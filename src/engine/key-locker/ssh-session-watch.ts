@@ -229,8 +229,22 @@ export class SshSessionWatch {
   /**
    * One poll tick: snapshot once, then for each watched pane check its registered session ssh. Cheap:
    * one Toolhelp snapshot + a bounded per-pane identity read.
+   *
+   * `exempt` (L3-4 §0-CORR.2 — the fire-AFTER-delivery correction): when the driver drives this tick from
+   * `onDispatch` for a command that ITSELF opens an interactive ssh, that ssh child is ALREADY in the tree
+   * (the S-A hook fires post-delivery), so the W-2b unregistered-ssh scan would mis-flag the assistant's OWN
+   * just-dispatched login as a lurking USER ssh and `markUnknown` the pane. `exempt = { paneId, pid, startTimeMs }`
+   * skips EXACTLY that one process — matched on BOTH pid AND creation time — in the W-2b scan for
+   * `exempt.paneId`. The driver PROVED (via a before/after ssh-descendant delta) it is the child THIS dispatch
+   * spawned. Every OTHER interactive-ssh descendant — a user's ssh to the SAME host is a DIFFERENT pid — STILL
+   * flags; every other pane scans in full. A PID (not a host) is REQUIRED, and the CREATION TIME closes PID
+   * REUSE: if the dispatched ssh exits and Windows reassigns its pid to a user's ssh before this snapshot, the
+   * reused process has a different creation time ⇒ NOT skipped ⇒ still flags (Codex L3-4 W-0.5 P1 host-identity
+   * + P2 pid-reuse; mirrors the module's `session.startedAt` reuse discipline). A zero creation time never
+   * matches (doubt sentinel). Omit `exempt` (a `sudo`/non-ssh dispatch, the periodic timer, or an
+   * ambiguous/unproven delta) ⇒ the full scan runs everywhere. The exempt NEVER touches the pop/markUnknown core.
    */
-  tick(): void {
+  tick(exempt?: { paneId: string; pid: number; startTimeMs: number }): void {
     if (this.panes.size === 0) return;
     const snap = this.deps.snapshot();
     // A degenerate (empty) snapshot means the native call FAILED, not that every process died — skip the
@@ -261,7 +275,10 @@ export class SshSessionWatch {
         // disclose). Gated on depth 0: a legit assistant-dispatched ssh has pushed a frame (depth>0) and is
         // handled above, so this scan never fights the normal push→register flow (Opus L3-4 R2 Q1 / R3 Q1a).
         childrenByParent ??= buildChildrenMap(snap.parentMap);
-        if (this.hasUnregisteredInteractiveSsh(snap, childrenByParent, pane.shellPid)) this.deps.tracker.markUnknown(paneId);
+        // §0-CORR.2: exempt the assistant's OWN just-dispatched login (a proven pid+creation-time) for THIS
+        // pane only — the creation time closes pid reuse (a reassigned pid is a different process).
+        const exemptId = exempt?.paneId === paneId ? { pid: exempt.pid, startTimeMs: exempt.startTimeMs } : undefined;
+        if (this.hasUnregisteredInteractiveSsh(snap, childrenByParent, pane.shellPid, exemptId)) this.deps.tracker.markUnknown(paneId);
         continue;
       }
       // Liveness is authoritative from the Toolhelp map (a pid present as a KEY is alive); identify() reads
@@ -317,11 +334,20 @@ export class SshSessionWatch {
    * `-L`), a one-shot (`ssh host cmd`), or scp/sftp/git-over-ssh (whose inner ssh carries a trailing remote
    * command) all classify null ⇒ NOT flagged, so those panes keep autofilling (OQ-W-7 = option B). Short-
    * circuits on the first interactive/unreadable ssh, so the common no-ssh subtree is one adjacency walk.
+   *
+   * `exempt` (§0-CORR.2): the ONE process the driver proved is the ssh child THIS dispatch spawned (via a
+   * before/after ssh-descendant delta) — matched on BOTH pid AND creation time, so a REUSED pid (a different
+   * process) does not inherit the exemption. It is NOT flagged (its own subtree is still scanned). Pid+time,
+   * not host, on purpose: a user's ssh to the SAME host is a DIFFERENT pid and STILL flags, and an UNREADABLE
+   * descendant (name "" / argv null) STILL flags (can't confirm it is the exempt one — fail-safe). A zero
+   * creation time never matches (doubt sentinel). Omit `exempt` ⇒ every interactive ssh flags (the
+   * pre-correction behavior — a non-ssh dispatch, the periodic timer, or an ambiguous/unproven delta).
    */
   private hasUnregisteredInteractiveSsh(
     snap: ProcessSnapshot,
     children: Map<number, number[]>,
     shellPid: number,
+    exempt?: { pid: number; startTimeMs: number },
   ): boolean {
     // BFS the subtree over the pre-built parent→children map (Opus PR#512 P3: built once per tick, not per
     // pane). `seen` guards against pid-reuse apparent cycles (a child listing an ancestor pid).
@@ -333,6 +359,12 @@ export class SshSessionWatch {
         if (seen.has(pid)) continue;
         seen.add(pid);
         frontier.push(pid);
+        const id = snap.identify(pid);
+        // §0-CORR.2: the assistant's OWN just-dispatched ssh — matched on pid AND creation time, so a REUSED
+        // pid (a different process; zero creation time never matches) does NOT inherit the exemption (Codex
+        // W-0.5 P2, mirrors `session.startedAt` reuse discipline). Do not flag it; its subtree is still walked
+        // (it was pushed to the frontier above) in case it holds a lurking child.
+        if (exempt !== undefined && pid === exempt.pid && id.startTimeMs !== 0 && id.startTimeMs === exempt.startTimeMs) continue;
         // Every pid reached here is a KEY in `parentMap` (it came from
         // buildChildrenMap, which inverts parentMap) ⇒ ALIVE per the module's
         // liveness contract. So identify()'s "" here is NOT a gone pid — it is a
@@ -343,7 +375,7 @@ export class SshSessionWatch {
         // fail-safe below (Codex PR#512 P1 — otherwise a `sudo ssh` leaves the
         // depth-0 pane trusted-local and a later fill discloses to the remote).
         // A READABLE non-ssh descendant genuinely cannot be an in-bound login ⇒ skip.
-        const descName = snap.identify(pid).name;
+        const descName = id.name;
         if (descName === "") return true; // unreadable LIVE descendant ⇒ possibly interactive ssh (decline)
         if (descName !== SSH_PROGRAM) continue; // readable non-ssh ⇒ not an in-bound login
         // Fail-safe on ANY non-classifiable ssh: unreadable (null) OR an EMPTY argv — an ssh we cannot
@@ -352,7 +384,7 @@ export class SshSessionWatch {
         // the module's "any doubt sinks" invariant).
         const argv = snap.commandLine(pid);
         if (argv === null || argv.length === 0) return true; // unreadable / empty ⇒ fail-safe (possibly interactive)
-        if (interactiveSshTarget(argv.slice(1)) !== null) return true; // an interactive in-bound login
+        if (interactiveSshTarget(argv.slice(1)) !== null) return true; // an interactive in-bound login (exempt pid already skipped)
       }
     }
     return false;

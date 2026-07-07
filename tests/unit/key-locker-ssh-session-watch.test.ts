@@ -560,3 +560,105 @@ describe("SshSessionWatch — W-2b: an UNREGISTERED interactive ssh on a LOCAL p
     expect(sink.ends).toEqual([]);
   });
 });
+
+describe("SshSessionWatch — W-2b PID-based exempt (§0-CORR.2, the fire-after-delivery correction)", () => {
+  // With the S-A hook firing AFTER delivery, the `ssh host-a` the ASSISTANT dispatched is already in the tree
+  // when onDispatch drives the tick. `tick({ paneId, pid, startTimeMs })` exempts EXACTLY the driver-proven pid,
+  // matched on BOTH pid AND creation time — a user's ssh to the SAME host is a DIFFERENT pid and STILL flags (a
+  // host match could not prove which process is the dispatched one — Codex W-0.5 P1), and a REUSED pid reads a
+  // different creation time so it is NOT exempt (Codex W-0.5 P2). Unreadable descendants and every other pane
+  // still flag.
+  const localPane = (extra: Record<number, Proc>): Record<number, Proc> => ({ ...SHELL_ONLY, ...extra });
+
+  it("the assistant's OWN dispatched ssh (proven pid) is NOT flagged", () => {
+    const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000, startTimeMs: 20 }); // driver proved pid 2000 is the just-dispatched login
+    expect(sink.unknowns).toEqual([]); // exempt → not sunk → the assistant's own login can be armed/filled
+  });
+
+  it("a SAME-HOST user ssh with a DIFFERENT pid STILL flags (closes Codex W-0.5 P1 — host is not identity)", () => {
+    // The user already `ssh host-a`'d in (pid 2100); the assistant then dispatches `ssh host-a` (proven pid 2000).
+    // A host-only exempt would have skipped the user's ssh too — the pid exempt does NOT.
+    const { watch, sink } = setup(localPane({
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },   // assistant's own (exempt)
+      2100: { parent: 1000, name: "ssh", start: 19, argv: ["ssh", "user@host-a"] },     // user's, SAME host, unregistered
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000, startTimeMs: 20 });
+    expect(sink.unknowns).toEqual(["pane-1"]); // pid 2000 exempt, but the user's pid 2100 (same host) still flags
+  });
+
+  it("a lurking user ssh to a DIFFERENT host STILL flags under an exempt", () => {
+    const { watch, sink } = setup(localPane({
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },   // assistant's (exempt)
+      2100: { parent: 1000, name: "ssh", start: 21, argv: ["ssh", "user@host-evil"] },  // user's
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000, startTimeMs: 20 });
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("an UNREADABLE ssh descendant (a different pid) STILL flags under an exempt (fail-safe)", () => {
+    const { watch, sink } = setup(localPane({
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },   // assistant's (exempt)
+      4000: { parent: 1000, name: "ssh", start: 40 /* argv null ⇒ unreadable */ },      // a different, unreadable ssh
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000, startTimeMs: 20 });
+    expect(sink.unknowns).toEqual(["pane-1"]); // unreadable ≠ exempt pid ⇒ flags
+  });
+
+  it("the exempt applies ONLY to its named pane — another pane's ssh (even same pid-space) still flags", () => {
+    const procs: Record<number, Proc> = {
+      500: { parent: 0, name: "windowsterminal", start: 1 },
+      1000: { parent: 500, name: "powershell", start: 10 },
+      1100: { parent: 500, name: "powershell", start: 11 },
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },  // pane-1's (exempt)
+      2100: { parent: 1100, name: "ssh", start: 21, argv: ["ssh", "user@host-a"] },    // pane-2's (NOT exempt)
+    };
+    const { watch, sink } = setup(procs);
+    watch.watchPane("pane-1", 1000);
+    watch.watchPane("pane-2", 1100);
+    sink.setDepth("pane-1", 0);
+    sink.setDepth("pane-2", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000, startTimeMs: 20 }); // exempt names pane-1 only
+    expect(sink.unknowns).toEqual(["pane-2"]); // pane-1 exempt, pane-2 still flags
+  });
+
+  it("a lurking interactive ssh CHILD UNDER the exempt pid STILL flags (the exempt pid's subtree is walked)", () => {
+    // The exempt pid is skipped from flagging, but its subtree is still scanned — a nested unregistered login
+    // beneath it must not slip through (guards the frontier.push-before-continue ordering).
+    const { watch, sink } = setup(localPane({
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },   // assistant's (exempt)
+      2001: { parent: 2000, name: "ssh", start: 21, argv: ["ssh", "user@host-evil"] },  // a lurking login UNDER it
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000, startTimeMs: 20 });
+    expect(sink.unknowns).toEqual(["pane-1"]); // 2000 exempt, but its child 2001 still flags
+  });
+
+  it("a REUSED exempt pid (same pid, DIFFERENT creation time) is NOT exempt — flags (Codex W-0.5 P2)", () => {
+    // The assistant's dispatched ssh (pid 2000, start 20) exited; Windows reassigned pid 2000 to a USER's ssh
+    // (start 99). The exempt names { pid 2000, startTimeMs 20 }, but the live pid 2000 now reads start 99 ⇒ not
+    // skipped ⇒ flags. Without the creation-time match this reused pid would leak trusted-local.
+    const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 99, argv: ["ssh", "user@host-evil"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000, startTimeMs: 20 }); // exempt time 20 ≠ the live pid's time 99
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("no exempt (a sudo/non-ssh dispatch, the periodic timer, or an ambiguous delta) ⇒ full scan flags", () => {
+    const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick(); // omitting exempt preserves the pre-correction behavior
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+});
