@@ -338,19 +338,20 @@ describe("KeyLockerCaptureDriver — RECONCILE-then-FREEZE (W3, P1-A)", () => {
 
     // dispatch a REMOTE `sudo x` (frozen = host-a, expected = host-a)
     h.driver.onDispatch("pane-1", "sudo x");
-    // an EXTERNAL event pops the ssh: 2000 exits + a tick reconciles → tracker now LOCAL (a valid pop, still KNOWN)
+    // an EXTERNAL event pops the ssh: 2000 exits + a tick reconciles → tracker now LOCAL (a valid pop, still
+    // KNOWN). The tick's arm-hygiene sees the arm's expected=host-a no longer matches the live localhost — a
+    // cross-host mismatch (isKnownSession alone would MISS it: both frames are KNOWN) — and disarms.
     h.setTree(shellTree());
     h.driver.tickWatch();
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
+    expect(h.driver.armedPaneIds()).toEqual([]); // disarmed by the hygiene — host-a secret can't reach the now-local pane
 
-    // the arm's expected=host-a no longer matches the live localhost → filling frozen host-a's secret into the
-    // now-LOCAL pane would be a cross-host disclosure. DECLINE (isKnownSession alone would MISS this — both
-    // frames are KNOWN — which is why the guard matches execHost+isRemote against `expected`).
+    // a subsequent poll is idle; frozen host-a's secret is NEVER filled into the now-local pane
     h.deriveCalls.length = 0;
     vi.mocked(h.deps.capture).mockClear();      // the earlier ssh-login poll captured; isolate the sudo-x poll
     vi.mocked(h.deps.injectPane).mockClear();
     const r = await h.driver.poll("pane-1");
-    expect(r.status).toBe("declined");
+    expect(r.status).toBe("idle");
     expect(h.deps.capture).not.toHaveBeenCalled();
     expect(h.deps.injectPane).not.toHaveBeenCalled();
     expect(h.deriveCalls).toEqual([]); // never even derived
@@ -443,17 +444,18 @@ describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not 
     h.driver.onDispatch("pane-1", "sudo x"); // armed, frozen = { localhost }
     expect(h.driver.armedPaneIds()).toEqual(["pane-1"]);
 
-    // the USER hand-ssh's into the shared launched pane; a periodic tick's W-2b scan markUnknowns the pane
+    // the USER hand-ssh's into the shared launched pane; a periodic tick's W-2b scan markUnknowns the pane AND
+    // the tick's arm-hygiene disarms it (the live session no longer matches the arm's expected localhost).
     h.setTree(shellTree({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "admin@secret-host"] } }));
     h.driver.tickWatch();
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
+    expect(h.driver.armedPaneIds()).toEqual([]); // the tick's hygiene already disarmed — no stale arm lingers
 
-    // a poll must DECLINE (the frozen localhost binding must NOT reach the remote prompt) and disarm
+    // a subsequent poll finds nothing to do (idle); the frozen localhost binding NEVER reaches the remote prompt
     const r = await h.driver.poll("pane-1");
-    expect(r.status).toBe("declined");
+    expect(r.status).toBe("idle");
     expect(h.deps.capture).not.toHaveBeenCalled();
     expect(h.deps.injectPane).not.toHaveBeenCalled();
-    expect(h.driver.armedPaneIds()).toEqual([]); // disarmed — no stale arm lingers
   });
 
   it("the poll RECONCILES before trusting the live session — a user hand-ssh'd in with NO tickWatch between still declines (Codex R3 P1)", async () => {
@@ -471,6 +473,34 @@ describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not 
     expect(r.status).toBe("declined");
     expect(h.deps.capture).not.toHaveBeenCalled();
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // the poll reconcile sank it
+  });
+
+  it("the session changes DURING the capture/confirm await ⇒ the injection instant re-checks and ABORTS (Codex R4 line 524)", async () => {
+    // The deepest disclosure: the poll's pre-loop check passed, but the capture UI (arbitrary user time) is
+    // open when the ssh exits. The injection-instant re-check must catch it — the pre-loop check cannot.
+    let releaseCapture!: () => void;
+    const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), capture }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // register host-a (child present) — no poll needed
+    h.driver.onDispatch("pane-1", "sudo x");             // remote sudo, frozen = expected = host-a; re-arms
+
+    const loopP = h.driver.poll("pane-1");               // pre-loop check passes (live host-a); loop BLOCKS in capture()
+    await new Promise((r) => setTimeout(r, 0));
+    expect(capture).toHaveBeenCalledTimes(1);
+    vi.mocked(h.deps.injectPane).mockClear();
+
+    // WHILE the capture dialog is open, the ssh session ends (2000 exits). No explicit tickWatch — the
+    // injection-instant re-check drives its own reconcile.
+    h.setTree(shellTree());
+    releaseCapture();
+    const r = await loopP;
+
+    // the injection instant reconciled → live localhost ≠ expected host-a → ABORT before injectPane
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toMatchObject({ kind: "fill_aborted", code: "target_mismatch" });
+    expect(h.deps.injectPane).not.toHaveBeenCalled();     // never delivered the secret
+    expect(h.deps.deleteSecret).toHaveBeenCalled();       // reverse-orphan: the captured secret is deleted
   });
 
   it("a pane sunk to UNKNOWN mid prompt-read (async) declines rather than fills", async () => {

@@ -69,6 +69,7 @@ import {
   interactiveSshTarget,
   isKnownSession,
   programOf,
+  type PaneSession,
   type SessionFrame,
   type SessionTracker,
 } from "./session-tracker.js";
@@ -380,35 +381,15 @@ export class KeyLockerCaptureDriver {
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
-      // RECONCILE-THEN-TRUST before the fill (Codex R3 P1 — the poll can be the FIRST code to observe reality
-      // after the arm). The live-session guard below is only meaningful against a tracker that reflects the
-      // CURRENT process tree. But between arm and this poll, an external change — a user hand-ssh out of the
-      // launched pane, or a registered ssh exiting — may NOT yet have been reconciled (the separate `tickWatch`
-      // timer has not run), so `tracker.get()` would still read the STALE arm-time session and the guard would
-      // pass. So drive the SAME reconcile the dispatch path drives, HERE, right before the read: correlate any
-      // straggler child, then `watch.tick()` (NO exempt — there is no just-dispatched command to prove a child
-      // for; a user's in-bound ssh must fully flag). This is the poll-time half of reconcile-then-freeze.
-      this.correlateAllPending();
-      this.watch.tick();
-
-      // LIVE-SESSION RE-CHECK before the fill (Codex R2 P1 + Opus R2 P2 — disclosures the DISPATCH-time
-      // reconcile CANNOT catch, because the change happens AFTER the freeze). Now that the tracker is freshly
-      // reconciled, re-read the LIVE session and require it to STILL match `armed.expected` (the POST-record
-      // frame the command's own prompt shows in), by execHost+isRemote:
-      //   (P1a) a doubt markUnknown — the user hand-ssh's in, the W-2b scan sinks it — while a prior `sudo x`
-      //         arm (frozen `{localhost}`) is still live ⇒ live UNKNOWN ≠ expected ⇒ a LOCAL secret would reach
-      //         a now-REMOTE prompt; declined.
-      //   (P2)  a session-end POP — the pane's `ssh host-a` exits, the tick pops it to local — while a remote
-      //         `sudo x` arm (frozen `host-a`) is still live ⇒ live localhost ≠ expected host-a ⇒ a host-a
-      //         secret would reach a now-LOCAL prompt; declined.
-      // Match `expected`, NOT `frozen`: a session-changing `ssh deploy@host-a` has `frozen`=local but
-      // `expected`=host-a (its own push), so matching `expected` permits that login's own prompt while catching
-      // any external pop/push/sink. Any mismatch (incl. UNKNOWN) ⇒ the pane is no longer the command's context.
-      const live = this.deps.tracker.get(paneId);
-      if (!isKnownSession(live) || live.execHost !== armed.expected.execHost || live.isRemote !== armed.expected.isRemote) {
-        rec.armed = null;
-        return { status: "declined" };
-      }
+      // EARLY-DECLINE before opening the capture UI (Codex R2/R3 P1). The arm's `frozen` was reconciled at
+      // DISPATCH, but an async change between arm and this poll — a user hand-ssh out of the launched pane
+      // (doubt markUnknown), or a registered ssh exiting (session-end POP) — moves the pane out from under it.
+      // `liveSessionMatchesExpected` RECONCILES (the poll can be the FIRST code to observe reality; the tracker
+      // is stale until a tick — Codex R3) then checks the live session STILL matches `armed.expected`. A
+      // mismatch here avoids opening a capture dialog on an already-changed pane. This is NOT the load-bearing
+      // guard, though — the confirm/capture awaits below can change the session AFTER this check, so the
+      // AUTHORITATIVE re-check is at the INJECTION INSTANT (`runCaptureLoopFor`'s injectPane wrapper, Codex R4).
+      if (!this.liveSessionMatchesExpected(paneId, armed.expected)) { rec.armed = null; return { status: "declined" }; }
 
       // A credential prompt appeared → run the loop. Mark `pre-landed` (§0-CORR.3) FIRST so a command
       // delivered while the shell is blocked at this prompt — including the Mode-A `runToExit` landed re-run
@@ -462,12 +443,37 @@ export class KeyLockerCaptureDriver {
       rec.sshBaseline = new Set(sshDescendants(this.deps.snapshot(), rec.shellPid).keys());
     }
     this.watch.tick();
+    // ARM HYGIENE (Codex R1-R4 line 464): this tick may have popped/markUnknown'd a pane that holds a live
+    // arm from an earlier dispatch (a user hand-ssh'd in, or the session ended). The injection-instant guard
+    // already makes a stale fill IMPOSSIBLE, but leaving the arm set wastes polls and misreports
+    // `armedPaneIds`. Disarm any pane whose (freshly-reconciled) live session no longer matches its arm's
+    // `expected`. No extra tick — the tracker is already reconciled by the `watch.tick()` above.
+    for (const [paneId, rec] of this.panes) {
+      if (rec.armed !== null && !sessionMatches(this.tracker.get(paneId), rec.armed.expected)) rec.armed = null;
+    }
   }
 
   // ── internals ──────────────────────────────────────────────────────────────────────────────────────
 
   private get tracker(): SessionTracker { return this.deps.tracker; }
   private get watch(): SshSessionWatch { return this.deps.watch; }
+
+  /**
+   * RECONCILE-then-CHECK: the single "is it still safe to fill this arm?" test. Drives the SAME reconcile the
+   * dispatch path drives (correlate stragglers + `watch.tick()`, NO exempt — a user's in-bound ssh must fully
+   * flag), THEN checks the pane's live session STILL matches the arm's `expected` frame (execHost + isRemote).
+   * Used at BOTH the poll early-decline AND the INJECTION INSTANT — because the confirm/capture UI awaits
+   * between them can take arbitrary user time, during which an async tick can pop/markUnknown the session
+   * (Codex R3 line 408 / R4 line 524). The tracker only reflects reality after a tick, so the reconcile MUST
+   * precede the read. Returns false on any mismatch (incl. UNKNOWN) ⇒ the pane is no longer the command's
+   * context ⇒ do not fill. Matches `expected`, not `frozen`: a session-changing `ssh host-a` has frozen=local
+   * but expected=host-a (its own push), so its own login prompt fills while an external pop/push/sink declines.
+   */
+  private liveSessionMatchesExpected(paneId: string, expected: SessionFrame): boolean {
+    this.correlateAllPending();
+    this.watch.tick();
+    return sessionMatches(this.tracker.get(paneId), expected);
+  }
 
   /**
    * Register the freshly-spawned interactive-ssh child of EVERY pane whose straggler correlation is still
@@ -521,7 +527,20 @@ export class KeyLockerCaptureDriver {
       confirmPolicyFor: (k) => this.deps.confirmPolicyFor(k),
       capture: (id) => this.deps.capture(id),
       deleteSecret: (id) => this.deps.deleteSecret(id),
-      injectPane: (b, id, sub) => this.deps.injectPane(paneId, b, id, sub),
+      // INJECTION-INSTANT re-check (Codex R4 line 524 — the AUTHORITATIVE disclosure guard). The poll's
+      // early-decline ran BEFORE the loop; but `confirmPolicyFor`/`confirmInjection`/`capture` (a secure UI
+      // dialog the user interacts with) await for ARBITRARY time before we get here, and an async `tickWatch`
+      // can pop the ssh frame or markUnknown the pane DURING that wait. Injecting the FROZEN binding blind
+      // would then type e.g. a remote sudo secret into a now-LOCAL prompt (the ssh exited while the confirm UI
+      // was open) — a disclosure the pre-loop check cannot see. So RECONCILE + re-verify the live session STILL
+      // matches `armed.expected` at the exact injection instant; on mismatch ABORT with `target_mismatch` (the
+      // loop maps it to `fill_aborted` and, on the NO-MATCH path, its `finally` deletes the just-captured
+      // secret — reverse-orphan). This is the local-vs-remote analog of L2's window/title injection-instant
+      // re-verify, which does NOT catch a session change (plan §3 W3).
+      injectPane: (b, id, sub) =>
+        this.liveSessionMatchesExpected(paneId, armed.expected)
+          ? this.deps.injectPane(paneId, b, id, sub)
+          : Promise.resolve({ ok: false, code: "target_mismatch" } as InjectResult),
       awaitLanded: async (cmd) => {
         const result = await awaitLanded(
           {
@@ -544,6 +563,13 @@ export class KeyLockerCaptureDriver {
     };
     return runCaptureLoop(loopDeps, event);
   }
+}
+
+/** Does a live pane session STILL match the arm's `expected` context, by execHost + isRemote? (Not cwd —
+ *  cwd only steers git-remote derivation for the https-cred scheme, which is not a pane channel, so a cwd
+ *  drift cannot move a pane-injected secret cross-host.) UNKNOWN never matches (fail-safe). */
+function sessionMatches(live: PaneSession, expected: SessionFrame): boolean {
+  return isKnownSession(live) && live.execHost === expected.execHost && live.isRemote === expected.isRemote;
 }
 
 /**
