@@ -132,9 +132,12 @@ export class KeyLockerManager {
   }
 
   /**
-   * One live process-tree snapshot for the watch/driver reconcile (W-3 §2.1 — the Win32 adapter). Wires the
-   * real (or injected) `buildProcessParentMap` + `getProcessIdentity` + `getProcessCommandLine` into the pure
-   * `ProcessSnapshot` shape. Two adaptations the watch's contract requires:
+   * One live process-tree snapshot for the watch/driver reconcile (W-3 §2.1 — the Win32 adapter). PUBLIC so
+   * the wiring root (W-4) can build the capture-driver's `snapshot` seam from the SAME manager-owned adapter
+   * the watch uses — passing `() => manager.snapshotProcessTree()` — rather than duplicating it and risking
+   * production/test drift (Codex W-3). Wires the real (or injected) `buildProcessParentMap` +
+   * `getProcessIdentity` + `getProcessCommandLine` into the pure `ProcessSnapshot` shape. Two adaptations the
+   * watch's contract requires:
    *   - `identify().name` is the native `processName` LOWERCASED (win32 does NOT lowercase at source; the watch
    *     compares against the lowercase literal `"ssh"`), with `startTimeMs` from `processStartTimeMs`.
    *   - `commandLine(pid)` passes `getProcessCommandLine` through verbatim (null on ANY read failure — the
@@ -143,7 +146,7 @@ export class KeyLockerManager {
    * empty identity (`{ name: "", startTimeMs: 0 }`) — the watch tolerates both (it skips a degenerate tick and
    * treats "" as gone-or-unreadable), so this adapter never throws.
    */
-  private snapshotProcessTree(): ProcessSnapshot {
+  snapshotProcessTree(): ProcessSnapshot {
     const w = this.opts.win32;
     const parentMapOf = w?.buildProcessParentMap ?? buildProcessParentMap;
     const identityOf = w?.getProcessIdentity ?? getProcessIdentityByPid;

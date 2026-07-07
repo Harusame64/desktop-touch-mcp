@@ -311,6 +311,16 @@ describe("KeyLockerManager — W-3 tracker/watch ownership + Win32 snapshot adap
     expect(mgr.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
   });
 
+  it("exposes the snapshot adapter PUBLICLY so W-4 can build the driver's snapshot seam from the same source (Codex W-3)", () => {
+    const tree = { 500: { parent: 0, name: "explorer", start: 1 }, 2000: { parent: 500, name: "SSH", start: 20, argv: ["ssh", "deploy@host-a"] } };
+    const mgr = new KeyLockerManager({ storeDir: freshDir(), win32: win32Of(tree) });
+    const snap = mgr.snapshotProcessTree(); // the public seam the wiring passes to the driver
+    expect(snap.parentMap.get(2000)).toBe(500);
+    expect(snap.identify(2000)).toEqual({ name: "ssh", startTimeMs: 20 }); // lowercased through the manager-owned adapter
+    expect(snap.commandLine(2000)).toEqual(["ssh", "deploy@host-a"]);
+    expect(snap.identify(9999)).toEqual({ name: "", startTimeMs: 0 }); // gone pid
+  });
+
   it("a degenerate snapshot (native failure ⇒ empty parentMap) is tolerated: the tick is a no-op, no throw", () => {
     const mgr = new KeyLockerManager({ storeDir: freshDir(), win32: { buildProcessParentMap: () => new Map(), getProcessIdentity: () => ({ processName: "", processStartTimeMs: 0 }), getProcessCommandLine: () => null } });
     mgr.tracker.beginLocalSession("pane-1");
