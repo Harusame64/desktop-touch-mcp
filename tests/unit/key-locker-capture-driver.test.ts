@@ -291,6 +291,44 @@ describe("KeyLockerCaptureDriver — §3.1 before/after ssh-child DIFF (Q2)", ()
   });
 });
 
+describe("KeyLockerCaptureDriver — push→register window closed by correlate-before-tick (Codex W2-P1)", () => {
+  const sshA: Proc = { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] };
+
+  it("a periodic tickWatch after an ssh dispatch registers the child FIRST, so the frame is NOT markUnknown'd", async () => {
+    const h = makeHarness({}, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // push host-a, correlation pending (no poll yet)
+    h.setTree(shellTree({ 2000: sshA }));                     // the ssh child is now visible in Toolhelp
+    h.driver.tickWatch(); // must correlate-register 2000 BEFORE the backstop sees the unwatched frame
+    expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true }); // survives — tracked
+    expect(h.tracker.remoteDepth("pane-1")).toBe(1);
+  });
+
+  it("another pane's onDispatch does NOT markUnknown pane-1's pending ssh frame (correlated-first)", async () => {
+    const twoShells = (extra: Record<number, Proc> = {}): Record<number, Proc> => ({
+      500: { parent: 0, name: "windowsterminal", start: 1 },
+      1000: { parent: 500, name: "powershell", start: 10 },
+      1100: { parent: 500, name: "powershell", start: 11 },
+      ...extra,
+    });
+    const h = makeHarness({}, twoShells());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-2", 1100);
+    await h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // pane-1 pushes host-a, pending
+    h.setTree(twoShells({ 2000: sshA }));                     // ssh child visible
+    await h.driver.onDispatch("pane-2", "ls");               // pane-2's tick reconciles ALL panes
+    expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true }); // pane-1 survives
+  });
+
+  it("if the child is not yet visible when a tick fires, the unwatched frame markUnknowns (fail-safe OQ-W-9 residual)", async () => {
+    const h = makeHarness({}, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // push, but the child has NOT spawned yet
+    h.driver.tickWatch(); // child invisible ⇒ nothing to register ⇒ backstop markUnknowns (safe decline)
+    expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // declines, NEVER wrong-targets
+  });
+});
+
 describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () => {
   it("polls until a credential prompt appears, then runs the loop and disarms", async () => {
     const verdicts = [PROMPT(false), PROMPT(false), PROMPT(true)];

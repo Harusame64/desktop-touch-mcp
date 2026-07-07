@@ -206,6 +206,15 @@ export class KeyLockerCaptureDriver {
     const rec = this.panes.get(paneId);
     if (rec === undefined || rec.loopInFlight) return;
 
+    // (0) REGISTER any pending ssh child BEFORE reconciling. `watch.tick()` is driven ONLY from the driver
+    //     (here + `tickWatch`), so registering every armed pane's freshly-spawned interactive-ssh child
+    //     first makes the push→register window non-observable to this tick: a just-pushed-but-unregistered
+    //     remote frame (`session===null && remoteDepth>0`) would otherwise trip the watch's unwatched-frame
+    //     backstop → markUnknown, losing a NORMAL ssh login's tracking (Codex L3-4-W2 P1; the residual is
+    //     only the sub-ms gap before the child appears in Toolhelp = OQ-W-9). Fail-safe either way — the
+    //     push stays at dispatch (an unwatched frame declines, never wrong-targets; DEFERRING the push
+    //     would under-report remote and DISCLOSE a local secret to a remote prompt, so it is NOT done).
+    this.correlateAllPending();
     // (1) RECONCILE this pane to a correct-or-UNKNOWN steady state (P1-A: pop a dead ssh so a post-exit
     //     command doesn't freeze a stale remote; W-2b: markUnknown a user-typed in-bound ssh). Synchronous.
     this.watch.tick();
@@ -282,8 +291,11 @@ export class KeyLockerCaptureDriver {
     this.panes.delete(paneId);
   }
 
-  /** Drive the watch's periodic reconcile (the wiring's tick timer, §2.1 mechanical half of W3). */
+  /** Drive the watch's periodic reconcile (the wiring's tick timer, §2.1 mechanical half of W3). Registers
+   *  any pending ssh child FIRST so the periodic tick cannot markUnknown a just-pushed-but-unregistered
+   *  interactive-ssh frame (the push→register window — see `onDispatch` step 0). */
   tickWatch(): void {
+    this.correlateAllPending();
     this.watch.tick();
   }
 
@@ -298,6 +310,20 @@ export class KeyLockerCaptureDriver {
     const snap = this.deps.snapshot();
     if (snap.parentMap.size === 0) return { preSsh: new Set(), baselineOk: false, registered: false };
     return { preSsh: sshDirectChildren(snap, shellPid), baselineOk: true, registered: false };
+  }
+
+  /**
+   * Register the freshly-spawned interactive-ssh child of EVERY armed pane whose correlation is still
+   * pending. Called before every `watch.tick()` the driver issues (`onDispatch` step 0 + `tickWatch`) so a
+   * just-pushed remote frame is registered before the tick's unwatched-frame backstop can see it. A pane
+   * whose child is not visible yet stays pending and is retried on the next tick/poll; correlation is a
+   * no-op once resolved (`registered`), so this is idempotent and O(pending panes) — usually 0–1.
+   */
+  private correlateAllPending(): void {
+    for (const [paneId, rec] of this.panes) {
+      const ssh = rec.armed?.ssh;
+      if (ssh !== undefined && !ssh.registered) this.correlateSshChild(paneId, rec.shellPid, ssh);
+    }
   }
 
   /**
