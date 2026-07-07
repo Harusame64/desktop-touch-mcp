@@ -65,7 +65,17 @@ export function setTerminalDispatchHook(fn: ((ev: TerminalDispatchEvent) => void
 export function fireTerminalDispatch(paneId: string, command: string): void {
   const hook = terminalDispatchHook;
   if (hook === null) return;
-  try { hook({ paneId, command }); } catch { /* fire-and-forget: never break a dispatch */ }
+  try {
+    // The hook is typed `=> void`, but TypeScript still accepts an async
+    // (Promise-returning) function here. A synchronous throw is caught below;
+    // an async REJECTION escapes this try/catch and would surface as an
+    // unhandled promise rejection. Isolate that too so a fire-and-forget
+    // observer can never break — or noisily leak past — a dispatch.
+    const r = hook({ paneId, command }) as unknown;
+    if (r !== null && typeof r === "object" && typeof (r as { then?: unknown }).then === "function") {
+      void (r as Promise<unknown>).then(undefined, () => { /* fire-and-forget: swallow rejection */ });
+    }
+  } catch { /* fire-and-forget: never break a dispatch */ }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

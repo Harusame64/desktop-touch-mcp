@@ -70,6 +70,40 @@ describe("terminal dispatch hook seam", () => {
     expect(seen).toEqual({ paneId: "42", command: "rm -rf /tmp/x" });
   });
 
+  it("isolates an async hook's rejection — no unhandled promise rejection (Codex PR#511 P2)", async () => {
+    // The hook is typed `=> void`, but TypeScript accepts async functions here.
+    // A rejection thrown AFTER the synchronous portion escapes the try/catch and
+    // would surface as an unhandled promise rejection. fireTerminalDispatch must
+    // attach its own rejection handler so a fire-and-forget observer can never
+    // leak one out.
+    let unhandled: unknown = null;
+    const onUnhandled = (reason: unknown): void => {
+      unhandled = reason;
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let seen: TerminalDispatchEvent | null = null;
+      // An async function returns Promise<void>, which TypeScript accepts for
+      // this `=> void`-typed slot. It rejects AFTER a microtask turn — the very
+      // shape that escapes a plain synchronous try/catch.
+      const asyncHook = async (ev: TerminalDispatchEvent): Promise<void> => {
+        seen = ev;
+        await Promise.resolve();
+        throw new Error("async observer blew up");
+      };
+      setTerminalDispatchHook(asyncHook);
+
+      expect(() => fireTerminalDispatch("77", "kubectl get pods")).not.toThrow();
+      expect(seen).toEqual({ paneId: "77", command: "kubectl get pods" });
+
+      // Give the microtask + a macrotask turn for any unhandled rejection to fire.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toBeNull();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("passes the caller-provided paneId/command through verbatim (no rewrite)", () => {
     const received: TerminalDispatchEvent[] = [];
     setTerminalDispatchHook((ev) => received.push(ev));
