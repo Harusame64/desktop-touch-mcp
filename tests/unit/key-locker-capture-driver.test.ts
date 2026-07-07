@@ -456,6 +456,23 @@ describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not 
     expect(h.driver.armedPaneIds()).toEqual([]); // disarmed — no stale arm lingers
   });
 
+  it("the poll RECONCILES before trusting the live session — a user hand-ssh'd in with NO tickWatch between still declines (Codex R3 P1)", async () => {
+    // The deepest form: the poll is the FIRST code to observe reality after the arm. Without a poll-time
+    // reconcile, `tracker.get()` still reads the STALE arm-time localhost session (no tickWatch has run to
+    // markUnknown it), so the live-check would PASS and fill the local secret into the now-remote prompt.
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onDispatch("pane-1", "sudo x"); // armed, expected = { localhost }
+    // the USER hand-ssh's in — but NO tickWatch fires. The tracker is still stale-local until the poll reconciles.
+    h.setTree(shellTree({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "admin@secret-host"] } }));
+    expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false }); // STALE — not yet reconciled
+
+    const r = await h.driver.poll("pane-1"); // the poll's own reconcile must W-2b-markUnknown the pane, then decline
+    expect(r.status).toBe("declined");
+    expect(h.deps.capture).not.toHaveBeenCalled();
+    expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // the poll reconcile sank it
+  });
+
   it("a pane sunk to UNKNOWN mid prompt-read (async) declines rather than fills", async () => {
     let releasePrompt!: (v: PromptVerdict) => void;
     const readPromptTail = vi.fn(() => new Promise<PromptVerdict>((res) => { releasePrompt = res; }));

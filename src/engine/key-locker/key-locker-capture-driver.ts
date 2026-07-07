@@ -380,19 +380,30 @@ export class KeyLockerCaptureDriver {
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
+      // RECONCILE-THEN-TRUST before the fill (Codex R3 P1 — the poll can be the FIRST code to observe reality
+      // after the arm). The live-session guard below is only meaningful against a tracker that reflects the
+      // CURRENT process tree. But between arm and this poll, an external change — a user hand-ssh out of the
+      // launched pane, or a registered ssh exiting — may NOT yet have been reconciled (the separate `tickWatch`
+      // timer has not run), so `tracker.get()` would still read the STALE arm-time session and the guard would
+      // pass. So drive the SAME reconcile the dispatch path drives, HERE, right before the read: correlate any
+      // straggler child, then `watch.tick()` (NO exempt — there is no just-dispatched command to prove a child
+      // for; a user's in-bound ssh must fully flag). This is the poll-time half of reconcile-then-freeze.
+      this.correlateAllPending();
+      this.watch.tick();
+
       // LIVE-SESSION RE-CHECK before the fill (Codex R2 P1 + Opus R2 P2 — disclosures the DISPATCH-time
-      // reconcile CANNOT catch, because the change happens AFTER the freeze). The arm's `frozen` was reconciled
-      // at dispatch, but an async tick between arm and fill can move the pane out from under it:
-      //   (P1) a doubt markUnknown — the user hand-ssh's into a launched pane, the W-2b scan sinks it — while a
-      //        prior `sudo x` arm (frozen `{localhost}`) is still live ⇒ a LOCAL secret into a now-REMOTE prompt;
-      //   (P2) a session-end POP — the pane's `ssh host-a` exits, a tick pops it to local — while a remote
-      //        `sudo x` arm (frozen `host-a`) is still live ⇒ a host-a secret into a now-LOCAL prompt.
-      // Both are cross-host disclosures the frozen-derive W3 closure (`getSession: () => armed.frozen`) would
-      // fill blind. So `poll` — the SINGLE fill chokepoint — re-reads the LIVE session and requires it to STILL
-      // match `armed.expected` (the POST-record frame the command's own prompt shows in), by execHost+isRemote.
-      // NOT frozen-equality: a session-changing `ssh deploy@host-a` has `frozen`=local but `expected`=host-a
-      // (its own push), so matching `expected` permits that login's own prompt while still catching an external
-      // pop/push/sink. Any mismatch (incl. UNKNOWN) ⇒ the pane is no longer the command's context ⇒ decline.
+      // reconcile CANNOT catch, because the change happens AFTER the freeze). Now that the tracker is freshly
+      // reconciled, re-read the LIVE session and require it to STILL match `armed.expected` (the POST-record
+      // frame the command's own prompt shows in), by execHost+isRemote:
+      //   (P1a) a doubt markUnknown — the user hand-ssh's in, the W-2b scan sinks it — while a prior `sudo x`
+      //         arm (frozen `{localhost}`) is still live ⇒ live UNKNOWN ≠ expected ⇒ a LOCAL secret would reach
+      //         a now-REMOTE prompt; declined.
+      //   (P2)  a session-end POP — the pane's `ssh host-a` exits, the tick pops it to local — while a remote
+      //         `sudo x` arm (frozen `host-a`) is still live ⇒ live localhost ≠ expected host-a ⇒ a host-a
+      //         secret would reach a now-LOCAL prompt; declined.
+      // Match `expected`, NOT `frozen`: a session-changing `ssh deploy@host-a` has `frozen`=local but
+      // `expected`=host-a (its own push), so matching `expected` permits that login's own prompt while catching
+      // any external pop/push/sink. Any mismatch (incl. UNKNOWN) ⇒ the pane is no longer the command's context.
       const live = this.deps.tracker.get(paneId);
       if (!isKnownSession(live) || live.execHost !== armed.expected.execHost || live.isRemote !== armed.expected.isRemote) {
         rec.armed = null;
