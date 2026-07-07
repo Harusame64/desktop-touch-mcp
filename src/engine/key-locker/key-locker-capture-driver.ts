@@ -313,6 +313,12 @@ export class KeyLockerCaptureDriver {
     const snap = this.deps.snapshot();
     if (snap.parentMap.size === 0) return; // native failure this poll — retry next poll (no baseline change)
 
+    // `sshDirectChildren` gates on `identify().name === "ssh"`, so a NEW login whose ssh process is
+    // NAME-unreadable (an elevated/cross-user ssh whose OpenProcess is denied) is excluded from this diff
+    // rather than flagged ambiguous. That is still FAIL-SAFE, just via a different path: its pushed remote
+    // frame stays unwatched (`session === null && remoteDepth > 0`), so the watch `tick` backstop
+    // (`ssh-session-watch.ts`) markUnknowns the pane on the next poll. (The argv-unreadable path below flags
+    // immediately; the name-unreadable case is the rarer elevated-ssh variant the backstop covers.)
     const interactive: number[] = [];
     let ambiguous = false;
     for (const pid of sshDirectChildren(snap, shellPid)) {

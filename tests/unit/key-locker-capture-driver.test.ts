@@ -255,6 +255,19 @@ describe("KeyLockerCaptureDriver — §3.1 before/after ssh-child DIFF (Q2)", ()
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
   });
 
+  it("W-2b: an anchored pane the USER hand-ssh'd out of ⇒ onDispatch(sudo) declines (no arm, unknown)", async () => {
+    // THE security crux: reconcile-at-dispatch runs the W-2b subtree scan, so a LOCAL secret never reaches
+    // a remote prompt in a shared L3-launched pane the user drove an in-bound ssh into.
+    const h = makeHarness({}, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000); // anchored KNOWN-LOCAL
+    // the USER hand-ssh's out of the shared pane — the driver never dispatched it (no frame, no register)
+    h.setTree(shellTree({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "admin@secret-host"] } }));
+    await h.driver.onDispatch("pane-1", "sudo x"); // tick's W-2b scan must sink the pane BEFORE the freeze
+    expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // sunk — LOCAL secret must not reach remote
+    expect(h.driver.armedPaneIds()).toEqual([]);                // declined, never armed
+    expect(h.deriveCalls).toEqual([]);                          // never derived a localhost binding
+  });
+
   it("an argv-UNREADABLE new ssh child ⇒ markUnknown (fail-safe, never guess)", async () => {
     const h = makeHarness({}, shellTree());
     h.driver.onLocalPaneLaunched("pane-1", 1000);
@@ -303,6 +316,20 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
     await h.driver.onDispatch("pane-1", "sudo x");
     const r = await h.driver.poll("pane-1");
     expect(r).toEqual({ status: "filled", outcome: { kind: "filled_from_store", verified: true } satisfies CaptureLoopOutcome });
+  });
+
+  it("a rejected D2 confirm on a MATCH flows through as { status: 'filled', outcome: confirm_rejected }", async () => {
+    const h = makeHarness({
+      readPromptTail: vi.fn(async () => PROMPT(true)),
+      resolveBinding: vi.fn(async () => ({ opaqueId: "stored-1" })), // MATCH
+      confirmPolicyFor: vi.fn(() => true),          // backstop on
+      confirmInjection: vi.fn(async () => false),   // user rejects it
+    }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "sudo x");
+    const r = await h.driver.poll("pane-1");
+    expect(r).toEqual({ status: "filled", outcome: { kind: "confirm_rejected" } satisfies CaptureLoopOutcome });
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
   });
 
   it("a NO-MATCH capture→inject→landed→[Save] flows through as { status: 'filled', outcome: saved }", async () => {
