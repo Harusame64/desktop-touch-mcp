@@ -560,3 +560,71 @@ describe("SshSessionWatch — W-2b: an UNREGISTERED interactive ssh on a LOCAL p
     expect(sink.ends).toEqual([]);
   });
 });
+
+describe("SshSessionWatch — W-2b SURGICAL exempt (§0-CORR.2, the fire-after-delivery correction)", () => {
+  // With the S-A hook firing AFTER delivery, an `ssh host-a` the ASSISTANT dispatched is already in the tree
+  // when onDispatch drives the tick. `tick({ paneId, host })` exempts ONLY the host-matching interactive
+  // descendant of that pane, so the assistant's own login is not mis-flagged — while a DIFFERENT-host user ssh,
+  // an unreadable ssh, and every other pane still flag.
+  const localPane = (extra: Record<number, Proc>): Record<number, Proc> => ({ ...SHELL_ONLY, ...extra });
+
+  it("the assistant's OWN host-matched ssh is NOT flagged when exempt names that host", () => {
+    const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", host: "host-a" }); // the assistant just dispatched `ssh …@host-a`
+    expect(sink.unknowns).toEqual([]); // exempt → not sunk → the assistant's own login can be armed/filled
+  });
+
+  it("a DIFFERENT-host ssh STILL flags even under an exempt (a lurking user ssh)", () => {
+    const { watch, sink } = setup(localPane({ 2100: { parent: 1000, name: "ssh", start: 21, argv: ["ssh", "user@host-evil"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", host: "host-a" }); // assistant dispatched host-a, but the tree has host-evil
+    expect(sink.unknowns).toEqual(["pane-1"]); // surgical: host-evil ≠ host-a ⇒ still sunk (no disclosure)
+  });
+
+  it("exempt host-a + a lurking user ssh to host-evil ⇒ STILL flags (the OTHER login trips it)", () => {
+    const { watch, sink } = setup(localPane({
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },       // assistant's own
+      2100: { parent: 1000, name: "ssh", start: 21, argv: ["ssh", "user@host-evil"] },      // user's, unregistered
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", host: "host-a" });
+    expect(sink.unknowns).toEqual(["pane-1"]); // host-a exempt, but host-evil still flags
+  });
+
+  it("an UNREADABLE ssh descendant STILL flags even under an exempt (can't confirm it is the exempt one)", () => {
+    const { watch, sink } = setup(localPane({ 4000: { parent: 1000, name: "ssh", start: 40 /* argv null */ } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", host: "host-a" });
+    expect(sink.unknowns).toEqual(["pane-1"]); // fail-safe: unreadable ⇒ flag regardless of exempt
+  });
+
+  it("the exempt applies ONLY to its named pane — another pane's ssh still flags in the same tick", () => {
+    const procs: Record<number, Proc> = {
+      500: { parent: 0, name: "windowsterminal", start: 1 },
+      1000: { parent: 500, name: "powershell", start: 10 },
+      1100: { parent: 500, name: "powershell", start: 11 },
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },  // pane-1's (exempt)
+      2100: { parent: 1100, name: "ssh", start: 21, argv: ["ssh", "user@host-a"] },    // pane-2's (NOT exempt)
+    };
+    const { watch, sink } = setup(procs);
+    watch.watchPane("pane-1", 1000);
+    watch.watchPane("pane-2", 1100);
+    sink.setDepth("pane-1", 0);
+    sink.setDepth("pane-2", 0);
+    watch.tick({ paneId: "pane-1", host: "host-a" }); // exempt names pane-1 only
+    expect(sink.unknowns).toEqual(["pane-2"]); // pane-1 exempt, pane-2 (same host, but not exempt) still flags
+  });
+
+  it("no exempt (a sudo/non-ssh dispatch or the periodic timer) ⇒ full scan, host-a still flags", () => {
+    const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick(); // omitting exempt preserves the pre-correction behavior
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+});
