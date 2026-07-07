@@ -253,12 +253,15 @@ export class KeyLockerCaptureDriver {
     this.tracker.recordDispatch(paneId, command);
     if (this.tracker.remoteDepth(paneId) > depthBefore) rec.pendingSsh = this.snapshotSshBaseline(rec.shellPid);
 
-    // (3) ARM the poller iff this is a credential command in a KNOWN session (OQ-W-3 — don't poll after
-    //     `ls`). The derive is pure/idempotent; the loop re-derives from the SAME frozen frame (a benign
-    //     double-derive). An UNKNOWN pane (reconcile sank it, or a conditional/ambiguous record) stays
-    //     disarmed (rec.armed already null from 0a) — but `pendingSsh` (session tracking) is INDEPENDENT of
-    //     arming, so it stays. Both pre-await returns leave the null from 0a; nothing interleaved (sync).
-    if (!isKnownSession(frozen)) return;
+    // (3) ARM the poller iff this is a credential command in a session that is KNOWN both BEFORE the record
+    //     (the derive-then-record context) AND AFTER it. `recordDispatch` can SINK the pane to UNKNOWN for a
+    //     conditional/ambiguous command — `false && ssh host ; sudo -v`, `cd x && ssh host` — whose effect it
+    //     cannot predict; the pre-record `frozen` still looks local, so without the post-record check the
+    //     trailing `sudo` prompt would fill under the (mis-derived) skipped-ssh binding (Codex L3-4-W2 R5 P1).
+    //     Declining a sunk pane is the fail-safe (never wrong-target). The derive is pure/idempotent; the loop
+    //     re-derives from the SAME frozen frame (a benign double-derive). `pendingSsh` (session tracking) is
+    //     INDEPENDENT of arming, so it stays. Both pre-await returns leave the null from 0a (nothing async yet).
+    if (!isKnownSession(frozen) || !isKnownSession(this.tracker.get(paneId))) return;
     const binding = await this.deps.deriveBinding(command, frozen);
     // Publish ONLY if this dispatch is still the latest for the pane — a newer onDispatch (which bumped
     // `dispatchSeq` and cleared `rec.armed`) owns the arm now; an out-of-order older derive must not clobber

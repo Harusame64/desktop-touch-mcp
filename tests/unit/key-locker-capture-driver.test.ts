@@ -147,6 +147,18 @@ describe("KeyLockerCaptureDriver — poller arm filter (OQ-W-3)", () => {
     // the derive is skipped for an unknown session (never guess localhost)
     expect(h.deriveCalls).toEqual([]);
   });
+
+  it("a conditional ssh that recordDispatch SINKS to UNKNOWN ⇒ decline — never fill the trailing sudo prompt under the skipped-ssh binding (Codex R5 P1)", async () => {
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    // `false && ssh host` is a conditional (skipped) ssh → recordDispatch markUnknowns the pane; the pre-record
+    // frozen still looks local, so the post-record gate must decline rather than arm the skipped ssh binding.
+    await h.driver.onDispatch("pane-1", "false && ssh deploy@host-a ; sudo -v");
+    expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // recordDispatch sank it
+    expect(h.driver.armedPaneIds()).toEqual([]);                 // declined — not armed
+    expect((await h.driver.poll("pane-1")).status).toBe("idle");
+    expect(h.deps.capture).not.toHaveBeenCalled();               // the sudo prompt is left for the human
+  });
 });
 
 describe("KeyLockerCaptureDriver — derive-then-record ordering (§3.1 point 1)", () => {
