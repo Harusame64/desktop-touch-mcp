@@ -167,12 +167,11 @@ interface PaneRecord {
   /** A `poll()` is in progress for this pane — serializes polls (a re-entrant poll returns `busy`) so a
    *  slow prompt read cannot let two polls run two capture loops for one dispatch (Codex L3-4-W2 R2 P2). */
   pollBusy: boolean;
-  /** The CAPTURE LOOP (prompt found → fill → landed → save) is running — a SUBSET of `pollBusy`. onDispatch
-   *  drops ONLY a re-dispatch of `loopCommand` (the Mode-A landed re-run, P2-E / W4-O2), not a real dispatch. */
-  loopInFlight: boolean;
-  /** The command the in-flight capture loop is processing (null when no loop) — lets onDispatch tell the
-   *  Mode-A re-run (same command) from a REAL post-auth dispatch (different command) that must be processed. */
-  loopCommand: string | null;
+  /** True ONLY while the Mode-A `runToExit` landed seam is executing — the exact window that seam re-fires
+   *  onDispatch for the same command (W4-O2). onDispatch drops a re-entrant ONLY on this flag (NOT a command
+   *  string, which is fragile to hook-emission normalization — Opus R7 P2). Mode B never enters runToExit, so
+   *  a genuine post-auth dispatch during readPaneAfterAuth/offerSave is admitted (recorded/reconciled). */
+  inRunToExit: boolean;
 }
 
 const SSH_PROGRAM = "ssh";
@@ -199,7 +198,7 @@ export class KeyLockerCaptureDriver {
   onLocalPaneLaunched(paneId: string, shellPid: number, cwd?: string): void {
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, shellPid);
-    this.panes.set(paneId, { shellPid, armed: null, dispatchSeq: 0, pendingSsh: undefined, pollBusy: false, loopInFlight: false, loopCommand: null });
+    this.panes.set(paneId, { shellPid, armed: null, dispatchSeq: 0, pendingSsh: undefined, pollBusy: false, inRunToExit: false });
   }
 
   /**
@@ -221,13 +220,12 @@ export class KeyLockerCaptureDriver {
   async onDispatch(paneId: string, command: string): Promise<void> {
     const rec = this.panes.get(paneId);
     if (rec === undefined) return;
-    // Drop the Mode-A landed RE-RUN — the `runToExit` seam re-fires onDispatch for the SAME command mid-loop
-    // (W4-O2) — but NOT a REAL new dispatch. A Mode-B interactive login succeeds mid-loop, so a genuine
-    // `ssh host-b` during `readPaneAfterAuth`/`offerSave` must be recorded/reconciled, not dropped (Codex R6
-    // P1). The re-run carries the loop's own command (W4-O1: the hook emits the user input, = `loopCommand`);
-    // a real dispatch is a different command. A same-command real re-dispatch (rare) is bounded-safe to drop
-    // (same session effect: a nested `ssh host-a` from host-a still resolves to host-a).
-    if (rec.loopInFlight && command === rec.loopCommand) return;
+    // Drop the Mode-A landed RE-RUN — the `runToExit` seam re-fires onDispatch mid-loop (W4-O2) — but NOT a
+    // real dispatch. We gate on the `inRunToExit` FLAG (set only around that seam, `runCaptureLoopFor`), NOT a
+    // command-string match (fragile to any hook-emission normalization — Opus R7 P2). A Mode-B interactive
+    // login succeeds mid-loop and never enters runToExit, so a genuine `ssh host-b` during
+    // `readPaneAfterAuth`/`offerSave` is recorded/reconciled, not dropped (Codex R6 P1).
+    if (rec.inRunToExit) return;
 
     // (0a) SUPERSEDE the prior arm. A newer dispatch means the previous command's prompt is stale — clearing
     //      `rec.armed` HERE, before the arm-derive await, stops a poll from filling THIS command's prompt
@@ -292,8 +290,8 @@ export class KeyLockerCaptureDriver {
     // SERIALIZE polls per pane (Codex L3-4-W2 P2). `pollBusy` is set BEFORE the `readPromptTail` await, so a
     // poll-timer re-entry while a prior poll is still awaiting the (slow, UIA) prompt read is dropped —
     // otherwise BOTH would pass the guard, observe the same prompt, and run two capture loops for one armed
-    // dispatch (duplicate capture/inject/save). `loopInFlight` (the capture-loop window) is a SUBSET of
-    // `pollBusy`; onDispatch checks `loopInFlight` to drop the Mode-A re-run (W4-O2), so both are kept.
+    // dispatch (duplicate capture/inject/save). `pollBusy` spans the WHOLE poll incl. the capture loop, so it
+    // is the sole poll-serialization gate (onDispatch's own drop uses the separate `inRunToExit` flag).
     if (rec.pollBusy) return { status: "busy" };
     rec.pollBusy = true;
     try {
@@ -307,29 +305,25 @@ export class KeyLockerCaptureDriver {
       if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) { rec.armed = null; return { status: "timed_out" }; }
 
       const verdict = await this.deps.readPromptTail(paneId);
-      // The arm can be OVERWRITTEN during the (slow, UIA) read: onDispatch is gated only by `loopInFlight`
-      // (not `pollBusy`), so a NEWER credential dispatch to this pane replaces `rec.armed` mid-read. Acting on
+      // The arm can be OVERWRITTEN during the (slow, UIA) read: onDispatch is NOT gated by `pollBusy` (only by
+      // `inRunToExit`, false here), so a NEWER credential dispatch to this pane replaces `rec.armed` mid-read. Acting on
       // the STALE `armed` would fill/save the newer prompt under the OLDER binding (e.g. a cached-sudo arm
       // then an ssh-password prompt → sudo secret into the ssh prompt). If the arm changed, abort — the
       // fresh arm is polled next tick (Codex L3-4-W2 R3 P1). Never clear the newer arm.
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
-      // A credential prompt appeared → run the loop. `loopInFlight` + `loopCommand` are set BEFORE the loop:
-      // onDispatch drops ONLY the Mode-A landed re-run (the SAME command re-fired by `runToExit`, W4-O2), NOT
-      // a REAL post-auth dispatch — a Mode-B login succeeds mid-loop (the shell is back at an interactive
-      // prompt during `readPaneAfterAuth`/`offerSave`), so `ssh host-b` there must still record/reconcile, else
-      // the tracker stays on host-a and a later host-b `sudo` fills the host-a binding (Codex L3-4-W2 R6 P1).
-      rec.loopInFlight = true;
-      rec.loopCommand = armed.command;
+      // A credential prompt appeared → run the loop. `pollBusy` (set above) already blocks a re-entrant poll
+      // for the whole loop; onDispatch is admitted EXCEPT while the Mode-A `runToExit` seam runs (the driver
+      // brackets it with `inRunToExit`, `runCaptureLoopFor`). A Mode-B login succeeds mid-loop, so a real
+      // `ssh host-b` during `readPaneAfterAuth`/`offerSave` records/reconciles rather than being dropped and
+      // leaving the tracker stale on host-a (Codex L3-4-W2 R6 P1).
       try {
-        const outcome = await this.runCaptureLoopFor(paneId, armed);
+        const outcome = await this.runCaptureLoopFor(rec, paneId, armed);
         return { status: "filled", outcome };
       } finally {
-        rec.loopInFlight = false;
-        rec.loopCommand = null;
-        // Disarm ONLY the loop's OWN arm — a real dispatch that ran mid-loop (above) may have replaced
-        // `rec.armed` with a newer arm (via 0a clear + republish), which must survive to be polled next.
+        // Disarm ONLY the loop's OWN arm — a real dispatch that ran mid-loop may have replaced `rec.armed`
+        // with a newer arm (via the onDispatch 0a-clear + republish), which must survive to be polled next.
         if (rec.armed === armed) rec.armed = null;
       }
     } finally {
@@ -427,7 +421,7 @@ export class KeyLockerCaptureDriver {
    * Assemble the per-event `CaptureLoopDeps` bound to the FROZEN session (W3 — `getSession` returns the
    * frozen frame, never a live `tracker.get`) and run the merged capture loop.
    */
-  private runCaptureLoopFor(paneId: string, armed: ArmedDispatch): Promise<CaptureLoopOutcome> {
+  private runCaptureLoopFor(rec: PaneRecord, paneId: string, armed: ArmedDispatch): Promise<CaptureLoopOutcome> {
     const event: CredentialEvent = { paneId, dispatchedCommand: armed.command };
     const loopDeps: CaptureLoopDeps = {
       getSession: () => armed.frozen, // FROZEN pre-effect frame — the W3 closure
@@ -439,7 +433,14 @@ export class KeyLockerCaptureDriver {
       deleteSecret: (id) => this.deps.deleteSecret(id),
       injectPane: (b, id, sub) => this.deps.injectPane(paneId, b, id, sub),
       awaitLanded: (cmd) => awaitLanded({
-        runToExit: () => this.deps.runToExit(paneId, cmd, armed.frozen.isRemote),
+        // BRACKET the Mode-A re-run window: onDispatch drops a re-entrant only while `inRunToExit` is set (the
+        // exact seam that re-fires it, W4-O2) — robust to hook-string normalization (Opus R7 P2). Mode B calls
+        // `readPaneAfterAuth`, never this, so the flag stays false there → real post-auth dispatches admitted.
+        runToExit: async () => {
+          rec.inRunToExit = true;
+          try { return await this.deps.runToExit(paneId, cmd, armed.frozen.isRemote); }
+          finally { rec.inRunToExit = false; }
+        },
         readPaneAfterAuth: () => this.deps.readPaneAfterAuth(paneId),
       }, cmd),
       confirmInjection: (b) => this.deps.confirmInjection(b),

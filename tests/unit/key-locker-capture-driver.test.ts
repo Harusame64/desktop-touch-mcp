@@ -221,28 +221,25 @@ describe("KeyLockerCaptureDriver — RECONCILE-then-FREEZE (W3, P1-A)", () => {
   });
 });
 
-describe("KeyLockerCaptureDriver — single-flight (P2-E / W4-O2)", () => {
-  it("the SAME-command re-entrant onDispatch (the Mode-A re-run) is dropped while a loop is in flight", async () => {
+describe("KeyLockerCaptureDriver — a re-entrant dispatch does not corrupt the running loop (P2-E)", () => {
+  it("a re-entrant onDispatch during the capture window (outside runToExit) does not corrupt the loop's own outcome", async () => {
     let releaseCapture!: () => void;
     const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), capture }, shellTree());
     h.driver.onLocalPaneLaunched("pane-1", 1000);
     await h.driver.onDispatch("pane-1", "sudo x"); // arm
 
-    // start the loop; it BLOCKS in capture() → loopInFlight stays true, loopCommand = "sudo x"
+    // start the loop; it BLOCKS in capture() → pollBusy stays true (a re-entrant POLL would return busy)
     const loopP = h.driver.poll("pane-1");
     await new Promise((r) => setTimeout(r, 0)); // flush microtasks until poll reaches capture()
     expect(capture).toHaveBeenCalledTimes(1);
 
-    const derivesBefore = h.deriveCalls.length;
-    // the Mode-A landed re-run re-fires onDispatch with the SAME command (W4-O2) — must be dropped (no
-    // second arm-derive). A DIFFERENT command would be a real dispatch and IS processed (Codex R6 P1, tested
-    // separately) — so this pins specifically the same-command re-run.
+    // a re-entrant onDispatch during capture is ADMITTED (only the runToExit window drops — inRunToExit),
+    // but the loop reads only the LOCAL captured arm + immutable frozen, so its own outcome is unaffected.
     await h.driver.onDispatch("pane-1", "sudo x");
-    expect(h.deriveCalls.length).toBe(derivesBefore); // dropped — no arm-derive
 
     releaseCapture();
-    await loopP;
+    expect((await loopP).status).toBe("filled"); // the original loop still completes correctly
   });
 });
 
