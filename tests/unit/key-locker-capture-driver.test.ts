@@ -413,6 +413,44 @@ describe("KeyLockerCaptureDriver — loopPhase gate (§0-CORR.3)", () => {
   });
 });
 
+describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not filled (Codex W-2 REDO P1)", () => {
+  it("a launched pane armed for `sudo x` (frozen localhost), then user-ssh'd in + markUnknown'd by a tick, DECLINES the fill", async () => {
+    // THE disclosure the dispatch-time reconcile cannot catch: the sink happens AFTER the freeze. Without the
+    // poll's live-session re-check the loop would fill the LOCAL sudo secret into the now-REMOTE pane's prompt.
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onDispatch("pane-1", "sudo x"); // armed, frozen = { localhost }
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]);
+
+    // the USER hand-ssh's into the shared launched pane; a periodic tick's W-2b scan markUnknowns the pane
+    h.setTree(shellTree({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "admin@secret-host"] } }));
+    h.driver.tickWatch();
+    expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
+
+    // a poll must DECLINE (the frozen localhost binding must NOT reach the remote prompt) and disarm
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("declined");
+    expect(h.deps.capture).not.toHaveBeenCalled();
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
+    expect(h.driver.armedPaneIds()).toEqual([]); // disarmed — no stale arm lingers
+  });
+
+  it("a pane sunk to UNKNOWN mid prompt-read (async) declines rather than fills", async () => {
+    let releasePrompt!: (v: PromptVerdict) => void;
+    const readPromptTail = vi.fn(() => new Promise<PromptVerdict>((res) => { releasePrompt = res; }));
+    const h = makeHarness({ readPromptTail }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onDispatch("pane-1", "sudo x"); // armed on localhost
+    const p = h.driver.poll("pane-1");         // awaits the blocked prompt read
+    await new Promise((r) => setTimeout(r, 0));
+    // the pane is sunk WHILE the prompt read is pending (a user ssh'd in + an interleaved tick)
+    h.tracker.markUnknown("pane-1");
+    releasePrompt(PROMPT(true));
+    expect((await p).status).toBe("declined");
+    expect(h.deps.capture).not.toHaveBeenCalled();
+  });
+});
+
 describe("KeyLockerCaptureDriver — single-flight + stale-arm guards", () => {
   it("concurrent polls for one pane run only ONE capture loop (pollBusy serialize)", async () => {
     let releasePrompt!: (v: PromptVerdict) => void;

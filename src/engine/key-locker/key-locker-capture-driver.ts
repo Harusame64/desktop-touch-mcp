@@ -93,6 +93,9 @@ export type PollResult =
   | { status: "polling" }
   /** A NEWER dispatch replaced the arm during the prompt read — this poll aborts, the fresh arm polls next. */
   | { status: "superseded" }
+  /** The pane was SUNK to UNKNOWN (a doubt-tick — e.g. a user hand-ssh'd in) between the arm and the fill —
+   *  the frozen context is stale, so the arm is voided and the prompt is left for the human (Codex P1). */
+  | { status: "declined" }
   /** A poll is already in progress for this pane (serialized) — the caller should not re-drive. */
   | { status: "busy" }
   /** The poller lifetime elapsed with no prompt (a key-based ssh / cached sudo prints none) — disarmed. */
@@ -365,6 +368,18 @@ export class KeyLockerCaptureDriver {
       // is polled next tick (Codex L3-4-W2 R3 P1). Never clear the newer arm.
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
+
+      // LIVE-SESSION RE-CHECK before the fill (Codex W-2 REDO P1 — a disclosure the dispatch-time reconcile
+      // CANNOT catch). The arm's `frozen` was reconciled at DISPATCH, but an async tick AFTER that can sink the
+      // pane to UNKNOWN — e.g. the user hand-ssh's into a launched pane and a `tickWatch` W-2b scan
+      // markUnknowns it while a prior `sudo x` arm (frozen `{localhost}`) is still live. The frozen-derive W3
+      // closure (`getSession: () => armed.frozen`) would then fill the LOCAL secret into the now-REMOTE pane's
+      // prompt. So `poll` — the SINGLE fill chokepoint — re-reads the LIVE session here and DECLINES if it is
+      // no longer known. This reads `isKnownSession`, NOT frozen-equality: a session-changing credential like
+      // `ssh deploy@host-a` legitimately has `frozen`=local but a live POST-push host-a frame (both KNOWN), so
+      // requiring live==frozen would wrongly block that login's own prompt. Only a markUnknown (doubt) — the
+      // signal that the pane's context is no longer trustworthy — voids the arm.
+      if (!isKnownSession(this.deps.tracker.get(paneId))) { rec.armed = null; return { status: "declined" }; }
 
       // A credential prompt appeared → run the loop. Mark `pre-landed` (§0-CORR.3) FIRST so a command
       // delivered while the shell is blocked at this prompt — including the Mode-A `runToExit` landed re-run
