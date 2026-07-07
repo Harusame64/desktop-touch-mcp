@@ -40,6 +40,7 @@ function snapshotOf(procs: Record<number, Proc>): ProcessSnapshot {
 
 const SENDINPUT_OK = (verified = true): InjectResult => ({ ok: true, injector: "sendinput", verified });
 const PROMPT = (isCredentialPrompt: boolean): PromptVerdict => ({ isCredentialPrompt, tail: "", stillHiddenPrompt: false });
+const SSH_A_BINDING: BindingUri = { scheme: "ssh", user: "deploy", host: "host-a", port: 22, fpSet: ["SHA256:host-a"] };
 
 /** Records the (command, session) passed to every deriveBinding call (arm + loop). */
 interface Harness {
@@ -326,6 +327,42 @@ describe("KeyLockerCaptureDriver — push→register window closed by correlate-
     await h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // push, but the child has NOT spawned yet
     h.driver.tickWatch(); // child invisible ⇒ nothing to register ⇒ backstop markUnknowns (safe decline)
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // declines, NEVER wrong-targets
+  });
+
+  it("pendingSsh is published BEFORE the arm-derive await, so a tickWatch during a slow deriveBinding still correlates (Codex R3 P2)", async () => {
+    let releaseDerive!: () => void;
+    const deriveBinding = vi.fn((): Promise<BindingUri> =>
+      new Promise((res) => { releaseDerive = () => res(SSH_A_BINDING); }));
+    const h = makeHarness({ deriveBinding }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    const pDispatch = h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // pushes frame + pendingSsh, then BLOCKS on deriveBinding
+    await new Promise((r) => setTimeout(r, 0));                            // let onDispatch reach the deriveBinding await
+    h.setTree(shellTree({ 2000: sshA }));                                  // the ssh child appears while derive is blocked
+    h.driver.tickWatch(); // correlateAllPending must see rec.pendingSsh (published pre-await) → register 2000
+    expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true }); // NOT markUnknown'd
+    expect(h.tracker.remoteDepth("pane-1")).toBe(1);
+    releaseDerive();
+    await pDispatch;
+  });
+});
+
+describe("KeyLockerCaptureDriver — stale-arm guard: a newer dispatch during a slow prompt read (Codex R3 P1)", () => {
+  it("a poll whose arm was overwritten mid-read aborts (superseded) — never fills the newer prompt under the older binding", async () => {
+    let releasePrompt!: (v: PromptVerdict) => void;
+    const readPromptTail = vi.fn(() => new Promise<PromptVerdict>((res) => { releasePrompt = res; }));
+    const h = makeHarness({ readPromptTail }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "sudo x"); // arm A (sudo, cached — no prompt of its own)
+
+    const pA = h.driver.poll("pane-1");            // captures armed=A(sudo), awaits the blocked prompt read
+    await new Promise((r) => setTimeout(r, 0));
+    // a NEWER credential command lands while the read is pending — onDispatch is not gated by pollBusy
+    await h.driver.onDispatch("pane-1", "ssh admin@host-b"); // overwrites rec.armed = B(ssh)
+    releasePrompt(PROMPT(true));                    // now a credential prompt (the ssh one) is visible
+
+    expect((await pA).status).toBe("superseded");   // aborts — does NOT fill the ssh prompt under sudo
+    expect(h.deps.capture).not.toHaveBeenCalled();  // no capture loop ran for the stale arm
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // the newer arm B survives to be polled next
   });
 });
 

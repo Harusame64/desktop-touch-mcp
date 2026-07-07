@@ -63,7 +63,9 @@ export type PollResult =
   | { status: "idle" }
   /** Armed, but no credential prompt has appeared yet — keep polling. */
   | { status: "polling" }
-  /** A capture loop is already in flight for this pane (single-flight) — the caller should not re-drive. */
+  /** A NEWER dispatch replaced the arm during the prompt read — this poll aborts, the fresh arm polls next. */
+  | { status: "superseded" }
+  /** A poll is already in progress for this pane (serialized) — the caller should not re-drive. */
   | { status: "busy" }
   /** The poller lifetime elapsed with no prompt (a key-based ssh / cached sudo prints none) — disarmed. */
   | { status: "timed_out" }
@@ -134,8 +136,6 @@ interface ArmedDispatch {
   frozen: SessionFrame;
   /** `nowMs()` when armed (poller lifetime, OQ-W-2). */
   armedAtMs: number;
-  /** Present only when this dispatch pushed an interactive-ssh frame — the §3.1 child correlation. */
-  ssh?: SshCorrelation;
 }
 
 /** The §3.1 before/after ssh-child DIFF state for one interactive-ssh dispatch. */
@@ -155,8 +155,14 @@ interface PaneRecord {
   shellPid: number;
   /** The credential dispatch awaiting a prompt, or null. */
   armed: ArmedDispatch | null;
+  /** The pending §3.1 interactive-ssh child correlation, DECOUPLED from `armed` and published the instant
+   *  `recordDispatch` pushes the frame — BEFORE the arm-derive await — so `correlateAllPending` can register
+   *  the child even while `deriveBinding` (`ssh -G`) is still awaiting (Codex L3-4-W2 R3 P2). Also survives
+   *  a not-armed ssh (binding null): the session-end watch still needs the child. Overwritten on the next
+   *  ssh push, resolved once `registered`. */
+  pendingSsh: SshCorrelation | undefined;
   /** A `poll()` is in progress for this pane — serializes polls (a re-entrant poll returns `busy`) so a
-   *  slow prompt read cannot let two polls run two capture loops for one dispatch (Codex L3-4-W2 P2). */
+   *  slow prompt read cannot let two polls run two capture loops for one dispatch (Codex L3-4-W2 R2 P2). */
   pollBusy: boolean;
   /** The CAPTURE LOOP (prompt found → fill → landed → save) is running — a SUBSET of `pollBusy`. onDispatch
    *  checks this to drop the re-entrant dispatch the Mode-A landed re-run fires (P2-E / W4-O2). */
@@ -187,7 +193,7 @@ export class KeyLockerCaptureDriver {
   onLocalPaneLaunched(paneId: string, shellPid: number, cwd?: string): void {
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, shellPid);
-    this.panes.set(paneId, { shellPid, armed: null, pollBusy: false, loopInFlight: false });
+    this.panes.set(paneId, { shellPid, armed: null, pendingSsh: undefined, pollBusy: false, loopInFlight: false });
   }
 
   /**
@@ -224,22 +230,24 @@ export class KeyLockerCaptureDriver {
     this.watch.tick();
     // (2) FREEZE the reconciled pre-effect frame (the derive-then-record PRE-push context, §3.1 point 1).
     const frozen = this.tracker.get(paneId);
-    // (4) Apply the session effect for SUBSEQUENT commands. An interactive-ssh frame push (depth delta) arms
-    //     the §3.1 child correlation with the PRE-dispatch direct-ssh-child baseline (the ssh child spawns
-    //     only after the send, so the baseline never contains it — W4-O1).
+    // (4) Apply the session effect for SUBSEQUENT commands. An interactive-ssh frame push (depth delta)
+    //     PUBLISHES the §3.1 child correlation onto `rec.pendingSsh` — the PRE-dispatch direct-ssh-child
+    //     baseline (the ssh child spawns only after the send, so the baseline never contains it — W4-O1).
+    //     Publishing it HERE (before the arm-derive await, decoupled from `armed`) is load-bearing: a
+    //     `tickWatch` during a slow `deriveBinding` (`ssh -G`) must be able to see the pending correlation via
+    //     `correlateAllPending`, else it markUnknowns the just-pushed unwatched frame (Codex L3-4-W2 R3 P2).
     const depthBefore = this.tracker.remoteDepth(paneId);
     this.tracker.recordDispatch(paneId, command);
-    const ssh = this.tracker.remoteDepth(paneId) > depthBefore
-      ? this.snapshotSshBaseline(rec.shellPid)
-      : undefined;
+    if (this.tracker.remoteDepth(paneId) > depthBefore) rec.pendingSsh = this.snapshotSshBaseline(rec.shellPid);
 
     // (3) ARM the poller iff this is a credential command in a KNOWN session (OQ-W-3 — don't poll after
     //     `ls`). The derive is pure/idempotent; the loop re-derives from the SAME frozen frame (a benign
-    //     double-derive). An UNKNOWN pane (reconcile sank it, or a conditional/ambiguous record) disarms.
+    //     double-derive). An UNKNOWN pane (reconcile sank it, or a conditional/ambiguous record) disarms —
+    //     but `pendingSsh` (session tracking) is INDEPENDENT of arming, so it stays.
     if (!isKnownSession(frozen)) { rec.armed = null; return; }
     const binding = await this.deps.deriveBinding(command, frozen);
     if (binding === null) { rec.armed = null; return; }
-    rec.armed = { command, frozen, armedAtMs: this.deps.nowMs(), ssh };
+    rec.armed = { command, frozen, armedAtMs: this.deps.nowMs() };
   }
 
   /**
@@ -263,12 +271,18 @@ export class KeyLockerCaptureDriver {
 
       // §3.1: register the newly-appeared interactive-ssh child (the wiring correlates it here, not at
       // dispatch — the child does not exist yet in that turn). Runs every poll until it resolves.
-      if (armed.ssh !== undefined && !armed.ssh.registered) this.correlateSshChild(paneId, rec.shellPid, armed.ssh);
+      if (rec.pendingSsh !== undefined && !rec.pendingSsh.registered) this.correlateSshChild(paneId, rec.shellPid, rec.pendingSsh);
 
       // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
       if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) { rec.armed = null; return { status: "timed_out" }; }
 
       const verdict = await this.deps.readPromptTail(paneId);
+      // The arm can be OVERWRITTEN during the (slow, UIA) read: onDispatch is gated only by `loopInFlight`
+      // (not `pollBusy`), so a NEWER credential dispatch to this pane replaces `rec.armed` mid-read. Acting on
+      // the STALE `armed` would fill/save the newer prompt under the OLDER binding (e.g. a cached-sudo arm
+      // then an ssh-password prompt → sudo secret into the ssh prompt). If the arm changed, abort — the
+      // fresh arm is polled next tick (Codex L3-4-W2 R3 P1). Never clear the newer arm.
+      if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
       // A credential prompt appeared → run the loop. `loopInFlight` is set BEFORE the loop so the Mode-A
@@ -334,7 +348,7 @@ export class KeyLockerCaptureDriver {
    */
   private correlateAllPending(): void {
     for (const [paneId, rec] of this.panes) {
-      const ssh = rec.armed?.ssh;
+      const ssh = rec.pendingSsh;
       if (ssh !== undefined && !ssh.registered) this.correlateSshChild(paneId, rec.shellPid, ssh);
     }
   }
