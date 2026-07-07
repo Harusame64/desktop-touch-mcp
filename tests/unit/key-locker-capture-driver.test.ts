@@ -21,7 +21,8 @@ import { SessionTracker, type SessionFrame } from "../../src/engine/key-locker/s
 import { SshSessionWatch, type ProcessSnapshot } from "../../src/engine/key-locker/ssh-session-watch.js";
 import type { BindingUri } from "../../src/engine/key-locker/binding.js";
 import type { InjectResult } from "../../src/engine/key-locker/injector.js";
-import type { CaptureLoopOutcome } from "../../src/engine/key-locker/capture-loop.js";
+import type { CaptureLoopOutcome, SaveChoice } from "../../src/engine/key-locker/capture-loop.js";
+import type { ExitCompletion } from "../../src/engine/key-locker/landed-detection.js";
 
 interface Proc { parent: number; name: string; start: number; argv?: string[] }
 
@@ -221,24 +222,24 @@ describe("KeyLockerCaptureDriver — RECONCILE-then-FREEZE (W3, P1-A)", () => {
 });
 
 describe("KeyLockerCaptureDriver — single-flight (P2-E / W4-O2)", () => {
-  it("a re-entrant onDispatch while a loop is in flight does NOT record (no frame push, no derive)", async () => {
+  it("the SAME-command re-entrant onDispatch (the Mode-A re-run) is dropped while a loop is in flight", async () => {
     let releaseCapture!: () => void;
     const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), capture }, shellTree());
     h.driver.onLocalPaneLaunched("pane-1", 1000);
     await h.driver.onDispatch("pane-1", "sudo x"); // arm
 
-    // start the loop; it BLOCKS in capture() → loopInFlight stays true
+    // start the loop; it BLOCKS in capture() → loopInFlight stays true, loopCommand = "sudo x"
     const loopP = h.driver.poll("pane-1");
     await new Promise((r) => setTimeout(r, 0)); // flush microtasks until poll reaches capture()
     expect(capture).toHaveBeenCalledTimes(1);
 
     const derivesBefore = h.deriveCalls.length;
-    const depthBefore = h.tracker.remoteDepth("pane-1");
-    // the Mode-A re-run (W4-O2) or a buffered dispatch re-enters — must be dropped
-    await h.driver.onDispatch("pane-1", "ssh evil@attacker");
-    expect(h.deriveCalls.length).toBe(derivesBefore);       // no arm-derive
-    expect(h.tracker.remoteDepth("pane-1")).toBe(depthBefore); // no frame push
+    // the Mode-A landed re-run re-fires onDispatch with the SAME command (W4-O2) — must be dropped (no
+    // second arm-derive). A DIFFERENT command would be a real dispatch and IS processed (Codex R6 P1, tested
+    // separately) — so this pins specifically the same-command re-run.
+    await h.driver.onDispatch("pane-1", "sudo x");
+    expect(h.deriveCalls.length).toBe(derivesBefore); // dropped — no arm-derive
 
     releaseCapture();
     await loopP;
@@ -532,6 +533,47 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
     h.driver.onLocalPaneLaunched("pane-1", 1000);
     expect((await h.driver.poll("pane-1")).status).toBe("idle");
     expect((await h.driver.poll("never-launched")).status).toBe("idle");
+  });
+});
+
+describe("KeyLockerCaptureDriver — the loop drops the Mode-A re-run but NOT real dispatches (Codex R6 P1)", () => {
+  it("a REAL nested dispatch during a Mode-B loop's post-auth window is recorded, not dropped", async () => {
+    let releaseOffer!: (c: SaveChoice) => void;
+    const offerSave = vi.fn(() => new Promise<SaveChoice>((res) => { releaseOffer = res; }));
+    const sshA: Proc = { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] };
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), offerSave }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // Mode-B login, arms host-a
+    h.setTree(shellTree({ 2000: sshA }));
+    const pLoop = h.driver.poll("pane-1");                     // runs the loop; blocks in offerSave (post-auth)
+    await new Promise((r) => setTimeout(r, 0));
+    expect(offerSave).toHaveBeenCalledTimes(1);
+    expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true }); // logged into host-a
+
+    // the login SUCCEEDED — a genuine nested `ssh host-b` now arrives while the loop is still in offerSave.
+    // It must be RECORDED (tracker → host-b), not dropped (which would leave it stale on host-a).
+    await h.driver.onDispatch("pane-1", "ssh admin@host-b");
+    expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-b", isRemote: true }); // processed, NOT stale host-a
+
+    releaseOffer("save");
+    await pLoop;
+    // the loop's finally did NOT clobber the newer host-b arm
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]);
+  });
+
+  it("the Mode-A landed re-run (SAME command) is still dropped mid-loop (W4-O2)", async () => {
+    let releaseRun!: () => void;
+    const runToExit = vi.fn((): Promise<ExitCompletion> => new Promise((res) => { releaseRun = () => res({ reason: "exited", exitCode: 0 }); }));
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), runToExit }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "sudo x"); // Mode-A one-shot, arms
+    const pLoop = h.driver.poll("pane-1");          // loop blocks in runToExit (awaitLanded Mode A)
+    await new Promise((r) => setTimeout(r, 0));
+    const derivesBefore = h.deriveCalls.length;
+    await h.driver.onDispatch("pane-1", "sudo x");  // the SAME-command Mode-A re-run → must be dropped
+    expect(h.deriveCalls.length).toBe(derivesBefore); // no arm-derive ran (dropped, not processed)
+    releaseRun();
+    await pLoop;
   });
 });
 

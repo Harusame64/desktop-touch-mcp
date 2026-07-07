@@ -168,8 +168,11 @@ interface PaneRecord {
    *  slow prompt read cannot let two polls run two capture loops for one dispatch (Codex L3-4-W2 R2 P2). */
   pollBusy: boolean;
   /** The CAPTURE LOOP (prompt found → fill → landed → save) is running — a SUBSET of `pollBusy`. onDispatch
-   *  checks this to drop the re-entrant dispatch the Mode-A landed re-run fires (P2-E / W4-O2). */
+   *  drops ONLY a re-dispatch of `loopCommand` (the Mode-A landed re-run, P2-E / W4-O2), not a real dispatch. */
   loopInFlight: boolean;
+  /** The command the in-flight capture loop is processing (null when no loop) — lets onDispatch tell the
+   *  Mode-A re-run (same command) from a REAL post-auth dispatch (different command) that must be processed. */
+  loopCommand: string | null;
 }
 
 const SSH_PROGRAM = "ssh";
@@ -196,7 +199,7 @@ export class KeyLockerCaptureDriver {
   onLocalPaneLaunched(paneId: string, shellPid: number, cwd?: string): void {
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, shellPid);
-    this.panes.set(paneId, { shellPid, armed: null, dispatchSeq: 0, pendingSsh: undefined, pollBusy: false, loopInFlight: false });
+    this.panes.set(paneId, { shellPid, armed: null, dispatchSeq: 0, pendingSsh: undefined, pollBusy: false, loopInFlight: false, loopCommand: null });
   }
 
   /**
@@ -217,7 +220,14 @@ export class KeyLockerCaptureDriver {
    */
   async onDispatch(paneId: string, command: string): Promise<void> {
     const rec = this.panes.get(paneId);
-    if (rec === undefined || rec.loopInFlight) return;
+    if (rec === undefined) return;
+    // Drop the Mode-A landed RE-RUN — the `runToExit` seam re-fires onDispatch for the SAME command mid-loop
+    // (W4-O2) — but NOT a REAL new dispatch. A Mode-B interactive login succeeds mid-loop, so a genuine
+    // `ssh host-b` during `readPaneAfterAuth`/`offerSave` must be recorded/reconciled, not dropped (Codex R6
+    // P1). The re-run carries the loop's own command (W4-O1: the hook emits the user input, = `loopCommand`);
+    // a real dispatch is a different command. A same-command real re-dispatch (rare) is bounded-safe to drop
+    // (same session effect: a nested `ssh host-a` from host-a still resolves to host-a).
+    if (rec.loopInFlight && command === rec.loopCommand) return;
 
     // (0a) SUPERSEDE the prior arm. A newer dispatch means the previous command's prompt is stale — clearing
     //      `rec.armed` HERE, before the arm-derive await, stops a poll from filling THIS command's prompt
@@ -305,15 +315,22 @@ export class KeyLockerCaptureDriver {
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
-      // A credential prompt appeared → run the loop. `loopInFlight` is set BEFORE the loop so the Mode-A
-      // landed re-run's re-entrant onDispatch (W4-O2) is suppressed. Disarm after (one prompt per dispatch).
+      // A credential prompt appeared → run the loop. `loopInFlight` + `loopCommand` are set BEFORE the loop:
+      // onDispatch drops ONLY the Mode-A landed re-run (the SAME command re-fired by `runToExit`, W4-O2), NOT
+      // a REAL post-auth dispatch — a Mode-B login succeeds mid-loop (the shell is back at an interactive
+      // prompt during `readPaneAfterAuth`/`offerSave`), so `ssh host-b` there must still record/reconcile, else
+      // the tracker stays on host-a and a later host-b `sudo` fills the host-a binding (Codex L3-4-W2 R6 P1).
       rec.loopInFlight = true;
+      rec.loopCommand = armed.command;
       try {
         const outcome = await this.runCaptureLoopFor(paneId, armed);
         return { status: "filled", outcome };
       } finally {
         rec.loopInFlight = false;
-        rec.armed = null;
+        rec.loopCommand = null;
+        // Disarm ONLY the loop's OWN arm — a real dispatch that ran mid-loop (above) may have replaced
+        // `rec.armed` with a newer arm (via 0a clear + republish), which must survive to be polled next.
+        if (rec.armed === armed) rec.armed = null;
       }
     } finally {
       rec.pollBusy = false;
