@@ -69,6 +69,25 @@
 //        that pane's frames — never drop the watch while a remote frame stays trusted (Edge 7).
 //   (W3) Derive/mutate atomicity + tick liveness: push-then-`noteSshOpened` in one turn, NO credential derive
 //        interleaved across an un-reconciled turn, and `tick` driven on the timer (Edges 1/2/4/9).
+//
+// W-2b (Opus L3-4 R2 Q1 / R3 Q1a — the UNREGISTERED in-bound ssh fail-safe): the reconcile above only covers
+// sessions the wiring REGISTERED. But in the cooperative model the user can hand-`ssh host` out of the SAME
+// local pane the assistant launched — the wiring never dispatched it, so no frame is pushed and no pid is
+// registered; the tracker stays confidently local and a later assistant `sudo` would fill a LOCAL secret into
+// the REMOTE prompt (disclosure). So at `tick`, for a LOCAL-anchored pane (`session===null` AND
+// `remoteDepth===0`), scan the shell's process SUBTREE for an ssh DESCENDANT (an ssh reached through an
+// intermediate — `sudo ssh`, a wrapper, a tmux server that stays UNDER the shell — is a grandchild the walk
+// still finds; an ssh REPARENTED OUT of the shell subtree entirely, e.g. a detached daemon, is out of scope,
+// a low-risk residual on the Windows target where a login pane's ssh normally stays under the shell) and
+// classify its argv with the SAME `interactiveSshTarget` rule: an interactive in-bound login — OR an ssh
+// whose argv is UNREADABLE or EMPTY (elevated/cross-user or a bad read: fail-safe) — sinks the
+// pane to `markUnknown`. A tunnel (`-N`/`-f`/`-L`), a one-shot (`ssh host cmd`), scp/sftp/git-over-ssh (their
+// inner ssh carries a trailing remote command) classify non-interactive ⇒ NOT sunk, so those panes keep
+// autofilling (OQ-W-7 = option B). This is a NEW fail-safe (markUnknown on doubt), never a new pop. It is
+// gated on `remoteDepth===0` so a LEGIT assistant-dispatched interactive ssh — whose `recordDispatch` has
+// pushed a frame (depth>0) — is handled by the existing unwatched-frame backstop, not this scan.
+
+import { interactiveSshTarget } from "./session-tracker.js";
 
 /** The tracker surface the watch drives (a subset of `SessionTracker`, so tests inject a fake). */
 export interface SessionTrackerSink {
@@ -108,6 +127,11 @@ export interface ProcessSnapshot {
   /** Identity for a pid (name + creation time). A gone OR present-but-unreadable pid returns
    *  `{ name: "", startTimeMs: 0 }` — use `parentMap` (the liveness authority) to tell the two apart. */
   identify(pid: number): ProcessIdentity;
+  /** A pid's launch argv (`getProcessCommandLineByPid` — W-0), or `null` on ANY read failure
+   *  (dead pid / ACCESS_DENIED on an elevated-or-cross-user target / parse failure). The W-2b scan
+   *  reads it ONLY for `ssh`-named descendants and treats `null` as "possibly interactive" (fail-safe
+   *  markUnknown). `argv[0]` is the ssh image; the classifier takes `argv.slice(1)`. */
+  commandLine(pid: number): string[] | null;
 }
 
 export interface SshWatchDeps {
@@ -212,6 +236,8 @@ export class SshSessionWatch {
     // A degenerate (empty) snapshot means the native call FAILED, not that every process died — skip the
     // tick rather than markUnknown + unwatch every pane on a transient glitch (Opus R1 P3-A).
     if (snap.parentMap.size === 0) return;
+    // Built lazily ONCE per tick, shared across panes, only if a local pane needs the W-2b subtree scan.
+    let childrenByParent: Map<number, number[]> | null = null;
     for (const [paneId, pane] of this.panes) {
       // (a) Shell gone ⇒ the pane is unobservable ⇒ fail-safe to UNKNOWN and stop watching it. A live
       //     process always appears as a KEY in the Toolhelp map, so absence = dead.
@@ -226,7 +252,16 @@ export class SshSessionWatch {
       // markUnknown as a systemic backstop (never a stray fire in normal flow — remoteDepth tracks the
       // stack in lockstep with session, so this is >0 only in that genuine unwatched-frame state).
       if (pane.session === null) {
-        if (this.deps.tracker.remoteDepth(paneId) > 0) this.deps.tracker.markUnknown(paneId);
+        // A remote frame with NO live watch (a non-atomic push↔register window, or a registration that
+        // could not confirm a live ssh) — the existing systemic backstop (see block comment above).
+        if (this.deps.tracker.remoteDepth(paneId) > 0) { this.deps.tracker.markUnknown(paneId); continue; }
+        // W-2b: a LOCAL-anchored pane (depth 0) whose shell subtree holds an UNREGISTERED interactive ssh —
+        // the user hand-ssh'd out of a shared L3-launched pane. The tracker is confidently local, so a later
+        // assistant `sudo` would fill a LOCAL secret into the REMOTE prompt. Sink on doubt (decline, never
+        // disclose). Gated on depth 0: a legit assistant-dispatched ssh has pushed a frame (depth>0) and is
+        // handled above, so this scan never fights the normal push→register flow (Opus L3-4 R2 Q1 / R3 Q1a).
+        childrenByParent ??= buildChildrenMap(snap.parentMap);
+        if (this.hasUnregisteredInteractiveSsh(snap, childrenByParent, pane.shellPid)) this.deps.tracker.markUnknown(paneId);
         continue;
       }
       // Liveness is authoritative from the Toolhelp map (a pid present as a KEY is alive); identify() reads
@@ -268,4 +303,70 @@ export class SshSessionWatch {
       pane.session = null; // consumed — do not re-fire until a new session is registered
     }
   }
+
+  /**
+   * W-2b: does the shell's process SUBTREE hold an UNREGISTERED ssh that would make a LOCAL-anchored pane
+   * actually remote — a user hand-`ssh host` the wiring never dispatched? Walk the `parentMap` subtree from
+   * `shellPid` and, for each LIVE `ssh`-named DESCENDANT (subtree, not just direct — a `sudo ssh`/wrapper/
+   * tmux-reparented login is a grandchild), classify its argv with `interactiveSshTarget` (the SAME rule that
+   * decides whether an ssh opens a session). Returns true (⇒ caller `markUnknown`s, decline-not-disclose) iff
+   * any LIVE descendant is itself UNREADABLE (identify() name "" — an elevated/cross-user process we cannot
+   * even name, e.g. the ssh in `sudo ssh`; Codex PR#512 P1), OR is an interactive in-bound `ssh` login, OR is
+   * an `ssh` whose argv is UNREADABLE (`commandLine` null — an elevated/cross-user ssh we cannot introspect:
+   * fail-safe to "possibly interactive"). A tunnel (`-N`/`-f`/
+   * `-L`), a one-shot (`ssh host cmd`), or scp/sftp/git-over-ssh (whose inner ssh carries a trailing remote
+   * command) all classify null ⇒ NOT flagged, so those panes keep autofilling (OQ-W-7 = option B). Short-
+   * circuits on the first interactive/unreadable ssh, so the common no-ssh subtree is one adjacency walk.
+   */
+  private hasUnregisteredInteractiveSsh(
+    snap: ProcessSnapshot,
+    children: Map<number, number[]>,
+    shellPid: number,
+  ): boolean {
+    // BFS the subtree over the pre-built parent→children map (Opus PR#512 P3: built once per tick, not per
+    // pane). `seen` guards against pid-reuse apparent cycles (a child listing an ancestor pid).
+    const seen = new Set<number>([shellPid]);
+    const frontier: number[] = [shellPid];
+    while (frontier.length > 0) {
+      const parent = frontier.pop() as number;
+      for (const pid of children.get(parent) ?? []) {
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        frontier.push(pid);
+        // Every pid reached here is a KEY in `parentMap` (it came from
+        // buildChildrenMap, which inverts parentMap) ⇒ ALIVE per the module's
+        // liveness contract. So identify()'s "" here is NOT a gone pid — it is a
+        // LIVE-but-UNREADABLE descendant (win32 OpenProcess denied on an elevated
+        // / cross-user process, e.g. `sudo ssh user@host` where the ssh itself
+        // runs as another identity). Fail CLOSED: such a descendant could be an
+        // in-bound ssh login, and the name gate must NOT pre-empt the argv
+        // fail-safe below (Codex PR#512 P1 — otherwise a `sudo ssh` leaves the
+        // depth-0 pane trusted-local and a later fill discloses to the remote).
+        // A READABLE non-ssh descendant genuinely cannot be an in-bound login ⇒ skip.
+        const descName = snap.identify(pid).name;
+        if (descName === "") return true; // unreadable LIVE descendant ⇒ possibly interactive ssh (decline)
+        if (descName !== SSH_PROGRAM) continue; // readable non-ssh ⇒ not an in-bound login
+        // Fail-safe on ANY non-classifiable ssh: unreadable (null) OR an EMPTY argv — an ssh we cannot
+        // classify must sink the pane, never trust-local (Opus PR#512 P2: `interactiveSshTarget([])` returns
+        // null, which without this guard would fall through to "not flagged" = trust local, the opposite of
+        // the module's "any doubt sinks" invariant).
+        const argv = snap.commandLine(pid);
+        if (argv === null || argv.length === 0) return true; // unreadable / empty ⇒ fail-safe (possibly interactive)
+        if (interactiveSshTarget(argv.slice(1)) !== null) return true; // an interactive in-bound login
+      }
+    }
+    return false;
+  }
+}
+
+/** Invert a pid→parent map into parent→children. Built ONCE per `tick` and reused across the tick's panes
+ *  (Opus PR#512 P3 — the W-2b subtree scan would otherwise rebuild it per local pane). */
+function buildChildrenMap(parentMap: Map<number, number>): Map<number, number[]> {
+  const children = new Map<number, number[]>();
+  for (const [pid, parentPid] of parentMap) {
+    const arr = children.get(parentPid);
+    if (arr === undefined) children.set(parentPid, [pid]);
+    else arr.push(pid);
+  }
+  return children;
 }
