@@ -563,9 +563,11 @@ describe("SshSessionWatch — W-2b: an UNREGISTERED interactive ssh on a LOCAL p
 
 describe("SshSessionWatch — W-2b PID-based exempt (§0-CORR.2, the fire-after-delivery correction)", () => {
   // With the S-A hook firing AFTER delivery, the `ssh host-a` the ASSISTANT dispatched is already in the tree
-  // when onDispatch drives the tick. `tick({ paneId, pid })` exempts EXACTLY the driver-proven pid — a user's
-  // ssh to the SAME host is a DIFFERENT pid and STILL flags (a host match could not prove which process is the
-  // dispatched one — Codex W-0.5 P1). Unreadable descendants and every other pane still flag.
+  // when onDispatch drives the tick. `tick({ paneId, pid, startTimeMs })` exempts EXACTLY the driver-proven pid,
+  // matched on BOTH pid AND creation time — a user's ssh to the SAME host is a DIFFERENT pid and STILL flags (a
+  // host match could not prove which process is the dispatched one — Codex W-0.5 P1), and a REUSED pid reads a
+  // different creation time so it is NOT exempt (Codex W-0.5 P2). Unreadable descendants and every other pane
+  // still flag.
   const localPane = (extra: Record<number, Proc>): Record<number, Proc> => ({ ...SHELL_ONLY, ...extra });
 
   it("the assistant's OWN dispatched ssh (proven pid) is NOT flagged", () => {
