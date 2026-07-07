@@ -46,6 +46,39 @@ import {
 } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Dispatch hook seam (ADR-014 v2 R3 L3-4 S-A)
+// Mirrors the setTerminalReadHook pattern (wait-until.js) so an external module
+// (the Key Locker wiring) can be notified of every dispatched terminal command
+// without terminal.ts taking a hard dependency on it. Fire-and-forget.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** ADR-014 v2 R3 L3-4 S-A: notified once per dispatched terminal command
+ *  (send/run) with the pane's hwnd id + the USER's command text. Fire-and-forget;
+ *  a hook throw never breaks a dispatch. Null = no observer (default). */
+export interface TerminalDispatchEvent { paneId: string; command: string }
+let terminalDispatchHook: ((ev: TerminalDispatchEvent) => void) | null = null;
+export function setTerminalDispatchHook(fn: ((ev: TerminalDispatchEvent) => void) | null): void {
+  terminalDispatchHook = fn;
+}
+/** Fire the dispatch hook (if any). Exported for unit tests to exercise the
+ *  try/catch isolation directly; production callers are the send/run handlers. */
+export function fireTerminalDispatch(paneId: string, command: string): void {
+  const hook = terminalDispatchHook;
+  if (hook === null) return;
+  try {
+    // The hook is typed `=> void`, but TypeScript still accepts an async
+    // (Promise-returning) function here. A synchronous throw is caught below;
+    // an async REJECTION escapes this try/catch and would surface as an
+    // unhandled promise rejection. Isolate that too so a fire-and-forget
+    // observer can never break — or noisily leak past — a dispatch.
+    const r = hook({ paneId, command }) as unknown;
+    if (r !== null && typeof r === "object" && typeof (r as { then?: unknown }).then === "function") {
+      void (r as Promise<unknown>).then(undefined, () => { /* fire-and-forget: swallow rejection */ });
+    }
+  } catch { /* fire-and-forget: never break a dispatch */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -839,7 +872,7 @@ export const terminalReadHandler = async ({
 export const terminalSendHandler = async ({
   windowTitle, input, method: inputMethod = "auto", chunkSize = 100,
   pressEnter, focusFirst, restoreFocus, preferClipboard, pasteKey,
-  forceFocus: forceFocusArg, trackFocus, settleMs,
+  forceFocus: forceFocusArg, trackFocus, settleMs, notifyDispatch = true,
 }: {
   windowTitle: string;
   input: string;
@@ -853,6 +886,11 @@ export const terminalSendHandler = async ({
   forceFocus?: boolean;
   trackFocus: boolean;
   settleMs: number;
+  /** ADR-014 v2 R3 L3-4 S-A: fire the dispatch hook on successful delivery.
+   *  terminalRunHandler passes false when it delegates here — it owns the
+   *  single notification (with the user's ORIGINAL input) so this nested send
+   *  must not double-fire. Defaults true for direct action='send'. */
+  notifyDispatch?: boolean;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   const startedAt = Date.now();
@@ -861,6 +899,18 @@ export const terminalSendHandler = async ({
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal:send", { windowTitle });
     }
+
+    // ADR-014 v2 R3 L3-4 S-A + Codex PR#511 P1: notify the dispatch observer
+    // (if any) with the pane's hwnd id + the USER's input (never a rewritten /
+    // quoted form). Fired via markDispatched() at each successful-delivery return
+    // below — NOT here. Firing before delivery recorded phantom commands on the
+    // many failure paths (foreground refusal, WT-unsupported background, partial
+    // WM_CHAR, …); and when terminalRunHandler delegates here it would double-fire.
+    // Run now passes notifyDispatch=false and fires once itself with the original
+    // input, so this handler stays the single notifier only for direct send.
+    const markDispatched = () => {
+      if (notifyDispatch) fireTerminalDispatch(String(win.hwnd), input);
+    };
 
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ─────────────────
     // method:'foreground_flash' は WT 等 WM_CHAR 不対応 terminal 用、Clipboard
@@ -903,6 +953,7 @@ export const terminalSendHandler = async ({
         if (pressEnter && !/[\r\n]$/.test(input)) {
           postEnterToHwnd(win.hwnd);
         }
+        markDispatched(); // delivered via wm_char
         return ok({
           ok: true,
           method: "foreground_flash",
@@ -944,6 +995,7 @@ export const terminalSendHandler = async ({
           }
         );
       }
+      markDispatched(); // delivered via clipboard_flash
       return ok({
         ok: true,
         method: "foreground_flash",
@@ -1030,6 +1082,7 @@ export const terminalSendHandler = async ({
                 "clipboard restore skipped — another app changed the clipboard during the paste",
               );
             }
+            markDispatched(); // delivered via native console-paste
             return ok({
               ok: true,
               // `sent` = input submitted; console-paste has no per-char count
@@ -1276,6 +1329,7 @@ export const terminalSendHandler = async ({
             }
           : null;
 
+      markDispatched(); // delivered via chunked wm_char
       return ok({
         ok: true,
         sent: input.slice(0, totalSent),
@@ -1418,6 +1472,7 @@ export const terminalSendHandler = async ({
 
     const ident = observeTarget(windowTitle, win.hwnd, win.title);
 
+    markDispatched(); // delivered via foreground keyboard/clipboard type
     return ok({
       ok: true,
       sent: input,
@@ -1762,7 +1817,7 @@ function keepOnlyProvidedKeys<T extends Record<string, unknown>>(
  * Read raw text from a terminal window (for run polling — avoids full ToolResult overhead).
  * Returns null if window not found.
  */
-async function readTerminalRaw(windowTitle: string): Promise<{ text: string; marker: string } | null> {
+export async function readTerminalRaw(windowTitle: string): Promise<{ text: string; marker: string } | null> {
   const win = findTerminalWindow(windowTitle);
   if (!win) return null;
   const raw = (await getTextViaTextPattern(win.title)) ?? "";
@@ -1985,6 +2040,12 @@ export const terminalRunHandler = async ({
     trackFocus: false,
     settleMs: 100,
     ...validatedSendOptions,
+    // Codex PR#511 P1: run owns the single dispatch notification (fired below
+    // with the USER's ORIGINAL input, after delivery is confirmed). Suppress the
+    // nested send's own fire so one run never double-records — and so the
+    // rewritten exit-mode `sendInput` epilogue is never the recorded command.
+    // After the spread so caller sendOptions can never re-enable it.
+    notifyDispatch: false as const,
   };
 
   const parseSendResult = (r: ToolResult): { ok?: boolean; code?: string } | null => {
@@ -2071,6 +2132,16 @@ export const terminalRunHandler = async ({
       ],
     };
     return ok(res);
+  }
+
+  // ADR-014 v2 R3 L3-4 S-A + Codex PR#511 P1: delivery is now confirmed (the
+  // send_failed early-return above did not fire). Notify the dispatch observer
+  // ONCE, here, with the USER's ORIGINAL `input` — never the buildExitCommand
+  // epilogue-wrapped `sendInput`. Positive gate (=== true) so a null/unparsed
+  // payload stays fail-closed (no phantom record). This is the single notifier
+  // for the run path; the nested send was suppressed via notifyDispatch=false.
+  if (sendPayload?.ok === true) {
+    fireTerminalDispatch(String(hwnd), input);
   }
 
   // ── Phase 2: Wait ──────────────────────────────────────────────────────────
