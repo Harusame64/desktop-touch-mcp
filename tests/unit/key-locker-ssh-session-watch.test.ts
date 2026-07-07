@@ -628,6 +628,19 @@ describe("SshSessionWatch — W-2b PID-based exempt (§0-CORR.2, the fire-after-
     expect(sink.unknowns).toEqual(["pane-2"]); // pane-1 exempt, pane-2 still flags
   });
 
+  it("a lurking interactive ssh CHILD UNDER the exempt pid STILL flags (the exempt pid's subtree is walked)", () => {
+    // The exempt pid is skipped from flagging, but its subtree is still scanned — a nested unregistered login
+    // beneath it must not slip through (guards the frontier.push-before-continue ordering).
+    const { watch, sink } = setup(localPane({
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] },   // assistant's (exempt)
+      2001: { parent: 2000, name: "ssh", start: 21, argv: ["ssh", "user@host-evil"] },  // a lurking login UNDER it
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick({ paneId: "pane-1", pid: 2000 });
+    expect(sink.unknowns).toEqual(["pane-1"]); // 2000 exempt, but its child 2001 still flags
+  });
+
   it("no exempt (a sudo/non-ssh dispatch, the periodic timer, or an ambiguous delta) ⇒ full scan flags", () => {
     const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] } }));
     watch.watchPane("pane-1", 1000);
