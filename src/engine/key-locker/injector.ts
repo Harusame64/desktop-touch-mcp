@@ -5,8 +5,9 @@
 //
 // Three injectors (D4(iii) has two transports — askpass stdout + git credential protocol — that share
 // machinery) behind one decision:
-//   * SendInput → pane  — the LOCKER types the secret into a dedicated console after an injection-
-//     instant re-verify (secret never leaves the locker).
+//   * console → pane   — the LOCKER writes the secret into a dedicated console's input buffer
+//     (AttachConsole + WriteConsoleInput) after an injection-instant identity re-verify (secret never
+//     leaves the locker).
 //   * askpass streaming — a compiled helper streams the secret locker→consumer off the MCP path,
 //     authorized by a single-use ticket; the engine only assembles the env/git-config.
 //   * env var          — R4-gated; a hard `RequiresRedaction` reject (no flag) until R4 lands.
@@ -27,7 +28,7 @@ const ASKPASS_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".
 /** Which consumer channel L3 observed for this credential event (drives injector selection). */
 export type InjectChannel = "pane" | "askpass" | "git-credential" | "env";
 
-export type InjectorKind = "sendinput" | "askpass";
+export type InjectorKind = "console" | "askpass";
 
 export type SelectErrorCode = "NoInjectorForBinding" | "RequiresRedaction";
 
@@ -45,8 +46,8 @@ export function selectInjector(scheme: BindingUri["scheme"], channel: InjectChan
   if (channel === "env") return { ok: false, code: "RequiresRedaction" };
   switch (channel) {
     case "pane":
-      // Interactive echo-off prompt in the pane → the locker SendInputs.
-      if (scheme === "sudo" || scheme === "ssh") return { ok: true, injector: "sendinput" };
+      // Interactive echo-off prompt in the pane → the locker writes into the console input buffer.
+      if (scheme === "sudo" || scheme === "ssh") return { ok: true, injector: "console" };
       return { ok: false, code: "NoInjectorForBinding" };
     case "askpass":
       // ssh login routed to SSH_ASKPASS, or an ssh-key passphrase.
@@ -85,14 +86,14 @@ export interface ConsumerSpawnConfig {
 }
 
 export type InjectResult =
-  | { ok: true; injector: "sendinput"; verified: boolean }
+  | { ok: true; injector: "console"; verified: boolean }
   | { ok: true; injector: "askpass"; spawn: ConsumerSpawnConfig }
-  // `InjectAbortCode` (the locker-side SendInput abort reasons, §2.1) is the SSOT in key-locker-host.
+  // `InjectAbortCode` (the locker-side inject abort reasons, §2.1) is the SSOT in key-locker-host.
   | { ok: false; code: SelectErrorCode | "target_required" | InjectAbortCode };
 
 /**
  * Orchestrate an injection. Returns booleans / config / typed reasons — NEVER a secret.
- * `pane` → the locker SendInputs (needs `target`); `askpass`/`git-credential` → mint a ticket + return
+ * `pane` → the locker writes into the console buffer (needs `target`); `askpass`/`git-credential` → mint a ticket + return
  * the consumer spawn config (the secret path is helper↔locker only); `env` → `RequiresRedaction`.
  */
 export async function inject(
@@ -105,11 +106,11 @@ export async function inject(
   const selected = selectInjector(binding.scheme, channel);
   if (!selected.ok) return { ok: false, code: selected.code };
 
-  if (selected.injector === "sendinput") {
+  if (selected.injector === "console") {
     if (target === null) return { ok: false, code: "target_required" };
     const r = await host.inject(opaqueId, target);
     return r.ok
-      ? { ok: true, injector: "sendinput", verified: r.verified }
+      ? { ok: true, injector: "console", verified: r.verified }
       : { ok: false, code: r.code };
   }
 

@@ -17,8 +17,8 @@ const target: InjectTarget = { hwnd: "12345", consolePid: 4242, titleFp: "abc", 
 
 describe("selectInjector (§1 selection rule) — total, typed rejects", () => {
   const cases: Array<[BindingUri["scheme"], InjectChannel, string]> = [
-    ["sudo", "pane", "sendinput"],
-    ["ssh", "pane", "sendinput"],
+    ["sudo", "pane", "console"],
+    ["ssh", "pane", "console"],
     ["ssh", "askpass", "askpass"],       // ssh login routed to SSH_ASKPASS
     ["sshkey", "askpass", "askpass"],    // key passphrase
     ["https-cred", "git-credential", "askpass"],
@@ -76,7 +76,7 @@ describe("inject orchestrator (§5) — never returns a secret", () => {
   it("pane → calls host.inject with the target, returns verified only", async () => {
     const host = fakeHost();
     const r = await inject(host, sudo, "op-1", "pane", target);
-    expect(r).toEqual({ ok: true, injector: "sendinput", verified: true });
+    expect(r).toEqual({ ok: true, injector: "console", verified: true });
     expect(host.inject).toHaveBeenCalledWith("op-1", target);
   });
 

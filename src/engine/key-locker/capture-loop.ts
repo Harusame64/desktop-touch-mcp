@@ -14,7 +14,7 @@
 //     exit — reject / not-landed / [Not now]/[Never] / any throw — DELETES the captured secret from the
 //     locker (Opus L3-R1 P2-1 reverse-orphan closure of L1 §5.3).
 //
-// SCOPE (L3-2): this is the PANE (SendInput) channel loop — the fully-reactive "echo-off prompt appeared,
+// SCOPE (L3-2): this is the PANE (console-buffer inject) channel loop — the fully-reactive "echo-off prompt appeared,
 // fill it now" flow (`sudo`/`ssh` password prompts). The `askpass` / `git-credential` channels fill via a
 // helper the CONSUMER spawn consults, so their inject happens at DISPATCH time (env pre-set) and their
 // landed signal spans the consumer's whole lifetime — a different control flow that does not fit the
@@ -73,7 +73,7 @@ export type CaptureLoopOutcome =
   | { kind: "confirm_rejected" }
   /** MATCH path: a stored secret was autofilled. `verified` = the locker's injection-instant re-verify. */
   | { kind: "filled_from_store"; verified: boolean }
-  /** Inject returned a typed abort (target_mismatch / not_foreground / …). `matched` distinguishes the
+  /** Inject returned a typed abort (target_mismatch / target_multiplexed / …). `matched` distinguishes the
    *  MATCH autofill from a NO-MATCH just-captured fill (the latter also deletes the capture). */
   | { kind: "fill_aborted"; matched: boolean; code: string }
   /** NO-MATCH path: the user cancelled the secure dialog — no secret captured, no binding. */
@@ -102,7 +102,7 @@ export interface CaptureLoopDeps {
   capture(opaqueId: string): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure; a no-op on an absent key). */
   deleteSecret(opaqueId: string): Promise<void>;
-  /** Assemble the pane InjectTarget (§4) and SendInput the secret under `opaqueId` (L2, "pane" channel). */
+  /** Assemble the pane InjectTarget (§4) and console-buffer inject the secret under `opaqueId` (L2, "pane" channel). */
   injectPane(binding: BindingUri, opaqueId: string, submit: boolean): Promise<InjectResult>;
   /** The §2 two-mode landed gate for the dispatched command (Mode A exit-0 / Mode B auth-accepted). */
   awaitLanded(command: string): Promise<LandedResult>;
@@ -153,7 +153,7 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
   const binding = await deps.deriveBinding(dispatchedCommand, session);
   if (binding === null) return { kind: "declined", reason: "not_a_credential" };
 
-  // PANE-CHANNEL scope: only `sudo`/`ssh` fill via the pane SendInput. An `sshkey` (always askpass — P3-2)
+  // PANE-CHANNEL scope: only `sudo`/`ssh` fill via the pane console-buffer inject. An `sshkey` (always askpass — P3-2)
   // or `https-cred` (git-credential) binding is NOT pane-injectable and is handled by the forward
   // askpass/git-credential flow (SP-L3-OQ-5), so decline this loop rather than mis-route to the pane.
   if (!selectInjector(binding.scheme, "pane").ok) return { kind: "declined", reason: "not_pane_channel" };
@@ -240,9 +240,9 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
   return outcome;
 }
 
-/** The pane channel only ever runs the `sendinput` injector; read its re-verify bit (else false). */
+/** The pane channel only ever runs the `console` injector; read its re-verify bit (else false). */
 function injectVerified(r: InjectResult): boolean {
-  return r.ok && r.injector === "sendinput" ? r.verified : false;
+  return r.ok && r.injector === "console" ? r.verified : false;
 }
 
 /**

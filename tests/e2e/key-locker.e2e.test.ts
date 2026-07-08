@@ -95,6 +95,26 @@ describe("key-locker DPAPI store (-SelfTest, headless)", () => {
     const storeJson = readFileSync(join(storeDir, "store.json"), "utf8");
     expect(storeJson).not.toContain("L2-SERVE-SECRET");
   }, 30_000);
+
+  // DF-5: the console-buffer injector (AttachConsole + WriteConsoleInput) is foreground/UIPI-immune and
+  // replaces the SendInput path that returned `sent=0`. `-SelfTestInjectConsole` runs the REAL production
+  // `Win32Input.ReVerifyAndType` against a self-spawned child console (echo-off cooked-read) and asserts a
+  // unicode+surrogate secret round-trips — a deterministic proof that needs no live ssh. (The live native
+  // OpenSSH leg is dogfood-only, like capture's dialog.)
+  it("types a unicode+surrogate secret into another process's console and it cooked-reads it back (-SelfTestInjectConsole)", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+
+    const { code, stdout } = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
+      const c = spawn(HELPER_EXE, ["-SelfTestInjectConsole"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+      let out = "";
+      c.stdout!.on("data", (d) => { out += d.toString("utf8"); });
+      c.on("exit", (code) => resolve({ code, stdout: out }));
+      setTimeout(() => { killTree(c.pid); resolve({ code: -999, stdout: out }); }, 25_000);
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout.trim())).toEqual({ ok: true });
+  }, 40_000);
 });
 
 describe("key-locker live smoke (pipe control plane)", () => {

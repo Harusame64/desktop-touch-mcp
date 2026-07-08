@@ -46,7 +46,7 @@ function snapshotOf(procs: Record<number, Proc>): ProcessSnapshot {
   };
 }
 
-const SENDINPUT_OK = (verified = true): InjectResult => ({ ok: true, injector: "sendinput", verified });
+const CONSOLE_INJECT_OK = (verified = true): InjectResult => ({ ok: true, injector: "console", verified });
 const PROMPT = (isCredentialPrompt: boolean): PromptVerdict => ({ isCredentialPrompt, tail: "", stillHiddenPrompt: false });
 const sshProc = (parent: number, host: string, start: number): Proc =>
   ({ parent, name: "ssh", start, argv: ["ssh", `deploy@${host}`] });
@@ -90,7 +90,7 @@ function makeHarness(o: Partial<CaptureDriverDeps> = {}, initialTree: Record<num
     confirmPolicyFor: vi.fn(() => false),
     capture: vi.fn(async () => ({ captured: true })),
     deleteSecret: vi.fn(async () => {}),
-    injectPane: vi.fn(async () => SENDINPUT_OK()),
+    injectPane: vi.fn(async () => CONSOLE_INJECT_OK()),
     confirmInjection: vi.fn(async () => true),
     offerSave: vi.fn(async () => "save"),
     mintOpaqueId: vi.fn(() => "opaque-1"),
