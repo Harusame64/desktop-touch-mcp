@@ -424,6 +424,7 @@ internal static class ConsoleInjectSelfTest
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CreateProcessW(string? app, StringBuilder cmd, nint pa, nint ta, bool inherit, uint flags, nint env, string? cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint h, uint ms);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(nint h, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(nint h);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleMode(nint h, out uint mode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetConsoleMode(nint h, uint mode);
@@ -508,7 +509,17 @@ internal static class ConsoleInjectSelfTest
         catch { return false; }
         finally
         {
-            if (spawned) { try { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); } catch { } }
+            if (spawned)
+            {
+                // Kill the child if it is still blocked in ReadConsoleW on a FAILURE path (on success the
+                // injected Enter already terminated its cooked-read and it exited). Otherwise a failed
+                // self-test — e.g. the WT-default `target_multiplexed` case, or `ReVerifyAndType`
+                // returning false — orphans a `key-locker.exe` (+ its AllocConsole'd conhost, which
+                // self-exits once its last client dies) blocked on input on the CI machine (Codex P2).
+                // TerminateProcess on an already-exited process is a harmless no-op.
+                try { TerminateProcess(pi.hProcess, 1); } catch { }
+                try { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); } catch { }
+            }
             foreach (var p in new[] { readyPath, outPath }) { try { if (File.Exists(p)) File.Delete(p); } catch { } }
         }
     }
