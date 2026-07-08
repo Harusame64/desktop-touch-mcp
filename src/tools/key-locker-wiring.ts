@@ -97,7 +97,9 @@ export class KeyLockerWiring {
       if (!this.enabled()) return; // runtime consent/kill re-check — never arm/record for an un-consented user
       this.driver.onDispatch(ev.paneId, ev.command);
     });
-    this.eventSubId = subscribe(["window_disappeared"]);
+    // NOTE: the event-bus subscription is NOT taken here — it is subscribed LAZILY in `tick()` only while
+    // consent is active (Codex W-4b :100). On a default install where the locker was never enabled, subscribing
+    // here would run the event-bus's 500ms EnumWindows sweep forever even though every tick returns early.
     this.tickTimer = setInterval(() => this.tick(), TICK_MS);
     this.tickTimer.unref?.();
     // ALWAYS `.catch()` a floating drive: `server-windows.ts` turns an unhandledRejection into a full
@@ -141,12 +143,17 @@ export class KeyLockerWiring {
 
   // ── the reconcile tick ────────────────────────────────────────────────────────────────────────────────
   private tick(): void {
-    if (!this.enabled()) return;
+    if (!this.enabled()) {
+      // Un-consented / kill-switched: drop our event-bus subscription (if consent was revoked) so we stop
+      // paying the 500ms EnumWindows sweep, and do nothing else (Codex W-4b :100).
+      if (this.eventSubId !== null) { unsubscribe(this.eventSubId); this.eventSubId = null; }
+      return;
+    }
+    // Consent is active — subscribe LAZILY on the first enabled tick (so a default install never paid for it).
+    if (this.eventSubId === null) this.eventSubId = subscribe(["window_disappeared"]);
     // gap3: a closed pane → forget it (W2 close atomicity is inside onPaneClosed).
-    if (this.eventSubId !== null) {
-      for (const ev of pollEvents(this.eventSubId)) {
-        if (ev.type === "window_disappeared") this.driver.onPaneClosed(ev.hwnd);
-      }
+    for (const ev of pollEvents(this.eventSubId)) {
+      if (ev.type === "window_disappeared") this.driver.onPaneClosed(ev.hwnd);
     }
     // Periodic reconcile (correlate stragglers + advance baselines + watch.tick + arm-hygiene).
     this.driver.tickWatch();
