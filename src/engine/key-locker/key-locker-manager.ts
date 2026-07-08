@@ -16,6 +16,7 @@
 // into.
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -185,24 +186,31 @@ export class KeyLockerManager {
    * launching arbitrary shells; this is a locker-owned, fixed, local shell) and polls for the new
    * `ConsoleWindowClass` window it owns. Returns `{ hwnd, shellPid }` (shellPid = the conhost pid = the window
    * owner; the shell + any ssh run as subtree descendants, which `sshDescendants` walks). The wiring fires
-   * `onLocalPaneLaunched(String(hwnd), shellPid)`. **Dogfood-verified (§5): the exact `conhost.exe` invocation
-   * that yields a classic console + injectable target is confirmed on the real desktop, not unit-testable.**
-   * Throws if no console window appears within `timeoutMs`.
+   * `onLocalPaneLaunched(String(hwnd), shellPid)`. The console gets a UNIQUE window title (`dtm-locker-console-
+   * <nonce>`) so the title-keyed read/inject seams resolve to EXACTLY this pane — `resolveTitleByHwnd` declines
+   * any pane whose title is not substring-unique, so without this a second console (or a same-titled user
+   * window) would never autofill (Codex W-4a R3 read-path). **Dogfood-verified (§5): the exact `conhost.exe`
+   * invocation that yields a classic console + injectable target (and that the title command takes) is confirmed
+   * on the real desktop, not unit-testable.** Throws if no console window appears within `timeoutMs`.
    */
   async launchAnchoredConsole(
-    shellExe = "powershell.exe",
     o: { timeoutMs?: number; pollMs?: number } = {},
-  ): Promise<{ hwnd: bigint; shellPid: number }> {
+  ): Promise<{ hwnd: bigint; shellPid: number; title: string }> {
     const timeoutMs = o.timeoutMs ?? 8000;
     const pollMs = o.pollMs ?? 150;
+    const title = `dtm-locker-console-${randomBytes(8).toString("hex")}`; // globally unique ⇒ unambiguous title read
     // Snapshot existing console hwnds so we claim only the NEW one this spawn creates.
     const before = new Set(
       enumWindowsInZOrder().filter((w) => w.className === CONSOLE_WINDOW_CLASS).map((w) => w.hwnd),
     );
-    // `conhost.exe <shell>` forces a CLASSIC conhost regardless of the user's default-terminal (WT) setting —
-    // the only form L2 can inject into. Detached + no stdio redirect so the child's console stays on screen for
-    // the human to type into (the cooperative model); we never read its stdio.
-    const child = spawn("conhost.exe", [shellExe], { detached: true, stdio: "ignore", windowsHide: false });
+    // `conhost.exe powershell …` forces a CLASSIC conhost regardless of the user's default-terminal (WT)
+    // setting — the only form L2 can inject into. The `-Command` sets the UNIQUE window title then leaves an
+    // interactive prompt (`-NoExit`) for the human to type into (the cooperative model); we never read its stdio.
+    const child = spawn(
+      "conhost.exe",
+      ["powershell.exe", "-NoExit", "-Command", `$Host.UI.RawUI.WindowTitle = '${title}'`],
+      { detached: true, stdio: "ignore", windowsHide: false },
+    );
     child.on("error", () => { /* spawn failure surfaces as the poll timing out below */ });
     // The console is a SEPARATE window the human owns — do NOT pin Node's event loop on its lifetime (else a
     // clean MCP shutdown would hang until the user closes the console). The wiring may kill `shellPid` on
@@ -221,7 +229,7 @@ export class KeyLockerManager {
       const fresh = enumWindowsInZOrder().find(
         (w) => w.className === CONSOLE_WINDOW_CLASS && !before.has(w.hwnd) && getWindowProcessId(w.hwnd) === childPid,
       );
-      if (fresh !== undefined) return { hwnd: fresh.hwnd, shellPid: childPid };
+      if (fresh !== undefined) return { hwnd: fresh.hwnd, shellPid: childPid, title };
       if (this.now() >= deadline) {
         try { child.kill(); } catch { /* best-effort */ }
         throw new KeyLockerError("KeyLockerSpawnFailed", "anchored console window did not appear");

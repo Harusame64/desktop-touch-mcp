@@ -561,11 +561,21 @@ export function buildExitProbe(shell: ExitShell, nonce: string): string {
 export function resolveTitleByHwnd(paneId: string): string | null {
   let target: bigint;
   try { target = BigInt(paneId); } catch { return null; } // malformed paneId ⇒ decline (never throw — contract is null-on-miss)
-  const win = enumWindowsInZOrder().find((w) => w.hwnd === target);
+  const wins = enumWindowsInZOrder();
+  const win = wins.find((w) => w.hwnd === target);
   if (win === undefined) return null;
-  // Guard the downstream partial-title match: the seams will call findTerminalWindow(title); only proceed if
-  // that unambiguously resolves back to THIS pane's hwnd.
-  return findTerminalWindow(win.title)?.hwnd === target ? win.title : null;
+  // The downstream read/find seams resolve by SUBSTRING title, and via DIFFERENT orders: `findTerminalWindow`
+  // takes the z-order-first `title.includes(query)`, while `readTerminalRaw`'s `getTextViaTextPattern` does its
+  // OWN UIA search `Name -like '*query*'` (UIA-tree order) — so guarding only findTerminalWindow is NOT enough
+  // (Codex W-4a R3: the read can still hit a same-title sibling in a different order → read pane B's prompt,
+  // inject into pane A ⇒ wrong-pane disclosure). The title is safe to hand those seams ONLY if EXACTLY ONE live
+  // window's title CONTAINS it — then every substring search, in any order, resolves to this one window. An
+  // empty title never qualifies. (`launchAnchoredConsole` gives its consoles a unique title so they pass;
+  // ambiguous panes decline — bounded-safe.)
+  const t = win.title.toLowerCase();
+  if (t.length === 0) return null;
+  const matches = wins.filter((w) => w.title.toLowerCase().includes(t));
+  return matches.length === 1 && matches[0].hwnd === target ? win.title : null;
 }
 
 /**
