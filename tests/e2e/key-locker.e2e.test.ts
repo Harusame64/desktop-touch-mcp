@@ -101,6 +101,11 @@ describe("key-locker DPAPI store (-SelfTest, headless)", () => {
   // `Win32Input.ReVerifyAndType` against a self-spawned child console (echo-off cooked-read) and asserts a
   // unicode+surrogate secret round-trips — a deterministic proof that needs no live ssh. (The live native
   // OpenSSH leg is dogfood-only, like capture's dialog.)
+  //
+  // `skipped:true` = the machine's Default Terminal is Windows Terminal, so the child's AllocConsole handed
+  // off to a ConPTY pseudoconsole (window class != ConsoleWindowClass) and the classic-conhost injector
+  // could not be exercised here — a supported Win11 config, covered by the live dogfood, not a failure
+  // (Codex #523 P2). CI + a default Windows desktop use a classic conhost, so they run the full assertion.
   it("types a unicode+surrogate secret into another process's console and it cooked-reads it back (-SelfTestInjectConsole)", async () => {
     expect(existsSync(HELPER_EXE)).toBe(true);
 
@@ -113,7 +118,12 @@ describe("key-locker DPAPI store (-SelfTest, headless)", () => {
     });
 
     expect(code).toBe(0);
-    expect(JSON.parse(stdout.trim())).toEqual({ ok: true });
+    const result = JSON.parse(stdout.trim()) as { ok: boolean; skipped?: boolean };
+    if (result.skipped) {
+      console.warn("[-SelfTestInjectConsole] skipped: non-classic conhost (Windows Terminal default) — covered by live dogfood");
+    } else {
+      expect(result).toEqual({ ok: true, skipped: false });
+    }
   }, 40_000);
 });
 

@@ -101,9 +101,9 @@ internal static class KeyLocker
             return ConsoleInjectSelfTest.RunChild(injectChildReady, injectChildOut);
         if (selfTestInject)
         {
-            var okInject = ConsoleInjectSelfTest.Run();
-            Console.WriteLine(JsonSerializer.Serialize(new { ok = okInject }));
-            return okInject ? 0 : 1;
+            var status = ConsoleInjectSelfTest.Run(); // "pass" | "fail" | "skip"
+            Console.WriteLine(JsonSerializer.Serialize(new { ok = status == "pass", skipped = status == "skip" }));
+            return status == "fail" ? 1 : 0; // pass OR skip (ConPTY-handoff env limitation) => success exit
         }
 
         _store = new LockerStore(storeDir);

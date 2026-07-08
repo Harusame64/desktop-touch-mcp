@@ -471,12 +471,19 @@ internal static class ConsoleInjectSelfTest
 
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool FreeConsole();
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AllocConsole();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern int GetClassName(nint hWnd, StringBuilder lpClassName, int nMaxCount);
 
-    /// PARENT role: spawn the child under conhost, derive the InjectTarget from the child's console hwnd
-    /// exactly as L3 does (`consolePid = GetWindowThreadProcessId(hwnd)`), run the REAL production injector,
-    /// and assert the child cooked-read the exact secret. titleFp is left empty (the title anchor is
-    /// unchanged pre-existing logic; this test covers the DF-5 attach/write path).
-    public static bool Run()
+    /// PARENT role: self-spawn a child in a CREATE_NEW_CONSOLE, derive the InjectTarget from the child's
+    /// console hwnd exactly as L3 does (`consolePid = GetWindowThreadProcessId(hwnd)`), run the REAL
+    /// production injector, and assert the child cooked-read the exact secret. titleFp is left empty (the
+    /// title anchor is unchanged pre-existing logic; this test covers the DF-5 attach/write path).
+    ///
+    /// Returns "pass" (verified), "fail" (a real regression), or "skip" — the WT-default limitation: when
+    /// the child's `AllocConsole` hands off to a ConPTY pseudoconsole (window class != ConsoleWindowClass)
+    /// the injector cannot be exercised on a CLASSIC conhost here, so we report SKIP rather than a false
+    /// failure (the live dogfood covers the real conhost path — OQ-DF-7/8). Classic-conhost machines (CI
+    /// and the default Windows desktop) run the full verification.
+    public static string Run()
     {
         string tmp = Path.GetTempPath();
         string tag = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
@@ -489,34 +496,42 @@ internal static class ConsoleInjectSelfTest
             string self = Environment.ProcessPath!;
             var cmd = new StringBuilder($"\"{self}\" -InjectConsoleChild \"{readyPath}\" \"{outPath}\"");
             var si = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>() };
-            if (!CreateProcessW(self, cmd, 0, 0, false, CREATE_NEW_CONSOLE, 0, tmp, ref si, out pi)) return false;
+            if (!CreateProcessW(self, cmd, 0, 0, false, CREATE_NEW_CONSOLE, 0, tmp, ref si, out pi)) return "fail";
             spawned = true;
 
-            if (!PollFile(readyPath, 8000)) return false;
-            if (!long.TryParse(File.ReadAllText(readyPath).Trim(), out var hraw) || hraw == 0) return false;
+            if (!PollFile(readyPath, 8000)) return "fail";
+            if (!long.TryParse(File.ReadAllText(readyPath).Trim(), out var hraw) || hraw == 0) return "fail";
             nint hwnd = (nint)hraw;
+
+            // Environment gate: if the child's console is NOT a classic conhost (ConPTY handoff under a
+            // Windows Terminal default terminal), the injector's ConsoleWindowClass allowlist cannot pass —
+            // SKIP rather than fail a supported Win11 config. Kill the (blocked) child on the way out.
+            var cls = new StringBuilder(64);
+            GetClassName(hwnd, cls, cls.Capacity);
+            if (cls.ToString() != "ConsoleWindowClass") return "skip";
+
             _ = GetWindowThreadProcessId(hwnd, out uint consolePid); // derive exactly as L3 does
-            if (consolePid == 0) return false;
+            if (consolePid == 0) return "fail";
 
             var target = new InjectTarget(hwnd, consolePid, "", true);
             var (injected, _) = Win32Input.ReVerifyAndType(in target, Encoding.UTF8.GetBytes(TestSecret));
-            if (!injected) return false;
+            if (!injected) return "fail";
 
             WaitForSingleObject(pi.hProcess, 8000);
-            if (!PollFile(outPath, 8000)) return false;
-            return File.ReadAllText(outPath) == TestSecret;
+            if (!PollFile(outPath, 8000)) return "fail";
+            return File.ReadAllText(outPath) == TestSecret ? "pass" : "fail";
         }
-        catch { return false; }
+        catch { return "fail"; }
         finally
         {
             if (spawned)
             {
-                // Kill the child if it is still blocked in ReadConsoleW on a FAILURE path (on success the
-                // injected Enter already terminated its cooked-read and it exited). Otherwise a failed
-                // self-test — e.g. the WT-default `target_multiplexed` case, or `ReVerifyAndType`
-                // returning false — orphans a `key-locker.exe` (+ its AllocConsole'd conhost, which
-                // self-exits once its last client dies) blocked on input on the CI machine (Codex P2).
-                // TerminateProcess on an already-exited process is a harmless no-op.
+                // Kill the child if it is still blocked in ReadConsoleW on any NON-pass path — a "skip"
+                // (ConPTY handoff, we return before injecting) or a "fail" — since only the success path's
+                // injected Enter terminates its cooked-read and exits it. Otherwise it orphans a
+                // `key-locker.exe` (+ its AllocConsole'd conhost, which self-exits once its last client
+                // dies) blocked on input on the CI machine (Codex P2). TerminateProcess on an already-
+                // exited process is a harmless no-op.
                 try { TerminateProcess(pi.hProcess, 1); } catch { }
                 try { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); } catch { }
             }
