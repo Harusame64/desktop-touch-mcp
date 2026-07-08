@@ -526,11 +526,13 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
  * `<token>|<code>|…`, parsed by the SAME `parseExitSentinel`. It does NOT reset `$LASTEXITCODE` first (that would
  * clobber the value being read). Send it with `notifyDispatch:false` (it is read-only, not a credential command).
  *
- * CAVEAT (PowerShell, cmdlet-only credential command): because `buildExitCommand` resets `$LASTEXITCODE=$null`
- * before its input but a PROBE cannot (Opus W-4a P3-2), a credential command that ran NO native exe leaves
- * `$LASTEXITCODE` at a STALE value from an earlier native exe, which `parseExitSentinel` prefers over `$?`. Key
- * Locker's real Mode-A credentials are native (`ssh`/`git`/`sudo`), so this is not hit in practice; the
- * asymmetry with `buildExitCommand`'s reset is noted here.
+ * PowerShell STALE-`$LASTEXITCODE` FIX (Opus/Codex W-4a P3-2): `buildExitCommand` resets `$LASTEXITCODE=$null`
+ * before its input so a cmdlet-only command reports via `$?`; a PROBE cannot reset (it would clobber the value
+ * it observes), so reading `$LASTEXITCODE` would emit a STALE native exit code that `parseExitSentinel` prefers
+ * over `$?`. Since Mode-A landed detection only needs SUCCESS-vs-FAILURE (`isExitAccepted` = `exitCode===0`),
+ * the PS probe emits ONLY `$?` (empty code field ⇒ `parseExitSentinel` maps the trailing bool True→0 / False→1)
+ * — ALWAYS the just-finished command's result, stale-immune, for cmdlets AND native exes alike. (bash `$?` is
+ * already the fresh numeric exit code, so bash keeps the precise code.)
  */
 export function buildExitProbe(shell: ExitShell, nonce: string): string {
   const head = EXIT_TOKEN_HEAD;
@@ -538,9 +540,9 @@ export function buildExitProbe(shell: ExitShell, nonce: string): string {
   if (shell === "bash") {
     return `__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
   }
-  // powershell — read the prior command's $?/$LASTEXITCODE with NO pre-reset (buildExitCommand resets before
-  // running the input; a probe must preserve the value it is observing).
-  return `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`;
+  // powershell — emit ONLY `$?` (bool), NOT `$LASTEXITCODE` (which a probe cannot reset and would read stale
+  // for a cmdlet-only command). Empty code field ⇒ parseExitSentinel uses the bool ⇒ fresh success/failure.
+  return `$dtmcp_ok=$?; ('${head}'+"${tail}")+'|'+'|'+$dtmcp_ok`;
 }
 
 /**

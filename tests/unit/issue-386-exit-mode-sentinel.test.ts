@@ -182,22 +182,23 @@ describe("buildExitProbe — epilogue-only probe (W-4 gap6: observe, never re-ru
     expect(parseExitSentinel(`${probe}\n${TOKEN}|127|`, NONCE, "bash")).toEqual({ matched: true, exitCode: 127 });
   });
 
-  it("powershell: reads $?/$LASTEXITCODE with NO pre-reset (must not clobber the value being observed)", () => {
+  it("powershell: emits ONLY $? (stale-immune) — NOT $LASTEXITCODE, which a probe cannot reset (Codex P3-2)", () => {
     const probe = buildExitProbe("powershell", NONCE);
-    // buildExitCommand resets `$global:LASTEXITCODE = $null` BEFORE running its input; a probe observing an
-    // ALREADY-run command must NOT reset — else it reads null instead of the real exit code.
+    // A probe cannot reset $LASTEXITCODE (that would clobber the value it observes), so reading it would emit a
+    // STALE native exit code for a cmdlet-only command. The probe emits only $? (bool) — always fresh; landed
+    // detection only needs success/failure. Empty code field ⇒ parseExitSentinel maps the bool.
+    expect(probe).not.toContain("$LASTEXITCODE");
     expect(probe).not.toContain("= $null");
-    expect(probe).toContain("$LASTEXITCODE");
+    expect(probe).toContain("$?");
     expect(probe).not.toContain(TOKEN);
-    expect(parseExitSentinel(`${probe}\n${TOKEN}|0|True`, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
+    expect(parseExitSentinel(`${probe}\n${TOKEN}||True`, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
     expect(parseExitSentinel(`${probe}\n${TOKEN}||False`, NONCE, "powershell")).toEqual({ matched: true, exitCode: 1 });
   });
 
-  it("drift-guard: the probe IS the exit epilogue of buildExitCommand (same sentinel machinery)", () => {
-    // If buildExitCommand's epilogue ever changes, the probe must track it (else Mode-A landed silently breaks).
-    for (const shell of ["bash", "powershell"] as const) {
-      expect(buildExitCommand("<cmd>", shell, NONCE).endsWith(buildExitProbe(shell, NONCE))).toBe(true);
-    }
+  it("drift-guard: the BASH probe IS the exit epilogue of buildExitCommand (same sentinel machinery)", () => {
+    // bash: $? is the fresh numeric exit code, so the probe re-uses buildExitCommand's exact epilogue. (PS
+    // deliberately DIVERGES — the probe drops $LASTEXITCODE for $? to stay stale-immune; see the PS test above.)
+    expect(buildExitCommand("<cmd>", "bash", NONCE).endsWith(buildExitProbe("bash", NONCE))).toBe(true);
   });
 });
 
