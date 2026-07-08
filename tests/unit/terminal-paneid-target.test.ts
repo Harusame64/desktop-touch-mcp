@@ -145,6 +145,13 @@ describe("terminal send paneId (Phase 1 — hwnd-direct, survives title drift)",
 });
 
 describe("terminal read paneId (Phase 1 — safe-declines on a non-unique title)", () => {
+  it("reads the pane when its title is still unique (happy path)", async () => {
+    mockEnum.mockReturnValue([fakeWindow("dtm-locker-console-abc", 222n), fakeWindow("PowerShell", 111n)]);
+    mockUia.mockResolvedValue("dtmdogfood@host:~$ ready");
+    const r = parseResult(await terminalReadHandler(readArgs({ paneId: "222" })));
+    expect(r.ok).not.toBe(false);
+    expect(String(r.text)).toContain("ready");
+  });
   it("declines (never wrong-reads) when the pane's title is no longer unique", async () => {
     // Same-title sibling ⇒ resolveTitleByHwnd cannot hand a unique title to the UIA read ⇒ decline.
     mockEnum.mockReturnValue([fakeWindow("dtmdogfood@host: ~", 111n), fakeWindow("dtmdogfood@host: ~", 222n)]);
