@@ -46,6 +46,10 @@ internal static class KeyLocker
     private static LockerStore _store = null!;
     private static ServingRegistry _serving = null!;
     private static Application? _app;
+    /// TEST-ONLY: set from the `-PromptAutoAnswer <choice>` CLI arg (never from production `start()`). When
+    /// set to a kind-valid choice, `PromptDialog` returns it without a window so the e2e verb round-trip runs
+    /// headless. Not an env var — a production launch cannot inherit it to bypass the human backstop.
+    internal static string? PromptAutoAnswer;
 
     [System.STAThread]
     private static int Main(string[] args)
@@ -66,6 +70,10 @@ internal static class KeyLocker
                 case "-SelfTest": selfTest = true; break;
                 case "-SelfTestL2": selfTestL2 = true; break;
                 case "-Consent": consent = true; break;
+                // TEST-ONLY headless seam (e2e verb round-trip, no GUI): auto-answer `prompt` with this choice.
+                // A CLI ARG on purpose — NOT an env var: `KeyLockerHost.start()` never passes it, so a production
+                // launch cannot inherit it and silently bypass the human confirm/offer backstop (Codex W-3.5 P2).
+                case "-PromptAutoAnswer" when i + 1 < args.Length: PromptAutoAnswer = args[++i]; break;
             }
         }
 
@@ -606,10 +614,12 @@ internal static class PromptDialog
 {
     public static string Prompt(string kind, string label)
     {
-        // Headless CI seam (mirrors the -SelfTest spirit): when DTM_LOCKER_PROMPT_AUTOANSWER is set, return it
-        // WITHOUT a window so the `prompt` verb round-trips in tests with no GUI. Only a valid choice for the
-        // kind is honored; anything else falls through to the real dialog.
-        var auto = Environment.GetEnvironmentVariable("DTM_LOCKER_PROMPT_AUTOANSWER");
+        // Headless CI seam (the e2e verb round-trip): when the `-PromptAutoAnswer` CLI arg is set to a
+        // kind-valid choice, return it WITHOUT a window so the `prompt` verb round-trips with no GUI. This is a
+        // CLI arg, NOT an env var — `KeyLockerHost.start()` never passes it, so a production launch cannot
+        // inherit it and silently skip the human backstop (Codex W-3.5 P2). Only a kind-valid choice is honored;
+        // anything else falls through to the real dialog (fail-safe: an unexpected value never auto-fills).
+        var auto = KeyLocker.PromptAutoAnswer;
         if (auto != null && IsValidChoice(kind, auto)) return auto;
 
         _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };

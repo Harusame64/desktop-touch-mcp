@@ -71,6 +71,13 @@ export interface KeyLockerStartOptions {
   connectBackoffMs?: number;
   /** Override the locker's at-rest store directory (tests). Production uses the locker default. */
   storeDir?: string;
+  /**
+   * TEST-ONLY (e2e verb round-trip): pass `-PromptAutoAnswer <choice>` so the locker auto-answers the
+   * `prompt` verb without a GUI. A spawn-controlled seam — production callers (the wiring) never set it, so it
+   * is NOT an env-inherited backdoor that could silently bypass the human confirm/offer backstop (Codex
+   * W-3.5 P2). Undefined in production.
+   */
+  promptAutoAnswerForTest?: string;
 }
 
 interface PendingRequest {
@@ -240,6 +247,8 @@ export class KeyLockerHost {
 
     const argv = ["-PipeName", pipeName, "-McpPid", String(mcpPid)];
     if (opts.storeDir) argv.push("-StoreDir", opts.storeDir);
+    // TEST-ONLY seam (never set by production callers): headless auto-answer for the `prompt` verb.
+    if (opts.promptAutoAnswerForTest) argv.push("-PromptAutoAnswer", opts.promptAutoAnswerForTest);
 
     // Direct-spawn the locker (detached, no stdio redirect). It is our DIRECT child, so if it
     // fail-louds on a non-fresh pipe (squatter won the name) we observe the exit and abort BEFORE
