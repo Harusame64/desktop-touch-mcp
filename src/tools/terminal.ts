@@ -83,7 +83,7 @@ export function fireTerminalDispatch(paneId: string, command: string): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const terminalReadSchema = {
-  windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
+  windowTitle: z.string().max(200).optional().describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal'). Provide windowTitle OR paneId (paneId takes precedence)."),
   paneId: z.string().max(32).optional().describe(
     "Decimal hwnd of a specific pane (from key_locker launch_console) — targets THIS window even after " +
     "its title changes; takes precedence over windowTitle. NOTE: read still resolves the pane's text by " +
@@ -98,7 +98,7 @@ export const terminalReadSchema = {
 };
 
 export const terminalSendSchema = {
-  windowTitle: z.string().max(200).describe("Partial title of the terminal window."),
+  windowTitle: z.string().max(200).optional().describe("Partial title of the terminal window. Provide windowTitle OR paneId (paneId takes precedence)."),
   paneId: z.string().max(32).optional().describe(
     "Decimal hwnd of a specific pane (from key_locker launch_console) — targets THIS window directly by " +
     "hwnd, surviving a title change (e.g. after an ssh login the title becomes user@host); takes " +
@@ -847,7 +847,7 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
 export const terminalReadHandler = async ({
   windowTitle, paneId, lines, sinceMarker, stripAnsi: doStripAnsi, source, ocrLanguage = detectOcrLanguage(),
 }: {
-  windowTitle: string;
+  windowTitle?: string;
   paneId?: string;
   lines: number;
   sinceMarker?: string;
@@ -866,6 +866,10 @@ export const terminalReadHandler = async ({
         return failWith("Terminal window not found: paneId " + paneId, "terminal:read", { paneId, windowTitle });
       }
       windowTitle = resolved;
+    }
+    // windowTitle is optional in the schema (paneId is the alternative) — one of the two is required.
+    if (windowTitle === undefined || windowTitle === "") {
+      return failWith("terminal(action='read') requires windowTitle or paneId", "terminal:read", {});
     }
     const win = findTerminalWindow(windowTitle);
     if (!win) {
@@ -973,7 +977,7 @@ export const terminalSendHandler = async ({
   pressEnter, focusFirst, restoreFocus, preferClipboard, pasteKey,
   forceFocus: forceFocusArg, trackFocus, settleMs, notifyDispatch = true,
 }: {
-  windowTitle: string;
+  windowTitle?: string;
   paneId?: string;
   input: string;
   method?: "auto" | "background" | "foreground" | "foreground_flash";
@@ -1003,12 +1007,18 @@ export const terminalSendHandler = async ({
       let h: bigint;
       try { h = BigInt(paneId); } catch { return failWith("Terminal window not found: paneId " + paneId, "terminal:send", { paneId, windowTitle }); }
       win = findTerminalWindowByHwnd(h);
-    } else {
+    } else if (windowTitle !== undefined && windowTitle !== "") {
       win = findTerminalWindow(windowTitle);
+    } else {
+      // windowTitle is optional in the schema (paneId is the alternative) — one of the two is required.
+      return failWith("terminal(action='send') requires windowTitle or paneId", "terminal:send", {});
     }
     if (!win) {
       return failWith("Terminal window not found: " + (paneId !== undefined ? "paneId " + paneId : windowTitle), "terminal:send", { windowTitle, ...(paneId !== undefined ? { paneId } : {}) });
     }
+    // Downstream identity/focus tracking wants a concrete title. For the paneId path windowTitle was
+    // undefined, so adopt the resolved window's title; the windowTitle path keeps its input partial (unchanged).
+    windowTitle ??= win.title;
 
     // ADR-014 v2 R3 L3-4 S-A + Codex PR#511 P1: notify the dispatch observer
     // (if any) with the pane's hwnd id + the USER's input (never a rewritten /

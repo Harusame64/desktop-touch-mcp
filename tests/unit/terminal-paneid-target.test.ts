@@ -63,6 +63,7 @@ import {
   findTerminalWindowByHwnd,
   terminalSendHandler,
   terminalReadHandler,
+  terminalDispatchHandler,
 } from "../../src/tools/terminal.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as bgInput from "../../src/engine/bg-input.js";
@@ -141,6 +142,32 @@ describe("terminal send paneId (Phase 1 — hwnd-direct, survives title drift)",
     mockEnum.mockReturnValue([fakeWindow("x", 1n)]);
     const r = parseResult(await terminalSendHandler(sendArgs({ paneId: "999" })));
     expect(r.code).toBe("TerminalWindowNotFound");
+  });
+});
+
+describe("terminal DISPATCHER paneId-only (Phase 1 — schema gate, the real call path)", () => {
+  // The dispatcher re-parses args against the strict union (parseActionArgsOrFail). This is the path the
+  // examples exercise (paneId, NO windowTitle) — the handler-direct tests above bypass it. A required
+  // windowTitle would reject these with InvalidArgs (Fable P1-1).
+  it("accepts a paneId-only SEND (no windowTitle) and routes to the hwnd", async () => {
+    mockEnum.mockReturnValue([fakeWindow("dtm-locker-console-x", 222n)]);
+    mockUia.mockResolvedValue("dtm-locker-console-x whoami");
+    const r = parseResult(await terminalDispatchHandler({ action: "send", paneId: "222", input: "whoami", method: "background" } as never));
+    expect(r.code).not.toBe("InvalidArgs");
+    expect(mockChars.mock.calls[0]?.[0]).toBe(222n);
+  });
+  it("accepts a paneId-only READ (no windowTitle)", async () => {
+    mockEnum.mockReturnValue([fakeWindow("dtm-locker-console-y", 222n), fakeWindow("PowerShell", 111n)]);
+    mockUia.mockResolvedValue("dtm-locker-console-y ready");
+    const r = parseResult(await terminalDispatchHandler({ action: "read", paneId: "222" } as never));
+    expect(r.code).not.toBe("InvalidArgs");
+    expect(String(r.text)).toContain("ready");
+  });
+  it("rejects a SEND with NEITHER windowTitle nor paneId (typed, not a crash)", async () => {
+    mockEnum.mockReturnValue([]);
+    const r = parseResult(await terminalDispatchHandler({ action: "send", input: "whoami" } as never));
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toMatch(/windowTitle or paneId/);
   });
 });
 
