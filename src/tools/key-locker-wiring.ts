@@ -52,6 +52,7 @@ import {
 import { keyLockerManager } from "./key-locker-tool.js";
 import { KeyLockerError } from "../engine/key-locker-host.js";
 import { setCredentialAdvisor, type AdvisoryHint } from "./_advisory.js";
+import { isKnownSession } from "../engine/key-locker/session-tracker.js";
 
 /** Max simultaneously-live anchored consoles the tool will open (Risk R2 — a `fresh:true` loop can't spray
  *  windows). Dead ones are pruned first, so this bounds LIVE panes, not lifetime launches. */
@@ -194,24 +195,27 @@ export class KeyLockerWiring {
   /**
    * TOOL entry (ADR-014 R3 OQ-W-16-bis, `key_locker launch_console`): return an autofill-capable anchored
    * console the assistant can drive credential commands into. Idempotent by default — reuses the most-recent
-   * still-LIVE pane this wiring launched (liveness is hwnd-direct via `findTerminalWindowByHwnd`, NOT
-   * `resolveTitleByHwnd` which would false-DEAD a live same-host pane on its non-unique post-login title). Pass
-   * `fresh` to force a NEW pane (bounded by MAX_ANCHORED_PANES live panes so a `fresh` loop can't spray
-   * windows). Returns the pane's CURRENT title (a reused pane's may already have drifted — drive it by paneId).
+   * REUSABLE pane this wiring launched (`isReusable`: window alive via hwnd-direct `findTerminalWindowByHwnd`,
+   * NOT `resolveTitleByHwnd` which would false-DEAD a same-host pane on its non-unique post-login title; AND
+   * still driver-anchored + session KNOWN, so it can actually arm — OQ-8). Pass `fresh` to force a NEW pane
+   * (bounded by MAX_ANCHORED_PANES reusable panes so a `fresh` loop can't spray windows). Returns the pane's
+   * CURRENT title (a reused pane's may already have drifted — drive it by paneId).
    */
   async ensureAnchoredConsole({ fresh = false }: { fresh?: boolean } = {}): Promise<{ paneId: string; windowTitle: string }> {
-    // Prune dead panes so both the reuse scan and the cap count only LIVE windows.
-    const live = this.launchedPaneIds.filter((pid) => this.livePaneTitle(pid) !== null);
+    // Keep only REUSABLE panes — window alive AND still driver-anchored AND session KNOWN (OQ-8). A pane whose
+    // window died, OR whose driver record was torn down by a spurious `window_disappeared` (the record is gone
+    // but the window lives), OR whose session drifted to UNKNOWN, can NEVER arm — so we neither reuse nor count
+    // it toward the cap. Dropping it here means the next launch RE-ANCHORS a working pane (a self-healing reuse,
+    // NOT a blind re-anchor of the stale pane — re-anchoring a pane mid-remote-session as local would disclose a
+    // LOCAL secret to a REMOTE prompt, the P1-B / W-2b hole). The orphaned window (if any) is left for the human.
+    const reusable = this.launchedPaneIds.filter((pid) => this.isReusable(pid));
     this.launchedPaneIds.length = 0;
-    this.launchedPaneIds.push(...live);
+    this.launchedPaneIds.push(...reusable);
 
-    if (!fresh) {
-      // Reuse the most-recent live pane (scan from the end).
-      for (let i = this.launchedPaneIds.length - 1; i >= 0; i--) {
-        const pid = this.launchedPaneIds[i];
-        const title = this.livePaneTitle(pid);
-        if (title !== null) return { paneId: pid, windowTitle: title };
-      }
+    if (!fresh && this.launchedPaneIds.length > 0) {
+      // Reuse the most-recent reusable pane.
+      const pid = this.launchedPaneIds[this.launchedPaneIds.length - 1];
+      return { paneId: pid, windowTitle: this.livePaneTitle(pid) ?? "" };
     }
     if (this.launchedPaneIds.length >= MAX_ANCHORED_PANES) {
       throw new KeyLockerError(
@@ -222,6 +226,15 @@ export class KeyLockerWiring {
     const { paneId, title } = await this.launchAndAnchorConsole();
     this.launchedPaneIds.push(paneId);
     return { paneId, windowTitle: title };
+  }
+
+  /** A launched pane is REUSABLE only if its window is a live console (hwnd-direct) AND the driver still holds
+   *  its anchor (`hasPane`) AND its tracked session is KNOWN — the three conditions the arm gate needs. Any
+   *  failure means a later dispatch would not arm, so reuse must skip it and launch fresh instead (OQ-8). */
+  private isReusable(paneId: string): boolean {
+    if (this.livePaneTitle(paneId) === null) return false;
+    if (!this.driver.hasPane(paneId)) return false;
+    return isKnownSession(this.manager.tracker.get(paneId));
   }
 
   /** The current title of a launched pane if its hwnd is still a live console, else null (hwnd-direct). */

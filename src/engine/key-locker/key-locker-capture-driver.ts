@@ -410,6 +410,13 @@ export class KeyLockerCaptureDriver {
     }
   }
 
+  /** Is this pane still ANCHORED (a driver record exists)? The wiring's `launch_console` reuse checks this: a
+   *  pane whose window is alive but whose record was torn down (a spurious `window_disappeared` → `onPaneClosed`,
+   *  OQ-8) can never arm, so reuse must NOT return it — it launches a fresh, re-anchored pane instead. */
+  hasPane(paneId: string): boolean {
+    return this.panes.has(paneId);
+  }
+
   /** Panes with a credential dispatch awaiting a prompt (the wiring polls exactly these). */
   armedPaneIds(): string[] {
     const out: string[] = [];

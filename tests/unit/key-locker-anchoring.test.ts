@@ -94,6 +94,28 @@ describe("ensureAnchoredConsole (Phase 2)", () => {
     liveHwnds.delete(BigInt(a.paneId)); // one dies → slot freed
     await expect(wiring.ensureAnchoredConsole({ fresh: true })).resolves.toHaveProperty("paneId");
   });
+
+  // OQ-8: a pane whose WINDOW is still live but which can no longer ARM (driver record torn down by a spurious
+  // window_disappeared, or session drifted to UNKNOWN) must NOT be reused — reuse launches a fresh, re-anchored
+  // pane instead (self-healing). Blind re-anchor of the stale pane is rejected (wrong-target disclosure risk).
+  const driverOf = (w: KeyLockerWiring) =>
+    (w as unknown as { driver: { onPaneClosed(id: string): void } }).driver;
+
+  it("does NOT reuse a live-window pane whose driver record was torn down (OQ-8) — relaunches", async () => {
+    const { wiring } = newWiring();
+    const a = await wiring.ensureAnchoredConsole();
+    driverOf(wiring).onPaneClosed(a.paneId); // spurious teardown: record gone, window (liveHwnds) still live
+    const b = await wiring.ensureAnchoredConsole();
+    expect(b.paneId).not.toBe(a.paneId);
+  });
+
+  it("does NOT reuse a pane whose session drifted to UNKNOWN (OQ-8) — relaunches", async () => {
+    const { wiring, mgr } = newWiring();
+    const a = await wiring.ensureAnchoredConsole();
+    mgr.tracker.markUnknown(a.paneId); // hypothesis B: session no longer KNOWN
+    const b = await wiring.ensureAnchoredConsole();
+    expect(b.paneId).not.toBe(a.paneId);
+  });
 });
 
 describe("credentialNudge (Phase 3)", () => {
