@@ -399,9 +399,14 @@ internal sealed class ServingRegistry
 /// DF-5 headless self-test for the console-buffer injector (`-SelfTestInjectConsole`). Deterministic proof
 /// — no live ssh — that `Win32Input.ReVerifyAndType` (AttachConsole + WriteConsoleInput) types a
 /// unicode+surrogate secret into ANOTHER process's console and that its cooked-read (echo OFF) reads it
-/// back exactly. Forces a CLASSIC conhost (`ConsoleWindowClass`, so the `ReVerify` allowlist passes) by
-/// spawning the child under `conhost.exe` with CREATE_NEW_CONSOLE (DF-1's conhost-forcing), independent of
-/// the machine's Default Terminal — so it is stable on CI and a WT-default desktop alike.
+/// back exactly. The parent spawns a child copy of THIS exe with CREATE_NEW_CONSOLE; the child (a
+/// GUI-subsystem WinExe, which CREATE_NEW_CONSOLE does not reliably auto-attach) calls
+/// `FreeConsole`+`AllocConsole` to own a fresh console, and the parent then attaches to it by the
+/// window-owning pid. On a classic-conhost machine (CI, and the default Windows desktop) `AllocConsole`
+/// yields a `ConsoleWindowClass` window so the `ReVerify` allowlist passes. LIMITATION: on a desktop whose
+/// Default Terminal is Windows Terminal, `AllocConsole` may hand off to a ConPTY pseudoconsole whose window
+/// is NOT `ConsoleWindowClass`, in which case `ReVerify` aborts `target_multiplexed` and this self-test can
+/// fail — that path (like OQ-DF-7/8) is covered by the live dogfood, not this headless proof.
 internal static class ConsoleInjectSelfTest
 {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

@@ -8,7 +8,7 @@
 // NamedPipeClientStream). What differs from S1 is the CONTROL VERBS and the trust story:
 //
 //   * The locker opens a WPF PasswordBox secure dialog on `capture`, DPAPI-encrypts the secret
-//     at rest, and serves it to consumers (askpass / SendInput — L2) — never over THIS pipe.
+//     at rest, and serves it to consumers (askpass / console-buffer inject — L2) — never over THIS pipe.
 //   * The SECRET NEVER CROSSES THIS PIPE. The wire carries opaque ids + control only; `capture`
 //     replies with {captured, rt} booleans, not the secret. So the pipe's integrity guarantee
 //     (kernel client-verify, below) protects the CONTROL channel — a squatter-server is inert
@@ -105,7 +105,7 @@ export interface LockerReply {
 
 // L2 wire contracts (the locker owns these frame shapes; the injector orchestrator consumes them).
 
-/** The dedicated-console target of a SendInput (`inject`) — §2.1 of the L2 plan. */
+/** The dedicated-console target of a console-buffer injection (`inject`) — §2.1 of the L2 plan. */
 export interface InjectTarget {
   /** The console window HWND (decimal string). */
   hwnd: string;
@@ -460,10 +460,11 @@ export class KeyLockerHost {
   }
 
   /**
-   * SendInput the secret stored under `key` into a dedicated console `target`, AFTER the locker
-   * re-verifies the target at the injection instant (§2.2: HWND/consolePid, ConsoleWindowClass,
-   * foreground, titleFp). The secret NEVER crosses the pipe — only {injected, verified} come back;
-   * an abort returns the typed reason.
+   * Write the secret stored under `key` into a dedicated console `target` via the console-buffer
+   * injector (DF-5: AttachConsole + WriteConsoleInput), AFTER the locker re-verifies the target IDENTITY
+   * at the injection instant (§2.2: HWND/consolePid, ConsoleWindowClass, titleFp — no foreground gate; the
+   * write is addressed to the verified console pid). The secret NEVER crosses the pipe — only
+   * {injected, verified} come back; an abort returns the typed reason.
    */
   async inject(key: string, target: InjectTarget): Promise<InjectClientResult> {
     const reply = await this.request("inject", key, REQUEST_TIMEOUT_MS, { t: target });

@@ -501,7 +501,7 @@ internal sealed class LockerStore
     /// Transiently decrypt the stored secret and hand the plaintext BYTES to `use`, then zeroize
     /// the buffer — the plaintext lives only for the callback and NEVER leaves the locker process
     /// (L2 §0 invariant). Returns false if the id is absent or the blob won't decrypt. Used by the
-    /// SendInput injector and the askpass serving path.
+    /// console-buffer injector and the askpass serving path.
     public bool WithDecrypted(string id, Action<byte[]> use)
     {
         if (!_entries.TryGetValue(id, out var b64)) return false;
