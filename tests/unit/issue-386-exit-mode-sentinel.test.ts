@@ -18,6 +18,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildExitCommand,
+  buildExitProbe,
   parseExitSentinel,
   detectShell,
   isUnsafeForExitMode,
@@ -164,6 +165,32 @@ describe("buildExitCommand → parseExitSentinel round-trip (simulated buffer)",
     expect(parseExitSentinel(cmd, NONCE, "powershell").matched).toBe(false);
     const buffer = `${cmd}\n${TOKEN}||True`;
     expect(parseExitSentinel(buffer, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
+  });
+});
+
+describe("buildExitProbe — epilogue-only probe (W-4 gap6: observe, never re-run)", () => {
+  it("bash: contains NO command (never re-runs), and its OUTPUT round-trips to the exit code", () => {
+    const probe = buildExitProbe("bash", NONCE);
+    // The probe re-sends NO credential command — only the `$?`-reading epilogue. This is the whole point:
+    // re-running a non-idempotent one-shot (`git push`) would double-execute.
+    expect(probe).not.toContain("git push");
+    expect(probe).toContain("$?");
+    expect(probe).not.toContain(TOKEN); // echo-immune: the SENT text never has the contiguous token
+    // echo alone defers; the runtime OUTPUT (reading the prior command's $? = 0) matches.
+    expect(parseExitSentinel(probe, NONCE, "bash").matched).toBe(false);
+    expect(parseExitSentinel(`${probe}\n${TOKEN}|0|`, NONCE, "bash")).toEqual({ matched: true, exitCode: 0 });
+    expect(parseExitSentinel(`${probe}\n${TOKEN}|127|`, NONCE, "bash")).toEqual({ matched: true, exitCode: 127 });
+  });
+
+  it("powershell: reads $?/$LASTEXITCODE with NO pre-reset (must not clobber the value being observed)", () => {
+    const probe = buildExitProbe("powershell", NONCE);
+    // buildExitCommand resets `$global:LASTEXITCODE = $null` BEFORE running its input; a probe observing an
+    // ALREADY-run command must NOT reset — else it reads null instead of the real exit code.
+    expect(probe).not.toContain("= $null");
+    expect(probe).toContain("$LASTEXITCODE");
+    expect(probe).not.toContain(TOKEN);
+    expect(parseExitSentinel(`${probe}\n${TOKEN}|0|True`, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
+    expect(parseExitSentinel(`${probe}\n${TOKEN}||False`, NONCE, "powershell")).toEqual({ matched: true, exitCode: 1 });
   });
 });
 

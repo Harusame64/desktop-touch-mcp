@@ -247,7 +247,7 @@ const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
  * TextPattern snapshot — the cursor row. ANSI is stripped here so callers can
  * pass either ANSI-laden or pre-cleaned text. Returns null for null/blank input.
  */
-function lastNonEmptyPromptLine(baselineRaw: string | null): string | null {
+export function lastNonEmptyPromptLine(baselineRaw: string | null): string | null {
   if (!baselineRaw) return null;
   const cleaned = stripAnsi(baselineRaw).replace(/\r\n/g, "\n");
   const lines = cleaned.split("\n");
@@ -514,6 +514,42 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
     `$global:LASTEXITCODE = $null # ${nonce}\n${input}\n` +
     `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`
   );
+}
+
+/**
+ * The EPILOGUE-ONLY exit probe (ADR-014 R3 L3-4 W-4, gap6): the same echo-immune sentinel as
+ * `buildExitCommand` but WITHOUT re-sending the command. The Key Locker wiring's Mode-A landed detection uses
+ * this to read the exit code of an ALREADY-RUN credential command (fire-after: the command is running/done, its
+ * prompt already answered), NEVER re-executing it — re-running a non-idempotent one-shot (`git push`) would be
+ * a fatal double-execute. Send this as the NEXT command once the prompt has returned; it reads the just-finished
+ * command's `$?` / `$LASTEXITCODE` (unchanged since — the shell was idle at the prompt) and prints
+ * `<token>|<code>|…`, parsed by the SAME `parseExitSentinel`. It does NOT reset `$LASTEXITCODE` first (that would
+ * clobber the value being read). Send it with `notifyDispatch:false` (it is read-only, not a credential command).
+ */
+export function buildExitProbe(shell: ExitShell, nonce: string): string {
+  const head = EXIT_TOKEN_HEAD;
+  const tail = EXIT_TOKEN_TAIL_PREFIX + nonce;
+  if (shell === "bash") {
+    return `__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
+  }
+  // powershell — read the prior command's $?/$LASTEXITCODE with NO pre-reset (buildExitCommand resets before
+  // running the input; a probe must preserve the value it is observing).
+  return `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`;
+}
+
+/**
+ * Resolve a pane's hwnd (decimal string = the Key Locker `paneId`) to its EXACT window title, or null if no
+ * live window has that hwnd (ADR-014 R3 L3-4 W-4, gap2). The title-keyed terminal seams (`readTerminalRaw` /
+ * `terminalRunHandler`) partial-match on title, so two panes to the SAME host share a title and
+ * `findTerminalWindow` could grab the wrong window → a false-positive prompt would inject a secret into a
+ * promptless pane. The wiring resolves the title by EXACT hwnd here (the stable per-pane key), so a stale/
+ * duplicate title can never redirect the read/inject. Uses `enumWindowsInZOrder` (the same source
+ * `findTerminalWindow` reads). A vanished hwnd ⇒ null ⇒ the wiring declines.
+ */
+export function resolveTitleByHwnd(paneId: string): string | null {
+  const target = BigInt(paneId);
+  const win = enumWindowsInZOrder().find((w) => w.hwnd === target);
+  return win !== undefined ? win.title : null;
 }
 
 /**
