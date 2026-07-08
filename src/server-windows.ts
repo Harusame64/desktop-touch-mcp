@@ -326,8 +326,10 @@ let shuttingDown = false;
 const inflightIds = new Set<string | number>();
 let shutdownPending = false;
 let shutdownTimer: NodeJS.Timeout | null = null;
-/** Teardown for the ADR-014 R3 live wiring (timers + event-bus + dispatch hook), set at registration. */
-let disposeKeyLockerWiring: (() => void) | null = null;
+/** Teardown for the ADR-014 R3 live wiring (timers + event-bus + dispatch hook + host dispose), set at
+ *  registration. Returns a promise the shutdown path AWAITS so the detached key-locker.exe is killed before
+ *  process.exit (Codex W-4b). */
+let disposeKeyLockerWiring: (() => Promise<void>) | null = null;
 const SHUTDOWN_GRACE_MS = 60_000;
 
 function shutdown(exitCode = 0): void {
@@ -339,7 +341,10 @@ function shutdown(exitCode = 0): void {
     shutdownTimer = null;
   }
   console.error("[desktop-touch] Shutting down...");
-  disposeKeyLockerWiring?.(); // ADR-014 R3 L3-4 W-4: clear the wiring's timers + event-bus + dispatch hook
+  // ADR-014 R3 L3-4 W-4: the teardown clears the wiring's timers + event-bus + dispatch hook SYNCHRONOUSLY now
+  // and returns the host-dispose PROMISE, which we AWAIT in the flush Promise.all below so the detached
+  // key-locker.exe is killed before process.exit (Codex W-4b :127).
+  const keyLockerWiringTeardown = disposeKeyLockerWiring?.() ?? Promise.resolve();
   disposeKeyLockerWiring = null;
   stopNativeRuntime();
   // ADR-019 Stage 5 sub-plan §6 R2 + ADR-020 SR-4 PR-SR4-2 — release the
@@ -359,6 +364,7 @@ function shutdown(exitCode = 0): void {
   Promise.all([
     uiPatternStore.flushImmediateForShutdown(),
     macroOutcomeStore.flushImmediateForShutdown(),
+    keyLockerWiringTeardown, // ADR-014 R3 W-4: await the locker host dispose (shutdown frame + kill) before exit
   ])
     .catch(() => {})
     .finally(() => {

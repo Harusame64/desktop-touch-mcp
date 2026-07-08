@@ -114,17 +114,16 @@ export class KeyLockerWiring {
   }
 
   /** Tear EVERYTHING down (the "dispose stops the timers" obligation carried from W-3): clear both timers,
-   *  unsubscribe the event-bus (its 500ms EnumWindows sweep), and detach the dispatch hook. Idempotent. */
-  stop(): void {
+   *  unsubscribe the event-bus (its 500ms EnumWindows sweep), detach the dispatch hook, and dispose the locker
+   *  host. Returns the host-dispose PROMISE so the shutdown path can AWAIT it before `process.exit()` — a
+   *  fire-and-forget dispose could exit before `KeyLockerHost.dispose()` sends its shutdown frame + `killTree`,
+   *  orphaning the detached `key-locker.exe` (Codex W-4b :127). Idempotent (dispose is a no-op with no host). */
+  stop(): Promise<void> {
     if (this.tickTimer !== null) { clearInterval(this.tickTimer); this.tickTimer = null; }
     if (this.idleTimer !== null) { clearInterval(this.idleTimer); this.idleTimer = null; }
     if (this.eventSubId !== null) { unsubscribe(this.eventSubId); this.eventSubId = null; }
     setTerminalDispatchHook(null);
-    // Dispose the shared locker host too: autofill may have spawned a DETACHED `key-locker.exe`, and `dispose()`
-    // is the path that sends it `shutdown` + kills it. Without this, exiting before the idle timer fires would
-    // ORPHAN the helper (Codex W-4b). Fire-and-forget (`stop` is sync, called from the shutdown path) — the
-    // graceful shutdown frame + kill are best-effort on exit.
-    void this.manager.dispose().catch(() => {});
+    return this.manager.dispose().catch(() => {});
   }
 
   /**
@@ -171,7 +170,9 @@ export class KeyLockerWiring {
       snapshot: () => m.snapshotProcessTree(),
 
       deriveBinding: (command: string, session: SessionContext) => deriveBinding(command, session),
-      resolveBinding: (k) => this.bindings().resolve(k),
+      // `prune:false` — the live hot path is READ-ONLY: a stale-row prune-save here would clobber a concurrent
+      // user `key_locker` write (Codex W-4b). Fresh-loaded per op, so a stale row is just reported no-match.
+      resolveBinding: (k) => this.bindings().resolve(k, { prune: false }),
       bindBinding: (k, id, meta) => this.bindings().bind(k, id, meta),
       confirmPolicyFor: (k) => this.bindings().getPolicy(k),
       isNever: (k) => this.nevers().has(k),
@@ -286,8 +287,8 @@ let wiringSingleton: KeyLockerWiring | null = null;
  * feature is kill-switched. Returns a teardown fn (clears timers + hooks) for a clean shutdown. Shares the ONE
  * `keyLockerManager()` singleton with the L4 tool (so both use the same host + tracker/watch).
  */
-export function registerKeyLockerWiring(): () => void {
-  if (keyLockerDisabled()) return () => { /* feature off */ };
+export function registerKeyLockerWiring(): () => Promise<void> {
+  if (keyLockerDisabled()) return () => Promise.resolve(); /* feature off */
   // IDEMPOTENT — start the timers/hook/subscription ONCE PER PROCESS. In HTTP transport `createMcpServer()`
   // runs for EVERY `/mcp` request (`server-windows.ts` request path), so a non-idempotent register would leak
   // a new 500ms reconcile timer + event-bus subscription + dispatch hook on every RPC (Codex W-4b). The wiring
@@ -298,8 +299,9 @@ export function registerKeyLockerWiring(): () => void {
     wiringSingleton = wiring;
   }
   // Every caller's teardown stops the ONE process-global wiring (called at process shutdown; safe to null and
-  // re-init on a later register). Not a per-request teardown — HTTP request cleanup must NOT stop it.
-  return () => { wiringSingleton?.stop(); wiringSingleton = null; };
+  // re-init on a later register). Not a per-request teardown — HTTP request cleanup must NOT stop it. Returns
+  // the stop() PROMISE (host dispose) so shutdown can AWAIT it before exit (Codex W-4b :127).
+  return () => { const p = wiringSingleton?.stop() ?? Promise.resolve(); wiringSingleton = null; return p; };
 }
 
 /** The live wiring instance (for the dogfood `launchAndAnchorConsole` entry), or null if not registered. */

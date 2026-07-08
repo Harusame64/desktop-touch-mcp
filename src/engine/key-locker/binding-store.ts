@@ -134,13 +134,20 @@ export class BindingStore {
    * (a map row proves only "canonical → opaqueId", not "the secret survives"); a stale row is
    * pruned and reported as no binding. One cheap local pipe round-trip per autofill offer.
    */
-  async resolve(canonicalKey: string): Promise<{ opaqueId: string } | undefined> {
+  async resolve(canonicalKey: string, opts: { prune?: boolean } = {}): Promise<{ opaqueId: string } | undefined> {
     if (this.existsInLocker === undefined) throw new LockerNotBoundError("resolve");
     const row = this.data.bindings[canonicalKey];
     if (row === undefined) return undefined;
     if (!(await this.existsInLocker(row.opaqueId))) {
-      delete this.data.bindings[canonicalKey];
-      this.save();
+      // `prune: false` (the live-wiring hot path — it loads a FRESH store per op): DO NOT delete+save. A
+      // stale-row prune here rewrites the WHOLE snapshot, and this async `existsInLocker` await can straddle a
+      // concurrent user `key_locker` save/set_policy on ANOTHER binding — the prune would then clobber that
+      // write with its pre-write snapshot (Codex W-4b). A stale row is harmless (reported as no-binding); it
+      // is pruned only from a pruning caller (the L4 tool) whose writes are user-initiated, not a 500ms loop.
+      if (opts.prune !== false) {
+        delete this.data.bindings[canonicalKey];
+        this.save();
+      }
       return undefined;
     }
     return { opaqueId: row.opaqueId };
