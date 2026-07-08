@@ -218,13 +218,20 @@ export class KeyLockerManager {
     const sys32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
     const cmdExe = join(sys32, "cmd.exe");
     const conhostExe = join(sys32, "conhost.exe");
-    // `start "" <conhost> powershell -NoExit -Command <title>`: the empty "" is start's window-title arg (so a
-    // quoted exe path is never mistaken for the title); `-NoExit` leaves an interactive prompt for the human
-    // (cooperative model, we never read its stdio); `-Command` applies the UNIQUE title. The title nonce is hex
-    // (no cmd `&^%` metachars), so Node's default arg quoting is safe through cmd (dogfood-verified).
+    // `start "" <conhost> powershell -NoProfile -NoExit -Command <title>`: the empty "" is start's window-title
+    // arg (so a quoted exe path is never mistaken for the title); `-NoExit` leaves an interactive prompt for the
+    // human (cooperative model, we never read its stdio); `-Command` applies the UNIQUE title. The title nonce is
+    // hex (no cmd `&^%` metachars), so Node's default arg quoting is safe through cmd (dogfood-verified).
+    // `-NoProfile` is LOAD-BEARING, not cosmetic (Opus W-4b R1 P2): the entire read/inject path keys on the
+    // window title (`resolveTitleByHwnd`), but a user profile with a custom `prompt` function (oh-my-posh /
+    // starship — common in this audience) RE-SETS `$Host.UI.RawUI.WindowTitle` on every REPL render, which
+    // would overwrite our nonce ~ms after `-Command` and break BOTH the claim below AND every later title read.
+    // The anchored pane is a locker-owned utility console, so dropping profile customizations is acceptable
+    // (sudo/ssh are System32/PATH exes, unaffected). A mid-session ad-hoc title change is still fail-safe
+    // (`resolveTitleByHwnd` declines ⇒ the human types the credential; never a wrong-inject).
     const child = spawn(
       cmdExe,
-      ["/c", "start", "", conhostExe, "powershell.exe", "-NoExit", "-Command", `$Host.UI.RawUI.WindowTitle = '${title}'`],
+      ["/c", "start", "", conhostExe, "powershell.exe", "-NoProfile", "-NoExit", "-Command", `$Host.UI.RawUI.WindowTitle = '${title}'`],
       { detached: true, stdio: "ignore", windowsHide: false },
     );
     child.on("error", () => { /* spawn failure surfaces as the poll timing out below */ });
@@ -233,8 +240,10 @@ export class KeyLockerManager {
     if (child.pid === undefined) throw new KeyLockerError("KeyLockerSpawnFailed", "cmd spawn returned no pid");
 
     // CLAIM BY UNIQUE TITLE — NOT by `child.pid`: under `cmd /c start`, `child.pid` is the transient cmd.exe,
-    // never the conhost. The title is an 8-byte random nonce excluded against `before`, so a match is
-    // unambiguously OUR console (consistent with `resolveTitleByHwnd` declining non-unique titles); after the
+    // never the conhost. The title is the SOLE correlation now (the old owner-pid===child.pid co-anchor is gone
+    // with the cmd middleman), so its uniqueness is LOAD-BEARING: an 8-byte random nonce excluded against the
+    // pre-spawn `before` set — do not weaken it. A match is unambiguously OUR console (consistent with
+    // `resolveTitleByHwnd` declining non-unique titles); after the
     // claim every read/inject is hwnd-keyed, so the title is a one-shot startup correlation only. `shellPid =
     // getWindowProcessId(hwnd)` is the SHELL (powershell) process that owns the console window — conhost is its
     // PARENT (dogfood-verified) — so `shellPid` is exactly the `sshDescendants` subtree root (ssh/sudo run as
@@ -259,7 +268,9 @@ export class KeyLockerManager {
         if (leaked !== undefined) {
           const pid = getWindowProcessId(leaked.hwnd);
           if (pid !== 0) {
-            try { spawn(join(sys32, "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" }).unref(); }
+            // `windowsHide:true` (Fable W-4b R1 P2): a console app spawned from this parent CAN allocate a
+            // visible window (DF-1 is the proof), so taskkill must not flash one — matches `killTree`.
+            try { spawn(join(sys32, "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).unref(); }
             catch { /* best-effort */ }
           }
         }
