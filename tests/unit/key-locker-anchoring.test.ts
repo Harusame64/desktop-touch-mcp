@@ -99,12 +99,15 @@ describe("ensureAnchoredConsole (Phase 2)", () => {
   // window_disappeared, or session drifted to UNKNOWN) must NOT be reused — reuse launches a fresh, re-anchored
   // pane instead (self-healing). Blind re-anchor of the stale pane is rejected (wrong-target disclosure risk).
   const driverOf = (w: KeyLockerWiring) =>
-    (w as unknown as { driver: { onPaneClosed(id: string): void } }).driver;
+    (w as unknown as { driver: { panes: Map<string, unknown> } }).driver;
 
   it("does NOT reuse a live-window pane whose driver record was torn down (OQ-8) — relaunches", async () => {
     const { wiring } = newWiring();
     const a = await wiring.ensureAnchoredConsole();
-    driverOf(wiring).onPaneClosed(a.paneId); // spurious teardown: record gone, window (liveHwnds) still live
+    // Isolate the hasPane gate: delete ONLY the driver's pane record, NOT the tracker session — so the
+    // session stays KNOWN and `hasPane` ALONE must reject the reuse (proves it is load-bearing, not shadowed
+    // by the isKnownSession check that the full onPaneClosed teardown would also trip). Window stays live.
+    driverOf(wiring).panes.delete(a.paneId);
     const b = await wiring.ensureAnchoredConsole();
     expect(b.paneId).not.toBe(a.paneId);
   });
