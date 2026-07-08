@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.12.0] - 2026-07-08 — Key Locker: the terminal autofills your SSH / sudo passwords
+
+### Added
+
+- **Key Locker — save a credential once, and the terminal fills it in when a command
+  prompts for it.** Running `ssh user@host` or `sudo …` normally stops at a hidden password
+  prompt that an assistant can't safely type into. Key Locker stores your SSH key passphrases
+  and sudo / login passwords encrypted on your machine (Windows DPAPI, current user) and fills
+  them automatically when a bound command reaches its prompt — the secret is entered once into
+  the locker's own secure dialog and is never shown to the assistant or sent over the wire.
+
+  How to use it:
+  - `key_locker({action:'save', uri:'ssh://user@host:22'})` opens a secure dialog to store the
+    secret (the first save also shows a one-time enable confirmation). Supports `ssh://`,
+    `sudo://host/user`, `https-cred://host`, and SSH key passphrases.
+  - `key_locker({action:'launch_console'})` opens an autofill-capable console and returns its
+    `paneId`; run your command into it with `terminal({action:'send', paneId, input:'ssh …'})`
+    and the password is filled when the prompt appears.
+  - Autofill only works in a console opened by `launch_console` (a pre-existing terminal is
+    never touched). It's a classic Windows console you can also see and type into, so you can
+    take over at any prompt.
+  - `list` / `status` / `forget` / `set_policy` manage saved credentials; by default every
+    autofill asks you to confirm (opt a binding out with `set_policy`).
+  - Windows only. Disable the whole feature with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`. An `ssh`
+    save needs the host key already in known_hosts (connect to the host once first).
+- **Target a terminal by `paneId`.** `terminal` `read` / `send` now accept an optional `paneId`
+  (the decimal window handle returned by `key_locker launch_console`) as an alternative to
+  `windowTitle`. It targets that exact window even after its title changes — e.g. an `ssh` login
+  that renames the window to `user@host` — so a follow-up `send`/`read` still reaches the same
+  pane.
+
+### Notes
+
+- Key Locker's credential helper is an unsigned executable, so on some machines Windows
+  SmartScreen or antivirus may show an "unknown publisher" warning the first time it runs. This
+  is expected — the helper ships with desktop-touch-mcp and runs locally on your machine; you
+  can allow it to proceed. Code signing is planned for a future release.
+
 ## [1.11.0] - 2026-06-28 — Screenshots cost a fraction of the tokens, capture real pixels from GPU-rendered & occluded windows, plus tools to manage the cache
 
 ### Added

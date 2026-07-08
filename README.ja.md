@@ -47,6 +47,8 @@ npx -y @harusame64/desktop-touch-mcp
 > **注意:** nut-js のネイティブバインディングは Visual C++ 再頒布可能パッケージを必要とします。  
 > インストール済みでない場合は [Microsoft公式](https://learn.microsoft.com/ja-jp/cpp/windows/latest-supported-vc-redist) からダウンロードしてください。
 
+> **注意 (Key Locker):** Key Locker が使う認証情報ヘルパーは未署名の実行ファイルのため、環境によっては初回起動時に Windows SmartScreen やアンチウイルスが「発行元不明」の警告を表示することがあります。これは想定内で、ヘルパーは desktop-touch-mcp に同梱され、お使いのマシン上でローカルに動作します。許可して続行して問題ありません。（コード署名は今後のリリースで対応予定です。）
+
 ---
 
 ## インストール
@@ -249,7 +251,7 @@ DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `acti
 ### Key Locker (1)
 | ツール | 概要 |
 |---|---|
-| `key_locker` | ターミナルが自動入力する認証情報（SSH 鍵のパスフレーズ、sudo / ログインパスワード）を管理。秘密情報はロッカー自身のセキュアダイアログに一度だけ入力し、この PC 上で暗号化保存（Windows DPAPI, current user）— アシスタントには一切見えない。一度有効化すれば、認証プロンプト時に自動入力される。`action='save'`（登録）/ `list` / `forget` / `set_policy` / `status`。`DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1` で無効化 |
+| `key_locker` | ターミナルが自動入力する認証情報（SSH 鍵のパスフレーズ、sudo / ログインパスワード）を管理。秘密情報はロッカー自身のセキュアダイアログに一度だけ入力し、この PC 上で暗号化保存（Windows DPAPI, current user）— アシスタントには一切見えない。`action='launch_console'` で自動入力対応コンソールを起動（返る `paneId` を `terminal` に渡して `ssh`/`sudo` を流す）/ `save`（登録）/ `list` / `forget` / `set_policy` / `status`。自動入力は `launch_console` で開いたコンソールでのみ発火。`DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1` で無効化 |
 
 ---
 

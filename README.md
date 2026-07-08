@@ -48,6 +48,11 @@ npx -y @harusame64/desktop-touch-mcp
 > **Note:** nut-js native bindings require the Visual C++ Redistributable.
 > Download from [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) if not already installed.
 
+> **Note (Key Locker):** The credential helper Key Locker uses is an unsigned executable, so on
+> some machines Windows SmartScreen or antivirus may show an "unknown publisher" warning the
+> first time it runs. This is expected — the helper ships with desktop-touch-mcp and runs locally
+> on your machine; you can allow it to proceed. Code signing is planned for a future release.
+
 ---
 
 ## Installation
@@ -141,7 +146,7 @@ For a local checkout, register the built server directly:
 
 ---
 
-## Tools (31 Optimized Tools)
+## Tools (32 Optimized Tools)
 
 > 📖 **Full Reference**: [`docs/system-overview.md`](docs/system-overview.md) — Exhaustive guide on parameters, return schemas, and coordinate math.
 
@@ -185,7 +190,7 @@ For a local checkout, register the built server directly:
 | `workspace_launch` | Launch apps and auto-detect new HWNDs (supports localized titles). |
 | `run_macro` | Batch up to 50 operations into a single round-trip for maximum efficiency. |
 | `clipboard` / `notification_show` | System-level text exchange and user alerts. |
-| `key_locker` | Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login passwords). Secrets are entered once into the locker's own secure dialog and stored encrypted on this machine (Windows DPAPI); they are never shown to the assistant. Enable once, then autofill happens automatically at credential prompts. Disable with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`. |
+| `key_locker` | Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login passwords). Secrets are entered once into the locker's own secure dialog and stored encrypted on this machine (Windows DPAPI); they are never shown to the assistant. `action='launch_console'` opens an autofill-capable console (returns a `paneId` to drive `ssh`/`sudo` into via `terminal`); `save` / `list` / `forget` / `set_policy` / `status` manage bindings. Autofill only fires in a console opened by `launch_console`. Disable with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`. |
 
 ### 📊 Office (Excel)
 | Tool | Description |

@@ -1,6 +1,6 @@
 {
   "name": "@harusame64/desktop-touch-mcp",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "mcpName": "io.github.Harusame64/desktop-touch-mcp",
   "description": "Let Claude, Cursor, or any MCP client see and operate your Windows 10/11 desktop. 31 tools for screenshots, UI Automation, Chrome CDP, keyboard/mouse, terminal, with semantic discover-then-act targeting and per-action perception guards that avoid wrong-window typing and stale-coordinate clicks.",
   "keywords": [
