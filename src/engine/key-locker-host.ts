@@ -130,7 +130,9 @@ export interface MintTicketContext {
   path?: string;
 }
 
-/** Every abort reason the `inject` verb can return (§2.1 reply contract). */
+/** Every abort reason the `inject` verb can return (§2.1 reply contract). `not_foreground` is no longer
+ *  emitted since DF-5 (the console-buffer injector has no foreground gate — Injection.cs `InjectAbort`),
+ *  but stays in the union for wire back-compat so `normalizeAbort` never downgrades an in-flight old reply. */
 export type InjectAbortCode =
   | "target_mismatch" | "target_gone" | "not_foreground" | "target_multiplexed"
   | "no_secret" | "bad_target" | "executor_failed";

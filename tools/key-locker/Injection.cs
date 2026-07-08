@@ -1,11 +1,16 @@
-// ADR-014 v2 R3 Key Locker — L2 injection (C# side): the SendInput injector with injection-instant
-// re-verify, and the askpass serving path (single-use ticket + per-injection serving pipe).
+// ADR-014 v2 R3 Key Locker — L2 injection (C# side): the console-buffer injector with injection-instant
+// identity re-verify, and the askpass serving path (single-use ticket + per-injection serving pipe).
 //
-// Plan: desktop-touch-mcp-internal@<plan>:docs/adr-014-v2-r3-l2-injection-plan.md (§2, §3)
+// Plan: desktop-touch-mcp-internal@<plan>:docs/adr-014-v2-r3-l2-injection-plan.md (§2, §3);
+//       DF-5 fix: desktop-touch-mcp-internal@<plan>:docs/adr-014-v2-r3-df5-writeconsoleinput-impl-plan.md
 //
-// The secret NEVER crosses the control pipe and never reaches Node: SendInput happens HERE (the
+// The secret NEVER crosses the control pipe and never reaches Node: the keystroke write happens HERE (the
 // locker holds the plaintext); the askpass helper fetches it over a SEPARATE serving pipe this file
 // creates. Plaintext is decrypted transiently (LockerStore.WithDecrypted) and zeroized after use.
+//
+// DF-5 (2026-07-08): injection is `AttachConsole` + `WriteConsoleInputW` into the target console's input
+// buffer (foreground/UIPI-immune), NOT SendInput (which returned `sent=0` under a foreground-ownership
+// gate). See the Win32Input class doc for the mechanism + the re-expressed security property.
 
 using System.IO;
 using System.IO.Pipes;
@@ -17,10 +22,11 @@ using System.Text.Json;
 // Global namespace (matches Program.cs's `internal static class KeyLocker`; a `namespace KeyLocker`
 // here would collide with that class name).
 
-/// The dedicated-console target of a SendInput, parsed off the `inject` frame's `t` field (§2.1).
+/// The dedicated-console target of an injection, parsed off the `inject` frame's `t` field (§2.1).
 /// `ConsolePid` is the WINDOW-OWNING pid (`GetWindowThreadProcessId(hwnd)`) — L3 sends
 /// `getWindowProcessId(hwnd)` and this side re-reads the same API on the same hwnd, so it matches by
-/// construction (not asserted to be a specific conhost-vs-shell process).
+/// construction (not asserted to be a specific conhost-vs-shell process). DF-5 also uses `ConsolePid`
+/// as the `AttachConsole` target — the same window-owning pid identifies the console to attach to.
 internal readonly record struct InjectTarget(nint Hwnd, uint ConsolePid, string TitleFp, bool Submit);
 
 /// The abort reasons the re-verify predicate can raise (§2.2); null = passed.
@@ -28,41 +34,83 @@ internal static class InjectAbort
 {
     public const string Gone = "target_gone";
     public const string Multiplexed = "target_multiplexed";
+    // DF-5: no longer emitted (the console-buffer injector has no foreground gate). Retained so the wire
+    // enum + the Node-side InjectAbortCode union stay byte-stable for any in-flight old reply.
     public const string NotForeground = "not_foreground";
     public const string Mismatch = "target_mismatch";
     public const string NoSecret = "no_secret";
 }
 
-/// Win32 SendInput + the injection-instant re-verify (§2.2). Foreground-routed input demands the
-/// target be re-checked at the SEND instant, inside the locker, immediately before the first key.
+/// Win32 CONSOLE-BUFFER injector (DF-5 fix) + the injection-instant re-verify.
+///
+/// DF-5 (live dogfood 2026-07-08): the previous `SendInput` path returned `sent=0/N, GetLastError()==0`
+/// — a foreground-OWNERSHIP gate (the input was refused because this process is not the foreground-input
+/// owner; NOT UIPI, which would return the full count with events silently dropped). A window-less
+/// helper cannot acquire foreground ownership without a fragile cross-process AllowSetForegroundWindow +
+/// foreground-steal ladder. So injection now writes `KEY_EVENT` records DIRECTLY into the target
+/// console's input buffer via `AttachConsole(consolePid)` + `WriteConsoleInputW(CONIN$)`, which the shell
+/// cooked-reads (`ReadConsole`) — foreground- and UIPI-immune, self-contained in the helper, and a
+/// natural fit because the Key Locker only ever targets a classic conhost (`ConsoleWindowClass`).
+///
+/// The old "inject only when the target is FOREGROUND" property is re-expressed as "inject only into the
+/// verified `consolePid`'s console input buffer": the write is ADDRESSED to that console (not broadcast to
+/// whatever is foreground), and a two-stage identity re-verify (before attach + after CONIN$ open) pins
+/// that the hwnd/pid/class/title still name the same console — so mis-delivery to a wrong window is
+/// structurally impossible. Spike-proven (scratchpad/df5-spike, 4/4): cross-process WriteConsoleInput is
+/// cooked-read; Unicode/BMP/surrogate round-trip; a `wScan`-only mapping types ZERO chars (a cooked-read
+/// cooks `UnicodeChar`, NOT `wScan`).
 internal static class Win32Input
 {
     private const string ConsoleClass = "ConsoleWindowClass"; // the console window-class name (class-name origin, not a pid claim — intentionally retained through the R1 P3-1 conhost doc-fix)
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct INPUT { public uint type; public InputUnion U; }
+    // A console INPUT_RECORD carrying a KEY_EVENT. EventType is at offset 0 (WORD); the union member is at
+    // offset 4 on x64 (2 bytes of alignment padding after EventType). sizeof(INPUT_RECORD) = 20.
     [StructLayout(LayoutKind.Explicit)]
-    private struct InputUnion { [FieldOffset(0)] public KEYBDINPUT ki; }
+    private struct INPUT_RECORD { [FieldOffset(0)] public ushort EventType; [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent; }
     [StructLayout(LayoutKind.Sequential)]
-    private struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public nint dwExtraInfo; }
+    private struct KEY_EVENT_RECORD
+    {
+        public int bKeyDown;            // BOOL
+        public ushort wRepeatCount;     // MUST be 1 — a repeat count of 0 emits nothing
+        public ushort wVirtualKeyCode;
+        public ushort wVirtualScanCode;
+        public ushort UnicodeChar;      // the field a cooked-read cooks (NOT wVirtualScanCode)
+        public uint dwControlKeyState;
+    }
 
-    private const uint INPUT_KEYBOARD = 1;
-    private const uint KEYEVENTF_KEYUP = 0x0002;
-    private const uint KEYEVENTF_UNICODE = 0x0004;
+    private const ushort KEY_EVENT = 0x0001;
     private const ushort VK_RETURN = 0x0D;
+    private const uint GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000;
+    private const uint FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, OPEN_EXISTING = 3;
+    private const int STD_INPUT_HANDLE = -10, STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12;
+    private static readonly nint INVALID_HANDLE = -1;
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint nInputs, [In] INPUT[] pInputs, int cbSize);
-    [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
+    // Console-buffer injection surface (kernel32). AttachConsole/FreeConsole are PROCESS-GLOBAL: the
+    // helper attaches to the target console only transiently for one inject, then detaches.
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AttachConsole(uint dwProcessId);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteConsoleInputW(nint hConsoleInput, [In] INPUT_RECORD[] lpBuffer, uint nLength, out uint lpNumberOfEventsWritten);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern nint CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode, nint lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, nint hTemplateFile);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(nint hObject);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetStdHandle(int nStdHandle, nint hHandle);
+
     [DllImport("user32.dll")] private static extern bool IsWindow(nint hWnd);
     [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern int GetClassName(nint hWnd, StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(nint hWnd, StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll")] private static extern int GetWindowTextLength(nint hWnd);
 
-    /// Re-verify the target at the injection instant (§2.2). Returns an InjectAbort code on any
+    /// Re-verify the target IDENTITY at the injection instant. Returns an InjectAbort code on any
     /// mismatch, or null if all predicates pass. POSITIVE allowlist: the window MUST be the classic
     /// console class AND owned by the tracked window-owning pid — anything else is `target_multiplexed`.
+    ///
+    /// DF-5: there is NO foreground check — the console-buffer injector addresses the write to the
+    /// verified `consolePid` (it does not broadcast to the foreground window), so foreground is no longer
+    /// the delivery gate; identity (hwnd alive + class + owning pid + title fp) is. This predicate runs
+    /// TWICE per inject (before AttachConsole and again after the CONIN$ handle opens) so the console
+    /// cannot be swapped out from under the attached handle. `InjectAbort.NotForeground` is therefore no
+    /// longer emitted (kept in the wire enum for back-compat only).
     private static string? ReVerify(in InjectTarget t)
     {
         if (t.Hwnd == 0 || !IsWindow(t.Hwnd)) return InjectAbort.Gone;
@@ -74,8 +122,6 @@ internal static class Win32Input
         _ = GetWindowThreadProcessId(t.Hwnd, out var pid);
         if (pid == 0) return InjectAbort.Gone;
         if (pid != t.ConsolePid) return InjectAbort.Multiplexed;
-
-        if (GetForegroundWindow() != t.Hwnd) return InjectAbort.NotForeground;
 
         // Secondary anchor (defense-in-depth): the live title hash must match the expected fp.
         // Skipped when the engine supplied no fp.
@@ -93,46 +139,97 @@ internal static class Win32Input
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).ToLowerInvariant();
     }
 
-    /// Build the keystrokes, re-verify the target at the LAST moment, then type the secret + Enter
-    /// if `submit`. Returns (injected, abortCode). BOTH plaintext-bearing buffers — the decoded
-    /// char[] AND the INPUT[] (the secret lives in each `KEYBDINPUT.wScan`) — are zeroized in the
-    /// finally, upholding §2.2 step 5's zeroize discipline (Opus R1 P2-1). Building into a sized
-    /// INPUT[] (not a List) avoids a hidden backing-array copy that would survive uncleared.
+    /// Build the KEY_EVENT records, re-verify the target identity, ATTACH to the target console, re-verify
+    /// again, then write the secret + Enter (if `submit`) into that console's input buffer. Returns
+    /// (injected, abortCode). BOTH plaintext-bearing buffers — the decoded char[] AND the INPUT_RECORD[]
+    /// (the secret lives in each `KEY_EVENT_RECORD.UnicodeChar`) — are zeroized in the finally, upholding
+    /// the zeroize discipline. Building into a sized array (not a List) avoids a hidden backing-array copy
+    /// that would survive uncleared.
+    ///
+    /// DF-5 delivery mechanism = `AttachConsole(consolePid)` + `WriteConsoleInputW(CONIN$)` (foreground-
+    /// and UIPI-immune), replacing the SendInput foreground path that returned `sent=0`. AttachConsole is
+    /// PROCESS-GLOBAL and rebinds the std handles, so the 3 std handles are saved before FreeConsole and
+    /// restored after, and NO `Console.Error` (or any std-stream) write may happen between AttachConsole
+    /// and the final FreeConsole — a hard invariant: a diagnostic there would leak onto the USER's console.
     public static (bool injected, string? abort) ReVerifyAndType(in InjectTarget t, byte[] secret)
     {
         char[] chars = Encoding.UTF8.GetChars(secret);
+        // One down + one up record per UTF-16 code unit (surrogate pairs => 2 code units => 2 records),
+        // plus a VK_RETURN down/up when submitting. The secret rides in each record's UnicodeChar.
         var n = chars.Length * 2 + (t.Submit ? 2 : 0);
-        var arr = new INPUT[n];
+        var arr = new INPUT_RECORD[n];
         try
         {
             var j = 0;
-            foreach (var ch in chars) { arr[j++] = UnicodeKey(ch, false); arr[j++] = UnicodeKey(ch, true); }
-            if (t.Submit) { arr[j++] = VkKey(VK_RETURN, false); arr[j++] = VkKey(VK_RETURN, true); }
+            foreach (var ch in chars) { arr[j++] = KeyRecord(ch, 0, true); arr[j++] = KeyRecord(ch, 0, false); }
+            if (t.Submit) { arr[j++] = KeyRecord('\r', VK_RETURN, true); arr[j++] = KeyRecord('\r', VK_RETURN, false); }
 
-            // Re-verify IMMEDIATELY before the send — the tightest TOCTOU window (Opus R1 P3-2). An
-            // abort here types nothing; the built (secret-bearing) INPUT[] is still zeroized below.
+            // Stage-1 identity re-verify (cheap early-out before we perturb the process console state).
             var abort = ReVerify(in t);
             if (abort != null) return (false, abort);
 
-            var sent = SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
-            return (sent == (uint)arr.Length, sent == (uint)arr.Length ? null : "executor_failed");
+            return AttachAndWrite(in t, arr);
         }
         finally
         {
             Array.Clear(chars, 0, chars.Length);
-            Array.Clear(arr, 0, arr.Length); // the INPUT[] holds the secret in each wScan
+            Array.Clear(arr, 0, arr.Length); // the INPUT_RECORD[] holds the secret in each UnicodeChar
         }
     }
 
-    private static INPUT UnicodeKey(char ch, bool up) => new()
+    /// The attach bracket: save std handles → FreeConsole → AttachConsole(consolePid) → open CONIN$ →
+    /// STAGE-2 re-verify (after the handle exists, so the console can't be swapped underneath) → write.
+    /// Everything is torn down in the finally (close CONIN$, FreeConsole, restore std handles). NO
+    /// std-stream write may occur inside this bracket (see ReVerifyAndType doc).
+    private static (bool injected, string? abort) AttachAndWrite(in InjectTarget t, INPUT_RECORD[] arr)
     {
-        type = INPUT_KEYBOARD,
-        U = new InputUnion { ki = new KEYBDINPUT { wVk = 0, wScan = ch, dwFlags = KEYEVENTF_UNICODE | (up ? KEYEVENTF_KEYUP : 0) } },
-    };
-    private static INPUT VkKey(ushort vk, bool up) => new()
+        nint savedIn = GetStdHandle(STD_INPUT_HANDLE);
+        nint savedOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        nint savedErr = GetStdHandle(STD_ERROR_HANDLE);
+        nint conin = INVALID_HANDLE;
+        var attached = false;
+        try
+        {
+            FreeConsole(); // detach from any console we already hold (the helper is a WinExe: usually none)
+            if (!AttachConsole(t.ConsolePid)) return (false, InjectAbort.Gone); // target console is gone
+            attached = true;
+
+            conin = CreateFileW("CONIN$", GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+            if (conin == INVALID_HANDLE) return (false, "executor_failed");
+
+            // Stage-2 re-verify: now that the CONIN$ handle is open, confirm the hwnd/pid/class/title
+            // STILL name the same console — closes the attach→write TOCTOU window (Opus R1 P2-3).
+            var abort = ReVerify(in t);
+            if (abort != null) return (false, abort);
+
+            var ok = WriteConsoleInputW(conin, arr, (uint)arr.Length, out var written);
+            return (ok && written == (uint)arr.Length, ok && written == (uint)arr.Length ? null : "executor_failed");
+        }
+        finally
+        {
+            if (conin != INVALID_HANDLE) CloseHandle(conin);
+            if (attached) FreeConsole();
+            // Restore the std handles AttachConsole/FreeConsole rebound, so later verbs' diagnostics go
+            // back to the helper's original streams, not the user's console (Opus R1 P2-1).
+            SetStdHandle(STD_INPUT_HANDLE, savedIn);
+            SetStdHandle(STD_OUTPUT_HANDLE, savedOut);
+            SetStdHandle(STD_ERROR_HANDLE, savedErr);
+        }
+    }
+
+    private static INPUT_RECORD KeyRecord(char ch, ushort vk, bool down) => new()
     {
-        type = INPUT_KEYBOARD,
-        U = new InputUnion { ki = new KEYBDINPUT { wVk = vk, wScan = 0, dwFlags = up ? KEYEVENTF_KEYUP : 0 } },
+        EventType = KEY_EVENT,
+        KeyEvent = new KEY_EVENT_RECORD
+        {
+            bKeyDown = down ? 1 : 0,
+            wRepeatCount = 1,
+            wVirtualKeyCode = vk,
+            wVirtualScanCode = 0,
+            UnicodeChar = ch,
+            dwControlKeyState = 0,
+        },
     };
 }
 
@@ -253,8 +350,9 @@ internal sealed class ServingRegistry
     }
 
     /// Headless deterministic proof of the serving/ticket contract (§3, §3.1): valid fetch,
-    /// single-use (replay refused), forged ticket refused, git context_mismatch refused. SendInput
-    /// needs a live foreground conhost and is exercised by the e2e suite, not here.
+    /// single-use (replay refused), forged ticket refused, git context_mismatch refused. The
+    /// console-buffer injection path needs a live conhost and is exercised by `-SelfTestInjectConsole`
+    /// (headless, self-spawned console) + the e2e suite, not here.
     public bool SelfTest()
     {
         const string id = "l2-selftest-id";
@@ -295,5 +393,129 @@ internal sealed class ServingRegistry
             return true;
         }
         finally { _store.Delete(id); }
+    }
+}
+
+/// DF-5 headless self-test for the console-buffer injector (`-SelfTestInjectConsole`). Deterministic proof
+/// — no live ssh — that `Win32Input.ReVerifyAndType` (AttachConsole + WriteConsoleInput) types a
+/// unicode+surrogate secret into ANOTHER process's console and that its cooked-read (echo OFF) reads it
+/// back exactly. Forces a CLASSIC conhost (`ConsoleWindowClass`, so the `ReVerify` allowlist passes) by
+/// spawning the child under `conhost.exe` with CREATE_NEW_CONSOLE (DF-1's conhost-forcing), independent of
+/// the machine's Default Terminal — so it is stable on CI and a WT-default desktop alike.
+internal static class ConsoleInjectSelfTest
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string? lpReserved, lpDesktop, lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public nint lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION { public nint hProcess, hThread; public uint dwProcessId, dwThreadId; }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessW(string? app, StringBuilder cmd, nint pa, nint ta, bool inherit, uint flags, nint env, string? cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint h, uint ms);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(nint h);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleMode(nint h, out uint mode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetConsoleMode(nint h, uint mode);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern bool ReadConsoleW(nint h, [Out] char[] buf, uint toRead, out uint read, nint pInputControl);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern nint CreateFileW(string name, uint access, uint share, nint sa, uint disp, uint flags, nint template);
+    [DllImport("kernel32.dll")] private static extern nint GetConsoleWindow();
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(nint hWnd, out uint pid);
+
+    private const uint GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000;
+    private const uint FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, OPEN_EXISTING = 3;
+    private const uint ENABLE_PROCESSED_INPUT = 0x0001, ENABLE_LINE_INPUT = 0x0002, ENABLE_ECHO_INPUT = 0x0004;
+    private const uint ENABLE_WINDOW_INPUT = 0x0008, ENABLE_MOUSE_INPUT = 0x0010;
+    private const uint CREATE_NEW_CONSOLE = 0x0010;
+    private static readonly nint INVALID = -1;
+
+    // A secret with an ASCII mix, BMP non-ASCII (Ω, ✓), and a surrogate pair (😀) — exercises the
+    // "1 UTF-16 code unit = 1 record" claim end-to-end.
+    private const string TestSecret = "Pw-Ω✓-😀-9";
+
+    /// CHILD role (`-InjectConsoleChild <ready> <out>`): we run as conhost's client, so we already own a
+    /// classic console. Arm echo-off line input, publish our console hwnd via the ready file, cooked-read
+    /// one line, and record it. Returns 0 always (the parent judges by the recorded line).
+    public static int RunChild(string readyPath, string outPath)
+    {
+        try
+        {
+            // Guarantee our OWN console: key-locker.exe is a GUI-subsystem WinExe, which CREATE_NEW_CONSOLE
+            // does NOT reliably auto-attach — AllocConsole gives us a fresh classic conhost we fully own.
+            FreeConsole(); AllocConsole();
+            nint hwnd = GetConsoleWindow();
+            nint conin = CreateFileW("CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+            if (conin == INVALID) { File.WriteAllText(outPath, "<conin-open-failed>"); return 0; }
+            GetConsoleMode(conin, out uint mode);
+            SetConsoleMode(conin, (mode | ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT) & ~(ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
+            File.WriteAllText(readyPath, ((long)hwnd).ToString()); // signal + hand the parent our console hwnd
+            var buf = new char[512];
+            bool ok = ReadConsoleW(conin, buf, (uint)buf.Length, out uint read, 0);
+            File.WriteAllText(outPath, ok ? new string(buf, 0, (int)read).TrimEnd('\r', '\n') : "<readconsole-failed>");
+            CloseHandle(conin);
+        }
+        catch (Exception e) { try { File.WriteAllText(outPath, "<child-exn:" + e.Message + ">"); } catch { } }
+        return 0;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AllocConsole();
+
+    /// PARENT role: spawn the child under conhost, derive the InjectTarget from the child's console hwnd
+    /// exactly as L3 does (`consolePid = GetWindowThreadProcessId(hwnd)`), run the REAL production injector,
+    /// and assert the child cooked-read the exact secret. titleFp is left empty (the title anchor is
+    /// unchanged pre-existing logic; this test covers the DF-5 attach/write path).
+    public static bool Run()
+    {
+        string tmp = Path.GetTempPath();
+        string tag = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+        string readyPath = Path.Combine(tmp, $"dtm-inj-ready-{tag}.txt");
+        string outPath = Path.Combine(tmp, $"dtm-inj-out-{tag}.txt");
+        var pi = default(PROCESS_INFORMATION);
+        var spawned = false;
+        try
+        {
+            string self = Environment.ProcessPath!;
+            var cmd = new StringBuilder($"\"{self}\" -InjectConsoleChild \"{readyPath}\" \"{outPath}\"");
+            var si = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>() };
+            if (!CreateProcessW(self, cmd, 0, 0, false, CREATE_NEW_CONSOLE, 0, tmp, ref si, out pi)) return false;
+            spawned = true;
+
+            if (!PollFile(readyPath, 8000)) return false;
+            if (!long.TryParse(File.ReadAllText(readyPath).Trim(), out var hraw) || hraw == 0) return false;
+            nint hwnd = (nint)hraw;
+            _ = GetWindowThreadProcessId(hwnd, out uint consolePid); // derive exactly as L3 does
+            if (consolePid == 0) return false;
+
+            var target = new InjectTarget(hwnd, consolePid, "", true);
+            var (injected, _) = Win32Input.ReVerifyAndType(in target, Encoding.UTF8.GetBytes(TestSecret));
+            if (!injected) return false;
+
+            WaitForSingleObject(pi.hProcess, 8000);
+            if (!PollFile(outPath, 8000)) return false;
+            return File.ReadAllText(outPath) == TestSecret;
+        }
+        catch { return false; }
+        finally
+        {
+            if (spawned) { try { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); } catch { } }
+            foreach (var p in new[] { readyPath, outPath }) { try { if (File.Exists(p)) File.Delete(p); } catch { } }
+        }
+    }
+
+    private static bool PollFile(string path, int timeoutMs)
+    {
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (File.Exists(path)) return true;
+            Thread.Sleep(30);
+        }
+        return File.Exists(path);
     }
 }
