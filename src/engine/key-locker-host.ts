@@ -138,6 +138,12 @@ export type MintTicketResult =
   | { ok: true; ticket: string; pipe: string }
   | { ok: false; code: "no_secret" };
 
+/** W-3.5 `prompt` verb — which secret-free backstop dialog to show. */
+export type PromptKind = "confirm" | "offer";
+/** The user's choice from a `prompt` dialog. `confirm` yields autofill/type_it; `offer` yields
+ *  save/not_now/never. On any pipe failure the host normalizes to the FAIL-CLOSED choice per kind. */
+export type PromptChoice = "autofill" | "type_it" | "save" | "not_now" | "never";
+
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
   "no_secret", "bad_target", "executor_failed",
@@ -399,6 +405,27 @@ export class KeyLockerHost {
   async capture(key: string): Promise<{ captured: boolean; rt: boolean }> {
     const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS);
     return { captured: reply.captured === true, rt: reply.rt === true };
+  }
+
+  /**
+   * W-3.5: show the SECRET-FREE confirm/offer backstop dialog for a binding `label` and return the user's
+   * choice (ADR seed §4). The pipe carries only {kind, label} out and the {choice} back — this verb NEVER
+   * touches a stored secret, so it is secret-free BY CONSTRUCTION (no `key`). `label` is the L1
+   * `formatBindingUri` displayUri (dispatched-command-derived — never prompt text; spoof-safe). Uses the long
+   * capture budget (blocks on human input). FAIL-CLOSED on any pipe error / timeout / unexpected value:
+   * `confirm` → `type_it` (do not fill), `offer` → `not_now` (do not save) — so a dead dialog never fills or
+   * persists a secret.
+   */
+  async prompt(kind: PromptKind, label: string): Promise<PromptChoice> {
+    const failClosed: PromptChoice = kind === "confirm" ? "type_it" : "not_now";
+    const valid: readonly PromptChoice[] = kind === "confirm" ? ["autofill", "type_it"] : ["save", "not_now", "never"];
+    try {
+      const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind, label });
+      if (!reply.ok) return failClosed;
+      return (valid as readonly string[]).includes(reply.r) ? (reply.r as PromptChoice) : failClosed;
+    } catch {
+      return failClosed; // pipe timeout / disposed / write failure — decline, never fill/save
+    }
   }
 
   /** Whether a secret is stored under `key`. */

@@ -33,6 +33,8 @@ function makeFakeLocker(
     seed?: string[];
     captureReply?: { captured: boolean; rt: boolean };
     state?: FakeState;
+    /** The `r` value the fake replies to a `prompt` verb (a raw choice string, or `__err__` for ok:false). */
+    promptReply?: string;
   } = {},
 ): net.Server {
   const proto = opts.protocol ?? "1";
@@ -61,6 +63,12 @@ function makeFakeLocker(
             if (captured) state.store.add(req.k ?? "");
             // The fake mirrors the C# reply shape: r is EMPTY, secret NEVER appears on the wire.
             write({ id: req.id, ok: true, r: "", captured, rt });
+            break;
+          }
+          case "prompt": {
+            const reply = opts.promptReply ?? "autofill";
+            if (reply === "__err__") write({ id: req.id, ok: false, r: "", e: "bad_prompt" });
+            else write({ id: req.id, ok: true, r: reply }); // r = the choice; NO secret ever on the wire
             break;
           }
           case "shutdown": write({ id: req.id, ok: true, r: "bye" }); break;
@@ -143,6 +151,47 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
     const r = await host.capture("ssh:cancel");
     expect(r).toEqual({ captured: false, rt: false });
+  });
+
+  it("prompt('confirm') returns the choice; the frame carries only {kind,label} — NO key, NO secret (W-3.5)", async () => {
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state, promptReply: "autofill" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+
+    expect(await host.prompt("confirm", "sudo://host-a")).toBe("autofill");
+    const frame = state.lastFrames.find((f) => f.includes('"prompt"'));
+    const parsed = JSON.parse(frame!) as Record<string, unknown>;
+    // The wire carries {id, m, kind, label} — the LABEL (a display URI), never a key or secret.
+    expect(Object.keys(parsed).sort()).toEqual(["id", "kind", "label", "m"]);
+    expect(parsed).toMatchObject({ m: "prompt", kind: "confirm", label: "sudo://host-a" });
+    expect(parsed.k).toBeUndefined();
+  });
+
+  it("prompt('offer') returns a 3-way SaveChoice", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { promptReply: "never" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.prompt("offer", "ssh://deploy@host-a")).toBe("never");
+  });
+
+  it("prompt() FAILS CLOSED on ok:false — confirm→type_it, offer→not_now", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { promptReply: "__err__" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.prompt("confirm", "sudo://h")).toBe("type_it");
+    expect(await host.prompt("offer", "sudo://h")).toBe("not_now");
+  });
+
+  it("prompt() FAILS CLOSED on an out-of-kind reply value (a confirm reply of 'save' is rejected)", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { promptReply: "save" }), path); // 'save' is an OFFER choice, invalid for confirm
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.prompt("confirm", "sudo://h")).toBe("type_it"); // not honored → fail-closed
   });
 
   it("matches concurrent requests to their replies by id", async () => {
