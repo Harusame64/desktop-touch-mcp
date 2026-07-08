@@ -204,21 +204,24 @@ export class KeyLockerManager {
     // the human to type into (the cooperative model); we never read its stdio.
     const child = spawn("conhost.exe", [shellExe], { detached: true, stdio: "ignore", windowsHide: false });
     child.on("error", () => { /* spawn failure surfaces as the poll timing out below */ });
+    // The console is a SEPARATE window the human owns — do NOT pin Node's event loop on its lifetime (else a
+    // clean MCP shutdown would hang until the user closes the console). The wiring may kill `shellPid` on
+    // teardown if it wants the console gone; otherwise it outlives the session by design (Opus W-4a P2-1).
+    child.unref();
     const childPid = child.pid;
+    // A failed spawn has no pid ⇒ nothing to claim ⇒ time out rather than grab an unrelated console.
+    if (childPid === undefined) throw new KeyLockerError("KeyLockerSpawnFailed", "conhost spawn returned no pid");
 
     const deadline = this.now() + timeoutMs;
     for (;;) {
+      // Claim ONLY the new console OUR conhost child owns — an exact `childPid` match (Opus W-4a P3-1: a
+      // pid-0-fallback could grab a DIFFERENT console that momentarily reads owner-pid 0 during its own
+      // creation, returning the wrong hwnd/shellPid). The owner pid may read 0 transiently for ours too, so
+      // we simply keep polling until it resolves to `childPid`.
       const fresh = enumWindowsInZOrder().find(
-        (w) =>
-          w.className === CONSOLE_WINDOW_CLASS &&
-          !before.has(w.hwnd) &&
-          // Prefer the window owned by OUR conhost child; fall back to any new console if the pid is unresolved
-          // (the owner can briefly read 0 during creation).
-          (childPid === undefined || getWindowProcessId(w.hwnd) === childPid || getWindowProcessId(w.hwnd) === 0),
+        (w) => w.className === CONSOLE_WINDOW_CLASS && !before.has(w.hwnd) && getWindowProcessId(w.hwnd) === childPid,
       );
-      if (fresh !== undefined && getWindowProcessId(fresh.hwnd) !== 0) {
-        return { hwnd: fresh.hwnd, shellPid: getWindowProcessId(fresh.hwnd) };
-      }
+      if (fresh !== undefined) return { hwnd: fresh.hwnd, shellPid: childPid };
       if (this.now() >= deadline) {
         try { child.kill(); } catch { /* best-effort */ }
         throw new KeyLockerError("KeyLockerSpawnFailed", "anchored console window did not appear");

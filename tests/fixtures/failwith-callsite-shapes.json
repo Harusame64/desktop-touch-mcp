@@ -517,28 +517,28 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 830,
+      "line": 844,
       "tool": "terminal:read",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 900,
+      "line": 914,
       "tool": "terminal:read",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1241,
+      "line": 1255,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1530,
+      "line": 1544,
       "tool": "terminal:send",
       "errKind": "identifier",
       "contextShape": "object-plain"

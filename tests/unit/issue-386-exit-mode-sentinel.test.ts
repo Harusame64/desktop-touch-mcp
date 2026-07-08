@@ -192,6 +192,13 @@ describe("buildExitProbe — epilogue-only probe (W-4 gap6: observe, never re-ru
     expect(parseExitSentinel(`${probe}\n${TOKEN}|0|True`, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
     expect(parseExitSentinel(`${probe}\n${TOKEN}||False`, NONCE, "powershell")).toEqual({ matched: true, exitCode: 1 });
   });
+
+  it("drift-guard: the probe IS the exit epilogue of buildExitCommand (same sentinel machinery)", () => {
+    // If buildExitCommand's epilogue ever changes, the probe must track it (else Mode-A landed silently breaks).
+    for (const shell of ["bash", "powershell"] as const) {
+      expect(buildExitCommand("<cmd>", shell, NONCE).endsWith(buildExitProbe(shell, NONCE))).toBe(true);
+    }
+  });
 });
 
 describe("detectShell — process name → shell + confidence", () => {

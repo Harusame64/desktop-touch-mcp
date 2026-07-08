@@ -525,6 +525,12 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
  * command's `$?` / `$LASTEXITCODE` (unchanged since — the shell was idle at the prompt) and prints
  * `<token>|<code>|…`, parsed by the SAME `parseExitSentinel`. It does NOT reset `$LASTEXITCODE` first (that would
  * clobber the value being read). Send it with `notifyDispatch:false` (it is read-only, not a credential command).
+ *
+ * CAVEAT (PowerShell, cmdlet-only credential command): because `buildExitCommand` resets `$LASTEXITCODE=$null`
+ * before its input but a PROBE cannot (Opus W-4a P3-2), a credential command that ran NO native exe leaves
+ * `$LASTEXITCODE` at a STALE value from an earlier native exe, which `parseExitSentinel` prefers over `$?`. Key
+ * Locker's real Mode-A credentials are native (`ssh`/`git`/`sudo`), so this is not hit in practice; the
+ * asymmetry with `buildExitCommand`'s reset is noted here.
  */
 export function buildExitProbe(shell: ExitShell, nonce: string): string {
   const head = EXIT_TOKEN_HEAD;
@@ -538,18 +544,26 @@ export function buildExitProbe(shell: ExitShell, nonce: string): string {
 }
 
 /**
- * Resolve a pane's hwnd (decimal string = the Key Locker `paneId`) to its EXACT window title, or null if no
- * live window has that hwnd (ADR-014 R3 L3-4 W-4, gap2). The title-keyed terminal seams (`readTerminalRaw` /
- * `terminalRunHandler`) partial-match on title, so two panes to the SAME host share a title and
- * `findTerminalWindow` could grab the wrong window → a false-positive prompt would inject a secret into a
- * promptless pane. The wiring resolves the title by EXACT hwnd here (the stable per-pane key), so a stale/
- * duplicate title can never redirect the read/inject. Uses `enumWindowsInZOrder` (the same source
- * `findTerminalWindow` reads). A vanished hwnd ⇒ null ⇒ the wiring declines.
+ * Resolve a pane's hwnd (decimal string = the Key Locker `paneId`) to a window title the title-keyed seams
+ * (`readTerminalRaw` / `terminalRunHandler`) will resolve BACK to the SAME hwnd — else null (ADR-014 R3 L3-4
+ * W-4, gap2). Those seams partial-match on title via `findTerminalWindow` (FIRST z-order hit), so two panes to
+ * the SAME host (e.g. two `conhost.exe powershell.exe` windows) share a title: a naive hwnd→title lookup would
+ * hand back a title that `findTerminalWindow` then resolves to a DIFFERENT window → a read/inject targets the
+ * wrong pane (a false-positive prompt on pane B → the secret typed into promptless pane A as a command, a
+ * disclosure — L2 ReVerify pid-anchors the INJECT hwnd but cannot see that the prompt was on another pane).
+ * So this ROUND-TRIPS: find the exact hwnd's title, then require `findTerminalWindow(title)` to resolve to the
+ * SAME hwnd. If the title is ambiguous (a same-title sibling wins the z-order match), it returns null ⇒ the
+ * wiring declines rather than act on the wrong pane. Residual: a UIA/z-order TOCTOU sliver between this check
+ * and the seam's own lookup (OQ-W-9 class). A vanished hwnd ⇒ null.
  */
 export function resolveTitleByHwnd(paneId: string): string | null {
-  const target = BigInt(paneId);
+  let target: bigint;
+  try { target = BigInt(paneId); } catch { return null; } // malformed paneId ⇒ decline (never throw — contract is null-on-miss)
   const win = enumWindowsInZOrder().find((w) => w.hwnd === target);
-  return win !== undefined ? win.title : null;
+  if (win === undefined) return null;
+  // Guard the downstream partial-title match: the seams will call findTerminalWindow(title); only proceed if
+  // that unambiguously resolves back to THIS pane's hwnd.
+  return findTerminalWindow(win.title)?.hwnd === target ? win.title : null;
 }
 
 /**
