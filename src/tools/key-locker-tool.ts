@@ -102,6 +102,13 @@ function manager(): KeyLockerManager {
   return (managerSingleton ??= new KeyLockerManager());
 }
 
+/** The shared `KeyLockerManager` singleton — the L4 tool AND the W-4 live wiring MUST use the SAME instance so
+ *  they share the one host + the one `tracker`/`watch`/`snapshotProcessTree` (Explore gap4). Lazy-constructs on
+ *  first use; honors `__setKeyLockerManagerForTest`. */
+export function keyLockerManager(): KeyLockerManager {
+  return manager();
+}
+
 /** TEST-ONLY seam: inject a manager (e.g. a fake-host subclass) or reset (null) the singleton. */
 export function __setKeyLockerManagerForTest(mgr: KeyLockerManager | null): void {
   managerSingleton = mgr;

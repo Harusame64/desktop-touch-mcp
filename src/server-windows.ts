@@ -38,6 +38,7 @@ import { registerScreenshotQueryTool } from "./tools/screenshot-query.js";
 import { registerScreenshotGcTool } from "./tools/screenshot-gc.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
 import { registerKeyLockerTools } from "./tools/key-locker-tool.js";
+import { registerKeyLockerWiring } from "./tools/key-locker-wiring.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import {
   stopNativeRuntime,
@@ -234,6 +235,9 @@ function createMcpServer(): McpServer {
   // ADR-014 R3 — the key locker management tool (self-gates on the kill switch, so a disabled
   // locker registers nothing).
   registerKeyLockerTools(s);
+  // ADR-014 R3 L3-4 W-4 — the live autofill wiring (S-A dispatch hook + reconcile/idle timers). No-op when
+  // kill-switched; returns a teardown the shutdown path clears (timers + event-bus + hooks).
+  disposeKeyLockerWiring = registerKeyLockerWiring();
 
   // Screenshot by-ref resource (always-on: the screenshot tool returns
   // resource_link refs by default, so this read handler must be available).
@@ -322,6 +326,8 @@ let shuttingDown = false;
 const inflightIds = new Set<string | number>();
 let shutdownPending = false;
 let shutdownTimer: NodeJS.Timeout | null = null;
+/** Teardown for the ADR-014 R3 live wiring (timers + event-bus + dispatch hook), set at registration. */
+let disposeKeyLockerWiring: (() => void) | null = null;
 const SHUTDOWN_GRACE_MS = 60_000;
 
 function shutdown(exitCode = 0): void {
@@ -333,6 +339,8 @@ function shutdown(exitCode = 0): void {
     shutdownTimer = null;
   }
   console.error("[desktop-touch] Shutting down...");
+  disposeKeyLockerWiring?.(); // ADR-014 R3 L3-4 W-4: clear the wiring's timers + event-bus + dispatch hook
+  disposeKeyLockerWiring = null;
   stopNativeRuntime();
   // ADR-019 Stage 5 sub-plan §6 R2 + ADR-020 SR-4 PR-SR4-2 — release the
   // shared DXGI duplication broker so the GPU session does not leak past
