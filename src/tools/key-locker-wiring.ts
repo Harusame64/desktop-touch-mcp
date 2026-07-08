@@ -104,6 +104,13 @@ export class KeyLockerWiring {
     // retries next check (Opus W-4b P1).
     this.idleTimer = setInterval(() => { void this.manager.disposeIfIdle(IDLE_DISPOSE_MS).catch(() => {}); }, IDLE_CHECK_MS);
     this.idleTimer.unref?.();
+    // PRODUCTION ANCHORING TRIGGER (Codex W-4b): nothing else calls `launchAndAnchorConsole`, and `onDispatch`
+    // DROPS any pane the driver never anchored (P1-B) — so without an anchored pane the autofill loop never
+    // arms. For the R3 dogfood (§5-3) an env flag auto-launches + anchors ONE classic conhost at startup so the
+    // loop has a real pane. A general tool-driven anchoring flow (beyond dogfood) is a follow-up (OQ-W-16-bis).
+    if (process.env.DESKTOP_TOUCH_KEY_LOCKER_DOGFOOD === "1") {
+      void this.launchAndAnchorConsole().catch(() => { /* dogfood-only; a failed launch just means no pane */ });
+    }
   }
 
   /** Tear EVERYTHING down (the "dispose stops the timers" obligation carried from W-3): clear both timers,
@@ -113,6 +120,11 @@ export class KeyLockerWiring {
     if (this.idleTimer !== null) { clearInterval(this.idleTimer); this.idleTimer = null; }
     if (this.eventSubId !== null) { unsubscribe(this.eventSubId); this.eventSubId = null; }
     setTerminalDispatchHook(null);
+    // Dispose the shared locker host too: autofill may have spawned a DETACHED `key-locker.exe`, and `dispose()`
+    // is the path that sends it `shutdown` + kills it. Without this, exiting before the idle timer fires would
+    // ORPHAN the helper (Codex W-4b). Fire-and-forget (`stop` is sync, called from the shutdown path) — the
+    // graceful shutdown frame + kill are best-effort on exit.
+    void this.manager.dispose().catch(() => {});
   }
 
   /**
@@ -206,16 +218,20 @@ export class KeyLockerWiring {
    *  immediate read would see the still-present prompt and false-reject, discarding the correct secret. Returns
    *  the settled `{ tail, stillHiddenPrompt }`; `isAuthAccepted` then checks a denial line + the cleared prompt. */
   private async readPaneAfterAuth(paneId: string): Promise<{ tail: string; stillHiddenPrompt: boolean }> {
-    const title = resolveTitleByHwnd(paneId);
-    if (title === null) return { tail: "", stillHiddenPrompt: true }; // can't read ⇒ fail-safe reject
     const deadline = Date.now() + AUTH_SETTLE_MS;
     let last = { tail: "", stillHiddenPrompt: true };
     for (;;) {
-      const raw = await readTerminalRaw(title);
-      if (raw !== null) {
-        const stillHiddenPrompt = isSecretInputPrompt(raw.text);
-        last = { tail: raw.text, stillHiddenPrompt };
-        if (!stillHiddenPrompt) return last; // prompt cleared → settled (accepted iff no denial line)
+      // RE-RESOLVE the title EACH iteration (Codex W-4b): an interactive login (ssh) updates the console title
+      // AFTER auth, so a title cached before the loop would stop resolving mid-poll → the correct secret would
+      // false-reject as auth_rejected. Re-resolving keeps the read bound to the pane's hwnd across the change.
+      const title = resolveTitleByHwnd(paneId);
+      if (title !== null) {
+        const raw = await readTerminalRaw(title);
+        if (raw !== null) {
+          const stillHiddenPrompt = isSecretInputPrompt(raw.text);
+          last = { tail: raw.text, stillHiddenPrompt };
+          if (!stillHiddenPrompt) return last; // prompt cleared → settled (accepted iff no denial line)
+        }
       }
       if (Date.now() >= deadline) return last; // still prompting at timeout → stillHiddenPrompt:true → reject
       await sleep(AUTH_POLL_MS);
@@ -243,10 +259,15 @@ export class KeyLockerWiring {
     }
     const deadline = Date.now() + EXIT_PROBE_MS;
     for (;;) {
-      const raw = await readTerminalRaw(title);
-      if (raw !== null) {
-        const m = parseExitSentinel(raw.text, nonce, shell);
-        if (m.matched) return { reason: "exited", exitCode: m.exitCode };
+      // RE-RESOLVE the title each read (Codex W-4b): the ran command may have changed the console title; the
+      // probe was already sent to the send-time window, but the READ must track the pane's current title.
+      const rtitle = resolveTitleByHwnd(paneId);
+      if (rtitle !== null) {
+        const raw = await readTerminalRaw(rtitle);
+        if (raw !== null) {
+          const m = parseExitSentinel(raw.text, nonce, shell);
+          if (m.matched) return { reason: "exited", exitCode: m.exitCode };
+        }
       }
       if (Date.now() >= deadline) return { reason: "timeout" };
       await sleep(EXIT_POLL_MS);
