@@ -49,7 +49,9 @@ export const KEY_LOCKER_PROTOCOL_VERSION = "1";
 export type KeyLockerErrorCode =
   | "KeyLockerSpawnFailed"
   | "KeyLockerHandshakeRejected"
-  | "KeyLockerPipeUnavailable";
+  | "KeyLockerPipeUnavailable"
+  // ADR-014 R3 OQ-W-16-bis: too many live anchored consoles already open (launch_console fresh cap).
+  | "KeyLockerConsoleLimit";
 
 /**
  * Typed failure for the key locker. L0 defines the codes locally; L4 wires them into

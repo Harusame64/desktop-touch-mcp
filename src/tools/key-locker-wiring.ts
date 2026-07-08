@@ -38,6 +38,7 @@ import { randomUUID } from "node:crypto";
 import { poll as pollEvents, subscribe, unsubscribe } from "../engine/event-bus.js";
 import {
   buildExitProbe,
+  findTerminalWindowByHwnd,
   generateExitNonce,
   isSecretInputPrompt,
   lastNonEmptyPromptLine,
@@ -49,6 +50,22 @@ import {
   type ExitShell,
 } from "./terminal.js";
 import { keyLockerManager } from "./key-locker-tool.js";
+import { KeyLockerError } from "../engine/key-locker-host.js";
+import { setCredentialAdvisor, type AdvisoryHint } from "./_advisory.js";
+
+/** Max simultaneously-live anchored consoles the tool will open (Risk R2 — a `fresh:true` loop can't spray
+ *  windows). Dead ones are pruned first, so this bounds LIVE panes, not lifetime launches. */
+const MAX_ANCHORED_PANES = 3;
+
+/** Programs that prompt for a credential (the cheap arm/advisory pre-filter — the loop's `deriveBinding` is
+ *  the authoritative gate). A tiny LOCAL predicate, NOT the full tokenizer (OQ-W-16-bis P3-2). */
+const CREDENTIAL_PROGRAMS = new Set(["sudo", "doas", "ssh", "su"]);
+function looksCredentialShaped(input: unknown): boolean {
+  if (typeof input !== "string") return false;
+  const first = input.trim().split(/\s+/)[0] ?? "";
+  const base = (first.replace(/\\/g, "/").split("/").pop() ?? first).toLowerCase().replace(/\.exe$/, "");
+  return CREDENTIAL_PROGRAMS.has(base);
+}
 
 /** How often the wiring reconciles: event-bus close events → tickWatch → poll each armed pane. Fast enough to
  *  catch a session-end promptly, slow enough to be cheap (one Toolhelp snapshot per tick). */
@@ -73,6 +90,10 @@ export class KeyLockerWiring {
   private tickTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private eventSubId: string | null = null;
+  /** paneIds this wiring launched via `ensureAnchoredConsole` (most-recent last), for reuse + the R2 cap. */
+  private readonly launchedPaneIds: string[] = [];
+  /** windowTitles already nudged toward launch_console (Phase 3 dedup — one advisory per pane, no spam). */
+  private readonly nudgedTitles = new Set<string>();
 
   constructor(private readonly manager: KeyLockerManager) {
     this.driver = new KeyLockerCaptureDriver(this.buildDeps());
@@ -97,6 +118,10 @@ export class KeyLockerWiring {
       if (!this.enabled()) return; // runtime consent/kill re-check — never arm/record for an un-consented user
       this.driver.onDispatch(ev.paneId, ev.command);
     });
+    // Phase 3 discoverability advisory (OQ-W-16-bis): nudge toward `launch_console` when a credential command
+    // is sent to a pane the locker cannot autofill. Locker-agnostic hook (the wiring owns consent state) so
+    // terminal.ts / _advisory.ts never import the locker (the rejected "terminal fold" coupling).
+    setCredentialAdvisor((args) => this.credentialNudge(args));
     // NOTE: the event-bus subscription is NOT taken here — it is subscribed LAZILY in `tick()` only while
     // consent is active (Codex W-4b :100). On a default install where the locker was never enabled, subscribing
     // here would run the event-bus's 500ms EnumWindows sweep forever even though every tick returns early.
@@ -107,12 +132,13 @@ export class KeyLockerWiring {
     // retries next check (Opus W-4b P1).
     this.idleTimer = setInterval(() => { void this.manager.disposeIfIdle(IDLE_DISPOSE_MS).catch(() => {}); }, IDLE_CHECK_MS);
     this.idleTimer.unref?.();
-    // PRODUCTION ANCHORING TRIGGER (Codex W-4b): nothing else calls `launchAndAnchorConsole`, and `onDispatch`
-    // DROPS any pane the driver never anchored (P1-B) — so without an anchored pane the autofill loop never
-    // arms. For the R3 dogfood (§5-3) an env flag auto-launches + anchors ONE classic conhost at startup so the
-    // loop has a real pane. A general tool-driven anchoring flow (beyond dogfood) is a follow-up (OQ-W-16-bis).
+    // PRODUCTION ANCHORING: the assistant opens panes on demand via `key_locker launch_console`
+    // (`ensureAnchoredConsole`). For the R3 dogfood (§5-3) the env flag ALSO pre-launches ONE pane at startup
+    // so the DF-5 RESUME flow has a pane without a tool call — routed through the SAME `ensureAnchoredConsole`
+    // (Phase 4) so the startup pane is TRACKED and REUSED by a later `launch_console` (no divergent spawn path,
+    // no duplicate pane). The startup pop-up is dogfood-only; a normal install opens panes on demand.
     if (process.env.DESKTOP_TOUCH_KEY_LOCKER_DOGFOOD === "1") {
-      void this.launchAndAnchorConsole().catch(() => { /* dogfood-only; a failed launch just means no pane */ });
+      void this.ensureAnchoredConsole().catch(() => { /* dogfood-only; a failed launch just means no pane */ });
     }
   }
 
@@ -126,7 +152,31 @@ export class KeyLockerWiring {
     if (this.idleTimer !== null) { clearInterval(this.idleTimer); this.idleTimer = null; }
     if (this.eventSubId !== null) { unsubscribe(this.eventSubId); this.eventSubId = null; }
     setTerminalDispatchHook(null);
+    setCredentialAdvisor(null);
     return this.manager.dispose().catch(() => {});
+  }
+
+  /**
+   * Phase 3 credential advisory (OQ-W-16-bis): the `_advisory.ts` hook body. Returns a nudge toward
+   * `launch_console` when a credential-shaped command was sent to a pane the locker cannot autofill. Proxy for
+   * "non-anchored": the send used NO `paneId` (a `paneId` send targets a launch_console pane = already the
+   * anchored flow). Gated on consent/kill-switch (never nudge an un-consented user). Deduped per windowTitle so
+   * a repeated credential command does not spam. null = no nudge.
+   */
+  private credentialNudge(args: Record<string, unknown>): AdvisoryHint | null {
+    if (!this.enabled()) return null;
+    if (typeof args["paneId"] === "string") return null; // already using an anchored pane
+    if (!looksCredentialShaped(args["input"])) return null;
+    const windowTitle = typeof args["windowTitle"] === "string" ? (args["windowTitle"] as string) : "";
+    if (this.nudgedTitles.has(windowTitle)) return null; // once per pane (bounded — no spam)
+    this.nudgedTitles.add(windowTitle);
+    return {
+      preferredPath: "key_locker",
+      reason:
+        "a credential command (ssh / sudo / su) was sent to a terminal the locker cannot autofill — autofill " +
+        "only works in a console opened by key_locker launch_console (a pre-existing terminal is never filled).",
+      example: "key_locker({action:'launch_console'}) → terminal({action:'send', paneId:'<returned paneId>', input:'<your command>'})",
+    };
   }
 
   /**
@@ -139,6 +189,46 @@ export class KeyLockerWiring {
     const paneId = String(hwnd);
     this.driver.onLocalPaneLaunched(paneId, shellPid);
     return { paneId, title };
+  }
+
+  /**
+   * TOOL entry (ADR-014 R3 OQ-W-16-bis, `key_locker launch_console`): return an autofill-capable anchored
+   * console the assistant can drive credential commands into. Idempotent by default — reuses the most-recent
+   * still-LIVE pane this wiring launched (liveness is hwnd-direct via `findTerminalWindowByHwnd`, NOT
+   * `resolveTitleByHwnd` which would false-DEAD a live same-host pane on its non-unique post-login title). Pass
+   * `fresh` to force a NEW pane (bounded by MAX_ANCHORED_PANES live panes so a `fresh` loop can't spray
+   * windows). Returns the pane's CURRENT title (a reused pane's may already have drifted — drive it by paneId).
+   */
+  async ensureAnchoredConsole({ fresh = false }: { fresh?: boolean } = {}): Promise<{ paneId: string; windowTitle: string }> {
+    // Prune dead panes so both the reuse scan and the cap count only LIVE windows.
+    const live = this.launchedPaneIds.filter((pid) => this.livePaneTitle(pid) !== null);
+    this.launchedPaneIds.length = 0;
+    this.launchedPaneIds.push(...live);
+
+    if (!fresh) {
+      // Reuse the most-recent live pane (scan from the end).
+      for (let i = this.launchedPaneIds.length - 1; i >= 0; i--) {
+        const pid = this.launchedPaneIds[i];
+        const title = this.livePaneTitle(pid);
+        if (title !== null) return { paneId: pid, windowTitle: title };
+      }
+    }
+    if (this.launchedPaneIds.length >= MAX_ANCHORED_PANES) {
+      throw new KeyLockerError(
+        "KeyLockerConsoleLimit",
+        `KeyLockerConsoleLimit: ${MAX_ANCHORED_PANES} anchored consoles are already open — close one before launching another`,
+      );
+    }
+    const { paneId, title } = await this.launchAndAnchorConsole();
+    this.launchedPaneIds.push(paneId);
+    return { paneId, windowTitle: title };
+  }
+
+  /** The current title of a launched pane if its hwnd is still a live console, else null (hwnd-direct). */
+  private livePaneTitle(paneId: string): string | null {
+    let h: bigint;
+    try { h = BigInt(paneId); } catch { return null; }
+    return findTerminalWindowByHwnd(h)?.title ?? null;
   }
 
   // ── the reconcile tick ────────────────────────────────────────────────────────────────────────────────

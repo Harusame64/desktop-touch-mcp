@@ -508,6 +508,9 @@ const SUGGESTS: Record<string, string[]> = {
   KeyLockerPipeUnavailable: [
     "The connection to the locker helper was lost. Retry; if it persists, restart the MCP server.",
   ],
+  KeyLockerConsoleLimit: [
+    "Too many anchored consoles are already open. Reuse an existing one (key_locker action='launch_console' without fresh:true returns the most recent), or close a console window before opening another.",
+  ],
   KeyLockerSshUnresolved: [
     "The ssh host key is not in known_hosts yet. Connect to the host once (ssh user@host) so its key is recorded, then save.",
     "ProxyJump / ProxyCommand bindings are not supported — the first prompt may belong to the jump host.",
