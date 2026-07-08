@@ -247,7 +247,7 @@ const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
  * TextPattern snapshot — the cursor row. ANSI is stripped here so callers can
  * pass either ANSI-laden or pre-cleaned text. Returns null for null/blank input.
  */
-function lastNonEmptyPromptLine(baselineRaw: string | null): string | null {
+export function lastNonEmptyPromptLine(baselineRaw: string | null): string | null {
   if (!baselineRaw) return null;
   const cleaned = stripAnsi(baselineRaw).replace(/\r\n/g, "\n");
   const lines = cleaned.split("\n");
@@ -514,6 +514,68 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
     `$global:LASTEXITCODE = $null # ${nonce}\n${input}\n` +
     `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`
   );
+}
+
+/**
+ * The EPILOGUE-ONLY exit probe (ADR-014 R3 L3-4 W-4, gap6): the same echo-immune sentinel as
+ * `buildExitCommand` but WITHOUT re-sending the command. The Key Locker wiring's Mode-A landed detection uses
+ * this to read the exit code of an ALREADY-RUN credential command (fire-after: the command is running/done, its
+ * prompt already answered), NEVER re-executing it — re-running a non-idempotent one-shot (`git push`) would be
+ * a fatal double-execute. Send this as the NEXT command once the prompt has returned; it reads the just-finished
+ * command's `$?` / `$LASTEXITCODE` (unchanged since — the shell was idle at the prompt) and prints
+ * `<token>|<code>|…`, parsed by the SAME `parseExitSentinel`. It does NOT reset `$LASTEXITCODE` first (that would
+ * clobber the value being read). Send it with `notifyDispatch:false` (it is read-only, not a credential command).
+ *
+ * PowerShell STALE-`$LASTEXITCODE` FIX (Opus/Codex W-4a P3-2): `buildExitCommand` resets `$LASTEXITCODE=$null`
+ * before its input so a cmdlet-only command reports via `$?`; a PROBE cannot reset (it would clobber the value
+ * it observes), so reading `$LASTEXITCODE` would emit a STALE native exit code that `parseExitSentinel` prefers
+ * over `$?`. Since Mode-A landed detection only needs SUCCESS-vs-FAILURE (`isExitAccepted` = `exitCode===0`),
+ * the PS probe emits ONLY `$?` (empty code field ⇒ `parseExitSentinel` maps the trailing bool True→0 / False→1)
+ * — ALWAYS the just-finished command's result, stale-immune, for cmdlets AND native exes alike. (bash `$?` is
+ * already the fresh numeric exit code, so bash keeps the precise code.)
+ */
+export function buildExitProbe(shell: ExitShell, nonce: string): string {
+  const head = EXIT_TOKEN_HEAD;
+  const tail = EXIT_TOKEN_TAIL_PREFIX + nonce;
+  if (shell === "bash") {
+    return `__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
+  }
+  // powershell — emit ONLY `$?` (bool), NOT `$LASTEXITCODE` (which a probe cannot reset and would read stale
+  // for a cmdlet-only command). Empty code field ⇒ parseExitSentinel uses the bool ⇒ fresh success/failure.
+  return `$dtmcp_ok=$?; ('${head}'+"${tail}")+'|'+'|'+$dtmcp_ok`;
+}
+
+/**
+ * Resolve a pane's hwnd (decimal string = the Key Locker `paneId`) to a window title the title-keyed seams
+ * (`readTerminalRaw` / `terminalRunHandler`) will resolve BACK to the SAME hwnd — else null (ADR-014 R3 L3-4
+ * W-4, gap2). Those seams partial-match on title via `findTerminalWindow` (FIRST z-order hit), so two panes to
+ * the SAME host (e.g. two `conhost.exe powershell.exe` windows) share a title: a naive hwnd→title lookup would
+ * hand back a title that `findTerminalWindow` then resolves to a DIFFERENT window → a read/inject targets the
+ * wrong pane (a false-positive prompt on pane B → the secret typed into promptless pane A as a command, a
+ * disclosure — L2 ReVerify pid-anchors the INJECT hwnd but cannot see that the prompt was on another pane).
+ * So this ROUND-TRIPS: find the exact hwnd's title, then require `findTerminalWindow(title)` to resolve to the
+ * SAME hwnd. If the title is ambiguous (a same-title sibling wins the z-order match), it returns null ⇒ the
+ * wiring declines rather than act on the wrong pane. Residual: a UIA/z-order TOCTOU sliver between this check
+ * and the seam's own lookup (OQ-W-9 class). A vanished hwnd ⇒ null.
+ */
+export function resolveTitleByHwnd(paneId: string): string | null {
+  let target: bigint;
+  try { target = BigInt(paneId); } catch { return null; } // malformed paneId ⇒ decline (never throw — contract is null-on-miss)
+  const wins = enumWindowsInZOrder();
+  const win = wins.find((w) => w.hwnd === target);
+  if (win === undefined) return null;
+  // The downstream read/find seams resolve by SUBSTRING title, and via DIFFERENT orders: `findTerminalWindow`
+  // takes the z-order-first `title.includes(query)`, while `readTerminalRaw`'s `getTextViaTextPattern` does its
+  // OWN UIA search `Name -like '*query*'` (UIA-tree order) — so guarding only findTerminalWindow is NOT enough
+  // (Codex W-4a R3: the read can still hit a same-title sibling in a different order → read pane B's prompt,
+  // inject into pane A ⇒ wrong-pane disclosure). The title is safe to hand those seams ONLY if EXACTLY ONE live
+  // window's title CONTAINS it — then every substring search, in any order, resolves to this one window. An
+  // empty title never qualifies. (`launchAnchoredConsole` gives its consoles a unique title so they pass;
+  // ambiguous panes decline — bounded-safe.)
+  const t = win.title.toLowerCase();
+  if (t.length === 0) return null;
+  const matches = wins.filter((w) => w.title.toLowerCase().includes(t));
+  return matches.length === 1 && matches[0].hwnd === target ? win.title : null;
 }
 
 /**

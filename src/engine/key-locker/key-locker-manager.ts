@@ -16,11 +16,19 @@
 // into.
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { HELPER_EXE, KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
-import { buildProcessParentMap, getProcessCommandLineByPid, getProcessIdentityByPid } from "../win32.js";
+import { HELPER_EXE, KeyLockerError, KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
+import {
+  buildProcessParentMap,
+  enumWindowsInZOrder,
+  getProcessCommandLineByPid,
+  getProcessIdentityByPid,
+  getWindowProcessId,
+  getWindowTitleW,
+} from "../win32.js";
 import { SessionTracker } from "./session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "./ssh-session-watch.js";
 
@@ -53,6 +61,9 @@ function defaultStoreDir(): string {
 }
 
 const CONSENT_FILE = "consent.json";
+/** The Win32 class of a CLASSIC conhost console window — the ONLY window L2 injection can target (the
+ *  `Injection.cs` ReVerify positive-allowlist). Windows Terminal is a XAML host with a different class. */
+const CONSOLE_WINDOW_CLASS = "ConsoleWindowClass";
 
 /** Read the persisted first-run consent flag (fail-closed: absent/corrupt/wrong-shape ⇒ false). */
 export function consentAccepted(storeDir?: string): boolean {
@@ -164,6 +175,75 @@ export class KeyLockerManager {
   /** The store dir this manager reads consent + bindings from. */
   get storeDir(): string {
     return this.opts.storeDir ?? defaultStoreDir();
+  }
+
+  /**
+   * W-4 (gap1, §3 W1): launch a KNOWN-LOCAL, INJECTABLE terminal pane the Key Locker can anchor. Code-verified
+   * constraints (Fable 2026-07-08): the ONLY injectable window is a CLASSIC conhost (`ConsoleWindowClass` — the
+   * L2 `Injection.cs` ReVerify positive-allowlist; Windows Terminal is a XAML host ⇒ `target_multiplexed`), and
+   * `workspace_launch` blocks all shells, and R1's cooperative terminal is headless-only (the visible-console
+   * launch is R2's unshipped S2). So the manager spawns `conhost.exe <shell>` DIRECTLY (an internal spawn — it
+   * does NOT route through `workspace_launch`'s executable blocklist, which exists to stop the ASSISTANT from
+   * launching arbitrary shells; this is a locker-owned, fixed, local shell) and polls for the new
+   * `ConsoleWindowClass` window it owns. Returns `{ hwnd, shellPid }` (shellPid = the conhost pid = the window
+   * owner; the shell + any ssh run as subtree descendants, which `sshDescendants` walks). The wiring fires
+   * `onLocalPaneLaunched(String(hwnd), shellPid)`. The console gets a UNIQUE window title (`dtm-locker-console-
+   * <nonce>`) so the title-keyed read/inject seams resolve to EXACTLY this pane — `resolveTitleByHwnd` declines
+   * any pane whose title is not substring-unique, so without this a second console (or a same-titled user
+   * window) would never autofill (Codex W-4a R3 read-path). **Dogfood-verified (§5): the exact `conhost.exe`
+   * invocation that yields a classic console + injectable target (and that the title command takes) is confirmed
+   * on the real desktop, not unit-testable.** Throws if no console window appears within `timeoutMs`.
+   */
+  async launchAnchoredConsole(
+    o: { timeoutMs?: number; pollMs?: number } = {},
+  ): Promise<{ hwnd: bigint; shellPid: number; title: string }> {
+    const timeoutMs = o.timeoutMs ?? 8000;
+    const pollMs = o.pollMs ?? 150;
+    const title = `dtm-locker-console-${randomBytes(8).toString("hex")}`; // globally unique ⇒ unambiguous title read
+    // Snapshot existing console hwnds so we claim only the NEW one this spawn creates.
+    const before = new Set(
+      enumWindowsInZOrder().filter((w) => w.className === CONSOLE_WINDOW_CLASS).map((w) => w.hwnd),
+    );
+    // `conhost.exe powershell …` forces a CLASSIC conhost regardless of the user's default-terminal (WT)
+    // setting — the only form L2 can inject into. The `-Command` sets the UNIQUE window title then leaves an
+    // interactive prompt (`-NoExit`) for the human to type into (the cooperative model); we never read its stdio.
+    const child = spawn(
+      "conhost.exe",
+      ["powershell.exe", "-NoExit", "-Command", `$Host.UI.RawUI.WindowTitle = '${title}'`],
+      { detached: true, stdio: "ignore", windowsHide: false },
+    );
+    child.on("error", () => { /* spawn failure surfaces as the poll timing out below */ });
+    // The console is a SEPARATE window the human owns — do NOT pin Node's event loop on its lifetime (else a
+    // clean MCP shutdown would hang until the user closes the console). The wiring may kill `shellPid` on
+    // teardown if it wants the console gone; otherwise it outlives the session by design (Opus W-4a P2-1).
+    child.unref();
+    const childPid = child.pid;
+    // A failed spawn has no pid ⇒ nothing to claim ⇒ time out rather than grab an unrelated console.
+    if (childPid === undefined) throw new KeyLockerError("KeyLockerSpawnFailed", "conhost spawn returned no pid");
+
+    const deadline = this.now() + timeoutMs;
+    for (;;) {
+      // Claim ONLY the new console OUR conhost child owns — an exact `childPid` match (Opus W-4a P3-1: a
+      // pid-0-fallback could grab a DIFFERENT console that momentarily reads owner-pid 0 during its own
+      // creation, returning the wrong hwnd/shellPid). The owner pid may read 0 transiently for ours too, so
+      // we simply keep polling until it resolves to `childPid`.
+      const fresh = enumWindowsInZOrder().find(
+        (w) =>
+          w.className === CONSOLE_WINDOW_CLASS &&
+          !before.has(w.hwnd) &&
+          getWindowProcessId(w.hwnd) === childPid &&
+          // Wait until the `-Command` has APPLIED the unique title — else the pane's live title is still the
+          // default and `resolveTitleByHwnd` would transiently decline it (Opus W-4a R4 P3). Returning a
+          // title-applied pane makes it immediately usable.
+          getWindowTitleW(w.hwnd) === title,
+      );
+      if (fresh !== undefined) return { hwnd: fresh.hwnd, shellPid: childPid, title };
+      if (this.now() >= deadline) {
+        try { child.kill(); } catch { /* best-effort */ }
+        throw new KeyLockerError("KeyLockerSpawnFailed", "anchored console window did not appear");
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
   }
 
   /** Consent state for `status` (readable Node-side without spawning the locker). */
