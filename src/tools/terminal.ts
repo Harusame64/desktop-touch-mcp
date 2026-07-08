@@ -84,6 +84,12 @@ export function fireTerminalDispatch(paneId: string, command: string): void {
 
 export const terminalReadSchema = {
   windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
+  paneId: z.string().max(32).optional().describe(
+    "Decimal hwnd of a specific pane (from key_locker launch_console) — targets THIS window even after " +
+    "its title changes; takes precedence over windowTitle. NOTE: read still resolves the pane's text by " +
+    "title under the hood, so it declines if the pane's current title is no longer unique among windows " +
+    "(send binds directly by hwnd and has no such limit).",
+  ),
   lines: z.coerce.number().int().min(1).max(2000).default(50).describe("Tail N lines (default 50)."),
   sinceMarker: z.string().max(64).optional().describe("Marker returned from a previous call. If found in current text, only the diff is returned."),
   stripAnsi: coercedBoolean().default(true).describe("Strip ANSI escape sequences (default true)."),
@@ -93,6 +99,11 @@ export const terminalReadSchema = {
 
 export const terminalSendSchema = {
   windowTitle: z.string().max(200).describe("Partial title of the terminal window."),
+  paneId: z.string().max(32).optional().describe(
+    "Decimal hwnd of a specific pane (from key_locker launch_console) — targets THIS window directly by " +
+    "hwnd, surviving a title change (e.g. after an ssh login the title becomes user@host); takes " +
+    "precedence over windowTitle.",
+  ),
   input: z.string().max(10000).describe("Text to send (max 10,000 chars)."),
   method: z.enum(["auto", "background", "foreground", "foreground_flash"]).default("auto").describe(
     "Input routing channel. " +
@@ -150,6 +161,20 @@ function findTerminalWindow(partialTitle: string): WindowZInfo | null {
     }
   }
   return null;
+}
+
+/**
+ * Bind a pane to its window by EXACT hwnd — the Key Locker `paneId` is the decimal hwnd string
+ * (ADR-014 R3 OQ-W-16-bis). Unlike `findTerminalWindow` (title substring) and `resolveTitleByHwnd`
+ * (hwnd→title round-trip that DECLINES on a non-unique title), this has NO title dependency, so a
+ * `send` target survives the post-login title drift (`user@host: ~`) AND a same-title sibling — the
+ * WM_CHAR goes to this exact hwnd. Returns the window ONLY if the hwnd is a live `ConsoleWindowClass`
+ * console (the only injectable/anchorable class — a launched anchored console always is); else null.
+ */
+export function findTerminalWindowByHwnd(hwnd: bigint): WindowZInfo | null {
+  const win = enumWindowsInZOrder().find((w) => w.hwnd === hwnd);
+  if (win === undefined) return null;
+  return win.className === "ConsoleWindowClass" ? win : null;
 }
 
 /**
@@ -820,9 +845,10 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const terminalReadHandler = async ({
-  windowTitle, lines, sinceMarker, stripAnsi: doStripAnsi, source, ocrLanguage = detectOcrLanguage(),
+  windowTitle, paneId, lines, sinceMarker, stripAnsi: doStripAnsi, source, ocrLanguage = detectOcrLanguage(),
 }: {
   windowTitle: string;
+  paneId?: string;
   lines: number;
   sinceMarker?: string;
   stripAnsi: boolean;
@@ -830,6 +856,17 @@ export const terminalReadHandler = async ({
   ocrLanguage?: string;
 }): Promise<ToolResult> => {
   try {
+    // ADR-014 R3 OQ-W-16-bis: a paneId (decimal hwnd) targets a specific pane. Read is title-keyed
+    // DOWNSTREAM (getTextViaTextPattern / recognizeWindow take a title, UIA `Name -like`), so resolve
+    // the hwnd to its title ONLY if that title is still live-unique (resolveTitleByHwnd) — else decline
+    // rather than risk reading a same-title sibling (never a wrong-pane read). paneId overrides windowTitle.
+    if (paneId !== undefined) {
+      const resolved = resolveTitleByHwnd(paneId);
+      if (resolved === null) {
+        return failWith("Terminal window not found: paneId " + paneId, "terminal:read", { paneId, windowTitle });
+      }
+      windowTitle = resolved;
+    }
     const win = findTerminalWindow(windowTitle);
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal:read", { windowTitle });
@@ -932,11 +969,12 @@ export const terminalReadHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const terminalSendHandler = async ({
-  windowTitle, input, method: inputMethod = "auto", chunkSize = 100,
+  windowTitle, paneId, input, method: inputMethod = "auto", chunkSize = 100,
   pressEnter, focusFirst, restoreFocus, preferClipboard, pasteKey,
   forceFocus: forceFocusArg, trackFocus, settleMs, notifyDispatch = true,
 }: {
   windowTitle: string;
+  paneId?: string;
   input: string;
   method?: "auto" | "background" | "foreground" | "foreground_flash";
   chunkSize?: number;
@@ -957,9 +995,19 @@ export const terminalSendHandler = async ({
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   const startedAt = Date.now();
   try {
-    const win = findTerminalWindow(windowTitle);
+    // ADR-014 R3 OQ-W-16-bis: a paneId (decimal hwnd) binds the send target DIRECTLY by hwnd (WM_CHAR
+    // goes to this exact window), surviving the post-login title drift AND a same-title sibling. Takes
+    // precedence over windowTitle. A malformed / vanished / non-console hwnd declines (never throws).
+    let win: WindowZInfo | null;
+    if (paneId !== undefined) {
+      let h: bigint;
+      try { h = BigInt(paneId); } catch { return failWith("Terminal window not found: paneId " + paneId, "terminal:send", { paneId, windowTitle }); }
+      win = findTerminalWindowByHwnd(h);
+    } else {
+      win = findTerminalWindow(windowTitle);
+    }
     if (!win) {
-      return failWith("Terminal window not found: " + windowTitle, "terminal:send", { windowTitle });
+      return failWith("Terminal window not found: " + (paneId !== undefined ? "paneId " + paneId : windowTitle), "terminal:send", { windowTitle, ...(paneId !== undefined ? { paneId } : {}) });
     }
 
     // ADR-014 v2 R3 L3-4 S-A + Codex PR#511 P1: notify the dispatch observer

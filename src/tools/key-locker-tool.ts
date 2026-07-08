@@ -37,6 +37,7 @@ import {
   type BindingUri,
 } from "../engine/key-locker/binding.js";
 import { resolveCanonicalForSshCommand, type ExecFn } from "../engine/key-locker/ssh-resolve.js";
+import { keyLockerWiring } from "./key-locker-wiring.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema — a discriminated union over `action` (Opus R1 P2-6: the FULL 3-layer chain, mirroring excel).
@@ -83,12 +84,26 @@ const statusSchema = z.object({
   ),
 });
 
+const launchConsoleSchema = z.object({
+  action: z.literal("launch_console").describe(
+    "Launch (or reuse) an autofill-capable anchored console and return its paneId + windowTitle. Use this " +
+      "BEFORE running an ssh / sudo / login command for the user: launch the console, then drive the command " +
+      "into it with terminal({action:'send', paneId}). Autofill ONLY works in a console launched this way — a " +
+      "pre-existing terminal the user opened is never autofilled. The console is a classic Windows console the " +
+      "human can ALSO see and type into (cooperative handoff). Enabling the locker grants this launch ability.",
+  ),
+  fresh: z.boolean().optional().describe(
+    "false (default) = reuse the most-recent still-open anchored console; true = open a NEW one (bounded).",
+  ),
+});
+
 export const keyLockerSchema = z.discriminatedUnion("action", [
   listSchema,
   saveSchema,
   forgetSchema,
   setPolicySchema,
   statusSchema,
+  launchConsoleSchema,
 ]);
 
 export type KeyLockerArgs = z.infer<typeof keyLockerSchema>;
@@ -304,6 +319,35 @@ function handleSetPolicy(uri: string, confirmEveryInjection: boolean): ToolResul
   return ok({ updated });
 }
 
+/**
+ * ADR-014 R3 OQ-W-16-bis: launch (or reuse) an autofill-capable anchored console for the assistant to drive
+ * credential commands into. Consent is an ACQUIRE path here (like `save`) — launching spawns a locker-owned
+ * console, so the one-time enable dialog is the natural moment to ask. Routes through the live WIRING (which
+ * anchors the pane via `onLocalPaneLaunched`); a direct manager spawn would NOT anchor it and the loop would
+ * never arm for that pane.
+ */
+async function handleLaunchConsole(fresh: boolean | undefined): Promise<ToolResult> {
+  let consented: boolean;
+  try {
+    consented = await manager().ensureConsent();
+  } catch (err) {
+    return keyLockerFailure(err); // kill-switched (KeyLockerDisabled)
+  }
+  if (!consented) {
+    return fail("KeyLockerConsentRequired", "KeyLockerConsentRequired: enabling the key locker was declined");
+  }
+  const wiring = keyLockerWiring();
+  if (wiring === null) {
+    return fail("KeyLockerDisabled", "KeyLockerDisabled: the key locker live wiring is not active");
+  }
+  try {
+    const { paneId, windowTitle } = await wiring.ensureAnchoredConsole({ fresh: fresh ?? false });
+    return ok({ paneId, windowTitle });
+  } catch (err) {
+    return keyLockerFailure(err); // KeyLockerSpawnFailed / KeyLockerConsoleLimit
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handler + registration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,6 +370,8 @@ export const keyLockerHandler = async (args: KeyLockerArgs): Promise<ToolResult>
       return handleForget(a.uri);
     case "set_policy":
       return handleSetPolicy(a.uri, a.confirmEveryInjection);
+    case "launch_console":
+      return handleLaunchConsole(a.fresh);
   }
 };
 
@@ -353,18 +399,24 @@ export function registerKeyLockerTools(server: McpServer): void {
           "stores the secret; the first save also shows a one-time enable confirmation. action='list' " +
           "shows saved bindings (metadata only, never secrets). action='forget' deletes a binding and its " +
           "secret. action='set_policy' toggles per-binding autofill confirmation. action='status' reports " +
-          "whether the locker is enabled (consent) and how many bindings exist.",
+          "whether the locker is enabled (consent) and how many bindings exist. action='launch_console' opens " +
+          "(or reuses) an autofill-capable anchored console and returns {paneId, windowTitle}.",
         prefer:
-          "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — " +
-          "there is no manual fill action. Use save to enroll, list/status to inspect.",
+          "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — there " +
+          "is no manual fill action. But autofill ONLY fires in a console opened by launch_console (a " +
+          "pre-existing terminal is never autofilled): to autofill, first launch_console, then run the ssh / " +
+          "sudo command with terminal({action:'send', paneId}). Use save to enroll, list/status to inspect.",
         caveats:
-          "Windows-only. Disable the whole feature with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. An ssh save " +
-          "needs the host key already in known_hosts (connect once first). API-token / env-var credentials " +
-          "are not supported yet.",
+          "Windows-only. The anchored console is a CLASSIC console window (not Windows Terminal) that the " +
+          "human can also see and type into. Enabling the locker (first save or launch_console) grants BOTH " +
+          "credential autofill AND the ability for the assistant to launch a locker-owned console. Disable " +
+          "the whole feature with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. An ssh save needs the host key already " +
+          "in known_hosts (connect once first). API-token / env-var credentials are not supported yet.",
         examples: [
           "key_locker({action:'status'}) → {consentAccepted:false, disabled:false, bindingCount:0}",
           "key_locker({action:'save', uri:'sudo://buildbox/root'}) → opens the secure dialog → {captured:true}",
           "key_locker({action:'list'}) → {bindings:[{displayUri:'sudo://buildbox/root', scheme:'sudo', …}]}",
+          "key_locker({action:'launch_console'}) → {paneId:'12345678', windowTitle:'dtm-locker-console-…'} → then terminal({action:'send', paneId:'12345678', input:'ssh user@host'})",
         ],
       }),
       inputSchema: keyLockerRegistrationSchema,

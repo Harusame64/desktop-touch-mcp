@@ -28,6 +28,17 @@ export interface AdvisoryHint {
   example: string;
 }
 
+// ── Generic credential-advisor hook (ADR-014 R3 OQ-W-16-bis, Phase 3) ─────────────
+// A nullable slot the Key Locker WIRING fills, so this module (and terminal.ts) stay
+// locker-agnostic — no terminal→locker import (the "terminal fold" coupling the plan
+// rejected). buildHint calls it for `terminal(action='send')`; the wiring decides
+// whether a credential command went to a non-anchored pane and returns the nudge.
+type CredentialAdvisor = (args: Record<string, unknown>) => AdvisoryHint | null;
+let credentialAdvisor: CredentialAdvisor | null = null;
+export function setCredentialAdvisor(fn: CredentialAdvisor | null): void {
+  credentialAdvisor = fn;
+}
+
 /** UIA control types that represent an editable text input. NOTE: ComboBox is
  *  deliberately EXCLUDED — dogfood (ADR-022) showed Chromium exposes web text
  *  inputs (e.g. Google search) as ComboBox, so admitting it would mis-fire on
@@ -91,6 +102,12 @@ function buildHint(
   focusedElement: PostElementInfo | null,
   processName: string,
 ): AdvisoryHint | null {
+  // ADR-014 R3 OQ-W-16-bis (Phase 3): terminal(action='send') → key_locker launch_console.
+  // Delegated to the wiring-supplied hook (locker state lives there, not here). Returns a nudge
+  // when a credential command was sent to a pane the locker can't autofill; null otherwise.
+  if (toolName === "terminal" && args["action"] === "send") {
+    return credentialAdvisor !== null ? credentialAdvisor(args) : null;
+  }
   // Round 1: keyboard(action='type') → desktop_act.
   if (toolName !== "keyboard" || args["action"] !== "type") return null;
   // Browser suppression (ADR-022 dogfood): web content uses browser_* / keyboard,
