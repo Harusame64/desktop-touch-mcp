@@ -615,16 +615,16 @@ internal static class PromptDialog
         _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var confirm = kind == "confirm";
         var failClosed = confirm ? "type_it" : "not_now";
-        var choice = failClosed; // default if the window is dismissed
+        var choice = failClosed; // default if the window is dismissed (✕ / Esc / the IsCancel button)
 
+        // Build the buttons WITHOUT handlers first (the affirmative handlers reference `win`, created below).
+        // Each carries its choice string in Tag. The FAIL-CLOSED button is IsCancel with NO handler — WPF
+        // auto-closes it with DialogResult=false and `choice` stays at failClosed. NEVER call win.Close() on an
+        // IsCancel button: WPF sets its DialogResult AFTER OnClick, so a handler that already closed the window
+        // would throw. This mirrors SecureDialog/ConsentDialog (only the affirmative button drives DialogResult).
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        Button Add(string content, string value, bool isDefault = false, bool isCancel = false)
-        {
-            var b = new Button { Content = content, Width = 110, Margin = new Thickness(4), IsDefault = isDefault, IsCancel = isCancel };
-            b.Click += (_, _) => { choice = value; };
-            buttons.Children.Add(b);
-            return b;
-        }
+        void Add(string content, string value, bool isDefault = false, bool isCancel = false) =>
+            buttons.Children.Add(new Button { Content = content, Width = 110, Margin = new Thickness(4), IsDefault = isDefault, IsCancel = isCancel, Tag = value });
 
         var panel = new StackPanel { Margin = new Thickness(16), MaxWidth = 460 };
         if (confirm)
@@ -632,14 +632,14 @@ internal static class PromptDialog
             panel.Children.Add(new Label { Content = "Autofill a saved secret?", FontWeight = FontWeights.Bold, FontSize = 15 });
             panel.Children.Add(new TextBlock { Text = $"Fill the saved secret for:  {label}", Margin = new Thickness(4, 8, 4, 12), TextWrapping = TextWrapping.Wrap });
             Add("Autofill", "autofill", isDefault: true);
-            Add("Type it", "type_it", isCancel: true); // the human types it themselves = decline the fill
+            Add("Type it", "type_it", isCancel: true); // the human types it themselves = decline the fill (fail-closed)
         }
         else
         {
             panel.Children.Add(new Label { Content = "Save this secret for next time?", FontWeight = FontWeights.Bold, FontSize = 15 });
             panel.Children.Add(new TextBlock { Text = $"Remember the secret you just entered for:  {label}", Margin = new Thickness(4, 8, 4, 12), TextWrapping = TextWrapping.Wrap });
             Add("Save", "save", isDefault: true);
-            Add("Not now", "not_now", isCancel: true);
+            Add("Not now", "not_now", isCancel: true); // fail-closed
             Add("Never", "never");
         }
         panel.Children.Add(buttons);
@@ -654,8 +654,14 @@ internal static class PromptDialog
             Topmost = true,
             ShowInTaskbar = false,
         };
-        // A button click sets `choice` then closes; a dismiss leaves `choice` at fail-closed.
-        foreach (var child in buttons.Children) if (child is Button btn) btn.Click += (_, _) => win.Close();
+        // Affirmative / explicit-choice buttons (Autofill / Save / Never — NOT IsCancel) set the choice and
+        // close via DialogResult=true. The IsCancel button has no handler (auto-close → failClosed).
+        foreach (var child in buttons.Children)
+            if (child is Button b && !b.IsCancel)
+            {
+                var value = (string)b.Tag!;
+                b.Click += (_, _) => { choice = value; win.DialogResult = true; };
+            }
         win.Loaded += (_, _) => { win.Activate(); if (buttons.Children.Count > 0 && buttons.Children[0] is Button first) first.Focus(); };
         win.ShowDialog();
         return choice;

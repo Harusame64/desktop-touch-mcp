@@ -124,6 +124,26 @@ describe("key-locker live smoke (pipe control plane)", () => {
     expect(await host.delete("ssh:nobody")).toBe(false);
   }, 40_000);
 
+  it("round-trips the W-3.5 `prompt` verb via the headless auto-answer seam (no GUI, secret-free)", async () => {
+    // Exercises the REAL C# HandlePrompt → PromptDialog path end-to-end without a human: the locker inherits
+    // DTM_LOCKER_PROMPT_AUTOANSWER and returns the canned choice before opening a window. Proves the verb
+    // plumbing (frame {kind,label} parse → STA marshal → reply) — the GUI button logic is dogfood-only (like
+    // capture's dialog). The wire carries only the LABEL + the choice; no key, no secret.
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const storeDir = freshStoreDir();
+    dirs.push(storeDir);
+    const prev = process.env.DTM_LOCKER_PROMPT_AUTOANSWER;
+    process.env.DTM_LOCKER_PROMPT_AUTOANSWER = "autofill"; // a confirm-valid choice
+    try {
+      const host = await KeyLockerHost.start({ startupTimeoutMs: 20_000, storeDir });
+      hosts.push(host);
+      expect(await host.prompt("confirm", "sudo://host-a")).toBe("autofill");
+    } finally {
+      if (prev === undefined) delete process.env.DTM_LOCKER_PROMPT_AUTOANSWER;
+      else process.env.DTM_LOCKER_PROMPT_AUTOANSWER = prev;
+    }
+  }, 40_000);
+
   it("releases the tool-exclusion PID when the locker dies WITHOUT dispose() (P2-1)", async () => {
     expect(existsSync(HELPER_EXE)).toBe(true);
     const storeDir = freshStoreDir();

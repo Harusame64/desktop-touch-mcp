@@ -140,9 +140,13 @@ export type MintTicketResult =
 
 /** W-3.5 `prompt` verb — which secret-free backstop dialog to show. */
 export type PromptKind = "confirm" | "offer";
-/** The user's choice from a `prompt` dialog. `confirm` yields autofill/type_it; `offer` yields
- *  save/not_now/never. On any pipe failure the host normalizes to the FAIL-CLOSED choice per kind. */
-export type PromptChoice = "autofill" | "type_it" | "save" | "not_now" | "never";
+/** The MATCH-backstop choice: fill the stored secret, or decline and type it by hand (fail-closed). */
+export type ConfirmChoice = "autofill" | "type_it";
+/** The NO-MATCH save choice (structurally the capture-loop `SaveChoice`). */
+export type OfferChoice = "save" | "not_now" | "never";
+/** The user's choice from a `prompt` dialog (the union of both kinds). On any pipe failure the host
+ *  normalizes to the FAIL-CLOSED choice per kind (`confirm`→`type_it`, `offer`→`not_now`). */
+export type PromptChoice = ConfirmChoice | OfferChoice;
 
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
@@ -414,8 +418,12 @@ export class KeyLockerHost {
    * `formatBindingUri` displayUri (dispatched-command-derived — never prompt text; spoof-safe). Uses the long
    * capture budget (blocks on human input). FAIL-CLOSED on any pipe error / timeout / unexpected value:
    * `confirm` → `type_it` (do not fill), `offer` → `not_now` (do not save) — so a dead dialog never fills or
-   * persists a secret.
+   * persists a secret. Overloaded so each kind returns its OWN narrow union — `confirm`→`ConfirmChoice`,
+   * `offer`→`OfferChoice` (the capture-loop `SaveChoice`) — so W-4 binds `confirmInjection`/`offerSave`
+   * WITHOUT a cast (the enum/contract SSOT discipline).
    */
+  async prompt(kind: "confirm", label: string): Promise<ConfirmChoice>;
+  async prompt(kind: "offer", label: string): Promise<OfferChoice>;
   async prompt(kind: PromptKind, label: string): Promise<PromptChoice> {
     const failClosed: PromptChoice = kind === "confirm" ? "type_it" : "not_now";
     const valid: readonly PromptChoice[] = kind === "confirm" ? ["autofill", "type_it"] : ["save", "not_now", "never"];
