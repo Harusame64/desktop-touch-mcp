@@ -27,6 +27,7 @@ import {
   getProcessCommandLineByPid,
   getProcessIdentityByPid,
   getWindowProcessId,
+  getWindowTitleW,
 } from "../win32.js";
 import { SessionTracker } from "./session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "./ssh-session-watch.js";
@@ -227,7 +228,14 @@ export class KeyLockerManager {
       // creation, returning the wrong hwnd/shellPid). The owner pid may read 0 transiently for ours too, so
       // we simply keep polling until it resolves to `childPid`.
       const fresh = enumWindowsInZOrder().find(
-        (w) => w.className === CONSOLE_WINDOW_CLASS && !before.has(w.hwnd) && getWindowProcessId(w.hwnd) === childPid,
+        (w) =>
+          w.className === CONSOLE_WINDOW_CLASS &&
+          !before.has(w.hwnd) &&
+          getWindowProcessId(w.hwnd) === childPid &&
+          // Wait until the `-Command` has APPLIED the unique title — else the pane's live title is still the
+          // default and `resolveTitleByHwnd` would transiently decline it (Opus W-4a R4 P3). Returning a
+          // title-applied pane makes it immediately usable.
+          getWindowTitleW(w.hwnd) === title,
       );
       if (fresh !== undefined) return { hwnd: fresh.hwnd, shellPid: childPid, title };
       if (this.now() >= deadline) {
