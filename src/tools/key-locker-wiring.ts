@@ -69,18 +69,25 @@ const EXIT_POLL_MS = 300;
  */
 export class KeyLockerWiring {
   private readonly driver: KeyLockerCaptureDriver;
-  private readonly bindings: BindingStore;
-  private readonly nevers: NeverStore;
   private tickTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private eventSubId: string | null = null;
 
   constructor(private readonly manager: KeyLockerManager) {
-    // The BindingStore verifies each candidate secret still EXISTS in the locker (prune stale rows) via the
-    // host `exists` verb, and the NeverStore holds tombstones — both keyed off the manager's store dir.
-    this.bindings = BindingStore.load(manager.storeDir, (id) => manager.withHost((h) => h.exists(id)));
-    this.nevers = NeverStore.load(manager.storeDir);
     this.driver = new KeyLockerCaptureDriver(this.buildDeps());
+  }
+
+  // The binding + never stores are loaded FRESH per operation (from disk), NOT cached on the instance — the L4
+  // `key_locker` tool writes a fresh `BindingStore`/never-store on every `save`/`set_policy`/`forget`, so a
+  // cached copy would make a credential saved (or a policy changed) IN THE SAME SESSION invisible to autofill
+  // until a process restart (Codex W-4b — the pre-seed flow would fall back to a no-match capture). `load` is
+  // cheap (a JSON read) and matches the tool's own per-call load. The BindingStore verifies each candidate
+  // still EXISTS in the locker (prune stale rows) via the host `exists` verb.
+  private bindings(): BindingStore {
+    return BindingStore.load(this.manager.storeDir, (id) => this.manager.withHost((h) => h.exists(id)));
+  }
+  private nevers(): NeverStore {
+    return NeverStore.load(this.manager.storeDir);
   }
 
   /** Install the S-A dispatch hook + subscribe the event-bus + start the timers. Idempotent-ish (call once). */
@@ -152,11 +159,11 @@ export class KeyLockerWiring {
       snapshot: () => m.snapshotProcessTree(),
 
       deriveBinding: (command: string, session: SessionContext) => deriveBinding(command, session),
-      resolveBinding: (k) => this.bindings.resolve(k),
-      bindBinding: (k, id, meta) => this.bindings.bind(k, id, meta),
-      confirmPolicyFor: (k) => this.bindings.getPolicy(k),
-      isNever: (k) => this.nevers.has(k),
-      onNever: (k) => this.nevers.add(k),
+      resolveBinding: (k) => this.bindings().resolve(k),
+      bindBinding: (k, id, meta) => this.bindings().bind(k, id, meta),
+      confirmPolicyFor: (k) => this.bindings().getPolicy(k),
+      isNever: (k) => this.nevers().has(k),
+      onNever: (k) => this.nevers().add(k),
 
       capture: (id) => m.withHost((h) => h.capture(id)).then((r) => ({ captured: r.captured })),
       deleteSecret: (id) => m.withHost((h) => h.delete(id)).then(() => undefined),
