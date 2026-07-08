@@ -182,17 +182,20 @@ export class KeyLockerManager {
    * constraints (Fable 2026-07-08): the ONLY injectable window is a CLASSIC conhost (`ConsoleWindowClass` — the
    * L2 `Injection.cs` ReVerify positive-allowlist; Windows Terminal is a XAML host ⇒ `target_multiplexed`), and
    * `workspace_launch` blocks all shells, and R1's cooperative terminal is headless-only (the visible-console
-   * launch is R2's unshipped S2). So the manager spawns `conhost.exe <shell>` DIRECTLY (an internal spawn — it
-   * does NOT route through `workspace_launch`'s executable blocklist, which exists to stop the ASSISTANT from
-   * launching arbitrary shells; this is a locker-owned, fixed, local shell) and polls for the new
-   * `ConsoleWindowClass` window it owns. Returns `{ hwnd, shellPid }` (shellPid = the conhost pid = the window
-   * owner; the shell + any ssh run as subtree descendants, which `sshDescendants` walks). The wiring fires
+   * launch is R2's unshipped S2). So the manager launches a locker-owned, fixed, local conhost DIRECTLY (an
+   * internal spawn — it does NOT route through `workspace_launch`'s executable blocklist, which exists to stop
+   * the ASSISTANT from launching arbitrary shells) via `cmd /c start` and polls for the new
+   * `ConsoleWindowClass` window (DF-1: `cmd /c start` is what forces a NEW console — see the impl note below).
+   * Returns `{ hwnd, shellPid }` where `shellPid = getWindowProcessId(hwnd)` = the SHELL (powershell) process
+   * that OWNS the console window (dogfood-verified: on Win11 the console window's owner is the shell, and
+   * conhost is its PARENT). Any ssh/sudo the human runs are CHILDREN of that shell, so `shellPid` is exactly
+   * the `sshDescendants` subtree root. The wiring fires
    * `onLocalPaneLaunched(String(hwnd), shellPid)`. The console gets a UNIQUE window title (`dtm-locker-console-
-   * <nonce>`) so the title-keyed read/inject seams resolve to EXACTLY this pane — `resolveTitleByHwnd` declines
-   * any pane whose title is not substring-unique, so without this a second console (or a same-titled user
-   * window) would never autofill (Codex W-4a R3 read-path). **Dogfood-verified (§5): the exact `conhost.exe`
-   * invocation that yields a classic console + injectable target (and that the title command takes) is confirmed
-   * on the real desktop, not unit-testable.** Throws if no console window appears within `timeoutMs`.
+   * <nonce>`) — the CLAIM key here (child.pid is the transient cmd.exe, not the conhost) AND the title-keyed
+   * read/inject seams' resolver (`resolveTitleByHwnd` declines any pane whose title is not substring-unique, so
+   * without this a second console (or a same-titled user window) would never autofill — Codex W-4a R3
+   * read-path). **NOT unit-testable — the live-desktop console-allocation behavior is covered by the §5
+   * dogfood (see the DF-1 followups doc).** Throws if no console window appears within `timeoutMs`.
    */
   async launchAnchoredConsole(
     o: { timeoutMs?: number; pollMs?: number } = {},
@@ -204,42 +207,62 @@ export class KeyLockerManager {
     const before = new Set(
       enumWindowsInZOrder().filter((w) => w.className === CONSOLE_WINDOW_CLASS).map((w) => w.hwnd),
     );
-    // `conhost.exe powershell …` forces a CLASSIC conhost regardless of the user's default-terminal (WT)
-    // setting — the only form L2 can inject into. The `-Command` sets the UNIQUE window title then leaves an
-    // interactive prompt (`-NoExit`) for the human to type into (the cooperative model); we never read its stdio.
+    // DF-1 (live dogfood 2026-07-08, followups doc): a bare `spawn("conhost.exe", …)` allocates NO console
+    // window under the MCP server's context — Node's child_process cannot pass the Win32 CREATE_NEW_CONSOLE
+    // flag and the server parent has no console to share, so no console is created (verified: conhost AND
+    // powershell, detached or not + stdio:ignore, produce zero `ConsoleWindowClass` windows). `cmd /c start`
+    // is the one form that forces a NEW console. Bonus: the `start`-ed console is REPARENTED off the transient
+    // cmd.exe (which exits at once), so the console OUTLIVES this process for free — no node-side tree-kill can
+    // reach it (the "console outlives the session" requirement, Opus W-4a P2-1). Absolute System32 paths: a
+    // credential feature must never resolve its spawn executables via PATH (hijack hardening).
+    const sys32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+    const cmdExe = join(sys32, "cmd.exe");
+    const conhostExe = join(sys32, "conhost.exe");
+    // `start "" <conhost> powershell -NoExit -Command <title>`: the empty "" is start's window-title arg (so a
+    // quoted exe path is never mistaken for the title); `-NoExit` leaves an interactive prompt for the human
+    // (cooperative model, we never read its stdio); `-Command` applies the UNIQUE title. The title nonce is hex
+    // (no cmd `&^%` metachars), so Node's default arg quoting is safe through cmd (dogfood-verified).
     const child = spawn(
-      "conhost.exe",
-      ["powershell.exe", "-NoExit", "-Command", `$Host.UI.RawUI.WindowTitle = '${title}'`],
+      cmdExe,
+      ["/c", "start", "", conhostExe, "powershell.exe", "-NoExit", "-Command", `$Host.UI.RawUI.WindowTitle = '${title}'`],
       { detached: true, stdio: "ignore", windowsHide: false },
     );
     child.on("error", () => { /* spawn failure surfaces as the poll timing out below */ });
-    // The console is a SEPARATE window the human owns — do NOT pin Node's event loop on its lifetime (else a
-    // clean MCP shutdown would hang until the user closes the console). The wiring may kill `shellPid` on
-    // teardown if it wants the console gone; otherwise it outlives the session by design (Opus W-4a P2-1).
-    child.unref();
-    const childPid = child.pid;
-    // A failed spawn has no pid ⇒ nothing to claim ⇒ time out rather than grab an unrelated console.
-    if (childPid === undefined) throw new KeyLockerError("KeyLockerSpawnFailed", "conhost spawn returned no pid");
+    child.unref(); // never pin Node's loop on cmd's (or the console's) lifetime.
+    // A failed spawn has no pid ⇒ nothing was launched ⇒ let the poll below time out.
+    if (child.pid === undefined) throw new KeyLockerError("KeyLockerSpawnFailed", "cmd spawn returned no pid");
 
+    // CLAIM BY UNIQUE TITLE — NOT by `child.pid`: under `cmd /c start`, `child.pid` is the transient cmd.exe,
+    // never the conhost. The title is an 8-byte random nonce excluded against `before`, so a match is
+    // unambiguously OUR console (consistent with `resolveTitleByHwnd` declining non-unique titles); after the
+    // claim every read/inject is hwnd-keyed, so the title is a one-shot startup correlation only. `shellPid =
+    // getWindowProcessId(hwnd)` is the SHELL (powershell) process that owns the console window — conhost is its
+    // PARENT (dogfood-verified) — so `shellPid` is exactly the `sshDescendants` subtree root (ssh/sudo run as
+    // CHILDREN of the shell). A window's owner pid can read 0 transiently during creation, so keep polling
+    // until it resolves NON-ZERO (a 0 root would break the subtree walk).
     const deadline = this.now() + timeoutMs;
     for (;;) {
-      // Claim ONLY the new console OUR conhost child owns — an exact `childPid` match (Opus W-4a P3-1: a
-      // pid-0-fallback could grab a DIFFERENT console that momentarily reads owner-pid 0 during its own
-      // creation, returning the wrong hwnd/shellPid). The owner pid may read 0 transiently for ours too, so
-      // we simply keep polling until it resolves to `childPid`.
       const fresh = enumWindowsInZOrder().find(
-        (w) =>
-          w.className === CONSOLE_WINDOW_CLASS &&
-          !before.has(w.hwnd) &&
-          getWindowProcessId(w.hwnd) === childPid &&
-          // Wait until the `-Command` has APPLIED the unique title — else the pane's live title is still the
-          // default and `resolveTitleByHwnd` would transiently decline it (Opus W-4a R4 P3). Returning a
-          // title-applied pane makes it immediately usable.
-          getWindowTitleW(w.hwnd) === title,
+        (w) => w.className === CONSOLE_WINDOW_CLASS && !before.has(w.hwnd) && getWindowTitleW(w.hwnd) === title,
       );
-      if (fresh !== undefined) return { hwnd: fresh.hwnd, shellPid: childPid, title };
+      if (fresh !== undefined) {
+        const shellPid = getWindowProcessId(fresh.hwnd);
+        if (shellPid !== 0) return { hwnd: fresh.hwnd, shellPid, title };
+      }
       if (this.now() >= deadline) {
-        try { child.kill(); } catch { /* best-effort */ }
+        // Best-effort leak sweep: cmd.exe has already exited (`child.kill()` is a no-op), so if OUR nonce-titled
+        // console DID appear late, kill it by owner pid — a timeout must not orphan a console. Bounded to one
+        // sweep; a console materializing after this is a documented rare leak.
+        const leaked = enumWindowsInZOrder().find(
+          (w) => w.className === CONSOLE_WINDOW_CLASS && !before.has(w.hwnd) && getWindowTitleW(w.hwnd) === title,
+        );
+        if (leaked !== undefined) {
+          const pid = getWindowProcessId(leaked.hwnd);
+          if (pid !== 0) {
+            try { spawn(join(sys32, "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" }).unref(); }
+            catch { /* best-effort */ }
+          }
+        }
         throw new KeyLockerError("KeyLockerSpawnFailed", "anchored console window did not appear");
       }
       await new Promise((r) => setTimeout(r, pollMs));
