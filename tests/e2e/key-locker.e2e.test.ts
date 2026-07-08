@@ -95,6 +95,36 @@ describe("key-locker DPAPI store (-SelfTest, headless)", () => {
     const storeJson = readFileSync(join(storeDir, "store.json"), "utf8");
     expect(storeJson).not.toContain("L2-SERVE-SECRET");
   }, 30_000);
+
+  // DF-5: the console-buffer injector (AttachConsole + WriteConsoleInput) is foreground/UIPI-immune and
+  // replaces the SendInput path that returned `sent=0`. `-SelfTestInjectConsole` runs the REAL production
+  // `Win32Input.ReVerifyAndType` against a self-spawned child console (echo-off cooked-read) and asserts a
+  // unicode+surrogate secret round-trips — a deterministic proof that needs no live ssh. (The live native
+  // OpenSSH leg is dogfood-only, like capture's dialog.)
+  //
+  // `skipped:true` = the machine's Default Terminal is Windows Terminal, so the child's AllocConsole handed
+  // off to a ConPTY pseudoconsole (window class != ConsoleWindowClass) and the classic-conhost injector
+  // could not be exercised here — a supported Win11 config, covered by the live dogfood, not a failure
+  // (Codex #523 P2). CI + a default Windows desktop use a classic conhost, so they run the full assertion.
+  it("types a unicode+surrogate secret into another process's console and it cooked-reads it back (-SelfTestInjectConsole)", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+
+    const { code, stdout } = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
+      const c = spawn(HELPER_EXE, ["-SelfTestInjectConsole"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+      let out = "";
+      c.stdout!.on("data", (d) => { out += d.toString("utf8"); });
+      c.on("exit", (code) => resolve({ code, stdout: out }));
+      setTimeout(() => { killTree(c.pid); resolve({ code: -999, stdout: out }); }, 25_000);
+    });
+
+    expect(code).toBe(0);
+    const result = JSON.parse(stdout.trim()) as { ok: boolean; skipped?: boolean };
+    if (result.skipped) {
+      console.warn("[-SelfTestInjectConsole] skipped: non-classic conhost (Windows Terminal default) — covered by live dogfood");
+    } else {
+      expect(result).toEqual({ ok: true, skipped: false });
+    }
+  }, 40_000);
 });
 
 describe("key-locker live smoke (pipe control plane)", () => {

@@ -59,6 +59,8 @@ internal static class KeyLocker
         string? storeDir = null;
         var selfTest = false;
         var selfTestL2 = false;
+        var selfTestInject = false;
+        string? injectChildReady = null, injectChildOut = null;
         var consent = false;
         for (var i = 0; i < args.Length; i++)
         {
@@ -69,6 +71,10 @@ internal static class KeyLocker
                 case "-StoreDir" when i + 1 < args.Length: storeDir = args[++i]; break;
                 case "-SelfTest": selfTest = true; break;
                 case "-SelfTestL2": selfTestL2 = true; break;
+                // DF-5 headless console-injector proof (no store, no pipe, no ssh): `-SelfTestInjectConsole`
+                // runs the parent role; `-InjectConsoleChild <ready> <out>` is the self-spawned child role.
+                case "-SelfTestInjectConsole": selfTestInject = true; break;
+                case "-InjectConsoleChild" when i + 2 < args.Length: injectChildReady = args[++i]; injectChildOut = args[++i]; break;
                 case "-Consent": consent = true; break;
                 // TEST-ONLY headless seam (e2e verb round-trip, no GUI): auto-answer `prompt` with this choice.
                 // A CLI ARG on purpose — NOT an env var: `KeyLockerHost.start()` never passes it, so a production
@@ -87,6 +93,18 @@ internal static class KeyLocker
         // ASK is allowed pre-consent (the gate is on secret effects, not process spawn). Runs before the
         // store is even opened.
         if (consent) return RunConsent(storeDir);
+
+        // DF-5 console-injector self-test seams — no store/pipe/GUI. The child role runs as conhost's
+        // client and cooked-reads a line; the parent role spawns it, runs the real Win32Input injector,
+        // and prints {ok}. Both are pre-store early returns (like -Consent).
+        if (injectChildReady != null && injectChildOut != null)
+            return ConsoleInjectSelfTest.RunChild(injectChildReady, injectChildOut);
+        if (selfTestInject)
+        {
+            var status = ConsoleInjectSelfTest.Run(); // "pass" | "fail" | "skip"
+            Console.WriteLine(JsonSerializer.Serialize(new { ok = status == "pass", skipped = status == "skip" }));
+            return status == "fail" ? 1 : 0; // pass OR skip (ConPTY-handoff env limitation) => success exit
+        }
 
         _store = new LockerStore(storeDir);
         _serving = new ServingRegistry(_store);
@@ -257,10 +275,11 @@ internal static class KeyLocker
         WriteReply(server, id, true, choice, null);
     }
 
-    /// SendInput the secret under `key` into the frame's dedicated-conhost target, AFTER the
-    /// injection-instant re-verify (§2.2). The secret NEVER crosses the pipe — the reply carries
-    /// only {injected, verified}; an abort carries the typed reason. The plaintext is decrypted
-    /// transiently inside the locker and zeroized (WithDecrypted).
+    /// Write the secret under `key` into the frame's dedicated-conhost target via the console-buffer
+    /// injector (DF-5: AttachConsole + WriteConsoleInput), AFTER the injection-instant identity re-verify
+    /// (§2.2). The secret NEVER crosses the pipe — the reply carries only {injected, verified}; an abort
+    /// carries the typed reason. The plaintext is decrypted transiently inside the locker and zeroized
+    /// (WithDecrypted).
     private static void HandleInject(NamedPipeServerStream server, long id, string key, string line)
     {
         if (string.IsNullOrEmpty(key)) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
@@ -482,7 +501,7 @@ internal sealed class LockerStore
     /// Transiently decrypt the stored secret and hand the plaintext BYTES to `use`, then zeroize
     /// the buffer — the plaintext lives only for the callback and NEVER leaves the locker process
     /// (L2 §0 invariant). Returns false if the id is absent or the blob won't decrypt. Used by the
-    /// SendInput injector and the askpass serving path.
+    /// console-buffer injector and the askpass serving path.
     public bool WithDecrypted(string id, Action<byte[]> use)
     {
         if (!_entries.TryGetValue(id, out var b64)) return false;

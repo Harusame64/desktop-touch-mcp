@@ -1,9 +1,9 @@
-// ADR-014 v2 R3 Key Locker — L3 §4: InjectTarget assembly for the `pane` (SendInput) channel.
+// ADR-014 v2 R3 Key Locker — L3 §4: InjectTarget assembly for the `pane` (console-buffer inject) channel.
 //
 // Plan: desktop-touch-mcp-internal@<plan>:docs/adr-014-v2-r3-l3-capture-plan.md (§4, THE LOCKED
 // CONTRACT #4)
 //
-// For a pane SendInput injection L3 must hand the locker an `InjectTarget {hwnd, consolePid, titleFp,
+// For a pane console-buffer injection L3 must hand the locker an `InjectTarget {hwnd, consolePid, titleFp,
 // submit}` (L2 §2.1). The hwnd is already in hand — the terminal/tool layer that observed the
 // credential prompt located the console window — so this module only reads the two derived fields
 // (consolePid, titleFp) via the SAME Win32 APIs the locker re-verifies with, so both match by
