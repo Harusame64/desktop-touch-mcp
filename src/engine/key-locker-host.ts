@@ -71,6 +71,13 @@ export interface KeyLockerStartOptions {
   connectBackoffMs?: number;
   /** Override the locker's at-rest store directory (tests). Production uses the locker default. */
   storeDir?: string;
+  /**
+   * TEST-ONLY (e2e verb round-trip): pass `-PromptAutoAnswer <choice>` so the locker auto-answers the
+   * `prompt` verb without a GUI. A spawn-controlled seam — production callers (the wiring) never set it, so it
+   * is NOT an env-inherited backdoor that could silently bypass the human confirm/offer backstop (Codex
+   * W-3.5 P2). Undefined in production.
+   */
+  promptAutoAnswerForTest?: string;
 }
 
 interface PendingRequest {
@@ -137,6 +144,16 @@ export type InjectClientResult =
 export type MintTicketResult =
   | { ok: true; ticket: string; pipe: string }
   | { ok: false; code: "no_secret" };
+
+/** W-3.5 `prompt` verb — which secret-free backstop dialog to show. */
+export type PromptKind = "confirm" | "offer";
+/** The MATCH-backstop choice: fill the stored secret, or decline and type it by hand (fail-closed). */
+export type ConfirmChoice = "autofill" | "type_it";
+/** The NO-MATCH save choice (structurally the capture-loop `SaveChoice`). */
+export type OfferChoice = "save" | "not_now" | "never";
+/** The user's choice from a `prompt` dialog (the union of both kinds). On any pipe failure the host
+ *  normalizes to the FAIL-CLOSED choice per kind (`confirm`→`type_it`, `offer`→`not_now`). */
+export type PromptChoice = ConfirmChoice | OfferChoice;
 
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
@@ -230,6 +247,8 @@ export class KeyLockerHost {
 
     const argv = ["-PipeName", pipeName, "-McpPid", String(mcpPid)];
     if (opts.storeDir) argv.push("-StoreDir", opts.storeDir);
+    // TEST-ONLY seam (never set by production callers): headless auto-answer for the `prompt` verb.
+    if (opts.promptAutoAnswerForTest) argv.push("-PromptAutoAnswer", opts.promptAutoAnswerForTest);
 
     // Direct-spawn the locker (detached, no stdio redirect). It is our DIRECT child, so if it
     // fail-louds on a non-fresh pipe (squatter won the name) we observe the exit and abort BEFORE
@@ -399,6 +418,31 @@ export class KeyLockerHost {
   async capture(key: string): Promise<{ captured: boolean; rt: boolean }> {
     const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS);
     return { captured: reply.captured === true, rt: reply.rt === true };
+  }
+
+  /**
+   * W-3.5: show the SECRET-FREE confirm/offer backstop dialog for a binding `label` and return the user's
+   * choice (ADR seed §4). The pipe carries only {kind, label} out and the {choice} back — this verb NEVER
+   * touches a stored secret, so it is secret-free BY CONSTRUCTION (no `key`). `label` is the L1
+   * `formatBindingUri` displayUri (dispatched-command-derived — never prompt text; spoof-safe). Uses the long
+   * capture budget (blocks on human input). FAIL-CLOSED on any pipe error / timeout / unexpected value:
+   * `confirm` → `type_it` (do not fill), `offer` → `not_now` (do not save) — so a dead dialog never fills or
+   * persists a secret. Overloaded so each kind returns its OWN narrow union — `confirm`→`ConfirmChoice`,
+   * `offer`→`OfferChoice` (the capture-loop `SaveChoice`) — so W-4 binds `confirmInjection`/`offerSave`
+   * WITHOUT a cast (the enum/contract SSOT discipline).
+   */
+  async prompt(kind: "confirm", label: string): Promise<ConfirmChoice>;
+  async prompt(kind: "offer", label: string): Promise<OfferChoice>;
+  async prompt(kind: PromptKind, label: string): Promise<PromptChoice> {
+    const failClosed: PromptChoice = kind === "confirm" ? "type_it" : "not_now";
+    const valid: readonly PromptChoice[] = kind === "confirm" ? ["autofill", "type_it"] : ["save", "not_now", "never"];
+    try {
+      const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind, label });
+      if (!reply.ok) return failClosed;
+      return (valid as readonly string[]).includes(reply.r) ? (reply.r as PromptChoice) : failClosed;
+    } catch {
+      return failClosed; // pipe timeout / disposed / write failure — decline, never fill/save
+    }
   }
 
   /** Whether a secret is stored under `key`. */

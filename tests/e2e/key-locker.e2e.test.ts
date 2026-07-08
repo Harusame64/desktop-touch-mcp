@@ -124,6 +124,20 @@ describe("key-locker live smoke (pipe control plane)", () => {
     expect(await host.delete("ssh:nobody")).toBe(false);
   }, 40_000);
 
+  it("round-trips the W-3.5 `prompt` verb via the headless -PromptAutoAnswer CLI seam (no GUI, secret-free)", async () => {
+    // Exercises the REAL C# HandlePrompt → PromptDialog path end-to-end without a human: `start()` passes the
+    // `-PromptAutoAnswer` CLI arg (a spawn-controlled test seam — NOT an env var a production launch could
+    // inherit and use to silently bypass the human backstop) so the dialog returns the canned choice before
+    // opening a window. Proves the verb plumbing (frame {kind,label} parse → STA marshal → reply); the GUI
+    // button logic is dogfood-only (like capture's dialog). The wire carries only the LABEL + the choice.
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const storeDir = freshStoreDir();
+    dirs.push(storeDir);
+    const host = await KeyLockerHost.start({ startupTimeoutMs: 20_000, storeDir, promptAutoAnswerForTest: "autofill" });
+    hosts.push(host);
+    expect(await host.prompt("confirm", "sudo://host-a")).toBe("autofill");
+  }, 40_000);
+
   it("releases the tool-exclusion PID when the locker dies WITHOUT dispose() (P2-1)", async () => {
     expect(existsSync(HELPER_EXE)).toBe(true);
     const storeDir = freshStoreDir();

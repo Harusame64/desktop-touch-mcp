@@ -46,6 +46,10 @@ internal static class KeyLocker
     private static LockerStore _store = null!;
     private static ServingRegistry _serving = null!;
     private static Application? _app;
+    /// TEST-ONLY: set from the `-PromptAutoAnswer <choice>` CLI arg (never from production `start()`). When
+    /// set to a kind-valid choice, `PromptDialog` returns it without a window so the e2e verb round-trip runs
+    /// headless. Not an env var — a production launch cannot inherit it to bypass the human backstop.
+    internal static string? PromptAutoAnswer;
 
     [System.STAThread]
     private static int Main(string[] args)
@@ -66,6 +70,10 @@ internal static class KeyLocker
                 case "-SelfTest": selfTest = true; break;
                 case "-SelfTestL2": selfTestL2 = true; break;
                 case "-Consent": consent = true; break;
+                // TEST-ONLY headless seam (e2e verb round-trip, no GUI): auto-answer `prompt` with this choice.
+                // A CLI ARG on purpose — NOT an env var: `KeyLockerHost.start()` never passes it, so a production
+                // launch cannot inherit it and silently bypass the human confirm/offer backstop (Codex W-3.5 P2).
+                case "-PromptAutoAnswer" when i + 1 < args.Length: PromptAutoAnswer = args[++i]; break;
             }
         }
 
@@ -198,6 +206,7 @@ internal static class KeyLocker
                 case "delete": WriteReply(server, id, true, _store.Delete(key) ? "1" : "0", null); break;
                 case "inject": HandleInject(server, id, key, line); break;
                 case "mint_ticket": HandleMintTicket(server, id, key, line); break;
+                case "prompt": HandlePrompt(server, id, line); break;
                 case "shutdown": WriteReply(server, id, true, "bye", null); return;
                 default: WriteReply(server, id, false, "", $"unknown_method:{method}"); break;
             }
@@ -218,6 +227,34 @@ internal static class KeyLocker
         _store.Capture(key, secret);
         var rt = _store.RoundTripOk(key, secret); // in-process verify; secret stays local
         WriteFrameReplyCaptured(server, id, true, rt);
+    }
+
+    /// W-3.5: the SECRET-FREE confirm/offer backstop dialog (ADR seed §4). Shows the binding LABEL only —
+    /// never a secret, and it touches NO store entry — so the pipe carries only {kind,label} in and the
+    /// user's {choice} out. `kind="confirm"` (MATCH backstop) → "autofill"/"type_it"; `kind="offer"`
+    /// (NO-MATCH save) → "save"/"not_now"/"never". A dialog failure normalizes to the FAIL-CLOSED choice
+    /// (the loop then declines/discards) — never a spuriously-permissive one.
+    private static void HandlePrompt(NamedPipeServerStream server, long id, string line)
+    {
+        string kind, label;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            kind = root.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() ?? "" : "";
+            label = root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String ? l.GetString() ?? "" : "";
+        }
+        catch { WriteReply(server, id, false, "", "bad_prompt"); return; }
+        if (kind != "confirm" && kind != "offer") { WriteReply(server, id, false, "", "bad_prompt"); return; }
+
+        string choice;
+        try { choice = _app!.Dispatcher.Invoke(() => PromptDialog.Prompt(kind, label)); }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"[key-locker] prompt dialog failed: {e.Message}");
+            choice = kind == "confirm" ? "type_it" : "not_now"; // fail-closed
+        }
+        WriteReply(server, id, true, choice, null);
     }
 
     /// SendInput the secret under `key` into the frame's dedicated-conhost target, AFTER the
@@ -564,4 +601,83 @@ internal static class ConsentDialog
         win.ShowDialog();
         return accepted;
     }
+}
+
+/// W-3.5: the SECRET-FREE confirm/offer dialog (ADR seed §4 state 1/2). A parameterized WPF window that
+/// shows ONLY the binding LABEL (e.g. "sudo://host-a") — never a secret — and returns the user's choice.
+/// One dialog serves both backstops:
+///   * kind="confirm" (MATCH, seed §4 state 2): "Autofill saved secret for `label`?" [Autofill]/[Type it]
+///   * kind="offer"   (NO-MATCH, seed §4 state 1): "Save `label` for next time?" [Save]/[Not now]/[Never]
+/// Closing the window (✕ / Esc / cancel) returns the FAIL-CLOSED choice ("type_it" / "not_now") so a
+/// dismissed dialog never fills or saves. Runs on the STA UI thread (marshalled by HandlePrompt).
+internal static class PromptDialog
+{
+    public static string Prompt(string kind, string label)
+    {
+        // Headless CI seam (the e2e verb round-trip): when the `-PromptAutoAnswer` CLI arg is set to a
+        // kind-valid choice, return it WITHOUT a window so the `prompt` verb round-trips with no GUI. This is a
+        // CLI arg, NOT an env var — `KeyLockerHost.start()` never passes it, so a production launch cannot
+        // inherit it and silently skip the human backstop (Codex W-3.5 P2). Only a kind-valid choice is honored;
+        // anything else falls through to the real dialog (fail-safe: an unexpected value never auto-fills).
+        var auto = KeyLocker.PromptAutoAnswer;
+        if (auto != null && IsValidChoice(kind, auto)) return auto;
+
+        _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var confirm = kind == "confirm";
+        var failClosed = confirm ? "type_it" : "not_now";
+        var choice = failClosed; // default if the window is dismissed (✕ / Esc / the IsCancel button)
+
+        // Build the buttons WITHOUT handlers first (the affirmative handlers reference `win`, created below).
+        // Each carries its choice string in Tag. The FAIL-CLOSED button is IsCancel with NO handler — WPF
+        // auto-closes it with DialogResult=false and `choice` stays at failClosed. NEVER call win.Close() on an
+        // IsCancel button: WPF sets its DialogResult AFTER OnClick, so a handler that already closed the window
+        // would throw. This mirrors SecureDialog/ConsentDialog (only the affirmative button drives DialogResult).
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        void Add(string content, string value, bool isDefault = false, bool isCancel = false) =>
+            buttons.Children.Add(new Button { Content = content, Width = 110, Margin = new Thickness(4), IsDefault = isDefault, IsCancel = isCancel, Tag = value });
+
+        var panel = new StackPanel { Margin = new Thickness(16), MaxWidth = 460 };
+        if (confirm)
+        {
+            panel.Children.Add(new Label { Content = "Autofill a saved secret?", FontWeight = FontWeights.Bold, FontSize = 15 });
+            panel.Children.Add(new TextBlock { Text = $"Fill the saved secret for:  {label}", Margin = new Thickness(4, 8, 4, 12), TextWrapping = TextWrapping.Wrap });
+            Add("Autofill", "autofill", isDefault: true);
+            Add("Type it", "type_it", isCancel: true); // the human types it themselves = decline the fill (fail-closed)
+        }
+        else
+        {
+            panel.Children.Add(new Label { Content = "Save this secret for next time?", FontWeight = FontWeights.Bold, FontSize = 15 });
+            panel.Children.Add(new TextBlock { Text = $"Remember the secret you just entered for:  {label}", Margin = new Thickness(4, 8, 4, 12), TextWrapping = TextWrapping.Wrap });
+            Add("Save", "save", isDefault: true);
+            Add("Not now", "not_now", isCancel: true); // fail-closed
+            Add("Never", "never");
+        }
+        panel.Children.Add(buttons);
+
+        var win = new Window
+        {
+            Title = "desktop-touch key locker",
+            Content = panel,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            Topmost = true,
+            ShowInTaskbar = false,
+        };
+        // Affirmative / explicit-choice buttons (Autofill / Save / Never — NOT IsCancel) set the choice and
+        // close via DialogResult=true. The IsCancel button has no handler (auto-close → failClosed).
+        foreach (var child in buttons.Children)
+            if (child is Button b && !b.IsCancel)
+            {
+                var value = (string)b.Tag!;
+                b.Click += (_, _) => { choice = value; win.DialogResult = true; };
+            }
+        win.Loaded += (_, _) => { win.Activate(); if (buttons.Children.Count > 0 && buttons.Children[0] is Button first) first.Focus(); };
+        win.ShowDialog();
+        return choice;
+    }
+
+    private static bool IsValidChoice(string kind, string v) =>
+        kind == "confirm" ? (v == "autofill" || v == "type_it")
+                          : (v == "save" || v == "not_now" || v == "never");
 }
