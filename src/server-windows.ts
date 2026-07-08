@@ -38,6 +38,7 @@ import { registerScreenshotQueryTool } from "./tools/screenshot-query.js";
 import { registerScreenshotGcTool } from "./tools/screenshot-gc.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
 import { registerKeyLockerTools } from "./tools/key-locker-tool.js";
+import { registerKeyLockerWiring } from "./tools/key-locker-wiring.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import {
   stopNativeRuntime,
@@ -234,6 +235,9 @@ function createMcpServer(): McpServer {
   // ADR-014 R3 — the key locker management tool (self-gates on the kill switch, so a disabled
   // locker registers nothing).
   registerKeyLockerTools(s);
+  // ADR-014 R3 L3-4 W-4 — the live autofill wiring (S-A dispatch hook + reconcile/idle timers). No-op when
+  // kill-switched; returns a teardown the shutdown path clears (timers + event-bus + hooks).
+  disposeKeyLockerWiring = registerKeyLockerWiring();
 
   // Screenshot by-ref resource (always-on: the screenshot tool returns
   // resource_link refs by default, so this read handler must be available).
@@ -322,6 +326,10 @@ let shuttingDown = false;
 const inflightIds = new Set<string | number>();
 let shutdownPending = false;
 let shutdownTimer: NodeJS.Timeout | null = null;
+/** Teardown for the ADR-014 R3 live wiring (timers + event-bus + dispatch hook + host dispose), set at
+ *  registration. Returns a promise the shutdown path AWAITS so the detached key-locker.exe is killed before
+ *  process.exit (Codex W-4b). */
+let disposeKeyLockerWiring: (() => Promise<void>) | null = null;
 const SHUTDOWN_GRACE_MS = 60_000;
 
 function shutdown(exitCode = 0): void {
@@ -333,6 +341,11 @@ function shutdown(exitCode = 0): void {
     shutdownTimer = null;
   }
   console.error("[desktop-touch] Shutting down...");
+  // ADR-014 R3 L3-4 W-4: the teardown clears the wiring's timers + event-bus + dispatch hook SYNCHRONOUSLY now
+  // and returns the host-dispose PROMISE, which we AWAIT in the flush Promise.all below so the detached
+  // key-locker.exe is killed before process.exit (Codex W-4b :127).
+  const keyLockerWiringTeardown = disposeKeyLockerWiring?.() ?? Promise.resolve();
+  disposeKeyLockerWiring = null;
   stopNativeRuntime();
   // ADR-019 Stage 5 sub-plan §6 R2 + ADR-020 SR-4 PR-SR4-2 — release the
   // shared DXGI duplication broker so the GPU session does not leak past
@@ -351,6 +364,7 @@ function shutdown(exitCode = 0): void {
   Promise.all([
     uiPatternStore.flushImmediateForShutdown(),
     macroOutcomeStore.flushImmediateForShutdown(),
+    keyLockerWiringTeardown, // ADR-014 R3 W-4: await the locker host dispose (shutdown frame + kill) before exit
   ])
     .catch(() => {})
     .finally(() => {
