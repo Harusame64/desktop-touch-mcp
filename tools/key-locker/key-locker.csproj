@@ -19,7 +19,15 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- DF-2 (live dogfood 2026-07-08): InvariantGlobalization MUST stay off. The WPF secure
+         PasswordBox, on Focus(), queries the CURRENT INPUT LANGUAGE culture
+         (InputLanguageSource.CurrentInputLanguage). On a non-en keyboard layout (e.g. Japanese,
+         LCID 1041) that CultureInfo ctor throws CultureNotFoundException under invariant mode —
+         an UNHANDLED dispatcher exception that fail-fasts the whole locker (exit 0xC0000409) the
+         instant `capture` opens the dialog, surfacing to Node as `pipe closed`. Invariant mode
+         only ever saved a little startup cost; WPF text input is fundamentally incompatible with
+         it on international systems. DPAPI/store are culture-independent (self-test unaffected). -->
+    <InvariantGlobalization>false</InvariantGlobalization>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
