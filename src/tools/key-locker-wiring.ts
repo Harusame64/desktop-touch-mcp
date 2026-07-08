@@ -260,16 +260,18 @@ let wiringSingleton: KeyLockerWiring | null = null;
  */
 export function registerKeyLockerWiring(): () => void {
   if (keyLockerDisabled()) return () => { /* feature off */ };
-  const wiring = new KeyLockerWiring(keyLockerManager());
-  wiringSingleton = wiring;
-  wiring.start();
-  // Capture the LOCAL instance so a (contract-forbidden) double-register's first teardown stops the FIRST
-  // wiring, not whichever one the module var currently points at (Opus W-4b P3). Only clear the singleton if it
-  // still points at us.
-  return () => {
-    wiring.stop();
-    if (wiringSingleton === wiring) wiringSingleton = null;
-  };
+  // IDEMPOTENT — start the timers/hook/subscription ONCE PER PROCESS. In HTTP transport `createMcpServer()`
+  // runs for EVERY `/mcp` request (`server-windows.ts` request path), so a non-idempotent register would leak
+  // a new 500ms reconcile timer + event-bus subscription + dispatch hook on every RPC (Codex W-4b). The wiring
+  // is a process-global resource (one dispatch-hook slot, one tracker/watch), so reuse the singleton.
+  if (wiringSingleton === null) {
+    const wiring = new KeyLockerWiring(keyLockerManager());
+    wiring.start();
+    wiringSingleton = wiring;
+  }
+  // Every caller's teardown stops the ONE process-global wiring (called at process shutdown; safe to null and
+  // re-init on a later register). Not a per-request teardown — HTTP request cleanup must NOT stop it.
+  return () => { wiringSingleton?.stop(); wiringSingleton = null; };
 }
 
 /** The live wiring instance (for the dogfood `launchAndAnchorConsole` entry), or null if not registered. */
