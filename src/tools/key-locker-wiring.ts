@@ -40,6 +40,7 @@ import {
   buildExitProbe,
   generateExitNonce,
   isSecretInputPrompt,
+  lastNonEmptyPromptLine,
   parseExitSentinel,
   readTerminalRaw,
   resolveTitleByHwnd,
@@ -205,13 +206,20 @@ export class KeyLockerWiring {
     return this.manager.withHost((h) => inject(h, binding, opaqueId, "pane", target));
   }
 
-  /** S-B readPromptTail: resolve the pane's title (substring-unique or null → decline) → read → classify. */
+  /** S-B readPromptTail: resolve the pane's title (substring-unique or null → decline) → read → classify.
+   *  Stricter than a bare `isSecretInputPrompt` for the INJECT trigger: also require the cursor row to END IN A
+   *  COLON. A real hidden-input prompt (`[sudo] password for alice:`, `Enter passphrase:`, `Password:`) ends in
+   *  `:`; a COMMAND ECHO / OUTPUT that merely ends in a credential word (`sudo tail -f /tmp/password`, cached
+   *  sudo, no prompt) does NOT — and `isSecretInputPrompt` alone would match it and inject the stored secret
+   *  into the running process (Codex W-4b disclosure). A colon-less real prompt is rare ⇒ it declines and the
+   *  human types it (never a wrong-inject). A proper echo-off detector is the robust follow-up (OQ-W-17-bis). */
   private async readPromptTail(paneId: string): Promise<PromptVerdict | null> {
     const title = resolveTitleByHwnd(paneId);
     if (title === null) return null; // ambiguous / vanished title ⇒ decline (never read a same-title sibling)
     const raw = await readTerminalRaw(title);
     if (raw === null) return null;
-    const isCredentialPrompt = isSecretInputPrompt(raw.text);
+    const line = lastNonEmptyPromptLine(raw.text);
+    const isCredentialPrompt = line !== null && /:\s*$/.test(line) && isSecretInputPrompt(raw.text);
     return { isCredentialPrompt, tail: raw.text, stillHiddenPrompt: isCredentialPrompt };
   }
 
