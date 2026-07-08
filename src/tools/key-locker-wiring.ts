@@ -92,7 +92,10 @@ export class KeyLockerWiring {
     this.eventSubId = subscribe(["window_disappeared"]);
     this.tickTimer = setInterval(() => this.tick(), TICK_MS);
     this.tickTimer.unref?.();
-    this.idleTimer = setInterval(() => { void this.manager.disposeIfIdle(IDLE_DISPOSE_MS); }, IDLE_CHECK_MS);
+    // ALWAYS `.catch()` a floating drive: `server-windows.ts` turns an unhandledRejection into a full
+    // `shutdown(1)` (all tools down). A locker-pipe hiccup during dispose must NOT crash the server — it
+    // retries next check (Opus W-4b P1).
+    this.idleTimer = setInterval(() => { void this.manager.disposeIfIdle(IDLE_DISPOSE_MS).catch(() => {}); }, IDLE_CHECK_MS);
     this.idleTimer.unref?.();
   }
 
@@ -128,8 +131,12 @@ export class KeyLockerWiring {
     }
     // Periodic reconcile (correlate stragglers + advance baselines + watch.tick + arm-hygiene).
     this.driver.tickWatch();
-    // Poll every armed pane for a credential prompt (pollBusy serializes; the loop runs on a hit).
-    for (const paneId of this.driver.armedPaneIds()) void this.driver.poll(paneId);
+    // Poll every armed pane for a credential prompt (pollBusy serializes; the loop runs on a hit). ALWAYS
+    // `.catch()` — a rejected poll (a locker-pipe hiccup mid-fill: the capture loop's pre-`try` seams
+    // resolveBinding/confirmInjection/injectPane can reject through `withHost`) would otherwise become an
+    // unhandledRejection → `server-windows.ts` `shutdown(1)` = ALL tools down (Opus W-4b P1). A swallowed poll
+    // just re-polls next tick — bounded-safe, the fill-failure north-star. Never crash the server for a fill.
+    for (const paneId of this.driver.armedPaneIds()) void this.driver.poll(paneId).catch(() => {});
   }
 
   private enabled(): boolean {
@@ -253,9 +260,16 @@ let wiringSingleton: KeyLockerWiring | null = null;
  */
 export function registerKeyLockerWiring(): () => void {
   if (keyLockerDisabled()) return () => { /* feature off */ };
-  wiringSingleton = new KeyLockerWiring(keyLockerManager());
-  wiringSingleton.start();
-  return () => { wiringSingleton?.stop(); wiringSingleton = null; };
+  const wiring = new KeyLockerWiring(keyLockerManager());
+  wiringSingleton = wiring;
+  wiring.start();
+  // Capture the LOCAL instance so a (contract-forbidden) double-register's first teardown stops the FIRST
+  // wiring, not whichever one the module var currently points at (Opus W-4b P3). Only clear the singleton if it
+  // still points at us.
+  return () => {
+    wiring.stop();
+    if (wiringSingleton === wiring) wiringSingleton = null;
+  };
 }
 
 /** The live wiring instance (for the dogfood `launchAndAnchorConsole` entry), or null if not registered. */
