@@ -16,7 +16,6 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { canonicalFpSet, canonicalKey, type BindingUri } from "./binding.js";
@@ -196,7 +195,14 @@ export async function knownHostsFingerprints(
 ): Promise<string[]> {
   const found = new Set<string>();
   for (const file of new Set(files)) {
-    if (!existsSync(file)) continue;
+    // NO `existsSync(file)` pre-filter (DF-3, live dogfood 2026-07-08): `ssh -G` reports known_hosts
+    // paths in the SSH BINARY'S OWN world. Git-for-Windows' MSYS OpenSSH — very commonly first on a
+    // Windows PATH — prints POSIX paths like `/c/Users/you/.ssh/known_hosts` that Windows
+    // `fs.existsSync` cannot stat, so the old guard dropped EVERY candidate file ⇒ the host was always
+    // "not known" ⇒ the derivation returned null ⇒ autofill SILENTLY never fired for anyone whose PATH
+    // `ssh` is Git's. `ssh-keygen -F -f <file>` already returns non-zero for an absent/unreadable file
+    // (skipped just below), so it is the sole, format-correct arbiter — and Node resolves the SAME ssh
+    // family for `ssh-keygen`, so an MSYS path emitted by MSYS `ssh -G` is read by MSYS `ssh-keygen`.
     for (const token of new Set(tokens)) {
       const { code, stdout } = await exec("ssh-keygen", ["-l", "-F", token, "-f", file]);
       if (code !== 0) continue; // host not in this file under this token — skip, keep unioning
