@@ -135,7 +135,7 @@ export interface CaptureDriverDeps {
   capture(opaqueId: string): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure). */
   deleteSecret(opaqueId: string): Promise<void>;
-  /** Assemble the pane InjectTarget for `paneId` (`assembleInjectTarget`) + SendInput (`inject`, "pane"). */
+  /** Assemble the pane InjectTarget for `paneId` (`assembleInjectTarget`) + console-buffer inject (`inject`, "pane"). */
   injectPane(paneId: string, binding: BindingUri, opaqueId: string, submit: boolean): Promise<InjectResult>;
   /** The D2 backstop confirm before a MATCH autofill. */
   confirmInjection(binding: BindingUri): Promise<boolean>;

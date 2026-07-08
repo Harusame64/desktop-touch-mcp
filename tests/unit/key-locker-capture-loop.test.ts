@@ -19,7 +19,7 @@ const SSH: BindingUri = { scheme: "ssh", user: "deploy", host: "prod", port: 22,
 const SSHKEY: BindingUri = { scheme: "sshkey", keyFp: "SHA256:zzz" };
 const HTTPS: BindingUri = { scheme: "https-cred", host: "github.com", port: 443, user: "octocat" };
 
-const SENDINPUT_OK = (verified = true): InjectResult => ({ ok: true, injector: "sendinput", verified });
+const CONSOLE_INJECT_OK = (verified = true): InjectResult => ({ ok: true, injector: "console", verified });
 const ABORT = (code: string): InjectResult => ({ ok: false, code: code as never });
 const LANDED = (accepted: boolean, reason = accepted ? "exit_0" : "not_exit_0:timeout"): LandedResult =>
   ({ accepted, mode: "one-shot", reason });
@@ -36,7 +36,7 @@ function makeDeps(o: Partial<CaptureLoopDeps> = {}): CaptureLoopDeps {
     confirmPolicyFor: vi.fn(() => true),
     capture: vi.fn(async () => ({ captured: true })),
     deleteSecret: vi.fn(async () => {}),
-    injectPane: vi.fn(async () => SENDINPUT_OK()),
+    injectPane: vi.fn(async () => CONSOLE_INJECT_OK()),
     awaitLanded: vi.fn(async () => LANDED(true)),
     confirmInjection: vi.fn(async () => true),
     offerSave: vi.fn(async () => "save"),
@@ -177,7 +177,7 @@ describe("runCaptureLoop — MATCH (autofill a stored secret)", () => {
   it("filled_from_store.verified passes through the locker re-verify bit", async () => {
     const deps = makeDeps({
       resolveBinding: vi.fn(async () => ({ opaqueId: "stored-1" })),
-      injectPane: vi.fn(async () => SENDINPUT_OK(false)),
+      injectPane: vi.fn(async () => CONSOLE_INJECT_OK(false)),
     });
     expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "filled_from_store", verified: false });
   });
