@@ -528,6 +528,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   MalformedUri: [
     "The binding URI is malformed. Percent-encode any character outside the grammar and follow the scheme's shape (e.g. ssh://user@host:22).",
+    "For an SSH key passphrase use the opaque form sshkey:SHA256:<fingerprint> — no // after the scheme.",
   ],
   BadPercentEscape: [
     "A percent-escape in the URI is invalid — use %XX with two hex digits.",
