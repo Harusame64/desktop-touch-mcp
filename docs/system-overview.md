@@ -589,6 +589,12 @@ Reads the current buffer of PowerShell / cmd / Windows Terminal via UIA `TextPat
 #### `terminal(action='send')`
 Sends raw input to a terminal. `waitForPrompt` blocks until the next prompt reappears.
 
+> **Targeting by `paneId`.** `read` / `send` accept an optional `paneId` (the decimal
+> window handle returned by `key_locker(action='launch_console')`) as an alternative to
+> `windowTitle` — provide one of the two; `paneId` takes precedence. It targets that
+> exact window even after its title changes (e.g. an `ssh` login renaming the window to
+> `user@host`), so a follow-up `send` / `read` still reaches the same pane.
+
 ---
 
 ### 📊 Office (Excel)
@@ -622,24 +628,34 @@ excel({ action:'run_vba',
 #### `key_locker`
 Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login
 passwords). The secret is entered once into the locker's own secure dialog (a separate
-signed helper process) and stored encrypted on this machine (Windows DPAPI, current
-user); it is **never** shown to the assistant or sent through this tool. Autofill then
-happens automatically when a bound command triggers a credential prompt — there is no
-manual fill action.
+helper process) and stored encrypted on this machine (Windows DPAPI, current user); it
+is **never** shown to the assistant or sent through this tool. Autofill then happens
+automatically when a bound command reaches its credential prompt — there is no manual
+fill action. But autofill **only fires in a console opened by `launch_console`** — a
+pre-existing terminal is never autofilled.
 
+- `action='launch_console'` launches (or reuses) an autofill-capable anchored console
+  and returns `{ paneId, windowTitle }`. Run the `ssh` / `sudo` command into it with
+  `terminal({ action:'send', paneId })`. The console is a classic visible Windows
+  console the human can watch and type into — you can take over at any prompt. Pass
+  `fresh:true` to force a new console instead of reusing the current one.
 - `action='save'` enrolls a credential for a binding URI (`ssh://user@host:22`,
-  `sudo://host/root`, `https-cred://host:443`, `sshkey://SHA256:…`): it opens the secure
-  dialog and stores the secret. The first `save` also shows a one-time enable
-  confirmation (first-run consent).
+  `sudo://host/user`, `https-cred://host:443`, `sshkey://SHA256:…`): it opens the secure
+  dialog and stores the secret. The first `save` (or `launch_console`) also shows a
+  one-time enable confirmation (first-run consent). An `ssh` save needs the host key
+  already in `known_hosts` — connect to the host once first.
 - `action='list'` shows saved bindings (metadata only). `action='forget'` deletes a
   binding and its secret. `action='set_policy'` toggles per-binding autofill
-  confirmation. `action='status'` reports whether the locker is enabled and the binding
-  count.
+  confirmation (every autofill asks by default). `action='status'` reports whether the
+  locker is enabled and the binding count.
 - Windows-only. Disable the whole feature with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`.
+  The helper executable is currently unsigned, so Windows SmartScreen / antivirus may
+  show an "unknown publisher" warning on first run (expected; code signing is planned).
 
 ```js
-key_locker({ action:'status' })                             // → { consentAccepted:false, bindingCount:0 }
-key_locker({ action:'save', uri:'sudo://buildbox/root' })   // opens the secure dialog → { captured:true }
+key_locker({ action:'save', uri:'ssh://user@host:22' })     // opens the secure dialog → { captured:true }
+key_locker({ action:'launch_console' })                     // → { paneId:'12345678', windowTitle:'dtm-locker-console-…' }
+terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })  // password fills at the prompt
 ```
 
 ---

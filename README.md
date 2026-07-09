@@ -23,6 +23,7 @@ npx -y @harusame64/desktop-touch-mcp
 - **⚡ High-performance Rust Native Core** — The UIA bridge and image-diff engine are written in Rust (`napi-rs` + `windows-rs`) and loaded as a native `.node` addon. Direct COM calls from a dedicated MTA thread eliminate PowerShell process spawning — `getFocusedElement` completes in **2 ms** (160× faster), and `getUiElements` returns full trees in **~100 ms** with a batch BFS algorithm that minimizes cross-process RPC. Image-diff operations use **SSE2 SIMD** for 13–15× throughput. When the native engine is unavailable, every function transparently falls back to PowerShell — zero config required.
 - **🎯 Set-of-Marks (SoM) visual fallback** — Games, RDP sessions, and non-accessible Electron apps return clickable elements even when UIA is completely blind. `screenshot(detail="text")` automatically detects UIA sparsity and activates a Hybrid Non-CDP pipeline: Rust-powered grayscale + bilinear upscale → Windows OCR → clustering → red bounding-box annotation with numbered badges (`[1]`, `[2]`…). Two parallel representations returned: a visual PNG for spatial orientation and a semantic `elements[]` list with `clickAt` coords — no CDP required.
 - **🔁 One-call confirmation on visual-only targets** — On UIA-blind targets (Electron, PWAs, games, custom canvases, RDP windows), `desktop_act` can fold the post-action confirmation into its own response: an optional `roiCapture` carrying a PNG crop of *just the region that changed* plus a lease-less preview of the controls now visible there. The agent confirms what its click did and finds the next target without a separate `desktop_state` + `screenshot`. On visual-only targets it is **on by default** for a visible change (`returnCapture:"on-change"`); pass `returnCapture:"never"` to suppress it, or `"always"` to force it. Never attached on structured targets (browser/CDP, UIA-rich native), where `desktop_state` is cheaper and exact — so those responses are unchanged.
+- **🔐 Key Locker — the terminal autofills your SSH / sudo passwords** — Save a credential once into the locker's own secure dialog (stored encrypted on your machine with Windows DPAPI; never shown to the assistant), then run `ssh` / `sudo` in a console opened by `key_locker(action='launch_console')` — the password is filled in automatically when the hidden prompt appears, with a per-fill confirmation prompt by default. See [Key Locker](#key-locker-terminal-credential-autofill).
 - **LLM-native design** — Built around how LLMs think, not how humans click. `run_macro` batches multiple operations into a single API call; `diffMode` sends only the windows that changed since the last frame. Minimal tokens, minimal round-trips.
 - **Reactive Perception Graph** — Register a `lensId` for a window or browser tab, pass it to action tools, and get guard-checked `post.perception` feedback after each action. It reduces repeated `screenshot` / `desktop_state` calls and prevents wrong-window typing or stale-coordinate clicks.
 - **Full CJK support** — Uses Win32 `GetWindowTextW` for window titles, avoiding nut-js garbling. IME bypass input supported for Japanese/Chinese/Korean environments.
@@ -291,6 +292,40 @@ terminal({
 - Exit mode controls its own delivery, so delivery-shaping `sendOptions`
   (`method` / `preferClipboard` / `pressEnter` / `chunkSize` / `pasteKey`) are
   rejected with `InvalidArgs`; focus options remain accepted.
+
+---
+
+## Key Locker (terminal credential autofill)
+
+Running `ssh user@host` or `sudo …` normally stops at a hidden password prompt an
+assistant can't safely type into. Key Locker stores your SSH key passphrases and
+sudo / login passwords encrypted on your machine (Windows DPAPI, current user) and
+fills them in automatically when a bound command reaches its prompt. The secret is
+typed once into the locker's own secure dialog — it is never shown to the assistant
+and never travels through the MCP channel.
+
+```js
+// 1. Save the credential once — opens a secure dialog on your desktop
+key_locker({ action:'save', uri:'ssh://user@host:22' })
+
+// 2. Open an autofill-capable console (returns its paneId)
+key_locker({ action:'launch_console' })   // → { paneId:'12345678', windowTitle:'…' }
+
+// 3. Run the command through that pane — the password is filled at the prompt
+terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
+```
+
+- **Autofill only fires in a console opened by `launch_console`** — a pre-existing
+  terminal is never autofilled. The console is a classic visible Windows console,
+  so you can watch it and take over at any prompt yourself.
+- **Every autofill asks you to confirm by default**; opt a binding out with
+  `set_policy`. `list` / `status` / `forget` manage saved credentials.
+- `terminal` `read` / `send` accept `paneId` as an alternative to `windowTitle` —
+  it targets that exact window even after an `ssh` login renames its title.
+- Supported binding URIs: `ssh://user@host:22`, `sudo://host/user`,
+  `https-cred://host`, and SSH key passphrases (`sshkey://SHA256:…`). An `ssh`
+  save needs the host key already in `known_hosts` (connect to the host once first).
+- Windows only. Disable the whole feature with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`.
 
 ---
 
