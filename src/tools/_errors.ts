@@ -521,10 +521,10 @@ const SUGGESTS: Record<string, string[]> = {
   // Binding-URI parse failures reachable via key_locker `save`/`forget`/`set_policy` (L1 grammar).
   // Shared grammar hint — the typed message already names the offending character/component.
   UnknownScheme: [
-    "The URI scheme is not one of: ssh:// (user@host:port), sudo:// (host/targetUser), https-cred:// (host:port), sshkey:// (SHA256:…).",
+    "The URI scheme is not one of: ssh:// (user@host:port), sudo:// (host/targetUser), https-cred:// (host:port), sshkey: (SHA256:…, opaque form — no //).",
   ],
   MissingComponent: [
-    "The binding URI is missing a required part. Examples: ssh://user@host:22, sudo://host/root, https-cred://github.com:443, sshkey://SHA256:abc…",
+    "The binding URI is missing a required part. Examples: ssh://user@host:22, sudo://host/root, https-cred://github.com:443, sshkey:SHA256:abc…",
   ],
   MalformedUri: [
     "The binding URI is malformed. Percent-encode any character outside the grammar and follow the scheme's shape (e.g. ssh://user@host:22).",
