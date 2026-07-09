@@ -102,6 +102,10 @@
             <h2>Project Milestones</h2>
             <p>As the project evolves, we document major architectural shifts and milestones here.</p>
             <div class="three-up">
+              <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.12.0">
+                <h3>v1.12: Key Locker — the Terminal Autofills Your Passwords</h3>
+                <p>Running <code>ssh</code> or <code>sudo</code> normally stops at a hidden password prompt an agent can't safely type into. The new <code>key_locker</code> tool stores SSH key passphrases and sudo / login passwords encrypted on your machine (Windows DPAPI) and fills them in when a bound command reaches its prompt — the secret is entered once into the locker's own secure dialog and is never shown to the assistant. Autofill only fires in a console opened by <code>key_locker(action='launch_console')</code>, a classic visible console the human can take over at any prompt, and every fill asks for confirmation by default. The returned <code>paneId</code> also gives <code>terminal</code> a title-change-proof way to keep driving the same pane through an <code>ssh</code> login (32 tools total).</p>
+              </a>
               <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.11.0">
                 <h3>v1.11: Screenshots That Cost Less and See More</h3>
                 <p>Screenshots stop inlining their pixels into every response: <code>screenshot</code> (and the Set-of-Mark, diff, scroll, workspace, and <code>desktop_act</code> crop results) now return a cheap <code>screenshot://by-ref/{id}</code> link to an image saved on disk, so routine look-act-confirm loops cost a fraction of the tokens — pixels are spent only when the link is opened. A Windows.Graphics.Capture path lets GPU-rendered and occluded windows return real pixels instead of black, with a <code>captureBlocked</code> signal when content genuinely can't be captured, and two new tools — <code>screenshot_query</code> and <code>screenshot_gc</code> (31 tools total) — inspect and prune the self-bounding cache.</p>

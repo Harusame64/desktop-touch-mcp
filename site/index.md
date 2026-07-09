@@ -98,6 +98,10 @@ It is trying to document an active line of engineering and research.
 
 As the project evolves, we document major architectural shifts and milestones here.
 
+### v1.12: Key Locker — the Terminal Autofills Your Passwords
+Running `ssh` or `sudo` normally stops at a hidden password prompt an agent can't safely type into. The new `key_locker` tool stores SSH key passphrases and sudo / login passwords encrypted on your machine (Windows DPAPI) and fills them in when a bound command reaches its prompt — the secret is entered once into the locker's own secure dialog and is never shown to the assistant. Autofill only fires in a console opened by `key_locker(action='launch_console')`, a classic visible console the human can take over at any prompt, and every fill asks for confirmation by default. The returned `paneId` also gives `terminal` a title-change-proof way to keep driving the same pane through an `ssh` login (32 tools total).
+- [v1.12.0 release notes](https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.12.0)
+
 ### v1.11: Screenshots That Cost Less and See More
 Screenshots stop inlining their pixels into every response. `screenshot` — and the Set-of-Mark overlays, diff frames, scroll captures, workspace snapshots, and `desktop_act`'s changed-region crop — now hand back a cheap `screenshot://by-ref/{id}` link to an image saved on disk, so routine look-act-confirm loops cost a fraction of the tokens; the agent spends them on pixels only when it actually opens the link. The same release adds a Windows.Graphics.Capture path so GPU-rendered and occluded windows return real pixels instead of black (with a `captureBlocked` signal when content genuinely can't be captured), plus two new tools — `screenshot_query` and `screenshot_gc` (31 tools total) — to inspect and prune the self-bounding on-disk cache.
 - [v1.11.0 release notes](https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.11.0)

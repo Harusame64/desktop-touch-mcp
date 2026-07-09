@@ -22,6 +22,7 @@ npx -y @harusame64/desktop-touch-mcp
 - **⚡ 高性能 Rust ネイティブコア** — UIA ブリッジと画像差分エンジンを Rust (`napi-rs` + `windows-rs`) で実装し、ネイティブ `.node` アドオンとしてロード。専用 MTA スレッドからの直接 COM 呼び出しにより PowerShell プロセス起動を排除 — `getFocusedElement` は **2ms**（160 倍高速）、`getUiElements` はバッチ型 BFS アルゴリズムでクロスプロセス RPC を最小化し **約 100ms** で完了。画像差分は **SSE2 SIMD** で 13〜15 倍のスループット。ネイティブエンジンが利用不可の場合、全関数が PowerShell に透過フォールバック — 設定不要。
 - **🎯 Set-of-Marks (SoM) ビジュアルフォールバック** — ゲーム・RDP・非対応 Electron アプリで UIA が完全に機能しない場合でも、`screenshot(detail="text")` が Hybrid Non-CDP パイプラインを自動起動。Rust 画像前処理 → Windows OCR → クラスタリング → 赤い枠線 + 番号バッジ（`[1]`、`[2]`…）付き PNG 画像を生成し、`clickAt` 座標付きの要素リストを返します。CDP 不要。
 - **🔁 視覚のみ対象での 1 コール確認** — UIA が効かない対象（Electron・PWA・ゲーム・自前描画キャンバス・RDP ウィンドウ）では、`desktop_act` が操作後の確認を応答自体に畳み込めます。成功時にオプションの `roiCapture` ——「変化した領域だけ」を切り出した PNG ＋ そこに今ある要素の lease なしプレビュー —— を同梱するので、別途 `desktop_state` ＋ `screenshot` を呼ばずに「クリックの結果」と「次の対象」を確認できます。視覚のみ対象では変化があれば**デフォルトで付与**されます（`returnCapture:"on-change"`）。`returnCapture:"never"` で抑止、`"always"` で常時付与。構造化対象（ブラウザ/CDP・UIA リッチなネイティブ）には付与されないため、それらの応答は不変です（そこは `desktop_state` の方が安価かつ正確）。
+- **🔐 Key Locker — SSH / sudo のパスワードをターミナルが自動入力** — 認証情報はロッカー自身のセキュアダイアログに一度だけ入力して、この PC 上に暗号化保存（Windows DPAPI）— アシスタントには一切見えません。以後は `key_locker(action='launch_console')` で開いたコンソールで `ssh` / `sudo` を実行するだけで、隠しパスワードプロンプトに自動入力されます（既定では入力毎に確認あり）。詳細は [Key Locker](#key-locker-ターミナル認証情報の自動入力) 参照。
 - **LLM ネイティブ設計** — 人間の操作を模倣するのではなく、「LLM がいかにコンテキストを消費せず高速に動けるか」を前提に設計。`run_macro` による複数操作の一括実行（API 往復の削減）と、**MPEG P-frame 方式のレイヤー差分** (`diffMode`) を組み合わせることで、無駄な画像転送や推論ループを極限まで削ぎ落とす。
 - **Reactive Perception Graph** — ウィンドウやブラウザタブに `lensId` を登録し、以後の action tool に渡すだけで、操作前の安全 guard と操作後の `post.perception` フィードバックを受け取れます。`screenshot` / `desktop_state` の反復を減らし、別ウィンドウへの誤入力や古い座標クリックを防ぎます。
 - **日本語/CJK 完全対応** — ウィンドウタイトル取得に Win32 `GetWindowTextW` を使用。nut-js の文字化けを回避。IME バイパス入力にも対応。
@@ -330,6 +331,29 @@ terminal({
 - **first-class shell:** `bash` と `powershell`。`cmd.exe` は未対応（`ExitModeShellUnsupported`）。
 - **未完の構文で終わる入力は即座に reject**（`ExitModeUnsafeInput`）。閉じていない引用符 / here-doc / `$(…)` / 末尾の `\` または PowerShell バッククォートなどはハングせず弾きます。
 - exit mode は配送を自前制御するため、配送系の `sendOptions`（`method` / `preferClipboard` / `pressEnter` / `chunkSize` / `pasteKey`）は `InvalidArgs` で reject します（focus 系オプションは利用可）。
+
+---
+
+## Key Locker (ターミナル認証情報の自動入力)
+
+`ssh user@host` や `sudo …` は通常、アシスタントが安全に入力できない「隠しパスワードプロンプト」で止まります。Key Locker は SSH 鍵のパスフレーズや sudo / ログインパスワードをこの PC 上に暗号化保存し（Windows DPAPI, current user）、対象コマンドがプロンプトに達すると自動で入力します。秘密情報の入力はロッカー自身のセキュアダイアログへの一度きり — アシスタントには一切見えず、MCP チャネルを通ることもありません。
+
+```js
+// 1. 認証情報を一度だけ登録 — デスクトップにセキュアダイアログが開く
+key_locker({ action:'save', uri:'ssh://user@host:22' })
+
+// 2. 自動入力対応コンソールを起動（paneId が返る）
+key_locker({ action:'launch_console' })   // → { paneId:'12345678', windowTitle:'…' }
+
+// 3. その pane にコマンドを流す — プロンプトでパスワードが自動入力される
+terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
+```
+
+- **自動入力は `launch_console` で開いたコンソールでのみ発火** — 既存のターミナルには決して入力しません。開くのは通常の可視な Windows コンソールなので、目視でき、任意のプロンプトで人間が引き継いで直接入力もできます。
+- **既定では自動入力の度に確認ダイアログ**が出ます。binding 単位で `set_policy` により確認を省略可。保存済み認証情報の管理は `list` / `status` / `forget`。
+- `terminal` の `read` / `send` は `windowTitle` の代わりに `paneId` を受け取れます — `ssh` ログインでウィンドウタイトルが変わっても同じ窓を正確に狙えます。
+- 対応 binding URI: `ssh://user@host:22`、`sudo://host/user`、`https-cred://host`、SSH 鍵パスフレーズ（`sshkey:SHA256:…`）。`ssh` の登録はホスト鍵が `known_hosts` にあることが前提です（先に一度手動で接続してください）。
+- Windows 専用。機能全体の無効化は `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`。セキュアダイアログは未署名の実行ファイルのため、初回起動時に Windows SmartScreen の「発行元不明」警告が出ることがあります（[前提環境](#前提環境)の注意参照）。
 
 ---
 ## ブラウザ CDP 自動化
