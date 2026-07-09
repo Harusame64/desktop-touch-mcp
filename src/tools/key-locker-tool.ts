@@ -45,7 +45,7 @@ import { keyLockerWiring } from "./key-locker-wiring.js";
 
 const URI_DESC =
   "A binding URI identifying the credential target — e.g. `ssh://user@host:22`, `sudo://host/root`, " +
-  "`https-cred://github.com:443`, `sshkey://SHA256:…`. Parsed per the L1 grammar; malformed input is rejected.";
+  "`https-cred://github.com:443`, `sshkey:SHA256:…` (no `//`). Parsed per the L1 grammar; malformed input is rejected.";
 
 const listSchema = z.object({
   action: z.literal("list").describe("Enumerate saved bindings (non-secret metadata only)."),
@@ -395,7 +395,7 @@ export function registerKeyLockerTools(server: McpServer): void {
           "to this tool.",
         details:
           "action='save' pre-seeds a credential for a binding URI (ssh://user@host:22, sudo://host/root, " +
-          "https-cred://host:443, sshkey://SHA256:…): it opens the locker's secure entry dialog and " +
+          "https-cred://host:443, sshkey:SHA256:…): it opens the locker's secure entry dialog and " +
           "stores the secret; the first save also shows a one-time enable confirmation. action='list' " +
           "shows saved bindings (metadata only, never secrets). action='forget' deletes a binding and its " +
           "secret. action='set_policy' toggles per-binding autofill confirmation. action='status' reports " +
