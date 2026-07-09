@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.12.1] - 2026-07-09 — Fix: the documented SSH-key-passphrase URI form was rejected
+
+### Fixed
+
+- **`key_locker` documented an SSH-key-passphrase binding URI the parser rejects.** The tool
+  description and error hints showed `sshkey://SHA256:…`, but the URI grammar defines `sshkey`
+  as an opaque form without `//` — so copying the documented example into
+  `key_locker({action:'save'})` always failed with `MalformedUri`. All published strings now
+  show the accepted form **`sshkey:SHA256:…`**, and the `MalformedUri` error hint now spells
+  out the fix ("no `//` after the scheme") for anyone who types the old form. Behavior is
+  unchanged — `ssh://`, `sudo://`, and `https-cred://` bindings were never affected, and
+  previously saved bindings keep working.
+
+### Docs
+
+- The README now has a dedicated Key Locker section — the save → `launch_console` →
+  `terminal send` flow with a copy-paste example, the security model, and the supported
+  binding URI forms.
+
 ## [1.12.0] - 2026-07-08 — Key Locker: the terminal autofills your SSH / sudo passwords
 
 ### Added
