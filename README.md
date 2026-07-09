@@ -323,9 +323,12 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
 - `terminal` `read` / `send` accept `paneId` as an alternative to `windowTitle` —
   it targets that exact window even after an `ssh` login renames its title.
 - Supported binding URIs: `ssh://user@host:22`, `sudo://host/user`,
-  `https-cred://host`, and SSH key passphrases (`sshkey://SHA256:…`). An `ssh`
+  `https-cred://host`, and SSH key passphrases (`sshkey:SHA256:…`). An `ssh`
   save needs the host key already in `known_hosts` (connect to the host once first).
 - Windows only. Disable the whole feature with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`.
+  The secure dialog is an unsigned helper executable — Windows SmartScreen may show
+  an "unknown publisher" warning on first run (see the note under
+  [Requirements](#requirements)).
 
 ---
 

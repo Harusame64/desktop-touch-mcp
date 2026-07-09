@@ -591,9 +591,11 @@ Sends raw input to a terminal. `waitForPrompt` blocks until the next prompt reap
 
 > **Targeting by `paneId`.** `read` / `send` accept an optional `paneId` (the decimal
 > window handle returned by `key_locker(action='launch_console')`) as an alternative to
-> `windowTitle` — provide one of the two; `paneId` takes precedence. It targets that
-> exact window even after its title changes (e.g. an `ssh` login renaming the window to
-> `user@host`), so a follow-up `send` / `read` still reaches the same pane.
+> `windowTitle` — provide one of the two; `paneId` takes precedence. `send` binds
+> directly to that exact window even after its title changes (e.g. an `ssh` login
+> renaming the window to `user@host`). `read` resolves the pane's current title under
+> the hood and declines — rather than risk reading a same-title sibling — when that
+> title is no longer unique among open windows.
 
 ---
 
@@ -640,7 +642,7 @@ pre-existing terminal is never autofilled.
   console the human can watch and type into — you can take over at any prompt. Pass
   `fresh:true` to force a new console instead of reusing the current one.
 - `action='save'` enrolls a credential for a binding URI (`ssh://user@host:22`,
-  `sudo://host/user`, `https-cred://host:443`, `sshkey://SHA256:…`): it opens the secure
+  `sudo://host/user`, `https-cred://host:443`, `sshkey:SHA256:…`): it opens the secure
   dialog and stores the secret. The first `save` (or `launch_console`) also shows a
   one-time enable confirmation (first-run consent). An `ssh` save needs the host key
   already in `known_hosts` — connect to the host once first.

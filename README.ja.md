@@ -352,8 +352,8 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
 - **自動入力は `launch_console` で開いたコンソールでのみ発火** — 既存のターミナルには決して入力しません。開くのは通常の可視な Windows コンソールなので、目視でき、任意のプロンプトで人間が引き継いで直接入力もできます。
 - **既定では自動入力の度に確認ダイアログ**が出ます。binding 単位で `set_policy` により確認を省略可。保存済み認証情報の管理は `list` / `status` / `forget`。
 - `terminal` の `read` / `send` は `windowTitle` の代わりに `paneId` を受け取れます — `ssh` ログインでウィンドウタイトルが変わっても同じ窓を正確に狙えます。
-- 対応 binding URI: `ssh://user@host:22`、`sudo://host/user`、`https-cred://host`、SSH 鍵パスフレーズ（`sshkey://SHA256:…`）。`ssh` の登録はホスト鍵が `known_hosts` にあることが前提です（先に一度手動で接続してください）。
-- Windows 専用。機能全体の無効化は `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`。
+- 対応 binding URI: `ssh://user@host:22`、`sudo://host/user`、`https-cred://host`、SSH 鍵パスフレーズ（`sshkey:SHA256:…`）。`ssh` の登録はホスト鍵が `known_hosts` にあることが前提です（先に一度手動で接続してください）。
+- Windows 専用。機能全体の無効化は `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`。セキュアダイアログは未署名の実行ファイルのため、初回起動時に Windows SmartScreen の「発行元不明」警告が出ることがあります（[前提環境](#前提環境)の注意参照）。
 
 ---
 ## ブラウザ CDP 自動化
