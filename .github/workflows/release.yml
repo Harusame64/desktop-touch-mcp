@@ -281,8 +281,8 @@ jobs:
       # dependency, so `publish --provenance` died with MODULE_NOT_FOUND and
       # the v1.12.1 job failed twice (published manually). A floating `latest`
       # makes every future npm major a release-day gamble; bump this pin
-      # deliberately after verifying `npx npm@<major> publish --provenance`
-      # works on a dry run.
+      # deliberately, and verify on the bumped major's first real release (a
+      # --dry-run does not exercise the sigstore/provenance path that broke here).
       - name: Publish to npm (via npx npm@11 for OIDC support)
         run: npx -y npm@11 publish --ignore-scripts --provenance
 
