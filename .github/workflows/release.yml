@@ -276,8 +276,15 @@ jobs:
       # mid-self-upgrade and dies with `Cannot find module 'promise-retry'`,
       # so use npx — it stages npm 11 in a temp dir and avoids the
       # self-overwrite race.
-      - name: Publish to npm (via npx npm@latest for OIDC support)
-        run: npx -y npm@latest publish --ignore-scripts --provenance
+      # v1.12.1 fix: pin the major to npm@11 instead of npm@latest — the day
+      # npm 12.0.0 hit the `latest` dist-tag it shipped without its `sigstore`
+      # dependency, so `publish --provenance` died with MODULE_NOT_FOUND and
+      # the v1.12.1 job failed twice (published manually). A floating `latest`
+      # makes every future npm major a release-day gamble; bump this pin
+      # deliberately, and verify on the bumped major's first real release (a
+      # --dry-run does not exercise the sigstore/provenance path that broke here).
+      - name: Publish to npm (via npx npm@11 for OIDC support)
+        run: npx -y npm@11 publish --ignore-scripts --provenance
 
       - name: Verify npm publish
         run: |
