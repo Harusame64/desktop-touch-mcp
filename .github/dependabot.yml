@@ -6,6 +6,12 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    ignore:
+      # typescript-eslint (8.63.0, latest) still declares peer typescript ">=4.8.4 <6.1.0".
+      # A TypeScript major bump therefore breaks `npm ci` with ERESOLVE (see PR #530).
+      # Drop this once typescript-eslint ships a release that accepts TypeScript 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         patterns:
