@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.12.2] - 2026-07-16 — Fix: garbled (mojibake) CJK / Japanese output in Key Locker consoles
+
+### Fixed
+
+- **The Key Locker console now decodes UTF-8 program output correctly.** On a system whose
+  default console code page is not UTF-8 — for example a Japanese Windows install (code page
+  932) — a command that prints UTF-8 text (a database CLI, `git`, or any modern tool) showed up
+  as garbled characters (mojibake) in the console opened by
+  `key_locker({action:'launch_console'})`, and `terminal({action:'read'})` returned that same
+  garbled text — so the assistant could not read Japanese/CJK output either. The launched console
+  now sets its output encoding to UTF-8 at startup, so UTF-8 output (including CJK / Japanese)
+  both renders on screen and reads back correctly. This changes only how program output is
+  decoded for display; credential autofill and all other behavior are unchanged.
+
 ## [1.12.1] - 2026-07-09 — Fix: the documented SSH-key-passphrase URI form was rejected
 
 ### Fixed

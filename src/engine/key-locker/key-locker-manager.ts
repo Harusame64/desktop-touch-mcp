@@ -218,20 +218,42 @@ export class KeyLockerManager {
     const sys32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
     const cmdExe = join(sys32, "cmd.exe");
     const conhostExe = join(sys32, "conhost.exe");
-    // `start "" <conhost> powershell -NoProfile -NoExit -Command <title>`: the empty "" is start's window-title
-    // arg (so a quoted exe path is never mistaken for the title); `-NoExit` leaves an interactive prompt for the
-    // human (cooperative model, we never read its stdio); `-Command` applies the UNIQUE title. The title nonce is
-    // hex (no cmd `&^%` metachars), so Node's default arg quoting is safe through cmd (dogfood-verified).
-    // `-NoProfile` is LOAD-BEARING, not cosmetic (Opus W-4b R1 P2): the entire read/inject path keys on the
-    // window title (`resolveTitleByHwnd`), but a user profile with a custom `prompt` function (oh-my-posh /
-    // starship — common in this audience) RE-SETS `$Host.UI.RawUI.WindowTitle` on every REPL render, which
-    // would overwrite our nonce ~ms after `-Command` and break BOTH the claim below AND every later title read.
-    // The anchored pane is a locker-owned utility console, so dropping profile customizations is acceptable
-    // (sudo/ssh are System32/PATH exes, unaffected). A mid-session ad-hoc title change is still fail-safe
-    // (`resolveTitleByHwnd` declines ⇒ the human types the credential; never a wrong-inject).
+    // La-0 (CJK mojibake fix, 2026-07-16): set the console's OUTPUT codepage to UTF-8 so a child tool that
+    // writes UTF-8 bytes (a DB CLI, git, ssh diagnostics) is decoded correctly into the console's UTF-16 buffer
+    // — otherwise, on a JP-default (cp932) machine those bytes are mis-decoded as Shift-JIS and BOTH the human's
+    // display AND `terminal(read)` (which reads that UTF-16 buffer) return mojibake. `[Console]::OutputEncoding`
+    // calls ONLY `SetConsoleOutputCP(65001)` (console-global output CP) — it does NOT touch the INPUT codepage
+    // or the `WriteConsoleInputW`/UTF-16 cooked-read path the L2 secret injection rides on, so injection is
+    // unaffected (verified on-hardware: `InputCP=932 OutputCP=65001`). Deliberately NOT `chcp 65001`, which also
+    // changes the input CP (a layer the injector's cooked-read depends on) and would smuggle a `>` cmd metachar.
+    // `[System.Text.UTF8Encoding]::new()` = no BOM (vs `[Text.Encoding]::UTF8`, which prepends a BOM).
+    // The encoding assignment is wrapped in `try {…} catch {}` so it is STRICTLY NON-REGRESSIVE: the window
+    // title is the LOAD-BEARING claim key (the read/inject path keys on it), so even in the unlikely event the
+    // `OutputEncoding` setter throws, the title MUST still be applied — otherwise the claim poll below times out
+    // and the whole launch fails `KeyLockerSpawnFailed`. Worst case degrades to the pre-La-0 behavior (a
+    // possibly-mojibake but fully functional console), never a launch failure.
+    //
+    // Delivered via `-EncodedCommand <base64-utf16le>` (NOT `-Command`): the setup expression contains `(`, `)`,
+    // `::`, and spaces, which would otherwise have to survive node → cmd → `start` three-layer quoting; base64
+    // uses only `A-Za-z0-9+/=` (no cmd metachar), so it sidesteps that parsing entirely. The title nonce is
+    // interpolated into the command string BEFORE encoding, so it is still applied by powershell exactly as
+    // before (the claim below polls for it). `-EncodedCommand` runs the command then, with `-NoExit`, leaves the
+    // interactive prompt open.
+    //
+    // `start "" <conhost> powershell ...`: the empty "" is start's window-title arg (so a quoted exe path is
+    // never mistaken for the title); `-NoExit` leaves an interactive prompt for the human (cooperative model, we
+    // never read its stdio). `-NoProfile` is LOAD-BEARING, not cosmetic (Opus W-4b R1 P2): the entire read/inject
+    // path keys on the window title (`resolveTitleByHwnd`), but a user profile with a custom `prompt` function
+    // (oh-my-posh / starship — common in this audience) RE-SETS `$Host.UI.RawUI.WindowTitle` on every REPL
+    // render, which would overwrite our nonce ~ms after the command and break BOTH the claim below AND every
+    // later title read. The anchored pane is a locker-owned utility console, so dropping profile customizations
+    // is acceptable (sudo/ssh are System32/PATH exes, unaffected). A mid-session ad-hoc title change is still
+    // fail-safe (`resolveTitleByHwnd` declines ⇒ the human types the credential; never a wrong-inject).
+    const psCommand = `try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; $Host.UI.RawUI.WindowTitle = '${title}'`;
+    const encodedCommand = Buffer.from(psCommand, "utf16le").toString("base64");
     const child = spawn(
       cmdExe,
-      ["/c", "start", "", conhostExe, "powershell.exe", "-NoProfile", "-NoExit", "-Command", `$Host.UI.RawUI.WindowTitle = '${title}'`],
+      ["/c", "start", "", conhostExe, "powershell.exe", "-NoProfile", "-NoExit", "-EncodedCommand", encodedCommand],
       { detached: true, stdio: "ignore", windowsHide: false },
     );
     child.on("error", () => { /* spawn failure surfaces as the poll timing out below */ });
