@@ -176,6 +176,57 @@ describe("SshSessionWatch — P2-A: a NON-session ssh must never pop the frame",
   });
 });
 
+describe("SshSessionWatch — PR1: shell-pid REUSE detection (closes the liveness-only residual)", () => {
+  it("shell pid alive but a DIFFERENT non-zero creation time ⇒ markUnknown + unwatch (reused pid)", () => {
+    const { watch, sink, set } = setup(SHELL_WITH_SSH); // shell 1000 start=10 captured at registration
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    // The anchored shell died; Windows reassigned pid 1000 to an unrelated process (a new creation time).
+    set({ 500: { parent: 0, name: "windowsterminal", start: 1 }, 1000: { parent: 500, name: "cmd", start: 777 } });
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]); // fail-safe: the pane is no longer observable
+    expect(sink.ends).toEqual([]);
+    expect(watch.isWatching("pane-1")).toBe(false); // unwatched — a foreign pid must not be walked
+  });
+
+  it("shell pid alive with the SAME creation time ⇒ no signal (steady-state undisturbed)", () => {
+    // SHELL_ONLY (no ssh child) so this isolates the a2 reuse check — a SHELL_WITH_SSH subtree would trip the
+    // separate W-2b unregistered-ssh scan (its ssh child has no argv ⇒ fail-safe markUnknown), unrelated to a2.
+    const { watch, sink } = setup(SHELL_ONLY);
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick(); // same tree — shell 1000 still start=10
+    expect(sink.unknowns).toEqual([]);
+    expect(sink.ends).toEqual([]);
+    expect(watch.isWatching("pane-1")).toBe(true);
+  });
+
+  it("shell alive but a transient ZERO creation-time read ⇒ NOT reused (doubt sentinel, keep watching)", () => {
+    const { watch, sink, set } = setup(SHELL_WITH_SSH); // baseline 10 captured
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    // A GetProcessTimes glitch: shell 1000 still ALIVE (parentMap key) but its creation time reads 0 this tick.
+    set({ 500: { parent: 0, name: "windowsterminal", start: 1 }, 1000: { parent: 500, name: "powershell", start: 0 } });
+    watch.tick();
+    expect(sink.unknowns).toEqual([]); // 0 = doubt, never treated as a confirmed reuse
+    expect(watch.isWatching("pane-1")).toBe(true); // still watched; a real reuse re-reads non-zero next tick
+  });
+
+  it("shell NOT snapshot-visible at registration (0 baseline) ⇒ liveness-only, a later start change does NOT markUnknown", () => {
+    // Register when pid 1000 is absent from the tree ⇒ baseline 0 ⇒ liveness-only fallback (pre-hardening).
+    const { watch, sink, set } = setup(SHELL_ONLY); // no 1000 here? SHELL_ONLY HAS 1000 — use a tree without it
+    // Build a tree WITHOUT the shell so watchPane captures a 0 baseline.
+    set({ 500: { parent: 0, name: "windowsterminal", start: 1 } });
+    watch.watchPane("pane-1", 1000); // 1000 absent ⇒ shellStartTimeMs = 0
+    sink.setDepth("pane-1", 0);
+    // Now 1000 appears with some creation time; with a 0 baseline there is nothing to compare ⇒ no reuse fire.
+    set({ 500: { parent: 0, name: "windowsterminal", start: 1 }, 1000: { parent: 500, name: "powershell", start: 42 } });
+    watch.tick();
+    expect(sink.unknowns).toEqual([]); // liveness-only: no baseline ⇒ the a2 reuse guard is skipped
+    expect(watch.isWatching("pane-1")).toBe(true);
+  });
+});
+
 describe("SshSessionWatch — R2 P2: a live-but-UNREADABLE session ssh must not pop-to-local", () => {
   it("present in parentMap but identify() empty ⇒ markUnknown, NEVER noteSessionEnd (no pop-to-local)", () => {
     const sink = new FakeSink();

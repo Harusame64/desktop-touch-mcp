@@ -51,10 +51,14 @@
 // `markUnknown` sets the tracker stack to null and does NOT auto-recover on the session's later exit —
 // `recordDispatch` early-returns on a null stack — so an unknown pane re-anchors only when the wiring calls
 // `beginLocalSession` at a fresh local prompt (SP-L3-OQ-8 territory), not via exit observation. Safe
-// (declines), just degraded longer. RESIDUAL (P3, plan §Risks): the shell anchor is liveness-only
-// (`!parentMap.has(shellPid)`) with no startTime check — a reused shell pid can mask shell death; it
-// self-heals (the dead shell's ssh child dies/reparents ⇒ the session check catches it) and is tracked in
-// the plan, not gated on.
+// (declines), just degraded longer. SHELL-ANCHOR REUSE (S-pid gate PR1, formerly the liveness-only P3
+// residual, NOW CLOSED): the shell anchor carries the shell's CREATION TIME (`WatchedPane.shellStartTimeMs`,
+// captured at `watchPane`), so `tick` case (a2) declines a pane whose live `shellPid` reads a DIFFERENT
+// non-zero creation time (a reused pid = the anchored shell died) instead of trusting the foreign process.
+// A 0 baseline (shell not snapshot-visible at registration — never in production) or a transient 0 current
+// read (a GetProcessTimes glitch on a still-live shell) falls back to liveness-only, the safe pre-hardening
+// behavior. This is the shell-side of the S-pid identity re-base that also carries pid+creation-time into
+// the L2 InjectTarget re-verify (PR2).
 //
 // SCOPE / FIXED POINT (Opus PR#505 closing sweep): this pure module reconciles every STEADY (watch,tracker)
 // state to safety — any desync self-heals within one `tick`, so at rest there is no wrong-target. What a
@@ -144,6 +148,16 @@ export interface SshWatchDeps {
 /** A registered pane: the shell pid (liveness anchor) + the outermost session ssh currently watched. */
 interface WatchedPane {
   shellPid: number;
+  /** The shell's process CREATION TIME (ms since the Windows epoch), captured from the snapshot at
+   *  registration — the pid-reuse baseline for `tick` case (a). A real running process never has creation
+   *  time 0 (S-pid gate §4), so **0 = "no reliable baseline"** (the shell was unreadable at registration —
+   *  never in production, where `launchAnchoredConsole` polls until the shell is live): the pane falls back
+   *  to LIVENESS-ONLY (the pre-hardening behavior). A NON-ZERO baseline enables reuse detection: a live
+   *  `shellPid` whose creation time later reads a DIFFERENT non-zero value is a REUSED pid (the anchored
+   *  shell died and Windows reassigned its pid), so the pane is declined — this closes the documented
+   *  liveness-only residual (a reused shell pid could previously mask shell death). Mirrors the
+   *  `session.startedAt` non-zero discipline. */
+  shellStartTimeMs: number;
   /** The outermost interactive-session ssh child, or null when the pane holds no live ssh session. */
   session: { pid: number; startedAt: number } | null;
 }
@@ -165,6 +179,14 @@ export class SshSessionWatch {
    * Start watching `paneId`, anchored at its shell pid (`getWindowProcessId(hwnd)` — the window-owning
    * pid, value-consistent with L2's re-verify). No session ssh is watched until `noteSshOpened`.
    * Re-registering a pane resets it (drops any tracked session).
+   *
+   * The shell's CREATION TIME is captured here from the live snapshot — the same source + integer-ms value
+   * L2's `assembleInjectTarget` and (S-pid gate PR2) the C# re-verify read — so `tick` can distinguish a
+   * still-alive anchored shell from a REUSED pid (the pre-hardening liveness-only check could not). Read from
+   * the watch's own snapshot (not plumbed as a param) exactly as `noteSshOpened` reads the session ssh's
+   * creation time: one source of truth (the live process tree), no cross-layer plumbing to drift. A shell not
+   * yet visible in the snapshot reads 0 ⇒ liveness-only fallback (never happens in production —
+   * `launchAnchoredConsole` polls until the shell owns the console window with a non-zero owner pid).
    */
   watchPane(paneId: string, shellPid: number): void {
     // Re-anchoring a pane that STILL holds a live ssh session: silently resetting to a trusted-local slot
@@ -172,7 +194,10 @@ export class SshSessionWatch {
     // the live-remote-vs-local contradiction), leaving a live remote login derived as local. Decline first,
     // then reset — a re-anchor over a live session is doubt, so sink it (Opus/Codex R6).
     if (this.panes.get(paneId)?.session != null) this.deps.tracker.markUnknown(paneId);
-    this.panes.set(paneId, { shellPid, session: null });
+    // Capture the shell's creation-time baseline (0 when the pid is not yet snapshot-visible ⇒ liveness-only).
+    const snap = this.deps.snapshot();
+    const shellStartTimeMs = snap.parentMap.has(shellPid) ? snap.identify(shellPid).startTimeMs : 0;
+    this.panes.set(paneId, { shellPid, shellStartTimeMs, session: null });
   }
 
   /** Stop watching a pane (its window closed / the tracker forgot it). Idempotent. */
@@ -259,6 +284,22 @@ export class SshSessionWatch {
         this.deps.tracker.markUnknown(paneId);
         this.panes.delete(paneId);
         continue;
+      }
+      // (a2) Shell pid REUSED (closes the liveness-only residual): the pid is alive, but if it now names a
+      //      process with a DIFFERENT non-zero creation time than the registered baseline, the anchored shell
+      //      DIED and Windows reassigned its pid to an unrelated process — the pane is no longer observable, so
+      //      fail-safe to UNKNOWN + unwatch (the subtree walked from a foreign pid could otherwise mis-derive).
+      //      Gated on a non-zero baseline (0 = liveness-only fallback) AND a non-zero current read (0 = a
+      //      transient GetProcessTimes glitch on a still-live shell — the doubt sentinel; keep watching, the
+      //      Toolhelp liveness authority says alive, and a real reuse re-reads non-zero next tick). Mirrors the
+      //      `session.startedAt` reuse discipline applied to the session ssh.
+      if (pane.shellStartTimeMs !== 0) {
+        const shellNow = snap.identify(pane.shellPid).startTimeMs;
+        if (shellNow !== 0 && shellNow !== pane.shellStartTimeMs) {
+          this.deps.tracker.markUnknown(paneId);
+          this.panes.delete(paneId);
+          continue;
+        }
       }
       // No interactive ssh registered. Normally nothing to pop — but a pane that holds a remote frame with
       // NO live watch (a non-atomic push↔register window, or a registration that could not confirm a live
