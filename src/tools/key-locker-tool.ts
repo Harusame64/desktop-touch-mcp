@@ -86,14 +86,21 @@ const statusSchema = z.object({
 
 const launchConsoleSchema = z.object({
   action: z.literal("launch_console").describe(
-    "Launch (or reuse) an autofill-capable anchored console and return its paneId + windowTitle. Use this " +
-      "BEFORE running an ssh / sudo / login command for the user: launch the console, then drive the command " +
-      "into it with terminal({action:'send', paneId}). Autofill ONLY works in a console launched this way — a " +
-      "pre-existing terminal the user opened is never autofilled. The console is a classic Windows console the " +
-      "human can ALSO see and type into (cooperative handoff). Enabling the locker grants this launch ability.",
+    "Launch (or reuse) an autofill-capable anchored terminal pane and return its paneId + windowTitle. Use " +
+      "this BEFORE running an ssh / sudo / login command for the user: launch the pane, then drive the command " +
+      "into it with terminal({action:'send', paneId}). Autofill ONLY works in a pane launched this way — a " +
+      "pre-existing terminal the user opened is never autofilled. By default the pane opens as a NEW TAB in " +
+      "the user's current Windows Terminal window (a new window if none is open); the human can ALSO see and " +
+      "type into it (cooperative handoff). Enabling the locker grants this launch ability.",
   ),
   fresh: z.boolean().optional().describe(
-    "false (default) = reuse the most-recent still-open anchored console; true = open a NEW one (bounded).",
+    "false (default) = reuse the most-recent still-open anchored pane of the requested host; true = open a NEW one (bounded).",
+  ),
+  host: z.enum(["windows-terminal", "classic"]).optional().describe(
+    "'windows-terminal' (default) = open a new tab in the user's current Windows Terminal window. " +
+      "'classic' = open a dedicated classic console window instead (the fallback when Windows Terminal is " +
+      "not installed — a KeyLockerWtUnavailable error tells you to retry with this). A Windows Terminal " +
+      "pane autofills/reads only while its tab is the ACTIVE tab; a classic console has its own window.",
   ),
 });
 
@@ -326,7 +333,10 @@ function handleSetPolicy(uri: string, confirmEveryInjection: boolean): ToolResul
  * anchors the pane via `onLocalPaneLaunched`); a direct manager spawn would NOT anchor it and the loop would
  * never arm for that pane.
  */
-async function handleLaunchConsole(fresh: boolean | undefined): Promise<ToolResult> {
+async function handleLaunchConsole(
+  fresh: boolean | undefined,
+  host: "windows-terminal" | "classic" | undefined,
+): Promise<ToolResult> {
   let consented: boolean;
   try {
     consented = await manager().ensureConsent();
@@ -341,10 +351,17 @@ async function handleLaunchConsole(fresh: boolean | undefined): Promise<ToolResu
     return fail("KeyLockerDisabled", "KeyLockerDisabled: the key locker live wiring is not active");
   }
   try {
-    const { paneId, windowTitle } = await wiring.ensureAnchoredConsole({ fresh: fresh ?? false });
+    // S-pid E7 (OQ-R3x-2): the DEFAULT host is 'windows-terminal' — a bare launch_console opens a new
+    // tab in the user's CURRENT WT window (that IS the feature; classic is the explicit escape hatch a
+    // user can pin, NOT the default). Applied here, not as a zod .default() (the registration layer
+    // strips defaults — the TOOL_REGISTRY include-strip discipline).
+    const { paneId, windowTitle } = await wiring.ensureAnchoredConsole({
+      fresh: fresh ?? false,
+      host: host ?? "windows-terminal",
+    });
     return ok({ paneId, windowTitle });
   } catch (err) {
-    return keyLockerFailure(err); // KeyLockerSpawnFailed / KeyLockerConsoleLimit
+    return keyLockerFailure(err); // KeyLockerWtUnavailable / KeyLockerSpawnFailed / KeyLockerConsoleLimit
   }
 }
 
@@ -371,7 +388,7 @@ export const keyLockerHandler = async (args: KeyLockerArgs): Promise<ToolResult>
     case "set_policy":
       return handleSetPolicy(a.uri, a.confirmEveryInjection);
     case "launch_console":
-      return handleLaunchConsole(a.fresh);
+      return handleLaunchConsole(a.fresh, a.host);
   }
 };
 
@@ -400,23 +417,29 @@ export function registerKeyLockerTools(server: McpServer): void {
           "shows saved bindings (metadata only, never secrets). action='forget' deletes a binding and its " +
           "secret. action='set_policy' toggles per-binding autofill confirmation. action='status' reports " +
           "whether the locker is enabled (consent) and how many bindings exist. action='launch_console' opens " +
-          "(or reuses) an autofill-capable anchored console and returns {paneId, windowTitle}.",
+          "(or reuses) an autofill-capable anchored pane and returns {paneId, windowTitle} — by default a new " +
+          "tab in the user's current Windows Terminal window (host:'classic' opens a dedicated classic console " +
+          "window instead).",
         prefer:
           "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — there " +
-          "is no manual fill action. But autofill ONLY fires in a console opened by launch_console (a " +
+          "is no manual fill action. But autofill ONLY fires in a pane opened by launch_console (a " +
           "pre-existing terminal is never autofilled): to autofill, first launch_console, then run the ssh / " +
           "sudo command with terminal({action:'send', paneId}). Use save to enroll, list/status to inspect.",
         caveats:
-          "Windows-only. The anchored console is a CLASSIC console window (not Windows Terminal) that the " +
-          "human can also see and type into. Enabling the locker (first save or launch_console) grants BOTH " +
-          "credential autofill AND the ability for the assistant to launch a locker-owned console. Disable " +
-          "the whole feature with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. An ssh save needs the host key already " +
-          "in known_hosts (connect once first). API-token / env-var credentials are not supported yet.",
+          "Windows-only. The anchored pane defaults to a Windows Terminal tab (autofill and terminal reads " +
+          "operate while that tab is the ACTIVE tab — switching away pauses them safely); host:'classic' " +
+          "opens a dedicated classic console window instead, and is the retry when Windows Terminal is not " +
+          "installed (KeyLockerWtUnavailable). The human can also see and type into the pane. Enabling the " +
+          "locker (first save or launch_console) grants BOTH credential autofill AND the ability for the " +
+          "assistant to launch a locker-owned pane. Disable the whole feature with " +
+          "DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. An ssh save needs the host key already in known_hosts " +
+          "(connect once first). API-token / env-var credentials are not supported yet.",
         examples: [
           "key_locker({action:'status'}) → {consentAccepted:false, disabled:false, bindingCount:0}",
           "key_locker({action:'save', uri:'sudo://buildbox/root'}) → opens the secure dialog → {captured:true}",
           "key_locker({action:'list'}) → {bindings:[{displayUri:'sudo://buildbox/root', scheme:'sudo', …}]}",
-          "key_locker({action:'launch_console'}) → {paneId:'12345678', windowTitle:'dtm-locker-console-…'} → then terminal({action:'send', paneId:'12345678', input:'ssh user@host'})",
+          "key_locker({action:'launch_console'}) → {paneId:'wt:31264:13322426700123', windowTitle:'dtm-locker-console-…'} → then terminal({action:'send', paneId:'wt:31264:13322426700123', input:'ssh user@host'})",
+          "key_locker({action:'launch_console', host:'classic'}) → {paneId:'12345678', windowTitle:'dtm-locker-console-…'} (dedicated classic console window)",
         ],
       }),
       inputSchema: keyLockerRegistrationSchema,

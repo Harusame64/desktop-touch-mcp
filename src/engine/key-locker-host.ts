@@ -51,7 +51,11 @@ export type KeyLockerErrorCode =
   | "KeyLockerHandshakeRejected"
   | "KeyLockerPipeUnavailable"
   // ADR-014 R3 OQ-W-16-bis: too many live anchored consoles already open (launch_console fresh cap).
-  | "KeyLockerConsoleLimit";
+  | "KeyLockerConsoleLimit"
+  // ADR-014 R3.x La (S-pid E7): the Windows Terminal pane could not be launched/identified — wt.exe
+  // absent, or the marker discovery/identity verify failed. NEVER a silent classic fallback (E1); the
+  // tool hint names host:'classic' as the explicit retry.
+  | "KeyLockerWtUnavailable";
 
 /**
  * Typed failure for the key locker. L0 defines the codes locally; L4 wires them into

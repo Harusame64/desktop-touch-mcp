@@ -511,6 +511,9 @@ const SUGGESTS: Record<string, string[]> = {
   KeyLockerConsoleLimit: [
     "Too many anchored consoles are already open. Reuse an existing one (key_locker action='launch_console' without fresh:true returns the most recent), or close a console window before opening another.",
   ],
+  KeyLockerWtUnavailable: [
+    "The Windows Terminal pane could not be opened (wt.exe not installed, or the new tab could not be identified). Retry with key_locker action='launch_console', host:'classic' to open a dedicated classic console window instead.",
+  ],
   KeyLockerSshUnresolved: [
     "The ssh host key is not in known_hosts yet. Connect to the host once (ssh user@host) so its key is recorded, then save.",
     "ProxyJump / ProxyCommand bindings are not supported — the first prompt may belong to the jump host.",

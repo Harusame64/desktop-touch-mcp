@@ -682,3 +682,108 @@ describe("KeyLockerCaptureDriver — W2 close atomicity", () => {
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
   });
 });
+
+// ── S-pid gate §3: descendant-correlation EQUIVALENCE under both hosts ─────────────────────────────────
+// The two hosts differ only ABOVE the anchored shell (classic `conhost → shell`, wt `WindowsTerminal →
+// shell`); every walk starts AT the shell and traverses strictly DOWNWARD, so all classifications must be
+// byte-identical for both tree shapes. The gate mandates this test pair (plus the sudo→ssh grandchild,
+// unreadable-descendant, and WT sibling-tab cases) rather than assuming the proof sketch.
+describe("KeyLockerCaptureDriver — S-pid §3 host-shape equivalence (conhost vs WT)", () => {
+  const shapes: Array<[string, (extra?: Record<number, Proc>) => Record<number, Proc>]> = [
+    ["conhost→shell", (extra = {}) => ({
+      500: { parent: 0, name: "conhost", start: 1 },
+      1000: { parent: 500, name: "powershell", start: 10 },
+      ...extra,
+    })],
+    ["WindowsTerminal→shell", (extra = {}) => ({
+      500: { parent: 0, name: "windowsterminal", start: 1 },
+      1000: { parent: 500, name: "powershell", start: 10 },
+      ...extra,
+    })],
+  ];
+
+  for (const [shape, tree] of shapes) {
+    it(`[${shape}] interactive-ssh dispatch: armed + registered + pops on exit (identical classification)`, () => {
+      const h = makeHarness({}, tree({ 2000: sshProc(1000, "host-a", 20) }));
+      h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+      h.driver.onDispatch("pane-1", "ssh deploy@host-a");
+      expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true });
+      expect(h.tracker.remoteDepth("pane-1")).toBe(1);
+      h.setTree(tree());
+      h.driver.tickWatch();
+      expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
+    });
+
+    it(`[${shape}] a sudo→ssh GRANDCHILD (wrapper-spawned, unregistered) is seen by the subtree scan ⇒ markUnknown`, () => {
+      const h = makeHarness({}, tree());
+      h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+      h.setTree(tree({
+        2000: { parent: 1000, name: "sudo", start: 20 },
+        2100: sshProc(2000, "host-a", 21),
+      }));
+      h.driver.tickWatch(); // the grandchild interactive ssh is unregistered ⇒ W-2b flags it (both shapes)
+      expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
+    });
+
+    it(`[${shape}] an UNREADABLE ssh descendant (argv null) fails safe ⇒ markUnknown`, () => {
+      const h = makeHarness({}, tree());
+      h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+      h.setTree(tree({ 2000: { parent: 1000, name: "ssh", start: 20 } })); // no argv ⇒ commandLine null
+      h.driver.tickWatch();
+      expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
+    });
+  }
+
+  it("[WT only] a SIBLING TAB's ssh (another shell under the same WT host) is INVISIBLE to this pane's scan", () => {
+    // Per-pane sessions are per-shell: other tabs' shells are SIBLINGS under the WT host pid — NOT in the
+    // anchored shell's subtree — so a user's ssh in ANOTHER tab must neither flag nor arm this pane.
+    const h = makeHarness({}, {
+      500: { parent: 0, name: "windowsterminal", start: 1 },
+      1000: { parent: 500, name: "powershell", start: 10 },  // the anchored tab's shell
+      2000: { parent: 500, name: "powershell", start: 12 },  // ANOTHER tab's shell (sibling)
+      2100: sshProc(2000, "host-b", 13),                      // the user's ssh in that other tab
+    });
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.tickWatch();
+    expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false }); // NOT flagged
+    h.driver.onDispatch("pane-1", "sudo apt update");
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // still arms — the sibling ssh is out of scope
+  });
+});
+
+// ── S-pid E5 sibling: wt pane close detection (shell exit = the close signal) ──────────────────────────
+describe("KeyLockerCaptureDriver — wt pane close prune (tickWatch)", () => {
+  const wtAnchorOf = (shellPid: number): PaneAnchor => ({ kind: "wt", shellPid, shellStartTimeMs: 10 });
+  const wtTree = (extra: Record<number, Proc> = {}): Record<number, Proc> => ({
+    500: { parent: 0, name: "windowsterminal", start: 1 },
+    1000: { parent: 500, name: "powershell", start: 10 },
+    ...extra,
+  });
+
+  it("a wt pane whose shell is GONE is pruned with the full W2 bundle (unwatch + forget + record delete)", () => {
+    const h = makeHarness({}, wtTree());
+    h.driver.onLocalPaneLaunched("wt:1000:10", wtAnchorOf(1000));
+    expect(h.driver.hasPane("wt:1000:10")).toBe(true);
+    h.setTree({ 500: { parent: 0, name: "windowsterminal", start: 1 } }); // the tab closed — shell exited
+    h.driver.tickWatch();
+    expect(h.driver.hasPane("wt:1000:10")).toBe(false);
+    expect(h.watch.isWatching("wt:1000:10")).toBe(false);
+    expect(h.tracker.get("wt:1000:10")).toEqual({ unknown: true });
+  });
+
+  it("a CLASSIC pane is NOT pruned by shell exit (its close signal is window_disappeared → onPaneClosed)", () => {
+    const h = makeHarness({}, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.setTree({ 500: { parent: 0, name: "windowsterminal", start: 1 } });
+    h.driver.tickWatch();
+    expect(h.driver.hasPane("pane-1")).toBe(true); // record stays; the watch/tracker handle the gone shell
+  });
+
+  it("an EMPTY snapshot (native failure) never mass-prunes wt panes", () => {
+    const h = makeHarness({}, wtTree());
+    h.driver.onLocalPaneLaunched("wt:1000:10", wtAnchorOf(1000));
+    h.setTree({}); // buildProcessParentMap failure shape — empty map
+    h.driver.tickWatch();
+    expect(h.driver.hasPane("wt:1000:10")).toBe(true); // a degenerate tick must not tear panes down
+  });
+});

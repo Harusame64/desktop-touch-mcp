@@ -451,6 +451,18 @@ export class KeyLockerCaptureDriver {
    */
   tickWatch(): void {
     this.correlateAllPending();
+    // S-pid E5 (wt close detection): a classic pane closes via the event-bus `window_disappeared(hwnd)`
+    // → `onPaneClosed`, but a wt pane has NO tracked hwnd — its close signal is the SHELL EXIT. Prune
+    // any wt record whose shellPid is gone from the snapshot, with the SAME W2 close-atomicity bundle
+    // (`onPaneClosed` = unwatch + tracker.forget + record delete, same turn). The watch's own tick (a)
+    // observes the exit too; this prune keeps the DRIVER record set (and the reuse/cap accounting that
+    // reads it) from carrying dead wt panes.
+    const pruneSnap = this.deps.snapshot();
+    if (pruneSnap.parentMap.size > 0) { // an empty map = a native snapshot failure — never mass-prune on it
+      for (const [paneId, rec] of [...this.panes]) {
+        if (rec.anchor.kind === "wt" && !pruneSnap.parentMap.has(rec.anchor.shellPid)) this.onPaneClosed(paneId);
+      }
+    }
     // Advance each pane's delta baseline so the NEXT onDispatch's "new since last reconcile" is accurate
     // (a child that appeared/exited between dispatches is folded in here). One snapshot per pane is fine at
     // the tick cadence; the watch also snapshots independently inside `tick`.

@@ -25,6 +25,14 @@ import type { BindingUri } from "../engine/key-locker/binding.js";
 import { formatBindingUri } from "../engine/key-locker/binding.js";
 import { deriveBinding, type SessionContext } from "../engine/key-locker/command-derivation.js";
 import { assembleInjectTarget, type PaneAnchor } from "../engine/key-locker/inject-target.js";
+import {
+  formatWtPaneId,
+  parsePaneId,
+  registerWtPaneTitle,
+  unregisterWtPaneTitle,
+  wtPaneTitleOf,
+} from "../engine/key-locker/pane-id.js";
+import { getProcessIdentityByPid } from "../engine/win32.js";
 import { inject } from "../engine/key-locker/injector.js";
 import {
   KeyLockerCaptureDriver,
@@ -44,7 +52,7 @@ import {
   lastNonEmptyPromptLine,
   parseExitSentinel,
   readTerminalRaw,
-  resolveTitleByHwnd,
+  resolvePaneTitle,
   setTerminalDispatchHook,
   terminalSendHandler,
   type ExitShell,
@@ -91,8 +99,9 @@ export class KeyLockerWiring {
   private tickTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private eventSubId: string | null = null;
-  /** paneIds this wiring launched via `ensureAnchoredConsole` (most-recent last), for reuse + the R2 cap. */
-  private readonly launchedPaneIds: string[] = [];
+  /** Panes this wiring launched via `ensureAnchoredConsole` (most-recent last), for reuse + the R2 cap.
+   *  Host-aware since S-pid E7: reuse only hands back a pane of the REQUESTED host. */
+  private readonly launchedPanes: Array<{ paneId: string; host: "classic" | "windows-terminal" }> = [];
   /** windowTitles already nudged toward launch_console (Phase 3 dedup — one advisory per pane, no spam). */
   private readonly nudgedTitles = new Set<string>();
 
@@ -181,65 +190,100 @@ export class KeyLockerWiring {
   }
 
   /**
-   * DOGFOOD/tool entry (§5-3): launch a classic conhost the locker can anchor + fill, and anchor it KNOWN-LOCAL.
+   * DOGFOOD/tool entry (§5-3): launch a pane the locker can anchor + fill, and anchor it KNOWN-LOCAL.
    * The only path that produces an autofillable pane (a pre-existing user pane is never anchored — P1-B).
-   * Returns the pane's hwnd string so the caller can drive `sudo`/`ssh` into it.
+   * S-pid E2 paneId forms: classic stays `String(hwnd)` decimal (zero back-compat break); a wt pane is
+   * `wt:<shellPid>:<shellStartTimeMs>` (self-describing — no per-pane window exists). A wt pane's nonce
+   * tab title is REGISTERED for the terminal-layer resolver (E6 read/send path).
    */
-  async launchAndAnchorConsole(): Promise<{ paneId: string; title: string }> {
-    const { anchor, title } = await this.manager.launchAnchoredConsole();
-    // S-pid E2: a classic pane's public paneId stays `String(hwnd)` decimal (zero back-compat break);
-    // the wt paneId form (`wt:<pid>:<startMs>`) lands with the WT launch path (PR3).
-    if (anchor.kind !== "classic" || anchor.hwnd === undefined) {
-      throw new KeyLockerError("KeyLockerSpawnFailed", "launch returned a non-classic anchor (unsupported here)");
+  async launchAndAnchorConsole(host: "classic" | "windows-terminal" = "classic"): Promise<{ paneId: string; title: string }> {
+    const { anchor, title } = await this.manager.launchAnchoredConsole({ host });
+    let paneId: string;
+    if (anchor.kind === "classic") {
+      if (anchor.hwnd === undefined) {
+        throw new KeyLockerError("KeyLockerSpawnFailed", "launch returned a classic anchor with no hwnd");
+      }
+      paneId = String(anchor.hwnd);
+    } else {
+      paneId = formatWtPaneId(anchor.shellPid, anchor.shellStartTimeMs);
+      registerWtPaneTitle(paneId, title);
     }
-    const paneId = String(anchor.hwnd);
     this.driver.onLocalPaneLaunched(paneId, anchor);
     return { paneId, title };
   }
 
   /**
-   * TOOL entry (ADR-014 R3 OQ-W-16-bis, `key_locker launch_console`): return an autofill-capable anchored
-   * console the assistant can drive credential commands into. Idempotent by default — reuses the most-recent
-   * REUSABLE pane this wiring launched (`isReusable`: window alive via hwnd-direct `findTerminalWindowByHwnd`,
-   * NOT `resolveTitleByHwnd` which would false-DEAD a same-host pane on its non-unique post-login title; AND
-   * still driver-anchored + session KNOWN, so it can actually arm — OQ-8). Pass `fresh` to force a NEW pane
-   * (bounded by MAX_ANCHORED_PANES reusable panes so a `fresh` loop can't spray windows). Returns the pane's
-   * CURRENT title (a reused pane's may already have drifted — drive it by paneId).
+   * TOOL entry (ADR-014 R3 OQ-W-16-bis + S-pid E7, `key_locker launch_console`): return an autofill-capable
+   * anchored pane the assistant can drive credential commands into. Host-aware since E7 — reuse only hands
+   * back a pane of the REQUESTED host (a WT request never returns a classic window and vice versa).
+   * Idempotent by default — reuses the most-recent REUSABLE same-host pane this wiring launched
+   * (`isReusable`: classic = window alive via hwnd-direct `findTerminalWindowByHwnd`, NOT
+   * `resolveTitleByHwnd` which would false-DEAD a same-host pane on its non-unique post-login title; wt =
+   * ANCHOR-IDENTITY alive — shell pid + exact creation-time match; `resolveWtPane` is NOT required, an
+   * INACTIVE tab is still a valid pane to hand back, its reads simply decline until the user activates it;
+   * both AND still driver-anchored + session KNOWN, so it can actually arm — OQ-8). Pass `fresh` to force a
+   * NEW pane (bounded by MAX_ANCHORED_PANES reusable panes of BOTH kinds so a `fresh` loop can't spray
+   * windows). Returns the pane's CURRENT title (a reused pane's may already have drifted — drive it by paneId).
    */
-  async ensureAnchoredConsole({ fresh = false }: { fresh?: boolean } = {}): Promise<{ paneId: string; windowTitle: string }> {
-    // Keep only REUSABLE panes — window alive AND still driver-anchored AND session KNOWN (OQ-8). A pane whose
-    // window died, OR whose driver record was torn down by a spurious `window_disappeared` (the record is gone
-    // but the window lives), OR whose session drifted to UNKNOWN, can NEVER arm — so we neither reuse nor count
-    // it toward the cap. Dropping it here means the next launch RE-ANCHORS a working pane (a self-healing reuse,
-    // NOT a blind re-anchor of the stale pane — re-anchoring a pane mid-remote-session as local would disclose a
-    // LOCAL secret to a REMOTE prompt, the P1-B / W-2b hole). The orphaned window (if any) is left for the human.
-    const reusable = this.launchedPaneIds.filter((pid) => this.isReusable(pid));
-    this.launchedPaneIds.length = 0;
-    this.launchedPaneIds.push(...reusable);
+  async ensureAnchoredConsole(
+    { fresh = false, host = "windows-terminal" }: { fresh?: boolean; host?: "classic" | "windows-terminal" } = {},
+  ): Promise<{ paneId: string; windowTitle: string }> {
+    // Keep only REUSABLE panes — alive AND still driver-anchored AND session KNOWN (OQ-8). A pane whose
+    // window/shell died, OR whose driver record was torn down by a spurious `window_disappeared` (the record is
+    // gone but the window lives), OR whose session drifted to UNKNOWN, can NEVER arm — so we neither reuse nor
+    // count it toward the cap. Dropping it here means the next launch RE-ANCHORS a working pane (a self-healing
+    // reuse, NOT a blind re-anchor of the stale pane — re-anchoring a pane mid-remote-session as local would
+    // disclose a LOCAL secret to a REMOTE prompt, the P1-B / W-2b hole). The orphaned window (if any) is left
+    // for the human. A dropped wt pane's tab-title registration is released with it.
+    const reusable = this.launchedPanes.filter((p) => {
+      if (this.isReusable(p.paneId)) return true;
+      if (p.host === "windows-terminal") unregisterWtPaneTitle(p.paneId);
+      return false;
+    });
+    this.launchedPanes.length = 0;
+    this.launchedPanes.push(...reusable);
 
-    if (!fresh && this.launchedPaneIds.length > 0) {
-      // Reuse the most-recent reusable pane.
-      const pid = this.launchedPaneIds[this.launchedPaneIds.length - 1];
-      return { paneId: pid, windowTitle: this.livePaneTitle(pid) ?? "" };
+    if (!fresh) {
+      // Reuse the most-recent reusable pane OF THE REQUESTED HOST (E7).
+      const match = [...this.launchedPanes].reverse().find((p) => p.host === host);
+      if (match !== undefined) {
+        return { paneId: match.paneId, windowTitle: this.paneTitleFor(match) ?? "" };
+      }
     }
-    if (this.launchedPaneIds.length >= MAX_ANCHORED_PANES) {
+    if (this.launchedPanes.length >= MAX_ANCHORED_PANES) {
       throw new KeyLockerError(
         "KeyLockerConsoleLimit",
         `KeyLockerConsoleLimit: ${MAX_ANCHORED_PANES} anchored consoles are already open — close one before launching another`,
       );
     }
-    const { paneId, title } = await this.launchAndAnchorConsole();
-    this.launchedPaneIds.push(paneId);
+    const { paneId, title } = await this.launchAndAnchorConsole(host);
+    this.launchedPanes.push({ paneId, host });
     return { paneId, windowTitle: title };
   }
 
-  /** A launched pane is REUSABLE only if its window is a live console (hwnd-direct) AND the driver still holds
-   *  its anchor (`hasPane`) AND its tracked session is KNOWN — the three conditions the arm gate needs. Any
-   *  failure means a later dispatch would not arm, so reuse must skip it and launch fresh instead (OQ-8). */
+  /** A launched pane is REUSABLE only if it is alive (classic: live console window, hwnd-direct; wt: the
+   *  ANCHOR IDENTITY still holds — shell alive with the exact anchored creation time, S-pid E7) AND the
+   *  driver still holds its anchor (`hasPane`) AND its tracked session is KNOWN — the conditions the arm
+   *  gate needs. Any failure means a later dispatch would not arm, so reuse must skip it and launch fresh
+   *  instead (OQ-8). */
   private isReusable(paneId: string): boolean {
-    if (this.livePaneTitle(paneId) === null) return false;
+    const parsed = parsePaneId(paneId);
+    if (parsed === null) return false;
+    if (parsed.kind === "classic") {
+      if (this.livePaneTitle(paneId) === null) return false;
+    } else {
+      // wt: pid + EXACT creation-time equality (a reused pid reads a different non-zero time; a dead
+      // shell reads 0 — both decline). The paneId itself carries the anchor identity (E2).
+      if (getProcessIdentityByPid(parsed.shellPid).processStartTimeMs !== parsed.shellStartTimeMs) return false;
+    }
     if (!this.driver.hasPane(paneId)) return false;
     return isKnownSession(this.manager.tracker.get(paneId));
+  }
+
+  /** The title to report for a REUSED pane: classic = the window's live title; wt = the registered nonce
+   *  tab title (stable — `--suppressApplicationTitle` pins it; valid even while the tab is inactive). */
+  private paneTitleFor(p: { paneId: string; host: "classic" | "windows-terminal" }): string | null {
+    return p.host === "classic" ? this.livePaneTitle(p.paneId) : wtPaneTitleOf(p.paneId);
   }
 
   /** The current title of a launched pane if its hwnd is still a live console, else null (hwnd-direct). */
@@ -263,8 +307,13 @@ export class KeyLockerWiring {
     for (const ev of pollEvents(this.eventSubId)) {
       if (ev.type === "window_disappeared") this.driver.onPaneClosed(ev.hwnd);
     }
-    // Periodic reconcile (correlate stragglers + advance baselines + watch.tick + arm-hygiene).
+    // Periodic reconcile (correlate stragglers + advance baselines + wt shell-exit prune + watch.tick +
+    // arm-hygiene). Release the tab-title registration of any wt pane the prune dropped (idempotent; the
+    // launchedPanes list itself is re-filtered on the next ensureAnchoredConsole).
     this.driver.tickWatch();
+    for (const p of this.launchedPanes) {
+      if (p.host === "windows-terminal" && !this.driver.hasPane(p.paneId)) unregisterWtPaneTitle(p.paneId);
+    }
     // Poll every armed pane for a credential prompt (pollBusy serializes; the loop runs on a hit). ALWAYS
     // `.catch()` — a rejected poll (a locker-pipe hiccup mid-fill: the capture loop's pre-`try` seams
     // resolveBinding/confirmInjection/injectPane can reject through `withHost`) would otherwise become an
@@ -328,7 +377,7 @@ export class KeyLockerWiring {
    *  into the running process (Codex W-4b disclosure). A colon-less real prompt is rare ⇒ it declines and the
    *  human types it (never a wrong-inject). A proper echo-off detector is the robust follow-up (OQ-W-17-bis). */
   private async readPromptTail(paneId: string): Promise<PromptVerdict | null> {
-    const title = resolveTitleByHwnd(paneId);
+    const title = resolvePaneTitle(paneId);
     if (title === null) return null; // ambiguous / vanished title ⇒ decline (never read a same-title sibling)
     const raw = await readTerminalRaw(title);
     if (raw === null) return null;
@@ -346,8 +395,9 @@ export class KeyLockerWiring {
     for (;;) {
       // RE-RESOLVE the title EACH iteration (Codex W-4b): an interactive login (ssh) updates the console title
       // AFTER auth, so a title cached before the loop would stop resolving mid-poll → the correct secret would
-      // false-reject as auth_rejected. Re-resolving keeps the read bound to the pane's hwnd across the change.
-      const title = resolveTitleByHwnd(paneId);
+      // false-reject as auth_rejected. Re-resolving keeps the read bound to the pane across the change (a wt
+      // pane's nonce title is PINNED, so it re-resolves iff the tab is still active — E6).
+      const title = resolvePaneTitle(paneId);
       if (title !== null) {
         const raw = await readTerminalRaw(title);
         if (raw !== null) {
@@ -364,7 +414,7 @@ export class KeyLockerWiring {
   /** Mode-A runToExit (gap6): OBSERVE the already-run command's exit — send an EPILOGUE-ONLY probe (never the
    *  command) with `notifyDispatch:false`, poll for its echo-immune sentinel, return the exit code. */
   private async runToExit(paneId: string, isRemote: boolean): Promise<ExitCompletion> {
-    const title = resolveTitleByHwnd(paneId);
+    const title = resolvePaneTitle(paneId);
     if (title === null) return { reason: "probe_error:no_title" };
     const shell: ExitShell = isRemote ? "bash" : "powershell";
     const nonce = generateExitNonce();
@@ -384,7 +434,7 @@ export class KeyLockerWiring {
     for (;;) {
       // RE-RESOLVE the title each read (Codex W-4b): the ran command may have changed the console title; the
       // probe was already sent to the send-time window, but the READ must track the pane's current title.
-      const rtitle = resolveTitleByHwnd(paneId);
+      const rtitle = resolvePaneTitle(paneId);
       if (rtitle !== null) {
         const raw = await readTerminalRaw(rtitle);
         if (raw !== null) {
