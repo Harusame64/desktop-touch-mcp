@@ -23,6 +23,7 @@ import {
   TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
 import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
+import { parsePaneId, wtPaneTitleOf, WT_PANE_ID_SCHEMA_MAX } from "../engine/key-locker/pane-id.js";
 import { detectFocusLoss } from "./_focus.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToLines, detectOcrLanguage } from "../engine/ocr-bridge.js";
@@ -84,11 +85,12 @@ export function fireTerminalDispatch(paneId: string, command: string): void {
 
 export const terminalReadSchema = {
   windowTitle: z.string().max(200).optional().describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal'). Provide windowTitle OR paneId (paneId takes precedence)."),
-  paneId: z.string().max(32).optional().describe(
-    "Decimal hwnd of a specific pane (from key_locker launch_console) — targets THIS window even after " +
-    "its title changes; takes precedence over windowTitle. NOTE: read still resolves the pane's text by " +
-    "title under the hood, so it declines if the pane's current title is no longer unique among windows " +
-    "(send binds directly by hwnd and has no such limit).",
+  paneId: z.string().max(WT_PANE_ID_SCHEMA_MAX).optional().describe(
+    "Pane handle from key_locker launch_console — either the decimal hwnd of a classic console, or the " +
+    "'wt:…' form for a Windows Terminal tab. Targets THIS pane even after its title changes; takes " +
+    "precedence over windowTitle. NOTE: read still resolves the pane's text by title under the hood, so " +
+    "it declines if the pane's current title is no longer unique among windows (a 'wt:…' pane " +
+    "additionally reads only while its tab is the ACTIVE tab of its Windows Terminal window).",
   ),
   lines: z.coerce.number().int().min(1).max(2000).default(50).describe("Tail N lines (default 50)."),
   sinceMarker: z.string().max(64).optional().describe("Marker returned from a previous call. If found in current text, only the diff is returned."),
@@ -99,10 +101,11 @@ export const terminalReadSchema = {
 
 export const terminalSendSchema = {
   windowTitle: z.string().max(200).optional().describe("Partial title of the terminal window. Provide windowTitle OR paneId (paneId takes precedence)."),
-  paneId: z.string().max(32).optional().describe(
-    "Decimal hwnd of a specific pane (from key_locker launch_console) — targets THIS window directly by " +
-    "hwnd, surviving a title change (e.g. after an ssh login the title becomes user@host); takes " +
-    "precedence over windowTitle.",
+  paneId: z.string().max(WT_PANE_ID_SCHEMA_MAX).optional().describe(
+    "Pane handle from key_locker launch_console — either the decimal hwnd of a classic console (bound " +
+    "directly by hwnd, surviving a title change, e.g. after an ssh login the title becomes user@host), " +
+    "or the 'wt:…' form for a Windows Terminal tab (delivered to its Windows Terminal window while that " +
+    "tab is ACTIVE). Takes precedence over windowTitle.",
   ),
   input: z.string().max(10000).describe("Text to send (max 10,000 chars)."),
   method: z.enum(["auto", "background", "foreground", "foreground_flash"]).default("auto").describe(
@@ -604,6 +607,53 @@ export function resolveTitleByHwnd(paneId: string): string | null {
 }
 
 /**
+ * Resolve a wt pane (`wt:<pid>:<startMs>` paneId) to its Windows Terminal WINDOW (S-pid gate E6,
+ * `resolveWtPane`). A WT pane has no per-pane hwnd; UIA TextPattern reads the WT window's ACTIVE tab and
+ * the WT window title mirrors the ACTIVE tab's title — so the pane resolves ONLY while its nonce tab
+ * title (pinned by `--suppressApplicationTitle`, registered at launch) is showing: find the window whose
+ * title contains the registered tab title under the SAME exactly-1-substring discipline as
+ * `resolveTitleByHwnd`. The locker tab being INACTIVE (its WT window shows another tab's title) or its
+ * window gone ⇒ null ⇒ every read/poll declines — the E6 honest contract: WT autofill operates while the
+ * locker tab is the active tab; switching away PAUSES the loop fail-safe (never a wrong-target read, and
+ * injection re-verifies pid+time regardless). An UNREGISTERED wt paneId (not launched by this process)
+ * always declines.
+ */
+function resolveWtPaneWindow(paneId: string): { win: WindowZInfo; tabTitle: string } | null {
+  const tabTitle = wtPaneTitleOf(paneId);
+  if (tabTitle === null || tabTitle.length === 0) return null;
+  const wins = enumWindowsInZOrder();
+  const q = tabTitle.toLowerCase();
+  const matches = wins.filter((w) => w.title.toLowerCase().includes(q));
+  return matches.length === 1 ? { win: matches[0], tabTitle } : null;
+}
+
+/**
+ * Resolve ANY public paneId to a title the title-keyed seams can use (S-pid E2/E6 — the one resolver
+ * over both pane forms): classic → `resolveTitleByHwnd` (unchanged semantics), wt → the registered
+ * nonce tab title iff exactly one live window contains it (`resolveWtPaneWindow`). Null ⇒ decline.
+ */
+export function resolvePaneTitle(paneId: string): string | null {
+  const parsed = parsePaneId(paneId);
+  if (parsed === null) return null;
+  if (parsed.kind === "classic") return resolveTitleByHwnd(paneId);
+  return resolveWtPaneWindow(paneId)?.tabTitle ?? null;
+}
+
+/**
+ * Resolve ANY public paneId to its send-target WINDOW (S-pid E6): classic → hwnd-direct
+ * `findTerminalWindowByHwnd` (unchanged — survives title drift), wt → the pane's Windows Terminal
+ * window via the exactly-1 tab-title match (commands ride the existing WT-capable send machinery; the
+ * SECRET never rides this path — it rides AttachConsole/WriteConsoleInputW, pid-addressed). Null ⇒
+ * decline (malformed / vanished / inactive-tab / non-console classic hwnd).
+ */
+export function findTerminalWindowByPaneId(paneId: string): WindowZInfo | null {
+  const parsed = parsePaneId(paneId);
+  if (parsed === null) return null;
+  if (parsed.kind === "classic") return findTerminalWindowByHwnd(parsed.hwnd);
+  return resolveWtPaneWindow(paneId)?.win ?? null;
+}
+
+/**
  * Parse the echo-immune sentinel out of the post-baseline slice. Returns
  * matched=false (DEFER) until the COMPLETE sentinel line (token + separator +
  * exit-code field) has rendered — partial renders never match, and the echo
@@ -856,12 +906,14 @@ export const terminalReadHandler = async ({
   ocrLanguage?: string;
 }): Promise<ToolResult> => {
   try {
-    // ADR-014 R3 OQ-W-16-bis: a paneId (decimal hwnd) targets a specific pane. Read is title-keyed
+    // ADR-014 R3 OQ-W-16-bis (+ S-pid E6): a paneId targets a specific pane. Read is title-keyed
     // DOWNSTREAM (getTextViaTextPattern / recognizeWindow take a title, UIA `Name -like`), so resolve
-    // the hwnd to its title ONLY if that title is still live-unique (resolveTitleByHwnd) — else decline
-    // rather than risk reading a same-title sibling (never a wrong-pane read). paneId overrides windowTitle.
+    // the pane to a title ONLY if that title is still live-unique — classic via resolveTitleByHwnd, wt
+    // via the registered nonce tab title (which also gates on the tab being ACTIVE) — else decline
+    // rather than risk reading a same-title sibling / another tab (never a wrong-pane read). paneId
+    // overrides windowTitle.
     if (paneId !== undefined) {
-      const resolved = resolveTitleByHwnd(paneId);
+      const resolved = resolvePaneTitle(paneId);
       if (resolved === null) {
         return failWith("Terminal window not found: paneId " + paneId, "terminal:read", { paneId, windowTitle });
       }
@@ -999,14 +1051,14 @@ export const terminalSendHandler = async ({
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   const startedAt = Date.now();
   try {
-    // ADR-014 R3 OQ-W-16-bis: a paneId (decimal hwnd) binds the send target DIRECTLY by hwnd (WM_CHAR
-    // goes to this exact window), surviving the post-login title drift AND a same-title sibling. Takes
-    // precedence over windowTitle. A malformed / vanished / non-console hwnd declines (never throws).
+    // ADR-014 R3 OQ-W-16-bis (+ S-pid E6): a paneId binds the send target — classic DIRECTLY by hwnd
+    // (WM_CHAR goes to this exact window, surviving the post-login title drift AND a same-title
+    // sibling), wt to the pane's Windows Terminal window while its tab is ACTIVE (exactly-1 nonce
+    // tab-title match). Takes precedence over windowTitle. A malformed / vanished / inactive-tab /
+    // non-console pane declines (never throws).
     let win: WindowZInfo | null;
     if (paneId !== undefined) {
-      let h: bigint;
-      try { h = BigInt(paneId); } catch { return failWith("Terminal window not found: paneId " + paneId, "terminal:send", { paneId, windowTitle }); }
-      win = findTerminalWindowByHwnd(h);
+      win = findTerminalWindowByPaneId(paneId);
     } else if (windowTitle !== undefined && windowTitle !== "") {
       win = findTerminalWindow(windowTitle);
     } else {
@@ -1029,7 +1081,11 @@ export const terminalSendHandler = async ({
     // Run now passes notifyDispatch=false and fires once itself with the original
     // input, so this handler stays the single notifier only for direct send.
     const markDispatched = () => {
-      if (notifyDispatch) fireTerminalDispatch(String(win.hwnd), input);
+      // S-pid E2: the dispatch event's pane key must be the PUBLIC paneId when one was given — for a wt
+      // pane String(win.hwnd) is the WT HOST window, which is NOT the driver's pane key (`wt:…`), so the
+      // arm would silently never fire. For a classic paneId the two are identical; a windowTitle send
+      // keeps the hwnd key (a pre-existing pane is never anchored, so the driver ignores it either way).
+      if (notifyDispatch) fireTerminalDispatch(paneId ?? String(win.hwnd), input);
     };
 
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ─────────────────

@@ -17,7 +17,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { HELPER_EXE, KeyLockerError, KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
@@ -200,9 +200,16 @@ export class KeyLockerManager {
    * without this a second console (or a same-titled user window) would never autofill — Codex W-4a R3
    * read-path). **NOT unit-testable — the live-desktop console-allocation behavior is covered by the §5
    * dogfood (see the DF-1 followups doc).** Throws if no console window appears within `timeoutMs`.
+   *
+   * `host: 'windows-terminal'` (S-pid gate E1, R3.x La) instead opens a NEW TAB in the user's current
+   * Windows Terminal window (`wt -w 0 new-tab`) — see `launchWtPane`. On ANY wt-path failure it THROWS
+   * (`KeyLockerWtUnavailable`) — never a silent classic fallback (the caller asked for a WT tab; a
+   * surprise classic window violates least-astonishment). The TOOL layer (E7) offers `host:'classic'`
+   * as the explicit retry. Default stays `'classic'` HERE (the manager is host-agnostic infrastructure;
+   * the WT-first default is the TOOL's decision — E7).
    */
   async launchAnchoredConsole(
-    o: { timeoutMs?: number; pollMs?: number } = {},
+    o: { timeoutMs?: number; pollMs?: number; host?: "classic" | "windows-terminal" } = {},
   ): Promise<{ anchor: PaneAnchor; title: string }> {
     const timeoutMs = o.timeoutMs ?? 8000;
     const pollMs = o.pollMs ?? 150;
@@ -255,6 +262,11 @@ export class KeyLockerManager {
     // fail-safe (`resolveTitleByHwnd` declines ⇒ the human types the credential; never a wrong-inject).
     const psCommand = `try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; $Host.UI.RawUI.WindowTitle = '${title}'`;
     const encodedCommand = Buffer.from(psCommand, "utf16le").toString("base64");
+    // S-pid E1 (R3.x La): the WT host takes a separate launch path — the `-EncodedCommand` base64
+    // (which interpolates the 8-byte title nonce BEFORE encoding) doubles as its unique argv marker.
+    if (o.host === "windows-terminal") {
+      return this.launchWtPane(title, encodedCommand, timeoutMs, pollMs);
+    }
     const child = spawn(
       cmdExe,
       ["/c", "start", "", conhostExe, "powershell.exe", "-NoProfile", "-NoExit", "-EncodedCommand", encodedCommand],
@@ -316,6 +328,121 @@ export class KeyLockerManager {
         );
       }
       await new Promise((r) => setTimeout(r, pollMs));
+    }
+  }
+
+  /**
+   * S-pid E1 (R3.x La): launch a locker-anchored pane as a NEW TAB in the user's current Windows
+   * Terminal window (`wt -w 0 new-tab`; no existing window ⇒ WT opens a new one — OQ-S-2, stated in the
+   * tool reply contract). A WT pane has NO per-pane window, so identity is discovered by the
+   * `-EncodedCommand` base64 ARGV MARKER (it interpolates the 8-byte nonce before encoding ⇒ globally
+   * unique): poll the process snapshot for shells whose command line carries the marker —
+   *   * exactly 1 (name == powershell, non-zero creation time) ⇒ freeze `{kind:'wt', shellPid,
+   *     shellStartTimeMs}`. Discovery is INDEPENDENT of the spawn (self-report is never trusted; the
+   *     OQ-S-3 spike ground-truthed marker match == the tab's shell, parent == the WT host).
+   *   * >1 ⇒ FAIL the launch (ambiguous identity never anchors — the same exactly-1 discipline as
+   *     `resolveTitleByHwnd`), best-effort killing the marker-matched shells (they are OURS by nonce).
+   *   * 0 within the deadline ⇒ spawn failed (leak-sweep any late match, then throw).
+   * `--suppressApplicationTitle` pins the tab title to the nonce (spike-verified: the shell's own
+   * title-set does not fight it, and the WT WINDOW title mirrors the ACTIVE tab) — the E6 read path
+   * keys on it. Every failure throws `KeyLockerWtUnavailable` — NEVER a silent classic fallback (E1).
+   *
+   * OQ-S-1 spawn hardening: wt.exe is an app-execution ALIAS (not System32) — resolved EXPLICITLY at
+   * `%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe`, never bare-PATH `wt`. Residual (documented, accepted):
+   * the alias parent dir is user-writable; a user-profile compromise could shadow it, but that adversary
+   * can already shadow the shell profile — the secret still only ever types into the pid the locker
+   * itself spawned AND re-verifies (I1/I2).
+   *
+   * Impl note vs the gate text: the gate sketches the discovery as a WMI `Win32_Process … CommandLine
+   * LIKE` query (the spike's vehicle). This implementation reads the SAME data (process command lines)
+   * through the existing native snapshot seam (`snapshotProcessTree().commandLine`) — same marker, same
+   * exactly-1 discipline, no WMI service dependency, and the injected `win32` test seam keeps it
+   * fake-able. (Gate doc synced with this note.)
+   */
+  private async launchWtPane(
+    title: string,
+    encodedCommand: string,
+    timeoutMs: number,
+    pollMs: number,
+  ): Promise<{ anchor: PaneAnchor; title: string }> {
+    const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    const wtExe = join(localAppData, "Microsoft", "WindowsApps", "wt.exe");
+    if (!existsSync(wtExe)) {
+      throw new KeyLockerError(
+        "KeyLockerWtUnavailable",
+        `KeyLockerWtUnavailable: Windows Terminal (wt.exe) was not found at ${wtExe}`,
+      );
+    }
+    // The tab's shell is pinned to the absolute System32 PowerShell (the same PATH-hijack hardening as
+    // the classic spawn — a credential feature never resolves its spawn executables via PATH).
+    const sys32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+    const psExe = join(sys32, "WindowsPowerShell", "v1.0", "powershell.exe");
+    const child = spawn(
+      wtExe,
+      ["-w", "0", "new-tab", "--title", title, "--suppressApplicationTitle", "--",
+        psExe, "-NoProfile", "-NoExit", "-EncodedCommand", encodedCommand],
+      { detached: true, stdio: "ignore", windowsHide: false },
+    );
+    child.on("error", () => { /* spawn failure surfaces as the discovery poll timing out below */ });
+    child.unref();
+    if (child.pid === undefined) {
+      throw new KeyLockerError("KeyLockerWtUnavailable", "KeyLockerWtUnavailable: wt.exe spawn returned no pid");
+    }
+
+    const deadline = this.now() + timeoutMs;
+    for (;;) {
+      const matches = this.findMarkerShells(encodedCommand);
+      if (matches.length > 1) {
+        // Ambiguous identity NEVER anchors. Both processes are running OUR nonce-marked command (a
+        // duplicate spawn / session-restore artifact), so a best-effort kill is safe and avoids orphans.
+        this.killPids(matches.map((m) => m.pid));
+        throw new KeyLockerError(
+          "KeyLockerWtUnavailable",
+          `KeyLockerWtUnavailable: ${matches.length} shells matched the launch marker (ambiguous identity)`,
+        );
+      }
+      if (matches.length === 1 && matches[0].startTimeMs !== 0) {
+        // Non-zero creation time verified (0 is the doubt sentinel — keep polling within the deadline,
+        // exactly like the classic start-time read).
+        return {
+          anchor: { kind: "wt", shellPid: matches[0].pid, shellStartTimeMs: matches[0].startTimeMs },
+          title,
+        };
+      }
+      if (this.now() >= deadline) {
+        // Leak sweep (mirrors the classic timeout path): if OUR marker-matched shell DID appear late /
+        // never became identifiable, kill it — a timeout must not orphan a tab. Bounded to one sweep.
+        this.killPids(this.findMarkerShells(encodedCommand).map((m) => m.pid));
+        throw new KeyLockerError(
+          "KeyLockerWtUnavailable",
+          "KeyLockerWtUnavailable: the Windows Terminal pane did not become identifiable (no marker-matched shell with a non-zero creation time)",
+        );
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+  }
+
+  /** The powershell processes whose command line carries the launch marker (E1 wt discovery). Uses the
+   *  SAME snapshot seam the watch/driver reconcile against (injectable via `opts.win32` for tests). */
+  private findMarkerShells(marker: string): Array<{ pid: number; startTimeMs: number }> {
+    const snap = this.snapshotProcessTree();
+    const out: Array<{ pid: number; startTimeMs: number }> = [];
+    for (const pid of snap.parentMap.keys()) {
+      const id = snap.identify(pid);
+      if (id.name !== "powershell") continue;
+      const argv = snap.commandLine(pid);
+      if (argv !== null && argv.some((a) => a === marker)) out.push({ pid, startTimeMs: id.startTimeMs });
+    }
+    return out;
+  }
+
+  /** Best-effort tree-kill (leak sweeps). `windowsHide:true` — a cleanup must not flash a console. */
+  private killPids(pids: number[]): void {
+    const sys32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+    for (const pid of pids) {
+      if (pid === 0) continue;
+      try { spawn(join(sys32, "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).unref(); }
+      catch { /* best-effort */ }
     }
   }
 

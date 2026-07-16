@@ -1,6 +1,27 @@
 # Changelog
 
-## [1.12.2] - 2026-07-16 — Fix: garbled (mojibake) CJK / Japanese output in Key Locker consoles
+## [Unreleased]
+
+### Added
+
+- **Key Locker can now autofill in a Windows Terminal tab, not just a separate console
+  window.** `key_locker({action:'launch_console'})` now opens a new tab in your current Windows
+  Terminal window by default and returns a `paneId` for it; drive your command into it with
+  `terminal({action:'send', paneId})` exactly as before, and a bound credential is filled when
+  the prompt appears — all in the terminal you already use, no extra window. If Windows Terminal
+  is not installed, pass `host:'classic'` (the tool also suggests this in the
+  `KeyLockerWtUnavailable` error) to open the previous dedicated classic console window instead.
+  Autofill and terminal reads for a Windows Terminal tab operate while that tab is the **active**
+  tab — switching to another tab safely pauses them (your credential is never typed into the
+  wrong pane), and they resume when you switch back.
+
+### Changed
+
+- **A launched pane is now identified by the shell process it started, not by its window.** This
+  makes autofill robust against Windows reusing a process id after the shell exits — the locker
+  will not type a secret into an unrelated process that happened to inherit the old id. Existing
+  classic-console `paneId`s are unchanged; a Windows Terminal tab uses a new self-describing
+  `wt:…` handle. No action is needed on your part.
 
 ### Fixed
 

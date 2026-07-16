@@ -32,14 +32,38 @@ import type { PaneAnchor } from "../../src/engine/key-locker/inject-target.js";
 import { KeyLockerWiring } from "../../src/tools/key-locker-wiring.js";
 import { maybeAdvisory } from "../../src/tools/_advisory.js";
 
-/** A manager whose console launch is faked (no real conhost) and whose consent/kill are directly settable. */
+// wt panes have no window — their liveness is the shell's creation-time identity, faked via this map
+// (paneId → the anchored startTimeMs; a live shell reads the same value, a dead/reused one differs).
+const liveWtShells = new Map<number, number>();
+vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    getProcessIdentityByPid: vi.fn((pid: number) => ({
+      pid,
+      processName: liveWtShells.has(pid) ? "powershell" : "",
+      processStartTimeMs: liveWtShells.get(pid) ?? 0,
+    })),
+  };
+});
+
+/** A manager whose console launch is faked (no real conhost/wt) and whose consent/kill are directly settable. */
 class FakeWiringManager extends KeyLockerManager {
   hwndSeq = 1000n;
+  wtPidSeq = 30000;
   consent = true;
   constructor(dir: string) { super({ storeDir: dir }); }
   override isConsentAccepted(): boolean { return this.consent; }
   override isDisabled(): boolean { return false; }
-  override async launchAnchoredConsole(): Promise<{ anchor: PaneAnchor; title: string }> {
+  override async launchAnchoredConsole(
+    o: { host?: "classic" | "windows-terminal" } = {},
+  ): Promise<{ anchor: PaneAnchor; title: string }> {
+    if (o.host === "windows-terminal") {
+      const shellPid = this.wtPidSeq++;
+      const startMs = 10;
+      liveWtShells.set(shellPid, startMs); // a freshly launched wt shell is live with its anchored time
+      return { anchor: { kind: "wt", shellPid, shellStartTimeMs: startMs }, title: `dtm-locker-console-wt-${shellPid}` };
+    }
     const hwnd = this.hwndSeq++;
     liveHwnds.add(hwnd); // a freshly launched console is live
     return {
@@ -57,46 +81,50 @@ function newWiring(): { wiring: KeyLockerWiring; mgr: FakeWiringManager } {
 
 beforeEach(() => {
   liveHwnds.clear();
+  liveWtShells.clear();
 });
 
-describe("ensureAnchoredConsole (Phase 2)", () => {
+// The Phase-2 reuse/cap/prune logic is host-agnostic; these exercise it on the CLASSIC path (host:'classic'
+// explicit — the default is now 'windows-terminal', E7). The WT path is exercised in its own describe below.
+describe("ensureAnchoredConsole classic path (Phase 2)", () => {
+  const classic = { host: "classic" } as const;
   it("reuses the same live pane by default (idempotent)", async () => {
     const { wiring } = newWiring();
-    const a = await wiring.ensureAnchoredConsole();
-    const b = await wiring.ensureAnchoredConsole();
+    const a = await wiring.ensureAnchoredConsole(classic);
+    const b = await wiring.ensureAnchoredConsole(classic);
     expect(b.paneId).toBe(a.paneId);
   });
 
   it("opens a NEW pane when fresh:true", async () => {
     const { wiring } = newWiring();
-    const a = await wiring.ensureAnchoredConsole();
-    const b = await wiring.ensureAnchoredConsole({ fresh: true });
+    const a = await wiring.ensureAnchoredConsole(classic);
+    const b = await wiring.ensureAnchoredConsole({ ...classic, fresh: true });
     expect(b.paneId).not.toBe(a.paneId);
   });
 
   it("relaunches when the reusable pane has died (pruned)", async () => {
     const { wiring } = newWiring();
-    const a = await wiring.ensureAnchoredConsole();
+    const a = await wiring.ensureAnchoredConsole(classic);
     liveHwnds.delete(BigInt(a.paneId)); // the user closed it
-    const b = await wiring.ensureAnchoredConsole();
+    const b = await wiring.ensureAnchoredConsole(classic);
     expect(b.paneId).not.toBe(a.paneId);
   });
 
   it("declines with KeyLockerConsoleLimit once the live-pane cap is reached", async () => {
     const { wiring } = newWiring();
-    await wiring.ensureAnchoredConsole({ fresh: true }); // 1
-    await wiring.ensureAnchoredConsole({ fresh: true }); // 2
-    await wiring.ensureAnchoredConsole({ fresh: true }); // 3 (cap)
-    await expect(wiring.ensureAnchoredConsole({ fresh: true })).rejects.toMatchObject({ code: "KeyLockerConsoleLimit" });
+    await wiring.ensureAnchoredConsole({ ...classic, fresh: true }); // 1
+    await wiring.ensureAnchoredConsole({ ...classic, fresh: true }); // 2
+    await wiring.ensureAnchoredConsole({ ...classic, fresh: true }); // 3 (cap)
+    await expect(wiring.ensureAnchoredConsole({ ...classic, fresh: true })).rejects.toMatchObject({ code: "KeyLockerConsoleLimit" });
   });
 
   it("frees a cap slot when a live pane dies", async () => {
     const { wiring } = newWiring();
-    const a = await wiring.ensureAnchoredConsole({ fresh: true });
-    await wiring.ensureAnchoredConsole({ fresh: true });
-    await wiring.ensureAnchoredConsole({ fresh: true }); // at cap
+    const a = await wiring.ensureAnchoredConsole({ ...classic, fresh: true });
+    await wiring.ensureAnchoredConsole({ ...classic, fresh: true });
+    await wiring.ensureAnchoredConsole({ ...classic, fresh: true }); // at cap
     liveHwnds.delete(BigInt(a.paneId)); // one dies → slot freed
-    await expect(wiring.ensureAnchoredConsole({ fresh: true })).resolves.toHaveProperty("paneId");
+    await expect(wiring.ensureAnchoredConsole({ ...classic, fresh: true })).resolves.toHaveProperty("paneId");
   });
 
   // OQ-8: a pane whose WINDOW is still live but which can no longer ARM (driver record torn down by a spurious
@@ -107,21 +135,75 @@ describe("ensureAnchoredConsole (Phase 2)", () => {
 
   it("does NOT reuse a live-window pane whose driver record was torn down (OQ-8) — relaunches", async () => {
     const { wiring } = newWiring();
-    const a = await wiring.ensureAnchoredConsole();
+    const a = await wiring.ensureAnchoredConsole(classic);
     // Isolate the hasPane gate: delete ONLY the driver's pane record, NOT the tracker session — so the
     // session stays KNOWN and `hasPane` ALONE must reject the reuse (proves it is load-bearing, not shadowed
     // by the isKnownSession check that the full onPaneClosed teardown would also trip). Window stays live.
     driverOf(wiring).panes.delete(a.paneId);
-    const b = await wiring.ensureAnchoredConsole();
+    const b = await wiring.ensureAnchoredConsole(classic);
     expect(b.paneId).not.toBe(a.paneId);
   });
 
   it("does NOT reuse a pane whose session drifted to UNKNOWN (OQ-8) — relaunches", async () => {
     const { wiring, mgr } = newWiring();
-    const a = await wiring.ensureAnchoredConsole();
+    const a = await wiring.ensureAnchoredConsole(classic);
     mgr.tracker.markUnknown(a.paneId); // hypothesis B: session no longer KNOWN
+    const b = await wiring.ensureAnchoredConsole(classic);
+    expect(b.paneId).not.toBe(a.paneId);
+  });
+});
+
+// ── S-pid E7: the WT host path (default) + host-aware reuse ────────────────────────────────────────────
+describe("ensureAnchoredConsole WT path (S-pid E7)", () => {
+  it("defaults to the windows-terminal host and returns a wt:… paneId", async () => {
+    const { wiring } = newWiring();
+    const a = await wiring.ensureAnchoredConsole(); // no host ⇒ default windows-terminal
+    expect(a.paneId).toMatch(/^wt:\d+:\d+$/);
+  });
+
+  it("reuses the same wt pane by default (anchor-identity liveness, no window needed)", async () => {
+    const { wiring } = newWiring();
+    const a = await wiring.ensureAnchoredConsole();
+    const b = await wiring.ensureAnchoredConsole();
+    expect(b.paneId).toBe(a.paneId);
+  });
+
+  it("relaunches when the wt shell died (identity read 0)", async () => {
+    const { wiring } = newWiring();
+    const a = await wiring.ensureAnchoredConsole();
+    const parsed = /^wt:(\d+):/.exec(a.paneId)!;
+    liveWtShells.delete(Number(parsed[1])); // the tab closed — shell exited
     const b = await wiring.ensureAnchoredConsole();
     expect(b.paneId).not.toBe(a.paneId);
+  });
+
+  it("relaunches when the wt shell pid was REUSED (different non-zero creation time)", async () => {
+    const { wiring } = newWiring();
+    const a = await wiring.ensureAnchoredConsole();
+    const shellPid = Number(/^wt:(\d+):/.exec(a.paneId)![1]);
+    liveWtShells.set(shellPid, 999); // same pid, DIFFERENT creation time ⇒ a reused pid, not our shell
+    const b = await wiring.ensureAnchoredConsole();
+    expect(b.paneId).not.toBe(a.paneId);
+  });
+
+  it("does NOT reuse a classic pane for a windows-terminal request (host-aware reuse)", async () => {
+    const { wiring } = newWiring();
+    const c = await wiring.ensureAnchoredConsole({ host: "classic" });
+    const w = await wiring.ensureAnchoredConsole({ host: "windows-terminal" });
+    expect(w.paneId).not.toBe(c.paneId);
+    expect(w.paneId).toMatch(/^wt:/);
+    // …and back: a classic request does not hand back the wt pane.
+    const c2 = await wiring.ensureAnchoredConsole({ host: "classic" });
+    expect(c2.paneId).toBe(c.paneId); // the classic pane is still reused for a classic request
+  });
+
+  it("counts BOTH kinds toward the cap", async () => {
+    const { wiring } = newWiring();
+    await wiring.ensureAnchoredConsole({ host: "classic", fresh: true });
+    await wiring.ensureAnchoredConsole({ host: "windows-terminal", fresh: true });
+    await wiring.ensureAnchoredConsole({ host: "windows-terminal", fresh: true }); // 3 (cap)
+    await expect(wiring.ensureAnchoredConsole({ host: "windows-terminal", fresh: true }))
+      .rejects.toMatchObject({ code: "KeyLockerConsoleLimit" });
   });
 });
 
