@@ -32,7 +32,11 @@ export type ParsedPaneId =
  */
 export const WT_PANE_ID_SCHEMA_MAX = 48;
 
-const WT_PANE_ID_RE = /^wt:([0-9]{1,10}):([0-9]{1,16})$/;
+// startMs is bounded to 14 digits: a real FILETIME-ms is ~1.33e13 (14 digits) and 14 digits max
+// (9.99e13) stays well inside Number.MAX_SAFE_INTEGER (9.007e15) so parsing never loses precision; a
+// wider bound would accept values Number() rounds. pid is the 32-bit max (10 digits). Both feed the
+// length invariant (WT_PANE_ID_SCHEMA_MAX): 3 + 10 + 1 + 14 = 28 <= 48.
+const WT_PANE_ID_RE = /^wt:([0-9]{1,10}):([0-9]{1,14})$/;
 
 /** Format a wt pane's public paneId from its S-pid anchor identity (E2). */
 export function formatWtPaneId(shellPid: number, shellStartTimeMs: number): string {

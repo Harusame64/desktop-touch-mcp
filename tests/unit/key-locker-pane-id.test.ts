@@ -38,14 +38,16 @@ describe("parsePaneId — the one resolver over both public forms", () => {
       "", "abc", "-5", "0x1234", " 4660", "4660 ",   // not the decimal classic form
       "wt:", "wt:12", "wt:12:", "wt:a:b", "wt:12:34:56", "WT:12:34",  // not the wt form
       "wt:0:34", "wt:12:0",                            // 0 is the doubt sentinel — can never have anchored
-      "wt:12345678901:34", "wt:12:12345678901234567",  // over max digit widths
+      "wt:12345678901:34", "wt:12:123456789012345",  // over max digit widths (pid > 10, startMs > 14)
     ]) {
       expect(parsePaneId(bad), JSON.stringify(bad)).toBeNull();
     }
   });
 
-  it("LENGTH INVARIANT: the max-width wt paneId fits the public schema cap (gate E2 / Opus P3-1)", () => {
-    // Max pid = 32-bit max (10 digits); startMs 14 digits covers the Windows epoch past year 2200.
+  it("LENGTH INVARIANT: the PARSER's max-width wt paneId fits the public schema cap (gate E2 / Opus P3-1)", () => {
+    // Bound at the PARSER's ceiling (pid 10 digits = 32-bit max; startMs 14 digits, the regex max — a
+    // real FILETIME-ms is ~14 digits and 14 digits stays inside Number.MAX_SAFE_INTEGER so parsing is
+    // exact), so a future format tweak can't silently exceed the cap. 3 (`wt:`) + 10 + 1 (`:`) + 14 = 28.
     const widest = formatWtPaneId(4294967295, 99999999999999);
     expect(widest.length).toBeLessThanOrEqual(WT_PANE_ID_SCHEMA_MAX);
     expect(parsePaneId(widest)).toEqual({ kind: "wt", shellPid: 4294967295, shellStartTimeMs: 99999999999999 });
