@@ -29,7 +29,7 @@ vi.mock(import("../../src/tools/terminal.js"), async (importOriginal) => {
 
 import { KeyLockerManager } from "../../src/engine/key-locker/key-locker-manager.js";
 import type { PaneAnchor } from "../../src/engine/key-locker/inject-target.js";
-import { KeyLockerWiring } from "../../src/tools/key-locker-wiring.js";
+import { KeyLockerWiring, exitProbeMethod } from "../../src/tools/key-locker-wiring.js";
 import { maybeAdvisory } from "../../src/tools/_advisory.js";
 
 // wt panes have no window — their liveness is the shell's creation-time identity, faked via this map
@@ -243,6 +243,21 @@ describe("credentialNudge (Phase 3)", () => {
     const { wiring } = newWiring();
     const hint = nudge(wiring, { input: "C:\\Windows\\System32\\OpenSSH\\ssh.exe -p 2222 u@h", windowTitle: "cmd" });
     expect(hint).not.toBeNull();
+  });
+});
+
+// S-pid E6 / Codex PR3 R1 P1: the Mode-A exit probe's send channel must be WT-capable for a wt pane
+// (WT rejects background WM_CHAR ⇒ an undelivered probe would time out and DISCARD a working one-shot
+// credential in the DEFAULT flow). Pinned as a pure policy so the channel choice can't silently regress.
+describe("exitProbeMethod (S-pid E6 — WT probe channel)", () => {
+  it("a wt pane uses foreground_flash (WT-capable; background WM_CHAR is rejected by WT)", () => {
+    expect(exitProbeMethod("wt:31264:13322426700123")).toBe("foreground_flash");
+  });
+  it("a classic pane keeps background (byte-equivalent to the shipped probe — classic unchanged)", () => {
+    expect(exitProbeMethod("12345678")).toBe("background");
+  });
+  it("a malformed paneId defaults to background (never mis-routes to the flash path)", () => {
+    expect(exitProbeMethod("not-a-pane")).toBe("background");
   });
 });
 
