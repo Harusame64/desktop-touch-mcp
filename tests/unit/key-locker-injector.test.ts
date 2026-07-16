@@ -13,7 +13,7 @@ import {
 import type { BindingUri } from "../../src/engine/key-locker/binding.js";
 import type { KeyLockerHost } from "../../src/engine/key-locker-host.js";
 
-const target: InjectTarget = { hwnd: "12345", consolePid: 4242, titleFp: "abc", submit: true };
+const target: InjectTarget = { hwnd: "12345", consolePid: 4242, titleFp: "abc", shellPid: 4242, shellStartMs: 13322426700123, submit: true };
 
 describe("selectInjector (§1 selection rule) — total, typed rejects", () => {
   const cases: Array<[BindingUri["scheme"], InjectChannel, string]> = [

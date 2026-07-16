@@ -75,7 +75,10 @@ describe("key-locker DPAPI store (-SelfTest, headless)", () => {
   // L2 §6 #4/#7/#8 (headless slice): the serving-pipe + ticket contract — valid fetch, single-use,
   // forged ticket refused, git context_mismatch refused, context match serves. SendInput (§6 #2/#3)
   // needs a live foreground conhost and is a separate live e2e; this proves the serving path.
-  it("serves a ticketed secret once and refuses replay / forged ticket / context mismatch (-SelfTestL2)", async () => {
+  // Since S-pid PR2, `-SelfTestL2` ALSO carries the E3b wire-parse pin (a `t` frame's
+  // shellPid/shellStartMs reconstruct through the SAME ParseInjectTarget the live HandleInject uses)
+  // + the §4 FILETIME sign-extension pin — asserted here as `wireParse:true`.
+  it("serves a ticketed secret once and refuses replay / forged ticket / context mismatch (-SelfTestL2 + S-pid wire-parse pin)", async () => {
     expect(existsSync(HELPER_EXE)).toBe(true);
     const storeDir = freshStoreDir();
     dirs.push(storeDir);
@@ -89,7 +92,7 @@ describe("key-locker DPAPI store (-SelfTest, headless)", () => {
     });
 
     expect(code).toBe(0);
-    expect(JSON.parse(stdout.trim())).toEqual({ ok: true });
+    expect(JSON.parse(stdout.trim())).toEqual({ ok: true, serving: true, wireParse: true });
 
     // The serving path decrypts transiently in-process; the at-rest store never holds plaintext.
     const storeJson = readFileSync(join(storeDir, "store.json"), "utf8");

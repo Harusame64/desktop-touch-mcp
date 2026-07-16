@@ -24,6 +24,7 @@ import {
   type CaptureDriverDeps,
   type PromptVerdict,
 } from "../../src/engine/key-locker/key-locker-capture-driver.js";
+import type { PaneAnchor } from "../../src/engine/key-locker/inject-target.js";
 import { SessionTracker, type SessionFrame } from "../../src/engine/key-locker/session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "../../src/engine/key-locker/ssh-session-watch.js";
 import type { BindingUri } from "../../src/engine/key-locker/binding.js";
@@ -47,6 +48,10 @@ function snapshotOf(procs: Record<number, Proc>): ProcessSnapshot {
 }
 
 const CONSOLE_INJECT_OK = (verified = true): InjectResult => ({ ok: true, injector: "console", verified });
+/** S-pid E4: `onLocalPaneLaunched` takes the SPAWN-captured PaneAnchor (mechanical call-shape update —
+ *  the shell pid rides `anchor.shellPid`; hwnd/time values are opaque to the driver's own logic). */
+const anchorOf = (shellPid: number): PaneAnchor =>
+  ({ kind: "classic", hwnd: BigInt(shellPid), shellPid, shellStartTimeMs: 10 });
 const PROMPT = (isCredentialPrompt: boolean): PromptVerdict => ({ isCredentialPrompt, tail: "", stillHiddenPrompt: false });
 const sshProc = (parent: number, host: string, start: number): Proc =>
   ({ parent, name: "ssh", start, argv: ["ssh", `deploy@${host}`] });
@@ -115,7 +120,7 @@ const shellTree = (extra: Record<number, Proc> = {}): Record<number, Proc> => ({
 describe("KeyLockerCaptureDriver — W1 anchoring (launched panes only, P1-B)", () => {
   it("a LAUNCHED pane is anchored known-local + watched; a credential dispatch arms", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
     expect(h.watch.isWatching("pane-1")).toBe(true);
 
@@ -134,13 +139,13 @@ describe("KeyLockerCaptureDriver — W1 anchoring (launched panes only, P1-B)", 
 
   it("cwd from launch is anchored (for L1's configured-git-remote resolution)", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000, "C:/work");
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000), "C:/work");
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false, cwd: "C:/work" });
   });
 
   it("the anchored localhost frame is the one the loop derives from", async () => {
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo apt update");
     await h.driver.poll("pane-1");
     expect(h.deriveCalls.at(-1)?.session).toEqual({ execHost: "localhost", isRemote: false });
@@ -150,21 +155,21 @@ describe("KeyLockerCaptureDriver — W1 anchoring (launched panes only, P1-B)", 
 describe("KeyLockerCaptureDriver — arm pre-filter (looksLikeCredential, OQ-W-3)", () => {
   it("a non-credential command (`ls`) does NOT arm", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ls -la");
     expect(h.driver.armedPaneIds()).toEqual([]);
   });
 
   it("`sudo`/`doas`/`su` arm; a leading env-assignment is skipped (`LC_ALL=C sudo …` still arms)", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "LC_ALL=C sudo apt update");
     expect(h.driver.armedPaneIds()).toEqual(["pane-1"]);
   });
 
   it("an UNKNOWN pane (sunk by reconcile) does not arm even for a credential command", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.tracker.markUnknown("pane-1"); // simulate a prior sink
     h.driver.onDispatch("pane-1", "sudo apt update");
     expect(h.driver.armedPaneIds()).toEqual([]);
@@ -172,7 +177,7 @@ describe("KeyLockerCaptureDriver — arm pre-filter (looksLikeCredential, OQ-W-3
 
   it("a conditional ssh that recordDispatch SINKS to UNKNOWN ⇒ decline (Codex R5 P1)", async () => {
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     // `false && ssh host` is a conditional (skipped) ssh → recordDispatch markUnknowns the pane; the pre-record
     // frozen still looks local, so the post-record gate must decline rather than arm the skipped ssh binding.
     h.driver.onDispatch("pane-1", "false && ssh deploy@host-a ; sudo -v");
@@ -189,7 +194,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
     // proves pid 2000 is THIS dispatch's child → the W-2b scan skips it (no mis-flag) → the frame is pushed
     // and 2000 is registered synchronously in the SAME onDispatch turn.
     const h = makeHarness({}, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a");
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true }); // NOT markUnknown'd
     expect(h.tracker.remoteDepth("pane-1")).toBe(1);
@@ -205,7 +210,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
     // which is exactly why onDispatch passes the exempt. Here we drive tickWatch on a pane with a live but
     // UNregistered interactive ssh — the W-2b scan markUnknowns it (the shared-pane disclosure guard).
     const h = makeHarness({}, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.tickWatch(); // no exempt — the unregistered interactive ssh trips the W-2b scan
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
   });
@@ -215,7 +220,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
     // drove an in-bound ssh into. `sudo x` has no interactive-ssh host ⇒ NO exempt ⇒ the W-2b scan flags the
     // user's ssh ⇒ markUnknown ⇒ decline.
     const h = makeHarness({}, shellTree({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "admin@secret-host"] } }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // sunk — LOCAL secret must not reach remote
     expect(h.driver.armedPaneIds()).toEqual([]);
@@ -226,7 +231,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
     // the assistant then dispatches `ssh deploy@host-a` spawning a NEW child 2000. Only 2000 is exempt — the
     // user's 1500 is a DIFFERENT pid the W-2b scan STILL flags ⇒ markUnknown (host is not identity).
     const h = makeHarness({}, shellTree({ 1500: sshProc(1000, "host-a", 15) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.tickWatch(); // fold the pre-existing 1500 into the baseline (and it markUnknowns — user ssh)
     h.tracker.beginLocalSession("pane-1"); // re-anchor (the user pane is shared; simulate the driver re-seeing local)
     // now the assistant dispatches ssh host-a → new child 2000 appears alongside the user's 1500
@@ -240,7 +245,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
 
   it("a straggler child (not visible at dispatch) is correlated on a later tick (fire-after slow-spawn backstop)", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // child NOT visible yet → pending correlation
     // the pane pushed host-a but has no registered child; a tick before the child appears markUnknowns (fail-safe)
     // — but here the child appears, then a tick correlates it (register), and the frame survives.
@@ -252,7 +257,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
 
   it("a straggler that never appears before a tick ⇒ the unwatched frame markUnknowns (fail-safe OQ-W-9 residual)", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // push, but the child has NOT spawned yet
     h.driver.tickWatch(); // child invisible ⇒ nothing to register ⇒ backstop markUnknowns (safe decline)
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true }); // declines, NEVER wrong-targets
@@ -262,7 +267,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
     // The just-dispatched ssh's argv is unreadable (elevated/cross-user), so the exempt delta cannot host-match
     // it → NO exempt → the W-2b scan flags the unreadable ssh descendant → markUnknown.
     const h = makeHarness({}, shellTree({ 2000: { parent: 1000, name: "ssh", start: 20 /* no argv → null */ } }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a");
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
   });
@@ -274,7 +279,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
       2000: sshProc(1000, "host-a", 20),
       2001: { parent: 1000, name: "ssh", start: 21, argv: ["ssh", "admin@host-a"] },
     }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a");
     expect(h.tracker.get("pane-1")).toEqual({ unknown: true });
   });
@@ -284,7 +289,7 @@ describe("KeyLockerCaptureDriver — fire-AFTER-delivery correlation (§0-CORR.2
     // spawns; only host-a is registered. Killing the TUNNEL must not pop the frame; killing the LOGIN must.
     const tunnel: Proc = { parent: 1000, name: "ssh", start: 15, argv: ["ssh", "-fNL", "9000", "host-t"] };
     const h = makeHarness({}, shellTree({ 1500: tunnel, 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // exempt 2000 (host-a), tunnel host is null ≠ host-a
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true });
 
@@ -305,7 +310,7 @@ describe("KeyLockerCaptureDriver — derive-then-record ordering (§3.1 point 1)
     // pushes host-a for SUBSEQUENT commands. (A NESTED `ssh @host-b` from host-a is a different case: the module
     // deliberately declines it — depth≥2 is an unobservable inner login → markUnknown.)
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // frozen = localhost (pre-push); records host-a after
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true }); // post-push frame
     await h.driver.poll("pane-1"); // the loop derives the armed command from the FROZEN pre-push frame
@@ -317,7 +322,7 @@ describe("KeyLockerCaptureDriver — derive-then-record ordering (§3.1 point 1)
 describe("KeyLockerCaptureDriver — RECONCILE-then-FREEZE (W3, P1-A)", () => {
   it("reconcile-at-dispatch pops a dead ssh so a post-exit `sudo x` freezes localhost, NOT stale host-a", async () => {
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // register host-a (child present)
     expect(h.tracker.remoteDepth("pane-1")).toBe(1);
 
@@ -332,7 +337,7 @@ describe("KeyLockerCaptureDriver — RECONCILE-then-FREEZE (W3, P1-A)", () => {
 
   it("a remote `sudo x` whose ssh session POPS to local between arm and fill DECLINES (Opus R2 P2 — no cross-host disclosure)", async () => {
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // register host-a
     await h.driver.poll("pane-1"); // this poll's prompt fires a loop for the ssh; ignore its outcome
 
@@ -361,7 +366,7 @@ describe("KeyLockerCaptureDriver — RECONCILE-then-FREEZE (W3, P1-A)", () => {
     // The legitimate remote fill: no external change, so live == expected == host-a → the loop derives the
     // armed command from the FROZEN host-a frame (the freeze still gives a deterministic derive).
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // register host-a
     await h.driver.poll("pane-1"); // ignore the ssh login loop
     h.driver.onDispatch("pane-1", "sudo x"); // frozen = host-a, expected = host-a (2000 still alive)
@@ -378,7 +383,7 @@ describe("KeyLockerCaptureDriver — loopPhase gate (§0-CORR.3)", () => {
     let releaseCapture!: () => void;
     const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), capture }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x"); // arm
 
     // start the loop; it BLOCKS in capture() → loopPhase = pre-landed (the shell is at the prompt)
@@ -400,7 +405,7 @@ describe("KeyLockerCaptureDriver — loopPhase gate (§0-CORR.3)", () => {
     let releaseOffer!: (c: SaveChoice) => void;
     const offerSave = vi.fn(() => new Promise<SaveChoice>((res) => { releaseOffer = res; }));
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), offerSave }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // Mode-B login, arms host-a; child registered
     const pLoop = h.driver.poll("pane-1");               // runs the loop; awaitLanded(Mode B) accepts → post-landed → blocks in offerSave
     await new Promise((r) => setTimeout(r, 0));
@@ -423,7 +428,7 @@ describe("KeyLockerCaptureDriver — loopPhase gate (§0-CORR.3)", () => {
     let releaseRun!: () => void;
     const runToExit = vi.fn((): Promise<ExitCompletion> => new Promise((res) => { releaseRun = () => res({ reason: "exited", exitCode: 0 }); }));
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), runToExit }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x"); // Mode-A one-shot, arms
     const pLoop = h.driver.poll("pane-1");    // loop blocks in runToExit (awaitLanded Mode A) — still pre-landed
     await new Promise((r) => setTimeout(r, 0));
@@ -440,7 +445,7 @@ describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not 
     // THE disclosure the dispatch-time reconcile cannot catch: the sink happens AFTER the freeze. Without the
     // poll's live-session re-check the loop would fill the LOCAL sudo secret into the now-REMOTE pane's prompt.
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x"); // armed, frozen = { localhost }
     expect(h.driver.armedPaneIds()).toEqual(["pane-1"]);
 
@@ -463,7 +468,7 @@ describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not 
     // reconcile, `tracker.get()` still reads the STALE arm-time localhost session (no tickWatch has run to
     // markUnknown it), so the live-check would PASS and fill the local secret into the now-remote prompt.
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x"); // armed, expected = { localhost }
     // the USER hand-ssh's in — but NO tickWatch fires. The tracker is still stale-local until the poll reconciles.
     h.setTree(shellTree({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "admin@secret-host"] } }));
@@ -481,7 +486,7 @@ describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not 
     let releaseCapture!: () => void;
     const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)), capture }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // register host-a (child present) — no poll needed
     h.driver.onDispatch("pane-1", "sudo x");             // remote sudo, frozen = expected = host-a; re-arms
 
@@ -507,7 +512,7 @@ describe("KeyLockerCaptureDriver — a pane sunk to UNKNOWN after arming is not 
     let releasePrompt!: (v: PromptVerdict) => void;
     const readPromptTail = vi.fn(() => new Promise<PromptVerdict>((res) => { releasePrompt = res; }));
     const h = makeHarness({ readPromptTail }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x"); // armed on localhost
     const p = h.driver.poll("pane-1");         // awaits the blocked prompt read
     await new Promise((r) => setTimeout(r, 0));
@@ -524,7 +529,7 @@ describe("KeyLockerCaptureDriver — single-flight + stale-arm guards", () => {
     let releasePrompt!: (v: PromptVerdict) => void;
     const readPromptTail = vi.fn(() => new Promise<PromptVerdict>((res) => { releasePrompt = res; }));
     const h = makeHarness({ readPromptTail }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
 
     const p1 = h.driver.poll("pane-1");             // sets pollBusy, awaits the (blocked) prompt read
@@ -542,7 +547,7 @@ describe("KeyLockerCaptureDriver — single-flight + stale-arm guards", () => {
     let releasePrompt!: (v: PromptVerdict) => void;
     const readPromptTail = vi.fn(() => new Promise<PromptVerdict>((res) => { releasePrompt = res; }));
     const h = makeHarness({ readPromptTail }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x"); // arm A (sudo, cached — no prompt of its own)
 
     const pA = h.driver.poll("pane-1");        // captures armed=A(sudo), awaits the blocked prompt read
@@ -562,7 +567,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
     const verdicts = [PROMPT(false), PROMPT(false), PROMPT(true)];
     let i = 0;
     const h = makeHarness({ readPromptTail: vi.fn(async () => verdicts[Math.min(i++, verdicts.length - 1)]) }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
 
     expect((await h.driver.poll("pane-1")).status).toBe("polling");
@@ -577,7 +582,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
       resolveBinding: vi.fn(async () => ({ opaqueId: "stored-1" })), // MATCH
       confirmPolicyFor: vi.fn(() => false),
     }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
     const r = await h.driver.poll("pane-1");
     expect(r).toEqual({ status: "filled", outcome: { kind: "filled_from_store", verified: true } satisfies CaptureLoopOutcome });
@@ -590,7 +595,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
       confirmPolicyFor: vi.fn(() => true),
       confirmInjection: vi.fn(async () => false),
     }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
     const r = await h.driver.poll("pane-1");
     expect(r).toEqual({ status: "filled", outcome: { kind: "confirm_rejected" } satisfies CaptureLoopOutcome });
@@ -599,7 +604,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
 
   it("a NO-MATCH capture→inject→landed→[Save] flows through as { status: 'filled', outcome: saved }", async () => {
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
     const r = await h.driver.poll("pane-1");
     expect(r).toEqual({ status: "filled", outcome: { kind: "saved", verified: true } satisfies CaptureLoopOutcome });
@@ -611,7 +616,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
       readPromptTail: vi.fn(async () => PROMPT(true)),
       capture: vi.fn(async () => ({ captured: false })),
     }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
     const r = await h.driver.poll("pane-1");
     expect(r).toEqual({ status: "filled", outcome: { kind: "capture_cancelled" } satisfies CaptureLoopOutcome });
@@ -622,7 +627,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
       readPromptTail: vi.fn(async () => PROMPT(true)),
       runToExit: vi.fn(async () => ({ reason: "timeout" })), // Mode A not exit-0
     }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.driver.onDispatch("pane-1", "sudo x");
     const r = await h.driver.poll("pane-1");
     expect(r.status).toBe("filled");
@@ -632,7 +637,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
 
   it("poller lifetime elapses with no prompt ⇒ timed_out + disarm (OQ-W-2)", async () => {
     const h = makeHarness({ pollTimeoutMs: 5000 }, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     h.clock.ms = 1000;
     h.driver.onDispatch("pane-1", "sudo x"); // armedAt = 1000
     h.clock.ms = 7000; // > 1000 + 5000
@@ -642,7 +647,7 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
 
   it("poll on an idle / unarmed pane ⇒ idle", async () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     expect((await h.driver.poll("pane-1")).status).toBe("idle");
     expect((await h.driver.poll("never-launched")).status).toBe("idle");
   });
@@ -658,8 +663,8 @@ describe("KeyLockerCaptureDriver — multi-pane correlation isolation", () => {
 
   it("another pane's onDispatch does NOT markUnknown pane-1's registered ssh frame", () => {
     const h = makeHarness({}, twoShells({ 2000: sshProc(1000, "host-a", 20) }));
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
-    h.driver.onLocalPaneLaunched("pane-2", 1100);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onLocalPaneLaunched("pane-2", anchorOf(1100));
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // pane-1 registers host-a (child present)
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true });
     h.driver.onDispatch("pane-2", "ls");                // pane-2's tick reconciles ALL panes
@@ -670,7 +675,7 @@ describe("KeyLockerCaptureDriver — multi-pane correlation isolation", () => {
 describe("KeyLockerCaptureDriver — W2 close atomicity", () => {
   it("onPaneClosed unwatches + forgets the pane (same turn)", () => {
     const h = makeHarness({}, shellTree());
-    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
     expect(h.watch.isWatching("pane-1")).toBe(true);
     h.driver.onPaneClosed("pane-1");
     expect(h.watch.isWatching("pane-1")).toBe(false);

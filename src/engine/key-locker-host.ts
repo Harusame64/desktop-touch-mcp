@@ -107,20 +107,27 @@ export interface LockerReply {
 
 // L2 wire contracts (the locker owns these frame shapes; the injector orchestrator consumes them).
 
-/** The dedicated-console target of a console-buffer injection (`inject`) — §2.1 of the L2 plan. */
+/** The anchored-pane target of a console-buffer injection (`inject`) — §2.1 of the L2 plan, re-based on
+ *  the S-pid identity (S-pid gate E3). `shellPid`/`shellStartMs` are REQUIRED for both hosts (the
+ *  locker's PRIMARY pid+creation-time re-verify); the window-derived trio is CLASSIC-ONLY (a WT pane has
+ *  no per-pane window). Additive on the wire — an un-rebuilt L0 reader ignores unknown props. */
 export interface InjectTarget {
-  /** The console window HWND (decimal string). */
-  hwnd: string;
+  /** The console window HWND (decimal string) — classic only (absent for wt). */
+  hwnd?: string;
   /**
    * The pid that OWNS the console window — whatever `GetWindowThreadProcessId(hwnd)` returns for the
    * `ConsoleWindowClass` window. L3 supplies `getWindowProcessId(hwnd)` and the locker re-verifies
    * with the SAME API on the same hwnd, so the value matches by CONSTRUCTION (L3 plan §4). The
    * `ConsoleWindowClass` allowlist is what excludes a WT multiplexer; this is the window-owning pid,
-   * not asserted to be a specific conhost-vs-shell process (Opus R1 P3-1).
+   * not asserted to be a specific conhost-vs-shell process (Opus R1 P3-1). Classic only.
    */
-  consolePid: number;
-  /** Opaque hash of the expected pane identity (secondary anchor). */
-  titleFp: string;
+  consolePid?: number;
+  /** Opaque hash of the expected pane identity (secondary anchor). Classic only. */
+  titleFp?: string;
+  /** The spawn-tracked SHELL pid — the AttachConsole target for wt, the identity root for both hosts. */
+  shellPid: number;
+  /** The shell's creation time, ms since the 1601 epoch = floor(FILETIME/10000) (gate §4). Never 0. */
+  shellStartMs: number;
   /** Append Enter after the secret. */
   submit?: boolean;
 }
