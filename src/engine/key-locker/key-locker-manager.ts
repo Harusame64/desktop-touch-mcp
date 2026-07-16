@@ -227,6 +227,11 @@ export class KeyLockerManager {
     // unaffected (verified on-hardware: `InputCP=932 OutputCP=65001`). Deliberately NOT `chcp 65001`, which also
     // changes the input CP (a layer the injector's cooked-read depends on) and would smuggle a `>` cmd metachar.
     // `[System.Text.UTF8Encoding]::new()` = no BOM (vs `[Text.Encoding]::UTF8`, which prepends a BOM).
+    // The encoding assignment is wrapped in `try {…} catch {}` so it is STRICTLY NON-REGRESSIVE: the window
+    // title is the LOAD-BEARING claim key (the read/inject path keys on it), so even in the unlikely event the
+    // `OutputEncoding` setter throws, the title MUST still be applied — otherwise the claim poll below times out
+    // and the whole launch fails `KeyLockerSpawnFailed`. Worst case degrades to the pre-La-0 behavior (a
+    // possibly-mojibake but fully functional console), never a launch failure.
     //
     // Delivered via `-EncodedCommand <base64-utf16le>` (NOT `-Command`): the setup expression contains `(`, `)`,
     // `::`, and spaces, which would otherwise have to survive node → cmd → `start` three-layer quoting; base64
@@ -244,7 +249,7 @@ export class KeyLockerManager {
     // later title read. The anchored pane is a locker-owned utility console, so dropping profile customizations
     // is acceptable (sudo/ssh are System32/PATH exes, unaffected). A mid-session ad-hoc title change is still
     // fail-safe (`resolveTitleByHwnd` declines ⇒ the human types the credential; never a wrong-inject).
-    const psCommand = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $Host.UI.RawUI.WindowTitle = '${title}'`;
+    const psCommand = `try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; $Host.UI.RawUI.WindowTitle = '${title}'`;
     const encodedCommand = Buffer.from(psCommand, "utf16le").toString("base64");
     const child = spawn(
       cmdExe,
