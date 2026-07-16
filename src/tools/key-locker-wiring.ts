@@ -19,6 +19,7 @@
 //   gap6 landed  — `runToExit` OBSERVES the already-run command's exit via an epilogue-only probe
 //                  (`buildExitProbe`), NEVER re-running it.
 
+import type { ToolResult } from "./_types.js";
 import type { BindingMeta } from "../engine/key-locker/binding-store.js";
 import { BindingStore } from "../engine/key-locker/binding-store.js";
 import type { BindingUri } from "../engine/key-locker/binding.js";
@@ -420,16 +421,33 @@ export class KeyLockerWiring {
     const nonce = generateExitNonce();
     const probe = buildExitProbe(shell, nonce);
     // Send the read-only probe. `notifyDispatch:false` suppresses the S-A re-fire; even if it fired, the driver
-    // drops it (loopPhase pre-landed) and it is not credential-shaped. background method = do not steal focus.
+    // drops it (loopPhase pre-landed) and it is not credential-shaped.
+    //
+    // S-pid E6 / Codex PR3 R1 P1: the exit probe MUST ride a WT-CAPABLE send channel for a wt pane. WT's
+    // XAML pipeline REJECTS background WM_CHAR (`terminal.ts` `wt_xaml_pipeline`), so a background probe to a
+    // wt pane is NEVER delivered — the sentinel never writes, this poll times out, and `awaitLanded` then
+    // DISCARDS a WORKING just-captured one-shot credential (the fill itself rides AttachConsole, pid-addressed,
+    // and is UNAFFECTED; only completion-detection breaks). `foreground_flash` resolves to the NO-STEAL
+    // `wm_char` path for a CLASSIC console (byte-equivalent to the prior background probe — classic unchanged)
+    // and to the `clipboard_flash` path for WT (a brief ~60ms focus flash of a BENIGN non-secret sentinel; the
+    // SECRET never rides this path — it rides AttachConsole/WriteConsoleInputW). Gate E6 anticipated exactly
+    // this ("the Mode-A exit probe uses the WT-capable send machinery").
+    const method = exitProbeMethod(paneId);
+    let sendResult: ToolResult;
     try {
-      await terminalSendHandler({
-        windowTitle: title, input: probe, method: "background", pressEnter: true,
+      sendResult = await terminalSendHandler({
+        windowTitle: title, input: probe, method, pressEnter: true,
         focusFirst: false, restoreFocus: false, preferClipboard: false, pasteKey: "auto",
         trackFocus: false, settleMs: 0, notifyDispatch: false,
       });
     } catch (e) {
       return { reason: `probe_error:${e instanceof Error ? e.message : String(e)}` };
     }
+    // `terminalSendHandler` returns a TYPED FAILURE (not a throw) when the channel rejects the probe (Codex
+    // PR3 R1 P1: the prior code ignored the return value). A silently-undelivered probe must be treated as a
+    // probe_error NOW, not polled to the full EXIT_PROBE_MS timeout — the outcome is the same fail-safe discard,
+    // but promptly and with the real cause, not a misleading "timeout".
+    if (!sendSucceeded(sendResult)) return { reason: "probe_error:send_rejected" };
     const deadline = Date.now() + EXIT_PROBE_MS;
     for (;;) {
       // RE-RESOLVE the title each read (Codex W-4b): the ran command may have changed the console title; the
@@ -450,6 +468,29 @@ export class KeyLockerWiring {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * The send channel the Mode-A exit probe must ride for a pane (S-pid E6 / Codex PR3 R1 P1): a WT pane
+ * uses `foreground_flash` (WT's XAML pipeline rejects background WM_CHAR, so a background probe is never
+ * delivered → the sentinel never writes → a WORKING one-shot credential is discarded); a classic console
+ * keeps `background` (byte-equivalent to the shipped probe — `foreground_flash` also resolves to no-steal
+ * wm_char there, but keeping `background` leaves the classic regression-guard path bit-identical). Exported
+ * as a pure function so the delivery-channel policy is unit-pinned without driving the impure loop. */
+export function exitProbeMethod(paneId: string): "background" | "foreground_flash" {
+  return parsePaneId(paneId)?.kind === "wt" ? "foreground_flash" : "background";
+}
+
+/** Did a `terminalSendHandler` ToolResult report success? The handler encodes its payload as JSON text in
+ *  `content[0]`; a typed failure carries `ok:false` (or is unparseable). Fail-closed: anything not a clean
+ *  `ok:true` is treated as NOT delivered (so a rejected probe short-circuits to a fail-safe discard rather
+ *  than polling to a misleading timeout — Codex PR3 R1 P1). Mirrors terminalRunHandler's `parseSendResult`. */
+function sendSucceeded(result: ToolResult): boolean {
+  try {
+    const block = result.content[0];
+    if (block?.type === "text") return (JSON.parse(block.text) as { ok?: boolean }).ok === true;
+  } catch { /* unparseable ⇒ treat as failure */ }
+  return false;
 }
 
 let wiringSingleton: KeyLockerWiring | null = null;
