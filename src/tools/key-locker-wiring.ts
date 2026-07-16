@@ -24,7 +24,7 @@ import { BindingStore } from "../engine/key-locker/binding-store.js";
 import type { BindingUri } from "../engine/key-locker/binding.js";
 import { formatBindingUri } from "../engine/key-locker/binding.js";
 import { deriveBinding, type SessionContext } from "../engine/key-locker/command-derivation.js";
-import { assembleInjectTarget } from "../engine/key-locker/inject-target.js";
+import { assembleInjectTarget, type PaneAnchor } from "../engine/key-locker/inject-target.js";
 import { inject } from "../engine/key-locker/injector.js";
 import {
   KeyLockerCaptureDriver,
@@ -186,9 +186,14 @@ export class KeyLockerWiring {
    * Returns the pane's hwnd string so the caller can drive `sudo`/`ssh` into it.
    */
   async launchAndAnchorConsole(): Promise<{ paneId: string; title: string }> {
-    const { hwnd, shellPid, title } = await this.manager.launchAnchoredConsole();
-    const paneId = String(hwnd);
-    this.driver.onLocalPaneLaunched(paneId, shellPid);
+    const { anchor, title } = await this.manager.launchAnchoredConsole();
+    // S-pid E2: a classic pane's public paneId stays `String(hwnd)` decimal (zero back-compat break);
+    // the wt paneId form (`wt:<pid>:<startMs>`) lands with the WT launch path (PR3).
+    if (anchor.kind !== "classic" || anchor.hwnd === undefined) {
+      throw new KeyLockerError("KeyLockerSpawnFailed", "launch returned a non-classic anchor (unsupported here)");
+    }
+    const paneId = String(anchor.hwnd);
+    this.driver.onLocalPaneLaunched(paneId, anchor);
     return { paneId, title };
   }
 
@@ -291,7 +296,7 @@ export class KeyLockerWiring {
 
       capture: (id) => m.withHost((h) => h.capture(id)).then((r) => ({ captured: r.captured })),
       deleteSecret: (id) => m.withHost((h) => h.delete(id)).then(() => undefined),
-      injectPane: (paneId, binding, opaqueId, submit) => this.injectPane(paneId, binding, opaqueId, submit),
+      injectPane: (anchor, binding, opaqueId, submit) => this.injectPane(anchor, binding, opaqueId, submit),
       // gap4 confirm/offer: the W-3.5 secret-free `prompt` verb (label-only). `confirm` → fill vs decline.
       confirmInjection: (b) => m.withHost((h) => h.prompt("confirm", formatBindingUri(b))).then((c) => c === "autofill"),
       offerSave: (b) => m.withHost((h) => h.prompt("offer", formatBindingUri(b))),
@@ -307,11 +312,10 @@ export class KeyLockerWiring {
     };
   }
 
-  /** injectPane: hwnd-bound target (gap2 — assembleInjectTarget takes the exact hwnd) → L2 inject over the pipe. */
-  private async injectPane(paneId: string, binding: BindingUri, opaqueId: string, submit: boolean) {
-    let hwnd: bigint;
-    try { hwnd = BigInt(paneId); } catch { return { ok: false, code: "bad_target" } as const; }
-    const target = assembleInjectTarget(hwnd, submit);
+  /** injectPane: anchor-bound target (S-pid E4 — the driver passes the SPAWN-captured `PaneAnchor`, so
+   *  identity is never re-derived from the paneId string) → L2 inject over the pipe. */
+  private async injectPane(anchor: PaneAnchor, binding: BindingUri, opaqueId: string, submit: boolean) {
+    const target = assembleInjectTarget(anchor, submit);
     if (target === null) return { ok: false, code: "target_gone" } as const;
     return this.manager.withHost((h) => inject(h, binding, opaqueId, "pane", target));
   }

@@ -28,6 +28,7 @@ vi.mock(import("../../src/tools/terminal.js"), async (importOriginal) => {
 });
 
 import { KeyLockerManager } from "../../src/engine/key-locker/key-locker-manager.js";
+import type { PaneAnchor } from "../../src/engine/key-locker/inject-target.js";
 import { KeyLockerWiring } from "../../src/tools/key-locker-wiring.js";
 import { maybeAdvisory } from "../../src/tools/_advisory.js";
 
@@ -38,10 +39,13 @@ class FakeWiringManager extends KeyLockerManager {
   constructor(dir: string) { super({ storeDir: dir }); }
   override isConsentAccepted(): boolean { return this.consent; }
   override isDisabled(): boolean { return false; }
-  override async launchAnchoredConsole(): Promise<{ hwnd: bigint; shellPid: number; title: string }> {
+  override async launchAnchoredConsole(): Promise<{ anchor: PaneAnchor; title: string }> {
     const hwnd = this.hwndSeq++;
     liveHwnds.add(hwnd); // a freshly launched console is live
-    return { hwnd, shellPid: Number(hwnd) + 1, title: `dtm-locker-console-${hwnd}` };
+    return {
+      anchor: { kind: "classic", hwnd, shellPid: Number(hwnd) + 1, shellStartTimeMs: 10 },
+      title: `dtm-locker-console-${hwnd}`,
+    };
   }
 }
 

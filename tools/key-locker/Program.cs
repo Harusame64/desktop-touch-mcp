@@ -114,11 +114,15 @@ internal static class KeyLocker
         if (selfTest) return RunSelfTest();
 
         // Headless L2 serving-path seam — proves the ticket + serving-pipe contract (valid fetch,
-        // single-use, forged/context_mismatch refused) without live ssh/git.
+        // single-use, forged/context_mismatch refused) without live ssh/git. Also carries the S-pid
+        // E3b wire-parse + §4 FILETIME-conversion pins (WireParseSelfTest) so a missed HandleInject
+        // parser edit or a sign-extending FILETIME regression fails this seam, not a live fill.
         if (selfTestL2)
         {
-            var ok = _serving.SelfTest();
-            Console.WriteLine(JsonSerializer.Serialize(new { ok }));
+            var serving = _serving.SelfTest();
+            var wireParse = WireParseSelfTest();
+            var ok = serving && wireParse;
+            Console.WriteLine(JsonSerializer.Serialize(new { ok, serving, wireParse }));
             return ok ? 0 : 1;
         }
 
@@ -289,11 +293,7 @@ internal static class KeyLocker
             using var doc = JsonDocument.Parse(line);
             if (!doc.RootElement.TryGetProperty("t", out var t) || t.ValueKind != JsonValueKind.Object)
             { WriteReply(server, id, false, "", "bad_target"); return; }
-            target = new InjectTarget(
-                Hwnd: (nint)ParseLong(t, "hwnd"),
-                ConsolePid: (uint)ParseLong(t, "consolePid"),
-                TitleFp: t.TryGetProperty("titleFp", out var fp) && fp.ValueKind == JsonValueKind.String ? fp.GetString() ?? "" : "",
-                Submit: t.TryGetProperty("submit", out var sub) && sub.ValueKind == JsonValueKind.True);
+            target = ParseInjectTarget(t);
         }
         catch { WriteReply(server, id, false, "", "bad_target"); return; }
 
@@ -326,6 +326,47 @@ internal static class KeyLocker
         var minted = _serving.Mint(key, ctx);
         if (minted == null) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
         WriteFrame(server, $"{{\"id\":{id},\"ok\":true,\"r\":{JsonSerializer.Serialize(minted.Value.ticket)},\"pipe\":{JsonSerializer.Serialize(minted.Value.pipe)}}}");
+    }
+
+    /// Materialize the `inject` frame's `t` field into the InjectTarget record (S-pid gate E3b — the
+    /// SOLE wire→record parse on the inject path; `-SelfTestInjectConsole` constructs the record
+    /// directly and BYPASSES this, so `WireParseSelfTest` pins it separately). Absent fields parse to
+    /// 0/"" WITHOUT throwing (`ParseLong` absent → 0) — a wt frame carries no hwnd/consolePid/titleFp
+    /// and must not `bad_target`; do NOT switch to a throwing accessor.
+    internal static InjectTarget ParseInjectTarget(JsonElement t) => new(
+        Hwnd: (nint)ParseLong(t, "hwnd"),
+        ConsolePid: (uint)ParseLong(t, "consolePid"),
+        TitleFp: t.TryGetProperty("titleFp", out var fp) && fp.ValueKind == JsonValueKind.String ? fp.GetString() ?? "" : "",
+        Submit: t.TryGetProperty("submit", out var sub) && sub.ValueKind == JsonValueKind.True,
+        ShellPid: (uint)ParseLong(t, "shellPid"),
+        ShellStartMs: ParseLong(t, "shellStartMs"));
+
+    /// S-pid E3b/§4 regression pins, folded into `-SelfTestL2`'s exit status:
+    ///   1. a `t` frame carrying `shellPid`/`shellStartMs` (number OR decimal-string form) reconstructs
+    ///      them through the SAME `ParseInjectTarget` the live `HandleInject` uses — so the P1-1 wire-
+    ///      parser edit can never regress silently (the inject-console self-test bypasses this path);
+    ///   2. a wt-shaped frame (NO window fields) parses to 0/"" without throwing (absent-field tolerance);
+    ///   3. the FILETIME→ms conversion does not sign-extend a high-bit-set low dword (gate §4, Opus
+    ///      P1-2): ticks = (1 << 32) | 0x8000_0000 = 6_442_450_944 → floor(/10_000) = 644_245 — the
+    ///      same vector the Node `process.rs filetime_to_ms` u32 math yields.
+    private static bool WireParseSelfTest()
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(
+                "{\"t\":{\"hwnd\":\"4660\",\"consolePid\":4242,\"titleFp\":\"ab\",\"shellPid\":\"4242\",\"shellStartMs\":13322426700123,\"submit\":true}}");
+            var t = ParseInjectTarget(doc.RootElement.GetProperty("t"));
+            if (t.Hwnd != 4660 || t.ConsolePid != 4242 || t.TitleFp != "ab" || !t.Submit
+                || t.ShellPid != 4242 || t.ShellStartMs != 13322426700123L) return false;
+
+            using var doc2 = JsonDocument.Parse("{\"t\":{\"shellPid\":77,\"shellStartMs\":42}}");
+            var t2 = ParseInjectTarget(doc2.RootElement.GetProperty("t"));
+            if (t2.Hwnd != 0 || t2.ConsolePid != 0 || t2.TitleFp != "" || t2.Submit
+                || t2.ShellPid != 77 || t2.ShellStartMs != 42L) return false;
+
+            return Win32Input.FiletimeTicksToMs(0x8000_0000u, 1u) == 644_245L;
+        }
+        catch { return false; }
     }
 
     private static long ParseLong(JsonElement obj, string name)

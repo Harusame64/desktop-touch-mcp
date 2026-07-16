@@ -63,6 +63,7 @@ import {
 import { tokenizeCommandSegmentsWithOps } from "./command-derivation.js";
 import type { SessionContext } from "./command-derivation.js";
 import { awaitLanded, type ExitCompletion } from "./landed-detection.js";
+import type { PaneAnchor } from "./inject-target.js";
 import type { InjectResult } from "./injector.js";
 import {
   ENV_ASSIGN_RE,
@@ -135,8 +136,10 @@ export interface CaptureDriverDeps {
   capture(opaqueId: string): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure). */
   deleteSecret(opaqueId: string): Promise<void>;
-  /** Assemble the pane InjectTarget for `paneId` (`assembleInjectTarget`) + console-buffer inject (`inject`, "pane"). */
-  injectPane(paneId: string, binding: BindingUri, opaqueId: string, submit: boolean): Promise<InjectResult>;
+  /** Assemble the pane InjectTarget from the SPAWN-captured anchor (`assembleInjectTarget`) + console-buffer
+   *  inject (`inject`, "pane"). Takes the `PaneAnchor` (S-pid gate E4, Opus P2-2) — the driver holds it on the
+   *  `PaneRecord` and passes it, so the wiring never re-derives identity from the paneId string. */
+  injectPane(anchor: PaneAnchor, binding: BindingUri, opaqueId: string, submit: boolean): Promise<InjectResult>;
   /** The D2 backstop confirm before a MATCH autofill. */
   confirmInjection(binding: BindingUri): Promise<boolean>;
   /** The Chrome-model save offer after a landed NO-MATCH fill. */
@@ -201,8 +204,10 @@ type LoopPhase = "none" | "pre-landed" | "post-landed";
 
 /** Per-pane driver state (exists iff the driver ANCHORED the pane — i.e. L3 launched it). */
 interface PaneRecord {
-  /** The window-owning shell pid (`getWindowProcessId(hwnd)`), for the sshBaseline subtree root. */
-  shellPid: number;
+  /** The SPAWN-captured pane identity (S-pid gate E4): `anchor.shellPid` is the sshBaseline subtree
+   *  root; the whole anchor flows to the inject seam so the L2 re-verify compares against the value
+   *  frozen at spawn (never a live re-derivation). Immutable for the record's lifetime. */
+  anchor: PaneAnchor;
   /** The credential dispatch awaiting a prompt, or null. */
   armed: ArmedDispatch | null;
   /** The shell subtree's ssh-descendant pids as of the LAST reconcile (§0-CORR.2). Advanced every
@@ -241,15 +246,18 @@ export class KeyLockerCaptureDriver {
 
   /**
    * W1 — anchor a pane L3 ITSELF launched from a known-local shell. `beginLocalSession` (tracker known-local)
-   * and `watchPane` (liveness anchor at `shellPid`) run in ONE synchronous turn (Edge 3): never a window
-   * where the tracker trusts local while no watch guards a later ssh-out. Re-launching resets the pane.
-   * ONLY the assistant's own launches call this — a pre-existing pane is never anchored (P1-B, §3 W1).
+   * and `watchPane` (liveness anchor at `anchor.shellPid`) run in ONE synchronous turn (Edge 3): never a
+   * window where the tracker trusts local while no watch guards a later ssh-out. Re-launching resets the
+   * pane. ONLY the assistant's own launches call this — a pre-existing pane is never anchored (P1-B, §3 W1).
+   * Takes the SPAWN-captured `PaneAnchor` (S-pid gate E4) — the record carries it verbatim to the inject
+   * seam; the watch keeps its own snapshot-sourced creation-time read (E5/PR1, bit-equal for the same
+   * process), so no time param is plumbed here.
    */
-  onLocalPaneLaunched(paneId: string, shellPid: number, cwd?: string): void {
+  onLocalPaneLaunched(paneId: string, anchor: PaneAnchor, cwd?: string): void {
     this.tracker.beginLocalSession(paneId, cwd);
-    this.watch.watchPane(paneId, shellPid);
+    this.watch.watchPane(paneId, anchor.shellPid);
     this.panes.set(paneId, {
-      shellPid,
+      anchor,
       armed: null,
       sshBaseline: new Set(),
       pendingSsh: undefined,
@@ -290,7 +298,7 @@ export class KeyLockerCaptureDriver {
     //      reconcile's W-2b scan does not mis-flag the assistant's OWN login as a lurking user ssh. A user's
     //      SAME-host ssh is a DIFFERENT pid ⇒ still flags; 0 or >1 new host-matching children ⇒ NO exempt.
     const dHost = dispatchedInteractiveSshHost(command);
-    const curSsh = sshDescendants(this.deps.snapshot(), rec.shellPid);
+    const curSsh = sshDescendants(this.deps.snapshot(), rec.anchor.shellPid);
     const preBaseline = rec.sshBaseline;
     const newHostMatch =
       dHost === null
@@ -367,7 +375,7 @@ export class KeyLockerCaptureDriver {
 
       // §0-CORR.2 straggler backstop: register a still-pending ssh child (rare in fire-after). Idempotent.
       if (rec.pendingSsh !== undefined && !rec.pendingSsh.registered) {
-        this.correlateSshChild(paneId, rec.shellPid, rec.pendingSsh);
+        this.correlateSshChild(paneId, rec.anchor.shellPid, rec.pendingSsh);
       }
 
       // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
@@ -447,7 +455,7 @@ export class KeyLockerCaptureDriver {
     // (a child that appeared/exited between dispatches is folded in here). One snapshot per pane is fine at
     // the tick cadence; the watch also snapshots independently inside `tick`.
     for (const rec of this.panes.values()) {
-      rec.sshBaseline = new Set(sshDescendants(this.deps.snapshot(), rec.shellPid).keys());
+      rec.sshBaseline = new Set(sshDescendants(this.deps.snapshot(), rec.anchor.shellPid).keys());
     }
     this.watch.tick();
     // ARM HYGIENE (Codex R1-R4 line 464): this tick may have popped/markUnknown'd a pane that holds a live
@@ -492,7 +500,7 @@ export class KeyLockerCaptureDriver {
   private correlateAllPending(): void {
     for (const [paneId, rec] of this.panes) {
       const ssh = rec.pendingSsh;
-      if (ssh !== undefined && !ssh.registered) this.correlateSshChild(paneId, rec.shellPid, ssh);
+      if (ssh !== undefined && !ssh.registered) this.correlateSshChild(paneId, rec.anchor.shellPid, ssh);
     }
   }
 
@@ -546,7 +554,7 @@ export class KeyLockerCaptureDriver {
       // re-verify, which does NOT catch a session change (plan §3 W3).
       injectPane: (b, id, sub) =>
         this.liveSessionMatchesExpected(paneId, armed.expected)
-          ? this.deps.injectPane(paneId, b, id, sub)
+          ? this.deps.injectPane(rec.anchor, b, id, sub)
           : Promise.resolve({ ok: false, code: "target_mismatch" } as InjectResult),
       awaitLanded: async (cmd) => {
         const result = await awaitLanded(

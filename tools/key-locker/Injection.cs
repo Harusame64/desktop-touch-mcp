@@ -22,12 +22,16 @@ using System.Text.Json;
 // Global namespace (matches Program.cs's `internal static class KeyLocker`; a `namespace KeyLocker`
 // here would collide with that class name).
 
-/// The dedicated-console target of an injection, parsed off the `inject` frame's `t` field (§2.1).
+/// The anchored-pane target of an injection, parsed off the `inject` frame's `t` field (§2.1),
+/// re-based on the S-pid identity (S-pid gate E3). `ShellPid`/`ShellStartMs` are the PRIMARY identity
+/// for BOTH hosts: the spawn-tracked shell pid + its creation time (ms since 1601 = floor(FILETIME/10000),
+/// EXACTLY the Node `process.rs filetime_to_ms` formula — gate §4). The window trio is CLASSIC-ONLY:
 /// `ConsolePid` is the WINDOW-OWNING pid (`GetWindowThreadProcessId(hwnd)`) — L3 sends
 /// `getWindowProcessId(hwnd)` and this side re-reads the same API on the same hwnd, so it matches by
-/// construction (not asserted to be a specific conhost-vs-shell process). DF-5 also uses `ConsolePid`
-/// as the `AttachConsole` target — the same window-owning pid identifies the console to attach to.
-internal readonly record struct InjectTarget(nint Hwnd, uint ConsolePid, string TitleFp, bool Submit);
+/// construction. Classic keeps `AttachConsole(ConsolePid)` byte-identical; a wt pane has NO per-pane
+/// window (Hwnd == 0) and attaches by `ShellPid`.
+internal readonly record struct InjectTarget(
+    nint Hwnd, uint ConsolePid, string TitleFp, bool Submit, uint ShellPid, long ShellStartMs);
 
 /// The abort reasons the re-verify predicate can raise (§2.2); null = passed.
 internal static class InjectAbort
@@ -101,19 +105,87 @@ internal static class Win32Input
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(nint hWnd, StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll")] private static extern int GetWindowTextLength(nint hWnd);
 
-    /// Re-verify the target IDENTITY at the injection instant. Returns an InjectAbort code on any
-    /// mismatch, or null if all predicates pass. POSITIVE allowlist: the window MUST be the classic
-    /// console class AND owned by the tracked window-owning pid — anything else is `target_multiplexed`.
+    // S-pid §4: the creation-time identity read. PROCESS_QUERY_LIMITED_INFORMATION works cross-session
+    // for same-user processes; an unopenable pid fails CLOSED (a failed measurement is never the safe
+    // result — seed §4c).
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(nint hProcess, out FILETIME lpCreationTime, out FILETIME lpExitTime, out FILETIME lpKernelTime, out FILETIME lpUserTime);
+    // LOCAL FILETIME with UNSIGNED fields (S-pid gate §4, Opus P1-2): the BCL
+    // System.Runtime.InteropServices.ComTypes.FILETIME declares both dwords as SIGNED int — a
+    // dwLowDateTime with its high bit set (~50% of processes; the low dword cycles every ~430s) would
+    // SIGN-EXTEND when combined into the 64-bit value, corrupting the high half so the exact-equality
+    // check silently rejects a live shell. uint fields match `process.rs`'s u32 (`:110-111`).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILETIME { public uint dwLowDateTime; public uint dwHighDateTime; }
+
+    /// FILETIME (100ns ticks since 1601) → integer milliseconds: floor(ticks / 10_000). MUST stay
+    /// byte-identical to the Node side (`process.rs filetime_to_ms` — same integer division on the same
+    /// source API), so the wire equality below is EXACT with no tolerance (a tolerance would re-open the
+    /// pid-reuse hole this identity closes). `| low` widens uint→ulong with NO sign extension.
+    internal static long FiletimeTicksToMs(uint low, uint high) => (long)(((((ulong)high) << 32) | low) / 10_000);
+
+    /// The creation time of `pid` in wire ms, or 0 when unreadable (0 is the doubt sentinel — it can
+    /// never match a valid anchor). Used by the inject-console self-test child to publish its own
+    /// identity; `CheckShellIdentity` below is the fail-closed re-verify variant.
+    internal static long StartTimeMsOf(uint pid)
+    {
+        nint h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == 0) return 0;
+        try { return GetProcessTimes(h, out var created, out _, out _, out _) ? FiletimeTicksToMs(created.dwLowDateTime, created.dwHighDateTime) : 0; }
+        finally { CloseHandle(h); }
+    }
+
+    /// PRIMARY identity check, BOTH hosts (S-pid gate E3): the spawn-tracked shell must still be the
+    /// SAME process — `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetProcessTimes` creation-time
+    /// EXACT integer equality against the anchor. Fail-closed on every failure mode:
+    ///   * anchor time <= 0 (a 0 anchor can never exist — the launch refuses it) → Mismatch;
+    ///   * OpenProcess failure (the shell is dead, or unopenable) → Gone;
+    ///   * GetProcessTimes failure / a computed 0 (unreadable measurement) → Mismatch;
+    ///   * a DIFFERENT non-zero time → Mismatch (the pid was REUSED — the anchored shell is dead).
+    private static string? CheckShellIdentity(uint shellPid, long shellStartMs)
+    {
+        if (shellStartMs <= 0) return InjectAbort.Mismatch;
+        nint h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, shellPid);
+        if (h == 0) return InjectAbort.Gone;
+        try
+        {
+            if (!GetProcessTimes(h, out var created, out _, out _, out _)) return InjectAbort.Mismatch;
+            long ms = FiletimeTicksToMs(created.dwLowDateTime, created.dwHighDateTime);
+            if (ms == 0) return InjectAbort.Mismatch;
+            return ms == shellStartMs ? null : InjectAbort.Mismatch;
+        }
+        finally { CloseHandle(h); }
+    }
+
+    /// Re-verify the target IDENTITY at the injection instant (host-shaped since S-pid gate E3).
+    /// Returns an InjectAbort code on any mismatch, or null if all predicates pass.
+    ///
+    /// PRIMARY (both hosts): pid + creation-time exact equality on the spawn-tracked shell
+    /// (`CheckShellIdentity`) — unforgeable by pid reuse. Then, host-shaped:
+    ///   * classic (Hwnd != 0): ADDITIONALLY the ENTIRE pre-S-pid predicate unchanged — the window MUST
+    ///     be alive, the classic console class (POSITIVE allowlist — anything else is
+    ///     `target_multiplexed`), owned by the tracked `ConsolePid`, title-fp matched — PLUS one new
+    ///     cross-check `ConsolePid == ShellPid` (the window owner and the spawn-tracked shell must be
+    ///     the same process; a divergence is an identity contradiction → Mismatch). Classic is strictly
+    ///     STRENGTHENED, never relaxed (gate charter item 4).
+    ///   * wt (Hwnd == 0): NO window predicate — a WT pane has no per-pane hwnd to check; identity is
+    ///     pid+time alone. (An OLD-Node frame can never take this branch: it always carries an hwnd, and
+    ///     its missing shellPid parses to 0 → CheckShellIdentity fails closed.)
     ///
     /// DF-5: there is NO foreground check — the console-buffer injector addresses the write to the
-    /// verified `consolePid` (it does not broadcast to the foreground window), so foreground is no longer
-    /// the delivery gate; identity (hwnd alive + class + owning pid + title fp) is. This predicate runs
-    /// TWICE per inject (before AttachConsole and again after the CONIN$ handle opens) so the console
-    /// cannot be swapped out from under the attached handle. `InjectAbort.NotForeground` is therefore no
-    /// longer emitted (kept in the wire enum for back-compat only).
+    /// verified console (it does not broadcast to the foreground window), so foreground is no longer
+    /// the delivery gate; identity is. This predicate runs TWICE per inject (before AttachConsole and
+    /// again after the CONIN$ handle opens) so the console cannot be swapped out from under the attached
+    /// handle. `InjectAbort.NotForeground` is no longer emitted (kept in the wire enum for back-compat).
     private static string? ReVerify(in InjectTarget t)
     {
-        if (t.Hwnd == 0 || !IsWindow(t.Hwnd)) return InjectAbort.Gone;
+        var primary = CheckShellIdentity(t.ShellPid, t.ShellStartMs);
+        if (primary != null) return primary;
+
+        if (t.Hwnd == 0) return null; // wt: no per-pane window exists — pid+time IS the identity
+
+        if (!IsWindow(t.Hwnd)) return InjectAbort.Gone;
 
         var cls = new StringBuilder(64);
         GetClassName(t.Hwnd, cls, cls.Capacity);
@@ -122,6 +194,7 @@ internal static class Win32Input
         _ = GetWindowThreadProcessId(t.Hwnd, out var pid);
         if (pid == 0) return InjectAbort.Gone;
         if (pid != t.ConsolePid) return InjectAbort.Multiplexed;
+        if (pid != t.ShellPid) return InjectAbort.Mismatch; // ConsolePid == ShellPid cross-check (E3)
 
         // Secondary anchor (defense-in-depth): the live title hash must match the expected fp.
         // Skipped when the engine supplied no fp.
@@ -191,7 +264,10 @@ internal static class Win32Input
         try
         {
             FreeConsole(); // detach from any console we already hold (the helper is a WinExe: usually none)
-            if (!AttachConsole(t.ConsolePid)) return (false, InjectAbort.Gone); // target console is gone
+            // Attach target (S-pid gate E3): classic stays AttachConsole(ConsolePid) byte-identical; a wt
+            // pane (no per-pane window ⇒ Hwnd == 0) attaches by the verified spawn-tracked ShellPid —
+            // spike-proven to deliver into the ConPTY'd console input buffer end-to-end.
+            if (!AttachConsole(t.Hwnd != 0 ? t.ConsolePid : t.ShellPid)) return (false, InjectAbort.Gone);
             attached = true;
 
             conin = CreateFileW("CONIN$", GENERIC_READ | GENERIC_WRITE,
@@ -445,8 +521,10 @@ internal static class ConsoleInjectSelfTest
     private const string TestSecret = "Pw-Ω✓-😀-9";
 
     /// CHILD role (`-InjectConsoleChild <ready> <out>`): we run as conhost's client, so we already own a
-    /// classic console. Arm echo-off line input, publish our console hwnd via the ready file, cooked-read
-    /// one line, and record it. Returns 0 always (the parent judges by the recorded line).
+    /// classic console. Arm echo-off line input, publish our console hwnd + our own pid + creation time
+    /// (S-pid §5: the parent threads them into the InjectTarget so the pid+time re-verify is exercised
+    /// end-to-end) via the ready file, cooked-read one line, and record it. Returns 0 always (the parent
+    /// judges by the recorded line).
     public static int RunChild(string readyPath, string outPath)
     {
         try
@@ -459,7 +537,9 @@ internal static class ConsoleInjectSelfTest
             if (conin == INVALID) { File.WriteAllText(outPath, "<conin-open-failed>"); return 0; }
             GetConsoleMode(conin, out uint mode);
             SetConsoleMode(conin, (mode | ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT) & ~(ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
-            File.WriteAllText(readyPath, ((long)hwnd).ToString()); // signal + hand the parent our console hwnd
+            // `hwnd|pid|startMs` — the pid+time beside the hwnd (S-pid §5, additive).
+            var pid = (uint)Environment.ProcessId;
+            File.WriteAllText(readyPath, $"{(long)hwnd}|{pid}|{Win32Input.StartTimeMsOf(pid)}");
             var buf = new char[512];
             bool ok = ReadConsoleW(conin, buf, (uint)buf.Length, out uint read, 0);
             File.WriteAllText(outPath, ok ? new string(buf, 0, (int)read).TrimEnd('\r', '\n') : "<readconsole-failed>");
@@ -500,7 +580,12 @@ internal static class ConsoleInjectSelfTest
             spawned = true;
 
             if (!PollFile(readyPath, 8000)) return "fail";
-            if (!long.TryParse(File.ReadAllText(readyPath).Trim(), out var hraw) || hraw == 0) return "fail";
+            // `hwnd|pid|startMs` (S-pid §5): the child publishes its pid + creation time beside the hwnd.
+            var parts = File.ReadAllText(readyPath).Trim().Split('|');
+            if (parts.Length != 3
+                || !long.TryParse(parts[0], out var hraw) || hraw == 0
+                || !uint.TryParse(parts[1], out var childPid) || childPid == 0
+                || !long.TryParse(parts[2], out var childStartMs) || childStartMs == 0) return "fail";
             nint hwnd = (nint)hraw;
 
             // Environment gate: if the child's console is NOT a classic conhost (ConPTY handoff under a
@@ -513,7 +598,9 @@ internal static class ConsoleInjectSelfTest
             _ = GetWindowThreadProcessId(hwnd, out uint consolePid); // derive exactly as L3 does
             if (consolePid == 0) return "fail";
 
-            var target = new InjectTarget(hwnd, consolePid, "", true);
+            // Thread the child-published pid+time (S-pid §5): ReVerify's PRIMARY check + the
+            // ConsolePid == ShellPid cross-check are now exercised by this self-test end-to-end.
+            var target = new InjectTarget(hwnd, consolePid, "", true, childPid, childStartMs);
             var (injected, _) = Win32Input.ReVerifyAndType(in target, Encoding.UTF8.GetBytes(TestSecret));
             if (!injected) return "fail";
 

@@ -29,7 +29,7 @@
 //   resolve/bind      = BindingStore.resolve / .bind (locker exists()-verified)
 //   confirmPolicyFor  = the binding row's `confirmEveryInjection ?? true`  (D2, L1 §5.1 field)
 //   capture/delete    = KeyLockerHost.capture / .delete                    (L0, secret stays in the locker)
-//   injectPane        = assembleInjectTarget(hwnd, submit) + inject(host, …, "pane", target)  (§4 + L2)
+//   injectPane        = assembleInjectTarget(anchor, submit) + inject(host, …, "pane", target)  (§4 + L2)
 //   awaitLanded       = awaitLanded(landedDeps(paneId, cmd), cmd)          (§2)
 //   confirm / offer   = the locker's secret-free dialogs (like `-Consent`) — forward-wired in L3-3/L4
 //

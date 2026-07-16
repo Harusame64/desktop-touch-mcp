@@ -29,6 +29,7 @@ import {
   getWindowProcessId,
   getWindowTitleW,
 } from "../win32.js";
+import type { PaneAnchor } from "./inject-target.js";
 import { SessionTracker } from "./session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "./ssh-session-watch.js";
 
@@ -186,11 +187,14 @@ export class KeyLockerManager {
    * internal spawn — it does NOT route through `workspace_launch`'s executable blocklist, which exists to stop
    * the ASSISTANT from launching arbitrary shells) via `cmd /c start` and polls for the new
    * `ConsoleWindowClass` window (DF-1: `cmd /c start` is what forces a NEW console — see the impl note below).
-   * Returns `{ hwnd, shellPid }` where `shellPid = getWindowProcessId(hwnd)` = the SHELL (powershell) process
-   * that OWNS the console window (dogfood-verified: on Win11 the console window's owner is the shell, and
-   * conhost is its PARENT). Any ssh/sudo the human runs are CHILDREN of that shell, so `shellPid` is exactly
+   * Returns the spawn-captured `PaneAnchor` (S-pid gate E1): `shellPid = getWindowProcessId(hwnd)` = the
+   * SHELL (powershell) process that OWNS the console window (dogfood-verified: on Win11 the console window's
+   * owner is the shell, and conhost is its PARENT), and `shellStartTimeMs` = that shell's creation time,
+   * polled until NON-ZERO (a just-created process can transiently fail the time read; 0 is the doubt
+   * sentinel and can NEVER anchor — a deadline with no non-zero time is a `KeyLockerSpawnFailed`, exactly
+   * like a missing window). Any ssh/sudo the human runs are CHILDREN of that shell, so `shellPid` is exactly
    * the `sshDescendants` subtree root. The wiring fires
-   * `onLocalPaneLaunched(String(hwnd), shellPid)`. The console gets a UNIQUE window title (`dtm-locker-console-
+   * `onLocalPaneLaunched(String(hwnd), anchor)`. The console gets a UNIQUE window title (`dtm-locker-console-
    * <nonce>`) — the CLAIM key here (child.pid is the transient cmd.exe, not the conhost) AND the title-keyed
    * read/inject seams' resolver (`resolveTitleByHwnd` declines any pane whose title is not substring-unique, so
    * without this a second console (or a same-titled user window) would never autofill — Codex W-4a R3
@@ -199,7 +203,7 @@ export class KeyLockerManager {
    */
   async launchAnchoredConsole(
     o: { timeoutMs?: number; pollMs?: number } = {},
-  ): Promise<{ hwnd: bigint; shellPid: number; title: string }> {
+  ): Promise<{ anchor: PaneAnchor; title: string }> {
     const timeoutMs = o.timeoutMs ?? 8000;
     const pollMs = o.pollMs ?? 150;
     const title = `dtm-locker-console-${randomBytes(8).toString("hex")}`; // globally unique ⇒ unambiguous title read
@@ -278,7 +282,17 @@ export class KeyLockerManager {
       );
       if (fresh !== undefined) {
         const shellPid = getWindowProcessId(fresh.hwnd);
-        if (shellPid !== 0) return { hwnd: fresh.hwnd, shellPid, title };
+        if (shellPid !== 0) {
+          // S-pid E1: freeze the shell's creation time INTO the anchor at spawn — the identity the L2
+          // re-verify + the wt reuse check compare against. A just-created process can transiently read
+          // 0 (the doubt sentinel, which can never anchor) — keep polling within the existing deadline;
+          // the watch's own registration read (PR1) is bit-equal for the same process (immutable value).
+          const identityOf = this.opts.win32?.getProcessIdentity ?? getProcessIdentityByPid;
+          const shellStartTimeMs = identityOf(shellPid).processStartTimeMs;
+          if (shellStartTimeMs !== 0) {
+            return { anchor: { kind: "classic", hwnd: fresh.hwnd, shellPid, shellStartTimeMs }, title };
+          }
+        }
       }
       if (this.now() >= deadline) {
         // Best-effort leak sweep: cmd.exe has already exited (`child.kill()` is a no-op), so if OUR nonce-titled
@@ -296,7 +310,10 @@ export class KeyLockerManager {
             catch { /* best-effort */ }
           }
         }
-        throw new KeyLockerError("KeyLockerSpawnFailed", "anchored console window did not appear");
+        throw new KeyLockerError(
+          "KeyLockerSpawnFailed",
+          "anchored console did not become identifiable (no claimed window / owner pid / non-zero creation time)",
+        );
       }
       await new Promise((r) => setTimeout(r, pollMs));
     }
