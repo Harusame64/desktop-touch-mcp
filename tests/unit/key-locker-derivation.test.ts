@@ -42,6 +42,11 @@ const fakeExec: ExecFn = async (file, args) => {
     // reimplemented the code under test and got it wrong. This is scaffolding, not a layer, so it does not
     // re-introduce the table dependency §1.4 removed from production.
     const parsed = parseSshCommand(args.slice(1)); // drop the leading `-G`
+    // Real ssh refuses an option that has no value (`ssh -G h -p` → `option requires an argument`,
+    // exit 255) — it never prints a config. Without this the stub would hand back a clean port-22 config
+    // (`opts[pi+1]` is undefined → `Number(undefined)` is NaN → the port line is ignored → 22), i.e. the
+    // fake would be MORE permissive than the binary and could hide a real pipeline defect behind it.
+    if (parsed.malformed) return { code: 255, stdout: "", stderr: "option requires an argument" };
     const dest = parsed.destination ?? "";
     const opts = parsed.optionArgs;
     let user = "u";

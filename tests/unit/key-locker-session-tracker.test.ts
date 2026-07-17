@@ -580,6 +580,15 @@ describe("classifySshLogin — three states (F-3)", () => {
     { argv: ["h", "-4p"], expected: { kind: "none" } }, // same else-branch, reached through the cluster walk
     // Doubt still outranks it: with an unknown letter present, the "missing" value may be that letter's.
     { argv: ["h", "-z", "-p"], expected: { kind: "undecidable" } },
+    // KNOWN INACCURACY (pinned so it is visible, not silently believed). A value that is PRESENT but
+    // INVALID also makes ssh exit locally (`Bad port '2222x'`, status 255) — no session opens — yet we
+    // answer `interactive`. Telling a bad value from a good one means validating each option's semantics,
+    // i.e. re-implementing ssh's own config parser in a pure module; the resolver sidesteps this by asking
+    // the real `ssh -G` (which DOES reject it, so nothing is ever filled), but the sync classifier cannot.
+    // The cost is a spurious remote frame that the watch's unwatched-frame backstop sinks on the next
+    // tick. The pre-destination form (`ssh -p 2222x h`) has always behaved this way; the two-pass fix
+    // widened it to the post-destination form. Tracked for the release gate — see the findings doc.
+    { argv: ["h", "-p", "2222x"], expected: { kind: "interactive", host: "h" } },
     { argv: ["h", "-z"], expected: { kind: "undecidable" } }, // letter in neither table
     // DOUBT OUTRANKS A QUERY (Opus R1 P1-1). A future with-arg `-z` would eat the next token, so real ssh
     // reads this as "-G is -z's value" and OPENS A SESSION — while our flag scan sees a query. Answering

@@ -340,6 +340,12 @@ export async function resolveCanonicalForSshCommand(
   // today's callers happen to pass (強制命令 7). The other caller (`key-locker-tool.ts`) builds its argv
   // itself and never produces an undecidable parse, so this costs nothing.
   if (parsed.undecidable) return { kind: "unresolvable", reason: "unclassifiable ssh argv (unknown option letter)" };
+  // A with-arg option with no value never runs: ssh answers with a usage error, so there is nothing to
+  // bind. Stated explicitly rather than relied upon: without this, the decline happens only as a side
+  // effect of how the argv is reassembled below (the dangling option swallows the destination, ssh then
+  // errors for want of one). That is true today, but it is an accident of reconstruction order, not a
+  // guarantee — and it costs a pointless spawn to discover.
+  if (parsed.malformed) return { kind: "unresolvable", reason: "malformed ssh argv (option with no value)" };
   if (parsed.destination === undefined) return { kind: "unresolvable", reason: "no ssh destination" };
   let cfg: SshEffectiveConfig;
   try {

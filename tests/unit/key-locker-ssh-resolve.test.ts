@@ -181,6 +181,15 @@ describe.skipIf(!hasOpenSsh)("§8 #2 — ssh resolution + option passthrough (re
     if (r.kind === "ok") expect(r.uri.user).toBe("carol");
   });
 
+  // The sync classifier cannot tell a bad option value from a good one (that would mean re-implementing
+  // ssh's config parser), so `ssh h -p 2222x` still reports an interactive login. This pins the layer that
+  // DOES catch it: the resolver asks the real ssh, which rejects the value, so nothing is ever bound or
+  // filled. It is why that known classifier inaccuracy costs a spurious frame and not a secret.
+  it("a post-destination BAD option value fails closed — the real ssh rejects it", async () => {
+    const r = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-p", "2222x"]);
+    expect(r.kind).toBe("unresolvable");
+  });
+
   it("a post-destination -J still defers — the bastion prompt is not the final host's", async () => {
     const r = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-J", "bastion.example.com"]);
     expect(r.kind).toBe("unresolvable");

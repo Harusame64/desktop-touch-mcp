@@ -432,6 +432,12 @@ export class SshSessionWatch {
         // Anything but a PROVEN `none` flags: an interactive login, or an argv we cannot classify with
         // confidence (`undecidable` — an unknown option letter / no locatable destination). Only a proven
         // non-session-opening ssh is trusted, upholding the module's "any doubt sinks" invariant.
+        //
+        // A `none` descendant may well still be ALIVE when we look (this scan also runs from `onDispatch`,
+        // right after delivery, and a doomed `ssh h -p` has not necessarily exited yet). That is fine, and
+        // liveness is NOT the reason it is safe: the reason is that this argv OPENS NO SESSION, so the pane
+        // it lives in is still local no matter what the process is doing. Reasoning from "the process is
+        // gone" — or from "it opens no shell" — is how the landed-mode conflation got in.
         if (classifySshLogin(argv.slice(1)).kind !== "none") return true; // (exempt pid already skipped)
       }
     }
