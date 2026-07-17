@@ -302,7 +302,9 @@ export type SshLoginClass =
    *  label (L1 resolves the real endpoint later). */
   | { kind: "interactive"; host: string }
   /** PROVABLY opens no session in this pane: a query mode (`-G`/`-Q`/`-V`), `-N`/`-f`/`-W`, an argv whose
-   *  stdin is off the tty, or a one-shot with a PROVEN remote command. */
+   *  stdin is off the tty, a one-shot with a PROVEN remote command, or an argv a CONFIRMED with-arg option
+   *  leaves malformed (`ssh h -p` — ssh rejects it as a local usage error, exit 255, before any session
+   *  opens). Every member is PROVEN; a doubt belongs in `undecidable`, never here. */
   | { kind: "none" }
   /** The argv cannot be classified with confidence (an unknown option letter, or no locatable
    *  destination outside a query mode) ⇒ callers decline. */
@@ -332,6 +334,11 @@ export function classifySshLogin(rawArgs: readonly string[]): SshLoginClass {
   // (`if (!queryMode && destination === undefined) undecidable = true`), so `-V` / `-Q cipher` / `-G h`
   // carry `undecidable === false` and still fall through to the clean `none` below.
   if (parsed.undecidable) return { kind: "undecidable" };
+  // A confirmed with-arg option left without a value: ssh exits with a usage error before opening
+  // anything, so this is a PROVEN non-login — the pane never leaves local and keeps autofilling. It is
+  // checked AFTER `undecidable` on purpose: with an unknown letter in the argv, the "missing value" may
+  // not be missing at all (the trailing `-p` could be that letter's value), so doubt still wins.
+  if (parsed.malformed) return { kind: "none" };
   if (parsed.queryMode) return { kind: "none" };
   // Defensive: the parser's post-loop rule already covers this, but keep it so a future parser change
   // cannot silently re-open the hole.

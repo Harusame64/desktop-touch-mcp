@@ -323,6 +323,7 @@ describe("parseSshCommand — OpenSSH two-pass argv rule (F-3)", () => {
     remoteCommand: string[];
     undecidable: boolean;
     queryMode?: boolean;
+    malformed?: boolean;
   }
   const rows: Row[] = [
     { n: "1  h", argv: ["h"], destination: "h", optionArgs: [], flagLetters: [], remoteCommand: [], undecidable: false },
@@ -351,6 +352,17 @@ describe("parseSshCommand — OpenSSH two-pass argv rule (F-3)", () => {
     { n: "24 -Q cipher", argv: ["-Q", "cipher"], destination: undefined, optionArgs: ["-Q", "cipher"], flagLetters: ["Q"], remoteCommand: [], undecidable: false, queryMode: true },
     { n: "25 -1 h (retired letter — in NEITHER table by design)", argv: ["-1", "h"], destination: "h", optionArgs: ["-1"], flagLetters: ["1"], remoteCommand: [], undecidable: true },
     { n: "26 -2 h (accepted no-op)", argv: ["-2", "h"], destination: "h", optionArgs: ["-2"], flagLetters: ["2"], remoteCommand: [], undecidable: false },
+    // A confirmed with-arg option with NO value left: ssh exits with a usage error before opening
+    // anything, so the pane never leaves local. `3e78b2d` reported these as `interactive` and pushed a
+    // remote frame for a pane that had not moved — `main` happened to be right here (it ignored
+    // post-destination options entirely), so this was a regression the two-pass fix introduced.
+    { n: "27 h -p (no value left)", argv: ["h", "-p"], destination: "h", optionArgs: ["-p"], flagLetters: ["p"], remoteCommand: [], undecidable: false, malformed: true },
+    { n: "28 h -l (no value left)", argv: ["h", "-l"], destination: "h", optionArgs: ["-l"], flagLetters: ["l"], remoteCommand: [], undecidable: false, malformed: true },
+    { n: "29 h -o (no value left)", argv: ["h", "-o"], destination: "h", optionArgs: ["-o"], flagLetters: ["o"], remoteCommand: [], undecidable: false, malformed: true },
+    // The cluster path reaches the same else-branch: `-4p` ends on a with-arg letter that is not attached.
+    { n: "30 h -4p (cluster tail, no value left)", argv: ["h", "-4p"], destination: "h", optionArgs: ["-4p"], flagLetters: ["4", "p"], remoteCommand: [], undecidable: false, malformed: true },
+    // NOT malformed: the value IS available (it eats the destination) ⇒ undecidable for want of a destination.
+    { n: "31 -p h (the value eats the destination)", argv: ["-p", "h"], destination: undefined, optionArgs: ["-p", "h"], flagLetters: ["p"], remoteCommand: [], undecidable: true },
   ];
 
   it.each(rows)("row $n", (r: Row) => {
@@ -361,6 +373,7 @@ describe("parseSshCommand — OpenSSH two-pass argv rule (F-3)", () => {
     expect(p.remoteCommand).toEqual(r.remoteCommand);
     expect(p.undecidable).toBe(r.undecidable);
     expect(p.queryMode).toBe(r.queryMode ?? false);
+    expect(p.malformed).toBe(r.malformed ?? false);
   });
 });
 
@@ -373,6 +386,20 @@ describe("parseSshCommand — OpenSSH two-pass argv rule (F-3)", () => {
 // a letter fails here — on the machine that upgraded — instead of going unnoticed.
 //
 // A canary, not a gate: it skips where OpenSSH is absent (the same rule as the real-`ssh -G` suites above).
+// The `malformed ⇒ none` verdict rests on one claim about the real binary: a with-arg option with no
+// value is a LOCAL usage error, so no session opens. That is getopt's contract, not a property of `-p` —
+// an optstring letter declared with `:` and given no argument makes getopt return an error and ssh exit.
+// So this pins THE CONTRACT with one representative letter; do NOT grow it to one case per letter (the
+// per-letter fact that matters — "does this letter take a value at all?" — is `SSH_FLAGS_WITH_ARG`, and
+// the canary above is what keeps that honest).
+describe.skipIf(!hasOpenSsh)("getopt contract — a with-arg option with no value is a local error", () => {
+  it("`ssh <host> -p` exits non-zero with a usage error instead of connecting", () => {
+    const r = spawnSync("ssh", ["localhost", "-p"], { encoding: "utf8", windowsHide: true });
+    expect(r.status).not.toBe(0);
+    expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).toMatch(/option requires an argument/i);
+  });
+});
+
 describe.skipIf(!hasOpenSsh)("§1.3.1 — the flag tables match the local OpenSSH synopsis", () => {
   // `ssh` with no args prints the usage synopsis and exits non-zero — that IS the normal path here.
   const usage = (): string => {

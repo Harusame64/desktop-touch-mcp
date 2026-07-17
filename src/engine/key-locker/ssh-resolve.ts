@@ -107,6 +107,24 @@ export interface ParsedSshCommand {
    * remote login is open).
    */
   undecidable: boolean;
+  /**
+   * A CONFIRMED with-arg option was left without a value (`ssh h -p`): ssh rejects this as a local usage
+   * error (`option requires an argument -- p`, exit 255) BEFORE any session opens. Not a doubt — a known
+   * outcome, which is why it is a separate channel from `undecidable`:
+   *
+   *   `undecidable` = we do not know what ssh will do  ⇒ callers DECLINE (sink to UNKNOWN)
+   *   `malformed`   = we know ssh will fail locally     ⇒ callers may treat it as a PROVEN non-login
+   *
+   * Collapsing the two would be wrong in both directions: sinking a pane to UNKNOWN over a typo costs it
+   * autofill until it is re-anchored (recovery is a future item), while trusting a doubt as a non-login is
+   * the F-3 inversion itself. The guarantee rests on the letter really being with-arg — that is what
+   * `SSH_FLAGS_WITH_ARG` asserts and what the §1.3.1 drift canary keeps honest.
+   *
+   * The condition is deliberately narrow: a KNOWN with-arg letter, unattached, with no token left to
+   * consume. Nothing else belongs here — `ssh -p h` consumes `h` as the value (not malformed; it is
+   * `undecidable` for want of a destination).
+   */
+  malformed: boolean;
 }
 
 /**
@@ -139,6 +157,7 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
   let queryMode = false;
   let remoteCommand: string[] = [];
   let undecidable = false;
+  let malformed = false;
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
     // An option token is an option WHEREVER it appears until the remote command has begun — ssh's second
@@ -159,7 +178,13 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
         if (SSH_FLAGS_WITH_ARG.has(L)) {
           if (L === "Q") queryMode = true;
           const attached = c < tok.length - 1; // the value is the rest of THIS token
-          if (!attached && i + 1 < args.length) optionArgs.push(args[++i]); // else it is the next token
+          if (!attached) {
+            // The value is the NEXT token — unless there is none, in which case getopt hands ssh a usage
+            // error and it exits before opening anything. Recording that is what stops `ssh h -p` from
+            // looking like a login (the pane never left local, so pushing a remote frame would mislabel it).
+            if (i + 1 < args.length) optionArgs.push(args[++i]);
+            else malformed = true;
+          }
           break;
         }
         // A letter in NEITHER allow-list: we cannot know whether it eats the next token, so every
@@ -182,7 +207,7 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
   // An argv we cannot even find a destination in is not a "no session" verdict — it is NO verdict. Query
   // modes are exempt: `ssh -V` / `ssh -Q cipher` have no destination BY DESIGN and stay clean `none`s.
   if (!queryMode && destination === undefined) undecidable = true;
-  return { destination, optionArgs, queryMode, flagLetters, remoteCommand, undecidable };
+  return { destination, optionArgs, queryMode, flagLetters, remoteCommand, undecidable, malformed };
 }
 
 export interface SshEffectiveConfig {

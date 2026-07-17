@@ -571,6 +571,15 @@ describe("classifySshLogin — three states (F-3)", () => {
     { argv: ["h", "-N"], expected: { kind: "none" } },
     { argv: ["h", "-f"], expected: { kind: "none" } },
     { argv: ["h", "<", "in"], expected: { kind: "none" } }, // stdin off the tty
+    // A confirmed with-arg option with no value left: ssh exits with a usage error before opening
+    // anything ⇒ PROVEN non-login (and the pane, still local, keeps autofilling). NOT `undecidable`: we
+    // know exactly what ssh does here, and sinking the pane over a typo would cost it autofill until it
+    // is re-anchored.
+    { argv: ["h", "-p"], expected: { kind: "none" } },
+    { argv: ["h", "-l"], expected: { kind: "none" } },
+    { argv: ["h", "-4p"], expected: { kind: "none" } }, // same else-branch, reached through the cluster walk
+    // Doubt still outranks it: with an unknown letter present, the "missing" value may be that letter's.
+    { argv: ["h", "-z", "-p"], expected: { kind: "undecidable" } },
     { argv: ["h", "-z"], expected: { kind: "undecidable" } }, // letter in neither table
     // DOUBT OUTRANKS A QUERY (Opus R1 P1-1). A future with-arg `-z` would eat the next token, so real ssh
     // reads this as "-G is -z's value" and OPENS A SESSION — while our flag scan sees a query. Answering
@@ -635,5 +644,25 @@ describe("recordDispatch — post-destination options and the undecidable sink (
     t.beginLocalSession(P);
     t.recordDispatch(P, "ssh -2 prod.example.com");
     expect(t.get(P)).toEqual({ execHost: "prod.example.com", isRemote: true });
+  });
+
+  // Regression pin: `3e78b2d` pushed a remote frame here. ssh exits with `option requires an argument`
+  // (exit 255) without connecting, so the pane never left local — mislabelling it remote would send a
+  // later `sudo`'s REMOTE secret into this LOCAL prompt, and would leave the pane's recovery to the
+  // watch's backstop. The pane must simply stay local and keep working.
+  it("`ssh h -p` (no value) leaves the pane LOCAL — no frame, no sink (regression)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -p");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true); // still usable — a typo must not disable the pane
+  });
+
+  it("a LOCAL sudo after `ssh h -p` still derives locally (the pane was never remote)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -p");
+    t.recordDispatch(P, "sudo systemctl restart app");
+    expect(t.get(P)).toMatchObject({ execHost: "localhost", isRemote: false });
   });
 });
