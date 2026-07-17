@@ -24,7 +24,7 @@
 // primitives and tests drive fakes.
 
 import { tokenizeCommandSegmentsWithOps } from "./command-derivation.js";
-import { ENV_ASSIGN_RE, interactiveSshTarget, programOf } from "./session-tracker.js";
+import { ENV_ASSIGN_RE, classifySshLogin, programOf } from "./session-tracker.js";
 
 /** Which landed-detection mode a dispatched credential command uses. */
 export type LandedMode = "one-shot" | "interactive";
@@ -86,7 +86,10 @@ function privLaunchesInteractiveShell(rest: readonly string[]): boolean {
 
 /**
  * Classify which landed-mode a dispatched credential command uses. Interactive = an ssh INTERACTIVE
- * login (reuses the SAME `interactiveSshTarget` that pushes a session frame), a `sudo`/`doas` that opens
+ * login (reuses the SAME `classifySshLogin` that pushes a session frame — only a PROVEN `interactive`
+ * counts, so an `undecidable` argv falls to one-shot; that is DEFENCE IN DEPTH, not a live path: the same
+ * synchronous `recordDispatch` turn already sank such a pane to UNKNOWN, so it never arms and no landed
+ * check runs — and were it ever reached, one-shot is the stricter of the two), a `sudo`/`doas` that opens
  * a shell (`-i`/`-s`/`sudo su`/`sudo bash -l`, see `privLaunchesInteractiveShell`), or a bare `su`.
  * Everything else — a one-shot `ssh host cmd`, a plain `sudo <cmd>`, `git push`, `ssh-keygen` — is
  * one-shot (Mode A, exit-gated).
@@ -103,7 +106,7 @@ export function classifyLandedMode(command: string): LandedMode {
     while (start < tokens.length && ENV_ASSIGN_RE.test(tokens[start])) start++;
     const program = programOf(tokens[start]);
     const rest = tokens.slice(start + 1);
-    if (program === "ssh" && interactiveSshTarget(rest) !== null) return "interactive";
+    if (program === "ssh" && classifySshLogin(rest).kind === "interactive") return "interactive";
     if ((program === "sudo" || program === "doas") && privLaunchesInteractiveShell(rest)) return "interactive";
     if (program === "su") return "interactive";
   }

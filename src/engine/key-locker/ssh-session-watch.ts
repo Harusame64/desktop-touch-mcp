@@ -83,15 +83,16 @@
 // intermediate — `sudo ssh`, a wrapper, a tmux server that stays UNDER the shell — is a grandchild the walk
 // still finds; an ssh REPARENTED OUT of the shell subtree entirely, e.g. a detached daemon, is out of scope,
 // a low-risk residual on the Windows target where a login pane's ssh normally stays under the shell) and
-// classify its argv with the SAME `interactiveSshTarget` rule: an interactive in-bound login — OR an ssh
-// whose argv is UNREADABLE or EMPTY (elevated/cross-user or a bad read: fail-safe) — sinks the
+// classify its argv with the SAME `classifySshLogin` rule: anything other than a PROVEN `none` — an
+// interactive in-bound login, an argv we cannot classify (`undecidable`), OR an ssh whose argv is
+// UNREADABLE or EMPTY (elevated/cross-user or a bad read: fail-safe) — sinks the
 // pane to `markUnknown`. A tunnel (`-N`/`-f`/`-L`), a one-shot (`ssh host cmd`), scp/sftp/git-over-ssh (their
 // inner ssh carries a trailing remote command) classify non-interactive ⇒ NOT sunk, so those panes keep
 // autofilling (OQ-W-7 = option B). This is a NEW fail-safe (markUnknown on doubt), never a new pop. It is
 // gated on `remoteDepth===0` so a LEGIT assistant-dispatched interactive ssh — whose `recordDispatch` has
 // pushed a frame (depth>0) — is handled by the existing unwatched-frame backstop, not this scan.
 
-import { interactiveSshTarget } from "./session-tracker.js";
+import { classifySshLogin } from "./session-tracker.js";
 
 /** The tracker surface the watch drives (a subset of `SessionTracker`, so tests inject a fake). */
 export interface SessionTrackerSink {
@@ -425,7 +426,10 @@ export class SshSessionWatch {
         // the module's "any doubt sinks" invariant).
         const argv = snap.commandLine(pid);
         if (argv === null || argv.length === 0) return true; // unreadable / empty ⇒ fail-safe (possibly interactive)
-        if (interactiveSshTarget(argv.slice(1)) !== null) return true; // an interactive in-bound login (exempt pid already skipped)
+        // Anything but a PROVEN `none` flags: an interactive login, or an argv we cannot classify with
+        // confidence (`undecidable` — an unknown option letter / no locatable destination). Only a proven
+        // non-session-opening ssh is trusted, upholding the module's "any doubt sinks" invariant.
+        if (classifySshLogin(argv.slice(1)).kind !== "none") return true; // (exempt pid already skipped)
       }
     }
     return false;

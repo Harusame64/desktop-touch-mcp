@@ -15,7 +15,7 @@ import {
   tokenizeCommandSegmentsWithOps,
   type SessionContext,
 } from "../../src/engine/key-locker/command-derivation.js";
-import { defaultExec, type ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
+import { defaultExec, parseSshCommand, type ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
 
 let tmp: string;
 let khFile: string;
@@ -28,20 +28,35 @@ const remotePane: SessionContext = { execHost: "prod.example.com", isRemote: tru
 // Canned ssh -G/ssh-keygen; git falls through to the real binary (fixture repos, no network).
 const fakeExec: ExecFn = async (file, args) => {
   if (file === "ssh" && args[0] === "-G") {
-    const dest = args[args.length - 1];
+    // The resolver hands `ssh -G` the WHOLE dispatched argv (F-3 / plan §1.6: the ENDPOINT decision must
+    // not ride on our own flag table), so this stub must locate the destination the way the real ssh does
+    // rather than assume it is the last token — `ssh -G h sudo apt update` would otherwise be read as a
+    // connection to `update`. (Verified against the real binary: `ssh -G h sudo apt update` prints the
+    // same config as `ssh -G h`; only the stderr pty warning differs, and we parse stdout.)
+    //
+    // It reuses `parseSshCommand` ON PURPOSE (plan §6.1(b)). That is circular ONLY in appearance: this
+    // suite pins the derivation PIPELINE (derive → canonical → fp-set → lookup), while the parser itself is
+    // pinned independently by the 27-row table (pure) and by the real-`ssh -G` suite in
+    // key-locker-ssh-resolve.test.ts — a broken parser fails those, loudly. Do NOT "fix" this into a
+    // hand-rolled mini-parser: an earlier attempt at exactly that mis-read the `-4p 2222` cluster, i.e. it
+    // reimplemented the code under test and got it wrong. This is scaffolding, not a layer, so it does not
+    // re-introduce the table dependency §1.4 removed from production.
+    const parsed = parseSshCommand(args.slice(1)); // drop the leading `-G`
+    const dest = parsed.destination ?? "";
+    const opts = parsed.optionArgs;
     let user = "u";
     let port = "22";
-    const li = args.indexOf("-l");
-    if (li >= 0) user = args[li + 1];
-    const pi = args.indexOf("-p");
-    if (pi >= 0) port = args[pi + 1];
+    const li = opts.indexOf("-l");
+    if (li >= 0) user = opts[li + 1];
+    const pi = opts.indexOf("-p");
+    if (pi >= 0) port = opts[pi + 1];
     let host = dest;
     const at = dest.lastIndexOf("@");
     if (at > 0) { user = dest.slice(0, at); host = dest.slice(at + 1); }
     host = host.replace(/^\[|\]$/g, ""); // real ssh -G prints IPv6 hostnames UNBRACKETED
     if (host === "resolvefail.example.com") return { code: 255, stdout: "", stderr: "boom" };
-    const ji = args.indexOf("-J"); // real ssh maps -J onto an effective ProxyJump line
-    const proxy = ji >= 0 ? `proxyjump ${args[ji + 1]}\n` : "";
+    const ji = opts.indexOf("-J"); // real ssh maps -J onto an effective ProxyJump line
+    const proxy = ji >= 0 ? `proxyjump ${opts[ji + 1]}\n` : "";
     return {
       code: 0,
       stdout: `hostname ${host}\nuser ${user}\nport ${port}\n${proxy}userknownhostsfile ${khFile}\nglobalknownhostsfile ${join(tmp, "absent")}\n`,

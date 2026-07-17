@@ -496,6 +496,35 @@ describe("SshSessionWatch — W-2b: an UNREGISTERED interactive ssh on a LOCAL p
     expect(sink.unknowns).toEqual([]);
   });
 
+  // ── F-3: the scan shares the classifier, so it inherited BOTH halves of the bug ──────────────────
+  // Pre-fix, `ssh host -v` counted as a "remote command" ⇒ classified one-shot ⇒ the user's own hand-typed
+  // login was NOT flagged ⇒ the pane stayed trusted-local ⇒ a later assistant `sudo` would fill a LOCAL
+  // secret into that REMOTE prompt. The guard at :422-427 only covered an unreadable/empty argv; a
+  // readable-but-misparsed one fell straight through to trust-local.
+  it("interactive ssh with a POST-DESTINATION option (`ssh host -v`) ⇒ markUnknown (F-3)", () => {
+    const { watch, sink } = setup(localPane({ 2100: { parent: 1000, name: "ssh", start: 21, argv: ["ssh", "user@host-a", "-v"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("interactive ssh with a post-destination `-p` (`ssh host -p 2222`) ⇒ markUnknown (F-3)", () => {
+    const { watch, sink } = setup(localPane({ 2200: { parent: 1000, name: "ssh", start: 22, argv: ["ssh", "user@host-a", "-p", "2222"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("an UNCLASSIFIABLE ssh (`ssh host -z`) ⇒ markUnknown — only a PROVEN none is trusted", () => {
+    const { watch, sink } = setup(localPane({ 2300: { parent: 1000, name: "ssh", start: 23, argv: ["ssh", "host-a", "-z"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
   it("a ONE-SHOT (`ssh host cmd`) ⇒ NOT flagged", () => {
     const { watch, sink } = setup(localPane({ 3100: { parent: 1000, name: "ssh", start: 31, argv: ["ssh", "host-a", "uptime"] } }));
     watch.watchPane("pane-1", 1000);

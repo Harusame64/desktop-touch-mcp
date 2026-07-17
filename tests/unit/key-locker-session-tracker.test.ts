@@ -2,7 +2,12 @@
 // deriveBinding from localhost-collapsing a remote pane (or remote-collapsing a local one).
 // Plan: desktop-touch-mcp-internal@<plan>:docs/adr-014-v2-r3-l3-capture-plan.md
 import { describe, expect, it } from "vitest";
-import { SessionTracker, isKnownSession, type PaneSession } from "../../src/engine/key-locker/session-tracker.js";
+import {
+  SessionTracker,
+  classifySshLogin,
+  isKnownSession,
+  type PaneSession,
+} from "../../src/engine/key-locker/session-tracker.js";
 
 const P = "pane-1";
 
@@ -528,5 +533,95 @@ describe("SessionTracker — the get() shape feeds deriveBinding's SessionContex
       expect(typeof s.execHost).toBe("string");
       expect(typeof s.isRemote).toBe("boolean");
     }
+  });
+});
+
+// ── F-3: classifySshLogin + the recordDispatch arms it feeds ─────────────────────────────────────────
+//
+// Plan: desktop-touch-mcp-internal:docs/adr-014-v2-r3x-complete-fix-plan.md §1.3 / §5 PR1.3.
+// Findings: …-la-live-dogfood-findings.md F-3.
+//
+// The predecessor (`interactiveSshTarget`) returned host-or-null, so it could not say "I don't know" —
+// and it located the remote command by counting tokens (`optionArgs.length + 1`), which cannot tell a
+// post-destination OPTION from a command. `ssh h -v` therefore looked like a one-shot ⇒ NO frame pushed
+// ⇒ the pane stayed trusted-LOCAL while a real login was open ⇒ a later `sudo` would fill a LOCAL secret
+// into the REMOTE prompt. Three states + ssh's own two-pass boundary close both halves.
+describe("classifySshLogin — three states (F-3)", () => {
+  const cases: Array<{ argv: string[]; expected: ReturnType<typeof classifySshLogin> }> = [
+    { argv: ["h"], expected: { kind: "interactive", host: "h" } },
+    { argv: ["alice@H.example.com"], expected: { kind: "interactive", host: "h.example.com" } }, // lowercased
+    { argv: ["-p", "2222", "alice@h"], expected: { kind: "interactive", host: "h" } },
+    { argv: ["alice@h", "-p", "2222"], expected: { kind: "interactive", host: "h" } }, // FIXED (was none)
+    { argv: ["h", "-v"], expected: { kind: "interactive", host: "h" } }, // FIXED (was none)
+    { argv: ["h", "-l", "other"], expected: { kind: "interactive", host: "h" } }, // FIXED (was none)
+    { argv: ["h", "ls"], expected: { kind: "none" } }, // a PROVEN remote command
+    { argv: ["h", "-v", "ls"], expected: { kind: "none" } },
+    { argv: ["h", "ls", "-v"], expected: { kind: "none" } }, // the -v is the remote ls's
+    { argv: ["-G", "h"], expected: { kind: "none" } }, // query
+    { argv: ["h", "-G"], expected: { kind: "none" } }, // query, post-destination
+    { argv: ["-V"], expected: { kind: "none" } },
+    { argv: ["-Q", "cipher"], expected: { kind: "none" } },
+    { argv: ["-N", "-L", "8080:x:80", "h"], expected: { kind: "none" } }, // tunnel, no login shell
+    { argv: ["h", "-N"], expected: { kind: "none" } },
+    { argv: ["h", "-f"], expected: { kind: "none" } },
+    { argv: ["h", "<", "in"], expected: { kind: "none" } }, // stdin off the tty
+    { argv: ["h", "-z"], expected: { kind: "undecidable" } }, // letter in neither table
+    { argv: ["-1", "h"], expected: { kind: "undecidable" } }, // retired letter — real ssh is fatal
+    { argv: ["-2", "h"], expected: { kind: "interactive", host: "h" } }, // accepted no-op ⇒ a real session
+    { argv: ["-P", "mytag", "h"], expected: { kind: "interactive", host: "h" } }, // -P takes a tag
+    { argv: ["-P", "h"], expected: { kind: "undecidable" } }, // the tag ate the destination
+    { argv: [], expected: { kind: "undecidable" } },
+  ];
+  it.each(cases)("ssh $argv → $expected.kind", ({ argv, expected }) => {
+    expect(classifySshLogin(argv)).toEqual(expected);
+  });
+});
+
+describe("recordDispatch — post-destination options and the undecidable sink (F-3)", () => {
+  const P = "pane-f3";
+
+  it("`ssh h -p 2222` pushes a remote frame (the option no longer reads as a remote command)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com -p 2222");
+    expect(t.get(P)).toEqual({ execHost: "prod.example.com", isRemote: true });
+  });
+
+  it("`ssh h -z` (unclassifiable) sinks the pane to UNKNOWN — never trusted-local", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -z");
+    expect(isKnownSession(t.get(P))).toBe(false);
+  });
+
+  it("`ssh h ls` still pushes nothing — a proven one-shot leaves the pane local", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com ls");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+  });
+
+  it("`ssh -P mytag h` pushes a remote frame — the tag is consumed, the destination survives", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -P mytag prod.example.com");
+    expect(t.get(P)).toEqual({ execHost: "prod.example.com", isRemote: true });
+  });
+
+  // `-1` is FATAL in the real ssh ("SSH protocol v.1 is no longer supported"), so no session ever opens.
+  // Pushing a frame here would track a still-LOCAL pane as remote — a later `sudo` would then pull the
+  // REMOTE binding's secret into a LOCAL prompt (the mirror image of F-3). UNKNOWN is the honest state.
+  it("`ssh -1 h` sinks to UNKNOWN — it must NOT push a frame (real ssh never opens the session)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -1 prod.example.com");
+    expect(isKnownSession(t.get(P))).toBe(false);
+  });
+
+  it("`ssh -2 h` pushes a remote frame — the no-op flag is accepted and the login is real", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -2 prod.example.com");
+    expect(t.get(P)).toEqual({ execHost: "prod.example.com", isRemote: true });
   });
 });
