@@ -307,16 +307,22 @@ function scanRedirectionsForStdin(tokens: readonly string[]): { touchesStdin: bo
  *       (measured: `You must specify a subsystem to invoke.`, exit 255). `-s sftp` reaching `none` today via
  *       the remote-command check is the RIGHT answer for the WRONG reason — it would break the moment that
  *       check moved
+ *   n — redirects stdin from `/dev/null`, so the remote shell hits EOF and exits AT ONCE, returning the pane
+ *       to LOCAL. It OPENS a shell yet does not PERSIST — the exact mirror of `-N` (measured 2026-07-18,
+ *       Windows OpenSSH 10.0.0.0p2 sshd: `ssh -n` prints the login prompt then exits 0 in ~400 ms, whereas a
+ *       plain login with stdin still on the tty holds the shell indefinitely). Almost always paired with `-f`
+ *       (already here), so the bare form is rare, but it is letter-only decidable and belongs on its own
  *
- * The test is "does a remote login shell take over this pane", NOT "does the process persist": `-N` outlives
- * everything here and still belongs (measured: alive past 6s, holding its tunnel), while a plain `ssh host`
- * is the login. Judging by persistence instead breaks on the very first letter.
+ * The test is "does a remote login shell take over this pane", NOT "does the process persist" — the two come
+ * apart in BOTH directions, which is why judging by persistence breaks on the very first letter: `-N` outlives
+ * everything here yet opens no shell (measured: alive past 6s, holding its tunnel), while `-n` opens a shell
+ * that vanishes in ~400 ms. Only a plain `ssh host` (persists AND takes over) is the login.
  *
  * ⚠ Unlike `SSH_FLAGS_WITH_ARG`, this set CANNOT be machine-checked against the synopsis — ssh's usage text
  * says which options take a value, never which suppress the shell. It has to be right by reading, so it was
  * swept letter-by-letter against the synopsis once (plan §1.5b) rather than grown one report at a time.
  */
-const SSH_FLAGS_NO_LOGIN_SHELL = new Set([..."NfWOs"]);
+const SSH_FLAGS_NO_LOGIN_SHELL = new Set([..."NfWOsn"]);
 
 /** How an `ssh` argv (WITHOUT the leading `ssh` token) affects THIS pane's session. Three states, because
  *  two cannot express doubt — and treating doubt as "opens nothing" is exactly the F-3 inversion: the pane
@@ -328,7 +334,7 @@ export type SshLoginClass =
    *  label (L1 resolves the real endpoint later). */
   | { kind: "interactive"; host: string }
   /** PROVABLY opens no session in this pane: a query mode (`-G`/`-Q`/`-V`), a no-login-shell flag
-   *  (`SSH_FLAGS_NO_LOGIN_SHELL` = `-N`/`-f`/`-W`/`-O`/`-s`), an argv whose stdin is off the tty, a one-shot
+   *  (`SSH_FLAGS_NO_LOGIN_SHELL` = `-N`/`-f`/`-W`/`-O`/`-s`/`-n`), an argv whose stdin is off the tty, a one-shot
    *  with a PROVEN remote command, or an argv a CONFIRMED with-arg option leaves malformed (`ssh h -p` —
    *  ssh rejects it as a local usage error, exit 255, before any session opens). Every member is PROVEN; a
    *  doubt belongs in `undecidable`, never here. */
@@ -370,7 +376,7 @@ export function classifySshLogin(rawArgs: readonly string[]): SshLoginClass {
   // Defensive: the parser's post-loop rule already covers this, but keep it so a future parser change
   // cannot silently re-open the hole.
   if (parsed.destination === undefined) return { kind: "undecidable" };
-  // A flag that PROVES no login shell takes over THIS pane (`-N`/`-f`/`-W`/`-O`/`-s`) → no session, no
+  // A flag that PROVES no login shell takes over THIS pane (`-N`/`-f`/`-W`/`-O`/`-s`/`-n`) → no session, no
   // push: pushing a remote frame would mislabel a later LOCAL command as remote → wrong-target on the
   // fp-less sudo path (#495 P2 / R5 P2). The letters and their per-letter reasons live in
   // SSH_FLAGS_NO_LOGIN_SHELL; consulting the SET rather than an inline `has("N")||has("f")||…` chain is

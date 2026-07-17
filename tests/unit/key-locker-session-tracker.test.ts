@@ -570,6 +570,11 @@ describe("classifySshLogin — three states (F-3)", () => {
     { argv: ["-N", "-L", "8080:x:80", "h"], expected: { kind: "none" } }, // tunnel, no login shell
     { argv: ["h", "-N"], expected: { kind: "none" } },
     { argv: ["h", "-f"], expected: { kind: "none" } },
+    // `-n` sends stdin from /dev/null, so the remote shell hits EOF and exits at once → the pane returns to
+    // LOCAL (measured: `ssh -n` exits 0 in ~400 ms vs a plain login that holds the shell). Opens a shell yet
+    // does not persist — the mirror of `-N`; a member of SSH_FLAGS_NO_LOGIN_SHELL, letter-only decidable.
+    { argv: ["h", "-n"], expected: { kind: "none" } },
+    { argv: ["-n", "h"], expected: { kind: "none" } }, // flag-before form
     // `-O` (control-master command) and `-s` (subsystem) never open a login shell on THIS pane — both are
     // letters in SSH_FLAGS_NO_LOGIN_SHELL, decided from the LETTER alone, no value semantics (Codex PR#541).
     // Before the set existed, `91c2575` answered `interactive` for these and pushed a remote frame for a
@@ -698,6 +703,18 @@ describe("recordDispatch — post-destination options and the undecidable sink (
     const t = new SessionTracker();
     t.beginLocalSession(P);
     t.recordDispatch(P, "ssh prod.example.com -O check");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true);
+  });
+
+  // `-n` redirects stdin from /dev/null, so the remote shell hits EOF and exits at once — the pane is back
+  // to local in ~400 ms (measured, Windows OpenSSH 10.0.0.0p2 sshd). Pushing a frame here would be wrong
+  // twice: the pane is local almost immediately, and the child's disappearance would trip the watch's
+  // unwatched-frame backstop into markUnknown. It opens a shell but does not take the pane over.
+  it("`ssh h -n` leaves the pane LOCAL — no frame (stdin off the tty; the remote shell EOF-exits)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -n");
     expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
     expect(isKnownSession(t.get(P))).toBe(true);
   });
