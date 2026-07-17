@@ -570,6 +570,15 @@ describe("classifySshLogin — three states (F-3)", () => {
     { argv: ["-N", "-L", "8080:x:80", "h"], expected: { kind: "none" } }, // tunnel, no login shell
     { argv: ["h", "-N"], expected: { kind: "none" } },
     { argv: ["h", "-f"], expected: { kind: "none" } },
+    // `-O` (control-master command) and `-s` (subsystem) never open a login shell on THIS pane — both are
+    // letters in SSH_FLAGS_NO_LOGIN_SHELL, decided from the LETTER alone, no value semantics (Codex PR#541).
+    // Before the set existed, `91c2575` answered `interactive` for these and pushed a remote frame for a
+    // pane that never left local.
+    { argv: ["h", "-O", "check"], expected: { kind: "none" } }, // sends a control cmd to a master, then exits
+    { argv: ["-O", "check", "h"], expected: { kind: "none" } }, // flag-BEFORE form — was broken on main too
+    { argv: ["h", "-s"], expected: { kind: "none" } }, // bare subsystem request — ssh errors locally, no shell
+    { argv: ["h", "-s", "sftp"], expected: { kind: "none" } }, // subsystem, NOT a login shell (via the set, not remoteCommand)
+    { argv: ["-s", "h"], expected: { kind: "none" } }, // flag-BEFORE subsystem twin — also broken on main
     { argv: ["h", "<", "in"], expected: { kind: "none" } }, // stdin off the tty
     // A confirmed with-arg option with no value left: ssh exits with a usage error before opening
     // anything ⇒ PROVEN non-login (and the pane, still local, keeps autofilling). NOT `undecidable`: we
@@ -589,6 +598,12 @@ describe("classifySshLogin — three states (F-3)", () => {
     // tick. The pre-destination form (`ssh -p 2222x h`) has always behaved this way; the two-pass fix
     // widened it to the post-destination form. Tracked for the release gate — see the findings doc.
     { argv: ["h", "-p", "2222x"], expected: { kind: "interactive", host: "h" } },
+    // Same F-7 class via a different mechanism: `-v` LOOKS like a flag but is eaten as `-p`'s VALUE, so the
+    // parse is neither `malformed` (a value IS present) nor `undecidable` (no unknown letter is scanned). Real
+    // ssh: `Bad port '-v'`, exit 255 — no session — yet we answer `interactive`. This is the exact case Codex
+    // raised on PR#541; it stays out of scope for the SAME reason as `2222x` (telling a bad value from a good
+    // one is per-option value semantics), pinned here so the gap is VISIBLE, not silently absent.
+    { argv: ["h", "-p", "-v"], expected: { kind: "interactive", host: "h" } },
     { argv: ["h", "-z"], expected: { kind: "undecidable" } }, // letter in neither table
     // DOUBT OUTRANKS A QUERY (Opus R1 P1-1). A future with-arg `-z` would eat the next token, so real ssh
     // reads this as "-G is -z's value" and OPENS A SESSION — while our flag scan sees a query. Answering
@@ -673,5 +688,28 @@ describe("recordDispatch — post-destination options and the undecidable sink (
     t.recordDispatch(P, "ssh prod.example.com -p");
     t.recordDispatch(P, "sudo systemctl restart app");
     expect(t.get(P)).toMatchObject({ execHost: "localhost", isRemote: false });
+  });
+
+  // `-O check` sends a control command to an existing master (or errors when there is none) and exits —
+  // it never opens a login shell in this pane. `91c2575` classified it `interactive` and pushed a remote
+  // frame; a later `sudo` would then pull the REMOTE binding's secret into this LOCAL prompt. The pane
+  // must stay local and keep autofilling.
+  it("`ssh h -O check` leaves the pane LOCAL — no frame (control-master command, not a login)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -O check");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true);
+  });
+
+  // `-s` requests a subsystem, never a login shell — for BOTH the bare form (ssh errors locally) and the
+  // named form `-s sftp`. The latter used to reach `none` only because "sftp" was a remote-command token;
+  // now it lands there for the real reason, so a step-ordering change cannot silently re-open the hole.
+  it("`ssh h -s sftp` leaves the pane LOCAL — no frame (subsystem, not a login shell)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -s sftp");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true);
   });
 });
