@@ -367,8 +367,9 @@ export class SshSessionWatch {
    * W-2b: does the shell's process SUBTREE hold an UNREGISTERED ssh that would make a LOCAL-anchored pane
    * actually remote — a user hand-`ssh host` the wiring never dispatched? Walk the `parentMap` subtree from
    * `shellPid` and, for each LIVE `ssh`-named DESCENDANT (subtree, not just direct — a `sudo ssh`/wrapper/
-   * tmux-reparented login is a grandchild), classify its argv with `interactiveSshTarget` (the SAME rule that
-   * decides whether an ssh opens a session). Returns true (⇒ caller `markUnknown`s, decline-not-disclose) iff
+   * tmux-reparented login is a grandchild), classify its argv with `classifySshLogin` (the SAME rule that
+   * decides whether an ssh opens a session) and trust ONLY a PROVEN `none` — an `undecidable` argv flags.
+   * Returns true (⇒ caller `markUnknown`s, decline-not-disclose) iff
    * any LIVE descendant is itself UNREADABLE (identify() name "" — an elevated/cross-user process we cannot
    * even name, e.g. the ssh in `sudo ssh`; Codex PR#512 P1), OR is an interactive in-bound `ssh` login, OR is
    * an `ssh` whose argv is UNREADABLE (`commandLine` null — an elevated/cross-user ssh we cannot introspect:
@@ -421,9 +422,11 @@ export class SshSessionWatch {
         if (descName === "") return true; // unreadable LIVE descendant ⇒ possibly interactive ssh (decline)
         if (descName !== SSH_PROGRAM) continue; // readable non-ssh ⇒ not an in-bound login
         // Fail-safe on ANY non-classifiable ssh: unreadable (null) OR an EMPTY argv — an ssh we cannot
-        // classify must sink the pane, never trust-local (Opus PR#512 P2: `interactiveSshTarget([])` returns
-        // null, which without this guard would fall through to "not flagged" = trust local, the opposite of
-        // the module's "any doubt sinks" invariant).
+        // classify must sink the pane, never trust-local. Belt and braces since F-3: `classifySshLogin([])`
+        // now returns `undecidable`, which the check below flags anyway. Kept deliberately — this module's
+        // "any doubt sinks" invariant must not depend on another module's classification order (the original
+        // Opus PR#512 P2 hole was exactly that dependency: the old classifier returned a bare null here,
+        // which fell through to "not flagged" = trust local).
         const argv = snap.commandLine(pid);
         if (argv === null || argv.length === 0) return true; // unreadable / empty ⇒ fail-safe (possibly interactive)
         // Anything but a PROVEN `none` flags: an interactive login, or an argv we cannot classify with

@@ -602,8 +602,9 @@ function sessionMatches(live: PaneSession, expected: SessionFrame): boolean {
 /**
  * The ssh-named DESCENDANTS of `shellPid` in a snapshot (subtree, not just direct children — the exempt
  * delta must see a `sudo ssh`/wrapper/tmux-reparented login the same way the W-2b scan does). For each,
- * report its interactive-login HOST (`commandLine` → `interactiveSshTarget`, or null for a tunnel/one-shot/
- * unreadable ssh) + its creation time (for the pid+time exempt). A `seen` set guards pid-reuse cycles.
+ * report its interactive-login HOST (`commandLine` → `classifySshLogin`, or null for a tunnel/one-shot/
+ * unclassifiable/unreadable ssh) + its creation time (for the pid+time exempt). A `seen` set guards
+ * pid-reuse cycles.
  */
 function sshDescendants(snap: ProcessSnapshot, shellPid: number): Map<number, { host: string | null; startTimeMs: number }> {
   const out = new Map<number, { host: string | null; startTimeMs: number }>();

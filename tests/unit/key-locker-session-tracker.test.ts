@@ -546,6 +546,12 @@ describe("SessionTracker — the get() shape feeds deriveBinding's SessionContex
 // post-destination OPTION from a command. `ssh h -v` therefore looked like a one-shot ⇒ NO frame pushed
 // ⇒ the pane stayed trusted-LOCAL while a real login was open ⇒ a later `sudo` would fill a LOCAL secret
 // into the REMOTE prompt. Three states + ssh's own two-pass boundary close both halves.
+//
+// Coverage vs the plan's decision table: the parser-shape rows (#13-#18 — cluster/attached/ProxyJump forms
+// like `-4p 2222 h`, `-p2222 alice@h`, `h -J bastion`) are omitted here ON PURPOSE, not dropped: each
+// reaches `interactive` by the SAME (verdict, reason) path as row #3 / #11 already below, and their parser
+// shape is pinned row-by-row in key-locker-ssh-resolve.test.ts. Everything with a DISTINCT verdict or a
+// distinct reason is present.
 describe("classifySshLogin — three states (F-3)", () => {
   const cases: Array<{ argv: string[]; expected: ReturnType<typeof classifySshLogin> }> = [
     { argv: ["h"], expected: { kind: "interactive", host: "h" } },
@@ -566,6 +572,12 @@ describe("classifySshLogin — three states (F-3)", () => {
     { argv: ["h", "-f"], expected: { kind: "none" } },
     { argv: ["h", "<", "in"], expected: { kind: "none" } }, // stdin off the tty
     { argv: ["h", "-z"], expected: { kind: "undecidable" } }, // letter in neither table
+    // DOUBT OUTRANKS A QUERY (Opus R1 P1-1). A future with-arg `-z` would eat the next token, so real ssh
+    // reads this as "-G is -z's value" and OPENS A SESSION — while our flag scan sees a query. Answering
+    // `none` here would leave the pane trusted-LOCAL during a remote login: the exact silent disclosure
+    // `undecidable` exists to prevent. Checking queryMode first (an earlier revision) did exactly that.
+    { argv: ["-z", "-G", "h"], expected: { kind: "undecidable" } },
+    { argv: ["-z", "-V", "h"], expected: { kind: "undecidable" } },
     { argv: ["-1", "h"], expected: { kind: "undecidable" } }, // retired letter — real ssh is fatal
     { argv: ["-2", "h"], expected: { kind: "interactive", host: "h" } }, // accepted no-op ⇒ a real session
     { argv: ["-P", "mytag", "h"], expected: { kind: "interactive", host: "h" } }, // -P takes a tag

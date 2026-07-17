@@ -408,7 +408,7 @@ export function getWindowIdentity(hwnd: unknown): ProcessIdentity {
  * a query/parse failure — so callers fail SAFE (ADR-014 v2 R3 L3-4 W-2b treats a
  * null read as "possibly an interactive in-bound ssh" and declines).
  *
- * argv[0] is the image (ssh path); pass `argv.slice(1)` to `interactiveSshTarget`.
+ * argv[0] is the image (ssh path); pass `argv.slice(1)` to `classifySshLogin`.
  * Uses `NtQueryInformationProcess(ProcessCommandLineInformation)` under the same
  * `PROCESS_QUERY_LIMITED_INFORMATION` right as the identity query (no cross-process
  * memory read).

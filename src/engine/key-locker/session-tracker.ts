@@ -323,10 +323,16 @@ export function classifySshLogin(rawArgs: readonly string[]): SshLoginClass {
   const { touchesStdin, stripped: args } = scanRedirectionsForStdin(rawArgs);
   if (touchesStdin) return { kind: "none" };
   const parsed = parseSshCommand(args);
-  // Query modes FIRST: `ssh -V` / `ssh -Q cipher` have no destination BY DESIGN, so they must stay clean
-  // `none`s rather than fall into the undecidable arm below.
-  if (parsed.queryMode) return { kind: "none" };
+  // DOUBT OUTRANKS EVERY POSITIVE VERDICT — including a query. If an unknown letter is present we cannot
+  // even trust that `-G`/`-V`/`-Q` IS a query: a future with-arg `-z` would eat the next token, so real ssh
+  // reads `ssh -z -G h` as "-G is -z's VALUE" and OPENS A SESSION while our flag scan sees a query. Checking
+  // queryMode first would answer `none` there ⇒ the pane stays trusted-LOCAL while a remote login is open —
+  // the exact silent disclosure `undecidable` exists to prevent (Opus R1 P1-1).
+  // This costs nothing for real queries: the parser's post-loop rule already exempts them
+  // (`if (!queryMode && destination === undefined) undecidable = true`), so `-V` / `-Q cipher` / `-G h`
+  // carry `undecidable === false` and still fall through to the clean `none` below.
   if (parsed.undecidable) return { kind: "undecidable" };
+  if (parsed.queryMode) return { kind: "none" };
   // Defensive: the parser's post-loop rule already covers this, but keep it so a future parser change
   // cannot silently re-open the hole.
   if (parsed.destination === undefined) return { kind: "undecidable" };

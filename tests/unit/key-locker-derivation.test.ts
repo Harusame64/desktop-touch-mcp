@@ -232,6 +232,26 @@ describe("§8 #5 — sudo purpose + session host", () => {
     const uri = await deriveBinding("ssh prod.example.com sudo apt update", local, { exec: fakeExec });
     expect(uri).toMatchObject({ scheme: "ssh", host: "prod.example.com", user: "u", port: 22 });
   });
+
+  // ── the remote command must never reach a spawned process's ARGUMENTS ─────────────────────────────
+  // A dispatched command can carry a secret in plain sight (`mysql -pS3CR3T`), and `ssh` is enough to arm
+  // the poller, so `deriveBinding` runs over that argv. Resolution must pass the OPTIONS ONLY: Windows
+  // process command lines are readable by any same-user (and every elevated) process, so handing the whole
+  // argv to `ssh -G` would publish the secret. This is the same threat model that bans the dispatched
+  // command from the diagnostic log. (Regression pin: an earlier revision of the F-3 fix did exactly that.)
+  it("a secret inside the remote command NEVER reaches any exec's argv", async () => {
+    const seen: string[][] = [];
+    const spy: ExecFn = async (file, args) => {
+      seen.push([file, ...args]);
+      return fakeExec(file, args);
+    };
+    await deriveBinding("ssh h mysql -uroot -pS3CR3T --host=db", local, { exec: spy });
+    expect(seen.length).toBeGreaterThan(0); // the resolution actually ran
+    const flat = seen.map((a) => a.join(" ")).join("\n");
+    expect(flat).not.toContain("S3CR3T");
+    expect(flat).not.toContain("mysql");
+    for (const argv of seen) expect(argv).not.toContain("-pS3CR3T");
+  });
 });
 
 describe("§8 #6 — command derivation table", () => {

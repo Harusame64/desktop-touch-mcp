@@ -46,8 +46,9 @@ export const defaultExec: ExecFn = async (file, args) => {
   }
 };
 
-// OpenSSH client option letters (`man ssh` synopsis): which short flags CONSUME the next token.
-// (Everything else — 46AaCfGgKkMNnqsTtVvXxYy — is a no-arg flag and falls to the else branch.)
+// OpenSSH client option letters (`man ssh` synopsis): which short flags CONSUME the next token. The
+// no-arg letters are enumerated in SSH_FLAGS_NO_ARG below — the two sets are a CLOSED allow-list, so a
+// letter in neither is NOT assumed no-arg (that assumption is what `undecidable` exists to refuse).
 // Exported for the §1.3.1 drift guard (a unit canary re-derives both sets from the local ssh's own usage
 // synopsis, so an OpenSSH upgrade that moves a letter fails loudly instead of silently costing autofill).
 export const SSH_FLAGS_WITH_ARG = new Set([..."BbcDEeFIiJLlmOoPpQRSWw"]);
@@ -119,6 +120,12 @@ export interface ParsedSshCommand {
  * prompt, and `ssh h -v` was misread as a one-shot command ⇒ the pane was trusted LOCAL while a remote
  * login was open. See the findings + plan docs
  * (desktop-touch-mcp-internal:docs/adr-014-v2-r3x-la-live-dogfood-findings.md F-3, §1.2 of the fix plan).
+ *
+ * KNOWN GAP (availability-only, deliberate): `--` (end-of-options) is not modelled. Real ssh accepts it
+ * (`ssh -G -- host` prints the config, i.e. a session would open); here `-` is in neither allow-list, so
+ * the parse is `undecidable` and every consumer DECLINES. That is the fail-safe direction — a rare
+ * invocation loses autofill, nothing is ever mis-targeted — so it is left to the drift guard's allow-list
+ * rather than special-cased here.
  */
 export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
   const optionArgs: string[] = [];
@@ -208,22 +215,6 @@ export async function sshDashG(
     throw new Error(`ssh -G exited ${code}: ${stderr.trim().slice(0, 300)}`);
   }
   return parseSshDashGOutput(stdout, destination);
-}
-
-/**
- * `ssh -G <argv…>` — the whole dispatched argv, verbatim. Same parsing + failure contract as `sshDashG`;
- * the ONLY difference is that the real ssh, not our parser, decides which tokens are options. `args`
- * excludes the leading `ssh` program token.
- */
-export async function sshDashGArgv(
-  args: readonly string[],
-  exec: ExecFn = defaultExec,
-): Promise<SshEffectiveConfig> {
-  const { code, stdout, stderr } = await exec("ssh", ["-G", ...args]);
-  if (code !== 0) {
-    throw new Error(`ssh -G exited ${code}: ${stderr.trim().slice(0, 300)}`);
-  }
-  return parseSshDashGOutput(stdout, args.join(" "));
 }
 
 /** Parse `ssh -G` stdout into the effective, last-wins config. `destinationForError` only labels errors. */
@@ -316,14 +307,12 @@ export async function resolveCanonicalForSshCommand(
   if (parsed.destination === undefined) return { kind: "unresolvable", reason: "no ssh destination" };
   let cfg: SshEffectiveConfig;
   try {
-    // Hand the WHOLE argv to `ssh -G` and let the real binary arbitrate the option / value / remote-command
-    // split with its own ssh.c two-pass rule. Our parser is correct, but the ENDPOINT decision — which
-    // server's secret gets typed — must not depend on the completeness of our own flag table: a wrong
-    // entry here would be silent and security-relevant. `ssh -G` never connects (see the header) and
-    // ignores a trailing remote command; a non-zero exit already fail-closes below. This is what this
-    // module's header always intended — the old call could not honour it, because `optionArgs` dropped
-    // everything after the destination (F-3).
-    cfg = await sshDashGArgv(args, exec);
+    // Pass the OPTIONS ONLY — never the remote command. `optionArgs` now carries post-destination options
+    // too (the F-3 two-pass fix), so this yields the same endpoint handing `ssh -G` the whole argv would,
+    // WITHOUT putting the remote command on ssh.exe's command line: `ssh h mysql -pS3CR3T` would otherwise
+    // publish that secret to every process that can read our argv (Opus R1 P2-1). The same threat model
+    // already bans the dispatched command from the diagnostic log; process arguments are no different.
+    cfg = await sshDashG(parsed.destination, parsed.optionArgs, exec);
   } catch (e) {
     return { kind: "unresolvable", reason: (e as Error).message };
   }

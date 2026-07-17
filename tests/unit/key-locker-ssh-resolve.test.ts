@@ -185,10 +185,20 @@ describe.skipIf(!hasOpenSsh)("§8 #2 — ssh resolution + option passthrough (re
     expect(r.kind).toBe("unresolvable");
   });
 
-  it("a trailing remote command is ignored by ssh -G (it is not read as the destination)", async () => {
+  // The remote command must not change the endpoint — and it must never be handed to the spawned `ssh -G`
+  // either, since it can carry a secret (`ssh h mysql -pX`). The resolver passes options-only; this pins
+  // the observable half (same endpoint), and key-locker-derivation.test.ts pins the argv half.
+  it("a trailing remote command does not change the resolved endpoint", async () => {
     const withCmd = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "sudo", "apt", "update"]);
     const bare = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com"]);
     expect(withCmd).toEqual(bare);
+  });
+
+  it("an unclassifiable argv fails closed — no binding is derived from a guessed destination", async () => {
+    const r = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-z"]);
+    // The resolver itself still answers (real ssh would reject `-z`, so this is `unresolvable`), but the
+    // DERIVATION declines outright — see the `undecidable` pin in key-locker-derivation.test.ts.
+    expect(r.kind).not.toBe("ok");
   });
 
   it("a default-port entry stored in BRACKETED [host]:22 form is still found (Codex R4)", async () => {
@@ -289,6 +299,11 @@ describe.skipIf(!hasOpenSsh)("§8 #3 — P2-1 defense: recorded-identity drift (
 // prompt) and `ssh h -v` was misread as a one-shot (⇒ the pane was trusted LOCAL while a remote login was
 // open). Real ssh accepts post-destination options because ssh.c runs getopt AGAIN after the destination
 // (`goto again`) — ssh.c's own rule, not platform getopt permutation, so it is identical in every build.
+//
+// 26 rows = the plan's table minus its row 21 (`h < in`), which is CLASSIFIER-only: redirects are stripped
+// by `classifySshLogin` before it ever calls this parser, so `parseSshCommand(["h","<","in"])` legitimately
+// returns `remoteCommand: ["<","in"]` and the plan's parser columns for that row describe the stripped
+// argv (= row 1). It is pinned in key-locker-session-tracker.test.ts instead.
 describe("parseSshCommand — OpenSSH two-pass argv rule (F-3)", () => {
   interface Row {
     n: string;
