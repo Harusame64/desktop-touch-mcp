@@ -83,15 +83,16 @@
 // intermediate — `sudo ssh`, a wrapper, a tmux server that stays UNDER the shell — is a grandchild the walk
 // still finds; an ssh REPARENTED OUT of the shell subtree entirely, e.g. a detached daemon, is out of scope,
 // a low-risk residual on the Windows target where a login pane's ssh normally stays under the shell) and
-// classify its argv with the SAME `interactiveSshTarget` rule: an interactive in-bound login — OR an ssh
-// whose argv is UNREADABLE or EMPTY (elevated/cross-user or a bad read: fail-safe) — sinks the
+// classify its argv with the SAME `classifySshLogin` rule: anything other than a PROVEN `none` — an
+// interactive in-bound login, an argv we cannot classify (`undecidable`), OR an ssh whose argv is
+// UNREADABLE or EMPTY (elevated/cross-user or a bad read: fail-safe) — sinks the
 // pane to `markUnknown`. A tunnel (`-N`/`-f`/`-L`), a one-shot (`ssh host cmd`), scp/sftp/git-over-ssh (their
 // inner ssh carries a trailing remote command) classify non-interactive ⇒ NOT sunk, so those panes keep
 // autofilling (OQ-W-7 = option B). This is a NEW fail-safe (markUnknown on doubt), never a new pop. It is
 // gated on `remoteDepth===0` so a LEGIT assistant-dispatched interactive ssh — whose `recordDispatch` has
 // pushed a frame (depth>0) — is handled by the existing unwatched-frame backstop, not this scan.
 
-import { interactiveSshTarget } from "./session-tracker.js";
+import { classifySshLogin } from "./session-tracker.js";
 
 /** The tracker surface the watch drives (a subset of `SessionTracker`, so tests inject a fake). */
 export interface SessionTrackerSink {
@@ -366,8 +367,9 @@ export class SshSessionWatch {
    * W-2b: does the shell's process SUBTREE hold an UNREGISTERED ssh that would make a LOCAL-anchored pane
    * actually remote — a user hand-`ssh host` the wiring never dispatched? Walk the `parentMap` subtree from
    * `shellPid` and, for each LIVE `ssh`-named DESCENDANT (subtree, not just direct — a `sudo ssh`/wrapper/
-   * tmux-reparented login is a grandchild), classify its argv with `interactiveSshTarget` (the SAME rule that
-   * decides whether an ssh opens a session). Returns true (⇒ caller `markUnknown`s, decline-not-disclose) iff
+   * tmux-reparented login is a grandchild), classify its argv with `classifySshLogin` (the SAME rule that
+   * decides whether an ssh opens a session) and trust ONLY a PROVEN `none` — an `undecidable` argv flags.
+   * Returns true (⇒ caller `markUnknown`s, decline-not-disclose) iff
    * any LIVE descendant is itself UNREADABLE (identify() name "" — an elevated/cross-user process we cannot
    * even name, e.g. the ssh in `sudo ssh`; Codex PR#512 P1), OR is an interactive in-bound `ssh` login, OR is
    * an `ssh` whose argv is UNREADABLE (`commandLine` null — an elevated/cross-user ssh we cannot introspect:
@@ -420,12 +422,23 @@ export class SshSessionWatch {
         if (descName === "") return true; // unreadable LIVE descendant ⇒ possibly interactive ssh (decline)
         if (descName !== SSH_PROGRAM) continue; // readable non-ssh ⇒ not an in-bound login
         // Fail-safe on ANY non-classifiable ssh: unreadable (null) OR an EMPTY argv — an ssh we cannot
-        // classify must sink the pane, never trust-local (Opus PR#512 P2: `interactiveSshTarget([])` returns
-        // null, which without this guard would fall through to "not flagged" = trust local, the opposite of
-        // the module's "any doubt sinks" invariant).
+        // classify must sink the pane, never trust-local. Belt and braces since F-3: `classifySshLogin([])`
+        // now returns `undecidable`, which the check below flags anyway. Kept deliberately — this module's
+        // "any doubt sinks" invariant must not depend on another module's classification order (the original
+        // Opus PR#512 P2 hole was exactly that dependency: the old classifier returned a bare null here,
+        // which fell through to "not flagged" = trust local).
         const argv = snap.commandLine(pid);
         if (argv === null || argv.length === 0) return true; // unreadable / empty ⇒ fail-safe (possibly interactive)
-        if (interactiveSshTarget(argv.slice(1)) !== null) return true; // an interactive in-bound login (exempt pid already skipped)
+        // Anything but a PROVEN `none` flags: an interactive login, or an argv we cannot classify with
+        // confidence (`undecidable` — an unknown option letter / no locatable destination). Only a proven
+        // non-session-opening ssh is trusted, upholding the module's "any doubt sinks" invariant.
+        //
+        // A `none` descendant may well still be ALIVE when we look (this scan also runs from `onDispatch`,
+        // right after delivery, and a doomed `ssh h -p` has not necessarily exited yet). That is fine, and
+        // liveness is NOT the reason it is safe: the reason is that this argv OPENS NO SESSION, so the pane
+        // it lives in is still local no matter what the process is doing. Reasoning from "the process is
+        // gone" — or from "it opens no shell" — is how the landed-mode conflation got in.
+        if (classifySshLogin(argv.slice(1)).kind !== "none") return true; // (exempt pid already skipped)
       }
     }
     return false;

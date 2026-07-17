@@ -9,7 +9,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { resolveCanonicalForSshCommand } from "../../src/engine/key-locker/ssh-resolve.js";
+import {
+  parseSshCommand,
+  resolveCanonicalForSshCommand,
+  SSH_FLAGS_NO_ARG,
+  SSH_FLAGS_WITH_ARG,
+  type ExecFn,
+} from "../../src/engine/key-locker/ssh-resolve.js";
 import { BindingStore } from "../../src/engine/key-locker/binding-store.js";
 import { formatBindingUri } from "../../src/engine/key-locker/binding.js";
 
@@ -160,6 +166,59 @@ describe.skipIf(!hasOpenSsh)("§8 #2 — ssh resolution + option passthrough (re
     expect(r.kind).toBe("unresolvable");
   });
 
+  // ── F-3 (real `ssh -G`): options BEHIND the destination reach the resolver ──────────────────────────
+  // The pre-fix parser stopped at the destination, so these all resolved as if the option were absent.
+  it("a post-destination -p reaches ssh -G — `h -p 2222` is the SAME endpoint as `-p 2222 h`", async () => {
+    const post = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-p", "2222"]);
+    const pre = await resolveCanonicalForSshCommand([...mainOpts(), "-p", "2222", "bob@real.example.com"]);
+    expect(post.kind).toBe(pre.kind);
+    expect(post).toEqual(pre); // order of options vs destination must not change the endpoint
+  });
+
+  it("a post-destination -l changes the derived user (it used to be silently dropped)", async () => {
+    const r = await resolveCanonicalForSshCommand([...mainOpts(), "real.example.com", "-l", "carol"]);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.uri.user).toBe("carol");
+  });
+
+  // The sync classifier cannot tell a bad option value from a good one (that would mean re-implementing
+  // ssh's config parser), so `ssh h -p 2222x` still reports an interactive login. This pins the layer that
+  // DOES catch it: the resolver asks the real ssh, which rejects the value, so nothing is ever bound or
+  // filled. It is why that known classifier inaccuracy costs a spurious frame and not a secret.
+  it("a post-destination BAD option value fails closed — the real ssh rejects it", async () => {
+    const r = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-p", "2222x"]);
+    expect(r.kind).toBe("unresolvable");
+  });
+
+  it("a post-destination -J still defers — the bastion prompt is not the final host's", async () => {
+    const r = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-J", "bastion.example.com"]);
+    expect(r.kind).toBe("unresolvable");
+  });
+
+  // The remote command must not change the endpoint — and it must never be handed to the spawned `ssh -G`
+  // either, since it can carry a secret (`ssh h mysql -pX`). The resolver passes options-only; this pins
+  // the observable half (same endpoint), and key-locker-derivation.test.ts pins the argv half.
+  it("a trailing remote command does not change the resolved endpoint", async () => {
+    const withCmd = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "sudo", "apt", "update"]);
+    const bare = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com"]);
+    expect(withCmd).toEqual(bare);
+  });
+
+  // Deliberately NOT driven by the real ssh: today's ssh rejects `-z`, so a real-binary assertion here
+  // would pass with or without the guard — a tautology. The case the guard exists for is the FUTURE one
+  // where ssh *accepts* the unknown letter, so the fake below answers as that future ssh would (a clean
+  // config for a host we could have resolved). We must still decline, and must never even ask.
+  it("an unclassifiable argv fails closed BEFORE any exec — even if ssh would have answered", async () => {
+    const calls: string[][] = [];
+    const wouldSucceed: ExecFn = async (file, args) => {
+      calls.push([file, ...args]);
+      return { code: 0, stdout: "hostname real.example.com\nuser bob\nport 22\n", stderr: "" };
+    };
+    const r = await resolveCanonicalForSshCommand(["bob@real.example.com", "-z", "value"], wouldSucceed);
+    expect(r.kind).toBe("unresolvable");
+    expect(calls).toEqual([]); // never spawned: a guessed destination is not worth asking about
+  });
+
   it("a default-port entry stored in BRACKETED [host]:22 form is still found (Codex R4)", async () => {
     const khBracketed = fwd(join(tmp, "known_hosts_bracketed"));
     writeFileSync(khBracketed, `[::1]:22 ${pub1}\n`, "utf8");
@@ -173,6 +232,39 @@ describe.skipIf(!hasOpenSsh)("§8 #2 — ssh resolution + option passthrough (re
     if (r.kind === "ok") {
       expect(r.uri).toMatchObject({ host: "[::1]", port: 22 });
       expect(r.uri.fpSet).toEqual([fp1]);
+    }
+  });
+});
+
+// ── F-3 security regression pin (acceptance-critical) ────────────────────────────────────────────────
+//
+// The bug this pins is a CREDENTIAL MISDIRECTION, not a missing autofill. Pre-fix, `ssh alice@h -p 2222`
+// dropped the `-p`, so it derived the port-22 canonical key AND the port-22 known_hosts fingerprints —
+// a bit-exact match for a stored port-22 binding. `BindingStore.resolve` is a plain map lookup, the
+// fp-set was derived from the WRONG endpoint (so it cannot detect the mismatch), and L2's
+// injection-instant re-verify checks the shell pid + creation time, never the endpoint. The port-22
+// secret would have been typed into the port-2222 server's prompt.
+describe.skipIf(!hasOpenSsh)("F-3 — a port-22 binding must NOT resolve for an explicit -p 2222", () => {
+  it("`ssh bob@h` and `ssh bob@h -p 2222` derive DIFFERENT keys ⇒ the :22 secret cannot reach :2222", async () => {
+    const store = BindingStore.load(join(tmp, "store-f3"), async () => true);
+
+    // The user saves a credential for the DEFAULT-port server and binds it.
+    const bound = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com"]);
+    expect(bound.kind).toBe("ok");
+    if (bound.kind !== "ok") return;
+    await store.bind(bound.canonical, "opaque-port22", { uri: formatBindingUri(bound.uri), createdAt: "t" });
+    expect(await store.resolve(bound.canonical)).toEqual({ opaqueId: "opaque-port22" });
+
+    // The assistant then runs a DIFFERENT server on the same host, with the port behind the destination.
+    const other = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-p", "2222"]);
+    // It resolves the real endpoint now (:2222) — or fails closed if that port has no known_hosts entry.
+    // Either way the one forbidden outcome is reusing the port-22 key.
+    if (other.kind === "ok") {
+      expect(other.uri.port).toBe(2222);
+      expect(other.canonical).not.toBe(bound.canonical);
+      expect(await store.resolve(other.canonical)).toBeUndefined(); // ⇒ no opaqueId ⇒ no autofill
+    } else {
+      expect(other.kind).toBe("host-not-known"); // fail-closed, never the port-22 binding
     }
   });
 });
@@ -212,5 +304,134 @@ describe.skipIf(!hasOpenSsh)("§8 #3 — P2-1 defense: recorded-identity drift (
     if (drifted.kind !== "ok") return;
     expect(drifted.canonical).not.toBe(bound.canonical);
     expect(await store.resolve(drifted.canonical)).toBeUndefined(); // ⇒ no opaqueId ⇒ no autofill
+  });
+});
+
+// ── F-3: OpenSSH's two-pass argv rule ────────────────────────────────────────────────────────────────
+//
+// Plan: desktop-touch-mcp-internal:docs/adr-014-v2-r3x-complete-fix-plan.md §1.2 / §5 PR1.2 — the table
+// below IS that table. Findings: …-la-live-dogfood-findings.md F-3.
+//
+// The pre-fix parser stopped at the destination and dropped every option behind it, so
+// `ssh user@h -p 2222` resolved as port 22 (the wrong endpoint's secret could be typed into this one's
+// prompt) and `ssh h -v` was misread as a one-shot (⇒ the pane was trusted LOCAL while a remote login was
+// open). Real ssh accepts post-destination options because ssh.c runs getopt AGAIN after the destination
+// (`goto again`) — ssh.c's own rule, not platform getopt permutation, so it is identical in every build.
+//
+// 26 rows = the plan's table minus its row 21 (`h < in`), which is CLASSIFIER-only: redirects are stripped
+// by `classifySshLogin` before it ever calls this parser, so `parseSshCommand(["h","<","in"])` legitimately
+// returns `remoteCommand: ["<","in"]` and the plan's parser columns for that row describe the stripped
+// argv (= row 1). It is pinned in key-locker-session-tracker.test.ts instead.
+describe("parseSshCommand — OpenSSH two-pass argv rule (F-3)", () => {
+  interface Row {
+    n: string;
+    argv: string[];
+    destination: string | undefined;
+    optionArgs: string[];
+    flagLetters: string[];
+    remoteCommand: string[];
+    undecidable: boolean;
+    queryMode?: boolean;
+    malformed?: boolean;
+  }
+  const rows: Row[] = [
+    { n: "1  h", argv: ["h"], destination: "h", optionArgs: [], flagLetters: [], remoteCommand: [], undecidable: false },
+    { n: "2  -p 2222 alice@h", argv: ["-p", "2222", "alice@h"], destination: "alice@h", optionArgs: ["-p", "2222"], flagLetters: ["p"], remoteCommand: [], undecidable: false },
+    { n: "3  alice@h -p 2222 (FIXED)", argv: ["alice@h", "-p", "2222"], destination: "alice@h", optionArgs: ["-p", "2222"], flagLetters: ["p"], remoteCommand: [], undecidable: false },
+    { n: "4  h ls", argv: ["h", "ls"], destination: "h", optionArgs: [], flagLetters: [], remoteCommand: ["ls"], undecidable: false },
+    { n: "5  h -v (FIXED)", argv: ["h", "-v"], destination: "h", optionArgs: ["-v"], flagLetters: ["v"], remoteCommand: [], undecidable: false },
+    { n: "6  h -v ls", argv: ["h", "-v", "ls"], destination: "h", optionArgs: ["-v"], flagLetters: ["v"], remoteCommand: ["ls"], undecidable: false },
+    { n: "7  h ls -v (the -v is the remote ls's)", argv: ["h", "ls", "-v"], destination: "h", optionArgs: [], flagLetters: [], remoteCommand: ["ls", "-v"], undecidable: false },
+    { n: "8  -G h", argv: ["-G", "h"], destination: "h", optionArgs: ["-G"], flagLetters: ["G"], remoteCommand: [], undecidable: false, queryMode: true },
+    { n: "9  h -G", argv: ["h", "-G"], destination: "h", optionArgs: ["-G"], flagLetters: ["G"], remoteCommand: [], undecidable: false, queryMode: true },
+    { n: "10 -l other h", argv: ["-l", "other", "h"], destination: "h", optionArgs: ["-l", "other"], flagLetters: ["l"], remoteCommand: [], undecidable: false },
+    { n: "11 h -l other (FIXED)", argv: ["h", "-l", "other"], destination: "h", optionArgs: ["-l", "other"], flagLetters: ["l"], remoteCommand: [], undecidable: false },
+    { n: "12 -N -L 8080:x:80 h", argv: ["-N", "-L", "8080:x:80", "h"], destination: "h", optionArgs: ["-N", "-L", "8080:x:80"], flagLetters: ["N", "L"], remoteCommand: [], undecidable: false },
+    { n: "13 h -N -L 8080:x:80", argv: ["h", "-N", "-L", "8080:x:80"], destination: "h", optionArgs: ["-N", "-L", "8080:x:80"], flagLetters: ["N", "L"], remoteCommand: [], undecidable: false },
+    { n: "14 -4p 2222 h", argv: ["-4p", "2222", "h"], destination: "h", optionArgs: ["-4p", "2222"], flagLetters: ["4", "p"], remoteCommand: [], undecidable: false },
+    { n: "15 -p2222 alice@h", argv: ["-p2222", "alice@h"], destination: "alice@h", optionArgs: ["-p2222"], flagLetters: ["p"], remoteCommand: [], undecidable: false },
+    { n: "16 alice@h -p2222 (FIXED)", argv: ["alice@h", "-p2222"], destination: "alice@h", optionArgs: ["-p2222"], flagLetters: ["p"], remoteCommand: [], undecidable: false },
+    { n: "17 -J bastion h", argv: ["-J", "bastion", "h"], destination: "h", optionArgs: ["-J", "bastion"], flagLetters: ["J"], remoteCommand: [], undecidable: false },
+    { n: "18 h -J bastion (FIXED)", argv: ["h", "-J", "bastion"], destination: "h", optionArgs: ["-J", "bastion"], flagLetters: ["J"], remoteCommand: [], undecidable: false },
+    { n: "19 h -z (letter in neither table)", argv: ["h", "-z"], destination: "h", optionArgs: ["-z"], flagLetters: ["z"], remoteCommand: [], undecidable: true },
+    { n: "20 -P mytag h (-P takes a tag)", argv: ["-P", "mytag", "h"], destination: "h", optionArgs: ["-P", "mytag"], flagLetters: ["P"], remoteCommand: [], undecidable: false },
+    { n: "20b -P h (the tag eats the destination)", argv: ["-P", "h"], destination: undefined, optionArgs: ["-P", "h"], flagLetters: ["P"], remoteCommand: [], undecidable: true },
+    { n: "22 (empty argv)", argv: [], destination: undefined, optionArgs: [], flagLetters: [], remoteCommand: [], undecidable: true },
+    { n: "23 -V", argv: ["-V"], destination: undefined, optionArgs: ["-V"], flagLetters: ["V"], remoteCommand: [], undecidable: false, queryMode: true },
+    { n: "24 -Q cipher", argv: ["-Q", "cipher"], destination: undefined, optionArgs: ["-Q", "cipher"], flagLetters: ["Q"], remoteCommand: [], undecidable: false, queryMode: true },
+    { n: "25 -1 h (retired letter — in NEITHER table by design)", argv: ["-1", "h"], destination: "h", optionArgs: ["-1"], flagLetters: ["1"], remoteCommand: [], undecidable: true },
+    { n: "26 -2 h (accepted no-op)", argv: ["-2", "h"], destination: "h", optionArgs: ["-2"], flagLetters: ["2"], remoteCommand: [], undecidable: false },
+    // A confirmed with-arg option with NO value left: ssh exits with a usage error before opening
+    // anything, so the pane never leaves local. `3e78b2d` reported these as `interactive` and pushed a
+    // remote frame for a pane that had not moved — `main` happened to be right here (it ignored
+    // post-destination options entirely), so this was a regression the two-pass fix introduced.
+    { n: "27 h -p (no value left)", argv: ["h", "-p"], destination: "h", optionArgs: ["-p"], flagLetters: ["p"], remoteCommand: [], undecidable: false, malformed: true },
+    { n: "28 h -l (no value left)", argv: ["h", "-l"], destination: "h", optionArgs: ["-l"], flagLetters: ["l"], remoteCommand: [], undecidable: false, malformed: true },
+    { n: "29 h -o (no value left)", argv: ["h", "-o"], destination: "h", optionArgs: ["-o"], flagLetters: ["o"], remoteCommand: [], undecidable: false, malformed: true },
+    // The cluster path reaches the same else-branch: `-4p` ends on a with-arg letter that is not attached.
+    { n: "30 h -4p (cluster tail, no value left)", argv: ["h", "-4p"], destination: "h", optionArgs: ["-4p"], flagLetters: ["4", "p"], remoteCommand: [], undecidable: false, malformed: true },
+    // NOT malformed: the value IS available (it eats the destination) ⇒ undecidable for want of a destination.
+    { n: "31 -p h (the value eats the destination)", argv: ["-p", "h"], destination: undefined, optionArgs: ["-p", "h"], flagLetters: ["p"], remoteCommand: [], undecidable: true },
+  ];
+
+  it.each(rows)("row $n", (r: Row) => {
+    const p = parseSshCommand(r.argv);
+    expect(p.destination).toBe(r.destination);
+    expect(p.optionArgs).toEqual(r.optionArgs);
+    expect([...p.flagLetters].sort()).toEqual([...r.flagLetters].sort());
+    expect(p.remoteCommand).toEqual(r.remoteCommand);
+    expect(p.undecidable).toBe(r.undecidable);
+    expect(p.queryMode).toBe(r.queryMode ?? false);
+    expect(p.malformed).toBe(r.malformed ?? false);
+  });
+});
+
+// ── §1.3.1 flag-table drift guard ────────────────────────────────────────────────────────────────────
+//
+// Both tables are a COPY of a moving spec (the `man ssh` synopsis). The parser CONTAINS an unknown letter
+// safely (`undecidable` ⇒ every consumer declines), but a drifted table silently costs autofill — and a
+// future with-arg letter we mis-list as no-arg is the one direction that can mis-locate a destination.
+// This canary re-derives both sets from the LOCAL ssh's own usage text, so the OpenSSH upgrade that moves
+// a letter fails here — on the machine that upgraded — instead of going unnoticed.
+//
+// A canary, not a gate: it skips where OpenSSH is absent (the same rule as the real-`ssh -G` suites above).
+// The `malformed ⇒ none` verdict rests on one claim about the real binary: a with-arg option with no
+// value is a LOCAL usage error, so no session opens. That is getopt's contract, not a property of `-p` —
+// an optstring letter declared with `:` and given no argument makes getopt return an error and ssh exit.
+// So this pins THE CONTRACT with one representative letter; do NOT grow it to one case per letter (the
+// per-letter fact that matters — "does this letter take a value at all?" — is `SSH_FLAGS_WITH_ARG`, and
+// the canary above is what keeps that honest).
+describe.skipIf(!hasOpenSsh)("getopt contract — a with-arg option with no value is a local error", () => {
+  it("`ssh <host> -p` exits non-zero with a usage error instead of connecting", () => {
+    const r = spawnSync("ssh", ["localhost", "-p"], { encoding: "utf8", windowsHide: true });
+    expect(r.status).not.toBe(0);
+    expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).toMatch(/option requires an argument/i);
+  });
+});
+
+describe.skipIf(!hasOpenSsh)("§1.3.1 — the flag tables match the local OpenSSH synopsis", () => {
+  // `ssh` with no args prints the usage synopsis and exits non-zero — that IS the normal path here.
+  const usage = (): string => {
+    const r = spawnSync("ssh", [], { encoding: "utf8", windowsHide: true });
+    return `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  };
+
+  it("every `[-X value]` letter in the synopsis is in SSH_FLAGS_WITH_ARG, and vice versa", () => {
+    // `[-B bind_interface]` / `[-D [bind_address:]port]` / `[-w local_tun[:remote_tun]]` — a letter, a
+    // space, then a value placeholder. The bare cluster `[-46Aa…]` has no space, so it never matches here.
+    const real = [...usage().matchAll(/\[-([A-Za-z]) [^\]]/g)].map((m) => m[1]);
+    expect(real.length).toBeGreaterThan(10); // the synopsis parsed at all (guards against a format change)
+    expect([...new Set(real)].sort()).toEqual([...SSH_FLAGS_WITH_ARG].sort());
+  });
+
+  it("the synopsis no-arg cluster equals SSH_FLAGS_NO_ARG minus the measured `2` exception", () => {
+    const cluster = /\[-([A-Za-z0-9]+)\]/.exec(usage())?.[1] ?? "";
+    expect(cluster.length).toBeGreaterThan(10); // the cluster parsed at all
+    // `2` is the ONE deliberate extra: the synopsis omits it, but every build still ACCEPTS it as a no-op
+    // (measured: `ssh -2 -G host` prints the config), so `ssh -2 host` opens a REAL session and must
+    // classify as a login. `1` is deliberately in NEITHER table (real ssh: "SSH protocol v.1 is no longer
+    // supported", fatal) and is therefore INSIDE this guard's net — if a future OpenSSH re-uses `-1`, this
+    // fails and we re-decide rather than silently classifying a dead invocation as a login.
+    expect([...cluster].sort()).toEqual([...SSH_FLAGS_NO_ARG].filter((c) => c !== "2").sort());
   });
 });

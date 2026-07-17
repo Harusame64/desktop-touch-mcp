@@ -108,7 +108,14 @@ export class SessionTracker {
         // stage `… | ssh host` whose stdin is the pipe, not the tty (Opus #495 R4 P2), and a LEADING
         // fd-0 redirect `< in ssh host` / `0>f ssh host` (Codex #495 R9) — pushing a remote frame in any
         // of them would mislabel a later LOCAL `sudo`/git as remote → wrong-target.
-        const remote = backgrounded || pipedStdin || leadingStdinRedir ? null : interactiveSshTarget(segment.slice(start + 1));
+        const cls: SshLoginClass = backgrounded || pipedStdin || leadingStdinRedir
+          ? { kind: "none" }
+          : classifySshLogin(segment.slice(start + 1));
+        // An UNCLASSIFIABLE ssh could be opening a login we cannot see. Trusting the pane as local would
+        // fill a LOCAL secret into a REMOTE prompt (F-3's derivative); pushing a guessed frame would
+        // mislabel a later local command. Neither is honest ⇒ sink to UNKNOWN and decline.
+        if (cls.kind === "undecidable") { this.markUnknown(paneId); return; }
+        const remote = cls.kind === "interactive" ? cls.host : null;
         if (remote !== null) {
           // A conditional (`&&` / `||`) ssh may or may not actually run — unknowable at dispatch time.
           // Pushing a remote frame that never materializes strands the pane as remote (no ssh child
@@ -286,12 +293,61 @@ function scanRedirectionsForStdin(tokens: readonly string[]): { touchesStdin: bo
 }
 
 /**
- * If an `ssh` argv (without the leading `ssh`) is an INTERACTIVE LOGIN, return the resolved host
- * (bare, lowercased — the label; L1 resolves the real endpoint later). Return null for a one-shot
- * `ssh host cmd`, a query mode (`-G`/`-Q`/`-V`), no destination, or a stdin-off-the-tty ssh — none of
- * which open a session.
+ * Option letters whose presence means NO REMOTE LOGIN SHELL TAKES OVER THIS PANE, whatever else the
+ * invocation does. Each is a semantic judgment about ssh's behaviour, so this set is a TABLE with reasons,
+ * not a boolean chain — the next missing letter should read as a gap in a documented list rather than as an
+ * absent clause in an `||`:
+ *
+ *   N — holds a tunnel and never asks for a shell (the process stays alive; that is not a login)
+ *   f — forks to the background after authenticating; the foreground returns to the LOCAL prompt
+ *   W — turns the pane into a stdio conduit for a bastion and exits
+ *   O — sends a control command to an existing master (`-O check`) and exits; with no ControlPath it errors
+ *       out at once (measured: `No ControlPath specified for "-O" command`, exit 255). Either way, no shell
+ *   s — requests a SUBSYSTEM (`-s sftp`), not a login shell; with no subsystem named it exits locally
+ *       (measured: `You must specify a subsystem to invoke.`, exit 255). `-s sftp` reaching `none` today via
+ *       the remote-command check is the RIGHT answer for the WRONG reason — it would break the moment that
+ *       check moved
+ *   n — redirects stdin from `/dev/null`, so the remote shell hits EOF and exits AT ONCE, returning the pane
+ *       to LOCAL. It OPENS a shell yet does not PERSIST — the exact mirror of `-N` (measured 2026-07-18,
+ *       Windows OpenSSH 10.0.0.0p2 sshd: `ssh -n` prints the login prompt then exits 0 in ~400 ms, whereas a
+ *       plain login with stdin still on the tty holds the shell indefinitely). Almost always paired with `-f`
+ *       (already here), so the bare form is rare, but it is letter-only decidable and belongs on its own
+ *
+ * The test is "does a remote login shell take over this pane", NOT "does the process persist" — the two come
+ * apart in BOTH directions, which is why judging by persistence breaks on the very first letter: `-N` outlives
+ * everything here yet opens no shell (measured: alive past 6s, holding its tunnel), while `-n` opens a shell
+ * that vanishes in ~400 ms. Only a plain `ssh host` (persists AND takes over) is the login.
+ *
+ * ⚠ Unlike `SSH_FLAGS_WITH_ARG`, this set CANNOT be machine-checked against the synopsis — ssh's usage text
+ * says which options take a value, never which suppress the shell. It has to be right by reading, so it was
+ * swept letter-by-letter against the synopsis once (plan §1.5b) rather than grown one report at a time.
  */
-export function interactiveSshTarget(rawArgs: string[]): string | null {
+const SSH_FLAGS_NO_LOGIN_SHELL = new Set([..."NfWOsn"]);
+
+/** How an `ssh` argv (WITHOUT the leading `ssh` token) affects THIS pane's session. Three states, because
+ *  two cannot express doubt — and treating doubt as "opens nothing" is exactly the F-3 inversion: the pane
+ *  stays trusted-LOCAL while a real remote login is open, and a later `sudo` fills a LOCAL secret into a
+ *  REMOTE prompt. Every consumer must map `undecidable` to its own DECLINE.
+ *  Plan: desktop-touch-mcp-internal:docs/adr-014-v2-r3x-complete-fix-plan.md §1.3 / PR1.3 */
+export type SshLoginClass =
+  /** An interactive login shell opened on this pane's tty. `host` is the bare, lowercased destination
+   *  label (L1 resolves the real endpoint later). */
+  | { kind: "interactive"; host: string }
+  /** PROVABLY opens no session in this pane: a query mode (`-G`/`-Q`/`-V`), a no-login-shell flag
+   *  (`SSH_FLAGS_NO_LOGIN_SHELL` = `-N`/`-f`/`-W`/`-O`/`-s`/`-n`), an argv whose stdin is off the tty, a one-shot
+   *  with a PROVEN remote command, or an argv a CONFIRMED with-arg option leaves malformed (`ssh h -p` —
+   *  ssh rejects it as a local usage error, exit 255, before any session opens). Every member is PROVEN; a
+   *  doubt belongs in `undecidable`, never here. */
+  | { kind: "none" }
+  /** The argv cannot be classified with confidence (an unknown option letter, or no locatable
+   *  destination outside a query mode) ⇒ callers decline. */
+  | { kind: "undecidable" };
+
+/**
+ * Classify an `ssh` argv (without the leading `ssh`) by what it does to THIS pane's session. Every `none`
+ * is PROVEN; every doubt falls through to `undecidable`.
+ */
+export function classifySshLogin(rawArgs: readonly string[]): SshLoginClass {
   // Redirections are shell I/O plumbing the shell consumes before exec, and they can appear ANYWHERE —
   // before the destination (`ssh 2>&1 host`), after it, or after a remote command. Scan the WHOLE argv:
   // a redirect that TOUCHES fd 0 (`ssh host < in`, `ssh 0>f host`) takes stdin off the tty → the ssh is
@@ -300,25 +356,47 @@ export function interactiveSshTarget(rawArgs: string[]): string | null {
   // command → the pane would else stay local while an interactive login opened → later remote `sudo`
   // wrong-targeted to localhost (Codex #495 P2).
   const { touchesStdin, stripped: args } = scanRedirectionsForStdin(rawArgs);
-  if (touchesStdin) return null;
+  if (touchesStdin) return { kind: "none" };
   const parsed = parseSshCommand(args);
-  if (parsed.queryMode || parsed.destination === undefined) return null;
-  // `-N` (no remote command), `-f` (fork to background) and `-W host:port` (forward stdin/stdout,
-  // implies -N/-T) do NOT open an interactive login shell in THIS pane: `-N` holds a tunnel, `-f`
-  // returns it to the LOCAL prompt, `-W` turns the pane into a stdio conduit for a bastion and exits.
-  // Pushing a remote frame would mislabel a later LOCAL command as remote → wrong-target on the
-  // fp-less sudo path (#495 P2 / R5 P2). Treat them as non-session-opening — no push.
-  if (parsed.flagLetters.has("N") || parsed.flagLetters.has("f") || parsed.flagLetters.has("W")) return null;
-  // A one-shot `ssh host cmd …` has a REAL remote-command token AFTER the destination → not an
-  // interactive login session. parseSshCommand consumes `optionArgs` (the options) + 1 (the
-  // destination); anything BEYOND that count (redirects already stripped above) is the remote command.
-  // STRUCTURAL token count, not indexOf (Opus R1 P2-1: `ssh -l host host` would make indexOf return the
-  // option-arg's index and misclassify it).
-  const consumed = parsed.optionArgs.length + 1;
-  if (args.length > consumed) return null; // trailing remote command → one-shot, no session
+  // DOUBT OUTRANKS EVERY POSITIVE VERDICT — including a query. If an unknown letter is present we cannot
+  // even trust that `-G`/`-V`/`-Q` IS a query: a future with-arg `-z` would eat the next token, so real ssh
+  // reads `ssh -z -G h` as "-G is -z's VALUE" and OPENS A SESSION while our flag scan sees a query. Checking
+  // queryMode first would answer `none` there ⇒ the pane stays trusted-LOCAL while a remote login is open —
+  // the exact silent disclosure `undecidable` exists to prevent (Opus R1 P1-1).
+  // This costs nothing for real queries: the parser's post-loop rule already exempts them
+  // (`if (!queryMode && destination === undefined) undecidable = true`), so `-V` / `-Q cipher` / `-G h`
+  // carry `undecidable === false` and still fall through to the clean `none` below.
+  if (parsed.undecidable) return { kind: "undecidable" };
+  // A confirmed with-arg option left without a value: ssh exits with a usage error before opening
+  // anything, so this is a PROVEN non-login — the pane never leaves local and keeps autofilling. It is
+  // checked AFTER `undecidable` on purpose: with an unknown letter in the argv, the "missing value" may
+  // not be missing at all (the trailing `-p` could be that letter's value), so doubt still wins.
+  if (parsed.malformed) return { kind: "none" };
+  if (parsed.queryMode) return { kind: "none" };
+  // Defensive: the parser's post-loop rule already covers this, but keep it so a future parser change
+  // cannot silently re-open the hole.
+  if (parsed.destination === undefined) return { kind: "undecidable" };
+  // A flag that PROVES no login shell takes over THIS pane (`-N`/`-f`/`-W`/`-O`/`-s`/`-n`) → no session, no
+  // push: pushing a remote frame would mislabel a later LOCAL command as remote → wrong-target on the
+  // fp-less sudo path (#495 P2 / R5 P2). The letters and their per-letter reasons live in
+  // SSH_FLAGS_NO_LOGIN_SHELL; consulting the SET rather than an inline `has("N")||has("f")||…` chain is
+  // what makes the next omission a VISIBLE gap in a documented table instead of a missing `||` clause —
+  // `-O` (control-master command) and `-s` (subsystem) were exactly that missing clause (Codex PR#541).
+  // Checked BEFORE the remote-command step so `ssh h -s sftp` lands here for the RIGHT reason (a
+  // subsystem never opens a login shell) rather than by the coincidence that "sftp" is a remote-command
+  // token — a right answer resting on a wrong reason breaks the moment step 8's ordering moves.
+  for (const letter of SSH_FLAGS_NO_LOGIN_SHELL) {
+    if (parsed.flagLetters.has(letter)) return { kind: "none" };
+  }
+  // A one-shot `ssh host cmd …` has a REAL remote-command token after the destination → not an
+  // interactive login. The parser locates that boundary with ssh's own two-pass rule, so a POST-
+  // DESTINATION OPTION (`ssh host -v`) is no longer miscounted as a command (F-3: the old
+  // `optionArgs.length + 1` arithmetic could not tell the two apart, so every trailing option made the
+  // pane look local while a login was open).
+  if (parsed.remoteCommand.length > 0) return { kind: "none" };
   const at = parsed.destination.lastIndexOf("@");
   const host = at >= 0 ? parsed.destination.slice(at + 1) : parsed.destination;
-  return host.toLowerCase();
+  return { kind: "interactive", host: host.toLowerCase() };
 }
 
 /**

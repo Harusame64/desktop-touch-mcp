@@ -229,6 +229,11 @@ async function deriveSsh(args: string[], exec: ExecFn): Promise<BindingUri | nul
   // Query / no-login modes never prompt (`-G` config query, `-Q` algorithm query, `-V` version).
   // Modes that still authenticate (-T no-pty, -N no-remote-cmd) derive normally.
   const parsed = parseSshCommand(args);
+  // An argv we cannot classify is one whose destination AND remote-command boundary are both guesses — so
+  // which endpoint this secret would be typed at is a guess too. Fail closed: no binding, no lookup, no
+  // save. (Doubt is checked BEFORE queryMode for the same reason it is in `classifySshLogin`: with an
+  // unknown letter present we cannot even trust that `-G` is a query rather than that letter's value.)
+  if (parsed.undecidable) return null;
   if (parsed.queryMode || parsed.destination === undefined) return null;
   const resolved = await resolveCanonicalForSshCommand(args, exec);
   // host-not-known / unresolvable ⇒ fail closed: no binding, no lookup, no save.

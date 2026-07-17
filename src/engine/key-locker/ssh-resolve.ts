@@ -46,39 +46,123 @@ export const defaultExec: ExecFn = async (file, args) => {
   }
 };
 
-// OpenSSH client option letters (`man ssh` synopsis): which short flags CONSUME the next token.
-// (Everything else — 46AaCfGgKkMNnqsTtVvXxYy — is a no-arg flag and falls to the else branch.)
-const SSH_FLAGS_WITH_ARG = new Set([..."BbcDEeFIiJLlmOoPpQRSWw"]);
+// OpenSSH client option letters (`man ssh` synopsis): which short flags CONSUME the next token. The
+// no-arg letters are enumerated in SSH_FLAGS_NO_ARG below — the two sets are a CLOSED allow-list, so a
+// letter in neither is NOT assumed no-arg (that assumption is what `undecidable` exists to refuse).
+// Exported for the §1.3.1 drift guard (a unit canary re-derives both sets from the local ssh's own usage
+// synopsis, so an OpenSSH upgrade that moves a letter fails loudly instead of silently costing autofill).
+export const SSH_FLAGS_WITH_ARG = new Set([..."BbcDEeFIiJLlmOoPpQRSWw"]);
+// The COMPLEMENT of SSH_FLAGS_WITH_ARG: every option letter we KNOW takes no argument. Same source (the
+// `man ssh` synopsis cluster `[-46AaCfGgKkMNnqsTtVvXxYy]`), plus `2`, which the synopsis omits but every
+// build still ACCEPTS as a no-op (measured: `ssh -2 -G host` prints the config on OpenSSH 9.5p2 and
+// 10.3p1) — so `ssh -2 host` opens a REAL session and must classify as a login.
+//
+// `1` is deliberately in NEITHER list. The synopsis omits it and the real ssh is FATAL on it
+// (`SSH protocol v.1 is no longer supported`), so no session ever opens; listing it as no-arg would make
+// us confidently classify `ssh -1 host` as an interactive login and push a remote frame for a pane that
+// never left local — a later `sudo` would then fill a REMOTE secret into a LOCAL prompt. A retired letter
+// is indistinguishable from a letter we have simply never heard of, and both must decline.
+//
+// Together the two sets are a CLOSED allow-list: a letter in NEITHER makes the parse `undecidable`,
+// because without knowing whether it consumes the next token we can locate neither the destination nor the
+// remote-command boundary — and guessing either way fails toward DISCLOSURE.
+// Plan: desktop-touch-mcp-internal:docs/adr-014-v2-r3x-complete-fix-plan.md §1.3 / PR1.1
+export const SSH_FLAGS_NO_ARG = new Set([..."246AaCfGgKkMNnqsTtVvXxYy"]);
 
 export interface ParsedSshCommand {
   /** The destination token (`host` or `user@host`), or undefined if none was found. */
   destination?: string;
-  /** Every option token up to the destination, in order — passed through to `ssh -G` verbatim. */
+  /**
+   * Every option token (and its value), in order, from ANYWHERE before the remote command begins —
+   * including AFTER the destination, which is where real ssh accepts them too. Passed to `ssh -G` verbatim.
+   */
   optionArgs: string[];
   /** True if the invocation is a query / no-login mode (`-G` / `-Q` / `-V`) — never prompts. */
   queryMode: boolean;
   /**
-   * Every OPTION FLAG LETTER seen before the destination (getopt clusters expanded: `-fN` → {f,N};
+   * Every OPTION FLAG LETTER seen before the remote command (getopt clusters expanded: `-fN` → {f,N};
    * `-4p 2222` → {4,p}), EXCLUDING the VALUES of with-arg flags (`-p 2222` contributes `p`, not
    * `2222`; `-F fname` contributes `F`, not `fname`). Lets a caller detect session-shape flags like
    * `-f` (background) / `-N` (no remote command) / `-W` (stdio-forward, implies -N/-T) without
    * re-parsing. Only FLAG letters, so a with-arg value that happens to contain N/f/W never false-triggers.
    */
   flagLetters: ReadonlySet<string>;
+  /**
+   * The remote command: every token from the FIRST non-option token AFTER the destination to the end of
+   * argv, verbatim. Empty ⇒ the invocation opens a LOGIN SHELL on this tty.
+   *
+   * This mirrors OpenSSH `ssh.c`'s own two-pass argv rule (NOT platform getopt permutation, which is why it
+   * is identical across builds): getopt → the first non-option is the DESTINATION → `goto again` → getopt
+   * runs AGAIN over the remainder → the first non-option after THAT begins the remote command, and
+   * everything from there is passed through untouched (never re-parsed as options). So `ssh h -p 2222` has
+   * NO remote command (measured: the live pane reached the :2222 sshd), while `ssh h ls -la` has
+   * `["ls","-la"]` and the `-la` belongs to the remote `ls`.
+   */
+  remoteCommand: string[];
+  /**
+   * The parse is NOT trustworthy: an option letter outside BOTH allow-lists was seen (we cannot know
+   * whether it consumed the next token, so neither the destination nor the remote-command boundary is
+   * reliable), OR no destination could be located outside a query mode. Security consumers MUST sink to
+   * UNKNOWN on this — never "no session" (that is the F-3 inversion: it trusts a pane as LOCAL while a
+   * remote login is open).
+   */
+  undecidable: boolean;
+  /**
+   * A CONFIRMED with-arg option was left without a value (`ssh h -p`): ssh rejects this as a local usage
+   * error (`option requires an argument -- p`, exit 255) BEFORE any session opens. Not a doubt — a known
+   * outcome, which is why it is a separate channel from `undecidable`:
+   *
+   *   `undecidable` = we do not know what ssh will do  ⇒ callers DECLINE (sink to UNKNOWN)
+   *   `malformed`   = we know ssh will fail locally     ⇒ callers may treat it as a PROVEN non-login
+   *
+   * Collapsing the two would be wrong in both directions: sinking a pane to UNKNOWN over a typo costs it
+   * autofill until it is re-anchored (recovery is a future item), while trusting a doubt as a non-login is
+   * the F-3 inversion itself. The guarantee rests on the letter really being with-arg — that is what
+   * `SSH_FLAGS_WITH_ARG` asserts and what the §1.3.1 drift canary keeps honest.
+   *
+   * The condition is deliberately narrow: a KNOWN with-arg letter, unattached, with no token left to
+   * consume. Nothing else belongs here — `ssh -p h` consumes `h` as the value (not malformed; it is
+   * `undecidable` for want of a destination).
+   */
+  malformed: boolean;
 }
 
 /**
- * Split an `ssh …` argv (WITHOUT the leading program token) into passthrough options + the
- * destination. Tokens after the destination are the remote command — irrelevant to resolution.
+ * Split an `ssh …` argv (WITHOUT the leading program token) into passthrough options, the destination,
+ * and the remote command, using OpenSSH's OWN two-pass argv rule (`ssh.c`: getopt → destination →
+ * `goto again` → getopt → first non-option begins the remote command). Options are therefore recognised
+ * AFTER the destination too — `ssh h -p 2222` really does connect to port 2222.
+ *
+ * The pre-F-3 parser stopped at the destination and silently dropped every option behind it, so
+ * `ssh user@h -p 2222` resolved as port 22: the wrong endpoint's secret could be typed into this one's
+ * prompt, and `ssh h -v` was misread as a one-shot command ⇒ the pane was trusted LOCAL while a remote
+ * login was open. See the findings + plan docs
+ * (desktop-touch-mcp-internal:docs/adr-014-v2-r3x-la-live-dogfood-findings.md F-3, §1.2 of the fix plan).
+ *
+ * KNOWN GAP (deliberate, fail-safe direction): LONG options are not modelled — `--` (end-of-options),
+ * `--help`, `--version`. Real ssh accepts them (`ssh -G -- host` prints the config, i.e. a session would
+ * open), but their first letter (`-`, `h`, `v` after the leading `--`) lands outside both allow-lists, so
+ * the parse is `undecidable` and every consumer DECLINES.
+ *
+ * The cost is bigger than the invocation: `recordDispatch` maps `undecidable` to `markUnknown`, and an
+ * UNKNOWN pane does not recover on its own (see `markUnknown`'s doc — recovery is a future item), so the
+ * PANE stops autofilling until it is re-anchored, not just that one command. Accepted anyway: the
+ * alternative is guessing an option's arity, and a wrong guess mis-locates the destination — that is the
+ * disclosure direction. Nothing is ever mis-targeted here.
  */
 export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
   const optionArgs: string[] = [];
   const flagLetters = new Set<string>();
   let destination: string | undefined;
   let queryMode = false;
+  let remoteCommand: string[] = [];
+  let undecidable = false;
+  let malformed = false;
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
-    if (destination === undefined && tok.startsWith("-") && tok.length >= 2) {
+    // An option token is an option WHEREVER it appears until the remote command has begun — ssh's second
+    // getopt pass sees post-destination options exactly the same way (F-3's root fix is this guard).
+    if (remoteCommand.length === 0 && tok.startsWith("-") && tok.length >= 2) {
       optionArgs.push(tok);
       // Walk the getopt cluster left-to-right. No-arg letters accumulate; the FIRST with-arg letter
       // (`p`/`F`/`o`/`W`/…) consumes its VALUE — the rest of THIS token if attached (`-p2222`,
@@ -94,9 +178,19 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
         if (SSH_FLAGS_WITH_ARG.has(L)) {
           if (L === "Q") queryMode = true;
           const attached = c < tok.length - 1; // the value is the rest of THIS token
-          if (!attached && i + 1 < args.length) optionArgs.push(args[++i]); // else it is the next token
+          if (!attached) {
+            // The value is the NEXT token — unless there is none, in which case getopt hands ssh a usage
+            // error and it exits before opening anything. Recording that is what stops `ssh h -p` from
+            // looking like a login (the pane never left local, so pushing a remote frame would mislabel it).
+            if (i + 1 < args.length) optionArgs.push(args[++i]);
+            else malformed = true;
+          }
           break;
         }
+        // A letter in NEITHER allow-list: we cannot know whether it eats the next token, so every
+        // boundary after it is a guess. Mark the parse untrustworthy but KEEP scanning so `flagLetters`
+        // stays as complete as it can be (no `break` — the caller declines on `undecidable` anyway).
+        if (!SSH_FLAGS_NO_ARG.has(L)) undecidable = true;
       }
       continue;
     }
@@ -104,9 +198,16 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
       destination = tok;
       continue;
     }
-    break; // remote command begins — stop
+    // The first non-option token AFTER the destination begins the remote command; ssh passes everything
+    // from here through untouched, so we keep it verbatim and stop parsing (a trailing `-la` belongs to
+    // the remote `ls`, not to ssh).
+    remoteCommand = args.slice(i);
+    break;
   }
-  return { destination, optionArgs, queryMode, flagLetters };
+  // An argv we cannot even find a destination in is not a "no session" verdict — it is NO verdict. Query
+  // modes are exempt: `ssh -V` / `ssh -Q cipher` have no destination BY DESIGN and stay clean `none`s.
+  if (!queryMode && destination === undefined) undecidable = true;
+  return { destination, optionArgs, queryMode, flagLetters, remoteCommand, undecidable, malformed };
 }
 
 export interface SshEffectiveConfig {
@@ -143,6 +244,11 @@ export async function sshDashG(
   if (code !== 0) {
     throw new Error(`ssh -G exited ${code}: ${stderr.trim().slice(0, 300)}`);
   }
+  return parseSshDashGOutput(stdout, destination);
+}
+
+/** Parse `ssh -G` stdout into the effective, last-wins config. `destinationForError` only labels errors. */
+function parseSshDashGOutput(stdout: string, destinationForError: string): SshEffectiveConfig {
   let host = "";
   let user = "";
   let port = 22;
@@ -175,7 +281,7 @@ export async function sshDashG(
     }
   }
   if (host === "" || user === "") {
-    throw new Error(`ssh -G output missing hostname/user for '${destination}'`);
+    throw new Error(`ssh -G output missing hostname/user for '${destinationForError}'`);
   }
   return { host, user, port, hostKeyAlias, knownHostsFiles, proxyJump, proxyCommand };
 }
@@ -228,9 +334,26 @@ export async function resolveCanonicalForSshCommand(
   exec: ExecFn = defaultExec,
 ): Promise<SshResolveResult> {
   const parsed = parseSshCommand(args);
+  // An argv we cannot classify has a GUESSED destination and a guessed option/command split, so which
+  // endpoint we would bind — i.e. whose prompt this secret gets typed into — is a guess too. Fail closed
+  // HERE, not only in `deriveSsh`: this is an exported engine seam, and containment must not rest on what
+  // today's callers happen to pass (強制命令 7). The other caller (`key-locker-tool.ts`) builds its argv
+  // itself and never produces an undecidable parse, so this costs nothing.
+  if (parsed.undecidable) return { kind: "unresolvable", reason: "unclassifiable ssh argv (unknown option letter)" };
+  // A with-arg option with no value never runs: ssh answers with a usage error, so there is nothing to
+  // bind. Stated explicitly rather than relied upon: without this, the decline happens only as a side
+  // effect of how the argv is reassembled below (the dangling option swallows the destination, ssh then
+  // errors for want of one). That is true today, but it is an accident of reconstruction order, not a
+  // guarantee — and it costs a pointless spawn to discover.
+  if (parsed.malformed) return { kind: "unresolvable", reason: "malformed ssh argv (option with no value)" };
   if (parsed.destination === undefined) return { kind: "unresolvable", reason: "no ssh destination" };
   let cfg: SshEffectiveConfig;
   try {
+    // Pass the OPTIONS ONLY — never the remote command. `optionArgs` now carries post-destination options
+    // too (the F-3 two-pass fix), so this yields the same endpoint handing `ssh -G` the whole argv would,
+    // WITHOUT putting the remote command on ssh.exe's command line: `ssh h mysql -pS3CR3T` would otherwise
+    // publish that secret to every process that can read our argv (Opus R1 P2-1). The same threat model
+    // already bans the dispatched command from the diagnostic log; process arguments are no different.
     cfg = await sshDashG(parsed.destination, parsed.optionArgs, exec);
   } catch (e) {
     return { kind: "unresolvable", reason: (e as Error).message };

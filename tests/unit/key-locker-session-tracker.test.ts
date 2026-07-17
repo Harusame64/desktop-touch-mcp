@@ -2,7 +2,12 @@
 // deriveBinding from localhost-collapsing a remote pane (or remote-collapsing a local one).
 // Plan: desktop-touch-mcp-internal@<plan>:docs/adr-014-v2-r3-l3-capture-plan.md
 import { describe, expect, it } from "vitest";
-import { SessionTracker, isKnownSession, type PaneSession } from "../../src/engine/key-locker/session-tracker.js";
+import {
+  SessionTracker,
+  classifySshLogin,
+  isKnownSession,
+  type PaneSession,
+} from "../../src/engine/key-locker/session-tracker.js";
 
 const P = "pane-1";
 
@@ -528,5 +533,200 @@ describe("SessionTracker — the get() shape feeds deriveBinding's SessionContex
       expect(typeof s.execHost).toBe("string");
       expect(typeof s.isRemote).toBe("boolean");
     }
+  });
+});
+
+// ── F-3: classifySshLogin + the recordDispatch arms it feeds ─────────────────────────────────────────
+//
+// Plan: desktop-touch-mcp-internal:docs/adr-014-v2-r3x-complete-fix-plan.md §1.3 / §5 PR1.3.
+// Findings: …-la-live-dogfood-findings.md F-3.
+//
+// The predecessor (`interactiveSshTarget`) returned host-or-null, so it could not say "I don't know" —
+// and it located the remote command by counting tokens (`optionArgs.length + 1`), which cannot tell a
+// post-destination OPTION from a command. `ssh h -v` therefore looked like a one-shot ⇒ NO frame pushed
+// ⇒ the pane stayed trusted-LOCAL while a real login was open ⇒ a later `sudo` would fill a LOCAL secret
+// into the REMOTE prompt. Three states + ssh's own two-pass boundary close both halves.
+//
+// Coverage vs the plan's decision table: the parser-shape rows (#13-#18 — cluster/attached/ProxyJump forms
+// like `-4p 2222 h`, `-p2222 alice@h`, `h -J bastion`) are omitted here ON PURPOSE, not dropped: each
+// reaches `interactive` by the SAME (verdict, reason) path as row #3 / #11 already below, and their parser
+// shape is pinned row-by-row in key-locker-ssh-resolve.test.ts. Everything with a DISTINCT verdict or a
+// distinct reason is present.
+describe("classifySshLogin — three states (F-3)", () => {
+  const cases: Array<{ argv: string[]; expected: ReturnType<typeof classifySshLogin> }> = [
+    { argv: ["h"], expected: { kind: "interactive", host: "h" } },
+    { argv: ["alice@H.example.com"], expected: { kind: "interactive", host: "h.example.com" } }, // lowercased
+    { argv: ["-p", "2222", "alice@h"], expected: { kind: "interactive", host: "h" } },
+    { argv: ["alice@h", "-p", "2222"], expected: { kind: "interactive", host: "h" } }, // FIXED (was none)
+    { argv: ["h", "-v"], expected: { kind: "interactive", host: "h" } }, // FIXED (was none)
+    { argv: ["h", "-l", "other"], expected: { kind: "interactive", host: "h" } }, // FIXED (was none)
+    { argv: ["h", "ls"], expected: { kind: "none" } }, // a PROVEN remote command
+    { argv: ["h", "-v", "ls"], expected: { kind: "none" } },
+    { argv: ["h", "ls", "-v"], expected: { kind: "none" } }, // the -v is the remote ls's
+    { argv: ["-G", "h"], expected: { kind: "none" } }, // query
+    { argv: ["h", "-G"], expected: { kind: "none" } }, // query, post-destination
+    { argv: ["-V"], expected: { kind: "none" } },
+    { argv: ["-Q", "cipher"], expected: { kind: "none" } },
+    { argv: ["-N", "-L", "8080:x:80", "h"], expected: { kind: "none" } }, // tunnel, no login shell
+    { argv: ["h", "-N"], expected: { kind: "none" } },
+    { argv: ["h", "-f"], expected: { kind: "none" } },
+    // `-n` sends stdin from /dev/null, so the remote shell hits EOF and exits at once → the pane returns to
+    // LOCAL (measured: `ssh -n` exits 0 in ~400 ms vs a plain login that holds the shell). Opens a shell yet
+    // does not persist — the mirror of `-N`; a member of SSH_FLAGS_NO_LOGIN_SHELL, letter-only decidable.
+    { argv: ["h", "-n"], expected: { kind: "none" } },
+    { argv: ["-n", "h"], expected: { kind: "none" } }, // flag-before form
+    // `-O` (control-master command) and `-s` (subsystem) never open a login shell on THIS pane — both are
+    // letters in SSH_FLAGS_NO_LOGIN_SHELL, decided from the LETTER alone, no value semantics (Codex PR#541).
+    // Before the set existed, `91c2575` answered `interactive` for these and pushed a remote frame for a
+    // pane that never left local.
+    { argv: ["h", "-O", "check"], expected: { kind: "none" } }, // sends a control cmd to a master, then exits
+    { argv: ["-O", "check", "h"], expected: { kind: "none" } }, // flag-BEFORE form — was broken on main too
+    { argv: ["h", "-s"], expected: { kind: "none" } }, // bare subsystem request — ssh errors locally, no shell
+    { argv: ["h", "-s", "sftp"], expected: { kind: "none" } }, // subsystem, NOT a login shell (via the set, not remoteCommand)
+    { argv: ["-s", "h"], expected: { kind: "none" } }, // flag-BEFORE subsystem twin — also broken on main
+    { argv: ["h", "<", "in"], expected: { kind: "none" } }, // stdin off the tty
+    // A confirmed with-arg option with no value left: ssh exits with a usage error before opening
+    // anything ⇒ PROVEN non-login (and the pane, still local, keeps autofilling). NOT `undecidable`: we
+    // know exactly what ssh does here, and sinking the pane over a typo would cost it autofill until it
+    // is re-anchored.
+    { argv: ["h", "-p"], expected: { kind: "none" } },
+    { argv: ["h", "-l"], expected: { kind: "none" } },
+    { argv: ["h", "-4p"], expected: { kind: "none" } }, // same else-branch, reached through the cluster walk
+    // Doubt still outranks it: with an unknown letter present, the "missing" value may be that letter's.
+    { argv: ["h", "-z", "-p"], expected: { kind: "undecidable" } },
+    // KNOWN INACCURACY (pinned so it is visible, not silently believed). A value that is PRESENT but
+    // INVALID also makes ssh exit locally (`Bad port '2222x'`, status 255) — no session opens — yet we
+    // answer `interactive`. Telling a bad value from a good one means validating each option's semantics,
+    // i.e. re-implementing ssh's own config parser in a pure module; the resolver sidesteps this by asking
+    // the real `ssh -G` (which DOES reject it, so nothing is ever filled), but the sync classifier cannot.
+    // The cost is a spurious remote frame that the watch's unwatched-frame backstop sinks on the next
+    // tick. The pre-destination form (`ssh -p 2222x h`) has always behaved this way; the two-pass fix
+    // widened it to the post-destination form. Tracked for the release gate — see the findings doc.
+    { argv: ["h", "-p", "2222x"], expected: { kind: "interactive", host: "h" } },
+    // Same F-7 class via a different mechanism: `-v` LOOKS like a flag but is eaten as `-p`'s VALUE, so the
+    // parse is neither `malformed` (a value IS present) nor `undecidable` (no unknown letter is scanned). Real
+    // ssh: `Bad port '-v'`, exit 255 — no session — yet we answer `interactive`. This is the exact case Codex
+    // raised on PR#541; it stays out of scope for the SAME reason as `2222x` (telling a bad value from a good
+    // one is per-option value semantics), pinned here so the gap is VISIBLE, not silently absent.
+    { argv: ["h", "-p", "-v"], expected: { kind: "interactive", host: "h" } },
+    { argv: ["h", "-z"], expected: { kind: "undecidable" } }, // letter in neither table
+    // DOUBT OUTRANKS A QUERY (Opus R1 P1-1). A future with-arg `-z` would eat the next token, so real ssh
+    // reads this as "-G is -z's value" and OPENS A SESSION — while our flag scan sees a query. Answering
+    // `none` here would leave the pane trusted-LOCAL during a remote login: the exact silent disclosure
+    // `undecidable` exists to prevent. Checking queryMode first (an earlier revision) did exactly that.
+    { argv: ["-z", "-G", "h"], expected: { kind: "undecidable" } },
+    { argv: ["-z", "-V", "h"], expected: { kind: "undecidable" } },
+    { argv: ["-1", "h"], expected: { kind: "undecidable" } }, // retired letter — real ssh is fatal
+    { argv: ["-2", "h"], expected: { kind: "interactive", host: "h" } }, // accepted no-op ⇒ a real session
+    { argv: ["-P", "mytag", "h"], expected: { kind: "interactive", host: "h" } }, // -P takes a tag
+    { argv: ["-P", "h"], expected: { kind: "undecidable" } }, // the tag ate the destination
+    { argv: [], expected: { kind: "undecidable" } },
+  ];
+  it.each(cases)("ssh $argv → $expected.kind", ({ argv, expected }) => {
+    expect(classifySshLogin(argv)).toEqual(expected);
+  });
+});
+
+describe("recordDispatch — post-destination options and the undecidable sink (F-3)", () => {
+  const P = "pane-f3";
+
+  it("`ssh h -p 2222` pushes a remote frame (the option no longer reads as a remote command)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com -p 2222");
+    expect(t.get(P)).toEqual({ execHost: "prod.example.com", isRemote: true });
+  });
+
+  it("`ssh h -z` (unclassifiable) sinks the pane to UNKNOWN — never trusted-local", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -z");
+    expect(isKnownSession(t.get(P))).toBe(false);
+  });
+
+  it("`ssh h ls` still pushes nothing — a proven one-shot leaves the pane local", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com ls");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+  });
+
+  it("`ssh -P mytag h` pushes a remote frame — the tag is consumed, the destination survives", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -P mytag prod.example.com");
+    expect(t.get(P)).toEqual({ execHost: "prod.example.com", isRemote: true });
+  });
+
+  // `-1` is FATAL in the real ssh ("SSH protocol v.1 is no longer supported"), so no session ever opens.
+  // Pushing a frame here would track a still-LOCAL pane as remote — a later `sudo` would then pull the
+  // REMOTE binding's secret into a LOCAL prompt (the mirror image of F-3). UNKNOWN is the honest state.
+  it("`ssh -1 h` sinks to UNKNOWN — it must NOT push a frame (real ssh never opens the session)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -1 prod.example.com");
+    expect(isKnownSession(t.get(P))).toBe(false);
+  });
+
+  it("`ssh -2 h` pushes a remote frame — the no-op flag is accepted and the login is real", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -2 prod.example.com");
+    expect(t.get(P)).toEqual({ execHost: "prod.example.com", isRemote: true });
+  });
+
+  // Regression pin: `3e78b2d` pushed a remote frame here. ssh exits with `option requires an argument`
+  // (exit 255) without connecting, so the pane never left local — mislabelling it remote would send a
+  // later `sudo`'s REMOTE secret into this LOCAL prompt, and would leave the pane's recovery to the
+  // watch's backstop. The pane must simply stay local and keep working.
+  it("`ssh h -p` (no value) leaves the pane LOCAL — no frame, no sink (regression)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -p");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true); // still usable — a typo must not disable the pane
+  });
+
+  it("a LOCAL sudo after `ssh h -p` still derives locally (the pane was never remote)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -p");
+    t.recordDispatch(P, "sudo systemctl restart app");
+    expect(t.get(P)).toMatchObject({ execHost: "localhost", isRemote: false });
+  });
+
+  // `-O check` sends a control command to an existing master (or errors when there is none) and exits —
+  // it never opens a login shell in this pane. `91c2575` classified it `interactive` and pushed a remote
+  // frame; a later `sudo` would then pull the REMOTE binding's secret into this LOCAL prompt. The pane
+  // must stay local and keep autofilling.
+  it("`ssh h -O check` leaves the pane LOCAL — no frame (control-master command, not a login)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -O check");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true);
+  });
+
+  // `-n` redirects stdin from /dev/null, so the remote shell hits EOF and exits at once — the pane is back
+  // to local in ~400 ms (measured, Windows OpenSSH 10.0.0.0p2 sshd). Pushing a frame here would be wrong
+  // twice: the pane is local almost immediately, and the child's disappearance would trip the watch's
+  // unwatched-frame backstop into markUnknown. It opens a shell but does not take the pane over.
+  it("`ssh h -n` leaves the pane LOCAL — no frame (stdin off the tty; the remote shell EOF-exits)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -n");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true);
+  });
+
+  // `-s` requests a subsystem, never a login shell — for BOTH the bare form (ssh errors locally) and the
+  // named form `-s sftp`. The latter used to reach `none` only because "sftp" was a remote-command token;
+  // now it lands there for the real reason, so a step-ordering change cannot silently re-open the hole.
+  it("`ssh h -s sftp` leaves the pane LOCAL — no frame (subsystem, not a login shell)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh prod.example.com -s sftp");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false, cwd: undefined });
+    expect(isKnownSession(t.get(P))).toBe(true);
   });
 });

@@ -67,7 +67,7 @@ import type { PaneAnchor } from "./inject-target.js";
 import type { InjectResult } from "./injector.js";
 import {
   ENV_ASSIGN_RE,
-  interactiveSshTarget,
+  classifySshLogin,
   isKnownSession,
   programOf,
   type PaneSession,
@@ -602,8 +602,9 @@ function sessionMatches(live: PaneSession, expected: SessionFrame): boolean {
 /**
  * The ssh-named DESCENDANTS of `shellPid` in a snapshot (subtree, not just direct children — the exempt
  * delta must see a `sudo ssh`/wrapper/tmux-reparented login the same way the W-2b scan does). For each,
- * report its interactive-login HOST (`commandLine` → `interactiveSshTarget`, or null for a tunnel/one-shot/
- * unreadable ssh) + its creation time (for the pid+time exempt). A `seen` set guards pid-reuse cycles.
+ * report its interactive-login HOST (`commandLine` → `classifySshLogin`, or null for a tunnel/one-shot/
+ * unclassifiable/unreadable ssh) + its creation time (for the pid+time exempt). A `seen` set guards
+ * pid-reuse cycles.
  */
 function sshDescendants(snap: ProcessSnapshot, shellPid: number): Map<number, { host: string | null; startTimeMs: number }> {
   const out = new Map<number, { host: string | null; startTimeMs: number }>();
@@ -624,7 +625,8 @@ function sshDescendants(snap: ProcessSnapshot, shellPid: number): Map<number, { 
       const id = snap.identify(pid);
       if (id.name !== SSH_PROGRAM) continue;
       const argv = snap.commandLine(pid);
-      const host = argv === null ? null : interactiveSshTarget(argv.slice(1));
+      const cls = argv === null ? ({ kind: "none" } as const) : classifySshLogin(argv.slice(1));
+      const host = cls.kind === "interactive" ? cls.host : null;
       out.set(pid, { host, startTimeMs: id.startTimeMs });
     }
   }
@@ -634,25 +636,27 @@ function sshDescendants(snap: ProcessSnapshot, shellPid: number): Map<number, { 
 /**
  * The interactive-login HOST the dispatched `command` opens (bare, lowercased), or null. Mirrors
  * `SessionTracker.recordDispatch`'s ssh-segment detection (env/redirect skip + backgrounded/piped/leading-
- * stdin-redirect + `interactiveSshTarget`) but returns the host instead of mutating a tracker. Used ONLY to
+ * stdin-redirect + `classifySshLogin`) but returns the host instead of mutating a tracker. Used ONLY to
  * host-match the exempt-pid delta (§0-CORR.2). This is AVAILABILITY-only, not security: any divergence from
  * `recordDispatch` only biases toward NO exempt (the W-2b scan then flags the assistant's own login → the
  * login declines — a bounded availability regression, never a wrong-target). Returns the FIRST segment's
  * interactive-ssh host — the one `recordDispatch` would push a frame for.
+ * An `undecidable` argv maps to null here, which upholds that bias exactly: no exempt is proven, so the
+ * scan flags and the pane declines (`recordDispatch` independently sinks it to UNKNOWN).
  */
 function dispatchedInteractiveSshHost(command: string): string | null {
   for (const seg of tokenizeCommandSegmentsWithOps(command)) {
     const { tokens, backgrounded, pipedStdin } = seg;
-    // Skip leading env-assignments; the redirect-skip is folded into interactiveSshTarget's own whole-argv
+    // Skip leading env-assignments; the redirect-skip is folded into classifySshLogin's own whole-argv
     // scan below, so here we only need to find the program token past leading `FOO=bar`.
     let start = 0;
     while (tokens[start] !== undefined && ENV_ASSIGN_RE.test(tokens[start])) start++;
     if (programOf(tokens[start]) !== SSH_PROGRAM) continue;
     // A backgrounded / downstream-piped ssh takes stdin off the tty ⇒ no interactive login (mirrors
-    // recordDispatch); a leading fd-0 redirect is caught inside interactiveSshTarget's whole-argv scan.
+    // recordDispatch); a leading fd-0 redirect is caught inside classifySshLogin's whole-argv scan.
     if (backgrounded || pipedStdin) continue;
-    const host = interactiveSshTarget(tokens.slice(start + 1));
-    if (host !== null) return host;
+    const cls = classifySshLogin(tokens.slice(start + 1));
+    if (cls.kind === "interactive") return cls.host;
   }
   return null;
 }

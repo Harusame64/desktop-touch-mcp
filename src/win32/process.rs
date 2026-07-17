@@ -192,7 +192,7 @@ pub fn win32_get_process_identity(pid: u32) -> napi::Result<NativeProcessIdentit
 /// — and does NO cross-process memory read (the OS copies the string into OUR
 /// buffer). Split with `CommandLineToArgvW` for byte-exact parity with how the
 /// process was actually launched (quote/backslash rules), so the L3-4 caller can
-/// reuse `interactiveSshTarget` to tell an interactive in-bound `ssh host` from a
+/// reuse `classifySshLogin` to tell an interactive in-bound `ssh host` from a
 /// tunnel (`-N`/`-f`/`-L`) or one-shot (`ssh host cmd`).
 ///
 /// Returns `None` on ANY failure — a dead pid, ACCESS_DENIED on an elevated /
