@@ -121,11 +121,16 @@ export interface ParsedSshCommand {
  * login was open. See the findings + plan docs
  * (desktop-touch-mcp-internal:docs/adr-014-v2-r3x-la-live-dogfood-findings.md F-3, §1.2 of the fix plan).
  *
- * KNOWN GAP (availability-only, deliberate): `--` (end-of-options) is not modelled. Real ssh accepts it
- * (`ssh -G -- host` prints the config, i.e. a session would open); here `-` is in neither allow-list, so
- * the parse is `undecidable` and every consumer DECLINES. That is the fail-safe direction — a rare
- * invocation loses autofill, nothing is ever mis-targeted — so it is left to the drift guard's allow-list
- * rather than special-cased here.
+ * KNOWN GAP (deliberate, fail-safe direction): LONG options are not modelled — `--` (end-of-options),
+ * `--help`, `--version`. Real ssh accepts them (`ssh -G -- host` prints the config, i.e. a session would
+ * open), but their first letter (`-`, `h`, `v` after the leading `--`) lands outside both allow-lists, so
+ * the parse is `undecidable` and every consumer DECLINES.
+ *
+ * The cost is bigger than the invocation: `recordDispatch` maps `undecidable` to `markUnknown`, and an
+ * UNKNOWN pane does not recover on its own (see `markUnknown`'s doc — recovery is a future item), so the
+ * PANE stops autofilling until it is re-anchored, not just that one command. Accepted anyway: the
+ * alternative is guessing an option's arity, and a wrong guess mis-locates the destination — that is the
+ * disclosure direction. Nothing is ever mis-targeted here.
  */
 export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
   const optionArgs: string[] = [];
@@ -304,6 +309,12 @@ export async function resolveCanonicalForSshCommand(
   exec: ExecFn = defaultExec,
 ): Promise<SshResolveResult> {
   const parsed = parseSshCommand(args);
+  // An argv we cannot classify has a GUESSED destination and a guessed option/command split, so which
+  // endpoint we would bind — i.e. whose prompt this secret gets typed into — is a guess too. Fail closed
+  // HERE, not only in `deriveSsh`: this is an exported engine seam, and containment must not rest on what
+  // today's callers happen to pass (強制命令 7). The other caller (`key-locker-tool.ts`) builds its argv
+  // itself and never produces an undecidable parse, so this costs nothing.
+  if (parsed.undecidable) return { kind: "unresolvable", reason: "unclassifiable ssh argv (unknown option letter)" };
   if (parsed.destination === undefined) return { kind: "unresolvable", reason: "no ssh destination" };
   let cfg: SshEffectiveConfig;
   try {

@@ -14,6 +14,7 @@ import {
   resolveCanonicalForSshCommand,
   SSH_FLAGS_NO_ARG,
   SSH_FLAGS_WITH_ARG,
+  type ExecFn,
 } from "../../src/engine/key-locker/ssh-resolve.js";
 import { BindingStore } from "../../src/engine/key-locker/binding-store.js";
 import { formatBindingUri } from "../../src/engine/key-locker/binding.js";
@@ -194,11 +195,19 @@ describe.skipIf(!hasOpenSsh)("§8 #2 — ssh resolution + option passthrough (re
     expect(withCmd).toEqual(bare);
   });
 
-  it("an unclassifiable argv fails closed — no binding is derived from a guessed destination", async () => {
-    const r = await resolveCanonicalForSshCommand([...mainOpts(), "bob@real.example.com", "-z"]);
-    // The resolver itself still answers (real ssh would reject `-z`, so this is `unresolvable`), but the
-    // DERIVATION declines outright — see the `undecidable` pin in key-locker-derivation.test.ts.
-    expect(r.kind).not.toBe("ok");
+  // Deliberately NOT driven by the real ssh: today's ssh rejects `-z`, so a real-binary assertion here
+  // would pass with or without the guard — a tautology. The case the guard exists for is the FUTURE one
+  // where ssh *accepts* the unknown letter, so the fake below answers as that future ssh would (a clean
+  // config for a host we could have resolved). We must still decline, and must never even ask.
+  it("an unclassifiable argv fails closed BEFORE any exec — even if ssh would have answered", async () => {
+    const calls: string[][] = [];
+    const wouldSucceed: ExecFn = async (file, args) => {
+      calls.push([file, ...args]);
+      return { code: 0, stdout: "hostname real.example.com\nuser bob\nport 22\n", stderr: "" };
+    };
+    const r = await resolveCanonicalForSshCommand(["bob@real.example.com", "-z", "value"], wouldSucceed);
+    expect(r.kind).toBe("unresolvable");
+    expect(calls).toEqual([]); // never spawned: a guessed destination is not worth asking about
   });
 
   it("a default-port entry stored in BRACKETED [host]:22 form is still found (Codex R4)", async () => {

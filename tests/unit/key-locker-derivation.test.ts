@@ -250,7 +250,26 @@ describe("§8 #5 — sudo purpose + session host", () => {
     const flat = seen.map((a) => a.join(" ")).join("\n");
     expect(flat).not.toContain("S3CR3T");
     expect(flat).not.toContain("mysql");
-    for (const argv of seen) expect(argv).not.toContain("-pS3CR3T");
+  });
+
+  // ── an unclassifiable argv derives nothing, and never even asks ───────────────────────────────────
+  // With `-z` in neither flag table we cannot know whether it eats the next token, so both the
+  // destination and the option/command split are guesses — and a guessed endpoint decides whose prompt
+  // the secret is typed into. This decline is what lets the resolver go back to using our own flag table
+  // (it was the whole-argv detour's job before; that detour leaked secrets into ssh.exe's argv).
+  it("an unclassifiable ssh argv derives NO binding and spawns nothing", async () => {
+    const seen: string[][] = [];
+    const spy: ExecFn = async (file, args) => {
+      seen.push([file, ...args]);
+      return fakeExec(file, args);
+    };
+    expect(await deriveBinding("ssh h -z", local, { exec: spy })).toBeNull();
+    expect(await deriveBinding("ssh h -z value", local, { exec: spy })).toBeNull();
+    expect(seen).toEqual([]); // never reached the resolver
+  });
+
+  it("a KNOWN argv still derives normally (the undecidable arm is not over-broad)", async () => {
+    expect(await deriveBinding("ssh h -v", local, { exec: fakeExec })).toMatchObject({ scheme: "ssh", host: "h" });
   });
 });
 
