@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.12.3] - 2026-07-18 — Key Locker: Windows Terminal autofill, and SSH autofill targets the exact endpoint
 
 ### Added
 
@@ -22,6 +22,21 @@
   will not type a secret into an unrelated process that happened to inherit the old id. Existing
   classic-console `paneId`s are unchanged; a Windows Terminal tab uses a new self-describing
   `wt:…` handle. No action is needed on your part.
+
+### Fixed
+
+- **SSH credential autofill now honors options written *after* the destination — a security
+  fix.** A command like `ssh user@host -p 2222` — with the port (or `-l user`, `-F file`, `-o …`)
+  placed after the destination rather than before it — was parsed as if that option were not
+  there. The locker then resolved the *wrong* endpoint (port 22 instead of 2222, or the default
+  user instead of `-l someone`) and could match a credential you had saved for a **different**
+  host, user, or port — then offer that secret at the prompt of the server you actually reached.
+  Autofill now parses the command line the way OpenSSH itself does, honoring options wherever they
+  appear, so a stored secret is only ever offered to the exact endpoint it was saved for. And when
+  a command is ambiguous enough that its target cannot be determined with confidence, the locker
+  now declines to autofill rather than guessing. No change is needed to your saved credentials.
+
+## [1.12.2] - 2026-07-16 — Fix: garbled (mojibake) CJK / Japanese output in Key Locker consoles
 
 ### Fixed
 
