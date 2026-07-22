@@ -64,6 +64,7 @@ import {
   terminalSendHandler,
   terminalReadHandler,
   terminalDispatchHandler,
+  paneIdMissSuggest,
 } from "../../src/tools/terminal.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as bgInput from "../../src/engine/bg-input.js";
@@ -189,5 +190,57 @@ describe("terminal read paneId (Phase 1 — safe-declines on a non-unique title)
     mockEnum.mockReturnValue([fakeWindow("x", 1n)]);
     const r = parseResult(await terminalReadHandler(readArgs({ paneId: "bad" })));
     expect(r.code).toBe("TerminalWindowNotFound");
+  });
+});
+
+describe("paneIdMissSuggest — shape-aware recovery hints (dogfood 2026-07)", () => {
+  it("detects a windowTitle passed into the paneId slot and points at the paneId field", () => {
+    const s = paneIdMissSuggest("dtm-locker-console-9dc7d7db");
+    expect(s.join(" ")).toMatch(/windowTitle.*NOT its .?paneId/i);
+    // Must NOT emit the generic 'run desktop_discover / partial title' misdirection.
+    expect(s.join(" ")).not.toMatch(/desktop_discover/i);
+  });
+  it("flags a genuinely malformed handle and points at launch_console reuse", () => {
+    const s = paneIdMissSuggest("not-a-handle");
+    expect(s.join(" ")).toMatch(/malformed/i);
+    expect(s.join(" ")).toMatch(/fresh:false/);
+  });
+  it("for a well-formed-but-gone handle explains the wt inactive-tab case", () => {
+    const s = paneIdMissSuggest("wt:31264:13322426700123");
+    expect(s.join(" ")).toMatch(/ACTIVE tab/i);
+  });
+  it("read surfaces the windowTitle-mixup suggest, not the generic title hint", async () => {
+    mockEnum.mockReturnValue([fakeWindow("dtm-locker-console-9dc7d7db", 222n)]);
+    const r = parseResult(await terminalReadHandler(readArgs({ paneId: "dtm-locker-console-9dc7d7db" })));
+    expect(r.code).toBe("TerminalWindowNotFound");
+    expect(JSON.stringify(r.suggest)).toMatch(/windowTitle/i);
+  });
+});
+
+describe("terminal run paneId (F-4 — parity with read/send)", () => {
+  // Bounded timeout so the poll loop returns fast (reason:'timeout'); the point of this test is that a
+  // classic paneId RESOLVES (not declined), not the wait semantics — so we cap timeoutMs at the min (500).
+  const runArgs = (over: Record<string, unknown>) => ({
+    action: "run" as const, input: "whoami", until: { mode: "quiet" as const, quietMs: 50 }, timeoutMs: 500, ...over,
+  });
+  it("resolves a classic paneId to the pane title and runs against it (not declined)", async () => {
+    mockEnum.mockReturnValue([fakeWindow("dtm-locker-console-abc", 222n), fakeWindow("PowerShell", 111n)]);
+    mockUia.mockResolvedValue("dtm-locker-console-abc whoami\nuser\n");
+    const r = parseResult(await terminalDispatchHandler(runArgs({ paneId: "222" }) as never));
+    // A resolved paneId must NOT short-circuit as a decline — it enters the run pipeline.
+    expect(r.code).not.toBe("InvalidArgs");
+    expect(r.code).not.toBe("TerminalWindowNotFound");
+  });
+  it("declines a windowTitle-shaped paneId with the shape-aware suggest", async () => {
+    mockEnum.mockReturnValue([fakeWindow("dtm-locker-console-abc", 222n)]);
+    const r = parseResult(await terminalDispatchHandler(runArgs({ paneId: "dtm-locker-console-abc" }) as never));
+    expect(r.code).toBe("TerminalWindowNotFound");
+    expect(JSON.stringify(r.suggest)).toMatch(/windowTitle/i);
+  });
+  it("rejects a run with NEITHER windowTitle nor paneId (typed)", async () => {
+    mockEnum.mockReturnValue([]);
+    const r = parseResult(await terminalDispatchHandler({ action: "run", input: "whoami" } as never));
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toMatch(/windowTitle or paneId/);
   });
 });

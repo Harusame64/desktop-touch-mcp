@@ -88,10 +88,13 @@ const launchConsoleSchema = z.object({
   action: z.literal("launch_console").describe(
     "Launch (or reuse) an autofill-capable anchored terminal pane and return its paneId + windowTitle. Use " +
       "this BEFORE running an ssh / sudo / login command for the user: launch the pane, then drive the command " +
-      "into it with terminal({action:'send', paneId}). Autofill ONLY works in a pane launched this way — a " +
-      "pre-existing terminal the user opened is never autofilled. By default the pane opens as a NEW TAB in " +
-      "the user's current Windows Terminal window (a new window if none is open); the human can ALSO see and " +
-      "type into it (cooperative handoff). Enabling the locker grants this launch ability.",
+      "into it with terminal({action:'run'|'send', paneId}). Pass the `paneId` field (NOT `windowTitle`) to " +
+      "terminal — paneId keeps targeting this pane even after its title changes (e.g. after ssh login). KEEP the " +
+      "paneId: there is no pane-listing action, but if you lose it, call this again with the default fresh:false " +
+      "to reuse the most-recent still-open pane and get its paneId back. Autofill ONLY works in a pane launched " +
+      "this way — a pre-existing terminal the user opened is never autofilled. By default the pane opens as a NEW " +
+      "TAB in the user's current Windows Terminal window (a new window if none is open); the human can ALSO see " +
+      "and type into it (cooperative handoff). Enabling the locker grants this launch ability.",
   ),
   fresh: z.boolean().optional().describe(
     "false (default) = reuse the most-recent still-open anchored pane of the requested host; true = open a NEW one (bounded).",
@@ -359,7 +362,15 @@ async function handleLaunchConsole(
       fresh: fresh ?? false,
       host: host ?? "windows-terminal",
     });
-    return ok({ paneId, windowTitle });
+    // Additive guidance field: the #1 dogfood mistake was passing `windowTitle` into terminal's `paneId`
+    // slot. LLMs follow instructions in the most-recent tool result closely, so name the right field here.
+    return ok({
+      paneId,
+      windowTitle,
+      hint:
+        "Drive commands with terminal({action:'run'|'send', paneId:'" + paneId + "'}). Pass this paneId " +
+        "(NOT windowTitle) so input keeps targeting this pane even after its title changes (e.g. after ssh login).",
+    });
   } catch (err) {
     return keyLockerFailure(err); // KeyLockerWtUnavailable / KeyLockerSpawnFailed / KeyLockerConsoleLimit
   }
@@ -424,7 +435,10 @@ export function registerKeyLockerTools(server: McpServer): void {
           "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — there " +
           "is no manual fill action. But autofill ONLY fires in a pane opened by launch_console (a " +
           "pre-existing terminal is never autofilled): to autofill, first launch_console, then run the ssh / " +
-          "sudo command with terminal({action:'send', paneId}). Use save to enroll, list/status to inspect.",
+          "sudo command with terminal({action:'run'|'send', paneId}) — pass the `paneId` field, not the " +
+          "`windowTitle`. Keep the returned paneId; there is no pane-listing action, but launch_console " +
+          "with fresh:false reuses the most-recent pane and returns its paneId again. Use save to enroll, " +
+          "list/status to inspect.",
         caveats:
           "Windows-only. The anchored pane defaults to a Windows Terminal tab (autofill and terminal reads " +
           "operate while that tab is the ACTIVE tab — switching away pauses them safely); host:'classic' " +

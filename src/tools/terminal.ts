@@ -654,6 +654,48 @@ export function findTerminalWindowByPaneId(paneId: string): WindowZInfo | null {
 }
 
 /**
+ * Build a recovery `suggest[]` for a `paneId` that failed to resolve to a live pane, branched on the
+ * FAILURE SHAPE so the hint matches the actual mistake instead of misdirecting.
+ *
+ * The #1 dogfood confusion (2026-07): an assistant passed launch_console's WINDOW TITLE
+ * (`dtm-locker-console-<hex>`) into the `paneId` slot. That value never parses as a paneId, so the
+ * generic `TerminalWindowNotFound` suggest ("run desktop_discover / try a partial title") pointed the
+ * OPPOSITE way — while the very same value, passed as `windowTitle`, would have resolved. The three
+ * branches below distinguish (a) a windowTitle-in-the-paneId-slot mixup, (b) any other malformed
+ * handle, and (c) a well-formed handle whose pane is simply gone / its wt tab inactive.
+ *
+ * The typed CODE stays `TerminalWindowNotFound` at every call site (existing clients branch on it); only
+ * the suggest text is sharpened, so this is a purely additive LLM-facing improvement.
+ */
+export function paneIdMissSuggest(paneId: string): string[] {
+  // (a) A launch_console windowTitle passed where a paneId belongs — the single most common mixup.
+  if (/^dtm-locker-console-/i.test(paneId)) {
+    return [
+      "That value is the `windowTitle` launch_console returned, NOT its `paneId`. launch_console returns BOTH " +
+        "{paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
+      "Or, to target it by title instead, pass this value as the `windowTitle` parameter (not `paneId`).",
+    ];
+  }
+  // (b) Any other handle that does not parse — a malformed paneId.
+  if (parsePaneId(paneId) === null) {
+    return [
+      "paneId is malformed. Valid forms: a decimal console hwnd (e.g. 12345678) or a Windows Terminal handle " +
+        "`wt:<pid>:<startMs>`. Use the `paneId` field from key_locker({action:'launch_console'}) verbatim.",
+      "Lost the paneId? Re-call key_locker({action:'launch_console'}) — the default fresh:false reuses the " +
+        "most-recent still-open locker pane and returns its paneId (there is no pane-listing action).",
+    ];
+  }
+  // (c) A well-formed paneId that resolved to no live pane right now.
+  return [
+    "The paneId is well-formed but no live pane matches it now. If it is a `wt:…` handle, its Windows Terminal " +
+      "tab may not be the ACTIVE tab — a wt pane reads/sends only while its tab is active; switch back to that tab " +
+      "(or focus_window its Windows Terminal window) and retry.",
+    "Otherwise the console may have closed, or its title is no longer unique among open windows. Re-call " +
+      "key_locker({action:'launch_console'}) to reuse or (with fresh:true) open a new pane.",
+  ];
+}
+
+/**
  * Parse the echo-immune sentinel out of the post-baseline slice. Returns
  * matched=false (DEFER) until the COMPLETE sentinel line (token + separator +
  * exit-code field) has rendered — partial renders never match, and the echo
@@ -915,7 +957,12 @@ export const terminalReadHandler = async ({
     if (paneId !== undefined) {
       const resolved = resolvePaneTitle(paneId);
       if (resolved === null) {
-        return failWith("Terminal window not found: paneId " + paneId, "terminal:read", { paneId, windowTitle });
+        // Shape-aware suggest (windowTitle-in-paneId-slot mixup / malformed / gone) — code stays
+        // TerminalWindowNotFound so existing typed-error branching is unchanged (see paneIdMissSuggest).
+        return failCode("TerminalWindowNotFound", "Terminal window not found: paneId " + paneId, {
+          suggest: paneIdMissSuggest(paneId),
+          context: { paneId },
+        });
       }
       windowTitle = resolved;
     }
@@ -1066,7 +1113,14 @@ export const terminalSendHandler = async ({
       return failWith("terminal(action='send') requires windowTitle or paneId", "terminal:send", {});
     }
     if (!win) {
-      return failWith("Terminal window not found: " + (paneId !== undefined ? "paneId " + paneId : windowTitle), "terminal:send", { windowTitle, ...(paneId !== undefined ? { paneId } : {}) });
+      if (paneId !== undefined) {
+        // Shape-aware suggest for the paneId path (see paneIdMissSuggest); code unchanged.
+        return failCode("TerminalWindowNotFound", "Terminal window not found: paneId " + paneId, {
+          suggest: paneIdMissSuggest(paneId),
+          context: { paneId },
+        });
+      }
+      return failWith("Terminal window not found: " + windowTitle, "terminal:send", { windowTitle });
     }
     // Downstream identity/focus tracking wants a concrete title. For the paneId path windowTitle was
     // undefined, so adopt the resolved window's title; the windowTitle path keeps its input partial (unchanged).
@@ -2012,9 +2066,14 @@ function isWindowStillAlive(hwnd: unknown): boolean {
 }
 
 export const terminalRunHandler = async ({
-  windowTitle, input, until, timeoutMs, sendOptions, readOptions,
+  windowTitle, paneId, input, until, timeoutMs, sendOptions, readOptions,
 }: {
   windowTitle: string;
+  /** ADR-014 R3 (F-4): the PUBLIC paneId the dispatcher resolved `windowTitle` from (when a paneId was
+   *  given). Used ONLY to key the autofill dispatch notification — for a wt pane String(hwnd) is the WT
+   *  host window, not the driver's pane key, so keying by String(hwnd) would silently never arm autofill
+   *  (same subtlety terminalSendHandler.markDispatched guards). Absent for a windowTitle-only run. */
+  paneId?: string;
   input: string;
   until:
     | { mode: "quiet"; quietMs: number }
@@ -2317,7 +2376,9 @@ export const terminalRunHandler = async ({
   // payload stays fail-closed (no phantom record). This is the single notifier
   // for the run path; the nested send was suppressed via notifyDispatch=false.
   if (sendPayload?.ok === true) {
-    fireTerminalDispatch(String(hwnd), input);
+    // Key by the PUBLIC paneId when the caller targeted one (a wt pane's driver key is `wt:…`, NOT the
+    // host-window String(hwnd) — keying by hwnd would silently never arm the autofill loop for wt panes).
+    fireTerminalDispatch(paneId ?? String(hwnd), input);
   }
 
   // ── Phase 2: Wait ──────────────────────────────────────────────────────────
@@ -2696,7 +2757,12 @@ export const terminalSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("run"),
-    windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
+    windowTitle: z.string().max(200).optional().describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal'). Provide windowTitle OR paneId (paneId takes precedence)."),
+    paneId: z.string().max(WT_PANE_ID_SCHEMA_MAX).optional().describe(
+      "Pane handle from key_locker launch_console — a decimal console hwnd, or the `wt:<pid>:<startMs>` form for " +
+      "a Windows Terminal tab. Targets THIS pane (surviving a post-login title change) for the whole run+wait+read; " +
+      "takes precedence over windowTitle. This is the paneId FIELD of launch_console's result — NOT its windowTitle.",
+    ),
     input: z.string().max(10000).optional().describe("Command to send (Enter is appended automatically). Either `input` or its deprecated alias `command` is required."),
     command: z.string().max(10000).optional().describe("[Deprecated alias of `input`] Accepted for callers that mis-remember the parameter name; new code should use `input`. If both are set, `input` wins."),
     // Issue #196: `until` / `sendOptions` / `readOptions` are wrapped with
@@ -2756,6 +2822,9 @@ export const terminalSchema = z.discriminatedUnion("action", [
   }).refine(
     (obj) => typeof obj.input === "string" || typeof obj.command === "string",
     { message: "terminal(action='run') requires `input` (or its deprecated alias `command`)", path: ["input"] },
+  ).refine(
+    (obj) => (typeof obj.windowTitle === "string" && obj.windowTitle !== "") || typeof obj.paneId === "string",
+    { message: "terminal(action='run') requires windowTitle or paneId", path: ["windowTitle"] },
   ),
 ]);
 
@@ -2783,7 +2852,31 @@ export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolR
         // case as a typed InvalidArgs error. Kept so TS narrows `resolvedInput`.
         throw new Error("terminal(action='run'): neither `input` nor `command` provided");
       }
-      return terminalRunHandler({ ...a, input: resolvedInput });
+      // ADR-014 R3 (F-4): run now accepts a paneId (parity with read/send). Resolve it to the pane's
+      // live-unique title UP FRONT so the whole windowTitle-keyed run pipeline (send + poll reads)
+      // targets THIS pane — classic → the hwnd's current unique title (survives post-login drift),
+      // wt → the active-tab nonce title. The paneId itself is ALSO passed through to terminalRunHandler
+      // so its dispatch notification keys the autofill arm by the PUBLIC paneId, not String(hwnd) (a wt
+      // pane's host-window hwnd is not the driver's pane key — mirrors terminalSendHandler's markDispatched).
+      let runWindowTitle = a.windowTitle;
+      if (a.paneId !== undefined) {
+        const resolved = resolvePaneTitle(a.paneId);
+        if (resolved === null) {
+          return failCode("TerminalWindowNotFound", "Terminal window not found: paneId " + a.paneId, {
+            suggest: paneIdMissSuggest(a.paneId),
+            context: { paneId: a.paneId },
+          });
+        }
+        runWindowTitle = resolved;
+      }
+      if (runWindowTitle === undefined || runWindowTitle === "") {
+        // Unreachable: the run variant's `.refine(windowTitle || paneId)` already rejected this as a
+        // typed InvalidArgs error. Kept so TS narrows runWindowTitle to a non-empty string.
+        return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId", {
+          suggest: ["Pass windowTitle (a partial terminal title) or paneId (from key_locker launch_console)."],
+        });
+      }
+      return terminalRunHandler({ ...a, windowTitle: runWindowTitle, input: resolvedInput });
     }
   }
 };
