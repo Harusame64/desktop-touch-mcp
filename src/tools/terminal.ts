@@ -2762,9 +2762,10 @@ export const terminalSchema = z.discriminatedUnion("action", [
       "Pane handle from key_locker launch_console — a decimal console hwnd, or the `wt:<pid>:<startMs>` form for " +
       "a Windows Terminal tab. Selects THIS pane, resolved ONCE at the start of the run; takes precedence over " +
       "windowTitle. This is the paneId FIELD of launch_console's result — NOT its windowTitle. A Windows Terminal " +
-      "tab title is pinned, so run+wait+read tracks it across a login; a classic console whose title changes DURING " +
-      "the run (e.g. the login command itself) can make later reads miss — for login flows prefer the default " +
-      "Windows Terminal pane, or use action='send' (hwnd-direct) then action='read'.",
+      "tab title is pinned, so run+wait+read tracks it across a login while its tab is the ACTIVE tab (switching " +
+      "away pauses the reads); a classic console whose title changes DURING the run (e.g. the login command itself) " +
+      "can make later reads miss — for login flows prefer the default Windows Terminal pane, or use action='send' " +
+      "(hwnd-direct) then action='read'.",
     ),
     input: z.string().max(10000).optional().describe("Command to send (Enter is appended automatically). Either `input` or its deprecated alias `command` is required."),
     command: z.string().max(10000).optional().describe("[Deprecated alias of `input`] Accepted for callers that mis-remember the parameter name; new code should use `input`. If both are set, `input` wins."),
