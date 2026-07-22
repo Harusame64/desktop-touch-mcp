@@ -2381,6 +2381,23 @@ export const terminalRunHandler = async ({
     fireTerminalDispatch(paneId ?? String(hwnd), input);
   }
 
+  // ADR-014 R3 (F-4, Codex PR #546 R1 P2): when targeting a paneId, RE-RESOLVE the pane's CURRENT title
+  // before every POST-SEND read. A command can retitle the pane mid-run (e.g. an ssh login on a classic
+  // console drifts the title to `user@host`), and the poll loop + final read are title-keyed
+  // (readTerminalRaw / terminalReadHandler): reading the stale launch title would miss and mis-report
+  // window_closed while the hwnd is still alive. wt tab titles are pinned (`--suppressApplicationTitle`)
+  // so this is a no-op there; classic titles drift and this tracks them. A null re-resolve (transiently
+  // non-unique / vanished) keeps the last good title — genuine closure is owned by the hwnd-based
+  // isWindowStillAlive check, so a transient null never false-fires. The pre-send baseline read (above)
+  // keeps the original title on purpose: it ran before any drift.
+  let readTitle = windowTitle;
+  const currentReadTitle = (): string => {
+    if (paneId === undefined) return windowTitle;
+    const t = resolvePaneTitle(paneId);
+    if (t !== null) readTitle = t;
+    return readTitle;
+  };
+
   // ── Phase 2: Wait ──────────────────────────────────────────────────────────
   // Quiet detection: do NOT start the quietMs timer until we have observed at
   // least one buffer change (issue #196 (a)). Pre-fix code fired
@@ -2478,7 +2495,7 @@ export const terminalRunHandler = async ({
   // is intentionally absent: empty content is a valid input for patterns like ""
   // or /^$/ that match emptiness.
   if (until.mode === "exit" && exitShell) {
-    const initialPostSend = await readTerminalRaw(windowTitle);
+    const initialPostSend = await readTerminalRaw(currentReadTitle());
     if (initialPostSend) {
       const r = parseExitSentinel(exitSliceSinceBaseline(initialPostSend.text), exitNonce, exitShell);
       if (r.matched) {
@@ -2487,7 +2504,7 @@ export const terminalRunHandler = async ({
       }
     }
   } else if (patternRe) {
-    const initialPostSend = await readTerminalRaw(windowTitle);
+    const initialPostSend = await readTerminalRaw(currentReadTitle());
     if (initialPostSend) {
       const newContent = newContentSinceBaseline(initialPostSend.text);
       // newContent === undefined → baseline lost, skip to avoid prior-history match.
@@ -2523,8 +2540,8 @@ export const terminalRunHandler = async ({
       break;
     }
 
-    // Read current output
-    const current = await readTerminalRaw(windowTitle);
+    // Read current output (re-resolve the pane title so a mid-run retitle is still read — F-4).
+    const current = await readTerminalRaw(currentReadTitle());
     if (!current) {
       // Window disappeared between our alive check and read
       completionReason = "window_closed";
@@ -2604,7 +2621,7 @@ export const terminalRunHandler = async ({
 
   // ── Phase 3: Read final output ─────────────────────────────────────────────
   const readArgs = {
-    windowTitle,
+    windowTitle: currentReadTitle(), // re-resolve so a mid-run retitle is read from the right window (F-4)
     lines: 50,
     sinceMarker,
     stripAnsi: true,
@@ -2760,12 +2777,11 @@ export const terminalSchema = z.discriminatedUnion("action", [
     windowTitle: z.string().max(200).optional().describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal'). Provide windowTitle OR paneId (paneId takes precedence)."),
     paneId: z.string().max(WT_PANE_ID_SCHEMA_MAX).optional().describe(
       "Pane handle from key_locker launch_console — a decimal console hwnd, or the `wt:<pid>:<startMs>` form for " +
-      "a Windows Terminal tab. Selects THIS pane, resolved ONCE at the start of the run; takes precedence over " +
-      "windowTitle. This is the paneId FIELD of launch_console's result — NOT its windowTitle. A Windows Terminal " +
-      "tab title is pinned, so run+wait+read tracks it across a login while its tab is the ACTIVE tab (switching " +
-      "away pauses the reads); a classic console whose title changes DURING the run (e.g. the login command itself) " +
-      "can make later reads miss — for login flows prefer the default Windows Terminal pane, or use action='send' " +
-      "(hwnd-direct) then action='read'.",
+      "a Windows Terminal tab. Targets THIS pane for the whole run+wait+read: the pane title is re-resolved before " +
+      "every read, so a mid-run retitle (e.g. a classic console renaming to `user@host` after an ssh login) is " +
+      "still tracked. Takes precedence over windowTitle. This is the paneId FIELD of launch_console's result — " +
+      "NOT its windowTitle. A Windows Terminal pane is tracked while its tab is the ACTIVE tab (switching away " +
+      "pauses the reads until you switch back).",
     ),
     input: z.string().max(10000).optional().describe("Command to send (Enter is appended automatically). Either `input` or its deprecated alias `command` is required."),
     command: z.string().max(10000).optional().describe("[Deprecated alias of `input`] Accepted for callers that mis-remember the parameter name; new code should use `input`. If both are set, `input` wins."),
