@@ -2381,22 +2381,18 @@ export const terminalRunHandler = async ({
     fireTerminalDispatch(paneId ?? String(hwnd), input);
   }
 
-  // ADR-014 R3 (F-4, Codex PR #546 R1 P2): when targeting a paneId, RE-RESOLVE the pane's CURRENT title
-  // before every POST-SEND read. A command can retitle the pane mid-run (e.g. an ssh login on a classic
-  // console drifts the title to `user@host`), and the poll loop + final read are title-keyed
-  // (readTerminalRaw / terminalReadHandler): reading the stale launch title would miss and mis-report
-  // window_closed while the hwnd is still alive. wt tab titles are pinned (`--suppressApplicationTitle`)
-  // so this is a no-op there; classic titles drift and this tracks them. A null re-resolve (transiently
-  // non-unique / vanished) keeps the last good title — genuine closure is owned by the hwnd-based
-  // isWindowStillAlive check, so a transient null never false-fires. The pre-send baseline read (above)
-  // keeps the original title on purpose: it ran before any drift.
-  let readTitle = windowTitle;
-  const currentReadTitle = (): string => {
-    if (paneId === undefined) return windowTitle;
-    const t = resolvePaneTitle(paneId);
-    if (t !== null) readTitle = t;
-    return readTitle;
-  };
+  // ADR-014 R3 (F-4, Codex PR #546 R1 P2 + Opus R3 P2): return the pane's CURRENT live-unique title for a
+  // POST-SEND read, RE-RESOLVED each call so a mid-run retitle is tracked (an ssh login on a classic console
+  // drifts the title to `user@host`; wt tab titles are pinned so this is a no-op there). Returns null when
+  // the pane cannot be resolved SAFELY right now (paneId given but resolvePaneTitle declined: transiently
+  // non-unique / vanished / wt tab inactive). Callers MUST SKIP the read+match on null and poll again — a
+  // stale-title fallback could read a same-title SIBLING pane (the wrong-pane disclosure resolveTitleByHwnd's
+  // exactly-1 gate exists to prevent), and forcing window_closed would false-fire while the hwnd is alive.
+  // Genuine closure is owned by the hwnd-based isWindowStillAlive check in the poll loop. A non-paneId run
+  // always returns the fixed windowTitle (never null) — behaviour identical to before F-4. The pre-send
+  // baseline read (above) keeps the original title on purpose: it ran before any drift.
+  const currentReadTitle = (): string | null =>
+    paneId === undefined ? windowTitle : resolvePaneTitle(paneId);
 
   // ── Phase 2: Wait ──────────────────────────────────────────────────────────
   // Quiet detection: do NOT start the quietMs timer until we have observed at
@@ -2495,7 +2491,8 @@ export const terminalRunHandler = async ({
   // is intentionally absent: empty content is a valid input for patterns like ""
   // or /^$/ that match emptiness.
   if (until.mode === "exit" && exitShell) {
-    const initialPostSend = await readTerminalRaw(currentReadTitle());
+    const t0 = currentReadTitle();
+    const initialPostSend = t0 !== null ? await readTerminalRaw(t0) : null;
     if (initialPostSend) {
       const r = parseExitSentinel(exitSliceSinceBaseline(initialPostSend.text), exitNonce, exitShell);
       if (r.matched) {
@@ -2504,7 +2501,8 @@ export const terminalRunHandler = async ({
       }
     }
   } else if (patternRe) {
-    const initialPostSend = await readTerminalRaw(currentReadTitle());
+    const t0 = currentReadTitle();
+    const initialPostSend = t0 !== null ? await readTerminalRaw(t0) : null;
     if (initialPostSend) {
       const newContent = newContentSinceBaseline(initialPostSend.text);
       // newContent === undefined → baseline lost, skip to avoid prior-history match.
@@ -2541,7 +2539,14 @@ export const terminalRunHandler = async ({
     }
 
     // Read current output (re-resolve the pane title so a mid-run retitle is still read — F-4).
-    const current = await readTerminalRaw(currentReadTitle());
+    const readTitle = currentReadTitle();
+    if (readTitle === null) {
+      // paneId given but not safely resolvable this tick (transiently non-unique / wt tab inactive) —
+      // skip the read+match and poll again rather than risk reading a same-title sibling or false-firing
+      // window_closed. Genuine closure is owned by the isWindowStillAlive(hwnd) check above (Opus R3 P2).
+      continue;
+    }
+    const current = await readTerminalRaw(readTitle);
     if (!current) {
       // Window disappeared between our alive check and read
       completionReason = "window_closed";
@@ -2620,8 +2625,11 @@ export const terminalRunHandler = async ({
   }
 
   // ── Phase 3: Read final output ─────────────────────────────────────────────
+  // For a paneId run, pass the paneId to the read handler (not a pre-resolved title): it re-resolves via the
+  // SAME safe resolvePaneTitle gate and DECLINES (TerminalWindowNotFound → readError) when the pane is not
+  // uniquely resolvable, rather than reading a same-title sibling pane (Opus R3 P2). windowTitle otherwise.
   const readArgs = {
-    windowTitle: currentReadTitle(), // re-resolve so a mid-run retitle is read from the right window (F-4)
+    ...(paneId !== undefined ? { paneId } : { windowTitle }),
     lines: 50,
     sinceMarker,
     stripAnsi: true,
