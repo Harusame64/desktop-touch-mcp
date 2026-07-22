@@ -696,8 +696,8 @@ export function paneIdMissSuggest(paneId: string): string[] {
       "That value is the `windowTitle` launch_console returned, NOT its `paneId`. launch_console returns BOTH " +
         "{paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
       "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill " +
-        "un-armed (autofill keys off the paneId, and a Windows Terminal pane's window title is its host window, " +
-        "not the pane). Lost the paneId? Re-call key_locker({action:'launch_console'}) (default fresh:false) to get it back.",
+        "un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window " +
+        "title is the host window's, shared by all tabs). Lost the paneId? Re-call key_locker({action:'launch_console'}) (default fresh:false) to get it back.",
     ];
   }
   // (b) Any other handle that does not parse — a malformed paneId.
