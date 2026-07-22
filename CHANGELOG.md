@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.12.4] - 2026-07-22 — terminal: run accepts a pane handle, and clearer help when a pane handle is mistyped
+
+### Added
+
+- **`terminal({action:'run'})` now accepts a `paneId`, matching `read` and `send`.** You can run a
+  command and wait for its output in one call against a Key Locker pane opened with
+  `key_locker({action:'launch_console'})` — just pass the `paneId` it returned. `run` keeps
+  targeting that exact pane for the whole call even if the command changes the window title (for
+  example, an `ssh` login that renames the console to `user@host`), so a login flow no longer loses
+  track of the pane partway through.
+
+### Changed
+
+- **`key_locker({action:'launch_console'})` now returns a short `hint` naming the field to use.**
+  The result reminds you to drive the pane with the returned `paneId` (not its `windowTitle`) so
+  credential autofill stays wired to the right pane.
+
+### Fixed
+
+- **A mistyped pane handle now gets an error that points the right way.** If you passed a
+  launch_console *window title* (`dtm-locker-console-…`) where a `paneId` belongs, `terminal` used
+  to reply with a generic "window not found" hint that steered you toward window-title search — the
+  wrong direction. It now recognizes the mix-up and tells you to pass the `paneId` field (and warns
+  that driving a locker pane by window title can leave credential autofill un-armed). Lost the
+  paneId? Re-run `launch_console` to get it back.
+- **A `run` against a Windows Terminal pane whose tab was closed now ends promptly.** Closing the
+  tab while its host window stayed open could previously make the run wait out its full timeout
+  before reporting the pane was gone; it now detects the closed pane and reports `window_closed`
+  right away. An inactive (not closed) tab still just pauses until you switch back to it.
+
 ## [1.12.3] - 2026-07-18 — Key Locker: Windows Terminal autofill, and SSH autofill targets the exact endpoint
 
 ### Added
