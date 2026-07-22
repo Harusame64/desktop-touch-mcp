@@ -18,6 +18,7 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     enumWindowsInZOrder: vi.fn(),
     restoreAndFocusWindow: vi.fn(),
     getWindowClassName: vi.fn(() => "ConsoleWindowClass"),
+    getProcessIdentityByPid: vi.fn(() => ({ processName: "pwsh.exe", processStartTimeMs: 0 })),
   };
 });
 
@@ -65,6 +66,7 @@ import {
   terminalReadHandler,
   terminalDispatchHandler,
   paneIdMissSuggest,
+  isPaneShellAlive,
 } from "../../src/tools/terminal.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as bgInput from "../../src/engine/bg-input.js";
@@ -73,6 +75,7 @@ import * as uia from "../../src/engine/uia-bridge.js";
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockChars = vi.mocked(bgInput.postCharsToHwnd);
 const mockUia = vi.mocked(uia.getTextViaTextPattern);
+const mockIdentity = vi.mocked(win32.getProcessIdentityByPid);
 
 function fakeWindow(title: string, hwnd: bigint, className = "ConsoleWindowClass") {
   return {
@@ -214,6 +217,24 @@ describe("paneIdMissSuggest — shape-aware recovery hints (dogfood 2026-07)", (
     const r = parseResult(await terminalReadHandler(readArgs({ paneId: "dtm-locker-console-9dc7d7db" })));
     expect(r.code).toBe("TerminalWindowNotFound");
     expect(JSON.stringify(r.suggest)).toMatch(/windowTitle/i);
+  });
+});
+
+describe("isPaneShellAlive — wt closed-tab vs inactive-tab (Codex PR #546 #3)", () => {
+  it("returns true for undefined / classic / malformed (nothing wt-specific to decide)", () => {
+    expect(isPaneShellAlive(undefined)).toBe(true);
+    expect(isPaneShellAlive("12345678")).toBe(true); // classic — liveness owned by isWindowStillAlive(hwnd)
+    expect(isPaneShellAlive("dtm-locker-console-abc")).toBe(true); // malformed
+  });
+  it("returns true when the wt shell pid is alive with the matching start time (inactive tab → pause)", () => {
+    mockIdentity.mockReturnValue({ processName: "pwsh.exe", processStartTimeMs: 13322426700123 } as never);
+    expect(isPaneShellAlive("wt:31264:13322426700123")).toBe(true);
+  });
+  it("returns false when the wt shell is gone (startTime 0) or pid reused (mismatch) → closed tab", () => {
+    mockIdentity.mockReturnValue({ processName: "", processStartTimeMs: 0 } as never);
+    expect(isPaneShellAlive("wt:31264:13322426700123")).toBe(false);
+    mockIdentity.mockReturnValue({ processName: "other.exe", processStartTimeMs: 999 } as never);
+    expect(isPaneShellAlive("wt:31264:13322426700123")).toBe(false);
   });
 });
 

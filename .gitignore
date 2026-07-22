@@ -111,3 +111,6 @@ scripts/spikes/
 
 # e2e emergency-stop sentinel (runtime, never commit)
 .e2e-stop
+
+# transient review-fetch scratch
+.codex-review.txt

@@ -654,6 +654,28 @@ export function findTerminalWindowByPaneId(paneId: string): WindowZInfo | null {
 }
 
 /**
+ * Is the pane behind `paneId` still ALIVE? Only meaningful for a `wt:` paneId: a wt pane has no per-pane
+ * hwnd, so when its tab is not resolvable (`resolvePaneTitle` → null) the run poll loop cannot tell an
+ * INACTIVE tab (pause + retry) from a CLOSED tab whose Windows Terminal HOST window still stands — the
+ * hwnd-based `isWindowStillAlive` only sees the host and would let a closed tab skip until timeout (Codex
+ * PR #546 #3). The wt paneId carries the shell's `{pid, startTimeMs}` identity, so verify the shell process
+ * is still that exact process (same idiom as `inject-target.ts`: startTime 0 = gone, mismatch = pid reused).
+ * Classic panes return true here — their liveness is owned by the hwnd `isWindowStillAlive` check — and a
+ * non-paneId / malformed input returns true (nothing wt-specific to decide).
+ */
+export function isPaneShellAlive(paneId: string | undefined): boolean {
+  if (paneId === undefined) return true;
+  const parsed = parsePaneId(paneId);
+  if (parsed === null || parsed.kind !== "wt") return true;
+  try {
+    const startMs = getProcessIdentityByPid(parsed.shellPid).processStartTimeMs;
+    return startMs !== 0 && startMs === parsed.shellStartTimeMs;
+  } catch {
+    return false; // pid not queryable ⇒ treat the pane as gone
+  }
+}
+
+/**
  * Build a recovery `suggest[]` for a `paneId` that failed to resolve to a live pane, branched on the
  * FAILURE SHAPE so the hint matches the actual mistake instead of misdirecting.
  *
@@ -673,7 +695,9 @@ export function paneIdMissSuggest(paneId: string): string[] {
     return [
       "That value is the `windowTitle` launch_console returned, NOT its `paneId`. launch_console returns BOTH " +
         "{paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
-      "Or, to target it by title instead, pass this value as the `windowTitle` parameter (not `paneId`).",
+      "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill " +
+        "un-armed (autofill keys off the paneId, and a Windows Terminal pane's window title is its host window, " +
+        "not the pane). Lost the paneId? Re-call key_locker({action:'launch_console'}) (default fresh:false) to get it back.",
     ];
   }
   // (b) Any other handle that does not parse — a malformed paneId.
@@ -2543,7 +2567,14 @@ export const terminalRunHandler = async ({
     if (readTitle === null) {
       // paneId given but not safely resolvable this tick (transiently non-unique / wt tab inactive) —
       // skip the read+match and poll again rather than risk reading a same-title sibling or false-firing
-      // window_closed. Genuine closure is owned by the isWindowStillAlive(hwnd) check above (Opus R3 P2).
+      // window_closed. Genuine closure is owned by the isWindowStillAlive(hwnd) check above (Opus R3 P2)
+      // for classic panes; a wt pane has no per-pane hwnd, so a CLOSED wt tab (host window still up) would
+      // otherwise skip until timeout — check the wt shell's pid/startTime identity to end promptly instead
+      // of hanging (Codex PR #546 #3). An inactive (not closed) wt tab stays alive → keep polling (pause).
+      if (!isPaneShellAlive(paneId)) {
+        completionReason = "window_closed";
+        break;
+      }
       continue;
     }
     const current = await readTerminalRaw(readTitle);
@@ -2973,8 +3004,8 @@ export function registerTerminalTools(server: McpServer): void {
       description: buildDesc({
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call. action='read' / action='send' absorb the formerly-standalone read/send tools (Phase 4).",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
-        prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when (a) the target window class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts) OR (b) env DTM_BG_AUTO=1 is set globally. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally EXCLUDED from auto-engage (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR posted to its HWND, so the FG path is used by default — pass sendOptions:{method:'background'} only if you have verified your WT build accepts BG input.",
+        prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions. read/send/run also accept a launch_console `paneId` (pass the paneId field, NOT windowTitle) to keep targeting a pane after its title changes.",
+        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when the target class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh) OR env DTM_BG_AUTO=1. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is EXCLUDED (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR, so the FG path is default — pass sendOptions:{method:'background'} only if your WT build accepts BG input.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",
