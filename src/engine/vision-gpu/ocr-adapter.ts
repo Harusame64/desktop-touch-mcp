@@ -142,7 +142,10 @@ export class OcrVisualAdapter {
     preFetchedHwnd?: string,
   ): Promise<UiEntityCandidate[]> {
     let elements: SomElement[];
-    let originHwnd: string | undefined = target.hwnd ?? preFetchedHwnd;
+    // Only a window-kind candidate has a window rect for the viewport gate to
+    // judge. A browser-tab target keeps its virtual-screen path even if a handle
+    // happens to be available alongside the tab id.
+    let originHwnd: string | undefined = target.tabId ? undefined : (target.hwnd ?? preFetchedHwnd);
 
     if (preFetchedElements) {
       elements = preFetchedElements;
@@ -153,7 +156,7 @@ export class OcrVisualAdapter {
         const title = target.windowTitle ?? "@active";
         const result = await runSomPipeline(title, hwnd, detectOcrLanguage(), 2, "auto", false, dictionary);
         elements = result.elements;
-        originHwnd = originHwnd ?? result.resolvedHwnd;
+        if (!target.tabId) originHwnd = originHwnd ?? result.resolvedHwnd;
       } catch (err) {
         console.error("[ocr-adapter] runSomPipeline failed:", err);
         return [];
