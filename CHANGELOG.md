@@ -24,15 +24,16 @@
 
 - **Clicks aimed outside the primary monitor are now refused with a typed error instead of
   landing somewhere else.** Coordinate-based mouse input (`mouse_click`, `mouse_drag`,
-  `scroll`, and the mouse route inside `desktop_act`) reaches the primary
+  `scroll`, `browser_click`, and the mouse route inside `desktop_act`) reaches the primary
   monitor only: the underlying input library silently pulls any other point into the primary
   monitor, so a click meant for a second monitor used to report success while clicking
   whatever sat at the pulled-in position. Such a call now fails fast with
   `CoordinateOutsideReachableBounds` (`desktop_act` reports
   `reason:"coordinate_outside_reachable_bounds"`), and the error names what does work:
   move the window to the primary monitor and re-run `desktop_discover`, or use
-  `click_element` (accessibility) / `browser_click` (browser) — neither moves the cursor, so
-  both work on any monitor. **This is a behaviour change**: scripts and macros that pass
+  `click_element`, which invokes the element through the accessibility API and never moves
+  the cursor, so it works on any monitor. (`browser_click` is not an escape hatch — it
+  clicks through the OS cursor too.) **This is a behaviour change**: scripts and macros that pass
   coordinates on a monitor placed left, right, above or below the primary one will now get an
   error where they previously got a success that clicked the wrong place. Full multi-monitor
   mouse input is coming in a follow-up release.

@@ -410,22 +410,74 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
   // providers fall back to the title when no HWND was resolved. Probing it as a
   // handle would block the entity as stale instead of taking the fallback.
   it("treats an all-numeric origin that matches a live window title as title-based", () => {
-    const enumerate = () => [win({ hwnd: BigInt(4242), title: "1000" })];
+    // The origin id "1000" is not a live HWND here, but a window carries it as a
+    // title — so it resolves through the title path and is compared against THAT
+    // window's rect, not probed as a handle and blocked as stale.
     const probeWindow = () => null;
-    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow })).toBeNull();
+    const covering = () => [
+      win({ hwnd: BigInt(4242), title: "1000", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+    ];
+    expect(productionCheckViewport(visualEntity(), { enumerate: covering, virtualScreen, probeWindow })).toBeNull();
+
+    const elsewhere = () => [
+      win({ hwnd: BigInt(4242), title: "1000", region: { x: 0, y: 0, width: 400, height: 300 } }),
+    ];
+    expect(productionCheckViewport(visualEntity(), { enumerate: elsewhere, virtualScreen, probeWindow }))
+      .toBe("entity_outside_viewport");
   });
 
-  it("falls back to the virtual screen for a non-HWND origin", () => {
+  it("falls back to the virtual screen only when the origin cannot be resolved", () => {
     const enumerate = () => [win({ hwnd: BigInt(1000) })];
-    const byTitle = visualEntity({ origin: { kind: "window", id: "@active" } });
+    const active = visualEntity({ origin: { kind: "window", id: "@active" } });
     // Inside the virtual screen (second monitor to the right) → pass.
-    expect(productionCheckViewport(byTitle, { enumerate, virtualScreen })).toBeNull();
+    expect(productionCheckViewport(active, { enumerate, virtualScreen })).toBeNull();
     // Off every monitor → still blocked; the fallback is not a blanket pass.
     const offscreen = visualEntity({
-      origin: { kind: "window", id: "Notepad" },
+      origin: { kind: "window", id: "@active" },
       rect: { x: 9000, y: 300, width: 100, height: 40 },
     });
     expect(productionCheckViewport(offscreen, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+  });
+
+  // `desktop_discover({target:{windowTitle}})` is the common shape and records the
+  // title, not an HWND. Passing those coordinates just because they are somewhere
+  // on screen would let a stale element be clicked after its window moved away.
+  describe("title-based origin", () => {
+    const titled = visualEntity({ origin: { kind: "window", id: "Untitled - Notepad" } });
+
+    it("compares against the window that currently carries the title", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBeNull();
+    });
+
+    it("blocks when that window moved away from the element", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 0, y: 0, width: 400, height: 300 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
+    it("blocks as stale when no live window carries the title any more", () => {
+      const enumerate = () => [win({ hwnd: BigInt(7), title: "Something else" })];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
+    it("reports origin_window_not_visible when every match is minimised", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", isMinimized: true, region: { x: 0, y: 0, width: 0, height: 0 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("origin_window_not_visible");
+    });
+
+    it("passes when any one of several same-titled windows still covers the element", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", isMinimized: true, region: { x: 0, y: 0, width: 0, height: 0 } }),
+        win({ hwnd: BigInt(8), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBeNull();
+    });
   });
 
   // The gate only takes effect if the facade is actually wired to it. Nothing

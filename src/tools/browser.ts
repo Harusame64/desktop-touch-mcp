@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
+import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { ok, buildDesc } from "./_types.js";
@@ -646,6 +647,15 @@ async function osClickAndVerify(
   tabId: string | null,
   port: number,
 ): Promise<VerifyDeliveryHint> {
+  // ADR-029 Phase 1: every browser_click path (selector, by-axis, actionability
+  // rescue) funnels here, and this is an OS cursor click — CDP only resolves the
+  // coordinates and verifies delivery afterwards. So a browser window on a
+  // secondary monitor is subject to the same libnut clamp as any other coordinate
+  // click, and worse: a clamped click that happens to mutate some DOM node would
+  // be reported back as `delivered`. Refused before the cursor moves, and before
+  // focusing the browser, so a refused click has no side effect at all.
+  assertCoordinateReachable(x, y);
+
   await ensureBrowserFocused(port);
 
   const speed = DEFAULT_MOUSE_SPEED;

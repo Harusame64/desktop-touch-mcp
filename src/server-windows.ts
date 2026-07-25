@@ -128,7 +128,7 @@ function createMcpServer(): McpServer {
         "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via click_element(name=blockingElement.name), then retry;",
         "  entity_outside_viewport → the element moved off screen: scroll it back via scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
         "  origin_window_not_visible → the window the element came from is minimised or hidden: focus_window(windowTitle) to restore it, then re-call desktop_discover;",
-        "  coordinate_outside_reachable_bounds → the element is on a secondary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor then re-call desktop_discover — do NOT retry the same point with mouse_click (same limit). UIA routes (click_element) and browser_click still work anywhere;",
+        "  coordinate_outside_reachable_bounds → the element is on a secondary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor then re-call desktop_discover — do NOT retry the same point with mouse_click or browser_click (both click through the OS cursor and hit the same limit). click_element (UIA invoke) works on any monitor;",
         "  executor_failed → fall back to click_element / mouse_click / browser_click",
         "",
         "## Observation — priority order",

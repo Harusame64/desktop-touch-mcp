@@ -189,8 +189,8 @@ const SUGGESTS: Record<string, string[]> = {
   CoordinateOutsideReachableBounds: [
     "Move the target window onto the primary monitor (drag it or press Win+Shift+Arrow), then re-run desktop_discover and retry — coordinates are re-read there.",
     "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act hits this same limit; the coordinate itself is the problem, not the tool.",
-    "If the target exposes UIA, click_element(name=…) or desktop_act on a UIA-sourced entity works on any monitor — those routes do not move the cursor.",
-    "For a browser target, browser_click(selector) drives the page through CDP and is unaffected by monitor layout.",
+    "If the target exposes UIA, click_element(name=…) works on any monitor — it invokes the element directly and never moves the cursor. desktop_act does too, as long as its UIA route succeeds (its mouse fallback hits this same limit).",
+    "browser_click is NOT an escape hatch here: it moves the OS cursor to the element's screen coordinates, so it is subject to the same limit and fails the same way.",
     "Multi-monitor mouse input is being added; until then only the primary monitor is reachable by coordinate-based mouse tools.",
   ],
   BackgroundInputIncomplete: [

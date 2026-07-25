@@ -103,15 +103,20 @@ const advisoryRegistry = createDefaultCapabilityRegistry();
  * common case on a multi-monitor desktop, where the entity legitimately lives at
  * coordinates far outside the foreground window's rect).
  *
- * Verdicts:
- *   - origin window gone (closed)        → entity_outside_viewport (stale view; re-discover)
+ * The origin is resolved in identity order — HWND, then window title (providers
+ * record the title when the target carried no handle), then a direct probe of an
+ * HWND the enumeration filtered out. Verdicts:
+ *   - origin window gone (closed / renamed) → entity_outside_viewport (stale view; re-discover)
  *   - origin window minimised / cloaked / hidden → origin_window_not_visible (nothing is
  *     rendered at those coordinates; restore with focus_window, then re-discover). Falling back
  *     to a virtual-screen check here would be a category error: the gate would pass and the click
  *     would land on whatever unrelated window now occupies that area.
  *   - entity centre outside the origin window's current rect → entity_outside_viewport
- *   - non-HWND origin (title / "@active" / browserTab / absent) → virtual-screen bounds check,
+ *   - unresolvable origin ("@active" / browserTab / absent) → virtual-screen bounds check,
  *     so coordinates off every monitor are still blocked rather than conservatively passed.
+ *
+ * A title origin is NOT treated as "valid anywhere on screen": that would let a stale
+ * element be clicked at its old coordinates after its window moved, hid or closed.
  *
  * Absence from `enumWindowsInZOrder` does NOT mean the window closed: that enumeration
  * drops invisible, untitled and sub-50px windows, and an untitled canvas / game / remote
@@ -142,43 +147,65 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
   const enumerate = deps.enumerate ?? enumWindowsInZOrder;
   const virtualScreen = deps.virtualScreen ?? getVirtualScreen;
   const probeWindow = deps.probeWindow ?? getWindowRenderState;
+  const rect = entity.rect;
+  const inView = (region: { x: number; y: number; width: number; height: number }): ViewportVerdict =>
+    computeViewportPosition(rect, region) === "in-view" ? null : "entity_outside_viewport";
+
   // Visual-only: check the entity rect against its origin window's current rect.
   try {
-    const origin = entity.origin;
-    if (origin?.kind === "window" && /^\d+$/.test(origin.id)) {
-      // Decimal HWND string (win32 / ocr / uia provider lanes). One enumeration
-      // snapshot serves both lookups below — it is not cheap, and two snapshots
-      // could disagree about the same desktop.
+    const originId = entity.origin?.kind === "window" ? entity.origin.id : undefined;
+    // "@active" carries no identity (the provider had neither HWND nor title at
+    // discovery time), and a browser tab has no window rect to compare against.
+    if (originId !== undefined && originId !== "@active") {
+      // One enumeration snapshot serves every lookup below — it is not cheap, and
+      // two snapshots could disagree about the same desktop.
       const windows = enumerate();
-      const win = windows.find((w) => String(w.hwnd) === origin.id);
-      if (win) {
-        if (win.isMinimized || win.isCloaked) return "origin_window_not_visible";
-        return computeViewportPosition(entity.rect, win.region) === "in-view"
+      const looksLikeHwnd = /^\d+$/.test(originId);
+
+      // 1. Exact HWND identity. Preferred over a title match: a title is only a
+      //    name, and an all-numeric title is indistinguishable from a handle.
+      if (looksLikeHwnd) {
+        const byHwnd = windows.find((w) => String(w.hwnd) === originId);
+        if (byHwnd) {
+          if (byHwnd.isMinimized || byHwnd.isCloaked) return "origin_window_not_visible";
+          return inView(byHwnd.region);
+        }
+      }
+
+      // 2. Title identity — the common `desktop_discover({target:{windowTitle}})`
+      //    shape, where the provider had no HWND to record. Resolving it matters:
+      //    treating a title origin as "valid anywhere on screen" would let a stale
+      //    element be clicked at its old coordinates after its window moved, hid
+      //    or closed, which is the silent misclick this change exists to remove.
+      const named = windows.filter((w) => w.title === originId);
+      if (named.length > 0) {
+        if (named.every((w) => w.isMinimized || w.isCloaked)) return "origin_window_not_visible";
+        // Windows can share a title; the element belongs to whichever one still
+        // covers it, so any visible match is enough to proceed.
+        return named.some(
+          (w) => !w.isMinimized && !w.isCloaked && computeViewportPosition(rect, w.region) === "in-view",
+        )
           ? null
           : "entity_outside_viewport";
       }
-      // An all-numeric *window title* looks exactly like an HWND string. If a live
-      // window carries that title, treat the origin as title-based (providers fall
-      // back to `windowTitle` when no HWND was resolved) rather than probing a
-      // handle that was never one. HWND match wins deliberately: it is the exact
-      // identity, while a title is only a name that may be shared or reused.
-      if (windows.some((w) => w.title === origin.id)) {
-        return computeViewportPosition(entity.rect, virtualScreen()) === "in-view"
-          ? null
-          : "entity_outside_viewport";
+
+      // 3. HWND-shaped but not enumerated: the enumeration drops invisible,
+      //    untitled and sub-50px windows, so probe the handle before calling it
+      //    closed — untitled canvases are exactly this gate's subject.
+      if (looksLikeHwnd) {
+        const state = probeWindow(BigInt(originId));
+        if (!state) return "entity_outside_viewport"; // handle is gone → view is stale
+        if (state.minimized || state.cloaked || !state.visible) return "origin_window_not_visible";
+        return inView(state.rect);
       }
-      // Not enumerated — closed, or filtered out (untitled / hidden / tiny). Probe it.
-      const state = probeWindow(BigInt(origin.id));
-      if (!state) return "entity_outside_viewport"; // handle is gone → view is stale
-      if (state.minimized || state.cloaked || !state.visible) return "origin_window_not_visible";
-      return computeViewportPosition(entity.rect, state.rect) === "in-view"
-        ? null
-        : "entity_outside_viewport";
+
+      // 4. A title that no longer matches any live window → closed or renamed.
+      return "entity_outside_viewport";
     }
-    // Non-HWND origin: fall back to the virtual screen (all monitors combined).
-    return computeViewportPosition(entity.rect, virtualScreen()) === "in-view"
-      ? null
-      : "entity_outside_viewport";
+
+    // No resolvable origin → virtual screen, so coordinates off every monitor are
+    // still blocked rather than conservatively passed.
+    return inView(virtualScreen());
   } catch {
     return null; // conservative on Win32 error
   }
@@ -1345,7 +1372,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
-      "  coordinate_outside_reachable_bounds → the element sits outside the primary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor and re-call desktop_discover (retrying with mouse_click hits the same limit);",
+      "  coordinate_outside_reachable_bounds → the element sits outside the primary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor and re-call desktop_discover (retrying with V1 mouse_click or browser_click hits the same limit; click_element works on any monitor);",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",

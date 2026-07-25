@@ -4,6 +4,9 @@ import {
   isCoordinateReachable,
 } from "../../src/engine/reachable-bounds.js";
 import { failWith } from "../../src/tools/_errors.js";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ADR-029 Phase 1 — nut.js clamps any point outside the primary monitor into it,
 // so the guard has to refuse such points before the cursor moves.
@@ -50,6 +53,31 @@ describe("reachable-bounds guard", () => {
   it("allows any coordinate when the reachable region is unknown", () => {
     expect(isCoordinateReachable(-5000, -5000, null)).toBe(true);
     expect(() => assertCoordinateReachable(-5000, -5000, null)).not.toThrow();
+  });
+});
+
+// Structural invariant: the guard is only worth anything if EVERY path that
+// moves the OS cursor to an absolute coordinate runs it. Enumerating those by
+// hand during review missed `browser_click` once already, so pin it: any source
+// file that moves the nut.js cursor must also assert reachability.
+describe("reachable-bounds guard — no unguarded cursor-move path", () => {
+  const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src");
+  const MOVES_CURSOR = /mouse\.(move|setPosition|drag)\s*\(/;
+
+  function tsFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) return tsFiles(p);
+      return e.isFile() && e.name.endsWith(".ts") ? [p] : [];
+    });
+  }
+
+  it("every file that moves the cursor also calls assertCoordinateReachable", () => {
+    const unguarded = tsFiles(SRC).filter((f) => {
+      const src = readFileSync(f, "utf8");
+      return MOVES_CURSOR.test(src) && !src.includes("assertCoordinateReachable");
+    });
+    expect(unguarded.map((f) => f.replace(SRC, "src"))).toEqual([]);
   });
 });
 
