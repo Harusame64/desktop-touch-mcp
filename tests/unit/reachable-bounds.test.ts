@@ -103,10 +103,18 @@ describe("cursor movement — only the choke point may move the cursor", () => {
   // there by widening the list; write the call in cursor.ts instead.
 
   const MOVES_CURSOR = /mouse\.(move|setPosition|drag)\s*\(/;
-  // `!` / `?.` sit between the name and the paren in the house idiom
-  // (`native.win32MoveCursorPath!(points, isLast)`), so a plain `\s*\(`
-  // would never match a real call site and the rule would be decorative.
-  const CALLS_NATIVE_CURSOR = /win32(MoveCursorAbsolute|MoveCursorPath|GetCursorPos)\s*[!?.]*\s*\(/;
+  // A call is dot-accessed AND followed by a paren; the house idiom puts `!`
+  // or `?.` in between (`native.win32MoveCursorPath!(points, isLast)`).
+  // Requiring both ends separates it from the two shapes that must stay legal
+  // in the declaration file: the interface member `win32MoveCursorPath?(a, b)`
+  // has no dot before it, and the probe `nativeWin32?.win32GetCursorPos` has no
+  // paren after it. So no file needs a blanket exemption from this rule.
+  // No whitespace after the dot, and only horizontal whitespace before the
+  // paren: the file is scanned as one string, so a `\s*` here would span
+  // newlines and marry the full stop ending a comment to the declaration on the
+  // next line — which is exactly what it did on the first attempt.
+  const CALLS_NATIVE_CURSOR =
+    /\.win32(MoveCursorAbsolute|MoveCursorPath|GetCursorPos)[ \t]*!?[ \t]*\??\.?[ \t]*\(/;
   const NAMES_NATIVE_CURSOR = /win32(MoveCursorAbsolute|MoveCursorPath|GetCursorPos)/;
 
   function tsFiles(dir: string): string[] {
@@ -118,14 +126,26 @@ describe("cursor movement — only the choke point may move the cursor", () => {
   }
   const rel = (f: string) => f.replace(SRC, "src");
 
+  // A rule that cannot match its own subject is worse than no rule: it reads as
+  // coverage while proving nothing. This pins that the call pattern matches a
+  // real call and skips the two declaration shapes.
+  it("recognises a native call without flagging the declaration or the probe", () => {
+    expect(CALLS_NATIVE_CURSOR.test("await native.win32MoveCursorPath!(points, isLast);")).toBe(true);
+    expect(CALLS_NATIVE_CURSOR.test("nativeWin32?.win32GetCursorPos?.();")).toBe(true);
+    expect(CALLS_NATIVE_CURSOR.test("  win32MoveCursorPath?(points: NativeCursorPoint[], verifyLast: boolean): NativeCursorMoveResult;")).toBe(false);
+    expect(CALLS_NATIVE_CURSOR.test('typeof nativeWin32?.win32MoveCursorAbsolute === "function"')).toBe(false);
+    // The file is scanned whole, so the pattern must not join a sentence ending
+    // in a full stop to the declaration on the following line.
+    expect(
+      CALLS_NATIVE_CURSOR.test(
+        ["  // …added or removed mid-move.", "  win32MoveCursorAbsolute?(x: number): void;"].join("\n"),
+      ),
+    ).toBe(false);
+  });
+
   it("no file other than cursor.ts moves the cursor", () => {
     const movers = tsFiles(SRC).filter((f) => {
-      // The declaration file is exempt from this rule as well as from rule B:
-      // TypeScript writes an optional method as `win32MoveCursorPath?(a, b)`,
-      // which no regex can tell apart from a call. Rule B still holds it to
-      // naming the functions and nothing else, and its only executable use is
-      // the `typeof … === "function"` probe.
-      if (f === CHOKE_POINT || f === BINDING_DECLARATION) return false;
+      if (f === CHOKE_POINT) return false;
       const src = readFileSync(f, "utf8");
       return MOVES_CURSOR.test(src) || CALLS_NATIVE_CURSOR.test(src);
     });
