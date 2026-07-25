@@ -3,6 +3,7 @@ import {
   assertCoordinateReachable,
   isCoordinateReachable,
 } from "../../src/engine/reachable-bounds.js";
+import { failWith } from "../../src/tools/_errors.js";
 
 // ADR-029 Phase 1 — nut.js clamps any point outside the primary monitor into it,
 // so the guard has to refuse such points before the cursor moves.
@@ -49,5 +50,30 @@ describe("reachable-bounds guard", () => {
   it("allows any coordinate when the reachable region is unknown", () => {
     expect(isCoordinateReachable(-5000, -5000, null)).toBe(true);
     expect(() => assertCoordinateReachable(-5000, -5000, null)).not.toThrow();
+  });
+});
+
+describe("reachable-bounds guard — typed code classification", () => {
+  it("the thrown error classifies as CoordinateOutsideReachableBounds with recovery advice", () => {
+    let thrown: unknown;
+    try {
+      assertCoordinateReachable(-1500, 300, PRIMARY);
+    } catch (e) {
+      thrown = e;
+    }
+    const body = JSON.parse(failWith(thrown as Error, "mouse_click").content[0]!.text);
+    expect(body.code).toBe("CoordinateOutsideReachableBounds");
+    expect(body.suggest.join(" ")).toMatch(/primary monitor/i);
+  });
+
+  // Ordering pin: the guard's message names the target region, and the generic
+  // arms below it ("window not found" / "timeout") would poach a message that
+  // ever mentions a window. Same defence as the SpawnFailed ordering pin.
+  it("wins over the generic classify arms when the message contains their keywords too", () => {
+    for (const suffix of ["window not found", "timed out", "element not found"]) {
+      const err = new Error(`CoordinateOutsideReachableBounds: (-1500, 300) is outside … ${suffix}`);
+      const body = JSON.parse(failWith(err, "mouse_click").content[0]!.text);
+      expect(body.code, `poached by "${suffix}"`).toBe("CoordinateOutsideReachableBounds");
+    }
   });
 });

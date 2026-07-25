@@ -285,6 +285,11 @@ handler / schema 定義は残置せず、新名で完全置換 (Phase 1 のリ�
 
 ### 4.3. desktop_act 失敗時の recovery
 
+> **Historical record (naming design 時点の文面)。** 実際に出荷されている recovery 文言の SSOT は
+> `src/server-windows.ts` の instructions と `README.md` / `docs/system-overview.md`。
+> `entity_outside_viewport` の文言は更新済みで、`origin_window_not_visible` /
+> `coordinate_outside_reachable_bounds` が追加されている。
+
 ```
 ## When desktop_act returns ok:false
 Read reason and follow the recovery path:

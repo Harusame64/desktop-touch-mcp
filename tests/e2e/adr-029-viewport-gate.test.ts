@@ -7,13 +7,17 @@
  * with `entity_outside_viewport` whenever the target window was merely
  * unfocused — which on a multi-monitor desktop is the normal case.
  *
- * This runs the production gate with NO injected dependencies, so real
- * `enumWindowsInZOrder` / `getWindowRenderState` behaviour is exercised end to
- * end; the unit tests inject fakes and cannot catch a Win32-level regression.
+ * This runs the production gate with NO injected dependencies, so real Win32
+ * behaviour is exercised end to end; the unit tests inject fakes and cannot
+ * catch a Win32-level regression. The first describe covers the enumerated
+ * path (`enumWindowsInZOrder`), the second the probe path
+ * (`getWindowRenderState`) against a real untitled window — the shape the
+ * enumeration drops.
  */
 import { describe, it, expect, afterAll } from "vitest";
 import { spawnBlankWindow } from "./helpers/blank-window.js";
 import { spawnVisualOnlyCanvas } from "./helpers/visual-only-canvas.js";
+import { spawnUntitledWindow } from "./helpers/untitled-window.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../../src/engine/win32.js";
 import { productionCheckViewport } from "../../src/tools/desktop-register.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
@@ -22,6 +26,7 @@ interface Rect { x: number; y: number; width: number; height: number }
 
 const canvas = await spawnVisualOnlyCanvas();
 const blank = await spawnBlankWindow();
+const untitled = await spawnUntitledWindow();
 
 function findByTitle(title: string): { hwnd: bigint; region: Rect } | null {
   const w = enumWindowsInZOrder().find((x) => x.title === title);
@@ -61,6 +66,7 @@ function visualEntity(rect: Rect, originHwnd: bigint): UiEntity {
 afterAll(() => {
   canvas?.close();
   blank?.close();
+  untitled?.close();
 });
 
 describe.skipIf(canvas === null || blank === null)("ADR-029 AC1 — viewport gate vs. an unfocused window", () => {
@@ -102,6 +108,7 @@ describe.skipIf(canvas === null || blank === null)("ADR-029 AC1 — viewport gat
   });
 
   it("blocks as stale once the origin window is gone", async () => {
+    // NOTE: keep this test last in the file — it closes the shared canvas window.
     const origin = findByTitle(canvas!.title);
     expect(origin).not.toBeNull();
     const rect = { x: origin!.region.x + 10, y: origin!.region.y + 10, width: 20, height: 10 };
@@ -114,5 +121,23 @@ describe.skipIf(canvas === null || blank === null)("ADR-029 AC1 — viewport gat
     expect(findByTitle(canvas!.title), "canvas window should be closed").toBeNull();
 
     expect(productionCheckViewport(visualEntity(rect, origin!.hwnd))).toBe("entity_outside_viewport");
+  });
+});
+
+// The gate's second lookup path, against a real window rather than a fake: an
+// untitled borderless window is dropped by `enumWindowsInZOrder`, so reading
+// "not enumerated" as "closed" would block this window's elements forever. This
+// is the shape of the accessibility-blind targets the gate exists for.
+describe.skipIf(untitled === null)("ADR-029 — a live window the enumeration filters out", () => {
+  it("is absent from the enumeration but still comparable through the probe", () => {
+    const enumerated = enumWindowsInZOrder().some((w) => w.hwnd === untitled!.hwnd);
+    expect(enumerated, "an untitled window must not be enumerated (fixture premise)").toBe(false);
+
+    const r = untitled!.rect;
+    const inside = { x: r.x + 20, y: r.y + 20, width: 20, height: 10 };
+    expect(productionCheckViewport(visualEntity(inside, untitled!.hwnd))).toBeNull();
+
+    const outside = { x: r.x + r.width + 200, y: r.y, width: 20, height: 10 };
+    expect(productionCheckViewport(visualEntity(outside, untitled!.hwnd))).toBe("entity_outside_viewport");
   });
 });

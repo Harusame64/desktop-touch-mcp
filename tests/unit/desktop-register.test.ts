@@ -436,7 +436,8 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
       join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "tools", "desktop-register.ts"),
       "utf8",
     );
-    expect(source).toMatch(/checkViewport:\s*productionCheckViewport/);
+    // Anchored at line start so a commented-out wiring line does not satisfy it.
+    expect(source).toMatch(/^\s*checkViewport:\s*productionCheckViewport,\s*$/m);
   });
 
   it("keeps the conservative passes: structured sources, missing rect, Win32 failure", () => {

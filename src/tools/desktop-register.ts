@@ -119,7 +119,12 @@ const advisoryRegistry = createDefaultCapabilityRegistry();
  * probed directly (`getWindowRenderState`) so a live-but-filtered window is compared
  * against its real rect instead of being blocked as stale.
  *
- * Conservative fallback (`null` = pass) on any Win32 error.
+ * Conservative fallback (`null` = pass) when the window *enumeration* fails, i.e.
+ * when the gate cannot judge at all. The per-HWND probe is the one exception: it
+ * cannot separate "handle is gone" from "handle unreadable", and both are
+ * reported as a stale view, because by then the enumeration has already said the
+ * window is not among the live titled ones. That direction is safe — it costs a
+ * re-discovery, never a click at the wrong place.
  *
  * `deps` exists for unit tests only — production calls pass nothing and hit the
  * real Win32 enumerators (same injection idiom as `createCachedProductionWindowsProvider`).
@@ -141,8 +146,11 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
   try {
     const origin = entity.origin;
     if (origin?.kind === "window" && /^\d+$/.test(origin.id)) {
-      // Decimal HWND string (win32 / ocr / uia provider lanes).
-      const win = enumerate().find((w) => String(w.hwnd) === origin.id);
+      // Decimal HWND string (win32 / ocr / uia provider lanes). One enumeration
+      // snapshot serves both lookups below — it is not cheap, and two snapshots
+      // could disagree about the same desktop.
+      const windows = enumerate();
+      const win = windows.find((w) => String(w.hwnd) === origin.id);
       if (win) {
         if (win.isMinimized || win.isCloaked) return "origin_window_not_visible";
         return computeViewportPosition(entity.rect, win.region) === "in-view"
@@ -152,8 +160,9 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
       // An all-numeric *window title* looks exactly like an HWND string. If a live
       // window carries that title, treat the origin as title-based (providers fall
       // back to `windowTitle` when no HWND was resolved) rather than probing a
-      // handle that was never one.
-      if (enumerate().some((w) => w.title === origin.id)) {
+      // handle that was never one. HWND match wins deliberately: it is the exact
+      // identity, while a title is only a name that may be shared or reused.
+      if (windows.some((w) => w.title === origin.id)) {
         return computeViewportPosition(entity.rect, virtualScreen()) === "in-view"
           ? null
           : "entity_outside_viewport";
