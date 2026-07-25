@@ -509,21 +509,24 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
       expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("origin_window_not_visible");
     });
 
-    // Discovery's Case 3 skips dialog-class and owned windows; the gate must skip
-    // the same ones or it compares against a dialog the discovery never captured.
-    it("skips dialog-class and owned windows, exactly as discovery does", () => {
-      const enumerate = () => [
-        win({
-          hwnd: BigInt(9), title: "Untitled - Notepad — Save As", className: "#32770",
-          region: { x: 0, y: 0, width: 400, height: 300 },
-        }),
-        win({
-          hwnd: BigInt(10), title: "Untitled - Notepad — owned popup", ownerHwnd: BigInt(7),
-          region: { x: 0, y: 0, width: 400, height: 300 },
-        }),
+    // The OCR capture that produced the entity resolves the title with a plain
+    // substring find — no dialog / owned filtering — so a dialog above its owner
+    // IS the window the pixels came from. Filtering it here would compare against
+    // the owner instead and block a perfectly valid element.
+    it("includes dialog-class and owned windows, exactly as the capture does", () => {
+      const dialogAt = (region: { x: number; y: number; width: number; height: number }) => [
+        win({ hwnd: BigInt(9), title: "Untitled - Notepad — Save As", className: "#32770", region }),
         win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
       ];
-      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBeNull();
+      // Dialog covers the element → the element is in view.
+      expect(
+        productionCheckViewport(titled, { enumerate: () => dialogAt({ x: 2000, y: 0, width: 1920, height: 1080 }), virtualScreen }),
+      ).toBeNull();
+      // Dialog elsewhere → blocked, rather than silently compared against the owner
+      // window (which does cover the element).
+      expect(
+        productionCheckViewport(titled, { enumerate: () => dialogAt({ x: 0, y: 0, width: 400, height: 300 }), virtualScreen }),
+      ).toBe("entity_outside_viewport");
     });
   });
 

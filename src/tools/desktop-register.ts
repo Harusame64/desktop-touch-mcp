@@ -179,19 +179,21 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
       //    element be clicked at its old coordinates after its window moved, hid
       //    or closed, which is the silent misclick this change exists to remove.
       //
-      //    Resolved through the SAME predicate the discovery path uses, with the
-      //    same flags as its Case 3 (`_resolve-window.ts`): case-insensitive
-      //    substring, first hit in Z-order, dialogs and owned windows excluded,
-      //    minimised matches NOT skipped. `windowTitle` is a query, not a full
-      //    title, so equality would fail to resolve "Notepad" against "Untitled -
-      //    Notepad"; and skipping a minimised match would silently retarget the
-      //    gate to a different window that merely shares the substring — with a
-      //    query like "Chrome" and a virtual-desktop switch (which cloaks
-      //    windows) that is ordinary, and the click would land in the wrong window.
-      //    Resolve first, judge that window's visibility second.
+      //    Resolved exactly the way the OCR capture resolved it — `runSomPipeline`
+      //    (`engine/ocr-bridge.ts`) picks the window whose pixels became this
+      //    entity with a plain case-insensitive substring find over the Z-ordered
+      //    list, with NO minimised / dialog / owned filtering. That is the
+      //    authority here, not `resolveWindowTarget`, which only probes for a
+      //    match and leaves the raw query to reach the providers. Any stricter
+      //    rule resolves a different window than the one the entity came from:
+      //    equality fails on "Notepad" vs "Untitled - Notepad"; skipping a
+      //    minimised or cloaked match retargets to another window sharing the
+      //    substring (ordinary with a query like "Chrome" plus a virtual-desktop
+      //    switch, which cloaks windows); filtering dialogs skips a dialog whose
+      //    pixels OCR actually captured. Resolve first, judge visibility second.
       const match = pickPlainTopLevelWindowByTitle(windows, originId, {
         excludeMinimized: false,
-        excludeDialogsAndOwned: true,
+        excludeDialogsAndOwned: false,
       });
       if (match) {
         if (match.isMinimized || match.isCloaked) return "origin_window_not_visible";
