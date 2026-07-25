@@ -54,6 +54,16 @@ describe("resolveCandidates — basic resolution", () => {
     expect(e.origin).toEqual(TARGET);
   });
 
+  // ADR-029 OQ7: the handle the capture resolved rides along with the target, but
+  // stays out of `candidateKey` so entity identity is unaffected.
+  it("origin carries the candidate's originHwnd without changing the entity id", () => {
+    const plain = resolveCandidates([candidate("Play")], GEN)[0];
+    const withHwnd = resolveCandidates([candidate("Play", { originHwnd: "4242" })], GEN)[0];
+    expect(withHwnd.origin).toEqual({ ...TARGET, hwnd: "4242" });
+    expect(withHwnd.entityId).toBe(plain.entityId);
+    expect(withHwnd.evidenceDigest).toBe(plain.evidenceDigest);
+  });
+
   it("origin comes from the most recently observed candidate in a merged group", () => {
     const older = candidate("Play", { observedAtMs: 1000, target: { kind: "window", id: "1000" } });
     const newer = candidate("Play", { observedAtMs: 2000, target: { kind: "window", id: "2000" } });

@@ -155,22 +155,40 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
   // Visual-only: check the entity rect against its origin window's current rect.
   try {
     const originId = entity.origin?.kind === "window" ? entity.origin.id : undefined;
+    // The handle the capture resolved, when the producer recorded one. This is a
+    // stable identity: `origin.id` is frequently the caller's query, and
+    // re-resolving a query at act time can land on a different window if the
+    // Z-order changed since discovery.
+    const originHwnd = entity.origin?.hwnd;
+
     // "@active" carries no identity (the provider had neither HWND nor title at
     // discovery time), and a browser tab has no window rect to compare against.
-    if (originId !== undefined && originId !== "@active") {
+    if (originHwnd !== undefined || (originId !== undefined && originId !== "@active")) {
       // One enumeration snapshot serves every lookup below — it is not cheap, and
       // two snapshots could disagree about the same desktop.
       const windows = enumerate();
-      const looksLikeHwnd = /^\d+$/.test(originId);
+      // A recorded handle wins outright; otherwise an all-numeric id is treated as
+      // one, since a handle and an all-numeric window title look identical.
+      const hwndId = originHwnd ?? (originId !== undefined && /^\d+$/.test(originId) ? originId : undefined);
 
       // 1. Exact HWND identity. Preferred over a title match: a title is only a
-      //    name, and an all-numeric title is indistinguishable from a handle.
-      if (looksLikeHwnd) {
-        const byHwnd = windows.find((w) => String(w.hwnd) === originId);
+      //    name that several windows can share and that re-resolution can move.
+      if (hwndId !== undefined) {
+        const byHwnd = windows.find((w) => String(w.hwnd) === hwndId);
         if (byHwnd) {
           if (byHwnd.isMinimized || byHwnd.isCloaked) return "origin_window_not_visible";
           return inView(byHwnd.region);
         }
+      }
+
+      // A recorded handle is an identity, not a query: never fall through to title
+      // matching for it — an unrelated live window whose title contains the same
+      // digits would otherwise be accepted as the origin. Probe it, then stop.
+      if (originHwnd !== undefined) {
+        const state = probeWindow(BigInt(originHwnd));
+        if (!state) return "entity_outside_viewport"; // handle is gone → view is stale
+        if (state.minimized || state.cloaked || !state.visible) return "origin_window_not_visible";
+        return inView(state.rect);
       }
 
       // 2. Title identity — the common `desktop_discover({target:{windowTitle}})`
@@ -191,20 +209,22 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
       //    substring (ordinary with a query like "Chrome" plus a virtual-desktop
       //    switch, which cloaks windows); filtering dialogs skips a dialog whose
       //    pixels OCR actually captured. Resolve first, judge visibility second.
-      const match = pickPlainTopLevelWindowByTitle(windows, originId, {
-        excludeMinimized: false,
-        excludeDialogsAndOwned: false,
-      });
+      const match = originId !== undefined
+        ? pickPlainTopLevelWindowByTitle(windows, originId, {
+            excludeMinimized: false,
+            excludeDialogsAndOwned: false,
+          })
+        : null;
       if (match) {
         if (match.isMinimized || match.isCloaked) return "origin_window_not_visible";
         return inView(match.region);
       }
 
-      // 3. HWND-shaped but not enumerated: the enumeration drops invisible,
-      //    untitled and sub-50px windows, so probe the handle before calling it
-      //    closed — untitled canvases are exactly this gate's subject.
-      if (looksLikeHwnd) {
-        const state = probeWindow(BigInt(originId));
+      // 3. HWND-shaped id, not enumerated and not a live title: the enumeration
+      //    drops invisible, untitled and sub-50px windows, so probe the handle
+      //    before calling it closed — untitled canvases are this gate's subject.
+      if (hwndId !== undefined) {
+        const state = probeWindow(BigInt(hwndId));
         if (!state) return "entity_outside_viewport"; // handle is gone → view is stale
         if (state.minimized || state.cloaked || !state.visible) return "origin_window_not_visible";
         return inView(state.rect);
@@ -1175,6 +1195,10 @@ function buildFoldPostSnapshot(
             discover.map((e) => ({ text: e.label, region: e.rect })),
             { kind: "window", id: targetId },
             Date.now(),
+            // ADR-029: the fold already knows the window it verified against, so
+            // the carried-forward entities keep the same origin handle the
+            // discover lane recorded (outside candidateKey → parity unaffected).
+            String(hwnd),
           )
         : [];
 

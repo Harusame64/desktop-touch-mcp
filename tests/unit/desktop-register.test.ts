@@ -439,6 +439,43 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
     expect(productionCheckViewport(offscreen, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
   });
 
+  // ADR-029 OQ7: when the capture recorded the handle it resolved, the gate judges
+  // that handle. Re-resolving the title at act time could land on a different
+  // window if the Z-order changed since discovery.
+  describe("recorded origin handle wins over the title", () => {
+    const withHandle = visualEntity({ origin: { kind: "window", id: "Notepad", hwnd: "1000" } });
+
+    it("judges the recorded handle even when another window matches the title", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(2000), title: "Notepad — decoy", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+        win({ hwnd: BigInt(1000), title: "Notepad", region: { x: 0, y: 0, width: 400, height: 300 } }),
+      ];
+      // The decoy covers the element and would pass under title matching; the
+      // recorded origin window does not, so the touch is blocked.
+      expect(productionCheckViewport(withHandle, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
+    it("does not fall back to title matching when the recorded handle is gone", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(2000), title: "Notepad — decoy", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      const probeWindow = () => null; // handle really is gone
+      expect(productionCheckViewport(withHandle, { enumerate, virtualScreen, probeWindow }))
+        .toBe("entity_outside_viewport");
+    });
+
+    it("probes the recorded handle when the enumeration filtered it out", () => {
+      const enumerate = () => [win({ hwnd: BigInt(2000), title: "unrelated" })];
+      const probeWindow = () => ({
+        rect: { x: 2000, y: 0, width: 1920, height: 1080 },
+        visible: true,
+        minimized: false,
+        cloaked: false,
+      });
+      expect(productionCheckViewport(withHandle, { enumerate, virtualScreen, probeWindow })).toBeNull();
+    });
+  });
+
   // `desktop_discover({target:{windowTitle}})` is the common shape and records the
   // title, not an HWND. Passing those coordinates just because they are somewhere
   // on screen would let a stale element be clicked after its window moved away.

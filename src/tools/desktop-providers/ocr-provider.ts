@@ -49,6 +49,10 @@ export async function fetchOcrCandidates(
     const candidates: UiEntityCandidate[] = somResult.elements.map((el): UiEntityCandidate => ({
       source: "ocr",
       target: { kind: "window", id: targetId },
+      // ADR-029: the handle the capture actually resolved, so the viewport gate
+      // judges that window instead of re-resolving `targetId` (often a title
+      // query) at act time.
+      ...(somResult.resolvedHwnd !== undefined && { originHwnd: somResult.resolvedHwnd }),
       // locator omitted — EntityLocator has no .ocr slot; executor routes to mouse click
       role: "label",
       label: el.text,
@@ -65,7 +69,7 @@ export async function fetchOcrCandidates(
     // Fire-and-forget: adapter has its own debounce; errors never block OCR return.
     try {
       const adapter = getOcrVisualAdapter(target);
-      void adapter.pollOnce(target, dictionary, somResult.elements).catch(() => {
+      void adapter.pollOnce(target, dictionary, somResult.elements, somResult.resolvedHwnd).catch(() => {
         /* adapter logs its own errors; never block the OCR return */
       });
     } catch (err) {

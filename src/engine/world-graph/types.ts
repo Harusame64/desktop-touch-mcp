@@ -174,8 +174,14 @@ export interface UiEntity {
    * otherwise a window title or `"@active"`. Absent for entities resolved
    * before this field existed (tests / legacy fixtures) — the gate falls back
    * to a virtual-screen bounds check in that case.
+   *
+   * `hwnd` is the handle of the window the candidate was actually observed in,
+   * when the producer knows it. Preferred over `id`, which is often the caller's
+   * query rather than an identity: re-resolving a title at act time can select a
+   * different window if the Z-order changed since discovery, and the click would
+   * then be judged against — and land in — the wrong one.
    */
-  origin?: { kind: "window" | "browserTab"; id: string };
+  origin?: { kind: "window" | "browserTab"; id: string; hwnd?: string };
 }
 
 export interface EntityLease {

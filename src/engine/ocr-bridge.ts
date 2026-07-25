@@ -589,6 +589,16 @@ export interface SomPipelineResult {
   preprocessScale: number;
   /** Full title of the resolved window. When hwnd is passed, reflects the window's current title rather than the windowTitle argument. */
   resolvedWindowTitle: string;
+  /**
+   * HWND (decimal string) of the window whose pixels were captured — the one this
+   * pipeline resolved the title to, or the caller's hwnd when it supplied one.
+   *
+   * ADR-029: consumers record it as the entity's origin so the viewport gate can
+   * check a stable identity instead of re-resolving the title at act time, where
+   * a Z-order change between discovery and act could select a different window.
+   * Absent only when capture never got as far as resolving a window.
+   */
+  resolvedHwnd?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -708,6 +718,8 @@ export async function runSomPipeline(
   let targetHwnd: unknown = hwnd ?? null;
   let origin = { x: 0, y: 0 };
   let resolvedWindowTitle = windowTitle;
+  const resolvedHwndOf = (h: unknown): string | undefined =>
+    typeof h === "bigint" || typeof h === "number" ? String(h) : undefined;
 
   // R3 tool-exclusion backstop: refuse to OCR a key-locker window reached by EXPLICIT hwnd. The
   // title-only branch below already relies on the filtered enumWindowsInZOrder (the locker is not
@@ -724,6 +736,10 @@ export async function runSomPipeline(
   }
 
   if (!targetHwnd) {
+    // ADR-029: this find IS the authority on which window a visual-only entity
+    // came from — plain case-insensitive substring, first hit in Z-order. The
+    // resolved handle is returned so consumers can record it as the entity's
+    // origin instead of re-running this search at act time.
     const wins = enumWindowsInZOrder();
     const win  = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
     if (!win) throw new Error(`runSomPipeline: window not found: "${windowTitle}"`);
@@ -763,7 +779,7 @@ export async function runSomPipeline(
     const cropped = cropRgbaToRoi(rawData, width, height, roi);
     if (cropped === null) {
       // ROI does not overlap the captured buffer → nothing to OCR.
-      return { somImage: null, elements: [], preprocessScale: scale, resolvedWindowTitle };
+      return { somImage: null, elements: [], preprocessScale: scale, resolvedWindowTitle, resolvedHwnd: resolvedHwndOf(targetHwnd) };
     }
     rawData = cropped.data;
     width = cropped.width;
@@ -903,5 +919,5 @@ export async function runSomPipeline(
 
   console.error(`[SoM] total pipeline: ${(performance.now() - _somT0).toFixed(1)}ms`);
 
-  return { somImage, elements, preprocessScale: effectiveScale, resolvedWindowTitle };
+  return { somImage, elements, preprocessScale: effectiveScale, resolvedWindowTitle, resolvedHwnd: resolvedHwndOf(targetHwnd) };
 }
