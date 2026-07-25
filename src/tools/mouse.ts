@@ -49,14 +49,23 @@ import {
   assertTier4Reachable,
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
+import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
  * speed=0 → setPosition teleport (instant, no animation).
  * speed>0 → straightTo animation at that px/sec.
  * speed omitted → DEFAULT_MOUSE_SPEED.
+ *
+ * ADR-029 Phase 1: the destination is checked BEFORE any movement — libnut
+ * clamps an off-primary point into the primary monitor, so by the time the move
+ * returns the cursor is already in the wrong place (and a negative coordinate
+ * can land in the failsafe corner). Guarding here covers click / move / scroll,
+ * which all funnel through this helper; `mouse_drag` checks both of its
+ * endpoints in the handler because it moves the cursor by other means.
  */
 async function moveTo(x: number, y: number, speed?: number): Promise<void> {
+  assertCoordinateReachable(x, y);
   const s = speed ?? DEFAULT_MOUSE_SPEED;
   if (s === 0) {
     await mouse.setPosition(new Point(x, y));
@@ -826,6 +835,12 @@ export const mouseDragHandler = async ({
         );
       }
     }
+
+    // ADR-029 Phase 1: both endpoints must be reachable before the drag starts.
+    // Checking the endpoint later (at the press/move step) would abort halfway
+    // through, leaving the button pressed at the start point.
+    assertCoordinateReachable(tsx, tsy);
+    assertCoordinateReachable(tex, tey);
 
     // Step 2: Guard evaluation on FINAL start coordinates (after homing).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;

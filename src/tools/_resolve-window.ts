@@ -96,26 +96,50 @@ export function findPlainTopLevelWindowByTitle(
     excludeDialogsAndOwned?: boolean;
   } = {},
 ): ReturnType<typeof enumWindowsInZOrder>[number] | null {
+  // Checked before enumerating: an empty title must cost nothing (pinned by
+  // find-plain-top-level-window.test.ts).
   if (!title) return null;
-  const { excludeMinimized = false, excludeDialogsAndOwned = false } = opts;
   try {
-    const q = title.toLowerCase();
-    const wins = enumWindowsInZOrder();
-    return (
-      wins.find((w) => {
-        if (excludeMinimized && w.isMinimized) return false;
-        if (excludeDialogsAndOwned) {
-          if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
-          if (w.ownerHwnd != null) return false;
-        }
-        return w.title.toLowerCase().includes(q);
-      }) ?? null
-    );
+    return pickPlainTopLevelWindowByTitle(enumWindowsInZOrder(), title, opts);
   } catch {
     // `enumWindowsInZOrder` unavailable → null (callers fall through to their
     // own fallback / unresolved path).
     return null;
   }
+}
+
+/**
+ * The predicate half of {@link findPlainTopLevelWindowByTitle}, applied to a
+ * window list the caller already has.
+ *
+ * ADR-029 Phase 1: the viewport gate resolves a title-based origin against the
+ * enumeration snapshot it took for its other lookups, and it must resolve the
+ * SAME window the discovery path would — matching by any other rule (equality,
+ * "first visible match", ignoring the dialog/owned filter) silently retargets
+ * the gate to a different window and can pass a click onto it. Sharing the
+ * predicate is what keeps the two from drifting apart.
+ */
+export function pickPlainTopLevelWindowByTitle(
+  windows: ReturnType<typeof enumWindowsInZOrder>,
+  title: string,
+  opts: {
+    excludeMinimized?: boolean;
+    excludeDialogsAndOwned?: boolean;
+  } = {},
+): ReturnType<typeof enumWindowsInZOrder>[number] | null {
+  if (!title) return null;
+  const { excludeMinimized = false, excludeDialogsAndOwned = false } = opts;
+  const q = title.toLowerCase();
+  return (
+    windows.find((w) => {
+      if (excludeMinimized && w.isMinimized) return false;
+      if (excludeDialogsAndOwned) {
+        if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
+        if (w.ownerHwnd != null) return false;
+      }
+      return w.title.toLowerCase().includes(q);
+    }) ?? null
+  );
 }
 
 /**

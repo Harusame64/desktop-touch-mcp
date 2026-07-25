@@ -248,6 +248,12 @@ function findFirstProducer(branch: ClassifyBranch, srcFiles: string[]): string |
     // mapping at browser.ts:2150 `__error === "ScopeNotFound" ? "..."`.
     new RegExp(`__error:\\s*"${escCode}"`),
     new RegExp(`__error\\s*===\\s*"${escCode}"`),
+    // ADR-029 Phase 1: `new <Code>Error(...)` — a typed error subclass from
+    // `src/errors/typed-errors.ts` whose `name` IS the typed code (the class
+    // convention documented in that module's header). Instantiating it is as
+    // much a producer as `new Error("<Code>: …")`; without this pattern a
+    // classify branch fed by the typed-error family reads as dead.
+    new RegExp(`new ${escCode}Error\\(`),
   ];
   // Per-keyword regexes — match any string-literal (double-quote OR
   // backtick template) in src/ that contains the keyword and is wrapped

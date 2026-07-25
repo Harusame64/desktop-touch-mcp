@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   registerDesktopTools,
@@ -6,9 +9,11 @@ import {
   _resetFacadeForTest,
   createCachedProductionWindowsProvider,
   desktopActRawHandler,
+  productionCheckViewport,
 } from "../../src/tools/desktop-register.js";
 import { DesktopFacade } from "../../src/tools/desktop.js";
-import type { EntityLease } from "../../src/engine/world-graph/types.js";
+import type { EntityLease, UiEntity } from "../../src/engine/world-graph/types.js";
+import type { WindowZInfo } from "../../src/engine/win32.js";
 
 afterEach(() => {
   _resetFacadeForTest();
@@ -289,6 +294,301 @@ describe("createCachedProductionWindowsProvider — TTL cache", () => {
 
     expect(second[0]!.title).toBe("Second");
     expect(enumerate).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── ADR-029 Phase 1 — viewport gate compares against the ORIGIN window ──────
+
+describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)", () => {
+  function win(overrides: Partial<WindowZInfo> & { hwnd: bigint }): WindowZInfo {
+    return {
+      title: "Target",
+      zOrder: 1,
+      region: { x: 0, y: 0, width: 800, height: 600 },
+      isActive: false,
+      isMinimized: false,
+      isMaximized: false,
+      ...overrides,
+    };
+  }
+
+  function visualEntity(overrides: Partial<UiEntity> = {}): UiEntity {
+    return {
+      entityId: "e1",
+      role: "button",
+      confidence: 0.9,
+      sources: ["ocr"],
+      affordances: [],
+      generation: "g1",
+      evidenceDigest: "d1",
+      rect: { x: 2100, y: 300, width: 100, height: 40 },
+      origin: { kind: "window", id: "1000" },
+      ...overrides,
+    };
+  }
+
+  // Two 1920x1080 monitors side by side; the entity fixture lives on the right one.
+  const VIRTUAL_SCREEN = { x: 0, y: 0, width: 3840, height: 1080 };
+  const virtualScreen = () => VIRTUAL_SCREEN;
+
+  // The regression this phase exists for: the entity lives in a window that is
+  // NOT the foreground one (the normal case on a multi-monitor desktop). The
+  // pre-ADR-029 gate compared against the foreground rect and blocked it.
+  it("passes an entity inside its origin window even when another window is foreground", () => {
+    const enumerate = () => [
+      win({ hwnd: BigInt(2000), title: "Foreground", isActive: true, region: { x: 0, y: 0, width: 400, height: 300 } }),
+      win({ hwnd: BigInt(1000), region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+    ];
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen })).toBeNull();
+  });
+
+  // AC10: the entity centre sits outside its origin window but *inside another
+  // top-level window*. A tautological "containing window" implementation would
+  // pass here; comparing against the origin window must block.
+  it("blocks when the entity centre left its origin window and now sits over a different window", () => {
+    const enumerate = () => [
+      win({ hwnd: BigInt(3000), title: "Other", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      win({ hwnd: BigInt(1000), region: { x: 0, y: 0, width: 800, height: 600 } }),
+    ];
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+  });
+
+  it("blocks as stale when the origin window has closed", () => {
+    const enumerate = () => [win({ hwnd: BigInt(9999), region: { x: 2000, y: 0, width: 1920, height: 1080 } })];
+    const probeWindow = () => null; // handle gone
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow }))
+      .toBe("entity_outside_viewport");
+  });
+
+  // enumWindowsInZOrder drops invisible / untitled / sub-50px windows, so "absent
+  // from the enumeration" must not be read as "closed" — an untitled canvas or
+  // game window is exactly the UIA-less target this gate exists for.
+  it("compares against a live window that the enumeration filtered out (untitled)", () => {
+    const enumerate = () => [win({ hwnd: BigInt(9999), title: "Something else" })];
+    const probeWindow = () => ({
+      rect: { x: 2000, y: 0, width: 1920, height: 1080 },
+      visible: true,
+      minimized: false,
+      cloaked: false,
+    });
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow })).toBeNull();
+
+    const outside = visualEntity({ rect: { x: 100, y: 100, width: 50, height: 20 } });
+    expect(productionCheckViewport(outside, { enumerate, virtualScreen, probeWindow }))
+      .toBe("entity_outside_viewport");
+  });
+
+  it("blocks a filtered-out window that is hidden or minimised", () => {
+    const enumerate = () => [win({ hwnd: BigInt(9999) })];
+    const base = { rect: { x: 2000, y: 0, width: 1920, height: 1080 }, minimized: false, cloaked: false };
+    for (const state of [
+      { ...base, visible: false, minimized: false },
+      { ...base, visible: true, minimized: true },
+      { ...base, visible: true, cloaked: true },
+    ]) {
+      expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow: () => state }))
+        .toBe("origin_window_not_visible");
+    }
+  });
+
+  // A minimised origin window renders nothing at the discovered coordinates, so
+  // falling through to a virtual-screen check would pass the touch and land it
+  // on whatever unrelated window now occupies that area.
+  it("blocks with origin_window_not_visible when the origin window is minimised", () => {
+    const enumerate = () => [win({ hwnd: BigInt(1000), isMinimized: true, region: { x: 0, y: 0, width: 0, height: 0 } })];
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen })).toBe("origin_window_not_visible");
+  });
+
+  it("blocks with origin_window_not_visible when the origin window is DWM-cloaked", () => {
+    const enumerate = () => [
+      win({ hwnd: BigInt(1000), isCloaked: true, region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+    ];
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen })).toBe("origin_window_not_visible");
+  });
+
+  // A window titled e.g. "12345" is indistinguishable from an HWND string, and
+  // providers fall back to the title when no HWND was resolved. Probing it as a
+  // handle would block the entity as stale instead of taking the fallback.
+  it("treats an all-numeric origin that matches a live window title as title-based", () => {
+    // The origin id "1000" is not a live HWND here, but a window carries it as a
+    // title — so it resolves through the title path and is compared against THAT
+    // window's rect, not probed as a handle and blocked as stale.
+    const probeWindow = () => null;
+    const covering = () => [
+      win({ hwnd: BigInt(4242), title: "1000", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+    ];
+    expect(productionCheckViewport(visualEntity(), { enumerate: covering, virtualScreen, probeWindow })).toBeNull();
+
+    const elsewhere = () => [
+      win({ hwnd: BigInt(4242), title: "1000", region: { x: 0, y: 0, width: 400, height: 300 } }),
+    ];
+    expect(productionCheckViewport(visualEntity(), { enumerate: elsewhere, virtualScreen, probeWindow }))
+      .toBe("entity_outside_viewport");
+  });
+
+  it("falls back to the virtual screen only when the origin cannot be resolved", () => {
+    const enumerate = () => [win({ hwnd: BigInt(1000) })];
+    const active = visualEntity({ origin: { kind: "window", id: "@active" } });
+    // Inside the virtual screen (second monitor to the right) → pass.
+    expect(productionCheckViewport(active, { enumerate, virtualScreen })).toBeNull();
+    // Off every monitor → still blocked; the fallback is not a blanket pass.
+    const offscreen = visualEntity({
+      origin: { kind: "window", id: "@active" },
+      rect: { x: 9000, y: 300, width: 100, height: 40 },
+    });
+    expect(productionCheckViewport(offscreen, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+  });
+
+  // ADR-029 OQ7: when the capture recorded the handle it resolved, the gate judges
+  // that handle. Re-resolving the title at act time could land on a different
+  // window if the Z-order changed since discovery.
+  describe("recorded origin handle wins over the title", () => {
+    const withHandle = visualEntity({ origin: { kind: "window", id: "Notepad", hwnd: "1000" } });
+
+    it("judges the recorded handle even when another window matches the title", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(2000), title: "Notepad — decoy", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+        win({ hwnd: BigInt(1000), title: "Notepad", region: { x: 0, y: 0, width: 400, height: 300 } }),
+      ];
+      // The decoy covers the element and would pass under title matching; the
+      // recorded origin window does not, so the touch is blocked.
+      expect(productionCheckViewport(withHandle, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
+    it("does not fall back to title matching when the recorded handle is gone", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(2000), title: "Notepad — decoy", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      const probeWindow = () => null; // handle really is gone
+      expect(productionCheckViewport(withHandle, { enumerate, virtualScreen, probeWindow }))
+        .toBe("entity_outside_viewport");
+    });
+
+    it("probes the recorded handle when the enumeration filtered it out", () => {
+      const enumerate = () => [win({ hwnd: BigInt(2000), title: "unrelated" })];
+      const probeWindow = () => ({
+        rect: { x: 2000, y: 0, width: 1920, height: 1080 },
+        visible: true,
+        minimized: false,
+        cloaked: false,
+      });
+      expect(productionCheckViewport(withHandle, { enumerate, virtualScreen, probeWindow })).toBeNull();
+    });
+  });
+
+  // `desktop_discover({target:{windowTitle}})` is the common shape and records the
+  // title, not an HWND. Passing those coordinates just because they are somewhere
+  // on screen would let a stale element be clicked after its window moved away.
+  describe("title-based origin", () => {
+    const titled = visualEntity({ origin: { kind: "window", id: "Untitled - Notepad" } });
+
+    it("compares against the window that currently carries the title", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBeNull();
+    });
+
+    // `windowTitle` is a case-insensitive substring QUERY, not a full title —
+    // `desktop_discover({target:{windowTitle:"Notepad"}})` records "Notepad" while
+    // the live title is "Untitled - Notepad". Matching by equality would block
+    // every visual-only element on the most common discovery shape.
+    it("matches the title the way discovery does: case-insensitive substring", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      for (const id of ["Notepad", "notepad", "Untitled"]) {
+        const queried = visualEntity({ origin: { kind: "window", id } });
+        expect(productionCheckViewport(queried, { enumerate, virtualScreen }), id).toBeNull();
+      }
+    });
+
+    // One window is compared — the topmost drawn match — not "any match that
+    // happens to cover the point", which for a short query would decay into the
+    // tautological containment check this design rejected.
+    it("compares against the topmost drawn match only", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Notepad — A", zOrder: 0, region: { x: 0, y: 0, width: 400, height: 300 } }),
+        win({ hwnd: BigInt(8), title: "Notepad — B", zOrder: 1, region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      const queried = visualEntity({ origin: { kind: "window", id: "Notepad" } });
+      expect(productionCheckViewport(queried, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
+    it("blocks when that window moved away from the element", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 0, y: 0, width: 400, height: 300 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
+    it("blocks as stale when no live window carries the title any more", () => {
+      const enumerate = () => [win({ hwnd: BigInt(7), title: "Something else" })];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
+    it("reports origin_window_not_visible when every match is minimised", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", isMinimized: true, region: { x: 0, y: 0, width: 0, height: 0 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("origin_window_not_visible");
+    });
+
+    // Resolve first, judge visibility second. Skipping a minimised match to reach
+    // the next one would retarget the gate to a window discovery never picked —
+    // and with a short query ("Chrome") plus a virtual-desktop switch, which
+    // cloaks windows, that is ordinary rather than exotic.
+    it("does not retarget past a minimised match to another same-titled window", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", isMinimized: true, region: { x: 0, y: 0, width: 0, height: 0 } }),
+        win({ hwnd: BigInt(8), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("origin_window_not_visible");
+    });
+
+    // The OCR capture that produced the entity resolves the title with a plain
+    // substring find — no dialog / owned filtering — so a dialog above its owner
+    // IS the window the pixels came from. Filtering it here would compare against
+    // the owner instead and block a perfectly valid element.
+    it("includes dialog-class and owned windows, exactly as the capture does", () => {
+      const dialogAt = (region: { x: number; y: number; width: number; height: number }) => [
+        win({ hwnd: BigInt(9), title: "Untitled - Notepad — Save As", className: "#32770", region }),
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      // Dialog covers the element → the element is in view.
+      expect(
+        productionCheckViewport(titled, { enumerate: () => dialogAt({ x: 2000, y: 0, width: 1920, height: 1080 }), virtualScreen }),
+      ).toBeNull();
+      // Dialog elsewhere → blocked, rather than silently compared against the owner
+      // window (which does cover the element).
+      expect(
+        productionCheckViewport(titled, { enumerate: () => dialogAt({ x: 0, y: 0, width: 400, height: 300 }), virtualScreen }),
+      ).toBe("entity_outside_viewport");
+    });
+  });
+
+  // The gate only takes effect if the facade is actually wired to it. Nothing
+  // else in the suite would notice `checkViewport` being dropped or reverted to a
+  // constant pass, so pin the wiring at source level.
+  it("is the function the production facade is wired to", () => {
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "tools", "desktop-register.ts"),
+      "utf8",
+    );
+    // Anchored at line start so a commented-out wiring line does not satisfy it.
+    expect(source).toMatch(/^\s*checkViewport:\s*productionCheckViewport,\s*$/m);
+  });
+
+  it("keeps the conservative passes: structured sources, missing rect, Win32 failure", () => {
+    const enumerate = () => [win({ hwnd: BigInt(1000), region: { x: 0, y: 0, width: 10, height: 10 } })];
+    const structured = visualEntity({ sources: ["uia"] });
+    expect(productionCheckViewport(structured, { enumerate, virtualScreen })).toBeNull();
+
+    const noRect = visualEntity({ rect: undefined });
+    expect(productionCheckViewport(noRect, { enumerate, virtualScreen })).toBeNull();
+
+    const throwing = () => { throw new Error("win32 enumeration failed"); };
+    expect(productionCheckViewport(visualEntity(), { enumerate: throwing, virtualScreen })).toBeNull();
   });
 });
 

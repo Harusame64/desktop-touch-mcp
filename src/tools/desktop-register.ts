@@ -39,8 +39,8 @@ import type { ToolResult } from "./_types.js";
 import { persistCapture, REF_URI_PREFIX } from "../engine/screenshot-cache.js";
 import { pngDimensions } from "./screenshot-response.js";
 import { Err } from "../types/result.js";
-import { ExecutorFailedError } from "../errors/typed-errors.js";
-import type { TouchAction, RoiCapture, RoiCaptureMaterial } from "../engine/world-graph/guarded-touch.js";
+import { ExecutorFailedError, CoordinateOutsideReachableBoundsError } from "../errors/typed-errors.js";
+import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -62,8 +62,11 @@ import {
   getWindowProcessId,
   getProcessIdentityByPid,
   getWindowRectByHwnd,
+  getVirtualScreen,
+  getWindowRenderState,
 } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
+import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { verifyAnyChange } from "../engine/any-change.js";
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { verifyLocalRepaint } from "../engine/local-repaint.js";
@@ -87,28 +90,155 @@ const advisoryRegistry = createDefaultCapabilityRegistry();
 // ── G1: Production guards (viewport + focus) ──────────────────────────────────
 
 /**
- * G1-B: Production viewport guard.
+ * G1-B: Production viewport guard. Returns `null` when the touch may proceed,
+ * otherwise the reason to block on (ADR-029 Phase 1).
  *
  * Structured sources (uia, cdp, terminal) guarantee that the element is accessible
  * to the OS at the time of candidate resolution — they cannot be truly "out of viewport"
  * from the OS's perspective. We pass these conservatively.
  *
- * Visual-only entities with a rect are checked against the current foreground window.
- * If the entity center lies outside the foreground window's region, we block the touch.
- * Conservative fallback (return true) on any Win32 error.
+ * Visual-only entities with a rect are checked against the *origin* window — the
+ * window that produced the entity at discovery time (`entity.origin`) — not against
+ * the foreground window. Before ADR-029 this compared with the foreground window,
+ * which blocked every visual-only touch whose target window was not focused (the
+ * common case on a multi-monitor desktop, where the entity legitimately lives at
+ * coordinates far outside the foreground window's rect).
+ *
+ * The origin is resolved in identity order — HWND, then window title (providers
+ * record the title when the target carried no handle), then a direct probe of an
+ * HWND the enumeration filtered out. Verdicts:
+ *   - origin window gone (closed / renamed) → entity_outside_viewport (stale view; re-discover)
+ *   - origin window minimised / cloaked / hidden → origin_window_not_visible (nothing is
+ *     rendered at those coordinates; restore with focus_window, then re-discover). Falling back
+ *     to a virtual-screen check here would be a category error: the gate would pass and the click
+ *     would land on whatever unrelated window now occupies that area.
+ *   - entity centre outside the origin window's current rect → entity_outside_viewport
+ *   - unresolvable origin ("@active" / browserTab / absent) → virtual-screen bounds check,
+ *     so coordinates off every monitor are still blocked rather than conservatively passed.
+ *
+ * A title origin is NOT treated as "valid anywhere on screen": that would let a stale
+ * element be clicked at its old coordinates after its window moved, hid or closed.
+ *
+ * Absence from `enumWindowsInZOrder` does NOT mean the window closed: that enumeration
+ * drops invisible, untitled and sub-50px windows, and an untitled canvas / game / remote
+ * session window is exactly the UIA-less target this gate exists for. Such an HWND is
+ * probed directly (`getWindowRenderState`) so a live-but-filtered window is compared
+ * against its real rect instead of being blocked as stale.
+ *
+ * Conservative fallback (`null` = pass) when the window *enumeration* fails, i.e.
+ * when the gate cannot judge at all. The per-HWND probe is the one exception: it
+ * cannot separate "handle is gone" from "handle unreadable", and both are
+ * reported as a stale view, because by then the enumeration has already said the
+ * window is not among the live titled ones. That direction is safe — it costs a
+ * re-discovery, never a click at the wrong place.
+ *
+ * `deps` exists for unit tests only — production calls pass nothing and hit the
+ * real Win32 enumerators (same injection idiom as `createCachedProductionWindowsProvider`).
  */
-function productionIsInViewport(entity: UiEntity): boolean {
-  if (!entity.rect) return true; // no rect → can't check → conservative pass
+export interface ViewportCheckDeps {
+  enumerate?: typeof enumWindowsInZOrder;
+  virtualScreen?: typeof getVirtualScreen;
+  probeWindow?: typeof getWindowRenderState;
+}
+
+export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDeps = {}): ViewportVerdict {
+  if (!entity.rect) return null; // no rect → can't check → conservative pass
   // Structured sources: OS guarantees accessibility, skip rect check.
-  if (entity.sources.some((s) => s === "uia" || s === "cdp" || s === "terminal")) return true;
-  // Visual-only: check entity rect against current foreground window.
+  if (entity.sources.some((s) => s === "uia" || s === "cdp" || s === "terminal")) return null;
+  const enumerate = deps.enumerate ?? enumWindowsInZOrder;
+  const virtualScreen = deps.virtualScreen ?? getVirtualScreen;
+  const probeWindow = deps.probeWindow ?? getWindowRenderState;
+  const rect = entity.rect;
+  const inView = (region: { x: number; y: number; width: number; height: number }): ViewportVerdict =>
+    computeViewportPosition(rect, region) === "in-view" ? null : "entity_outside_viewport";
+
+  // Visual-only: check the entity rect against its origin window's current rect.
   try {
-    const wins = enumWindowsInZOrder();
-    const fg = wins.find((w) => w.isActive);
-    if (!fg) return true; // no foreground window → conservative pass
-    return computeViewportPosition(entity.rect, fg.region) === "in-view";
+    const originId = entity.origin?.kind === "window" ? entity.origin.id : undefined;
+    // The handle the capture resolved, when the producer recorded one. This is a
+    // stable identity: `origin.id` is frequently the caller's query, and
+    // re-resolving a query at act time can land on a different window if the
+    // Z-order changed since discovery.
+    const originHwnd = entity.origin?.hwnd;
+
+    // "@active" carries no identity (the provider had neither HWND nor title at
+    // discovery time), and a browser tab has no window rect to compare against.
+    if (originHwnd !== undefined || (originId !== undefined && originId !== "@active")) {
+      // One enumeration snapshot serves every lookup below — it is not cheap, and
+      // two snapshots could disagree about the same desktop.
+      const windows = enumerate();
+      // A recorded handle wins outright; otherwise an all-numeric id is treated as
+      // one, since a handle and an all-numeric window title look identical.
+      const hwndId = originHwnd ?? (originId !== undefined && /^\d+$/.test(originId) ? originId : undefined);
+
+      // 1. Exact HWND identity. Preferred over a title match: a title is only a
+      //    name that several windows can share and that re-resolution can move.
+      if (hwndId !== undefined) {
+        const byHwnd = windows.find((w) => String(w.hwnd) === hwndId);
+        if (byHwnd) {
+          if (byHwnd.isMinimized || byHwnd.isCloaked) return "origin_window_not_visible";
+          return inView(byHwnd.region);
+        }
+      }
+
+      // A recorded handle is an identity, not a query: never fall through to title
+      // matching for it — an unrelated live window whose title contains the same
+      // digits would otherwise be accepted as the origin. Probe it, then stop.
+      if (originHwnd !== undefined) {
+        const state = probeWindow(BigInt(originHwnd));
+        if (!state) return "entity_outside_viewport"; // handle is gone → view is stale
+        if (state.minimized || state.cloaked || !state.visible) return "origin_window_not_visible";
+        return inView(state.rect);
+      }
+
+      // 2. Title identity — the common `desktop_discover({target:{windowTitle}})`
+      //    shape, where the provider had no HWND to record. Resolving it matters:
+      //    treating a title origin as "valid anywhere on screen" would let a stale
+      //    element be clicked at its old coordinates after its window moved, hid
+      //    or closed, which is the silent misclick this change exists to remove.
+      //
+      //    Resolved exactly the way the OCR capture resolved it — `runSomPipeline`
+      //    (`engine/ocr-bridge.ts`) picks the window whose pixels became this
+      //    entity with a plain case-insensitive substring find over the Z-ordered
+      //    list, with NO minimised / dialog / owned filtering. That is the
+      //    authority here, not `resolveWindowTarget`, which only probes for a
+      //    match and leaves the raw query to reach the providers. Any stricter
+      //    rule resolves a different window than the one the entity came from:
+      //    equality fails on "Notepad" vs "Untitled - Notepad"; skipping a
+      //    minimised or cloaked match retargets to another window sharing the
+      //    substring (ordinary with a query like "Chrome" plus a virtual-desktop
+      //    switch, which cloaks windows); filtering dialogs skips a dialog whose
+      //    pixels OCR actually captured. Resolve first, judge visibility second.
+      const match = originId !== undefined
+        ? pickPlainTopLevelWindowByTitle(windows, originId, {
+            excludeMinimized: false,
+            excludeDialogsAndOwned: false,
+          })
+        : null;
+      if (match) {
+        if (match.isMinimized || match.isCloaked) return "origin_window_not_visible";
+        return inView(match.region);
+      }
+
+      // 3. HWND-shaped id, not enumerated and not a live title: the enumeration
+      //    drops invisible, untitled and sub-50px windows, so probe the handle
+      //    before calling it closed — untitled canvases are this gate's subject.
+      if (hwndId !== undefined) {
+        const state = probeWindow(BigInt(hwndId));
+        if (!state) return "entity_outside_viewport"; // handle is gone → view is stale
+        if (state.minimized || state.cloaked || !state.visible) return "origin_window_not_visible";
+        return inView(state.rect);
+      }
+
+      // 4. A title that no longer matches any live window → closed or renamed.
+      return "entity_outside_viewport";
+    }
+
+    // No resolvable origin → virtual screen, so coordinates off every monitor are
+    // still blocked rather than conservatively passed.
+    return inView(virtualScreen());
   } catch {
-    return true; // conservative on Win32 error
+    return null; // conservative on Win32 error
   }
 }
 
@@ -363,8 +493,9 @@ export function getDesktopFacade(): DesktopFacade {
       // holds the process open on its own.
       sessionEvictionIntervalMs: 30_000,
       ingress,
-      // G1-B: viewport guard — blocks visual-only entities outside the foreground window.
-      isInViewport: productionIsInViewport,
+      // G1-B: viewport guard — blocks visual-only entities that are no longer
+      // reachable at their discovered coordinates (ADR-029 Phase 1).
+      checkViewport: productionCheckViewport,
       // G1-C: window-level focus fingerprint for focus_shifted diff.
       getFocusedEntityId: productionGetFocusedEntityId,
       // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
@@ -788,6 +919,24 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // ADR-029 Phase 1: same shape for the unreachable-coordinate refusal. It gets
+  // its own envelope so `try_next` carries the coordinate-specific recovery
+  // (move the window to the primary monitor / use a route that does not move the
+  // cursor) instead of executor_failed's "fall back to mouse_click", which would
+  // send the caller back into the guard. `reason` is derived from the error name
+  // by the same pascalToSnake path, so it matches the TouchFailReason value.
+  if (!result.ok && result.reason === "coordinate_outside_reachable_bounds") {
+    const failure = toFailureEnvelope(
+      Err(new CoordinateOutsideReachableBoundsError(
+        "CoordinateOutsideReachableBounds: the entity sits outside the area mouse input can currently reach"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // ADR-026 §3.6: when the act carried a roiCapture crop, attach its by-ref link
   // as a resource_link content block alongside the JSON result. The crop pixels
   // are NOT inlined in the envelope (roiCapture.somImage is null); the agent
@@ -1046,6 +1195,10 @@ function buildFoldPostSnapshot(
             discover.map((e) => ({ text: e.label, region: e.rect })),
             { kind: "window", id: targetId },
             Date.now(),
+            // ADR-029: the fold already knows the window it verified against, so
+            // the carried-forward entities keep the same origin handle the
+            // discover lane recorded (outside candidateKey → parity unaffected).
+            String(hwnd),
           )
         : [];
 
@@ -1252,7 +1405,9 @@ export function registerDesktopTools(server: McpServer): void {
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
-      "  entity_outside_viewport → scroll via V1 scroll(action='raw'/'to_element') then retry;",
+      "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
+      "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
+      "  coordinate_outside_reachable_bounds → the element sits outside the primary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor and re-call desktop_discover (retrying with V1 mouse_click or browser_click hits the same limit; click_element works on any monitor);",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",

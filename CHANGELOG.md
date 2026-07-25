@@ -1,5 +1,43 @@
 # Changelog
 
+## [Unreleased] — multi-monitor: acting on a window that isn't focused, and a refusal instead of a stray click
+
+### Fixed
+
+- **`desktop_act` no longer refuses elements just because their window isn't the focused
+  one.** For elements found visually (OCR / screen recognition — anything without an
+  accessibility tree, such as remote-desktop sessions, games and canvas apps), the check
+  that decides "is this still on screen?" compared the element against whatever window
+  happened to be in the foreground. On a multi-monitor desktop that is usually a different
+  window, so the action came back `ok:false` with `entity_outside_viewport` even though the
+  element was plainly visible. The check now compares against the window the element was
+  actually discovered in, and re-running `desktop_discover` is no longer needed to work
+  around it.
+- **A minimised or hidden window now reports why, instead of looking like a scrolling
+  problem.** When the window an element came from is minimised or hidden, nothing is drawn
+  at the coordinates it was found at. `desktop_act` returns the new reason
+  `origin_window_not_visible`, whose recovery is `focus_window(windowTitle)` followed by
+  `desktop_discover` — previously this surfaced as `entity_outside_viewport`, whose advice
+  ("scroll it into view") could never succeed for a minimised window.
+
+### Changed
+
+- **Clicks aimed outside the primary monitor are now refused with a typed error instead of
+  landing somewhere else.** Coordinate-based mouse input (`mouse_click`, `mouse_drag`,
+  `scroll`, `browser_click`, and the mouse route inside `desktop_act`) reaches the primary
+  monitor only: the underlying input library silently pulls any other point into the primary
+  monitor, so a click meant for a second monitor used to report success while clicking
+  whatever sat at the pulled-in position. Such a call now fails fast with
+  `CoordinateOutsideReachableBounds` (`desktop_act` reports
+  `reason:"coordinate_outside_reachable_bounds"`), and the error names what does work:
+  move the window to the primary monitor and re-run `desktop_discover`, or use
+  `click_element`, which invokes the element through the accessibility API and never moves
+  the cursor, so it works on any monitor. (`browser_click` is not an escape hatch — it
+  clicks through the OS cursor too.) **This is a behaviour change**: scripts and macros that pass
+  coordinates on a monitor placed left, right, above or below the primary one will now get an
+  error where they previously got a success that clicked the wrong place. Full multi-monitor
+  mouse input is coming in a follow-up release.
+
 ## [1.12.4] - 2026-07-22 — terminal: run accepts a pane handle, and clearer help when a pane handle is mistyped
 
 ### Added

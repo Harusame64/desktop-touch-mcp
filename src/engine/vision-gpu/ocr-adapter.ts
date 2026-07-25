@@ -112,11 +112,16 @@ export class OcrVisualAdapter {
    * @param preFetchedElements - When the caller already holds SomElement[] from a
    *   preceding runSomPipeline call, pass them here to skip a duplicate invocation.
    *   `dictionary` is ignored when preFetchedElements is provided.
+   * @param preFetchedHwnd - The handle that same call resolved (ADR-029). Passed
+   *   through to the candidates as `originHwnd` so the visual lane records the
+   *   window its pixels came from, exactly as the OCR lane does; without it the
+   *   visual lane would fall back to title matching at act time.
    */
   async pollOnce(
     target: TargetSpec,
     dictionary: OcrDictionaryEntry[] = [],
     preFetchedElements?: SomElement[],
+    preFetchedHwnd?: string,
   ): Promise<UiEntityCandidate[]> {
     const now = Date.now();
     if (now - this.lastPollMs < this.minPollIntervalMs) return [];
@@ -124,7 +129,7 @@ export class OcrVisualAdapter {
     if (this.inFlight) return this.inFlight;
     this.lastPollMs = now;
 
-    this.inFlight = this._doPoll(target, dictionary, now, preFetchedElements)
+    this.inFlight = this._doPoll(target, dictionary, now, preFetchedElements, preFetchedHwnd)
       .finally(() => { this.inFlight = null; });
     return this.inFlight;
   }
@@ -134,8 +139,13 @@ export class OcrVisualAdapter {
     dictionary: OcrDictionaryEntry[],
     nowMs: number,
     preFetchedElements: SomElement[] | undefined,
+    preFetchedHwnd?: string,
   ): Promise<UiEntityCandidate[]> {
     let elements: SomElement[];
+    // Only a window-kind candidate has a window rect for the viewport gate to
+    // judge. A browser-tab target keeps its virtual-screen path even if a handle
+    // happens to be available alongside the tab id.
+    let originHwnd: string | undefined = target.tabId ? undefined : (target.hwnd ?? preFetchedHwnd);
 
     if (preFetchedElements) {
       elements = preFetchedElements;
@@ -146,6 +156,7 @@ export class OcrVisualAdapter {
         const title = target.windowTitle ?? "@active";
         const result = await runSomPipeline(title, hwnd, detectOcrLanguage(), 2, "auto", false, dictionary);
         elements = result.elements;
+        if (!target.tabId) originHwnd = originHwnd ?? result.resolvedHwnd;
       } catch (err) {
         console.error("[ocr-adapter] runSomPipeline failed:", err);
         return [];
@@ -190,6 +201,13 @@ export class OcrVisualAdapter {
       if (inputs.length > 0) {
         candidates = this.producer.ingest(inputs);
       }
+    }
+
+    // ADR-029: stamp the window the pixels came from. Done here rather than in
+    // CandidateProducer because the handle is a property of this observation, not
+    // of the producer's long-lived target.
+    if (originHwnd !== undefined) {
+      candidates = candidates.map((c) => ({ ...c, originHwnd }));
     }
 
     // Stage 4: publish.

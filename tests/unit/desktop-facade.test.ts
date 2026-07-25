@@ -444,10 +444,10 @@ describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
 });
 
 describe("DesktopFacade — G1 viewport guard", () => {
-  it("entity_outside_viewport when isInViewport returns false", async () => {
+  it("entity_outside_viewport when checkViewport blocks", async () => {
     const facade = new DesktopFacade(gameProvider, {
       executorFn: async () => "mouse",
-      isInViewport: () => false, // simulate entity outside window
+      checkViewport: () => "entity_outside_viewport", // simulate entity outside window
     });
     const view = await facade.see({ target: TARGET_GAME });
     const result = await facade.touch({ lease: view.entities[0].lease });
@@ -455,10 +455,23 @@ describe("DesktopFacade — G1 viewport guard", () => {
     if (!result.ok) expect(result.reason).toBe("entity_outside_viewport");
   });
 
-  it("touch proceeds when isInViewport returns true", async () => {
+  // ADR-029 Phase 1: minimised / cloaked origin window gets its own reason so the
+  // recovery advice can point at focus_window instead of scroll / re-discover.
+  it("origin_window_not_visible when checkViewport reports a hidden origin window", async () => {
     const facade = new DesktopFacade(gameProvider, {
       executorFn: async () => "mouse",
-      isInViewport: () => true,
+      checkViewport: () => "origin_window_not_visible",
+    });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("origin_window_not_visible");
+  });
+
+  it("touch proceeds when checkViewport clears", async () => {
+    const facade = new DesktopFacade(gameProvider, {
+      executorFn: async () => "mouse",
+      checkViewport: () => null,
     });
     const view = await facade.see({ target: TARGET_GAME });
     const result = await facade.touch({ lease: view.entities[0].lease });

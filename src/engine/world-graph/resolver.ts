@@ -153,6 +153,13 @@ export function resolveCandidates(
       locator: mergeLocators(group),
       generation,
       evidenceDigest: key,
+      // ADR-029 Phase 1: carry the primary candidate's discovery-time target
+      // through to the entity so the viewport gate can compare against the
+      // origin window's current rect. `target` is required on
+      // UiEntityCandidate, so `primary.target` is always present.
+      origin: primary.originHwnd !== undefined
+        ? { ...primary.target, hwnd: primary.originHwnd }
+        : primary.target,
     };
     if (controlType !== undefined) entity.controlType = controlType;
     if (patterns !== undefined) entity.patterns = patterns;

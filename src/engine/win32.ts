@@ -103,6 +103,17 @@ export function getVirtualScreen(): { x: number; y: number; width: number; heigh
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
+/**
+ * Bounds of the primary monitor, or null when no monitor reports itself primary
+ * (enumeration failure / headless session). Callers decide what "unknown" means;
+ * the reachable-bounds guard treats it as "cannot judge → allow".
+ *
+ * Same `enumMonitors().find(primary)` idiom as `pickMonitor` in `dock.ts`.
+ */
+export function getPrimaryMonitorBounds(): { x: number; y: number; width: number; height: number } | null {
+  return enumMonitors().find((m) => m.primary)?.bounds ?? null;
+}
+
 export interface WindowZInfo {
   hwnd: bigint;
   title: string;
@@ -213,6 +224,39 @@ export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; widt
     const rect = requireNativeWin32().win32GetWindowRect!(hwnd as bigint);
     if (!rect) return null;
     return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ADR-029 Phase 1 — whether a window is currently drawn, by HWND.
+ *
+ * `enumWindowsInZOrder` deliberately drops windows that are invisible, untitled
+ * or smaller than 50px, so "absent from the enumeration" does NOT mean "closed".
+ * Callers that must tell those apart (the viewport gate: a filtered-out window is
+ * live, a closed one makes the view stale) probe the HWND directly here.
+ *
+ * Returns null when the window is gone (or the handle cannot be read at all).
+ */
+export interface WindowRenderState {
+  rect: { x: number; y: number; width: number; height: number };
+  visible: boolean;
+  minimized: boolean;
+  cloaked: boolean;
+}
+
+export function getWindowRenderState(hwnd: unknown): WindowRenderState | null {
+  const rect = getWindowRectByHwnd(hwnd);
+  if (rect === null) return null;
+  try {
+    const w32 = requireNativeWin32();
+    return {
+      rect,
+      visible: w32.win32IsWindowVisible ? w32.win32IsWindowVisible(hwnd as bigint) : true,
+      minimized: w32.win32IsIconic ? w32.win32IsIconic(hwnd as bigint) : false,
+      cloaked: isWindowCloaked(hwnd),
+    };
   } catch {
     return null;
   }

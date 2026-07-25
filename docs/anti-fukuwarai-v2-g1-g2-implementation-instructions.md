@@ -90,6 +90,10 @@ V2 が失敗したときに、引き続き V1 へ戻れることを前提に実�
 
 ## 5. G1 の実装対象
 
+> **Historical record (G1/G2 実装指示書、当時の API 名)。** viewport gate は現在 `checkViewport`
+> （`boolean` ではなく verdict を返す）で、比較対象はフォアグラウンド窓ではなく entity の由来窓。
+> 現行仕様は `src/tools/desktop-register.ts` の `productionCheckViewport` を参照。
+
 ### 5.1. 目的
 
 `desktop_touch` の `modal_blocking` / `entity_outside_viewport` / `focus_shifted` を、  

@@ -90,10 +90,18 @@ export function somElementsToCandidates(
   elements: readonly { text: string; region: Rect; confidence?: number }[],
   target: { kind: "window" | "browserTab"; id: string },
   observedAtMs: number,
+  /**
+   * ADR-029 — handle of the window these elements were observed in. Carried so
+   * the viewport gate judges that window instead of re-resolving `target.id`
+   * (often a title query) later. Outside `candidateKey`, so entityId parity with
+   * the discover lane is unaffected.
+   */
+  originHwnd?: string,
 ): UiEntityCandidate[] {
   return elements.map((el): UiEntityCandidate => ({
     source: "ocr",
     target,
+    ...(originHwnd !== undefined && { originHwnd }),
     // locator omitted — EntityLocator has no .ocr slot; executor routes to mouse
     // click (identical to fetchOcrCandidates).
     role: "label",

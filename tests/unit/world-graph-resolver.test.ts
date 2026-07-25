@@ -46,6 +46,31 @@ describe("resolveCandidates — basic resolution", () => {
     expect(e.sources).toContain("visual_gpu");
   });
 
+  // ADR-029 Phase 1: the viewport gate compares the entity rect against the
+  // window it was discovered in, so the primary candidate's target has to reach
+  // the entity.
+  it("origin carries the primary candidate's target", () => {
+    const [e] = resolveCandidates([candidate("Play")], GEN);
+    expect(e.origin).toEqual(TARGET);
+  });
+
+  // ADR-029 OQ7: the handle the capture resolved rides along with the target, but
+  // stays out of `candidateKey` so entity identity is unaffected.
+  it("origin carries the candidate's originHwnd without changing the entity id", () => {
+    const plain = resolveCandidates([candidate("Play")], GEN)[0];
+    const withHwnd = resolveCandidates([candidate("Play", { originHwnd: "4242" })], GEN)[0];
+    expect(withHwnd.origin).toEqual({ ...TARGET, hwnd: "4242" });
+    expect(withHwnd.entityId).toBe(plain.entityId);
+    expect(withHwnd.evidenceDigest).toBe(plain.evidenceDigest);
+  });
+
+  it("origin comes from the most recently observed candidate in a merged group", () => {
+    const older = candidate("Play", { observedAtMs: 1000, target: { kind: "window", id: "1000" } });
+    const newer = candidate("Play", { observedAtMs: 2000, target: { kind: "window", id: "2000" } });
+    const [e] = resolveCandidates([older, newer], GEN);
+    expect(e.origin).toEqual({ kind: "window", id: "2000" });
+  });
+
   it("evidenceDigest is always set (required for lease issuance)", () => {
     const [e] = resolveCandidates([candidate("Start")], GEN);
     expect(e.evidenceDigest).toBeTruthy();

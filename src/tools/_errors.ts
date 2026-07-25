@@ -180,6 +180,19 @@ const SUGGESTS: Record<string, string[]> = {
     "If the call originates from a background process or service, the OS suppresses foreground transfers — proxy the focus request via the foreground app.",
     "Skip explicit focus_window: tools that accept windowTitle directly (keyboard / desktop_act / browser_click) handle focus internally and may succeed where focus_window cannot.",
   ],
+  // ADR-029 Phase 1: a click / move / drag aimed outside the primary monitor.
+  // Mouse input runs through nut.js, which clamps such a point into the primary
+  // monitor — so acting on it would click something else entirely. The suggests
+  // must NOT send the caller back to mouse_click / desktop_act on the same
+  // coordinate (that re-enters this guard); they name the two things that
+  // actually work today plus the fix that is coming.
+  CoordinateOutsideReachableBounds: [
+    "Move the target window onto the primary monitor (drag it or press Win+Shift+Arrow), then re-run desktop_discover and retry — coordinates are re-read there.",
+    "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act hits this same limit; the coordinate itself is the problem, not the tool.",
+    "If the target exposes UIA, click_element(name=…) works on any monitor — it invokes the element directly and never moves the cursor. desktop_act does too, as long as its UIA route succeeds (its mouse fallback hits this same limit).",
+    "browser_click is NOT an escape hatch here: it moves the OS cursor to the element's screen coordinates, so it is subject to the same limit and fails the same way.",
+    "Multi-monitor mouse input is being added; until then only the primary monitor is reachable by coordinate-based mouse tools.",
+  ],
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",
     "Check context.sent vs context.total",
@@ -640,6 +653,13 @@ function classify(message: string): { code: string; suggest: string[] } {
   // and asserting SpawnFailed wins.
   if (m.includes("spawnfailed") || m.includes("spawn failed:")) {
     return { code: "SpawnFailed", suggest: SUGGESTS.SpawnFailed };
+  }
+  // ADR-029 Phase 1: emitted by the reachable-bounds guard before any cursor
+  // movement. Kept above the generic arms because the message names the target
+  // window, so a future wording change could otherwise be poached by
+  // "window not found" / "timeout" below.
+  if (m.includes("coordinateoutsidereachablebounds")) {
+    return { code: "CoordinateOutsideReachableBounds", suggest: SUGGESTS.CoordinateOutsideReachableBounds ?? [] };
   }
   if (m.includes("window not found") || m.includes("no window")) {
     return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };

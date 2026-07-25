@@ -59,6 +59,18 @@ export interface UiEntityCandidate {
   source: "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal";
   target: { kind: "window" | "browserTab"; id: string };
   /**
+   * ADR-029 — HWND (decimal string) of the window this candidate was actually
+   * observed in, when the producer knows it. `target.id` is often the caller's
+   * query (a window title) rather than an identity, and re-resolving that query
+   * later can land on a different window; the viewport gate prefers this handle
+   * so it always judges the window the pixels came from.
+   *
+   * Deliberately separate from `target`: `target` participates in `candidateKey`,
+   * so changing it would shift every entityId / evidence digest and break the
+   * fold path's pre/post identity. This field does not.
+   */
+  originHwnd?: string;
+  /**
    * Source-specific locators. Populated by source-specific providers.
    * The resolver merges these into UiEntity.locator.
    */
