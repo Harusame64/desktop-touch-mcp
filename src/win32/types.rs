@@ -128,14 +128,14 @@ pub struct NativeCursorPoint {
 /// becomes (`CursorPlacementBlocked`). `method` records which mechanism
 /// produced the final position so the failure mode is observable:
 ///
-/// - `"set_cursor_pos"` — landed within tolerance (or, from the unverified
-///   batch path, "placed and the position was readable")
-/// - `"send_input"` — `SetCursorPos` missed, the `MOUSEEVENTF_VIRTUALDESK`
-///   `SendInput` correction landed it
-/// - `"failed"` — the correction was injected and the cursor still is not
-///   there; `final_x` / `final_y` hold the real position
-/// - `"send_input_refused"` — the injection itself was rejected (Win11 input
-///   restrictions); `final_x` / `final_y` hold the real position
+/// - `"set_cursor_pos"` — landed on the requested pixel first try (or, from the
+///   unverified batch path, "placed and the position was readable")
+/// - `"set_cursor_pos_retry"` — the first attempt read back wrong and the retry
+///   landed it, i.e. something moved the cursor in between
+/// - `"failed"` — the call was accepted and the cursor is still not there;
+///   `final_x` / `final_y` hold the real position
+/// - `"set_cursor_pos_refused"` — Windows rejected the call (no input desktop /
+///   no window-station access); `final_x` / `final_y` hold the real position
 /// - `"readback_failed"` — `GetCursorPos` failed, so the position is unknown
 ///   and `final_x` / `final_y` merely echo the request. Callers MUST NOT
 ///   present them as where the cursor is.
