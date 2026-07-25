@@ -332,7 +332,11 @@ export interface NativeCursorPoint {
  *  up where it was asked to go (something is holding it, or the session is not
  *  interactive) — the native side reports it instead of throwing, and
  *  `src/engine/cursor.ts` turns it into `CursorPlacementBlocked`.
- *  `method` is `"set_cursor_pos"` | `"send_input"` | `"failed"`. */
+ *
+ *  `method` is one of `"set_cursor_pos"` | `"send_input"` | `"failed"` |
+ *  `"send_input_refused"` | `"readback_failed"`. With `"readback_failed"` the
+ *  cursor position could not be read at all and `finalX` / `finalY` only echo
+ *  the request — never report them as where the cursor is. */
 export interface NativeCursorMoveResult {
   ok: boolean
   method: string

@@ -174,6 +174,22 @@ describe("moveCursorTo", () => {
     expect((err as Error).message).not.toContain("which is on a connected monitor");
   });
 
+  it("does not claim a position when the desktop could not be read", async () => {
+    // finalX/finalY only echo the request in this case. Reporting "the pointer
+    // ended up at (400, 300)" would say the cursor IS at the target and invite
+    // a retry of the click — the opposite of what happened.
+    nativeMock.win32MoveCursorAbsolute.mockReturnValue({
+      ok: false,
+      method: "readback_failed",
+      finalX: 400,
+      finalY: 300,
+    });
+    const { moveCursorTo } = await import("../../src/engine/cursor.js");
+    const err = await moveCursorTo(400, 300, 0).catch((e: Error) => e);
+    expect((err as Error).message).toContain("could not report where the pointer is");
+    expect((err as Error).message).not.toContain("ended up at (400, 300)");
+  });
+
   it("turns an unreadable cursor position into the typed error, not a raw one", async () => {
     // GetCursorPos fails when the session has no input desktop. Escaping as a
     // bare Error would be folded into executor_failed, whose advice loops back.
@@ -198,9 +214,12 @@ describe("moveCursorTo", () => {
   it("animates through the batch binding and verifies only the final segment", async () => {
     nativeMock.win32MoveCursorPath.mockImplementation((pts: CursorPoint[]) => ok(pts[pts.length - 1]!.x, pts[pts.length - 1]!.y));
     const { moveCursorTo } = await import("../../src/engine/cursor.js");
-    await moveCursorTo(200, 0, 100_000); // fast: few ticks, no real waiting
+    // The speed has to yield several ticks: at 100_000px/s the whole path fits
+    // in one segment and "every intermediate tick passed false" would assert
+    // over an empty array.
+    await moveCursorTo(200, 0, 3000);
     const calls = nativeMock.win32MoveCursorPath.mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.length).toBeGreaterThan(2);
     expect(calls.slice(0, -1).every((c) => c[1] === false)).toBe(true);
     expect(calls[calls.length - 1]![1]).toBe(true);
     const last = calls[calls.length - 1]![0] as CursorPoint[];

@@ -163,7 +163,15 @@ function placementBlocked(
   console.error(
     `[cursor] placement failed (${method}): asked (${x}, ${y}), cursor at (${finalX}, ${finalY})`,
   );
-  const landedAt = `The pointer ended up at (${finalX}, ${finalY}) instead.`;
+  // With `readback_failed` there is no position to report — the desktop could
+  // not be read at all — and `finalX/finalY` merely echo the target. Printing
+  // "the pointer ended up at (x, y)" there would say the cursor IS at the
+  // requested point, i.e. the exact opposite of what happened, and invite a
+  // retry of the click.
+  const landedAt =
+    method === "readback_failed"
+      ? "Windows could not report where the pointer is."
+      : `The pointer ended up at (${finalX}, ${finalY}) instead.`;
   if (region === null) {
     return new CursorPlacementBlockedError(
       `CursorPlacementBlocked: the cursor could not be moved to (${x}, ${y}), and the monitor ` +
