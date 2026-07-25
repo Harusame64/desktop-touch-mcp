@@ -95,7 +95,6 @@ vi.mock("../../src/engine/cursor.js", () => ({ moveCursorTo: vi.fn() }));
 import { mouseClickHandler } from "../../src/tools/mouse.js";
 import * as cursor from "../../src/engine/cursor.js";
 import * as win32 from "../../src/engine/win32.js";
-import * as nutjs from "../../src/engine/nutjs.js";
 import { updateWindowCache, saveSnapshot } from "../../src/engine/window-cache.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);

@@ -73,7 +73,21 @@ export default [
     rules: {
       "no-console": "off",
       "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-unused-vars": "off",
+      // Unused *imports* stay an error here. Turning the whole rule off (the
+      // previous setting) meant a stale import in a test was invisible to lint
+      // and only surfaced later as a CodeQL alert — which is how two of them
+      // reached main. Arguments and caught errors are exempt instead, since
+      // those are the test-shaped cases the blanket "off" was really for.
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          args: "none",
+          caughtErrors: "none",
+          ignoreRestSiblings: true,
+          varsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+        },
+      ],
       "@typescript-eslint/no-require-imports": "off",
       "@typescript-eslint/no-empty-object-type": "off",
       "no-control-regex": "off",

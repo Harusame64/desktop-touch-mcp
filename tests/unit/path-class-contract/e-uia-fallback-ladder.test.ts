@@ -29,7 +29,7 @@
 import { describe, it, expect } from "vitest";
 import { deriveEntityCapabilities } from "../../../src/tools/desktop-capabilities.js";
 import { createDesktopExecutor, type ExecutorDeps } from "../../../src/tools/desktop-executor.js";
-import type { UiEntity, ExecutorKind } from "../../../src/engine/world-graph/types.js";
+import type { UiEntity } from "../../../src/engine/world-graph/types.js";
 
 function makeUiaEntity(overrides: Partial<UiEntity> = {}): UiEntity {
   return {

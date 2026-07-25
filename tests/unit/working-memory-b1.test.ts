@@ -43,7 +43,6 @@ import {
   _resetHistoryClockForTest,
   _seedHistoryForTest,
   type ToolCallEvent,
-  type WorkingMemoryProjection,
 } from "../../src/tools/_envelope.js";
 
 afterEach(() => {

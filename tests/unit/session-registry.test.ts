@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   SessionRegistry,
   type SessionCreateOpts,
-  type TargetSpec,
 } from "../../src/engine/world-graph/session-registry.js";
 
 function makeOpts(overrides: Partial<SessionCreateOpts> = {}): SessionCreateOpts {

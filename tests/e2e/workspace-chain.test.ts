@@ -11,12 +11,12 @@
  * the error response is actionable.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { focusWindowHandler } from "../../src/tools/window.js";
 import { workspaceLaunchHandler } from "../../src/tools/workspace.js";
 import { waitUntilHandler } from "../../src/tools/wait-until.js";
-import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
-import { parsePayload, sleep } from "./helpers/wait.js";
+import { type NpInstance } from "./helpers/notepad-launcher.js";
+import { parsePayload } from "./helpers/wait.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // H1-base: focus_window on absent window → WindowNotFound + suggest wait_until
@@ -77,7 +77,6 @@ describe("H1-chain: workspace_launch + wait_until + focus_window happy path", ()
     const { join } = await import("path");
     const { writeFileSync, unlinkSync } = await import("fs");
     const { spawn } = await import("child_process");
-    const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
 
     const tag = `h1-${Date.now().toString(36)}`;
     const tempFile = join(tmpdir(), `${tag}.txt`);

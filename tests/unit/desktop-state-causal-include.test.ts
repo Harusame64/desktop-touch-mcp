@@ -31,9 +31,7 @@ import {
   _setHistoryClockForTest,
   _resetHistoryClockForTest,
   _seedHistoryForTest,
-  type CommitL1Emitter,
   type ViewSnapshot,
-  type ToolCallEvent,
 } from "../../src/tools/_envelope.js";
 
 // ── Test helpers ─────────────────────────────────────────────────────────────

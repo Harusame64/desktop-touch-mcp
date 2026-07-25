@@ -15,7 +15,7 @@ import {
   type BrowserSearchHook,
 } from "../../src/tools/wait-until.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
-import { sleep, parsePayload } from "./helpers/wait.js";
+import { parsePayload } from "./helpers/wait.js";
 
 // ─── Reset hooks between tests ─────────────────────────────────────────────────
 

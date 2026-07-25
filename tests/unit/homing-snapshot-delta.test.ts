@@ -103,7 +103,6 @@ import { mouseClickHandler } from "../../src/tools/mouse.js";
 import * as cursor from "../../src/engine/cursor.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as cache from "../../src/engine/window-cache.js";
-import * as nutjs from "../../src/engine/nutjs.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockGetRect = vi.mocked(win32.getWindowRectByHwnd);

@@ -465,7 +465,14 @@ npm cache clean --force
 #    (`npx @...@<older-version>` works from the project root because the local version
 #    no longer satisfies the spec, which is why a 1.7.2 cross-check can mislead.)
 npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
-# Expected: "desktop-touch-mcp vX.Y.Z" and usage text
+# Expected (v1.13.0 measured): the launcher prints
+#   [desktop-touch-mcp] Downloading desktop-touch-mcp-windows.zip from vX.Y.Z
+#   [desktop-touch-mcp] Installed vX.Y.Z to ...
+# and then exits 0 with NO usage text — neither bin/launcher.js nor src/ implements
+# --help, and 1.12.4 behaves identically, so a silent --help is not a regression.
+# What this step actually proves is the download + SHA verification + extraction.
+# For proof that the installed server RUNS, use the stdio initialize smoke test in
+# the "Smoke Test" section above; that is the check to trust.
 
 # 3. Verify installed files
 RELEASE_DIR="$USERPROFILE/.desktop-touch-mcp/releases/vX.Y.Z"
