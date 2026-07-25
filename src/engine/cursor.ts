@@ -96,13 +96,22 @@ export function planCursorPath(
   return points;
 }
 
-/** Split a path into tick-sized segments carrying the time each is due at. */
+/**
+ * Split a path into tick-sized segments carrying the time each is due at.
+ *
+ * `dueAtMs` is derived from the distance emitted so far, NOT from the tick
+ * index. Deriving it from the index ties the gesture to `TICK_MS` and silently
+ * floors the speed: below ~125 px/s one point per tick is still one point every
+ * 8 ms, i.e. faster than asked. nut.js honours slow speeds, and the CHANGELOG
+ * promises the speed settings behave as before.
+ */
 function segmentPath(points: CursorPoint[], speedPxPerSec: number): PathSegment[] {
   const perTick = Math.max(1, Math.round((speedPxPerSec * TICK_MS) / 1000 / STEP_PX));
   const segments: PathSegment[] = [];
   for (let i = 0; i < points.length; i += perTick) {
     const slice = points.slice(i, i + perTick);
-    segments.push({ points: slice, dueAtMs: ((i + slice.length) / perTick) * TICK_MS });
+    const emittedPx = (i + slice.length) * STEP_PX;
+    segments.push({ points: slice, dueAtMs: (emittedPx / speedPxPerSec) * 1000 });
   }
   return segments;
 }
@@ -114,9 +123,22 @@ function requireNative(): NonNullable<typeof nativeWin32> {
   return nativeWin32;
 }
 
-function readNativeCursorPos(): CursorPoint {
-  const p: NativeCursorPoint = requireNative().win32GetCursorPos!();
-  return { x: p.x, y: p.y };
+/**
+ * Current position, or `null` when the desktop cannot be read at all.
+ *
+ * `GetCursorPos` fails when the calling thread has no input desktop — a
+ * disconnected or locked session. Letting that escape as a raw error would send
+ * it through `executor_failed`, whose advice is "fall back to mouse_click",
+ * straight back into the same wall; the caller turns `null` into the typed
+ * placement failure instead.
+ */
+function readNativeCursorPos(): CursorPoint | null {
+  try {
+    const p: NativeCursorPoint = requireNative().win32GetCursorPos!();
+    return { x: p.x, y: p.y };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -133,7 +155,14 @@ function placementBlocked(
   finalX: number,
   finalY: number,
   region: ReachableRegion | null,
+  method: string,
 ): CursorPlacementBlockedError {
+  // The mechanism is diagnostic, not something to put in front of a user: it
+  // separates "Windows refused the injection" from "it was accepted and the
+  // cursor still did not move" from "the desktop could not be read at all".
+  console.error(
+    `[cursor] placement failed (${method}): asked (${x}, ${y}), cursor at (${finalX}, ${finalY})`,
+  );
   const landedAt = `The pointer ended up at (${finalX}, ${finalY}) instead.`;
   if (region === null) {
     return new CursorPlacementBlockedError(
@@ -197,11 +226,14 @@ export async function moveCursorTo(x: number, y: number, speed?: number): Promis
 
   if (s === 0) {
     const r = native.win32MoveCursorAbsolute!(x, y);
-    if (!r.ok) throw placementBlocked(x, y, r.finalX, r.finalY, region);
+    if (!r.ok) throw placementBlocked(x, y, r.finalX, r.finalY, region, r.method);
     return;
   }
 
   const from = readNativeCursorPos();
+  if (from === null) {
+    throw placementBlocked(x, y, x, y, region, "readback_failed");
+  }
   const path = planCursorPath(from, { x, y }, region);
   const segments = segmentPath(path, s);
   const startedAt = Date.now();
@@ -211,7 +243,7 @@ export async function moveCursorTo(x: number, y: number, speed?: number): Promis
     const isLast = i === segments.length - 1;
     const points: NativeCursorPoint[] = seg.points.map((p) => ({ x: p.x, y: p.y }));
     const r = native.win32MoveCursorPath!(points, isLast);
-    if (isLast && !r.ok) throw placementBlocked(x, y, r.finalX, r.finalY, region);
+    if (isLast && !r.ok) throw placementBlocked(x, y, r.finalX, r.finalY, region, r.method);
     if (isLast) break;
     // Pace against elapsed time, not a fixed sleep per tick: a slow tick must
     // not stretch the whole gesture, or the effective speed halves on a machine

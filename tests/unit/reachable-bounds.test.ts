@@ -1,4 +1,31 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// The resolved-region tests below need a monitor layout and a capability answer
+// that the test controls; the override-based tests keep running against the
+// real module surface.
+const hoisted = vi.hoisted(() => ({
+  state: {
+    nativeAvailable: true,
+    monitors: [{ x: 0, y: 0, width: 1920, height: 1080 }] as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }[],
+  },
+  enumCalls: { n: 0 },
+}));
+vi.mock("../../src/engine/native-engine.js", () => ({
+  nativeWin32: {},
+  hasNativeCursorMove: () => hoisted.state.nativeAvailable,
+}));
+vi.mock("../../src/engine/win32.js", () => ({
+  enumMonitors: () => {
+    hoisted.enumCalls.n++;
+    return hoisted.state.monitors.map((bounds) => ({ primary: true, bounds }));
+  },
+  getPrimaryMonitorBounds: () => hoisted.state.monitors[0] ?? null,
+}));
 import {
   assertCoordinateReachable,
   isCoordinateReachable,
@@ -76,7 +103,10 @@ describe("cursor movement — only the choke point may move the cursor", () => {
   // there by widening the list; write the call in cursor.ts instead.
 
   const MOVES_CURSOR = /mouse\.(move|setPosition|drag)\s*\(/;
-  const CALLS_NATIVE_CURSOR = /win32(MoveCursorAbsolute|MoveCursorPath|GetCursorPos)\s*\(/;
+  // `!` / `?.` sit between the name and the paren in the house idiom
+  // (`native.win32MoveCursorPath!(points, isLast)`), so a plain `\s*\(`
+  // would never match a real call site and the rule would be decorative.
+  const CALLS_NATIVE_CURSOR = /win32(MoveCursorAbsolute|MoveCursorPath|GetCursorPos)\s*[!?.]*\s*\(/;
   const NAMES_NATIVE_CURSOR = /win32(MoveCursorAbsolute|MoveCursorPath|GetCursorPos)/;
 
   function tsFiles(dir: string): string[] {
@@ -89,9 +119,16 @@ describe("cursor movement — only the choke point may move the cursor", () => {
   const rel = (f: string) => f.replace(SRC, "src");
 
   it("no file other than cursor.ts moves the cursor", () => {
-    const movers = tsFiles(SRC).filter(
-      (f) => f !== CHOKE_POINT && (MOVES_CURSOR.test(readFileSync(f, "utf8")) || CALLS_NATIVE_CURSOR.test(readFileSync(f, "utf8"))),
-    );
+    const movers = tsFiles(SRC).filter((f) => {
+      // The declaration file is exempt from this rule as well as from rule B:
+      // TypeScript writes an optional method as `win32MoveCursorPath?(a, b)`,
+      // which no regex can tell apart from a call. Rule B still holds it to
+      // naming the functions and nothing else, and its only executable use is
+      // the `typeof … === "function"` probe.
+      if (f === CHOKE_POINT || f === BINDING_DECLARATION) return false;
+      const src = readFileSync(f, "utf8");
+      return MOVES_CURSOR.test(src) || CALLS_NATIVE_CURSOR.test(src);
+    });
     expect(movers.map(rel)).toEqual([]);
   });
 
@@ -172,5 +209,75 @@ describe("cursor placement failure — typed code classification", () => {
       const body = JSON.parse(failWith(err, "mouse_click").content[0]!.text);
       expect(body.code, `poached by "${suffix}"`).toBe("CursorPlacementBlocked");
     }
+  });
+});
+
+// ── The resolved region, as opposed to the caller-supplied override ─────────
+//
+// The override tests above pin the arithmetic; these pin what the guard decides
+// on its own: every monitor when the native path can reach them, the primary
+// monitor when it cannot, and the gaps of a staggered layout in neither case.
+describe("resolveReachableRegion", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    hoisted.state.nativeAvailable = true;
+    hoisted.state.monitors = [
+      { x: 0, y: 0, width: 1920, height: 1080 },
+      { x: -1920, y: 0, width: 1920, height: 1080 },
+    ];
+    const m = await import("../../src/engine/reachable-bounds.js");
+    m._resetReachableRegionCacheForTests();
+  });
+
+  it("accepts a negative coordinate on a monitor left of the primary one", async () => {
+    const { isCoordinateReachable } = await import("../../src/engine/reachable-bounds.js");
+    expect(isCoordinateReachable(-1500, 300)).toBe(true);
+  });
+
+  it("rejects the gap of a staggered layout, which the bounding box would admit", async () => {
+    hoisted.state.monitors = [
+      { x: 0, y: 0, width: 1920, height: 1080 },
+      { x: 1920, y: 1080, width: 1920, height: 1080 },
+    ];
+    const m = await import("../../src/engine/reachable-bounds.js");
+    m._resetReachableRegionCacheForTests();
+    // Inside the virtual screen's bounding rectangle, on neither monitor.
+    expect(m.isCoordinateReachable(2500, 300)).toBe(false);
+    expect(m.isCoordinateReachable(500, 1500)).toBe(false);
+    expect(m.isCoordinateReachable(2500, 1500)).toBe(true);
+  });
+
+  it("falls back to the primary monitor when the native path is unavailable", async () => {
+    hoisted.state.nativeAvailable = false;
+    const m = await import("../../src/engine/reachable-bounds.js");
+    m._resetReachableRegionCacheForTests();
+    expect(m.isCoordinateReachable(-1500, 300)).toBe(false);
+    expect(m.isCoordinateReachable(500, 300)).toBe(true);
+    // …and says why, so the recovery advice is actionable.
+    const err = (() => {
+      try {
+        m.assertCoordinateReachable(-1500, 300);
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+    expect(err?.message).toContain("built-in Windows input module");
+  });
+
+  it("allows everything when the monitor layout cannot be read", async () => {
+    hoisted.state.monitors = [];
+    const m = await import("../../src/engine/reachable-bounds.js");
+    m._resetReachableRegionCacheForTests();
+    expect(m.isCoordinateReachable(-99999, -99999)).toBe(true);
+  });
+
+  it("reads the layout once per gesture rather than once per call", async () => {
+    const m = await import("../../src/engine/reachable-bounds.js");
+    m._resetReachableRegionCacheForTests();
+    hoisted.enumCalls.n = 0;
+    m.isCoordinateReachable(10, 10);
+    m.isCoordinateReachable(20, 20);
+    m.isCoordinateReachable(30, 30);
+    expect(hoisted.enumCalls.n).toBe(1);
   });
 });

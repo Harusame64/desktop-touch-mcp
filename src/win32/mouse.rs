@@ -118,6 +118,12 @@ fn send_input_absolute(x: i32, y: i32) -> bool {
 
 /// Place the cursor and confirm it arrived: `SetCursorPos` → read back → on a
 /// miss, `SendInput` correction → read back again.
+///
+/// An unreadable position is a FAILURE, never a pass. `GetCursorPos` fails
+/// precisely when the calling thread has no input desktop — a disconnected or
+/// locked session, one of the cases this error exists to report — so assuming
+/// the cursor reached the target there would recreate the silent wrong click
+/// the whole ADR is about.
 fn place_and_verify(x: i32, y: i32) -> NativeCursorMoveResult {
     let _ = unsafe { SetCursorPos(x, y) };
     if let Some(pos) = read_cursor_pos() {
@@ -131,14 +137,31 @@ fn place_and_verify(x: i32, y: i32) -> NativeCursorMoveResult {
         }
     }
 
-    send_input_absolute(x, y);
-    let pos = read_cursor_pos().unwrap_or((x, y));
-    let ok = landed(pos, x, y);
-    NativeCursorMoveResult {
-        ok,
-        method: if ok { "send_input" } else { "failed" }.to_string(),
-        final_x: pos.0,
-        final_y: pos.1,
+    let injected = send_input_absolute(x, y);
+    match read_cursor_pos() {
+        Some(pos) if landed(pos, x, y) => NativeCursorMoveResult {
+            ok: true,
+            method: "send_input".to_string(),
+            final_x: pos.0,
+            final_y: pos.1,
+        },
+        Some(pos) => NativeCursorMoveResult {
+            ok: false,
+            // Distinguish "the injection itself was refused" (Win11 input
+            // restrictions, same shape as `foreground_flash::send_keys`) from
+            // "it was accepted and the cursor still is not there" (something is
+            // holding it) — the caller cannot tell them apart from the position.
+            method: if injected { "failed" } else { "send_input_refused" }.to_string(),
+            final_x: pos.0,
+            final_y: pos.1,
+        },
+        None => NativeCursorMoveResult {
+            ok: false,
+            method: "readback_failed".to_string(),
+            // No position to report: the desktop could not be read at all.
+            final_x: x,
+            final_y: y,
+        },
     }
 }
 
@@ -182,13 +205,24 @@ pub fn win32_move_cursor_path(
             return Ok(place_and_verify(last.x, last.y));
         }
         let _ = unsafe { SetCursorPos(last.x, last.y) };
-        let pos = read_cursor_pos().unwrap_or((last.x, last.y));
-        Ok(NativeCursorMoveResult {
-            ok: true,
-            method: "set_cursor_pos".to_string(),
-            final_x: pos.0,
-            final_y: pos.1,
-        })
+        // Unverified by request (this segment is not the end of the gesture), so
+        // `ok` says nothing about where the cursor is — hence `method` reports
+        // whether the position could even be read, rather than implying a check
+        // that did not happen.
+        match read_cursor_pos() {
+            Some(pos) => Ok(NativeCursorMoveResult {
+                ok: true,
+                method: "set_cursor_pos".to_string(),
+                final_x: pos.0,
+                final_y: pos.1,
+            }),
+            None => Ok(NativeCursorMoveResult {
+                ok: true,
+                method: "readback_failed".to_string(),
+                final_x: last.x,
+                final_y: last.y,
+            }),
+        }
     })
 }
 

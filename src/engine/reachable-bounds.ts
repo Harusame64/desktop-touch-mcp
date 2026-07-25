@@ -53,6 +53,27 @@ function contains(b: ReachableBounds, x: number, y: number): boolean {
 let warnedUnknownBounds = false;
 
 /**
+ * The layout is read once per gesture rather than once per call.
+ *
+ * A single drag asks three times — the handler checks both endpoints before
+ * pressing, then the move checks again — and `EnumDisplayMonitors` on each was
+ * not only wasted work but a correctness gap: the guard could approve a point
+ * against one layout while the move ran against another. A short window keeps
+ * the whole gesture on one answer.
+ *
+ * It stays short because a monitor really can be unplugged mid-gesture. That
+ * case is not left to this cache: the native move reads the cursor back and
+ * reports a placement failure when the OS pulled it elsewhere.
+ */
+const REGION_CACHE_MS = 250;
+let cachedRegion: { at: number; region: ReachableRegion | null } | null = null;
+
+/** Drop the memoised layout — tests that swap the monitor set need this. */
+export function _resetReachableRegionCacheForTests(): void {
+  cachedRegion = null;
+}
+
+/**
  * Resolve the region the cursor can be placed in, or `null` when that cannot
  * be determined.
  *
@@ -63,6 +84,9 @@ let warnedUnknownBounds = false;
  * so the distinction is part of the return type rather than hidden inside.
  */
 export function resolveReachableRegion(): ReachableRegion | null {
+  const now = Date.now();
+  if (cachedRegion && now - cachedRegion.at < REGION_CACHE_MS) return cachedRegion.region;
+
   let region: ReachableRegion | null;
   try {
     if (hasNativeCursorMove()) {
@@ -85,6 +109,7 @@ export function resolveReachableRegion(): ReachableRegion | null {
         "clicks may land somewhere other than the requested point.",
     );
   }
+  cachedRegion = { at: now, region };
   return region;
 }
 

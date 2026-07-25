@@ -30,15 +30,21 @@ async function readCursor(): Promise<Pos> {
   return { x: body.x, y: body.y };
 }
 
-const primary = enumMonitors().find((m) => m.primary)!;
-/** Well inside the primary monitor — clear of the failsafe corners. */
-const A: Pos = { x: primary.bounds.x + 400, y: primary.bounds.y + 300 };
-const B: Pos = { x: primary.bounds.x + 900, y: primary.bounds.y + 650 };
-
+// Resolved in beforeAll, not at module scope: `enumMonitors` throws on a build
+// without the native addon, which would fail the file instead of skipping it.
+let primary!: { x: number; y: number; width: number; height: number };
+let A: Pos;
+let B: Pos;
 let entry: Pos;
 
 describe.skipIf(!hasNativeCursorMove())("ADR-029 Phase 2a — native cursor placement", () => {
   beforeAll(async () => {
+    const found = enumMonitors().find((m) => m.primary);
+    if (!found) throw new Error("no primary monitor reported");
+    primary = found.bounds;
+    // Well inside the primary monitor — clear of the failsafe corners.
+    A = { x: primary.x + 400, y: primary.y + 300 };
+    B = { x: primary.x + 900, y: primary.y + 650 };
     entry = await readCursor();
   });
 
@@ -76,7 +82,7 @@ describe.skipIf(!hasNativeCursorMove())("ADR-029 Phase 2a — native cursor plac
   });
 
   it("refuses a point that is on no monitor instead of clicking elsewhere", async () => {
-    const offScreen = { x: primary.bounds.x + primary.bounds.width + 5000, y: primary.bounds.y + 10 };
+    const offScreen = { x: primary.x + primary.width + 5000, y: primary.y + 10 };
     await expect(moveCursorTo(offScreen.x, offScreen.y, 0)).rejects.toMatchObject({
       name: "CoordinateOutsideReachableBounds",
     });
@@ -92,7 +98,7 @@ describe.skipIf(!hasNativeCursorMove())("ADR-029 Phase 2a — native cursor plac
     await moveCursorTo(A.x, A.y, 0);
     await mouse.pressButton(Button.LEFT);
     try {
-      await moveCursorTo(primary.bounds.x + primary.bounds.width + 5000, A.y, 0);
+      await moveCursorTo(primary.x + primary.width + 5000, A.y, 0);
     } catch {
       // expected
     } finally {
