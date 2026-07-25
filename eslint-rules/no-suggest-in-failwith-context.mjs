@@ -32,10 +32,21 @@
  * Scope (wired in eslint.config.mjs): `src/**` minus `_errors.ts`, which
  * defines the helpers and mentions the key names in its own documentation.
  *
- * What this rule cannot see, by construction: a third argument that is a
- * variable or a spread rather than an object literal, and an aliased import
- * (`import { failWith as f }`). Both are matched on the name at the call site.
- * The routing tests and the failWith call-site fixtures cover what slips past.
+ * Callee matching is the union of two signals (Codex R1 P2):
+ *   - the name at the call site is one of the helpers (`failWith(...)`,
+ *     `errors.failWith(...)`), and
+ *   - the callee resolves to a binding imported from `_errors`, which also
+ *     covers an alias (`import { failWith as f }` → `f(...)`) and a local
+ *     re-alias of one (`const f = failWith`).
+ * The union is deliberate: this is a guard rule, so a same-named helper from
+ * somewhere else being flagged is a cheap, visible false positive, whereas a
+ * missed alias silently recreates the malformed envelope. Suppress with an
+ * eslint-disable line if a genuinely unrelated `failWith` ever appears.
+ *
+ * What this rule still cannot see: a third argument that is a variable or a
+ * spread rather than an object literal, and a binding obtained dynamically
+ * (`const { failWith } = await import("./_errors.js")` — none exist). The
+ * routing tests and the failWith call-site fixtures cover what slips past.
  */
 
 const BANNED = {
@@ -64,27 +75,69 @@ export default {
     // mis-nests the same way (Opus R1 P3-2).
     const CHECKED_CALLEES = new Set(["failWith", "errorFromMessage", "failArgs"]);
 
-    function calleeName(node) {
-      if (node.type === "Identifier") return node.name;
-      // `errors.failWith(...)` / `_errors.failWith(...)`
-      if (node.type === "MemberExpression" && node.property.type === "Identifier") {
-        return node.property.name;
+    /** Module specifiers that mean `src/tools/_errors`. */
+    const ERRORS_MODULE = /(^|[\\/])_errors(\.js|\.ts)?$/;
+
+    /** Nearest declaration of `name`, walking out to module scope. */
+    function findVariable(scope, name) {
+      for (let s = scope; s; s = s.upper) {
+        const found = s.variables.find((v) => v.name === name);
+        if (found) return found;
       }
       return null;
     }
 
+    /**
+     * Does this Identifier callee resolve to a helper imported from `_errors`,
+     * whatever it is called here? Covers `import { failWith as f }` and a local
+     * `const g = f` re-alias of one, at any scope depth. `depth` bounds the
+     * chain (a self-referential `const f = f` would otherwise not terminate).
+     */
+    function resolvesToHelper(idNode, depth = 0) {
+      if (depth > 4) return false;
+      const variable = findVariable(context.sourceCode.getScope(idNode), idNode.name);
+      if (!variable) return false;
+      for (const def of variable.defs) {
+        if (def.type === "ImportBinding") {
+          const source = def.parent?.source?.value;
+          if (typeof source !== "string" || !ERRORS_MODULE.test(source)) continue;
+          if (def.node.type !== "ImportSpecifier" || def.node.imported.type !== "Identifier") continue;
+          if (CHECKED_CALLEES.has(def.node.imported.name)) return true;
+          continue;
+        }
+        if (def.type === "Variable" && def.node.type === "VariableDeclarator") {
+          const init = def.node.init;
+          if (init?.type !== "Identifier") continue;
+          if (CHECKED_CALLEES.has(init.name) || resolvesToHelper(init, depth + 1)) return true;
+        }
+      }
+      return false;
+    }
+
+    function isCheckedCallee(callee) {
+      if (callee.type === "Identifier") {
+        return CHECKED_CALLEES.has(callee.name) || resolvesToHelper(callee);
+      }
+      // `errors.failWith(...)` / `_errors.failWith(...)` — a namespace import
+      // cannot rename the member, so the property name is the whole signal.
+      if (callee.type === "MemberExpression" && !callee.computed && callee.property.type === "Identifier") {
+        return CHECKED_CALLEES.has(callee.property.name);
+      }
+      return false;
+    }
+
     return {
       CallExpression(node) {
-        const name = calleeName(node.callee);
-        if (!name || !CHECKED_CALLEES.has(name)) return;
-
         const third = node.arguments[2];
         if (!third || third.type !== "ObjectExpression") return;
+        if (!isCheckedCallee(node.callee)) return;
 
         for (const prop of third.properties) {
           if (prop.type !== "Property") continue;
+          // A computed *literal* key (`["suggest"]`) nests identically; a
+          // computed identifier (`[k]`) is unknowable, so it is not guessed.
           const key =
-            prop.key.type === "Identifier"
+            !prop.computed && prop.key.type === "Identifier"
               ? prop.key.name
               : prop.key.type === "Literal"
                 ? String(prop.key.value)
