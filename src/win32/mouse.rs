@@ -31,11 +31,19 @@
 //!   current cursor position when the application pumps its loop, so an
 //!   application observes the pointer at its own polling rate — intermediate
 //!   positions are never guaranteed to be seen, whoever sends them.
-//! - Raw input (`WM_INPUT`) is fed by the input stream that `SendInput` writes
-//!   to; `SetCursorPos` sets the position instead, so an application reading
-//!   raw input exclusively does not see this motion at all. Those are mainly
-//!   full-screen games, which confine the cursor anyway — and a confined
-//!   cursor is reported here as a placement failure rather than a wrong click.
+//! - Raw input (`WM_INPUT`) and low-level mouse hooks (`WH_MOUSE_LL`) are fed
+//!   by the input stream that `SendInput` writes to; `SetCursorPos` sets the
+//!   position instead, so anything watching through those does not see this
+//!   motion at all. Raw-input consumers are mainly full-screen games, which
+//!   confine the cursor anyway — and a confined cursor is reported here as a
+//!   placement failure rather than a wrong click. (This server's own failsafe
+//!   polls `GetCursorPos` rather than hooking, so it is unaffected.)
+//! - `SetCursorPos` does not reset the user-input idle timer the way
+//!   `SendInput` does, so a long run of moves with no clicks or typing will not
+//!   by itself hold off a screensaver or a lock. Clicks and keystrokes still go
+//!   through `SendInput`, so any real interaction does. If the session does
+//!   lock, `SetCursorPos` starts failing and the caller gets a typed error
+//!   rather than a wrong click.
 //!
 //! **Every move is verified.** `GetCursorPos` reads the position back and it
 //! must match exactly; near-enough is not enough, because one pixel can be a
