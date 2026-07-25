@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — multi-monitor: acting on a window that isn't focused, and mouse input that reaches every monitor
+## [1.13.0] - 2026-07-25 — multi-monitor: acting on a window that isn't focused, and mouse input that reaches every monitor
 
 ### Fixed
 
