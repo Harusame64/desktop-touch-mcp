@@ -458,7 +458,7 @@ wrong version, etc.) that the stdio smoke test above cannot detect.
 rm -rf "$USERPROFILE/.desktop-touch-mcp/releases/vX.Y.Z"
 npm cache clean --force
 
-# 2. Download via npx (proves download + SHA verification + extraction)
+# 2. Download via npx and verify --help output (download + SHA + extraction + arg forwarding)
 #    ⚠️ Run this from a cwd OUTSIDE the project source dir first
 #    (PowerShell: `cd $env:TEMP`  |  bash: `cd /tmp`).
 #    The project's own package.json has name=@harusame64/desktop-touch-mcp; once its
@@ -468,22 +468,24 @@ npm cache clean --force
 #    That is a false negative (wrong cwd), NOT a release bug — re-run from a temp dir.
 #    (`npx @...@<older-version>` works from the project root because the local version
 #    no longer satisfies the spec, which is why a 1.7.2 cross-check can mislead.)
-#    ⚠️ Give it EOF on stdin, or it will not exit. `--help` is not implemented,
-#    so the launcher installs the release and then starts the stdio server, which
-#    stays alive until its stdin ends (bin/launcher.js `wireLauncherStdio` ends
-#    the child's stdin only when the parent's does). From an interactive console
-#    stdin never ends, so the command looks like a hang.
-#      bash:        npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help < /dev/null
-#      PowerShell:  cmd /c "npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help < NUL"
-npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help < /dev/null
-# Expected (v1.13.0 measured, with stdin at EOF): the launcher prints
+#    (`--help` exits on its own — no stdin redirect needed. `src/server-windows.ts`
+#    handles it before the stdio transport starts, so unlike a normal launch the
+#    process does not sit waiting for input.)
+npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
+# Expected (measured on v1.13.0): the launcher prints
 #   [desktop-touch-mcp] Downloading desktop-touch-mcp-windows.zip from vX.Y.Z
 #   [desktop-touch-mcp] Installed vX.Y.Z to ...
-# and then exits 0 with NO usage text — neither bin/launcher.js nor src/ implements
-# --help, and 1.12.4 behaves identically, so a silent --help is not a regression.
-# What this step actually proves is the download + SHA verification + extraction.
-# For proof that the installed server RUNS, use the stdio initialize smoke test in
-# the "Smoke Test" section above; that is the check to trust.
+# then the SERVER prints its own usage and exits 0:
+#   desktop-touch-mcp vX.Y.Z
+#   Usage: desktop-touch-mcp [options]
+#   Options:  --http / --port <port> / -h, --help
+# Check the printed version equals X.Y.Z. Silence, or a version mismatch, is a
+# REGRESSION: it means the launcher stopped forwarding arguments, the wrong release
+# was extracted, or the runtime died before parsing flags.
+# So this step proves download + SHA verification + extraction + argument forwarding
+# + the runtime starting far enough to parse flags.
+# What this step does NOT prove is that the server answers MCP requests; for that,
+# run the stdio initialize / tools-list smoke test in the "Smoke Test" section above.
 
 # 3. Verify installed files
 RELEASE_DIR="$USERPROFILE/.desktop-touch-mcp/releases/vX.Y.Z"
