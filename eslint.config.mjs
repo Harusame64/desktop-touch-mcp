@@ -1,9 +1,14 @@
-// Two-tier lint policy:
-//   1. All JS/TS — typescript-eslint recommended (light code-quality baseline).
+// Lint policy, in the order the blocks appear below:
+//   1. All JS/TS — typescript-eslint recommended (light code-quality baseline),
+//      plus `reportUnusedDisableDirectives: "error"`: a stale eslint-disable is
+//      a failure, not a warning nobody reads (`npm run lint` has no
+//      --max-warnings, so warnings never failed CI — PR #550 Round 1 P2-1).
 //   2. src/      — adds no-console (allow: error/warn) to defend the MCP stdio
 //                  JSON-RPC stream against console.log/debug/info contamination
 //                  (Issue #60 regression guard, see Issue #61).
-//   3. scripts/, tests/, __test__/ — relax console + test-friendly rules.
+//   3. src/tools/ — ADR-021: no hand-built tool-failure wire shapes.
+//   4. scripts/, tests/, __test__/ — relax console and test-shaped rules, but
+//      unused *imports* stay an error (see the block's own comment).
 
 import js from "@eslint/js";
 import globals from "globals";
@@ -29,6 +34,14 @@ export default [
 
   // Global rule tuning — applies everywhere.
   {
+    // A disable comment for a rule that reports nothing is dead weight that
+    // hides the next real violation of that rule. Reported as an ERROR because
+    // `npm run lint` is plain `eslint .` with no --max-warnings, so anything
+    // warning-level passes CI unnoticed — which is exactly how the 14 stale
+    // directives this PR sweeps accumulated.
+    linterOptions: {
+      reportUnusedDisableDirectives: "error",
+    },
     languageOptions: {
       globals: { ...globals.node },
     },

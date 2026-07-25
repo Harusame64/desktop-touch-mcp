@@ -91,9 +91,13 @@ Run:
 ```bash
 node --check bin/launcher.js
 npm run check:launcher-manifest
+npm run lint            # stale eslint-disable directives are errors, so CI would fail on them
 npm run build
 npm publish --dry-run
 ```
+
+`npm run lint` is here so the guard is local: `.githooks/pre-push` only blocks
+direct pushes to `main`, and lint otherwise runs for the first time in CI.
 
 ### Dogfood Pass (Required, v1.3 lesson)
 
@@ -454,7 +458,7 @@ wrong version, etc.) that the stdio smoke test above cannot detect.
 rm -rf "$USERPROFILE/.desktop-touch-mcp/releases/vX.Y.Z"
 npm cache clean --force
 
-# 2. Download via npx and verify --help
+# 2. Download via npx (proves download + SHA verification + extraction)
 #    ⚠️ Run this from a cwd OUTSIDE the project source dir first
 #    (PowerShell: `cd $env:TEMP`  |  bash: `cd /tmp`).
 #    The project's own package.json has name=@harusame64/desktop-touch-mcp; once its
@@ -464,8 +468,15 @@ npm cache clean --force
 #    That is a false negative (wrong cwd), NOT a release bug — re-run from a temp dir.
 #    (`npx @...@<older-version>` works from the project root because the local version
 #    no longer satisfies the spec, which is why a 1.7.2 cross-check can mislead.)
-npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
-# Expected (v1.13.0 measured): the launcher prints
+#    ⚠️ Give it EOF on stdin, or it will not exit. `--help` is not implemented,
+#    so the launcher installs the release and then starts the stdio server, which
+#    stays alive until its stdin ends (bin/launcher.js `wireLauncherStdio` ends
+#    the child's stdin only when the parent's does). From an interactive console
+#    stdin never ends, so the command looks like a hang.
+#      bash:        npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help < /dev/null
+#      PowerShell:  cmd /c "npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help < NUL"
+npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help < /dev/null
+# Expected (v1.13.0 measured, with stdin at EOF): the launcher prints
 #   [desktop-touch-mcp] Downloading desktop-touch-mcp-windows.zip from vX.Y.Z
 #   [desktop-touch-mcp] Installed vX.Y.Z to ...
 # and then exits 0 with NO usage text — neither bin/launcher.js nor src/ implements

@@ -10,45 +10,35 @@
  *
  * @see src/tools/browser.ts  browserClickRegistrationSchema
  */
-
 import { describe, it, expect } from "vitest";
 import { browserClickRegistrationSchema, browserFillRegistrationSchema } from "../../src/tools/browser.js";
-
 describe("browser_click registration schema — exactly-one-of(selector | by+pattern)", () => {
   it("accepts selector alone", () => {
     expect(browserClickRegistrationSchema.safeParse({ selector: "#submit" }).success).toBe(true);
   });
-
   it("accepts by + pattern alone", () => {
     expect(browserClickRegistrationSchema.safeParse({ by: "text", pattern: "Save" }).success).toBe(true);
   });
-
   it("accepts by + pattern + role + scope (disambiguation args)", () => {
     expect(
       browserClickRegistrationSchema.safeParse({ by: "text", pattern: "Save", role: "button", scope: "#main" }).success,
     ).toBe(true);
   });
-
   it("rejects BOTH selector and by+pattern", () => {
     expect(browserClickRegistrationSchema.safeParse({ selector: "#x", by: "text", pattern: "Save" }).success).toBe(false);
   });
-
   it("rejects NEITHER (empty)", () => {
     expect(browserClickRegistrationSchema.safeParse({}).success).toBe(false);
   });
-
   it("rejects by without pattern", () => {
     expect(browserClickRegistrationSchema.safeParse({ by: "text" }).success).toBe(false);
   });
-
   it("rejects an unknown by-axis value (selector is NOT a public by-axis)", () => {
     expect(browserClickRegistrationSchema.safeParse({ by: "selector", pattern: "#x" }).success).toBe(false);
   });
-
   it("survives the refine as a ZodObject so the SDK emits tools/list properties", () => {
     // The MCP SDK's normalizeObjectSchema returns the schema only when
     // _zod.def.type === 'object' (or def.shape present). A refined object keeps both.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const def = (browserClickRegistrationSchema as any)._zod?.def;
     expect(def?.type).toBe("object");
     const shape = def?.shape ?? {};
@@ -57,30 +47,23 @@ describe("browser_click registration schema — exactly-one-of(selector | by+pat
     }
   });
 });
-
 describe("browser_fill registration schema — exactly-one-of(selector | by+pattern)", () => {
   it("accepts selector + value", () => {
     expect(browserFillRegistrationSchema.safeParse({ selector: "#email", value: "x" }).success).toBe(true);
   });
-
   it("accepts by + pattern + value", () => {
     expect(browserFillRegistrationSchema.safeParse({ by: "ariaLabel", pattern: "Email", value: "x" }).success).toBe(true);
   });
-
   it("rejects BOTH selector and by+pattern", () => {
     expect(browserFillRegistrationSchema.safeParse({ selector: "#e", by: "ariaLabel", pattern: "Email", value: "x" }).success).toBe(false);
   });
-
   it("rejects NEITHER", () => {
     expect(browserFillRegistrationSchema.safeParse({ value: "x" }).success).toBe(false);
   });
-
   it("requires value", () => {
     expect(browserFillRegistrationSchema.safeParse({ by: "ariaLabel", pattern: "Email" }).success).toBe(false);
   });
-
   it("survives the refine as a ZodObject with all by-axis + value properties", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const def = (browserFillRegistrationSchema as any)._zod?.def;
     expect(def?.type).toBe("object");
     const shape = def?.shape ?? {};
