@@ -70,11 +70,15 @@ export default [
   // ADR-029 OQ8 — failWith's third argument is a flat context record, so a
   // `suggest` key there is nested where nothing reads it and a `context` key
   // renders as `context.context`. Fourteen call sites had drifted into the
-  // first shape; five were emitting no root advice at all. `_errors.ts` is
-  // exempt because it defines the helpers and names the keys in its own docs.
+  // first shape; five were emitting no root advice at all.
+  //
+  // `_errors.ts` was exempted at first "because it names the keys in its own
+  // docs" — a false rationale: the rule inspects Property nodes inside a call
+  // argument, never comments or type declarations, and it reports nothing in
+  // that file today. The exemption bought nothing and blinded the one file
+  // where a new fail* wrapper would be written (Round 3 P2-5), so it is gone.
   {
     files: ["src/**/*.ts"],
-    ignores: ["src/tools/_errors.ts"],
     plugins: {
       adr029: { rules: { "no-suggest-in-failwith-context": noSuggestInFailWithContext } },
     },

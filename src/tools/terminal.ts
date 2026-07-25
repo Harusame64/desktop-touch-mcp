@@ -1237,12 +1237,15 @@ export const terminalSendHandler = async ({
         // OQ8 follow-up: prefix the code so classify() routes this to
         // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
         // adviceless generic `ToolError` a bare snake_case reason produced.
-        // The reason stays in the message tail AND in context.reason.
+        // The reason stays in the message tail AND in context.reason — same
+        // `?? "unknown"` fallback on both, so the advice's "context.reason
+        // names the step that failed" cannot point at a dropped key
+        // (Round 3 P3-10).
         return failWith(
           new Error(`ForegroundFlashFailed: ${flashResult.reason ?? "unknown"}`),
           "terminal:send",
           {
-            reason: flashResult.reason,
+            reason: flashResult.reason ?? "unknown",
             rawError: flashResult.rawError,
             windowTitle: win.title,
           }

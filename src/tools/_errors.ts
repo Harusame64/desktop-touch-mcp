@@ -216,17 +216,30 @@ const SUGGESTS: Record<string, string[]> = {
   ForegroundFlashUnsupported: [
     "method:'foreground_flash' resolved to a channel this window cannot accept.",
     "Try method:'foreground' — it works for Chromium, UWP and other non-terminal windows, and for terminal targets that reject the flash path.",
-    "context.reason says why the channel was rejected (for example `chromium`, `uwp_sandboxed`, `elevated_target`).",
+    // The values a resolver can actually produce on this path — see
+    // `BackgroundUnsupportedReason` in engine/background-channel-resolver.ts.
+    // Naming a reason no path emits would send the model looking for a cause
+    // that never applies (Round 3 P2-2).
+    "context.reason says why the channel was rejected (`chromium`, `uwp_sandboxed`, `class_unknown`, or `no_supported_channel`).",
   ],
   // OQ8 follow-up (6th hole of the same class): the flash channel WAS
-  // available but the paste sequence itself failed partway. context.reason
-  // names the failed step (snake_case, e.g. foreground_steal_denied /
-  // focus_wait_timeout / clipboard_lock_contention / input_contains_newline).
+  // available but the sequence failed. `context.reason` names the step
+  // (snake_case, 8 values — see ForegroundFlashErrorReason in
+  // win32/foreground_flash.rs).
+  //
+  // The advice is keyed to the reason because the reasons do not share a
+  // recovery, and the wrong one is worse than none (Round 3 P1): two are
+  // pre-flight rejects where NOTHING was sent and a retry fails identically,
+  // one (foreground_restore_failed) happens after the text was already pasted
+  // so resending would double-input, and one (send_input_failed) can leave the
+  // text truncated.
   ForegroundFlashFailed: [
-    "The flash paste sequence failed partway — context.reason names the step that failed.",
-    "Transient steps (focus_wait_timeout / clipboard_lock_contention / foreground_steal_denied) often clear on retry — retry once, then fall back to method:'foreground'.",
-    "input_contains_newline: the flash channel is single-line only — strip the trailing newline and rely on pressEnter, or send one line per call.",
-    "If the target runs elevated (admin) and this server does not, Windows refuses the foreground steal — run the server elevated or match elevation levels.",
+    "context.reason names the step that failed, and the recovery differs per step — read it before retrying.",
+    "input_contains_newline / input_exceeds_paste_warning_threshold: nothing was sent — both are checked before any input is injected, so retrying fails identically. Strip the newline (send one line per call and use pressEnter), or split the text into smaller calls.",
+    "focus_wait_timeout / clipboard_lock_contention / foreground_steal_denied: transient — retry once, then fall back to method:'foreground'. If the target runs elevated (admin) and this server does not, Windows refuses the foreground steal for good: match elevation levels instead of retrying.",
+    "send_input_failed: Windows accepted only part of the sequence, so the text may have arrived truncated — read the target before resending.",
+    "wt_paste_warning_intercepted: the terminal's own paste warning appeared and was dismissed, so nothing was pasted — send fewer lines per call.",
+    "foreground_restore_failed: the text WAS pasted; only restoring the previous foreground window failed. Do not resend — bring the window you want back with focus_window.",
   ],
   TabDragBlocked: [
     "To move the window, drag from the window border or use Win+Arrow keys instead.",
@@ -238,7 +251,13 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",
-    "Check context.sent vs context.total",
+    "Check context.sent vs context.total when the failure carries them — they say how much arrived",
+    // keyboard:press has no count to report: a combo fails as a whole boolean,
+    // and the code deliberately does NOT fall through to the foreground path
+    // because that would replay the combo (PR #64 Codex P1). Saying "check
+    // sent vs total" at that site pointed at fields its envelope never carries
+    // (Round 3 P2-3).
+    "keyboard:press reports context.keys instead: a combo has no partial count, and a modifier may still be held down in the target, so confirm the window with desktop_state before resending",
     // Kept from the keyboard:press / terminal:send call sites when their
     // hand-written suggests were removed. It is the one line those sites had
     // that this dictionary did not, and dropping it would have lost the only

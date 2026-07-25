@@ -43,6 +43,12 @@
  * missed alias silently recreates the malformed envelope. Suppress with an
  * eslint-disable line if a genuinely unrelated `failWith` ever appears.
  *
+ * The third argument is peeled of TS-only wrappers first (`as` / `satisfies` /
+ * `!` / `<T>`), which are idiomatic here and would otherwise be a silent
+ * escape: `failWith(e, t, { suggest } as Record<string, unknown>)` mis-nests
+ * exactly like the bare literal (Round 3 P2-6; the ADR-021 sibling rule peels
+ * the same wrappers for the same reason).
+ *
  * What this rule still cannot see: a third argument that is a variable or a
  * spread rather than an object literal, and a binding obtained dynamically
  * (`const { failWith } = await import("./_errors.js")` — none exist). The
@@ -126,9 +132,24 @@ export default {
       return false;
     }
 
+    /** Peel TS-only wrappers so a cast does not hide the object literal. */
+    function unwrap(node) {
+      let n = node;
+      while (
+        n &&
+        (n.type === "TSAsExpression" ||
+          n.type === "TSSatisfiesExpression" ||
+          n.type === "TSNonNullExpression" ||
+          n.type === "TSTypeAssertion")
+      ) {
+        n = n.expression;
+      }
+      return n;
+    }
+
     return {
       CallExpression(node) {
-        const third = node.arguments[2];
+        const third = unwrap(node.arguments[2]);
         if (!third || third.type !== "ObjectExpression") return;
         if (!isCheckedCallee(node.callee)) return;
 

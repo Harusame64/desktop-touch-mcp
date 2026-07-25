@@ -13,6 +13,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { Linter } from "eslint";
+import tseslint from "typescript-eslint";
 import rule from "../../eslint-rules/no-suggest-in-failwith-context.mjs";
 
 const linter = new Linter();
@@ -79,5 +80,43 @@ describe("no-suggest-in-failwith-context — shapes that must stay clean", () =>
   // trade-off is a decision, not a surprise.
   it("still flags a same-named import from an unrelated module (deliberate)", () => {
     expect(violations('import { failWith } from "./other.js";\nfailWith(e, "t", { suggest: [] });')).toHaveLength(1);
+  });
+});
+
+// The cases above run through the default parser, which cannot express a TS
+// cast — and a cast around the third argument was a real escape (Round 3 P2-6).
+// These run the same rule the way production does: typescript-eslint's parser
+// on a `.ts` filename.
+describe("no-suggest-in-failwith-context — under the TypeScript parser", () => {
+  const tsConfig = {
+    // A `.ts` filename only matches when the config says so — the default
+    // glob covers `.js` alone, and a mismatch surfaces as a config warning
+    // rather than a rule report (which the stray-message guard catches).
+    files: ["**/*.ts"],
+    plugins: { adr029: { rules: { "no-suggest-in-failwith-context": rule } } },
+    languageOptions: { parser: tseslint.parser, sourceType: "module" as const },
+    rules: { [RULE_ID]: "error" },
+  } as unknown as Parameters<Linter["verify"]>[1];
+
+  const tsViolations = (code: string) => {
+    const messages = linter.verify(code, tsConfig, "src/tools/fixture.ts");
+    const stray = messages.filter((m) => m.ruleId !== RULE_ID);
+    expect(stray, `unexpected non-rule messages: ${JSON.stringify(stray)}`).toHaveLength(0);
+    return messages;
+  };
+
+  const TS_IMPORT = 'import { failWith } from "./_errors.js";\ndeclare const e: Error;\n';
+
+  it.each([
+    ["an `as` cast", `${TS_IMPORT}failWith(e, "t", { suggest: [] } as Record<string, unknown>);`],
+    ["a `satisfies` expression", `${TS_IMPORT}failWith(e, "t", { context: { a: 1 } } satisfies object);`],
+    ["a non-null assertion", `${TS_IMPORT}failWith(e, "t", { suggest: [] }!);`],
+    ["an alias, under this parser too", 'import { failWith as f } from "./_errors.js";\ndeclare const e: Error;\nf(e, "t", { suggest: [] });'],
+  ])("flags %s", (_name, code) => {
+    expect(tsViolations(code)).toHaveLength(1);
+  });
+
+  it("leaves a flat context record alone", () => {
+    expect(tsViolations(`${TS_IMPORT}failWith(e, "t", { windowTitle: "w" } as Record<string, unknown>);`)).toHaveLength(0);
   });
 });

@@ -295,12 +295,14 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
     // Sanity: the bounds only guard the PARSER (a drastic drop or explosion
     // means the branch-extraction regex stopped matching the if-chain shape) —
     // the substantive per-branch producer check runs below regardless of
-    // count. History: ~30 after Phase 6 PR-B (32→29→30); 60 after the
-    // ADR-029 OQ8 arms (ForegroundFlash* family, TabDragBlocked /
-    // CrossWindowDragBlocked, ForegroundFlashFailed) — which is why the
-    // ceiling moved from 60 to 90. Bump it again when legitimate arm growth
-    // approaches the bound; every added arm is still individually pinned to a
-    // producer by the loop below.
+    // count. Measured history: ~30 after Phase 6 PR-B (32→29→30), then growth
+    // across later phases that this comment did not track — 55 immediately
+    // before the ADR-029 OQ8 arms, 60 after them (the OQ8 change adds five:
+    // the ForegroundFlash* additions plus TabDragBlocked /
+    // CrossWindowDragBlocked). The ceiling moved 60→90 for that, so the slack
+    // is now ~1.5x rather than the ~2x it used to be; bump it when arms
+    // approach 80. Every added arm is still individually pinned to a producer
+    // by the loop below.
     expect(branches.length).toBeGreaterThanOrEqual(20);
     expect(branches.length).toBeLessThan(90);
 
