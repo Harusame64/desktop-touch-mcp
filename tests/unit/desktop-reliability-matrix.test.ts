@@ -176,6 +176,7 @@ const FAIL_REASONS = [
   "entity_outside_viewport",
   "origin_window_not_visible",
   "coordinate_outside_reachable_bounds",
+  "cursor_placement_blocked",
   "executor_failed",
 ] as const;
 

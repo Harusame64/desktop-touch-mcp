@@ -111,6 +111,42 @@ pub struct NativeProcessIdentity {
     pub process_start_time_ms: f64,
 }
 
+// ── ADR-029 Phase 2a: multi-monitor cursor movement ──────────────────────────
+
+/// A cursor position in physical virtual-screen coordinates (signed — a
+/// monitor placed left of or above the primary one has negative coordinates,
+/// which is the whole point of the ADR-029 native path).
+#[napi(object)]
+pub struct NativeCursorPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Outcome of a cursor move. The native side never throws for a move that
+/// simply did not land — it reports `ok: false` plus where the cursor
+/// actually ended up, and the TS layer decides which typed error that
+/// becomes (`CursorPlacementBlocked`). `method` records which mechanism
+/// produced the final position so the failure mode is observable:
+///
+/// - `"set_cursor_pos"` — landed on the requested pixel first try (or, from the
+///   unverified batch path, "placed and the position was readable")
+/// - `"set_cursor_pos_retry"` — the first attempt read back wrong and the retry
+///   landed it, i.e. something moved the cursor in between
+/// - `"failed"` — the call was accepted and the cursor is still not there;
+///   `final_x` / `final_y` hold the real position
+/// - `"set_cursor_pos_refused"` — Windows rejected the call (no input desktop /
+///   no window-station access); `final_x` / `final_y` hold the real position
+/// - `"readback_failed"` — `GetCursorPos` failed, so the position is unknown
+///   and `final_x` / `final_y` merely echo the request. Callers MUST NOT
+///   present them as where the cursor is.
+#[napi(object)]
+pub struct NativeCursorMoveResult {
+    pub ok: bool,
+    pub method: String,
+    pub final_x: i32,
+    pub final_y: i32,
+}
+
 /// Scrollbar position snapshot. `page_ratio` (0..1) is precomputed so
 /// the TS wrapper does not have to redo the same `(nPos - nMin) / range`
 /// math the legacy `readScrollInfo` used.

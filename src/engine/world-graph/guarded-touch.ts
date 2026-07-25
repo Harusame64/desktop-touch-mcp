@@ -50,6 +50,7 @@ export type TouchFailReason =
   | "entity_outside_viewport"
   | "origin_window_not_visible"
   | "coordinate_outside_reachable_bounds"
+  | "cursor_placement_blocked"
   | "executor_failed";
 
 /**
@@ -533,6 +534,13 @@ export class GuardedTouchLoop {
       // silently fail the check.
       if (err instanceof Error && err.name === "CoordinateOutsideReachableBounds") {
         return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [] };
+      }
+      // ADR-029 Phase 2a: same reasoning for a cursor that could not be placed
+      // at all. Its recovery (free the cursor, reconnect the session) shares
+      // nothing with either executor_failed or the unreachable-coordinate
+      // advice, so it must not be folded into them.
+      if (err instanceof Error && err.name === "CursorPlacementBlocked") {
+        return { ok: false, reason: "cursor_placement_blocked", diff: [] };
       }
       return { ok: false, reason: "executor_failed", diff: [] };
     }

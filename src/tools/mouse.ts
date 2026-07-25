@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
+import { mouse, Button } from "../engine/nutjs.js";
 import {
   enumWindowsInZOrder,
   restoreAndFocusWindow,
@@ -50,34 +50,22 @@ import {
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
+import { moveCursorTo } from "../engine/cursor.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
- * speed=0 → setPosition teleport (instant, no animation).
- * speed>0 → straightTo animation at that px/sec.
+ * speed=0 → teleport (instant, no animation).
+ * speed>0 → animated at that px/sec.
  * speed omitted → DEFAULT_MOUSE_SPEED.
  *
- * ADR-029 Phase 1: the destination is checked BEFORE any movement — libnut
- * clamps an off-primary point into the primary monitor, so by the time the move
- * returns the cursor is already in the wrong place (and a negative coordinate
- * can land in the failsafe corner). Guarding here covers click / move / scroll,
- * which all funnel through this helper; `mouse_drag` checks both of its
- * endpoints in the handler because it moves the cursor by other means.
+ * ADR-029 Phase 2a: a thin delegate to the one place that moves the cursor
+ * (`engine/cursor.ts`), which owns the reachability guard, the native
+ * multi-monitor path and the nut.js fallback. Kept as a local name so the four
+ * call sites in this file (mouse_move / mouse_click / mouse_drag start /
+ * scroll) read unchanged.
  */
 async function moveTo(x: number, y: number, speed?: number): Promise<void> {
-  assertCoordinateReachable(x, y);
-  const s = speed ?? DEFAULT_MOUSE_SPEED;
-  if (s === 0) {
-    await mouse.setPosition(new Point(x, y));
-  } else {
-    const prev = mouse.config.mouseSpeed;
-    mouse.config.mouseSpeed = s;
-    try {
-      await mouse.move(straightTo(new Point(x, y)));
-    } finally {
-      mouse.config.mouseSpeed = prev;
-    }
-  }
+  await moveCursorTo(x, y, speed);
 }
 
 function toButton(b: string): Button {
@@ -955,19 +943,17 @@ export const mouseDragHandler = async ({
       preSnapshot = await snapshotForVerify(dragVerifyCoord[0], dragVerifyCoord[1]);
     }
 
-    const s = speed ?? DEFAULT_MOUSE_SPEED;
-    if (s === 0) {
-      await mouse.pressButton(Button.LEFT);
-      await mouse.setPosition(new Point(tex, tey));
+    // ADR-029 Phase 2a: press → move → release, with the release in a
+    // `finally`. The move can now THROW (the native path reports a cursor it
+    // could not place instead of silently clamping), and an exception between
+    // press and release would leave the left button held down at OS level,
+    // breaking every subsequent input. The old nut.js calls could not throw,
+    // which is why they did not need this.
+    await mouse.pressButton(Button.LEFT);
+    try {
+      await moveCursorTo(tex, tey, speed);
+    } finally {
       await mouse.releaseButton(Button.LEFT);
-    } else {
-      const prev = mouse.config.mouseSpeed;
-      mouse.config.mouseSpeed = s;
-      try {
-        await mouse.drag(straightTo(new Point(tex, tey)));
-      } finally {
-        mouse.config.mouseSpeed = prev;
-      }
     }
 
     // Issue #178 — Phase 4: post-drag snapshot at the SAME destination

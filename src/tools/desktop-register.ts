@@ -39,7 +39,7 @@ import type { ToolResult } from "./_types.js";
 import { persistCapture, REF_URI_PREFIX } from "../engine/screenshot-cache.js";
 import { pngDimensions } from "./screenshot-response.js";
 import { Err } from "../types/result.js";
-import { ExecutorFailedError, CoordinateOutsideReachableBoundsError } from "../errors/typed-errors.js";
+import { ExecutorFailedError, CoordinateOutsideReachableBoundsError, CursorPlacementBlockedError } from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
@@ -937,6 +937,22 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // ADR-029 Phase 2a: the cursor could not be placed at all. Separate envelope
+  // for the same reason as above — its recovery (free the cursor, reconnect the
+  // session) shares nothing with the unreachable-coordinate advice, and
+  // re-discovering would return the same correct point and fail identically.
+  if (!result.ok && result.reason === "cursor_placement_blocked") {
+    const failure = toFailureEnvelope(
+      Err(new CursorPlacementBlockedError(
+        "CursorPlacementBlocked: the pointer could not be placed on the entity — nothing was clicked"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // ADR-026 §3.6: when the act carried a roiCapture crop, attach its by-ref link
   // as a resource_link content block alongside the JSON result. The crop pixels
   // are NOT inlined in the envelope (roiCapture.somImage is null); the agent
@@ -1407,7 +1423,8 @@ export function registerDesktopTools(server: McpServer): void {
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
-      "  coordinate_outside_reachable_bounds → the element sits outside the primary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor and re-call desktop_discover (retrying with V1 mouse_click or browser_click hits the same limit; click_element works on any monitor);",
+      "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",
+      "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",

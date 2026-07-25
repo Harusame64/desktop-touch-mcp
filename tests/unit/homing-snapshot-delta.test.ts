@@ -11,11 +11,11 @@
  * failing that, from a *fresh* main-cache entry — against the live GetWindowRect.
  *
  * These tests drive the real mouseClickHandler with the window-cache / win32
- * surface mocked, and assert the FINAL cursor position (moveTo → setPosition)
+ * surface mocked, and assert the FINAL cursor position (moveTo → moveCursorTo)
  * reflects the screenshot-time → live delta.
  *
- * Assertion point: with speed:0, moveTo() teleports via mouse.setPosition(Point),
- * so the Point passed there is the post-homing click coordinate.
+ * Assertion point: moveTo() hands the final coordinate to moveCursorTo(x, y,
+ * speed), so the arguments there are the post-homing click coordinate.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -94,7 +94,13 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
   })),
 }));
 
+// ADR-029 Phase 2a: the cursor is moved by `engine/cursor.ts`, not by
+// nut.js directly. Mocked here both to read the post-homing coordinate and
+// so a unit test never moves the real pointer through the native path.
+vi.mock("../../src/engine/cursor.js", () => ({ moveCursorTo: vi.fn() }));
+
 import { mouseClickHandler } from "../../src/tools/mouse.js";
+import * as cursor from "../../src/engine/cursor.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as cache from "../../src/engine/window-cache.js";
 import * as nutjs from "../../src/engine/nutjs.js";
@@ -104,7 +110,7 @@ const mockGetRect = vi.mocked(win32.getWindowRectByHwnd);
 const mockGetSnapshot = vi.mocked(cache.getSnapshot);
 const mockGetCachedByTitle = vi.mocked(cache.getCachedWindowByTitle);
 const mockComputeDelta = vi.mocked(cache.computeWindowDelta);
-const mockSetPosition = vi.mocked(nutjs.mouse.setPosition);
+const mockMove = vi.mocked(cursor.moveCursorTo);
 
 const TITLE = "Doubao";
 const HWND = 4242n;
@@ -155,7 +161,7 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
 
     // delta = live(50,80) - snapshot(100,100) = (-50,-20)
     // corrected = (300-50, 400-20) = (250, 380)
-    expect(mockSetPosition).toHaveBeenCalledWith({ x: 250, y: 380 });
+    expect(mockMove).toHaveBeenCalledWith(250, 380, 0);
   });
 
   it("falls back to a fresh main-cache entry when no snapshot exists", async () => {
@@ -167,7 +173,7 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
     await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400 });
 
     // delta = live(130,160) - cached(100,100) = (+30,+60) → (330, 460)
-    expect(mockSetPosition).toHaveBeenCalledWith({ x: 330, y: 460 });
+    expect(mockMove).toHaveBeenCalledWith(330, 460, 0);
   });
 
   it("skips the snapshot delta when the cached HWND entry is stale (recycle guard)", async () => {
@@ -184,7 +190,7 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
 
     await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400 });
 
-    expect(mockSetPosition).toHaveBeenCalledWith({ x: 300, y: 400 });
+    expect(mockMove).toHaveBeenCalledWith(300, 400, 0);
   });
 
   it("ignores a stale main-cache entry (TTL guard) instead of applying a bogus offset", async () => {
@@ -200,6 +206,6 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
     await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400 });
 
     // No correction from the stale region → original coords.
-    expect(mockSetPosition).toHaveBeenCalledWith({ x: 300, y: 400 });
+    expect(mockMove).toHaveBeenCalledWith(300, 400, 0);
   });
 });

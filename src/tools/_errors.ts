@@ -180,18 +180,31 @@ const SUGGESTS: Record<string, string[]> = {
     "If the call originates from a background process or service, the OS suppresses foreground transfers — proxy the focus request via the foreground app.",
     "Skip explicit focus_window: tools that accept windowTitle directly (keyboard / desktop_act / browser_click) handle focus internally and may succeed where focus_window cannot.",
   ],
-  // ADR-029 Phase 1: a click / move / drag aimed outside the primary monitor.
-  // Mouse input runs through nut.js, which clamps such a point into the primary
-  // monitor — so acting on it would click something else entirely. The suggests
-  // must NOT send the caller back to mouse_click / desktop_act on the same
-  // coordinate (that re-enters this guard); they name the two things that
-  // actually work today plus the fix that is coming.
+  // ADR-029: a click / move / drag aimed at a point that is on no monitor.
+  // Since Phase 2a mouse input reaches every monitor, so this is almost always
+  // stale coordinates; the primary-monitor-only wording applies to an
+  // installation running without its native input module, which the message
+  // says explicitly. The first line therefore sends the caller to the message
+  // rather than guessing — the two cases have opposite recoveries, and a static
+  // list cannot know which one it is in.
   CoordinateOutsideReachableBounds: [
-    "Move the target window onto the primary monitor (drag it or press Win+Shift+Arrow), then re-run desktop_discover and retry — coordinates are re-read there.",
-    "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act hits this same limit; the coordinate itself is the problem, not the tool.",
-    "If the target exposes UIA, click_element(name=…) works on any monitor — it invokes the element directly and never moves the cursor. desktop_act does too, as long as its UIA route succeeds (its mouse fallback hits this same limit).",
-    "browser_click is NOT an escape hatch here: it moves the OS cursor to the element's screen coordinates, so it is subject to the same limit and fails the same way.",
-    "Multi-monitor mouse input is being added; until then only the primary monitor is reachable by coordinate-based mouse tools.",
+    "Read the error message first: it says whether the point is off every monitor (stale coordinates) or whether this installation is limited to the primary monitor.",
+    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then act on the new coordinates.",
+    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then re-run desktop_discover and retry. Reinstalling or updating the server restores input on the other monitors.",
+    "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act / browser_click fails the same way — the coordinate is the problem, not the tool.",
+    "If the target exposes UIA, click_element(name=…) invokes the element directly and never moves the cursor.",
+  ],
+  // ADR-029 Phase 2a: the coordinate was fine, but Windows would not put the
+  // pointer there. Nothing was clicked. Recovery has nothing in common with the
+  // unreachable-coordinate case above, which is why it is a separate code:
+  // re-discovering returns the same (correct) point and fails identically.
+  // click_element leads because it is the one route that works while the cursor
+  // is held, whichever cause applies.
+  CursorPlacementBlocked: [
+    "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
+    "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",
+    "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
+    "If the message says the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates.",
   ],
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",
@@ -660,6 +673,14 @@ function classify(message: string): { code: string; suggest: string[] } {
   // "window not found" / "timeout" below.
   if (m.includes("coordinateoutsidereachablebounds")) {
     return { code: "CoordinateOutsideReachableBounds", suggest: SUGGESTS.CoordinateOutsideReachableBounds ?? [] };
+  }
+  // ADR-029 Phase 2a: emitted by the cursor choke point when the pointer could
+  // not be placed. Sits beside its sibling above and ahead of the generic arms
+  // for the same reason — its message mentions a remote-desktop session and a
+  // monitor layout, either of which a later "window not found" / "timeout" arm
+  // could otherwise poach after a wording change.
+  if (m.includes("cursorplacementblocked")) {
+    return { code: "CursorPlacementBlocked", suggest: SUGGESTS.CursorPlacementBlocked ?? [] };
   }
   if (m.includes("window not found") || m.includes("no window")) {
     return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };

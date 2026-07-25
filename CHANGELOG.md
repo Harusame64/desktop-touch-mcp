@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — multi-monitor: acting on a window that isn't focused, and a refusal instead of a stray click
+## [Unreleased] — multi-monitor: acting on a window that isn't focused, and mouse input that reaches every monitor
 
 ### Fixed
 
@@ -20,23 +20,33 @@
   `desktop_discover` — previously this surfaced as `entity_outside_viewport`, whose advice
   ("scroll it into view") could never succeed for a minimised window.
 
+### Added
+
+- **Mouse input now works on every monitor.** `mouse_click`, `mouse_drag`, `scroll`,
+  `browser_click`, and the mouse route inside `desktop_act` can move the cursor to any
+  connected monitor, including monitors placed left of or above the primary one. Previously
+  the underlying input library silently pulled such a point into the primary monitor, so a
+  click meant for a second monitor reported success while clicking whatever sat at the
+  pulled-in position. Cursor movement now uses a built-in Windows input path that places the
+  cursor exactly and confirms it arrived before clicking. Movement speed settings
+  (`DESKTOP_TOUCH_MOUSE_SPEED`, the per-call `speed` parameter) are unchanged.
+
 ### Changed
 
-- **Clicks aimed outside the primary monitor are now refused with a typed error instead of
-  landing somewhere else.** Coordinate-based mouse input (`mouse_click`, `mouse_drag`,
-  `scroll`, `browser_click`, and the mouse route inside `desktop_act`) reaches the primary
-  monitor only: the underlying input library silently pulls any other point into the primary
-  monitor, so a click meant for a second monitor used to report success while clicking
-  whatever sat at the pulled-in position. Such a call now fails fast with
-  `CoordinateOutsideReachableBounds` (`desktop_act` reports
-  `reason:"coordinate_outside_reachable_bounds"`), and the error names what does work:
-  move the window to the primary monitor and re-run `desktop_discover`, or use
-  `click_element`, which invokes the element through the accessibility API and never moves
-  the cursor, so it works on any monitor. (`browser_click` is not an escape hatch — it
-  clicks through the OS cursor too.) **This is a behaviour change**: scripts and macros that pass
-  coordinates on a monitor placed left, right, above or below the primary one will now get an
-  error where they previously got a success that clicked the wrong place. Full multi-monitor
-  mouse input is coming in a follow-up release.
+- **A click that cannot be delivered now fails with a typed error instead of landing
+  somewhere else.** `CoordinateOutsideReachableBounds` means the point is not on any
+  monitor — usually coordinates that went stale because the window moved or closed, so
+  re-running `desktop_discover` fixes it. The new `CursorPlacementBlocked` means the point
+  was fine but the pointer could not be placed there: another app is holding the cursor
+  (common in full-screen games), the session is not interactive right now (a disconnected or
+  locked remote-desktop session), or a monitor was added or removed a moment ago. Nothing is
+  clicked in either case, and `desktop_act` reports them as
+  `reason:"coordinate_outside_reachable_bounds"` and `reason:"cursor_placement_blocked"`.
+  **This is a behaviour change**: both cases previously reported success after clicking the
+  wrong place. `click_element` invokes an element through the accessibility API without
+  moving the cursor and is unaffected. On an installation running without its built-in
+  Windows input module, mouse input falls back to the primary monitor only and the error
+  message says so.
 
 ## [1.12.4] - 2026-07-22 — terminal: run accepts a pane handle, and clearer help when a pane handle is mistyped
 

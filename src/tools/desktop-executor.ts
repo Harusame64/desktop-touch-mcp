@@ -225,9 +225,10 @@ export function createDesktopExecutor(
           { cause: uiaErr },
         );
         const { x, y } = rectCenter(rect);
-        // ADR-029 Phase 1: the UIA route works on any monitor, but this mouse
-        // downgrade does not — refuse an unreachable point instead of letting
-        // libnut clamp it onto the primary monitor and click the wrong thing.
+        // ADR-029: the UIA route works on any monitor. The mouse downgrade
+        // reaches every monitor too since Phase 2a, but the point still has to
+        // BE on one — a stale rect that now sits off-screen is refused here
+        // rather than clicked somewhere else.
         assertCoordinateReachable(x, y);
         await d.mouseClick(x, y);
         // Issue #327 item C: signal the silent downgrade so the LLM sees
@@ -377,11 +378,12 @@ function getSharedRealDeps(): ExecutorDeps {
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
-      // ADR-029 Phase 1: coordinates only become known inside this dep, so the
+      // ADR-029: coordinates only become known inside this dep, so the
       // reachability check lives here rather than in the executor core.
       assertCoordinateReachable(coords.x, coords.y);
-      const { mouse, Button, Point, straightTo } = await import("../engine/nutjs.js");
-      await mouse.move(straightTo(new Point(coords.x, coords.y)));
+      const { mouse, Button } = await import("../engine/nutjs.js");
+      const { moveCursorTo } = await import("../engine/cursor.js");
+      await moveCursorTo(coords.x, coords.y);
       await mouse.click(Button.LEFT);
     },
 
@@ -457,8 +459,13 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async mouseClick(x, y) {
-      const { mouse, Button, Point, straightTo } = await import("../engine/nutjs.js");
-      await mouse.move(straightTo(new Point(x, y)));
+      // ADR-029 Phase 2a: the shared cursor choke point places the pointer on
+      // any monitor (and refuses rather than clamping when it cannot); the
+      // click itself needs no coordinates — it hits whatever is under the
+      // cursor.
+      const { mouse, Button } = await import("../engine/nutjs.js");
+      const { moveCursorTo } = await import("../engine/cursor.js");
+      await moveCursorTo(x, y);
       await mouse.click(Button.LEFT);
     },
   };

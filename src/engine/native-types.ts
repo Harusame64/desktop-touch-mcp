@@ -319,6 +319,31 @@ export interface NativeMonitorInfo {
   dpi: number
 }
 
+// ── ADR-029 Phase 2a: multi-monitor cursor movement ──────────────────────────
+
+/** A cursor position in physical virtual-screen coordinates. Negative values
+ *  are normal — they address a monitor placed left of or above the primary. */
+export interface NativeCursorPoint {
+  x: number
+  y: number
+}
+
+/** Outcome of a native cursor move. `ok: false` means the cursor did not end
+ *  up where it was asked to go (something is holding it, or the session is not
+ *  interactive) — the native side reports it instead of throwing, and
+ *  `src/engine/cursor.ts` turns it into `CursorPlacementBlocked`.
+ *
+ *  `method` is one of `"set_cursor_pos"` | `"set_cursor_pos_retry"` |
+ *  `"failed"` | `"set_cursor_pos_refused"` | `"readback_failed"`. With `"readback_failed"` the
+ *  cursor position could not be read at all and `finalX` / `finalY` only echo
+ *  the request — never report them as where the cursor is. */
+export interface NativeCursorMoveResult {
+  ok: boolean
+  method: string
+  finalX: number
+  finalY: number
+}
+
 // ── Win32 process / input (ADR-007 P3) ───────────────────────────────────────
 
 /** Outcome of `win32ForceSetForegroundWindow`. The TS wrapper repacks
