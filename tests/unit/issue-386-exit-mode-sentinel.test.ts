@@ -448,7 +448,9 @@ describe("exit-mode typed codes route through classify() + SUGGESTS", () => {
     });
   }
 
-  it("a prose-suffixed message still routes (defensive substring match)", () => {
+  // The leading `<Code>:` form resolves at classify()'s declared-code arm;
+  // the bare-form cases above are what exercise the substring arms.
+  it("a prose-suffixed message still routes", () => {
     const result = failWith(
       new Error("ExitModeUnsafeInput: unterminated_command_substitution"),
       "terminal:run",

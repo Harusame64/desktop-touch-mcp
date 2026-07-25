@@ -628,8 +628,10 @@ const SUGGESTS: Record<string, string[]> = {
   // are surfaced dynamically from a caught `KeyLockerError.code`, and the two tool-specific codes below
   // have no classify branch on purpose (SUGGESTS-only — the tool sets the code directly).
   // Exception: `KeyLockerSpawnFailed` carries a defensive classify arm (first block) because its name
-  // contains "spawnfailed" and a code-shaped message would otherwise be poached by the generic
-  // SpawnFailed arm (Round 7 P2-2) — emission is still failCode; the arm only pins routing.
+  // contains "spawnfailed" and a code-shaped message in the cascade-reaching shapes (bare /
+  // wrapper-prefixed; the leading colon form resolves at the declared-code arm) would otherwise be
+  // poached by the generic SpawnFailed arm (Round 7 P2-2) — emission is still failCode; the arm only
+  // pins routing.
   KeyLockerSpawnFailed: [
     "The locker helper could not start. Ensure key-locker.exe is present (build it: cd tools/key-locker && dotnet publish -c Release -o ../../bin/).",
     "This tool is Windows-only.",
@@ -708,8 +710,16 @@ function classify(message: string): { code: string; suggest: string[] } {
   // window not found…" has a space, not a colon, after the first token) and
   // cannot invent a code. Messages that merely CONTAIN a code mid-string
   // (wrapper prefixes, `AutoGuardBlocked[endpoint]:` bracket variants) fall
-  // through to the substring cascade below, which is why the
-  // ordering-sensitive arms and their comments remain load-bearing. The bare
+  // through to the substring cascade below. NOTE (Opus round 9): no src
+  // producer emits a wrapper-prefixed SUGGESTS code today — the only
+  // prefix-composing producers are `cdp-bridge.ts` (`CDP: ${inner}`; `CDP`
+  // is not a SUGGESTS key, so it falls through here and the cascade is
+  // genuinely load-bearing for that inner message) and
+  // `launch.ts::spawnDetached` (`SpawnFailed: …`, a LEADING form this arm
+  // resolves). The ordering-sensitive arms below are therefore
+  // defense-in-depth for such compositions, not a live production path —
+  // kept because a `CDP:`-style wrapper around an inner message that names
+  // a code can appear at any time. The bare
   // `new Error("<Code>")` form (no colon) stays with the leading-code arm at
   // the END of the cascade — it carries no detail to poach, so it still lets
   // every specific arm decide first (round-6 rationale, unchanged).
@@ -721,8 +731,11 @@ function classify(message: string): { code: string; suggest: string[] } {
   const m = message.toLowerCase();
 
   // Key locker (ADR-014 R3) — checked FIRST among the substring arms (only the
-  // declared-code arm above precedes it, and for these codes it resolves to the
-  // same result because the producers prefix the code): both codes carry the unique `keylocker` prefix, so a
+  // declared-code arm above precedes it; for the producers that DO prefix the
+  // code — ConsentRequired / Disabled and the wt paths, per the shape note
+  // below — the leading form resolves there to the same result, while the
+  // spawn-path producers emit prose via failCode and never reach these arms):
+  // both codes carry the unique `keylocker` prefix, so a
   // keylocker message only matches these branches, never an existing generic one (e.g. `KeyLockerDisabled`
   // must not be swallowed by a future generic branch; and when the host codes land, `KeyLockerSpawnFailed`
   // ⊃ `spawnfailed` / `KeyLockerTargetNotForeground` ⊃ `foreground` would be mis-routed if placed after the
@@ -740,7 +753,8 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   // `KeyLockerSpawnFailed` ⊃ "spawnfailed": exactly the mis-route the block comment above predicts —
   // this arm must live in this FIRST block, ahead of the generic SpawnFailed arm, or a code-shaped
-  // message ("KeyLockerSpawnFailed" / "KeyLockerSpawnFailed: …") is poached by it. Found by the
+  // message in the cascade-reaching shapes (bare "KeyLockerSpawnFailed", or a wrapper-prefixed one —
+  // the leading "KeyLockerSpawnFailed: …" form resolves at the declared-code arm) is poached by it. Found by the
   // dictionary round-trip invariant (Round 7 P2-2): latent today because the producers emit via
   // failCode, but one switch to failWith would have silently rerouted the advice to SpawnFailed.
   if (m.includes("keylockerspawnfailed")) {
@@ -802,15 +816,19 @@ function classify(message: string): { code: string; suggest: string[] } {
     return { code: "InvokePatternNotSupported", suggest: SUGGESTS.InvokePatternNotSupported };
   }
   // Phase 7 F3: workspace_launch spawnDetached rejection (ENOENT / EACCES /
-  // EPERM 等). MUST stay BEFORE WindowNotFound — branch ordering is the
-  // only defense layer (no test-time guard) for the case where a SpawnFailed
-  // message tail accidentally contains "window not found" substring. Today
-  // the literal SpawnFailed messages emitted by `src/utils/launch.ts:153-157`
-  // do not contain that substring, but messages can grow over time (extra
-  // context appended by `failWith(err, ...)` callers). The Phase 7 F3 unit
-  // test (`tests/unit/phase7-f3-spawn-failed-typed-code.test.ts` case #6)
-  // pins this ordering by feeding a synthesized message with both substrings
-  // and asserting SpawnFailed wins.
+  // EPERM 等). The producer (`src/utils/launch.ts::spawnDetached`, the
+  // `SpawnFailed:`-prefixed rejects) emits the LEADING form, which the
+  // declared-code arm at the top resolves before any ordering applies. This
+  // arm decides the shapes that still reach the cascade — the bare code and
+  // a wrapper-prefixed message ("…: SpawnFailed: …"); no src producer emits
+  // that wrapper today (defense-in-depth, see the declared-arm note above).
+  // For those shapes it MUST stay BEFORE WindowNotFound: a SpawnFailed
+  // message tail can accidentally contain "window not found" (messages grow
+  // over time — extra context appended by `failWith(err, ...)` callers).
+  // The Phase 7 F3 unit test
+  // (`tests/unit/phase7-f3-spawn-failed-typed-code.test.ts` case #6) pins
+  // this ordering by feeding a wrapper-prefixed message carrying both
+  // substrings and asserting SpawnFailed wins.
   if (m.includes("spawnfailed") || m.includes("spawn failed:")) {
     return { code: "SpawnFailed", suggest: SUGGESTS.SpawnFailed };
   }
@@ -835,8 +853,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   // and `focus_wait_timeout` contains "timeout" — the leading `<Code>:` form
   // is resolved by the declared-code arm at the top of the cascade, so this
   // arm MUST stay BEFORE the generic arms only for the shapes that still reach
-  // the substring cascade (a wrapper prefix ahead of the code). Same
-  // early-placement rationale as SpawnFailed.
+  // the substring cascade (a wrapper prefix ahead of the code) — a shape no
+  // src producer emits today (defense-in-depth, see the declared-arm note
+  // above). Same early-placement rationale as SpawnFailed.
   if (m.includes("foregroundflashfailed")) {
     return { code: "ForegroundFlashFailed", suggest: SUGGESTS.ForegroundFlashFailed };
   }
@@ -848,7 +867,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   // `BrowserSearchTimeout` ⊃ "timeout": the code's own name contains the
   // generic keyword, so this arm must stay ABOVE the UiaTimeout arm below or a
-  // code-shaped message is poached by it. Found by the dictionary round-trip
+  // code-shaped message in the cascade-reaching shapes (bare / wrapper-
+  // prefixed; the leading `<Code>:` form resolves at the declared-code arm)
+  // is poached by it. Found by the dictionary round-trip
   // invariant (Round 7 P2-2); latent today (browser.ts emits via failCode).
   if (m.includes("browsersearchtimeout")) {
     return { code: "BrowserSearchTimeout", suggest: SUGGESTS.BrowserSearchTimeout };
@@ -893,8 +914,10 @@ function classify(message: string): { code: string; suggest: string[] } {
   // Issue #257: keyboard(action:'sequence') typed codes. Substrings are
   // long and unique enough that subsequent generic arms (timeout / window
   // not found) cannot poach the match, but the test pin in
-  // tests/unit/keyboard-input-serialization.test.ts asserts the ordering
-  // so future SUGGESTS additions cannot regress it silently.
+  // tests/unit/keyboard-input-serialization.test.ts asserts the routing —
+  // including a wrapper-prefixed shape that exercises this cascade arm (the
+  // leading `<Code>:` form resolves at the declared-code arm) — so future
+  // SUGGESTS additions cannot regress it silently.
   if (m.includes("menufocuslostmidsequence") || m.includes("menu focus lost mid sequence")) {
     return { code: "MenuFocusLostMidSequence", suggest: SUGGESTS.MenuFocusLostMidSequence };
   }
@@ -932,9 +955,11 @@ function classify(message: string): { code: string; suggest: string[] } {
   // the top of the cascade resolves it before any detail scan — so the poach
   // risk only remains for shapes that reach the substring cascade: a wrapper
   // that prepends its own prefix ("…: TabDragBlocked: …") with a title-bearing
-  // tail. Keep the messages title-free anyway, and the routing test
-  // (oq8-failwith-suggest-routing.test.ts) pins the current production strings
-  // as a tripwire.
+  // tail. No src producer composes that wrapper today (defense-in-depth, see
+  // the declared-arm note above). Keep the messages title-free anyway, and
+  // the routing test (oq8-failwith-suggest-routing.test.ts) pins the
+  // production strings AND their wrapper-prefixed cascade variants as the
+  // tripwire.
   if (m.includes("foregroundflashrequirestarget")) {
     return { code: "ForegroundFlashRequiresTarget", suggest: SUGGESTS.ForegroundFlashRequiresTarget };
   }
@@ -992,6 +1017,10 @@ function classify(message: string): { code: string; suggest: string[] } {
   // (`codeDeclaresMacro`) already returns VbaMacroNotFound BEFORE any
   // COM call, so the chain scenario is structurally impossible — this
   // ordering is belt-and-suspenders documentation (Opus Round 1 P2-3).
+  // Note (Opus round 9): that reasoning governs only chains that REACH this
+  // cascade (prose-leading / wrapper shapes). In the leading `<Code>:` form
+  // the declared-code arm makes the FIRST (declared) code win regardless of
+  // the arm order here — the opposite of the "latter wins" chain intuition.
   if (m.includes("vbaaccesslockedbypolicy")) {
     return { code: "VbaAccessLockedByPolicy", suggest: SUGGESTS.VbaAccessLockedByPolicy };
   }
@@ -1046,12 +1075,14 @@ function classify(message: string): { code: string; suggest: string[] } {
   // prose message (those do not start with a bare code token) and cannot invent
   // a code, since the key must already exist in the dictionary. It runs LAST so
   // every specific arm above — including the ordering-sensitive ones — decides
-  // first. The `<Code>:` colon form of this match was later promoted to the
+  // first. The `<Code>:` colon form of this match was promoted to the
   // declared-code arm at the TOP of the cascade (Codex round 8) — a colon
-  // prefix is a producer declaration and must beat the substring arms — so
-  // this tail arm now decides the bare / whitespace-separated forms; its `:`
-  // alternative is kept only as a backstop.
-  const leadingCode = /^([A-Z][A-Za-z0-9]*)(?::|\s|$)/.exec(message.trim())?.[1];
+  // prefix is a producer declaration and must beat the substring arms. That
+  // arm is a strict superset for colon forms (same token pattern, immediate
+  // colon, same SUGGESTS membership check), so a `:` alternative here would
+  // be unreachable — the regex is deliberately bare/whitespace-only so it
+  // states exactly what this arm decides (Opus round 9 P3-1).
+  const leadingCode = /^([A-Z][A-Za-z0-9]*)(?:\s|$)/.exec(message.trim())?.[1];
   if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode)) {
     return { code: leadingCode, suggest: SUGGESTS[leadingCode] ?? [] };
   }

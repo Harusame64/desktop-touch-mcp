@@ -189,11 +189,17 @@ describe("reachable-bounds guard — typed code classification", () => {
   // Ordering pin: the guard's message names the target region, and the generic
   // arms below it ("window not found" / "timeout") would poach a message that
   // ever mentions a window. Same defence as the SpawnFailed ordering pin.
+  // The leading `<Code>:` form resolves at the declared-code arm before any
+  // ordering applies, so both shapes are fed — the wrapper-prefixed one is
+  // what exercises the cascade ordering (no src producer emits that wrapper
+  // today; defense-in-depth).
   it("wins over the generic classify arms when the message contains their keywords too", () => {
     for (const suffix of ["window not found", "timed out", "element not found"]) {
-      const err = new Error(`CoordinateOutsideReachableBounds: (-1500, 300) is outside … ${suffix}`);
-      const body = JSON.parse(failWith(err, "mouse_click").content[0]!.text);
-      expect(body.code, `poached by "${suffix}"`).toBe("CoordinateOutsideReachableBounds");
+      for (const prefix of ["", "wrapped: "]) {
+        const err = new Error(`${prefix}CoordinateOutsideReachableBounds: (-1500, 300) is outside … ${suffix}`);
+        const body = JSON.parse(failWith(err, "mouse_click").content[0]!.text);
+        expect(body.code, `poached by "${suffix}" (prefix: "${prefix}")`).toBe("CoordinateOutsideReachableBounds");
+      }
     }
   });
 });
@@ -222,12 +228,16 @@ describe("cursor placement failure — typed code classification", () => {
 
   // Same ordering defence as its sibling: the message names a remote-desktop
   // session and a monitor layout, either of which a later generic arm could
-  // poach if the wording drifts.
+  // poach if the wording drifts. As above, only the wrapper-prefixed shape
+  // reaches the substring cascade — the leading form resolves at the
+  // declared-code arm.
   it("wins over the generic classify arms when the message contains their keywords too", () => {
     for (const suffix of ["window not found", "timed out", "element not found"]) {
-      const err = new Error(`CursorPlacementBlocked: could not place the pointer … ${suffix}`);
-      const body = JSON.parse(failWith(err, "mouse_click").content[0]!.text);
-      expect(body.code, `poached by "${suffix}"`).toBe("CursorPlacementBlocked");
+      for (const prefix of ["", "wrapped: "]) {
+        const err = new Error(`${prefix}CursorPlacementBlocked: could not place the pointer … ${suffix}`);
+        const body = JSON.parse(failWith(err, "mouse_click").content[0]!.text);
+        expect(body.code, `poached by "${suffix}" (prefix: "${prefix}")`).toBe("CursorPlacementBlocked");
+      }
     }
   });
 });

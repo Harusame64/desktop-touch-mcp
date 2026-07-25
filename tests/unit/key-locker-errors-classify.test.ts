@@ -23,7 +23,9 @@ describe("KeyLocker manager typed-error wiring (classify + SUGGESTS)", () => {
       expect(Array.isArray(bare.suggest)).toBe(true);
       expect(bare.suggest.length).toBeGreaterThan(0);
 
-      // Prose-suffixed variant still routes (substring match), as the real messages carry a colon + prose.
+      // Prose-suffixed variant still routes, as the real messages carry a colon + prose.
+      // (The leading `<Code>:` form resolves at classify()'s declared-code arm; the bare form
+      // above and the wrapper-prefixed test below are the ones that exercise the substring arm.)
       const prose = JSON.parse(failWith(new Error(`${code}: something to explain`), "key_locker").content[0]!.text);
       expect(prose.code).toBe(code);
 
@@ -34,8 +36,13 @@ describe("KeyLocker manager typed-error wiring (classify + SUGGESTS)", () => {
 
   it("KeyLockerDisabled is not swallowed by a generic branch (checked before them)", () => {
     // Its message would otherwise fall through to the generic ToolError tail with an empty suggest.
-    const body = JSON.parse(failWith(new Error("KeyLockerDisabled: off via env"), "key_locker").content[0]!.text);
-    expect(body.code).toBe("KeyLockerDisabled");
-    expect(body.suggest.length).toBeGreaterThan(0);
+    // The leading form resolves at the declared-code arm; the wrapper-prefixed shape is the one
+    // that reaches the substring cascade and exercises the KeyLocker arm placement (no src
+    // producer emits that wrapper today; defense-in-depth).
+    for (const message of ["KeyLockerDisabled: off via env", "wrapped: KeyLockerDisabled: off via env"]) {
+      const body = JSON.parse(failWith(new Error(message), "key_locker").content[0]!.text);
+      expect(body.code, message).toBe("KeyLockerDisabled");
+      expect(body.suggest.length).toBeGreaterThan(0);
+    }
   });
 });

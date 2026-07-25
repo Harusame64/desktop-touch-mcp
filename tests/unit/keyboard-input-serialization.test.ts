@@ -202,23 +202,33 @@ describe("keyboard(action='sequence') — issue #257 contract pins", () => {
     expect(headPressEnds).toBe(2);   // each finished inside the lock
   });
 
-  // ── Pin 2: classify() routes typed codes BEFORE generic arms ────────────────
+  // ── Pin 2: classify() routes the typed code in both message shapes ─────────
   it("classify() routes MenuFocusLostMidSequence to its typed code, not ToolError", () => {
+    // The production leading `<Code>:` form resolves at classify()'s
+    // declared-code arm (Codex round 8) — this pins the end-to-end behavior.
     const failure = failWith(
       new Error("MenuFocusLostMidSequence: focus left target before step 1 (stolen by Notepad)"),
       "keyboard:sequence",
     );
-    // failWith returns a ToolResult whose first content block carries the JSON
-    // envelope; rather than re-parse, we rely on the SUGGESTS dict being
-    // populated for the typed code — proof that the cascade matched.
     const suggests = getSuggestsForCode("MenuFocusLostMidSequence");
     expect(suggests.length).toBeGreaterThan(0);
     expect(suggests.join(" ")).toMatch(/context\.remaining/);
 
-    // Also verify the failure envelope text encodes the typed code, not the
+    // Verify the failure envelope text encodes the typed code, not the
     // generic ToolError. ToolFailure shape: content[0].text is a JSON string.
     const text = (failure.content?.[0] as { text?: string })?.text ?? "";
     expect(text).toMatch(/"code":\s*"MenuFocusLostMidSequence"/);
+
+    // A wrapper-prefixed shape is what actually reaches the substring cascade
+    // arm (the declared-code arm cannot match a lowercase prefix) — proof
+    // that the cascade arm itself still routes (no src producer emits this
+    // wrapper today; defense-in-depth).
+    const wrapped = failWith(
+      new Error("wrapped: MenuFocusLostMidSequence: focus left target before step 1"),
+      "keyboard:sequence",
+    );
+    const wrappedText = (wrapped.content?.[0] as { text?: string })?.text ?? "";
+    expect(wrappedText).toMatch(/"code":\s*"MenuFocusLostMidSequence"/);
   });
 
   // ── Pin 3: macro pre-validate scans steps[].keys ────────────────────────────

@@ -14,7 +14,12 @@
  * never grow a phrase an earlier generic arm would poach ("no window" /
  * "window not found" / "timeout"), plus `ForegroundFlashFailed` — the sixth
  * hole of the same class, whose message tail is a snake_case step reason that
- * the generic timeout arm WOULD poach if its arm were not placed early.
+ * the generic timeout arm WOULD poach in the shapes that reach the substring
+ * cascade. Since Codex round 8 the production leading `<Code>:` form resolves
+ * at the declared-code arm at the TOP of classify(), so the cascade-ordering
+ * pins below feed wrapper-prefixed variants — the shape that still falls
+ * through to the substring arms (no src producer emits it today;
+ * defense-in-depth).
  */
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
@@ -28,11 +33,11 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
   const cases: [string, string][] = [
     ["ForegroundFlashRequiresTarget", "ForegroundFlashRequiresTarget"],
     ["ForegroundFlashUnsupported", "ForegroundFlashUnsupported"],
-    // The two mouse_drag messages are the EXACT production strings — a
-    // tripwire for the wording caution in the classify arm comment: these
-    // arms sit after the generic "window not found" / "timeout" arms, so the
-    // prose must stay free of any phrase those arms match (hwnd numbers are
-    // fine; interpolated window titles would not be).
+    // The two mouse_drag messages are the EXACT production strings. As
+    // leading `<Code>:` forms they resolve at the declared-code arm — this
+    // it.each pins the end-to-end production behavior; the wording-caution
+    // tripwire for the substring cascade lives in the wrapper-prefixed
+    // variants below.
     ["TabDragBlocked", "TabDragBlocked: drag starts in the tab-strip area of a tabbed application"],
     [
       "CrossWindowDragBlocked",
@@ -48,6 +53,21 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
     const body = render(message);
     expect(body.code).toBe(code);
     expect(Array.isArray(body.suggest)).toBe(true);
+    expect(body.suggest.length).toBeGreaterThan(0);
+  });
+
+  // The wording-caution tripwire (classify arm comment, "keep the messages
+  // title-free"): the shapes that REACH the substring cascade are the ones a
+  // generic "window not found" / "timeout" arm could poach, and a leading
+  // `<Code>:` form never reaches it (declared-code arm). `CDP:` is the one
+  // real prefix-composing producer shape in src (cdp-bridge.ts) and is not a
+  // SUGGESTS key, so it falls through the declared-code arm — these variants
+  // fail if the family arms move below the generic arms OR if the production
+  // prose ever grows a phrase a generic arm matches. No src producer
+  // composes a wrapper around these codes today (defense-in-depth).
+  it.each(cases)("%s still classifies through the substring cascade under a wrapper prefix", (code, message) => {
+    const body = render(`CDP: ${message}`);
+    expect(body.code).toBe(code);
     expect(body.suggest.length).toBeGreaterThan(0);
   });
 
@@ -71,11 +91,19 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
 
   // The `ForegroundFlashFailed` arm sits BEFORE the generic arms because its
   // message tail is an arbitrary snake_case reason: `focus_wait_timeout`
-  // contains "timeout", which the UiaTimeout arm would otherwise capture.
+  // contains "timeout", which the UiaTimeout arm would otherwise capture in
+  // the shapes that reach the substring cascade. The production leading form
+  // resolves at the declared-code arm, so both shapes are pinned here — the
+  // wrapper-prefixed one is the one that exercises the cascade ordering.
   it("keeps the timeout-bearing flash reason out of the generic UiaTimeout arm", () => {
-    const body = render("ForegroundFlashFailed: focus_wait_timeout");
-    expect(body.code).toBe("ForegroundFlashFailed");
-    expect(body.suggest.length).toBeGreaterThan(0);
+    for (const message of [
+      "ForegroundFlashFailed: focus_wait_timeout",
+      "CDP: ForegroundFlashFailed: focus_wait_timeout",
+    ]) {
+      const body = render(message);
+      expect(body.code, message).toBe("ForegroundFlashFailed");
+      expect(body.suggest.length).toBeGreaterThan(0);
+    }
   });
 });
 

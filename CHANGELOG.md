@@ -37,8 +37,8 @@
   the classifier scans for — for example `WindowNotFound: hwnd "timeout" is not a
   valid integer`, where "timeout" is the literal argument that was passed — the
   failure used to come back as `UiaTimeout` with wait-and-retry advice, which cannot
-  fix a malformed argument. The declared code now wins, so the suggestions match the
-  actual failure.
+  fix a malformed argument. Any declared code that has suggestions registered now
+  wins, so the suggestions match the actual failure.
 - **Failure details are no longer double-nested.** In 23 failure responses across the
   `keyboard`, `terminal`, `clipboard` and `browser_eval` tools, detail fields that used
   to render as `context.context.<field>` (for example `context.context.sent`) now render

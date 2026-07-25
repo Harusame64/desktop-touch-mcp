@@ -34,7 +34,9 @@ describe("Issue #279: ForegroundFlashNotApplicableToKeyPress typed code", () => 
 
   it("classify routes a prose-suffixed message to the same typed code", () => {
     // Defensive variant: even if a future producer appends prose to the
-    // error message, the substring match in classify() should still route.
+    // error message, classify() still routes — the leading `<Code>:` form
+    // via the declared-code arm; the substring arm itself is exercised by
+    // the bare-form test above (no colon, so it reaches the cascade).
     const result = failWith(
       new Error("ForegroundFlashNotApplicableToKeyPress: clipboard paste cannot deliver a key combo"),
       "keyboard:press",
