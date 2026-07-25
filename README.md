@@ -224,7 +224,9 @@ Recovery hints — read `response.attention` after every observation and `respon
 
 - `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → re-call `desktop_discover`
 - `modal_blocking` → `response.blockingElement` (when present) names the blocking modal; dismiss via `click_element(name=blockingElement.name)` then retry
-- `entity_outside_viewport` → `scroll(action='to_element' | 'raw')`, then re-call `desktop_discover`
+- `entity_outside_viewport` → the element moved off screen: `scroll(action='to_element' | 'raw')`, or re-call `desktop_discover` if its window moved or closed
+- `origin_window_not_visible` → the element's window is minimised or hidden, so nothing is drawn where it was found: `focus_window(windowTitle)` to restore it, then re-call `desktop_discover`
+- `coordinate_outside_reachable_bounds` → the element is outside the primary monitor. Coordinate-based mouse input (`mouse_click` / `mouse_drag` / `scroll`, and the mouse route inside `desktop_act`) currently reaches the primary monitor only, so the click is refused instead of landing somewhere else. Move the window to the primary monitor and re-call `desktop_discover`; `click_element` (UIA) and `browser_click` (CDP) work on any monitor because they don't move the cursor
 - `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
 
 Lease lifecycle:
@@ -813,6 +815,8 @@ If `desktop_act` returns `ok: false`, read `reason` and follow the built-in reco
 - `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_discover`
 - `modal_blocking` → `response.blockingElement` (when present) carries `{ name, role, automationId? }`; dismiss with `click_element(name=blockingElement.name)`, then retry
 - `entity_outside_viewport` → `scroll` / `scroll(action='to_element')`, then re-call `desktop_discover`
+- `origin_window_not_visible` → `focus_window(windowTitle)` to restore the minimised / hidden window, then re-call `desktop_discover`
+- `coordinate_outside_reachable_bounds` → the target is off the primary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor, or use `click_element` / `browser_click`
 - `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
 
 For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), the coordinate-based tools (`screenshot(detail='text')`, `click_element`, `mouse_click`, `terminal`, …) remain available as an escape hatch.

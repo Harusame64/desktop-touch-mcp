@@ -180,6 +180,19 @@ const SUGGESTS: Record<string, string[]> = {
     "If the call originates from a background process or service, the OS suppresses foreground transfers — proxy the focus request via the foreground app.",
     "Skip explicit focus_window: tools that accept windowTitle directly (keyboard / desktop_act / browser_click) handle focus internally and may succeed where focus_window cannot.",
   ],
+  // ADR-029 Phase 1: a click / move / drag aimed outside the primary monitor.
+  // Mouse input runs through nut.js, which clamps such a point into the primary
+  // monitor — so acting on it would click something else entirely. The suggests
+  // must NOT send the caller back to mouse_click / desktop_act on the same
+  // coordinate (that re-enters this guard); they name the two things that
+  // actually work today plus the fix that is coming.
+  CoordinateOutsideReachableBounds: [
+    "Move the target window onto the primary monitor (drag it or press Win+Shift+Arrow), then re-run desktop_discover and retry — coordinates are re-read there.",
+    "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act hits this same limit; the coordinate itself is the problem, not the tool.",
+    "If the target exposes UIA, click_element(name=…) or desktop_act on a UIA-sourced entity works on any monitor — those routes do not move the cursor.",
+    "For a browser target, browser_click(selector) drives the page through CDP and is unaffected by monitor layout.",
+    "Multi-monitor mouse input is being added; until then only the primary monitor is reachable by coordinate-based mouse tools.",
+  ],
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",
     "Check context.sent vs context.total",
@@ -664,6 +677,12 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("foregroundrestricted") || m.includes("foreground restricted")) {
     return { code: "ForegroundRestricted", suggest: SUGGESTS.ForegroundRestricted ?? [] };
+  }
+  // ADR-029 Phase 1: emitted by the reachable-bounds guard before any cursor
+  // movement. Placed above the generic arms so neither "window not found" nor
+  // "timeout" can poach a message that mentions a window title.
+  if (m.includes("coordinateoutsidereachablebounds")) {
+    return { code: "CoordinateOutsideReachableBounds", suggest: SUGGESTS.CoordinateOutsideReachableBounds ?? [] };
   }
   if (m.includes("backgroundinputincomplete") || m.includes("background input incomplete")) {
     return { code: "BackgroundInputIncomplete", suggest: SUGGESTS.BackgroundInputIncomplete };

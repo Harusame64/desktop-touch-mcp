@@ -29,7 +29,7 @@ function makeEnv(overrides: Partial<TouchEnvironment> = {}): TouchEnvironment {
     resolveLiveEntities:      () => [],
     currentGeneration:        () => "gen-1",
     isModalBlocking:          () => false,
-    isInViewport:             () => true,
+    checkViewport:            () => null,
     execute:                  async () => "mouse",
     resolvePostTouchEntities: async () => [],
     ...overrides,
@@ -301,11 +301,46 @@ describe("GuardedTouchLoop — pre-touch checks", () => {
     const lease = store.issue(e, "v1");
     const loop = new GuardedTouchLoop(store, makeEnv({
       resolveLiveEntities: () => [e],
-      isInViewport:        () => false,
+      checkViewport:       () => "entity_outside_viewport",
     }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("entity_outside_viewport");
+  });
+
+  // ADR-029 Phase 1: the viewport check reports *why* it blocked, and the loop
+  // forwards that verdict verbatim instead of collapsing it to one reason.
+  it("forwards origin_window_not_visible from the viewport check", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      checkViewport:       () => "origin_window_not_visible",
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("origin_window_not_visible");
+  });
+
+  // ADR-029 Phase 1: an unreachable-coordinate refusal must keep its own reason —
+  // executor_failed's advice ("fall back to mouse_click") would loop back into the
+  // same guard.
+  it("promotes an unreachable-coordinate refusal to its own reason", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      execute: async () => {
+        const err = new Error("CoordinateOutsideReachableBounds: (-1500, 300) is outside …");
+        err.name = "CoordinateOutsideReachableBounds";
+        throw err;
+      },
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("coordinate_outside_reachable_bounds");
   });
 
   it("safe-fails when executor throws", async () => {

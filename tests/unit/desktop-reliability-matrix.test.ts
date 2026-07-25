@@ -174,6 +174,8 @@ const FAIL_REASONS = [
   "lease_digest_mismatch",
   "modal_blocking",
   "entity_outside_viewport",
+  "origin_window_not_visible",
+  "coordinate_outside_reachable_bounds",
   "executor_failed",
 ] as const;
 

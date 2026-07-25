@@ -158,6 +158,24 @@ export interface UiEntity {
    * to executor-side diagnostics in future PRs.
    */
   fallbackHint?: string;
+  /**
+   * ADR-029 Phase 1 — discovery-time provenance: the window / browser tab that
+   * produced this entity's primary candidate (`UiEntityCandidate.target`).
+   *
+   * The viewport gate compares the entity rect against the *current* rect of
+   * this origin window rather than against the foreground window: on a
+   * multi-monitor desktop the target window is frequently NOT the foreground
+   * one, and comparing against the foreground rect blocked every legitimate
+   * touch on another monitor. Comparing against the containing window would be
+   * tautological (the entity was observed inside it), so the identity has to be
+   * carried from discovery time.
+   *
+   * `id` is provider-defined: a decimal HWND string for win32/ocr/uia lanes,
+   * otherwise a window title or `"@active"`. Absent for entities resolved
+   * before this field existed (tests / legacy fixtures) — the gate falls back
+   * to a virtual-screen bounds check in that case.
+   */
+  origin?: { kind: "window" | "browserTab"; id: string };
 }
 
 export interface EntityLease {

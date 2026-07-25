@@ -17,6 +17,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
+import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
@@ -224,6 +225,10 @@ export function createDesktopExecutor(
           { cause: uiaErr },
         );
         const { x, y } = rectCenter(rect);
+        // ADR-029 Phase 1: the UIA route works on any monitor, but this mouse
+        // downgrade does not — refuse an unreachable point instead of letting
+        // libnut clamp it onto the primary monitor and click the wrong thing.
+        assertCoordinateReachable(x, y);
         await d.mouseClick(x, y);
         // Issue #327 item C: signal the silent downgrade so the LLM sees
         // `executor: "mouse"` AND `downgrade: { from: "uia", reason: ... }`
@@ -335,6 +340,8 @@ export function createDesktopExecutor(
       );
     }
     const { x, y } = rectCenter(entity.rect);
+    // ADR-029 Phase 1 — see the downgrade path above.
+    assertCoordinateReachable(x, y);
     await d.mouseClick(x, y);
     return "mouse";
   };
@@ -370,6 +377,9 @@ function getSharedRealDeps(): ExecutorDeps {
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
+      // ADR-029 Phase 1: coordinates only become known inside this dep, so the
+      // reachability check lives here rather than in the executor core.
+      assertCoordinateReachable(coords.x, coords.y);
       const { mouse, Button, Point, straightTo } = await import("../engine/nutjs.js");
       await mouse.move(straightTo(new Point(coords.x, coords.y)));
       await mouse.click(Button.LEFT);

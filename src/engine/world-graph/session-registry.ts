@@ -6,6 +6,7 @@ import {
   GuardedTouchLoop,
   type TouchAction,
   type TouchEnvironment,
+  type ViewportVerdict,
 } from "./guarded-touch.js";
 import { resolveCandidates } from "./resolver.js";
 
@@ -193,8 +194,11 @@ export interface SessionCreateOpts {
    * `findBlockingModal(entity) !== null` so the two stay consistent.
    */
   findBlockingModal?: (entity: UiEntity) => UiEntity | null;
-  /** Override viewport check. Default: conservative pass (always true). */
-  isInViewport?: (entity: UiEntity) => boolean;
+  /**
+   * Override the viewport check (ADR-029 Phase 1). Return `null` to let the
+   * touch proceed, or a block reason. Default: conservative pass (`null`).
+   */
+  checkViewport?: (entity: UiEntity) => ViewportVerdict;
   /**
    * Return a focus fingerprint for the currently focused element (or undefined if unknown).
    * Used for focus_shifted detection: pre- vs post-touch fingerprint is compared.
@@ -339,7 +343,7 @@ export class SessionRegistry {
         (opts.isModalBlocking
           ? () => null
           : (entity: UiEntity) => s.entities.find((e) => classifyModal(e, "pre-touch", { excludeSelf: entity })) ?? null),
-      isInViewport: opts.isInViewport ?? (() => true),
+      checkViewport: opts.checkViewport ?? (() => null),
       // G1-C: Focus fingerprint for focus_shifted detection.
       // Only wired when opts.getFocusedEntityId is provided (e.g. production desktop-register.ts).
       // Conservative: if not provided, focus_shifted is never emitted.

@@ -227,7 +227,9 @@ screenshot. On `ok:false` read `reason` and follow the recovery path:
 |---|---|
 | `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` | re-call `desktop_discover` |
 | `modal_blocking` | `response.blockingElement` names the blocker → `click_element(name=…)` then retry |
-| `entity_outside_viewport` | `scroll(action='to_element' | 'raw')` then re-call `desktop_discover` |
+| `entity_outside_viewport` | `scroll(action='to_element' | 'raw')` then re-call `desktop_discover` (re-discover instead when the window itself moved or closed) |
+| `origin_window_not_visible` | the element's window is minimised / hidden → `focus_window(windowTitle)` to restore it, then re-call `desktop_discover` |
+| `coordinate_outside_reachable_bounds` | the element is off the primary monitor, which coordinate-based mouse input cannot reach yet → move its window to the primary monitor and re-call `desktop_discover`, or use `click_element` / `browser_click` |
 | `executor_failed` | fall back to `click_element` / `mouse_click` / `browser_click` |
 
 > **Kill switch:** `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` hides `desktop_discover` /

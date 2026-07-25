@@ -39,8 +39,8 @@ import type { ToolResult } from "./_types.js";
 import { persistCapture, REF_URI_PREFIX } from "../engine/screenshot-cache.js";
 import { pngDimensions } from "./screenshot-response.js";
 import { Err } from "../types/result.js";
-import { ExecutorFailedError } from "../errors/typed-errors.js";
-import type { TouchAction, RoiCapture, RoiCaptureMaterial } from "../engine/world-graph/guarded-touch.js";
+import { ExecutorFailedError, CoordinateOutsideReachableBoundsError } from "../errors/typed-errors.js";
+import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -62,6 +62,7 @@ import {
   getWindowProcessId,
   getProcessIdentityByPid,
   getWindowRectByHwnd,
+  getVirtualScreen,
 } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { verifyAnyChange } from "../engine/any-change.js";
@@ -87,28 +88,64 @@ const advisoryRegistry = createDefaultCapabilityRegistry();
 // ── G1: Production guards (viewport + focus) ──────────────────────────────────
 
 /**
- * G1-B: Production viewport guard.
+ * G1-B: Production viewport guard. Returns `null` when the touch may proceed,
+ * otherwise the reason to block on (ADR-029 Phase 1).
  *
  * Structured sources (uia, cdp, terminal) guarantee that the element is accessible
  * to the OS at the time of candidate resolution — they cannot be truly "out of viewport"
  * from the OS's perspective. We pass these conservatively.
  *
- * Visual-only entities with a rect are checked against the current foreground window.
- * If the entity center lies outside the foreground window's region, we block the touch.
- * Conservative fallback (return true) on any Win32 error.
+ * Visual-only entities with a rect are checked against the *origin* window — the
+ * window that produced the entity at discovery time (`entity.origin`) — not against
+ * the foreground window. Before ADR-029 this compared with the foreground window,
+ * which blocked every visual-only touch whose target window was not focused (the
+ * common case on a multi-monitor desktop, where the entity legitimately lives at
+ * coordinates far outside the foreground window's rect).
+ *
+ * Verdicts:
+ *   - origin window gone (closed)        → entity_outside_viewport (stale view; re-discover)
+ *   - origin window minimised / cloaked  → origin_window_not_visible (nothing is rendered
+ *     at those coordinates; restore with focus_window, then re-discover). Falling back to a
+ *     virtual-screen check here would be a category error: the gate would pass and the click
+ *     would land on whatever unrelated window now occupies that area.
+ *   - entity centre outside the origin window's current rect → entity_outside_viewport
+ *   - non-HWND origin (title / "@active" / browserTab / absent) → virtual-screen bounds check,
+ *     so coordinates off every monitor are still blocked rather than conservatively passed.
+ *
+ * Conservative fallback (`null` = pass) on any Win32 error.
+ *
+ * `deps` exists for unit tests only — production calls pass nothing and hit the
+ * real Win32 enumerators (same injection idiom as `createCachedProductionWindowsProvider`).
  */
-function productionIsInViewport(entity: UiEntity): boolean {
-  if (!entity.rect) return true; // no rect → can't check → conservative pass
+export interface ViewportCheckDeps {
+  enumerate?: typeof enumWindowsInZOrder;
+  virtualScreen?: typeof getVirtualScreen;
+}
+
+export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDeps = {}): ViewportVerdict {
+  if (!entity.rect) return null; // no rect → can't check → conservative pass
   // Structured sources: OS guarantees accessibility, skip rect check.
-  if (entity.sources.some((s) => s === "uia" || s === "cdp" || s === "terminal")) return true;
-  // Visual-only: check entity rect against current foreground window.
+  if (entity.sources.some((s) => s === "uia" || s === "cdp" || s === "terminal")) return null;
+  const enumerate = deps.enumerate ?? enumWindowsInZOrder;
+  const virtualScreen = deps.virtualScreen ?? getVirtualScreen;
+  // Visual-only: check the entity rect against its origin window's current rect.
   try {
-    const wins = enumWindowsInZOrder();
-    const fg = wins.find((w) => w.isActive);
-    if (!fg) return true; // no foreground window → conservative pass
-    return computeViewportPosition(entity.rect, fg.region) === "in-view";
+    const origin = entity.origin;
+    if (origin?.kind === "window" && /^\d+$/.test(origin.id)) {
+      // Decimal HWND string (win32 / ocr / uia provider lanes).
+      const win = enumerate().find((w) => String(w.hwnd) === origin.id);
+      if (!win) return "entity_outside_viewport"; // origin window closed → view is stale
+      if (win.isMinimized || win.isCloaked) return "origin_window_not_visible";
+      return computeViewportPosition(entity.rect, win.region) === "in-view"
+        ? null
+        : "entity_outside_viewport";
+    }
+    // Non-HWND origin: fall back to the virtual screen (all monitors combined).
+    return computeViewportPosition(entity.rect, virtualScreen()) === "in-view"
+      ? null
+      : "entity_outside_viewport";
   } catch {
-    return true; // conservative on Win32 error
+    return null; // conservative on Win32 error
   }
 }
 
@@ -363,8 +400,9 @@ export function getDesktopFacade(): DesktopFacade {
       // holds the process open on its own.
       sessionEvictionIntervalMs: 30_000,
       ingress,
-      // G1-B: viewport guard — blocks visual-only entities outside the foreground window.
-      isInViewport: productionIsInViewport,
+      // G1-B: viewport guard — blocks visual-only entities that are no longer
+      // reachable at their discovered coordinates (ADR-029 Phase 1).
+      checkViewport: productionCheckViewport,
       // G1-C: window-level focus fingerprint for focus_shifted diff.
       getFocusedEntityId: productionGetFocusedEntityId,
       // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
@@ -781,6 +819,24 @@ export const desktopActRawHandler = async (
   if (!result.ok && result.reason === "executor_failed") {
     const failure = toFailureEnvelope(
       Err(new ExecutorFailedError("desktop_act executor failed")),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // ADR-029 Phase 1: same shape for the unreachable-coordinate refusal. It gets
+  // its own envelope so `try_next` carries the coordinate-specific recovery
+  // (move the window to the primary monitor / use a route that does not move the
+  // cursor) instead of executor_failed's "fall back to mouse_click", which would
+  // send the caller back into the guard. `reason` is derived from the error name
+  // by the same pascalToSnake path, so it matches the TouchFailReason value.
+  if (!result.ok && result.reason === "coordinate_outside_reachable_bounds") {
+    const failure = toFailureEnvelope(
+      Err(new CoordinateOutsideReachableBoundsError(
+        "CoordinateOutsideReachableBounds: the entity sits outside the area mouse input can currently reach"
+      )),
       { optIn: false },
     );
     return {
@@ -1252,7 +1308,9 @@ export function registerDesktopTools(server: McpServer): void {
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
-      "  entity_outside_viewport → scroll via V1 scroll(action='raw'/'to_element') then retry;",
+      "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
+      "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
+      "  coordinate_outside_reachable_bounds → the element sits outside the primary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor and re-call desktop_discover (retrying with mouse_click hits the same limit);",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",

@@ -353,4 +353,32 @@ describe("PR-P1-1 site 7: desktopActRawHandler executor_failed (DATA-level — h
     // compact JSON; PR-P1-3 normalisation would unify these.
     expect(text).toContain('\n  "ok": false');
   });
+
+  // ADR-029 Phase 1: the unreachable-coordinate refusal carries its own cause and
+  // try_next. Pinned here because reusing ExecutorFailed's advice ("fall back to
+  // mouse_click") would send the caller back into the guard that just refused.
+  it("coordinate_outside_reachable_bounds gets its own cause and try_next", async () => {
+    const facade = getDesktopFacade();
+    vi.spyOn(facade, "touch").mockResolvedValue({
+      ok: false,
+      reason: "coordinate_outside_reachable_bounds",
+      diff: [],
+    });
+
+    const parsed = parseContent(
+      (await desktopActRawHandler({ lease: fakeLease, action: "click" })).content
+    ) as {
+      ok: boolean;
+      reason: string;
+      if_unexpected: { most_likely_cause: string; try_next: Array<{ action: string }> };
+    };
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe("coordinate_outside_reachable_bounds");
+    expect(parsed.if_unexpected.most_likely_cause).toBe("CoordinateOutsideReachableBounds");
+    expect(parsed.if_unexpected.try_next.length).toBeGreaterThan(0);
+    // The advice must not steer back into the same guard.
+    const actions = parsed.if_unexpected.try_next.map((t) => t.action).join(" ");
+    expect(actions).toMatch(/primary monitor/i);
+  });
 });

@@ -37,6 +37,30 @@ export class ExecutorFailedError extends HandlerError {
 }
 
 /**
+ * ADR-029 Phase 1 — a mouse coordinate the current input backend cannot reach.
+ *
+ * The nut.js path clamps any point outside the primary monitor into it, so a
+ * click aimed at a second monitor silently lands somewhere else. Until the
+ * native multi-monitor path exists, the coordinate is refused up front instead.
+ *
+ * `name === "CoordinateOutsideReachableBounds"` matches the `SUGGESTS` key, and
+ * `GuardedTouchLoop` recognises this name to report
+ * `reason:"coordinate_outside_reachable_bounds"` instead of the generic
+ * `executor_failed` — whose recovery advice ("fall back to mouse_click") would
+ * send the caller straight back into the same guard.
+ *
+ * The name is deliberately boundary-agnostic: the reachable region widens to the
+ * whole virtual screen once the native path lands, and renaming a published
+ * error code would be a breaking change.
+ */
+export class CoordinateOutsideReachableBoundsError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "CoordinateOutsideReachableBounds";
+  }
+}
+
+/**
  * Generic typed error whose `name` is set from a code passed at construction
  * time. Used by wrapper-internal callsites (`makeQueryWrapper`'s N upper
  * bound checks, `makeCommitWrapper`'s lease validation / handler-throw

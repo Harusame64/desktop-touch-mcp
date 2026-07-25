@@ -280,7 +280,9 @@ mouse_click(x, y, origin?, scale?)    → 最終手段。dotByDot screenshot の
 
 - `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → `desktop_discover` を再実行
 - `modal_blocking` → `response.blockingElement` (含まれていれば) がブロック中の modal を識別する。`click_element(name=blockingElement.name)` で閉じてからリトライ
-- `entity_outside_viewport` → `scroll(action='to_element' | 'raw')` 後に `desktop_discover` 再実行
+- `entity_outside_viewport` → 要素が画面外へ移動: `scroll(action='to_element' | 'raw')` 後に `desktop_discover` 再実行（窓ごと移動・閉じた場合は再 discover）
+- `origin_window_not_visible` → 要素の由来ウィンドウが最小化 / 非表示で、発見時の座標には何も描画されていない: `focus_window(windowTitle)` で復元してから `desktop_discover` 再実行
+- `coordinate_outside_reachable_bounds` → 対象がプライマリモニタ外。座標ベースのマウス入力（`mouse_click` / `mouse_drag` / `scroll`、および `desktop_act` の mouse route）は現状プライマリモニタしか到達できないため、別の場所をクリックする代わりに拒否される。対象ウィンドウをプライマリモニタへ移してから `desktop_discover` 再実行するか、カーソルを動かさない `click_element`（UIA）/ `browser_click`（CDP）を使う
 - `executor_failed` → V1 (`click_element` / `mouse_click` / `browser_click`) にフォールバック
 
 Lease ライフサイクル:
@@ -608,6 +610,8 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 - `lease_expired` / `*_mismatch` / `entity_not_found` → `desktop_discover` を再実行してリースを更新
 - `modal_blocking` → `response.blockingElement` (含まれていれば) が `{ name, role, automationId? }` を返す。`click_element(name=blockingElement.name)` でモーダルを閉じてから retry
 - `entity_outside_viewport` → `scroll` / `scroll(action='to_element')` してから `desktop_discover` を再実行
+- `origin_window_not_visible` → `focus_window(windowTitle)` で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
+- `coordinate_outside_reachable_bounds` → 対象がプライマリモニタ外で座標マウス入力が届かない: ウィンドウをプライマリへ移すか、`click_element` / `browser_click` を使う
 - `executor_failed` → `click_element` / `mouse_click` / `browser_click` にフォールバック
 
 `desktop_discover` が warnings（`visual_provider_unavailable`、`visual_provider_warming`、`cdp_provider_failed` 等）を返した場合も、V1 ツール（`screenshot`、`click_element`、`get_ui_elements`、`terminal(action='send')` など）がエスケープハッチとして使えます。

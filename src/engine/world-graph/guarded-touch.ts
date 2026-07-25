@@ -48,7 +48,22 @@ export type TouchFailReason =
   | "lease_digest_mismatch"
   | "modal_blocking"
   | "entity_outside_viewport"
+  | "origin_window_not_visible"
+  | "coordinate_outside_reachable_bounds"
   | "executor_failed";
+
+/**
+ * ADR-029 Phase 1 — result of the pre-touch viewport check.
+ *
+ * `null` means "cleared, proceed"; a non-null value is the `TouchFailReason`
+ * to report. Modelled as a reason rather than a boolean because the two block
+ * cases need different recovery advice: `entity_outside_viewport` is recovered
+ * by scrolling or re-discovering, while `origin_window_not_visible` (the
+ * origin window is minimised / DWM-cloaked, so nothing is rendered at those
+ * coordinates) is only recovered by restoring the window with `focus_window`
+ * and re-running `desktop_discover`.
+ */
+export type ViewportVerdict = null | "entity_outside_viewport" | "origin_window_not_visible";
 
 /**
  * Identity of the modal entity blocking a touch attempt — included in the response
@@ -229,8 +244,13 @@ export interface TouchEnvironment {
    * Issue #63.
    */
   findBlockingModal?(entity: UiEntity): UiEntity | null;
-  /** True if the entity rect is fully or partially within the active viewport. */
-  isInViewport(entity: UiEntity): boolean;
+  /**
+   * ADR-029 Phase 1: check whether the entity is currently reachable on screen.
+   * Returns `null` when the touch may proceed, otherwise the block reason.
+   * (Replaces the pre-ADR-029 boolean `isInViewport`; the rename is deliberate
+   * so `!check(...)` cannot silently invert the new null-means-ok convention.)
+   */
+  checkViewport(entity: UiEntity): ViewportVerdict;
   /**
    * Perform the action and return which executor was used. Throw on failure.
    *
@@ -483,8 +503,9 @@ export class GuardedTouchLoop {
         ...(blocker ? { blockingElement: toBlockingElementInfo(blocker) } : {}),
       };
     }
-    if (!this.env.isInViewport(entity)) {
-      return { ok: false, reason: "entity_outside_viewport", diff: [] };
+    const viewportVerdict = this.env.checkViewport(entity);
+    if (viewportVerdict !== null) {
+      return { ok: false, reason: viewportVerdict, diff: [] };
     }
 
     // 4. Capture pre-touch focus (before execute).
@@ -503,7 +524,16 @@ export class GuardedTouchLoop {
     let outcome: ExecutorKind | ExecutorOutcome;
     try {
       outcome = await this.env.execute(entity, concreteAction, text);
-    } catch {
+    } catch (err) {
+      // ADR-029 Phase 1: an unreachable-coordinate refusal keeps its own reason.
+      // Collapsing it into executor_failed would hand the caller that reason's
+      // recovery advice — "fall back to mouse_click" — which walks straight back
+      // into the same guard. Matched on `name` (not instanceof) because the
+      // error crosses module boundaries where a duplicated class identity would
+      // silently fail the check.
+      if (err instanceof Error && err.name === "CoordinateOutsideReachableBounds") {
+        return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [] };
+      }
       return { ok: false, reason: "executor_failed", diff: [] };
     }
     // Issue #327 item C: normalise bare-kind / rich-outcome return shapes so

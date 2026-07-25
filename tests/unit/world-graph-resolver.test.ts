@@ -46,6 +46,21 @@ describe("resolveCandidates — basic resolution", () => {
     expect(e.sources).toContain("visual_gpu");
   });
 
+  // ADR-029 Phase 1: the viewport gate compares the entity rect against the
+  // window it was discovered in, so the primary candidate's target has to reach
+  // the entity.
+  it("origin carries the primary candidate's target", () => {
+    const [e] = resolveCandidates([candidate("Play")], GEN);
+    expect(e.origin).toEqual(TARGET);
+  });
+
+  it("origin comes from the most recently observed candidate in a merged group", () => {
+    const older = candidate("Play", { observedAtMs: 1000, target: { kind: "window", id: "1000" } });
+    const newer = candidate("Play", { observedAtMs: 2000, target: { kind: "window", id: "2000" } });
+    const [e] = resolveCandidates([older, newer], GEN);
+    expect(e.origin).toEqual({ kind: "window", id: "2000" });
+  });
+
   it("evidenceDigest is always set (required for lease issuance)", () => {
     const [e] = resolveCandidates([candidate("Start")], GEN);
     expect(e.evidenceDigest).toBeTruthy();

@@ -103,6 +103,17 @@ export function getVirtualScreen(): { x: number; y: number; width: number; heigh
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
+/**
+ * Bounds of the primary monitor, or null when no monitor reports itself primary
+ * (enumeration failure / headless session). Callers decide what "unknown" means;
+ * the reachable-bounds guard treats it as "cannot judge → allow".
+ *
+ * Same `enumMonitors().find(primary)` idiom as `pickMonitor` in `dock.ts`.
+ */
+export function getPrimaryMonitorBounds(): { x: number; y: number; width: number; height: number } | null {
+  return enumMonitors().find((m) => m.primary)?.bounds ?? null;
+}
+
 export interface WindowZInfo {
   hwnd: bigint;
   title: string;
