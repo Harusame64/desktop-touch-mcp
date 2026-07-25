@@ -814,7 +814,7 @@ If `desktop_act` returns `ok: false`, read `reason` and follow the built-in reco
 
 - `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_discover`
 - `modal_blocking` → `response.blockingElement` (when present) carries `{ name, role, automationId? }`; dismiss with `click_element(name=blockingElement.name)`, then retry
-- `entity_outside_viewport` → `scroll` / `scroll(action='to_element')`, then re-call `desktop_discover`
+- `entity_outside_viewport` → the element moved off screen: `scroll` / `scroll(action='to_element')` when it scrolled out of its own window, or re-call `desktop_discover` when the window itself moved or closed
 - `origin_window_not_visible` → `focus_window(windowTitle)` to restore the minimised / hidden window, then re-call `desktop_discover`
 - `coordinate_outside_reachable_bounds` → the target is off the primary monitor, which coordinate-based mouse input cannot reach yet: move its window to the primary monitor, or use `click_element` / `browser_click`
 - `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`

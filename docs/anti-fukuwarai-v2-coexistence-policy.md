@@ -37,6 +37,10 @@ V2 tools（`desktop_see` / `desktop_touch`）は default-on 後も V1 の上位�
 
 `desktop_touch` が `ok: false` を返した場合の対処:
 
+> **Historical record (v2 rollout, 旧ツール名 `desktop_see` 時代)。** 現行の failure reason と回復手順の SSOT は
+> `README.md` / `docs/system-overview.md` / tool description 側。特に `entity_outside_viewport` の回復手順と
+> 追加 reason（`origin_window_not_visible` / `coordinate_outside_reachable_bounds`）は下表より新しい。
+
 | reason | 意味 | 推奨 fallback |
 |---|---|---|
 | `lease_expired` | lease の有効期限切れ | `desktop_see` を再実行して lease を更新 |

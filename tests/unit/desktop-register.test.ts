@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   registerDesktopTools,
@@ -352,7 +355,40 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
 
   it("blocks as stale when the origin window has closed", () => {
     const enumerate = () => [win({ hwnd: BigInt(9999), region: { x: 2000, y: 0, width: 1920, height: 1080 } })];
-    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    const probeWindow = () => null; // handle gone
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow }))
+      .toBe("entity_outside_viewport");
+  });
+
+  // enumWindowsInZOrder drops invisible / untitled / sub-50px windows, so "absent
+  // from the enumeration" must not be read as "closed" — an untitled canvas or
+  // game window is exactly the UIA-less target this gate exists for.
+  it("compares against a live window that the enumeration filtered out (untitled)", () => {
+    const enumerate = () => [win({ hwnd: BigInt(9999), title: "Something else" })];
+    const probeWindow = () => ({
+      rect: { x: 2000, y: 0, width: 1920, height: 1080 },
+      visible: true,
+      minimized: false,
+      cloaked: false,
+    });
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow })).toBeNull();
+
+    const outside = visualEntity({ rect: { x: 100, y: 100, width: 50, height: 20 } });
+    expect(productionCheckViewport(outside, { enumerate, virtualScreen, probeWindow }))
+      .toBe("entity_outside_viewport");
+  });
+
+  it("blocks a filtered-out window that is hidden or minimised", () => {
+    const enumerate = () => [win({ hwnd: BigInt(9999) })];
+    const base = { rect: { x: 2000, y: 0, width: 1920, height: 1080 }, minimized: false, cloaked: false };
+    for (const state of [
+      { ...base, visible: false, minimized: false },
+      { ...base, visible: true, minimized: true },
+      { ...base, visible: true, cloaked: true },
+    ]) {
+      expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow: () => state }))
+        .toBe("origin_window_not_visible");
+    }
   });
 
   // A minimised origin window renders nothing at the discovered coordinates, so
@@ -370,6 +406,15 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
     expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen })).toBe("origin_window_not_visible");
   });
 
+  // A window titled e.g. "12345" is indistinguishable from an HWND string, and
+  // providers fall back to the title when no HWND was resolved. Probing it as a
+  // handle would block the entity as stale instead of taking the fallback.
+  it("treats an all-numeric origin that matches a live window title as title-based", () => {
+    const enumerate = () => [win({ hwnd: BigInt(4242), title: "1000" })];
+    const probeWindow = () => null;
+    expect(productionCheckViewport(visualEntity(), { enumerate, virtualScreen, probeWindow })).toBeNull();
+  });
+
   it("falls back to the virtual screen for a non-HWND origin", () => {
     const enumerate = () => [win({ hwnd: BigInt(1000) })];
     const byTitle = visualEntity({ origin: { kind: "window", id: "@active" } });
@@ -381,6 +426,17 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
       rect: { x: 9000, y: 300, width: 100, height: 40 },
     });
     expect(productionCheckViewport(offscreen, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+  });
+
+  // The gate only takes effect if the facade is actually wired to it. Nothing
+  // else in the suite would notice `checkViewport` being dropped or reverted to a
+  // constant pass, so pin the wiring at source level.
+  it("is the function the production facade is wired to", () => {
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "tools", "desktop-register.ts"),
+      "utf8",
+    );
+    expect(source).toMatch(/checkViewport:\s*productionCheckViewport/);
   });
 
   it("keeps the conservative passes: structured sources, missing rect, Win32 failure", () => {

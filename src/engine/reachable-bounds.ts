@@ -63,10 +63,24 @@ export function assertCoordinateReachable(
   );
 }
 
+let warnedUnknownBounds = false;
+
 function safePrimaryBounds(): ReachableBounds | null {
+  let bounds: ReachableBounds | null = null;
   try {
-    return getPrimaryMonitorBounds();
+    bounds = getPrimaryMonitorBounds();
   } catch {
-    return null; // Win32 failure → unknown → allow (same conservative stance as the viewport gate)
+    bounds = null; // Win32 failure → unknown → allow (same conservative stance as the viewport gate)
   }
+  if (bounds === null && !warnedUnknownBounds) {
+    // Allowing everything keeps a machine with unreadable monitor info usable, but
+    // it also restores the silent-misclick behaviour this guard exists to prevent.
+    // Say so once rather than failing quietly in both directions.
+    warnedUnknownBounds = true;
+    console.error(
+      "[reachable-bounds] monitor bounds unavailable — coordinate reachability cannot be checked; " +
+        "clicks outside the primary monitor may land elsewhere."
+    );
+  }
+  return bounds;
 }

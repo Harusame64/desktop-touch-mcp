@@ -165,6 +165,10 @@ V1 ツール群（56 tools）は以下の役割で当面残す。削除しない
 
 `ok=false` の場合は `reason` を確認して以下に従う:
 
+> **Historical record (v2 default-on 判定時点)。** 現行の failure reason と回復手順の SSOT は `README.md` /
+> `docs/system-overview.md` / tool description 側（`entity_outside_viewport` の回復手順は更新済み、
+> `origin_window_not_visible` / `coordinate_outside_reachable_bounds` が追加されている）。
+
 | reason | 意味 | 推奨アクション |
 |---|---|---|
 | `lease_expired` | Lease の TTL 切れ | `desktop_see` を再呼び出しして新しい lease を取得 |

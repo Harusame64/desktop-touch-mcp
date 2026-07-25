@@ -63,6 +63,7 @@ import {
   getProcessIdentityByPid,
   getWindowRectByHwnd,
   getVirtualScreen,
+  getWindowRenderState,
 } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { verifyAnyChange } from "../engine/any-change.js";
@@ -104,13 +105,19 @@ const advisoryRegistry = createDefaultCapabilityRegistry();
  *
  * Verdicts:
  *   - origin window gone (closed)        → entity_outside_viewport (stale view; re-discover)
- *   - origin window minimised / cloaked  → origin_window_not_visible (nothing is rendered
- *     at those coordinates; restore with focus_window, then re-discover). Falling back to a
- *     virtual-screen check here would be a category error: the gate would pass and the click
+ *   - origin window minimised / cloaked / hidden → origin_window_not_visible (nothing is
+ *     rendered at those coordinates; restore with focus_window, then re-discover). Falling back
+ *     to a virtual-screen check here would be a category error: the gate would pass and the click
  *     would land on whatever unrelated window now occupies that area.
  *   - entity centre outside the origin window's current rect → entity_outside_viewport
  *   - non-HWND origin (title / "@active" / browserTab / absent) → virtual-screen bounds check,
  *     so coordinates off every monitor are still blocked rather than conservatively passed.
+ *
+ * Absence from `enumWindowsInZOrder` does NOT mean the window closed: that enumeration
+ * drops invisible, untitled and sub-50px windows, and an untitled canvas / game / remote
+ * session window is exactly the UIA-less target this gate exists for. Such an HWND is
+ * probed directly (`getWindowRenderState`) so a live-but-filtered window is compared
+ * against its real rect instead of being blocked as stale.
  *
  * Conservative fallback (`null` = pass) on any Win32 error.
  *
@@ -120,6 +127,7 @@ const advisoryRegistry = createDefaultCapabilityRegistry();
 export interface ViewportCheckDeps {
   enumerate?: typeof enumWindowsInZOrder;
   virtualScreen?: typeof getVirtualScreen;
+  probeWindow?: typeof getWindowRenderState;
 }
 
 export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDeps = {}): ViewportVerdict {
@@ -128,15 +136,33 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
   if (entity.sources.some((s) => s === "uia" || s === "cdp" || s === "terminal")) return null;
   const enumerate = deps.enumerate ?? enumWindowsInZOrder;
   const virtualScreen = deps.virtualScreen ?? getVirtualScreen;
+  const probeWindow = deps.probeWindow ?? getWindowRenderState;
   // Visual-only: check the entity rect against its origin window's current rect.
   try {
     const origin = entity.origin;
     if (origin?.kind === "window" && /^\d+$/.test(origin.id)) {
       // Decimal HWND string (win32 / ocr / uia provider lanes).
       const win = enumerate().find((w) => String(w.hwnd) === origin.id);
-      if (!win) return "entity_outside_viewport"; // origin window closed → view is stale
-      if (win.isMinimized || win.isCloaked) return "origin_window_not_visible";
-      return computeViewportPosition(entity.rect, win.region) === "in-view"
+      if (win) {
+        if (win.isMinimized || win.isCloaked) return "origin_window_not_visible";
+        return computeViewportPosition(entity.rect, win.region) === "in-view"
+          ? null
+          : "entity_outside_viewport";
+      }
+      // An all-numeric *window title* looks exactly like an HWND string. If a live
+      // window carries that title, treat the origin as title-based (providers fall
+      // back to `windowTitle` when no HWND was resolved) rather than probing a
+      // handle that was never one.
+      if (enumerate().some((w) => w.title === origin.id)) {
+        return computeViewportPosition(entity.rect, virtualScreen()) === "in-view"
+          ? null
+          : "entity_outside_viewport";
+      }
+      // Not enumerated — closed, or filtered out (untitled / hidden / tiny). Probe it.
+      const state = probeWindow(BigInt(origin.id));
+      if (!state) return "entity_outside_viewport"; // handle is gone → view is stale
+      if (state.minimized || state.cloaked || !state.visible) return "origin_window_not_visible";
+      return computeViewportPosition(entity.rect, state.rect) === "in-view"
         ? null
         : "entity_outside_viewport";
     }

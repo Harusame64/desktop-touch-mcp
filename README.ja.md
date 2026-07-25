@@ -609,7 +609,7 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 
 - `lease_expired` / `*_mismatch` / `entity_not_found` → `desktop_discover` を再実行してリースを更新
 - `modal_blocking` → `response.blockingElement` (含まれていれば) が `{ name, role, automationId? }` を返す。`click_element(name=blockingElement.name)` でモーダルを閉じてから retry
-- `entity_outside_viewport` → `scroll` / `scroll(action='to_element')` してから `desktop_discover` を再実行
+- `entity_outside_viewport` → 要素が画面外へ移動: 由来ウィンドウ内でスクロールアウトしたなら `scroll` / `scroll(action='to_element')`、ウィンドウごと移動・閉じたなら `desktop_discover` を再実行
 - `origin_window_not_visible` → `focus_window(windowTitle)` で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
 - `coordinate_outside_reachable_bounds` → 対象がプライマリモニタ外で座標マウス入力が届かない: ウィンドウをプライマリへ移すか、`click_element` / `browser_click` を使う
 - `executor_failed` → `click_element` / `mouse_click` / `browser_click` にフォールバック

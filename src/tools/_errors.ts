@@ -654,6 +654,13 @@ function classify(message: string): { code: string; suggest: string[] } {
   if (m.includes("spawnfailed") || m.includes("spawn failed:")) {
     return { code: "SpawnFailed", suggest: SUGGESTS.SpawnFailed };
   }
+  // ADR-029 Phase 1: emitted by the reachable-bounds guard before any cursor
+  // movement. Kept above the generic arms because the message names the target
+  // window, so a future wording change could otherwise be poached by
+  // "window not found" / "timeout" below.
+  if (m.includes("coordinateoutsidereachablebounds")) {
+    return { code: "CoordinateOutsideReachableBounds", suggest: SUGGESTS.CoordinateOutsideReachableBounds ?? [] };
+  }
   if (m.includes("window not found") || m.includes("no window")) {
     return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };
   }
@@ -677,12 +684,6 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("foregroundrestricted") || m.includes("foreground restricted")) {
     return { code: "ForegroundRestricted", suggest: SUGGESTS.ForegroundRestricted ?? [] };
-  }
-  // ADR-029 Phase 1: emitted by the reachable-bounds guard before any cursor
-  // movement. Placed above the generic arms so neither "window not found" nor
-  // "timeout" can poach a message that mentions a window title.
-  if (m.includes("coordinateoutsidereachablebounds")) {
-    return { code: "CoordinateOutsideReachableBounds", suggest: SUGGESTS.CoordinateOutsideReachableBounds ?? [] };
   }
   if (m.includes("backgroundinputincomplete") || m.includes("background input incomplete")) {
     return { code: "BackgroundInputIncomplete", suggest: SUGGESTS.BackgroundInputIncomplete };
