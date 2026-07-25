@@ -66,7 +66,7 @@ export function assertCoordinateReachable(
 let warnedUnknownBounds = false;
 
 function safePrimaryBounds(): ReachableBounds | null {
-  let bounds: ReachableBounds | null = null;
+  let bounds: ReachableBounds | null;
   try {
     bounds = getPrimaryMonitorBounds();
   } catch {
