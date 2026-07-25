@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
+import { mouse, Button } from "../engine/nutjs.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
+import { moveCursorTo } from "../engine/cursor.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { ok, buildDesc } from "./_types.js";
@@ -647,29 +648,20 @@ async function osClickAndVerify(
   tabId: string | null,
   port: number,
 ): Promise<VerifyDeliveryHint> {
-  // ADR-029 Phase 1: every browser_click path (selector, by-axis, actionability
-  // rescue) funnels here, and this is an OS cursor click — CDP only resolves the
-  // coordinates and verifies delivery afterwards. So a browser window on a
-  // secondary monitor is subject to the same libnut clamp as any other coordinate
-  // click, and worse: a clamped click that happens to mutate some DOM node would
-  // be reported back as `delivered`. Refused before the cursor moves, and before
-  // focusing the browser, so a refused click has no side effect at all.
+  // ADR-029: every browser_click path (selector, by-axis, actionability rescue)
+  // funnels here, and this is an OS cursor click — CDP only resolves the
+  // coordinates and verifies delivery afterwards. A browser window on another
+  // monitor is therefore subject to whatever limits coordinate movement has, and
+  // worse: a click that landed somewhere else but happened to mutate some DOM
+  // node would be reported back as `delivered`. Checked before the cursor moves
+  // and before focusing the browser, so a refused click has no side effect.
   assertCoordinateReachable(x, y);
 
   await ensureBrowserFocused(port);
 
-  const speed = DEFAULT_MOUSE_SPEED;
-  if (speed === 0) {
-    await mouse.setPosition(new Point(x, y));
-  } else {
-    const prev = mouse.config.mouseSpeed;
-    mouse.config.mouseSpeed = speed;
-    try {
-      await mouse.move(straightTo(new Point(x, y)));
-    } finally {
-      mouse.config.mouseSpeed = prev;
-    }
-  }
+  // Phase 2a: same choke point as every other cursor move — native
+  // multi-monitor placement with the nut.js fallback behind it.
+  await moveCursorTo(x, y);
 
   // Probe installed AFTER the cursor move (Codex P1). Best-effort: install/read
   // failures never fail the click — they degrade to `unverifiable`.

@@ -133,6 +133,20 @@ export interface NativeMonitorInfo {
   dpi: number
 }
 
+// ─── ADR-029 Phase 2a: multi-monitor cursor movement ─────────────────────────
+
+export interface NativeCursorPoint {
+  x: number
+  y: number
+}
+
+export interface NativeCursorMoveResult {
+  ok: boolean
+  method: string
+  finalX: number
+  finalY: number
+}
+
 // ─── Win32 process / input (ADR-007 P3) ──────────────────────────────────────
 
 export interface NativeForceFocusResult {
@@ -357,6 +371,11 @@ export declare function win32WgcCaptureWindow(hwnd: bigint, opts?: NativeWgcCapt
 export declare function win32EnumMonitors(): NativeMonitorInfo[]
 export declare function win32GetWindowDpi(hwnd: bigint): number
 export declare function win32SetProcessDpiAwareness(level: number): boolean
+
+// ─── ADR-029 Phase 2a: multi-monitor cursor movement ─────────────────────────
+export declare function win32MoveCursorAbsolute(x: number, y: number): NativeCursorMoveResult
+export declare function win32MoveCursorPath(points: NativeCursorPoint[], verifyLast: boolean): NativeCursorMoveResult
+export declare function win32GetCursorPos(): NativeCursorPoint
 
 // ─── Win32 process / input (ADR-007 P3) ──────────────────────────────────────
 export declare function win32ShowWindow(hwnd: bigint, nCmdShow: number): boolean

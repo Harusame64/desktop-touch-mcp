@@ -111,6 +111,35 @@ pub struct NativeProcessIdentity {
     pub process_start_time_ms: f64,
 }
 
+// ── ADR-029 Phase 2a: multi-monitor cursor movement ──────────────────────────
+
+/// A cursor position in physical virtual-screen coordinates (signed — a
+/// monitor placed left of or above the primary one has negative coordinates,
+/// which is the whole point of the ADR-029 native path).
+#[napi(object)]
+pub struct NativeCursorPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Outcome of a cursor move. The native side never throws for a move that
+/// simply did not land — it reports `ok: false` plus where the cursor
+/// actually ended up, and the TS layer decides which typed error that
+/// becomes (`CursorPlacementBlocked`). `method` records which mechanism
+/// produced the final position so the failure mode is observable:
+///
+/// - `"set_cursor_pos"` — `SetCursorPos` alone landed within tolerance
+/// - `"send_input"` — `SetCursorPos` missed, the `MOUSEEVENTF_VIRTUALDESK`
+///   `SendInput` correction landed it
+/// - `"failed"` — neither did; `final_x` / `final_y` hold the real position
+#[napi(object)]
+pub struct NativeCursorMoveResult {
+    pub ok: bool,
+    pub method: String,
+    pub final_x: i32,
+    pub final_y: i32,
+}
+
 /// Scrollbar position snapshot. `page_ratio` (0..1) is precomputed so
 /// the TS wrapper does not have to redo the same `(nPos - nMin) / range`
 /// math the legacy `readScrollInfo` used.

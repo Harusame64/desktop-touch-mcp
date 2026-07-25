@@ -37,11 +37,19 @@ export class ExecutorFailedError extends HandlerError {
 }
 
 /**
- * ADR-029 Phase 1 — a mouse coordinate the current input backend cannot reach.
+ * ADR-029 — a mouse coordinate the current input backend cannot reach.
  *
- * The nut.js path clamps any point outside the primary monitor into it, so a
- * click aimed at a second monitor silently lands somewhere else. Until the
- * native multi-monitor path exists, the coordinate is refused up front instead.
+ * Since Phase 2a the native path reaches every monitor, so this now means the
+ * point is not on any connected monitor at all — normally coordinates that went
+ * stale because the window moved or closed after they were read. It keeps its
+ * Phase 1 meaning ("outside the primary monitor") only on an installation whose
+ * native input module is missing, where movement falls back to nut.js and that
+ * library clamps anything else into the primary monitor.
+ *
+ * A point that IS on a monitor but could not be reached — something is holding
+ * the cursor, the session is not interactive — raises
+ * {@link CursorPlacementBlockedError} instead: same failure to click, entirely
+ * different recovery.
  *
  * `name === "CoordinateOutsideReachableBounds"` matches the `SUGGESTS` key, and
  * `GuardedTouchLoop` recognises this name to report
@@ -57,6 +65,33 @@ export class CoordinateOutsideReachableBoundsError extends HandlerError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "CoordinateOutsideReachableBounds";
+  }
+}
+
+/**
+ * ADR-029 Phase 2a — the coordinate was fine, but the pointer could not be put
+ * there.
+ *
+ * The native path reads the cursor position back after moving it, which makes a
+ * class of failure visible that used to end as a click in the wrong place:
+ * another application confining the cursor to its own window (`ClipCursor`, the
+ * usual full-screen game), a session that is not interactive right now (a
+ * disconnected or locked remote-desktop session), another program repeatedly
+ * repositioning the pointer, or a monitor added or removed mid-move.
+ *
+ * Kept separate from {@link CoordinateOutsideReachableBoundsError} because
+ * saying "outside the reachable bounds" about a point that is plainly on a
+ * monitor would be untrue, and because none of that error's recovery advice
+ * (re-discover, move the window to the primary monitor) does anything here.
+ *
+ * Note what this is NOT: when an elevated window is in the foreground, UIPI
+ * discards the click but not `SetCursorPos`, so the move succeeds and verifies
+ * — that failure stays silent and is out of scope for this phase.
+ */
+export class CursorPlacementBlockedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "CursorPlacementBlocked";
   }
 }
 

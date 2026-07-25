@@ -282,7 +282,8 @@ mouse_click(x, y, origin?, scale?)    → 最終手段。dotByDot screenshot の
 - `modal_blocking` → `response.blockingElement` (含まれていれば) がブロック中の modal を識別する。`click_element(name=blockingElement.name)` で閉じてからリトライ
 - `entity_outside_viewport` → 要素が画面外へ移動: `scroll(action='to_element' | 'raw')` 後に `desktop_discover` 再実行（窓ごと移動・閉じた場合は再 discover）
 - `origin_window_not_visible` → 要素の由来ウィンドウが最小化 / 非表示で、発見時の座標には何も描画されていない: `focus_window(windowTitle)` で復元してから `desktop_discover` 再実行
-- `coordinate_outside_reachable_bounds` → 対象がプライマリモニタ外。座標ベースのマウス入力（`mouse_click` / `mouse_drag` / `scroll`、および `desktop_act` の mouse route）は現状プライマリモニタしか到達できないため、別の場所をクリックする代わりに拒否される。対象ウィンドウをプライマリモニタへ移してから `desktop_discover` 再実行するか、カーソルを動かさない `click_element`（UIA invoke）を使う。**`browser_click` は逃げ道にならない** — OS カーソルでクリックするため同じ制限を受け同じエラーになる
+- `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い。座標ベースのマウス入力（`mouse_click` / `mouse_drag` / `scroll` / `browser_click`、および `desktop_act` の mouse route）は**全モニタで動作する**ようになった（プライマリの左 / 上に置いたモニタを含む）ため、このエラーは通常「座標が古い」ことを意味する — 読み取った後にウィンドウが移動 / 閉じた場合。`desktop_discover` を再実行して新しい座標で操作する。サーバが内蔵の Windows 入力モジュール無しで動いている場合はプライマリモニタのみに fallback する（その旨がエラーメッセージに出る）。対処はウィンドウをプライマリへ移すか、サーバの再インストール
+- `cursor_placement_blocked` → 座標はモニタ上にあるが、ポインタをそこへ置けなかったためクリックは送られていない。他のアプリがカーソルを自分のウィンドウ内に拘束している（全画面ゲームで多い）/ リモートデスクトップのセッションが切断・ロックされている / 他のプログラムがポインタを動かし続けている / モニタを着脱した直後、といった場合に起きる。カーソルを掴んでいるアプリから離れる、セッションに再接続する、モニタ構成を変えた場合は `desktop_discover` を取り直してから再試行する。カーソルを動かさない `click_element`（UIA invoke）はその間も使える
 - `executor_failed` → V1 (`click_element` / `mouse_click` / `browser_click`) にフォールバック
 
 Lease ライフサイクル:
@@ -611,7 +612,8 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 - `modal_blocking` → `response.blockingElement` (含まれていれば) が `{ name, role, automationId? }` を返す。`click_element(name=blockingElement.name)` でモーダルを閉じてから retry
 - `entity_outside_viewport` → 要素が画面外へ移動: 由来ウィンドウ内でスクロールアウトしたなら `scroll` / `scroll(action='to_element')`、ウィンドウごと移動・閉じたなら `desktop_discover` を再実行
 - `origin_window_not_visible` → `focus_window(windowTitle)` で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
-- `coordinate_outside_reachable_bounds` → 対象がプライマリモニタ外で座標マウス入力が届かない: ウィンドウをプライマリへ移すか、`click_element`（UIA invoke、カーソル非使用）を使う
+- `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い（通常は座標が古い）: `desktop_discover` を再実行する。内蔵 Windows 入力モジュール無しの構成ではプライマリモニタのみ到達可（その旨がメッセージに出る）
+- `cursor_placement_blocked` → ポインタをそこへ置けずクリックは送られていない（アプリがカーソルを掴んでいる / セッションが非対話）: カーソルを解放するかセッションに再接続する、または `click_element`（UIA invoke、カーソル非使用）を使う
 - `executor_failed` → `click_element` / `mouse_click` / `browser_click` にフォールバック
 
 `desktop_discover` が warnings（`visual_provider_unavailable`、`visual_provider_warming`、`cdp_provider_failed` 等）を返した場合も、V1 ツール（`screenshot`、`click_element`、`get_ui_elements`、`terminal(action='send')` など）がエスケープハッチとして使えます。

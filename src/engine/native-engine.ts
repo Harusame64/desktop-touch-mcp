@@ -38,6 +38,8 @@ import type {
   NativeWgcResult,
   NativeWgcCaptureOptions,
   NativeMonitorInfo,
+  NativeCursorPoint,
+  NativeCursorMoveResult,
   NativeForceFocusResult,
   NativeForegroundFlashOptions,
   NativeForegroundFlashResult,
@@ -151,6 +153,13 @@ export interface NativeWin32 {
   win32EnumMonitors?(): NativeMonitorInfo[];
   win32GetWindowDpi?(hwnd: bigint): number;
   win32SetProcessDpiAwareness?(level: number): boolean;
+
+  // ADR-029 Phase 2a multi-monitor cursor movement. Probe all three together
+  // via `hasNativeCursorMove()` below — an addon that carries only some of
+  // them would pass a single-method check and then throw TypeError mid-move.
+  win32MoveCursorAbsolute?(x: number, y: number): NativeCursorMoveResult;
+  win32MoveCursorPath?(points: NativeCursorPoint[], verifyLast: boolean): NativeCursorMoveResult;
+  win32GetCursorPos?(): NativeCursorPoint;
 
   // ADR-007 P3 process / input / window-state ops
   win32ShowWindow?(hwnd: bigint, nCmdShow: number): boolean;
@@ -384,6 +393,27 @@ export const nativeWin32: NativeWin32 | null =
   nativeBinding && typeof nativeBinding.win32EnumTopLevelWindows === "function"
     ? (nativeBinding as unknown as NativeWin32)
     : null;
+
+/**
+ * ADR-029 Phase 2a — is the native multi-monitor cursor path usable?
+ *
+ * Requires ALL THREE bindings, not just one: an animated move calls
+ * `win32GetCursorPos` for its start point and `win32MoveCursorPath` for every
+ * tick, so an addon carrying only `win32MoveCursorAbsolute` (a partial or
+ * stale build) would pass a single-method probe and then throw a raw
+ * TypeError mid-gesture instead of the typed error this phase promises.
+ *
+ * Lives here rather than in `cursor.ts` so `reachable-bounds.ts` can widen its
+ * bounds by the same signal without importing `cursor.ts`, which imports it
+ * back.
+ */
+export function hasNativeCursorMove(): boolean {
+  return (
+    typeof nativeWin32?.win32MoveCursorAbsolute === "function" &&
+    typeof nativeWin32?.win32MoveCursorPath === "function" &&
+    typeof nativeWin32?.win32GetCursorPos === "function"
+  );
+}
 
 // ─── L1 capture surface (ADR-007 P5a) ────────────────────────────────────────
 //

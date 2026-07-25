@@ -27,6 +27,12 @@ pub(crate) mod input;
 pub(crate) mod window_op;
 #[cfg(windows)]
 pub(crate) mod scroll;
+// ADR-029 Phase 2a: multi-monitor cursor movement. The libnut prebuilt
+// normalises absolute coordinates against the primary monitor only, so a
+// point on any other monitor was silently clamped into it. See
+// `src/win32/mouse.rs`.
+#[cfg(windows)]
+pub(crate) mod mouse;
 // ADR-007 P4: final 5 owner/ancestor/enabled/popup/cloaked utilities.
 #[cfg(windows)]
 pub(crate) mod dwm;

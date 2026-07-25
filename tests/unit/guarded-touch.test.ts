@@ -343,6 +343,29 @@ describe("GuardedTouchLoop — pre-touch checks", () => {
     if (!result.ok) expect(result.reason).toBe("coordinate_outside_reachable_bounds");
   });
 
+  // ADR-029 Phase 2a: the coordinate was on a monitor but the pointer could not
+  // be put there. Folding this into executor_failed (or into the unreachable
+  // reason above) would hand the caller advice that cannot work — re-discovering
+  // returns the same correct point, and there is nothing to move to the primary
+  // monitor. Also the case the reliability matrix requires to be reachable from
+  // a test file for `cursor_placement_blocked`.
+  it("promotes a blocked cursor placement to its own reason", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      execute: async () => {
+        const err = new Error("CursorPlacementBlocked: the cursor could not be moved to (200, 300) …");
+        err.name = "CursorPlacementBlocked";
+        throw err;
+      },
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("cursor_placement_blocked");
+  });
+
   it("safe-fails when executor throws", async () => {
     const e = entity("e1", GEN);
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
