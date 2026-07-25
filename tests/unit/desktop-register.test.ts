@@ -497,10 +497,31 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
       expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("origin_window_not_visible");
     });
 
-    it("skips minimised matches and compares against the topmost drawn one", () => {
+    // Resolve first, judge visibility second. Skipping a minimised match to reach
+    // the next one would retarget the gate to a window discovery never picked —
+    // and with a short query ("Chrome") plus a virtual-desktop switch, which
+    // cloaks windows, that is ordinary rather than exotic.
+    it("does not retarget past a minimised match to another same-titled window", () => {
       const enumerate = () => [
         win({ hwnd: BigInt(7), title: "Untitled - Notepad", isMinimized: true, region: { x: 0, y: 0, width: 0, height: 0 } }),
         win({ hwnd: BigInt(8), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("origin_window_not_visible");
+    });
+
+    // Discovery's Case 3 skips dialog-class and owned windows; the gate must skip
+    // the same ones or it compares against a dialog the discovery never captured.
+    it("skips dialog-class and owned windows, exactly as discovery does", () => {
+      const enumerate = () => [
+        win({
+          hwnd: BigInt(9), title: "Untitled - Notepad — Save As", className: "#32770",
+          region: { x: 0, y: 0, width: 400, height: 300 },
+        }),
+        win({
+          hwnd: BigInt(10), title: "Untitled - Notepad — owned popup", ownerHwnd: BigInt(7),
+          region: { x: 0, y: 0, width: 400, height: 300 },
+        }),
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
       ];
       expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBeNull();
     });

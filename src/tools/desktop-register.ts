@@ -66,6 +66,7 @@ import {
   getWindowRenderState,
 } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
+import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { verifyAnyChange } from "../engine/any-change.js";
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { verifyLocalRepaint } from "../engine/local-repaint.js";
@@ -178,21 +179,23 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
       //    element be clicked at its old coordinates after its window moved, hid
       //    or closed, which is the silent misclick this change exists to remove.
       //
-      //    Matched exactly the way the discovery path matches it
-      //    (`findPlainTopLevelWindowByTitle`): case-insensitive SUBSTRING, first
-      //    hit in Z-order. `windowTitle` is a query, not a full title — equality
-      //    would fail to resolve `"Notepad"` against `"Untitled - Notepad"` and
-      //    block every visual-only element on the most common discovery shape.
-      const query = originId.toLowerCase();
-      const named = windows.filter((w) => w.title.toLowerCase().includes(query));
-      if (named.length > 0) {
-        // Compare against ONE window — the topmost drawn match, i.e. the one
-        // discovery would resolve the same query to now. Accepting "any match
-        // that covers the point" would drift back toward the containment check
-        // ADR-029 rejected as tautological, especially for a short query.
-        const visible = named.find((w) => !w.isMinimized && !w.isCloaked);
-        if (!visible) return "origin_window_not_visible";
-        return inView(visible.region);
+      //    Resolved through the SAME predicate the discovery path uses, with the
+      //    same flags as its Case 3 (`_resolve-window.ts`): case-insensitive
+      //    substring, first hit in Z-order, dialogs and owned windows excluded,
+      //    minimised matches NOT skipped. `windowTitle` is a query, not a full
+      //    title, so equality would fail to resolve "Notepad" against "Untitled -
+      //    Notepad"; and skipping a minimised match would silently retarget the
+      //    gate to a different window that merely shares the substring — with a
+      //    query like "Chrome" and a virtual-desktop switch (which cloaks
+      //    windows) that is ordinary, and the click would land in the wrong window.
+      //    Resolve first, judge that window's visibility second.
+      const match = pickPlainTopLevelWindowByTitle(windows, originId, {
+        excludeMinimized: false,
+        excludeDialogsAndOwned: true,
+      });
+      if (match) {
+        if (match.isMinimized || match.isCloaked) return "origin_window_not_visible";
+        return inView(match.region);
       }
 
       // 3. HWND-shaped but not enumerated: the enumeration drops invisible,
