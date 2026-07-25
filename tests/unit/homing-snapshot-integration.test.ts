@@ -18,8 +18,8 @@
  * instead of the snapshot, this test fails: after the Tier 2 overwrite the main
  * cache holds the moved position, so a main-cache delta would be (0,0).
  *
- * Assertion point: with speed:0, moveTo() teleports via mouse.setPosition(Point),
- * so the Point passed there is the post-homing click coordinate.
+ * Assertion point: moveTo() hands the final coordinate to moveCursorTo(x, y,
+ * speed), so the arguments there are the post-homing click coordinate.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -87,14 +87,20 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
   })),
 }));
 
+// ADR-029 Phase 2a: the cursor is moved by `engine/cursor.ts`, not by
+// nut.js directly. Mocked here both to read the post-homing coordinate and
+// so a unit test never moves the real pointer through the native path.
+vi.mock("../../src/engine/cursor.js", () => ({ moveCursorTo: vi.fn() }));
+
 import { mouseClickHandler } from "../../src/tools/mouse.js";
+import * as cursor from "../../src/engine/cursor.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as nutjs from "../../src/engine/nutjs.js";
 import { updateWindowCache, saveSnapshot } from "../../src/engine/window-cache.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockGetRect = vi.mocked(win32.getWindowRectByHwnd);
-const mockSetPosition = vi.mocked(nutjs.mouse.setPosition);
+const mockMove = vi.mocked(cursor.moveCursorTo);
 
 const TITLE = "IntegApp";
 const HWND = 7777n;
@@ -168,7 +174,7 @@ describe("issue #443 (integration): snapshot survives a real Tier 2 cache overwr
     // delta = live(50,80) - snapshot(100,100) = (-50,-20) → (250, 380).
     // A regression that read the (now overwritten) main-cache region would get
     // (50,80)-(50,80)=(0,0) → (300,400) and fail here.
-    expect(mockSetPosition).toHaveBeenCalledWith({ x: 250, y: 380 });
+    expect(mockMove).toHaveBeenCalledWith(250, 380, 0);
   });
 
   it("applies the delta with no focus needed (window already active)", async () => {
@@ -182,6 +188,6 @@ describe("issue #443 (integration): snapshot survives a real Tier 2 cache overwr
 
     await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400 });
 
-    expect(mockSetPosition).toHaveBeenCalledWith({ x: 250, y: 380 });
+    expect(mockMove).toHaveBeenCalledWith(250, 380, 0);
   });
 });
