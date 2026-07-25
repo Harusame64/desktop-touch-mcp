@@ -30,11 +30,25 @@ import { CursorPlacementBlockedError } from "../errors/typed-errors.js";
 /**
  * Distance between interpolated points, in pixels.
  *
- * nut.js emits one point per pixel, and applications that watch the pointer
- * stream — drag thresholds, `dragover`, freehand drawing — see every one of
- * them. Stepping by time instead (say 8 ms ticks) would jump ~24 px at the
- * default speed and hand those applications a much coarser gesture, so the step
- * is a distance and the pacing loop below is what deals with the clock.
+ * Note what this does NOT buy: guaranteed delivery of every point. Windows does
+ * not queue mouse moves — the input queue records that the mouse moved, and
+ * `WM_MOUSEMOVE` is generated from the *current* cursor position when the
+ * application next pumps its message loop. An application therefore observes
+ * the cursor at its own polling rate, no matter how finely the sender steps,
+ * and a batch sent inside one tick can be observed as a single jump.
+ *
+ * What stepping by distance does buy:
+ *  - every point is tested against the monitor layout, which is how a path
+ *    across a staggered desktop avoids emitting positions in the gap
+ *    ({@link planCursorPath});
+ *  - the observable granularity floor is the distance covered in one tick
+ *    (speed × {@link TICK_MS}), so it scales with the requested speed — a
+ *    slower move really is observed more finely, whereas a time-based step
+ *    would be coarse at every speed.
+ *
+ * At the default 3000 px/s that floor is ~24 px per tick, comparable to a
+ * 125 Hz physical mouse. Callers that need a finer trail (freehand drawing)
+ * should lower `speed`.
  */
 const STEP_PX = 1;
 

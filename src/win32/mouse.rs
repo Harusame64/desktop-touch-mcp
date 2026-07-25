@@ -23,11 +23,19 @@
 //!   Input Thread gets to it, so reading it back immediately is a race. A
 //!   verification step built on it verifies nothing.
 //!
-//! `SetCursorPos` still produces `WM_MOUSEMOVE`, so anything watching the
-//! pointer (drag thresholds, `dragover`) behaves as before. Only applications
-//! reading raw input exclusively would miss the motion, and those are the
-//! full-screen games that confine the cursor anyway — where this module
-//! correctly reports that the pointer could not be placed.
+//! `SetCursorPos` still produces `WM_MOUSEMOVE`, so drag thresholds and
+//! `dragover` behave normally. Two limits are worth stating plainly, because
+//! neither is specific to this module but both apply to it:
+//!
+//! - Windows does not queue mouse moves. The message is generated from the
+//!   current cursor position when the application pumps its loop, so an
+//!   application observes the pointer at its own polling rate — intermediate
+//!   positions are never guaranteed to be seen, whoever sends them.
+//! - Raw input (`WM_INPUT`) is fed by the input stream that `SendInput` writes
+//!   to; `SetCursorPos` sets the position instead, so an application reading
+//!   raw input exclusively does not see this motion at all. Those are mainly
+//!   full-screen games, which confine the cursor anyway — and a confined
+//!   cursor is reported here as a placement failure rather than a wrong click.
 //!
 //! **Every move is verified.** `GetCursorPos` reads the position back and it
 //! must match exactly; near-enough is not enough, because one pixel can be a
