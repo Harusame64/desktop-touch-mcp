@@ -24,6 +24,14 @@
     `foreground_restore_failed` the paste had already been sent, so reading the target
     beats resending it. The error message now starts with `ForegroundFlashFailed:`
     followed by the reason — previously the bare reason string was the whole message.
+  - `ForegroundFlashChannelNotImplemented` — `method:'foreground_flash'` resolved to a
+    channel this build does not implement (only the Windows Terminal clipboard path is);
+    `context.kind` names it, and `method:'foreground'` works instead.
+  - A failure whose message is just its code name now keeps that code as well. Some
+    failures write only `WindowNotFound` (for example), and the classifier matched
+    prose like "window not found", so those came back as `ToolError` with no
+    suggestions. Any code that has suggestions registered is now recognised in that
+    compact form too.
   - `TabDragBlocked` / `CrossWindowDragBlocked` — the `mouse_drag` safety gates that
     stop accidental tab tear-offs and cross-window drags. Pass `allowTabDrag:true` /
     `allowCrossWindowDrag:true` when the drag is intentional.

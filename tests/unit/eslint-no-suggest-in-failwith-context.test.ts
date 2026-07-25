@@ -49,6 +49,10 @@ describe("no-suggest-in-failwith-context — flagged shapes", () => {
       'import { failWith as f } from "./_errors.js";\nconst g = f;\ng(e, "t", { context: { a: 1 } });',
     ],
     [
+      "namespace member captured into a variable",
+      'import * as errors from "./_errors.js";\nconst f = errors.failWith;\nf(e, "t", { suggest: [] });',
+    ],
+    [
       "alias resolved from an inner scope",
       'import { errorFromMessage as em } from "../tools/_errors.js";\n' +
         'function h() { const q = em; return q("m", "t", { suggest: [] }); }',

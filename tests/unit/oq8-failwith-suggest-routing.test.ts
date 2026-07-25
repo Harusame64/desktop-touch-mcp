@@ -17,6 +17,8 @@
  * the generic timeout arm WOULD poach if its arm were not placed early.
  */
 import { describe, it, expect } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { failWith } from "../../src/tools/_errors.js";
 
 const render = (message: string, context?: Record<string, unknown>) =>
@@ -74,6 +76,52 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
     const body = render("ForegroundFlashFailed: focus_wait_timeout");
     expect(body.code).toBe("ForegroundFlashFailed");
     expect(body.suggest.length).toBeGreaterThan(0);
+  });
+});
+
+// Codex round 6 found the hole this closes: the arms match PROSE ("window not
+// found"), so a producer that writes only the code as its message fell through
+// to the adviceless `ToolError` — and this PR introduced one such producer
+// (`new Error("WindowNotFound")` for keyboard method:'background'). The
+// leading-code arm at the end of classify covers the whole shape; this test is
+// the structural guard, derived from the source rather than a hand-kept list, so
+// a future compact producer cannot reopen it.
+describe("OQ8 — a message that is only the code still gets that code's advice", () => {
+  const SRC_DIR = join(import.meta.dirname, "..", "..", "src");
+
+  /** Every `new Error("<PascalCase>")` a src file hands to a fail* helper. */
+  const compactCodeMessages = (): string[] => {
+    const found = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else if (entry.name.endsWith(".ts")) {
+          for (const m of readFileSync(p, "utf8").matchAll(/new Error\("([A-Z][A-Za-z0-9]*)"\)/g)) {
+            found.add(m[1]!);
+          }
+        }
+      }
+    };
+    walk(SRC_DIR);
+    return [...found].sort();
+  };
+
+  it("classifies every compact code message in src to itself, with advice", () => {
+    const codes = compactCodeMessages();
+    // Sanity: the sweep must actually find producers, or the test passes vacuously.
+    expect(codes.length).toBeGreaterThan(10);
+
+    const adviceless = codes
+      .map((code) => ({ code, body: render(code) }))
+      .filter(({ code, body }) => body.code !== code || (body.suggest ?? []).length === 0)
+      .map(({ code, body }) => `${code} → code:${body.code} suggest:${(body.suggest ?? []).length}`);
+
+    expect(
+      adviceless,
+      "these producers write only their code as the message, so classify must route it " +
+        "to that code and SUGGESTS must have an entry for it",
+    ).toEqual([]);
   });
 });
 

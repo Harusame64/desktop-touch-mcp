@@ -36,8 +36,9 @@
  *   - the name at the call site is one of the helpers (`failWith(...)`,
  *     `errors.failWith(...)`), and
  *   - the callee resolves to a binding imported from `_errors`, which also
- *     covers an alias (`import { failWith as f }` → `f(...)`) and a local
- *     re-alias of one (`const f = failWith`).
+ *     covers an alias (`import { failWith as f }` → `f(...)`), a local re-alias
+ *     of one (`const f = failWith`), and a namespace member captured into a
+ *     variable (`const f = errors.failWith`).
  * The union is deliberate: this is a guard rule, so a same-named helper from
  * somewhere else being flagged is a cheap, visible false positive, whereas a
  * missed alias silently recreates the malformed envelope. Suppress with an
@@ -113,8 +114,24 @@ export default {
         }
         if (def.type === "Variable" && def.node.type === "VariableDeclarator") {
           const init = def.node.init;
-          if (init?.type !== "Identifier") continue;
-          if (CHECKED_CALLEES.has(init.name) || resolvesToHelper(init, depth + 1)) return true;
+          if (!init) continue;
+          // `const g = f` (alias chain) …
+          if (init.type === "Identifier") {
+            if (CHECKED_CALLEES.has(init.name) || resolvesToHelper(init, depth + 1)) return true;
+            continue;
+          }
+          // … and `const f = errors.failWith` (namespace member captured into a
+          // variable). Without this, a namespace import could be re-aliased past
+          // the guard even though the direct `errors.failWith(...)` call shape is
+          // matched (Codex round 6).
+          if (
+            init.type === "MemberExpression" &&
+            !init.computed &&
+            init.property.type === "Identifier" &&
+            CHECKED_CALLEES.has(init.property.name)
+          ) {
+            return true;
+          }
         }
       }
       return false;

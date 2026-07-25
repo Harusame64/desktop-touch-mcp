@@ -209,6 +209,16 @@ const SUGGESTS: Record<string, string[]> = {
   // OQ8 — see the classify arms for these four. The advice moved here verbatim
   // from the call sites, where it was being nested under `context` instead of
   // reaching the root `suggest` the server instructions tell the model to read.
+  // The resolver picked a channel this build does not implement for the flash
+  // path (`cooperative_bridge`, ADR-013 Option F). Pre-existing hole of the same
+  // class found by the compact-message sweep in round 6: the producers write
+  // only the code, so before the leading-code arm in `classify` this shipped as
+  // `ToolError` with no advice.
+  ForegroundFlashChannelNotImplemented: [
+    "method:'foreground_flash' is only implemented for the Windows Terminal clipboard path; this window resolved to a different channel (context.kind names it).",
+    "Use method:'foreground' — it types into the window after focusing it and does not depend on the flash channel.",
+    "For a terminal target, method:'background' posts the characters without touching the foreground at all.",
+  ],
   ForegroundFlashRequiresTarget: [
     "method:'foreground_flash' needs a target window — pass windowTitle (or hwnd).",
     "Without a target there is nothing to flash to the foreground; use method:'foreground' to type into whatever is already focused.",
@@ -216,11 +226,16 @@ const SUGGESTS: Record<string, string[]> = {
   ForegroundFlashUnsupported: [
     "method:'foreground_flash' resolved to a channel this window cannot accept.",
     "Try method:'foreground' — it works for Chromium, UWP and other non-terminal windows, and for terminal targets that reject the flash path.",
-    // The values a resolver can actually produce on this path — see
+    // The values a resolver can actually produce ON THIS PATH — see
     // `BackgroundUnsupportedReason` in engine/background-channel-resolver.ts.
     // Naming a reason no path emits would send the model looking for a cause
-    // that never applies (Round 3 P2-2).
-    "context.reason says why the channel was rejected (`chromium`, `uwp_sandboxed`, `class_unknown`, or `no_supported_channel`).",
+    // that never applies (Round 3 P2-2). `no_supported_channel` was listed here
+    // until Codex round 6 pointed out that both producers pass
+    // `allowedChannels: ["wm_char", "clipboard_flash"]`, so `wt_xaml_pipeline`
+    // becomes a channel and the remaining rejections always carry one of the
+    // three below — `no_supported_channel` needs wm_char to be excluded, which
+    // no flash call site does.
+    "context.reason says why the channel was rejected (`chromium`, `uwp_sandboxed` or `class_unknown`).",
   ],
   // OQ8 follow-up (6th hole of the same class): the flash channel WAS
   // available but the sequence failed. `context.reason` names where.
@@ -256,7 +271,7 @@ const SUGGESTS: Record<string, string[]> = {
   // which is why the first line points at `context.rawError` too.
   ForegroundFlashFailed: [
     "Read context.reason first — it says where the sequence stopped, and the recoveries are mutually exclusive. If the reason is not one of the ones below, context.rawError carries the raw message from the native path.",
-    "Nothing was pasted, and an identical retry fails identically: input_contains_newline (send one line per call — terminal(action:'send') can add the Enter itself via pressEnter, and for keyboard:type follow the line with keyboard({action:'press', keys:'enter'})), input_exceeds_paste_warning_threshold (split the text into smaller calls), clipboard_empty_failed / clipboard_alloc_failed / clipboard_set_data_failed (the clipboard could not be written) / hidden_owner_create_failed (the helper window that clipboard write needs could not be created) — for all four, use method:'foreground').",
+    "Nothing was pasted, and an identical retry fails identically: input_contains_newline (send one line per call — terminal(action:'send') can add the Enter itself via pressEnter, and for keyboard:type follow the line with keyboard({action:'press', keys:'enter'})), input_exceeds_paste_warning_threshold (split the text into smaller calls — for terminal(action:'send') pass pressEnter:false on every chunk but the last, or each chunk runs as its own command), clipboard_empty_failed / clipboard_alloc_failed / clipboard_set_data_failed (the clipboard could not be written) / hidden_owner_create_failed (the helper window that clipboard write needs could not be created) — for all four, use method:'foreground').",
     "wt_paste_warning_intercepted: the terminal's paste warning appeared, so the text was NOT pasted, and it may still be on screen — check the target and dismiss the dialog before retrying, then use method:'foreground'.",
     "send_input_failed: either the paste keystroke or the Enter after it was refused, so the text may be fully pasted with only the Enter missing, or not pasted at all. Read the target before resending — a blind resend can double-input. Unless the target was already the front window, it was also left in front and not switched back, so focus_window returns you to the window you were using. If context.rawError says the native addon is missing, nothing was sent at all and the server needs reinstalling.",
     "foreground_restore_failed: the paste had already been sent; what failed was switching back to the window that was in front. Bring it back with focus_window, and read the target rather than resending — for a Windows Terminal target this reason can also hide an intercepted paste where nothing landed.",
@@ -950,6 +965,29 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("sessionnotfound")) {
     return { code: "SessionNotFound", suggest: SUGGESTS.SessionNotFound };
+  }
+
+  // Last resort before the adviceless generic: a producer that writes ONLY the
+  // code as its message (`new Error("WindowNotFound")`) still gets its own code
+  // and its dictionary advice.
+  //
+  // Why this exists (Codex, round 6): the arms above match prose — the
+  // WindowNotFound arm looks for "window not found" / "no window" — so a
+  // message that is just the PascalCase code matched nothing and shipped as
+  // `ToolError` with an empty `suggest`. That is the exact defect this PR is
+  // about, and it was re-introduced BY this PR: the round-2 change that made
+  // `keyboard` with `method:'background'` return `WindowNotFound` emits the
+  // compact form. A sweep of every compact `new Error("<Pascal>")` in src found
+  // one other, pre-existing: `ForegroundFlashChannelNotImplemented`.
+  //
+  // Matching the leading token exactly against SUGGESTS keys cannot poach a
+  // prose message (those do not start with a bare code token) and cannot invent
+  // a code, since the key must already exist in the dictionary. It runs LAST so
+  // every specific arm above — including the ordering-sensitive ones — decides
+  // first.
+  const leadingCode = /^([A-Z][A-Za-z0-9]*)(?::|\s|$)/.exec(message.trim())?.[1];
+  if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode)) {
+    return { code: leadingCode, suggest: SUGGESTS[leadingCode] ?? [] };
   }
 
   return { code: "ToolError", suggest: [] };
