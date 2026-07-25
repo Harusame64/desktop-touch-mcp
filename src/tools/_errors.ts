@@ -206,19 +206,27 @@ const SUGGESTS: Record<string, string[]> = {
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
     "If the message says the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates.",
   ],
-  // OQ8 — see the classify arms for these four. The advice moved here verbatim
-  // from the call sites, where it was being nested under `context` instead of
-  // reaching the root `suggest` the server instructions tell the model to read.
-  // The resolver picked a channel this build does not implement for the flash
-  // path (`cooperative_bridge`, ADR-013 Option F). Pre-existing hole of the same
-  // class found by the compact-message sweep in round 6: the producers write
-  // only the code, so before the leading-code arm in `classify` this shipped as
-  // `ToolError` with no advice.
+  // Reserved (currently unreachable): the producers (the keyboard.ts /
+  // terminal.ts flash paths) reject with this compact code when the resolver
+  // picks a channel this build does not implement (`cooperative_bridge`,
+  // ADR-013 Option F) — but the resolver never constructs that kind (it exists
+  // only in the type union in engine/background-channel-resolver.ts), so today
+  // no call reaches the reject. Pre-registered per the matrix §5.2
+  // false-positive policy: the compact-message sweep in round 6 found that if
+  // it ever fired it would have shipped as `ToolError` with no advice (the
+  // producers write only the code; the leading-code arm in `classify` covers
+  // that shape). No `method:'background'` line here on purpose: the only
+  // terminal class that reaches this path is Windows Terminal, and WT rejects
+  // the background channel (`bg-input.ts` reports `wt_xaml_pipeline`), so that
+  // advice would send the caller into a second dead end (Round 7 P2-3).
   ForegroundFlashChannelNotImplemented: [
     "method:'foreground_flash' is only implemented for the Windows Terminal clipboard path; this window resolved to a different channel (context.kind names it).",
     "Use method:'foreground' — it types into the window after focusing it and does not depend on the flash channel.",
-    "For a terminal target, method:'background' posts the characters without touching the foreground at all.",
   ],
+  // OQ8 — see the classify arms for these four (RequiresTarget / Unsupported /
+  // TabDragBlocked / CrossWindowDragBlocked). The advice moved here verbatim
+  // from the call sites, where it was being nested under `context` instead of
+  // reaching the root `suggest` the server instructions tell the model to read.
   ForegroundFlashRequiresTarget: [
     "method:'foreground_flash' needs a target window — pass windowTitle (or hwnd).",
     "Without a target there is nothing to flash to the foreground; use method:'foreground' to type into whatever is already focused.",
@@ -619,6 +627,9 @@ const SUGGESTS: Record<string, string[]> = {
   // Emitted EXPLICITLY by the key_locker tool via `failCode` (not classify): the host-lifecycle codes
   // are surfaced dynamically from a caught `KeyLockerError.code`, and the two tool-specific codes below
   // have no classify branch on purpose (SUGGESTS-only — the tool sets the code directly).
+  // Exception: `KeyLockerSpawnFailed` carries a defensive classify arm (first block) because its name
+  // contains "spawnfailed" and a code-shaped message would otherwise be poached by the generic
+  // SpawnFailed arm (Round 7 P2-2) — emission is still failCode; the arm only pins routing.
   KeyLockerSpawnFailed: [
     "The locker helper could not start. Ensure key-locker.exe is present (build it: cd tools/key-locker && dotnet publish -c Release -o ../../bin/).",
     "This tool is Windows-only.",
@@ -686,13 +697,25 @@ function classify(message: string): { code: string; suggest: string[] } {
   // keylocker message only matches these branches, never an existing generic one (e.g. `KeyLockerDisabled`
   // must not be swallowed by a future generic branch; and when the host codes land, `KeyLockerSpawnFailed`
   // ⊃ `spawnfailed` / `KeyLockerTargetNotForeground` ⊃ `foreground` would be mis-routed if placed after the
-  // generic branches — Opus L4-R1 P3-7 collision check). Producers: the KeyLocker*Error constructors in
-  // key-locker-manager.ts (`super("<code>: …")`). Host/inject codes are added when their producers land.
+  // generic branches — Opus L4-R1 P3-7 collision check). Producer message shapes are NOT uniform within
+  // the family (Round 7 P2-2d): ConsentRequired / Disabled prefix the code into the message
+  // (`super("<code>: …")`), and the wt producers do too, but the `KeyLockerError` throws in
+  // key-locker-manager.ts (spawn paths) carry prose only — those reach the tool as a caught `.code`
+  // (failCode) rather than through these arms, so routing here also depends on messages keeping the
+  // prefix where they have it. Remaining host/inject codes are added when their producers land.
   if (m.includes("keylockerconsentrequired")) {
     return { code: "KeyLockerConsentRequired", suggest: SUGGESTS.KeyLockerConsentRequired };
   }
   if (m.includes("keylockerdisabled")) {
     return { code: "KeyLockerDisabled", suggest: SUGGESTS.KeyLockerDisabled };
+  }
+  // `KeyLockerSpawnFailed` ⊃ "spawnfailed": exactly the mis-route the block comment above predicts —
+  // this arm must live in this FIRST block, ahead of the generic SpawnFailed arm, or a code-shaped
+  // message ("KeyLockerSpawnFailed" / "KeyLockerSpawnFailed: …") is poached by it. Found by the
+  // dictionary round-trip invariant (Round 7 P2-2): latent today because the producers emit via
+  // failCode, but one switch to failWith would have silently rerouted the advice to SpawnFailed.
+  if (m.includes("keylockerspawnfailed")) {
+    return { code: "KeyLockerSpawnFailed", suggest: SUGGESTS.KeyLockerSpawnFailed };
   }
 
   // Order matters: check more-specific patterns first, then fall back to general ones.
@@ -792,6 +815,13 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("element not found") || m.includes("no element")) {
     return { code: "ElementNotFound", suggest: SUGGESTS.ElementNotFound };
+  }
+  // `BrowserSearchTimeout` ⊃ "timeout": the code's own name contains the
+  // generic keyword, so this arm must stay ABOVE the UiaTimeout arm below or a
+  // code-shaped message is poached by it. Found by the dictionary round-trip
+  // invariant (Round 7 P2-2); latent today (browser.ts emits via failCode).
+  if (m.includes("browsersearchtimeout")) {
+    return { code: "BrowserSearchTimeout", suggest: SUGGESTS.BrowserSearchTimeout };
   }
   if (m.includes("timeout") || m.includes("timed out")) {
     return { code: "UiaTimeout", suggest: SUGGESTS.UiaTimeout };

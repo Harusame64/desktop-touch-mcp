@@ -107,6 +107,11 @@ describe("OQ8 — a message that is only the code still gets that code's advice"
     return [...found].sort();
   };
 
+  // I/O-bound: walks and reads every .ts under src/. Under parallel worker
+  // load the unit project's default 10s testTimeout is not a safe ceiling
+  // (same flake profile as issue-211-classify-branch-producer-pin.test.ts,
+  // which carries the same explicit budget), so it is raised here too
+  // (Round 7 P3-6).
   it("classifies every compact code message in src to itself, with advice", () => {
     const codes = compactCodeMessages();
     // Sanity: the sweep must actually find producers, or the test passes vacuously.
@@ -121,6 +126,64 @@ describe("OQ8 — a message that is only the code still gets that code's advice"
       adviceless,
       "these producers write only their code as the message, so classify must route it " +
         "to that code and SUGGESTS must have an entry for it",
+    ).toEqual([]);
+  }, 60_000);
+});
+
+// Round 7 P2-2 — the dictionary-side complement of the producer sweep above.
+// That sweep walks the PRODUCERS; this one walks the DICTIONARY: every
+// SUGGESTS key must survive the round trip through classify in both message
+// shapes a producer can emit — the bare code and the `<Code>: detail` form.
+// Without it, a key whose name embeds a generic keyword silently classifies
+// to another code the moment its producer switches from failCode to
+// failWith/errorFromMessage. On first run this invariant found exactly two
+// such keys out of 81: BrowserSearchTimeout (⊃ "timeout", poached by
+// UiaTimeout) and KeyLockerSpawnFailed (⊃ "spawnfailed", poached by
+// SpawnFailed) — both now have their own arms ahead of the generic ones.
+describe("OQ8 — every SUGGESTS key round-trips through classify to itself", () => {
+  /** SUGGESTS keys, derived from the source (a hand-kept list would rot). */
+  const suggestsKeys = (): string[] => {
+    const src = readFileSync(
+      join(import.meta.dirname, "..", "..", "src", "tools", "_errors.ts"),
+      "utf8",
+    );
+    const start = src.indexOf("const SUGGESTS");
+    expect(start).toBeGreaterThan(-1);
+    let i = src.indexOf("{", start);
+    expect(i).toBeGreaterThan(-1);
+    let depth = 1;
+    i++;
+    const bodyStart = i;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}") depth--;
+      i++;
+    }
+    const body = src.slice(bodyStart, i - 1);
+    // Top-level keys sit at exactly two spaces of indentation; nested advice
+    // strings never match the `<ident>:` shape at that indent.
+    return [...body.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]!);
+  };
+
+  it("bare and `<Code>: tail` messages both classify to the key itself", () => {
+    const keys = suggestsKeys();
+    // Sanity floor: 81 keys when this was written; a drastic drop means the
+    // extraction regex stopped matching the dictionary shape.
+    expect(keys.length).toBeGreaterThanOrEqual(75);
+
+    const misrouted = keys.flatMap((key) =>
+      [key, `${key}: detail tail`].flatMap((message) => {
+        const body = render(message);
+        return body.code !== key || (body.suggest ?? []).length === 0
+          ? [`${JSON.stringify(message)} → code:${body.code} suggest:${(body.suggest ?? []).length}`]
+          : [];
+      }),
+    );
+
+    expect(
+      misrouted,
+      "a SUGGESTS key must classify to itself in both producer message shapes — " +
+        "a key whose name embeds a generic keyword needs its own arm ahead of the generic one",
     ).toEqual([]);
   });
 });

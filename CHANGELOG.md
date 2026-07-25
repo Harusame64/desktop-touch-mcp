@@ -13,8 +13,8 @@
     target window; pass `windowTitle` (or `hwnd`), or use `method:'foreground'` to type
     into whatever is already focused.
   - `ForegroundFlashUnsupported` — the target window cannot accept the flash-paste
-    channel. `context.reason` says why (`chromium`, `uwp_sandboxed`, `class_unknown` or
-    `no_supported_channel`); `method:'foreground'` is the usual fallback.
+    channel. `context.reason` says why (`chromium`, `uwp_sandboxed` or `class_unknown`);
+    `method:'foreground'` is the usual fallback.
   - `ForegroundFlashFailed` — the flash-paste sequence did not complete.
     `context.reason` says where it stopped, and the suggestions are keyed to it, because
     the recoveries are mutually exclusive: a rejected input (a newline, or text over the
@@ -24,17 +24,14 @@
     `foreground_restore_failed` the paste had already been sent, so reading the target
     beats resending it. The error message now starts with `ForegroundFlashFailed:`
     followed by the reason — previously the bare reason string was the whole message.
-  - `ForegroundFlashChannelNotImplemented` — `method:'foreground_flash'` resolved to a
-    channel this build does not implement (only the Windows Terminal clipboard path is);
-    `context.kind` names it, and `method:'foreground'` works instead.
-  - A failure whose message is just its code name now keeps that code as well. Some
-    failures write only `WindowNotFound` (for example), and the classifier matched
-    prose like "window not found", so those came back as `ToolError` with no
-    suggestions. Any code that has suggestions registered is now recognised in that
-    compact form too.
   - `TabDragBlocked` / `CrossWindowDragBlocked` — the `mouse_drag` safety gates that
     stop accidental tab tear-offs and cross-window drags. Pass `allowTabDrag:true` /
     `allowCrossWindowDrag:true` when the drag is intentional.
+- **Failures whose message is only their code name keep that code.** Some failures
+  write only `WindowNotFound` (for example) as their message, and the classifier
+  matched prose like "window not found", so those came back as the generic `ToolError`
+  with no suggestions. Any code that has suggestions registered is now recognised in
+  that compact form too.
 - **Failure details are no longer double-nested.** In 23 failure responses across the
   `keyboard`, `terminal`, `clipboard` and `browser_eval` tools, detail fields that used
   to render as `context.context.<field>` (for example `context.context.sent`) now render

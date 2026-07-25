@@ -254,6 +254,15 @@ function findFirstProducer(branch: ClassifyBranch, srcFiles: string[]): string |
     // much a producer as `new Error("<Code>: …")`; without this pattern a
     // classify branch fed by the typed-error family reads as dead.
     new RegExp(`new ${escCode}Error\\(`),
+    // Round 7 P2-2: `new <Family>Error("<code>", …)` — a typed error class
+    // that takes the code as its FIRST ctor argument (`KeyLockerError` in
+    // key-locker-manager.ts / key-locker-host.ts). Its message carries prose
+    // only — the code never appears in it — so the message-based keyword
+    // regexes below cannot see these producers; this shape was a blind spot
+    // of this detector until the KeyLockerSpawnFailed classify arm (added for
+    // the dictionary round-trip invariant) was flagged dead despite having
+    // seven real producers.
+    new RegExp(`new \\w+Error\\(\\s*"${escCode}"`),
   ];
   // Per-keyword regexes — match any string-literal (double-quote OR
   // backtick template) in src/ that contains the keyword and is wrapped
