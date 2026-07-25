@@ -113,11 +113,9 @@ export const clipboardWriteHandler = async ({
         new Error("ClipboardWriteNotDelivered"),
         "clipboard:write",
         {
-          context: {
-            hint: "post-write Get-Clipboard -Raw did not match the requested bytes (UTF-16LE)",
-            expectedBytes: expectedBytes.length,
-            actualBytes: actualBytes.length,
-          },
+          hint: "post-write Get-Clipboard -Raw did not match the requested bytes (UTF-16LE)",
+          expectedBytes: expectedBytes.length,
+          actualBytes: actualBytes.length,
         }
       );
     }

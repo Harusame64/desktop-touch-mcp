@@ -1942,7 +1942,7 @@ export const browserEvalJsHandler = async ({
       });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_eval", {
-          context: { guardStatus: ag.summary.status },
+          guardStatus: ag.summary.status,
           ...(withPerception && { _perceptionForPost: ag.summary }),
         });
       }

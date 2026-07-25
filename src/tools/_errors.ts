@@ -206,6 +206,26 @@ const SUGGESTS: Record<string, string[]> = {
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
     "If the message says the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates.",
   ],
+  // OQ8 — see the classify arms for these four. The advice moved here verbatim
+  // from the call sites, where it was being nested under `context` instead of
+  // reaching the root `suggest` the server instructions tell the model to read.
+  ForegroundFlashRequiresTarget: [
+    "method:'foreground_flash' needs a target window — pass windowTitle (or hwnd).",
+    "Without a target there is nothing to flash to the foreground; use method:'foreground' to type into whatever is already focused.",
+  ],
+  ForegroundFlashUnsupported: [
+    "method:'foreground_flash' resolved to a channel this window cannot accept.",
+    "Try method:'foreground' — it works for Chromium, UWP and other non-terminal windows, and for terminal targets that reject the flash path.",
+    "context.reason names the channel that was rejected.",
+  ],
+  TabDragBlocked: [
+    "To move the window, drag from the window border or use Win+Arrow keys instead.",
+    "Pass allowTabDrag:true if you intend to rearrange or detach a tab.",
+  ],
+  CrossWindowDragBlocked: [
+    "Pass allowCrossWindowDrag:true to confirm cross-window or desktop drag intent.",
+    "If the drag was meant to stay inside one window, re-read the coordinates — one of the endpoints is landing outside it.",
+  ],
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",
     "Check context.sent vs context.total",
@@ -745,6 +765,29 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundnotapplicabletosequence")) {
     return { code: "BackgroundNotApplicableToSequence", suggest: SUGGESTS.BackgroundNotApplicableToSequence };
+  }
+  // OQ8: four codes whose producers wrote their recovery advice into failWith's
+  // third argument, which is a CONTEXT record — so it landed under
+  // `context.suggest` while the classified code stayed the generic `ToolError`
+  // with no root `suggest` at all. Same bug class as SpawnFailed above, and the
+  // same fix: classify the code the producer already names in its message and
+  // let SUGGESTS carry the advice. Producers: keyboard.ts (RequiresTarget /
+  // Unsupported), terminal.ts (Unsupported), mouse.ts (both drag blocks).
+  //
+  // Placed AFTER the ForegroundFlashNotApplicableTo* arms: those codes share the
+  // "foregroundflash" stem, and matching the longer, more specific ones first
+  // keeps this shorter arm from poaching them.
+  if (m.includes("foregroundflashrequirestarget")) {
+    return { code: "ForegroundFlashRequiresTarget", suggest: SUGGESTS.ForegroundFlashRequiresTarget };
+  }
+  if (m.includes("foregroundflashunsupported")) {
+    return { code: "ForegroundFlashUnsupported", suggest: SUGGESTS.ForegroundFlashUnsupported };
+  }
+  if (m.includes("tabdragblocked")) {
+    return { code: "TabDragBlocked", suggest: SUGGESTS.TabDragBlocked };
+  }
+  if (m.includes("crosswindowdragblocked")) {
+    return { code: "CrossWindowDragBlocked", suggest: SUGGESTS.CrossWindowDragBlocked };
   }
   if (m.includes("clipboardwritenotdelivered") || m.includes("clipboard write not delivered")) {
     return { code: "ClipboardWriteNotDelivered", suggest: SUGGESTS.ClipboardWriteNotDelivered };

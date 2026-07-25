@@ -9,6 +9,7 @@ import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 import noToolFailureShapeDirectConstruct from "./eslint-rules/no-tool-failure-shape-direct-construct.mjs";
+import noSuggestInFailWithContext from "./eslint-rules/no-suggest-in-failwith-context.mjs";
 
 export default [
   {
@@ -63,6 +64,22 @@ export default [
     },
     rules: {
       "adr021/no-tool-failure-shape-direct-construct": "error",
+    },
+  },
+
+  // ADR-029 OQ8 — failWith's third argument is a flat context record, so a
+  // `suggest` key there is nested where nothing reads it and a `context` key
+  // renders as `context.context`. Fourteen call sites had drifted into the
+  // first shape; five were emitting no root advice at all. `_errors.ts` is
+  // exempt because it defines the helpers and names the keys in its own docs.
+  {
+    files: ["src/**/*.ts"],
+    ignores: ["src/tools/_errors.ts"],
+    plugins: {
+      adr029: { rules: { "no-suggest-in-failwith-context": noSuggestInFailWithContext } },
+    },
+    rules: {
+      "adr029/no-suggest-in-failwith-context": "error",
     },
   },
 

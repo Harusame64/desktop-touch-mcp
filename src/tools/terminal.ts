@@ -1180,11 +1180,8 @@ export const terminalSendHandler = async ({
           new Error("ForegroundFlashUnsupported"),
           "terminal:send",
           {
-            context: { reason: channel.reason, windowTitle: win.title },
-            suggest: [
-              "method:'foreground_flash' resolved to unsupported channel",
-              "Try method:'foreground' for non-terminal targets",
-            ],
+            reason: channel.reason,
+            windowTitle: win.title,
           }
         );
       }
@@ -1198,7 +1195,7 @@ export const terminalSendHandler = async ({
           return failWith(
             new Error("BackgroundInputIncomplete"),
             "terminal:send",
-            { context: { sent: r.sent, total: input.length } }
+            { sent: r.sent, total: input.length }
           );
         }
         // Codex Round 1 P2-B 反映: input が CR/LF 終端なら Enter 重複送信を回避
@@ -1221,7 +1218,7 @@ export const terminalSendHandler = async ({
         return failWith(
           new Error("ForegroundFlashChannelNotImplemented"),
           "terminal:send",
-          { context: { kind: channel.kind, windowTitle: win.title } }
+          { kind: channel.kind, windowTitle: win.title }
         );
       }
       // Codex Round 1 P2-B 同型対応: input 末尾改行で Enter 重複送信を回避。
@@ -1241,11 +1238,9 @@ export const terminalSendHandler = async ({
           new Error(flashResult.reason ?? "ForegroundFlashFailed"),
           "terminal:send",
           {
-            context: {
-              reason: flashResult.reason,
-              rawError: flashResult.rawError,
-              windowTitle: win.title,
-            },
+            reason: flashResult.reason,
+            rawError: flashResult.rawError,
+            windowTitle: win.title,
           }
         );
       }
@@ -1401,12 +1396,10 @@ export const terminalSendHandler = async ({
             new Error(errorCode),
             "terminal:send",
             {
-              context: {
-                hint: "target rejects PostMessage (WM_CHAR) channel — explicit method:'background' cannot proceed",
-                reason: injectCheck.reason,
-                ...(injectCheck.className !== undefined && { className: injectCheck.className }),
-                ...(injectCheck.processName !== undefined && { processName: injectCheck.processName }),
-              },
+              hint: "target rejects PostMessage (WM_CHAR) channel — explicit method:'background' cannot proceed",
+              reason: injectCheck.reason,
+              ...(injectCheck.className !== undefined && { className: injectCheck.className }),
+              ...(injectCheck.processName !== undefined && { processName: injectCheck.processName }),
             }
           );
         }
@@ -1459,14 +1452,7 @@ export const terminalSendHandler = async ({
           return failWith(
             new Error("BackgroundInputIncomplete"),
             "terminal:send",
-            {
-              suggest: [
-                "Input sent partially - retry with method:'foreground' for full input",
-                "Check context.sent vs context.total",
-                "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
-              ],
-              context: { sent: totalSent, total: input.length },
-            }
+            { sent: totalSent, total: input.length }
           );
         }
       }
@@ -1558,10 +1544,8 @@ export const terminalSendHandler = async ({
           new Error("BackgroundInputNotDelivered"),
           "terminal:send",
           {
-            context: {
-              hint: "post-send UIA read-back did not contain the input substring",
-              targetClass,
-            },
+            hint: "post-send UIA read-back did not contain the input substring",
+            targetClass,
           }
         );
       }

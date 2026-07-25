@@ -888,10 +888,7 @@ export const mouseDragHandler = async ({
             return failWith(
               new Error("TabDragBlocked: drag starts in the tab-strip area of a tabbed application"),
               "mouse_drag",
-              { suggest: [
-                "To move the window, drag from the window border or use Win+Arrow keys instead",
-                "Pass allowTabDrag:true if you intend to rearrange or detach a tab",
-              ] }
+              {}
             );
           }
         }
@@ -911,7 +908,7 @@ export const mouseDragHandler = async ({
               `Pass allowCrossWindowDrag:true to confirm intent (e.g. for desktop range selection).`
             ),
             "mouse_drag",
-            { suggest: ["Pass allowCrossWindowDrag:true to confirm cross-window or desktop drag intent"] }
+            {}
           );
         }
       }
