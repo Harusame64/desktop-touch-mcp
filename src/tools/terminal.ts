@@ -1238,9 +1238,12 @@ export const terminalSendHandler = async ({
         // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
         // adviceless generic `ToolError` a bare snake_case reason produced.
         // The reason stays in the message tail AND in context.reason — same
-        // `?? "unknown"` fallback on both, so the advice's "context.reason
-        // names the step that failed" cannot point at a dropped key
-        // (Round 3 P3-10).
+        // `?? "unknown"` fallback on both, so the advice cannot point at a key
+        // dropped from the JSON (Round 3 P3-10). `injectViaForegroundFlash`
+        // always sets `reason` on failure, so the fallback covers the optional
+        // field rather than a live branch; an unknown native error arrives here
+        // as its raw message, which the advice routes to `context.rawError`
+        // (Round 4 P3-6).
         return failWith(
           new Error(`ForegroundFlashFailed: ${flashResult.reason ?? "unknown"}`),
           "terminal:send",

@@ -929,10 +929,14 @@ export const keyboardTypeHandler = async ({
         // OQ8 follow-up: prefix the code so classify() routes this to
         // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
         // adviceless generic `ToolError` a bare snake_case reason produced.
-        // The reason stays in the message tail AND in context.reason — the
-        // same `?? "unknown"` fallback on both, so the advice's "context.reason
-        // names the step that failed" is never a promise the envelope breaks
-        // (an undefined key is dropped from the JSON — Round 3 P3-10).
+        // The reason stays in the message tail AND in context.reason, with the
+        // same `?? "unknown"` fallback on both so an undefined key can never be
+        // dropped from the JSON while the advice promises to name the step
+        // (Round 3 P3-10). `injectViaForegroundFlash` does always set `reason`
+        // on failure, so this is the optional-field belt rather than a live
+        // branch — and when the native error is not a known reason, `reason`
+        // carries its raw message, which is why the advice also points at
+        // `context.rawError` (Round 4 P3-6).
         return failWith(
           new Error(`ForegroundFlashFailed: ${flashResult.reason ?? "unknown"}`),
           "keyboard:type",

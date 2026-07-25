@@ -16,13 +16,13 @@
     channel. `context.reason` says why (`chromium`, `uwp_sandboxed`, `class_unknown` or
     `no_supported_channel`); `method:'foreground'` is the usual fallback.
   - `ForegroundFlashFailed` — the flash-paste sequence did not complete.
-    `context.reason` names the step, and the suggestions are keyed to it, because the
-    recovery is different for each: a rejected input (a newline, or text over the paste
-    threshold) was never sent and needs splitting rather than retrying, a timeout or
-    clipboard contention usually clears on one retry, and `foreground_restore_failed`
-    means the text *was* pasted and only the window switch back failed — resending would
-    type it twice. The error message now starts with `ForegroundFlashFailed:` followed by
-    the reason — previously the bare reason string was the whole message.
+    `context.reason` says where it stopped, and the suggestions are keyed to it, because
+    the recoveries are mutually exclusive: a rejected input (a newline, or text over the
+    paste threshold) and a clipboard error were never sent, so they need different input
+    rather than a retry; a timeout or clipboard contention usually clears on one retry;
+    and after `foreground_restore_failed` the paste had already been sent, so reading the
+    target beats resending it. The error message now starts with `ForegroundFlashFailed:`
+    followed by the reason — previously the bare reason string was the whole message.
   - `TabDragBlocked` / `CrossWindowDragBlocked` — the `mouse_drag` safety gates that
     stop accidental tab tear-offs and cross-window drags. Pass `allowTabDrag:true` /
     `allowCrossWindowDrag:true` when the drag is intentional.

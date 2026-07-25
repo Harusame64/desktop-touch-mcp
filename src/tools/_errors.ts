@@ -223,23 +223,34 @@ const SUGGESTS: Record<string, string[]> = {
     "context.reason says why the channel was rejected (`chromium`, `uwp_sandboxed`, `class_unknown`, or `no_supported_channel`).",
   ],
   // OQ8 follow-up (6th hole of the same class): the flash channel WAS
-  // available but the sequence failed. `context.reason` names the step
-  // (snake_case, 8 values — see ForegroundFlashErrorReason in
-  // win32/foreground_flash.rs).
+  // available but the sequence failed. `context.reason` names where.
   //
   // The advice is keyed to the reason because the reasons do not share a
-  // recovery, and the wrong one is worse than none (Round 3 P1): two are
-  // pre-flight rejects where NOTHING was sent and a retry fails identically,
-  // one (foreground_restore_failed) happens after the text was already pasted
-  // so resending would double-input, and one (send_input_failed) can leave the
-  // text truncated.
+  // recovery, and the wrong one is worse than none (Round 3 P1 / Round 4 P1).
+  // The three groups that matter, traced through
+  // `win32/foreground_flash.rs::foreground_flash_inject`:
+  //   - NOTHING WAS SENT: the two `validate_input` rejects, every
+  //     `ClipboardError` (they fire while saving/writing the clipboard, before
+  //     the paste keystroke), `foreground_steal_denied`, `focus_wait_timeout`,
+  //     and the addon-missing shortcut in `engine/bg-input.ts`.
+  //   - ALREADY PASTED: `foreground_restore_failed` is raised after step 6/8,
+  //     so a resend double-inputs. Caveat: `inner?` propagates before the
+  //     `paste_warning_detected` check, so this reason can MASK an intercepted
+  //     paste where nothing landed — hence "read the target", not "assume".
+  //   - AMBIGUOUS: `send_input_failed` covers both the Ctrl+V of step 6 (not
+  //     pasted) and the Enter of step 8 (pasted, Enter missing), and the two
+  //     are indistinguishable from the reason alone.
+  // A clipboard paste is never partial, so no reason means "truncated".
+  // `context.reason` may also be a value not listed here — an unknown native
+  // error passes its raw message through (`bg-input.ts` KNOWN_FLASH_REASONS),
+  // which is why the first line points at `context.rawError` too.
   ForegroundFlashFailed: [
-    "context.reason names the step that failed, and the recovery differs per step — read it before retrying.",
-    "input_contains_newline / input_exceeds_paste_warning_threshold: nothing was sent — both are checked before any input is injected, so retrying fails identically. Strip the newline (send one line per call and use pressEnter), or split the text into smaller calls.",
-    "focus_wait_timeout / clipboard_lock_contention / foreground_steal_denied: transient — retry once, then fall back to method:'foreground'. If the target runs elevated (admin) and this server does not, Windows refuses the foreground steal for good: match elevation levels instead of retrying.",
-    "send_input_failed: Windows accepted only part of the sequence, so the text may have arrived truncated — read the target before resending.",
-    "wt_paste_warning_intercepted: the terminal's own paste warning appeared and was dismissed, so nothing was pasted — send fewer lines per call.",
-    "foreground_restore_failed: the text WAS pasted; only restoring the previous foreground window failed. Do not resend — bring the window you want back with focus_window.",
+    "Read context.reason first — it says where the sequence stopped, and the recoveries are mutually exclusive. If the reason is not one of the ones below, context.rawError carries the raw message from the native path.",
+    "Nothing was sent, and an identical retry fails identically: input_contains_newline (strip it — a terminal(action:'send') can add the Enter itself via pressEnter), input_exceeds_paste_warning_threshold (split the text into smaller calls), clipboard_empty_failed / clipboard_alloc_failed / clipboard_set_data_failed / hidden_owner_create_failed (the clipboard could not be written — use method:'foreground').",
+    "wt_paste_warning_intercepted: the terminal's paste warning appeared, so the text was NOT pasted, and it may still be on screen — check the target and dismiss the dialog before retrying, then use method:'foreground'.",
+    "send_input_failed: either the paste keystroke or the Enter after it was refused, so the text may be fully pasted with only the Enter missing, or not pasted at all. Read the target before resending — a blind resend can double-input. If context.rawError says the native addon is missing, nothing was sent and the server needs reinstalling.",
+    "foreground_restore_failed: the paste had already been sent; what failed was switching back to the window that was in front. Bring it back with focus_window, and read the target rather than resending — for a Windows Terminal target this reason can also hide an intercepted paste where nothing landed.",
+    "foreground_steal_denied / focus_wait_timeout / clipboard_lock_contention: nothing was pasted and these are usually transient — retry once, then fall back to method:'foreground'. If the target runs elevated (admin) and this server does not, Windows refuses the foreground steal for good: match elevation levels instead of retrying.",
   ],
   TabDragBlocked: [
     "To move the window, drag from the window border or use Win+Arrow keys instead.",
@@ -250,7 +261,10 @@ const SUGGESTS: Record<string, string[]> = {
     "If the drag was meant to stay inside one window, re-read the coordinates — one of the endpoints is landing outside it.",
   ],
   BackgroundInputIncomplete: [
-    "Input sent partially - retry with method:'foreground' for full input",
+    // Conditioned on the tool: for keyboard:press, retrying via the foreground
+    // path replays a combo whose modifiers may still be held — the opposite of
+    // what the last line warns about (Round 4 P3-8).
+    "Input sent partially - for keyboard:type and terminal:send, retry with method:'foreground' for full input",
     "Check context.sent vs context.total when the failure carries them — they say how much arrived",
     // keyboard:press has no count to report: a combo fails as a whole boolean,
     // and the code deliberately does NOT fall through to the foreground path

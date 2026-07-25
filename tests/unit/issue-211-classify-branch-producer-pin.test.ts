@@ -333,7 +333,13 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
           `  (d) Remove the classify branch (and SUGGESTS entry) entirely`,
       );
     }
-  });
+    // This test reads every .ts under src/ and scans it once per classify arm,
+    // so its cost grows with both the tree and the arm count (60 arms as of the
+    // ADR-029 OQ8 additions). Standalone it takes ~2.5s; sharing the machine
+    // with the other 294 files it has exceeded the 10s default. The work is
+    // I/O-bound, not a hang, so the timeout is raised rather than the scan
+    // trimmed — trimming would cost coverage of exactly what this pins.
+  }, 60_000);
 
   it("allow-listed dead codes are still classify-registered (negative pin)", () => {
     const errorsContent = readFileSync(ERRORS_FILE, "utf8");
