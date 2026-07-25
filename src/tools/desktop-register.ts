@@ -177,16 +177,22 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
       //    treating a title origin as "valid anywhere on screen" would let a stale
       //    element be clicked at its old coordinates after its window moved, hid
       //    or closed, which is the silent misclick this change exists to remove.
-      const named = windows.filter((w) => w.title === originId);
+      //
+      //    Matched exactly the way the discovery path matches it
+      //    (`findPlainTopLevelWindowByTitle`): case-insensitive SUBSTRING, first
+      //    hit in Z-order. `windowTitle` is a query, not a full title — equality
+      //    would fail to resolve `"Notepad"` against `"Untitled - Notepad"` and
+      //    block every visual-only element on the most common discovery shape.
+      const query = originId.toLowerCase();
+      const named = windows.filter((w) => w.title.toLowerCase().includes(query));
       if (named.length > 0) {
-        if (named.every((w) => w.isMinimized || w.isCloaked)) return "origin_window_not_visible";
-        // Windows can share a title; the element belongs to whichever one still
-        // covers it, so any visible match is enough to proceed.
-        return named.some(
-          (w) => !w.isMinimized && !w.isCloaked && computeViewportPosition(rect, w.region) === "in-view",
-        )
-          ? null
-          : "entity_outside_viewport";
+        // Compare against ONE window — the topmost drawn match, i.e. the one
+        // discovery would resolve the same query to now. Accepting "any match
+        // that covers the point" would drift back toward the containment check
+        // ADR-029 rejected as tautological, especially for a short query.
+        const visible = named.find((w) => !w.isMinimized && !w.isCloaked);
+        if (!visible) return "origin_window_not_visible";
+        return inView(visible.region);
       }
 
       // 3. HWND-shaped but not enumerated: the enumeration drops invisible,

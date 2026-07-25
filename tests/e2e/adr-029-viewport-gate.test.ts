@@ -107,6 +107,29 @@ describe.skipIf(canvas === null || blank === null)("ADR-029 AC1 — viewport gat
     expect(productionCheckViewport(visualEntity(far, origin!.hwnd))).toBe("entity_outside_viewport");
   });
 
+  // The title lane, against a real window: `desktop_discover({target:{windowTitle}})`
+  // records the raw query, which is a case-insensitive substring of the live title,
+  // not the whole thing. Matching it by equality would block every visual-only
+  // element discovered this way — the bug this whole change removes.
+  it("resolves a title-query origin against the live window", () => {
+    const origin = findByTitle(canvas!.title);
+    expect(origin).not.toBeNull();
+    const query = canvas!.title.slice(0, 12); // a prefix, as a user would type
+    expect(canvas!.title).not.toBe(query);
+
+    const inside = {
+      x: origin!.region.x + 20,
+      y: origin!.region.y + Math.round(origin!.region.height / 2),
+      width: 20,
+      height: 10,
+    };
+    const entity = { ...visualEntity(inside, origin!.hwnd), origin: { kind: "window" as const, id: query } };
+    expect(productionCheckViewport(entity)).toBeNull();
+
+    const outside = { ...entity, rect: { x: origin!.region.x + origin!.region.width + 300, y: origin!.region.y, width: 20, height: 10 } };
+    expect(productionCheckViewport(outside)).toBe("entity_outside_viewport");
+  });
+
   it("blocks as stale once the origin window is gone", async () => {
     // NOTE: keep this test last in the file — it closes the shared canvas window.
     const origin = findByTitle(canvas!.title);

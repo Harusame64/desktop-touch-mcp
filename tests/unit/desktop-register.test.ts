@@ -452,6 +452,32 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
       expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBeNull();
     });
 
+    // `windowTitle` is a case-insensitive substring QUERY, not a full title —
+    // `desktop_discover({target:{windowTitle:"Notepad"}})` records "Notepad" while
+    // the live title is "Untitled - Notepad". Matching by equality would block
+    // every visual-only element on the most common discovery shape.
+    it("matches the title the way discovery does: case-insensitive substring", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      for (const id of ["Notepad", "notepad", "Untitled"]) {
+        const queried = visualEntity({ origin: { kind: "window", id } });
+        expect(productionCheckViewport(queried, { enumerate, virtualScreen }), id).toBeNull();
+      }
+    });
+
+    // One window is compared — the topmost drawn match — not "any match that
+    // happens to cover the point", which for a short query would decay into the
+    // tautological containment check this design rejected.
+    it("compares against the topmost drawn match only", () => {
+      const enumerate = () => [
+        win({ hwnd: BigInt(7), title: "Notepad — A", zOrder: 0, region: { x: 0, y: 0, width: 400, height: 300 } }),
+        win({ hwnd: BigInt(8), title: "Notepad — B", zOrder: 1, region: { x: 2000, y: 0, width: 1920, height: 1080 } }),
+      ];
+      const queried = visualEntity({ origin: { kind: "window", id: "Notepad" } });
+      expect(productionCheckViewport(queried, { enumerate, virtualScreen })).toBe("entity_outside_viewport");
+    });
+
     it("blocks when that window moved away from the element", () => {
       const enumerate = () => [
         win({ hwnd: BigInt(7), title: "Untitled - Notepad", region: { x: 0, y: 0, width: 400, height: 300 } }),
@@ -471,7 +497,7 @@ describe("productionCheckViewport — origin-window comparison (ADR-029 Phase 1)
       expect(productionCheckViewport(titled, { enumerate, virtualScreen })).toBe("origin_window_not_visible");
     });
 
-    it("passes when any one of several same-titled windows still covers the element", () => {
+    it("skips minimised matches and compares against the topmost drawn one", () => {
       const enumerate = () => [
         win({ hwnd: BigInt(7), title: "Untitled - Notepad", isMinimized: true, region: { x: 0, y: 0, width: 0, height: 0 } }),
         win({ hwnd: BigInt(8), title: "Untitled - Notepad", region: { x: 2000, y: 0, width: 1920, height: 1080 } }),

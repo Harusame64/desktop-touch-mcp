@@ -60,6 +60,12 @@ describe("reachable-bounds guard", () => {
 // moves the OS cursor to an absolute coordinate runs it. Enumerating those by
 // hand during review missed `browser_click` once already, so pin it: any source
 // file that moves the nut.js cursor must also assert reachability.
+//
+// Deliberately file-level and therefore coarse: it catches a NEW cursor-moving
+// file (the miss that actually happened), not a new unguarded call site inside a
+// file that already guards elsewhere, and it does not see an aliased import. A
+// precise check would need the call graph; this one is cheap and catches the
+// failure mode that occurred.
 describe("reachable-bounds guard — no unguarded cursor-move path", () => {
   const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src");
   const MOVES_CURSOR = /mouse\.(move|setPosition|drag)\s*\(/;
