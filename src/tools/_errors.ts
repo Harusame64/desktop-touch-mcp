@@ -229,10 +229,15 @@ const SUGGESTS: Record<string, string[]> = {
   // recovery, and the wrong one is worse than none (Round 3 P1 / Round 4 P1).
   // The three groups that matter, traced through
   // `win32/foreground_flash.rs::foreground_flash_inject`:
-  //   - NOTHING WAS SENT: the two `validate_input` rejects, every
+  //   - NOTHING WAS PASTED: the two `validate_input` rejects, every
   //     `ClipboardError` (they fire while saving/writing the clipboard, before
   //     the paste keystroke), `foreground_steal_denied`, `focus_wait_timeout`,
-  //     and the addon-missing shortcut in `engine/bg-input.ts`.
+  //     and the addon-missing shortcut in `engine/bg-input.ts`. "Not pasted" is
+  //     not the same as "no side effect": steps 4-10 live in one IIFE, so an
+  //     early return from step 5 (`focus_wait_timeout`) or step 6/8
+  //     (`send_input_failed`) skips the foreground-restore block at its tail
+  //     and LEAVES THE TARGET IN FRONT. Only the clipboard restore runs after
+  //     the IIFE. That is why those reasons carry a focus_window line.
   //   - ALREADY PASTED: `foreground_restore_failed` is raised after step 6/8,
   //     so a resend double-inputs. Caveat: `inner?` propagates before the
   //     `paste_warning_detected` check, so this reason can MASK an intercepted
@@ -246,11 +251,12 @@ const SUGGESTS: Record<string, string[]> = {
   // which is why the first line points at `context.rawError` too.
   ForegroundFlashFailed: [
     "Read context.reason first — it says where the sequence stopped, and the recoveries are mutually exclusive. If the reason is not one of the ones below, context.rawError carries the raw message from the native path.",
-    "Nothing was sent, and an identical retry fails identically: input_contains_newline (strip it — a terminal(action:'send') can add the Enter itself via pressEnter), input_exceeds_paste_warning_threshold (split the text into smaller calls), clipboard_empty_failed / clipboard_alloc_failed / clipboard_set_data_failed / hidden_owner_create_failed (the clipboard could not be written — use method:'foreground').",
+    "Nothing was pasted, and an identical retry fails identically: input_contains_newline (send one line per call — terminal(action:'send') can add the Enter itself via pressEnter, and for keyboard:type follow the line with keyboard({action:'press', keys:'enter'})), input_exceeds_paste_warning_threshold (split the text into smaller calls), clipboard_empty_failed / clipboard_alloc_failed / clipboard_set_data_failed / hidden_owner_create_failed (the clipboard could not be written at all — use method:'foreground').",
     "wt_paste_warning_intercepted: the terminal's paste warning appeared, so the text was NOT pasted, and it may still be on screen — check the target and dismiss the dialog before retrying, then use method:'foreground'.",
-    "send_input_failed: either the paste keystroke or the Enter after it was refused, so the text may be fully pasted with only the Enter missing, or not pasted at all. Read the target before resending — a blind resend can double-input. If context.rawError says the native addon is missing, nothing was sent and the server needs reinstalling.",
+    "send_input_failed: either the paste keystroke or the Enter after it was refused, so the text may be fully pasted with only the Enter missing, or not pasted at all. Read the target before resending — a blind resend can double-input. The target window was also left in front, so use focus_window to get back to where you were. If context.rawError says the native addon is missing, nothing was sent at all and the server needs reinstalling.",
     "foreground_restore_failed: the paste had already been sent; what failed was switching back to the window that was in front. Bring it back with focus_window, and read the target rather than resending — for a Windows Terminal target this reason can also hide an intercepted paste where nothing landed.",
-    "foreground_steal_denied / focus_wait_timeout / clipboard_lock_contention: nothing was pasted and these are usually transient — retry once, then fall back to method:'foreground'. If the target runs elevated (admin) and this server does not, Windows refuses the foreground steal for good: match elevation levels instead of retrying.",
+    "focus_wait_timeout: nothing was pasted, but the target window WAS brought to the front and not switched back — restore the window you were using with focus_window, then retry once or fall back to method:'foreground'.",
+    "foreground_steal_denied / clipboard_lock_contention: nothing was pasted and the foreground was left as it was — usually transient, so retry once, then fall back to method:'foreground'. For foreground_steal_denied specifically: if the target runs elevated (admin) and this server does not, Windows refuses the steal for good, so match elevation levels instead of retrying.",
   ],
   TabDragBlocked: [
     "To move the window, drag from the window border or use Win+Arrow keys instead.",
