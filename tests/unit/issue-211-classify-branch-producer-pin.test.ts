@@ -292,13 +292,17 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
     const errorsContent = readFileSync(ERRORS_FILE, "utf8");
     const branches = parseClassifyBranches(errorsContent);
 
-    // Sanity: parser should find ~30 branches today (currently 30 after
-    // Phase 6 PR-B AutoGuardBlocked classify branch addition; PR-A removed
-    // 3 dead codes, PR-B added 1 → net 32→29→30). If the count drops
-    // drastically the parser is miss-matching the regex (e.g., due to a
-    // refactor of the if-chain shape).
+    // Sanity: the bounds only guard the PARSER (a drastic drop or explosion
+    // means the branch-extraction regex stopped matching the if-chain shape) —
+    // the substantive per-branch producer check runs below regardless of
+    // count. History: ~30 after Phase 6 PR-B (32→29→30); 60 after the
+    // ADR-029 OQ8 arms (ForegroundFlash* family, TabDragBlocked /
+    // CrossWindowDragBlocked, ForegroundFlashFailed) — which is why the
+    // ceiling moved from 60 to 90. Bump it again when legitimate arm growth
+    // approaches the bound; every added arm is still individually pinned to a
+    // producer by the loop below.
     expect(branches.length).toBeGreaterThanOrEqual(20);
-    expect(branches.length).toBeLessThan(60);
+    expect(branches.length).toBeLessThan(90);
 
     const srcFiles = walkSrcTs(SRC_DIR);
     expect(srcFiles.length).toBeGreaterThan(20); // sanity: src walker found .ts files

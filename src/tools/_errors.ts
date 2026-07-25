@@ -216,7 +216,17 @@ const SUGGESTS: Record<string, string[]> = {
   ForegroundFlashUnsupported: [
     "method:'foreground_flash' resolved to a channel this window cannot accept.",
     "Try method:'foreground' — it works for Chromium, UWP and other non-terminal windows, and for terminal targets that reject the flash path.",
-    "context.reason names the channel that was rejected.",
+    "context.reason says why the channel was rejected (for example `chromium`, `uwp_sandboxed`, `elevated_target`).",
+  ],
+  // OQ8 follow-up (6th hole of the same class): the flash channel WAS
+  // available but the paste sequence itself failed partway. context.reason
+  // names the failed step (snake_case, e.g. foreground_steal_denied /
+  // focus_wait_timeout / clipboard_lock_contention / input_contains_newline).
+  ForegroundFlashFailed: [
+    "The flash paste sequence failed partway — context.reason names the step that failed.",
+    "Transient steps (focus_wait_timeout / clipboard_lock_contention / foreground_steal_denied) often clear on retry — retry once, then fall back to method:'foreground'.",
+    "input_contains_newline: the flash channel is single-line only — strip the trailing newline and rely on pressEnter, or send one line per call.",
+    "If the target runs elevated (admin) and this server does not, Windows refuses the foreground steal — run the server elevated or match elevation levels.",
   ],
   TabDragBlocked: [
     "To move the window, drag from the window border or use Win+Arrow keys instead.",
@@ -229,6 +239,12 @@ const SUGGESTS: Record<string, string[]> = {
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",
     "Check context.sent vs context.total",
+    // Kept from the keyboard:press / terminal:send call sites when their
+    // hand-written suggests were removed. It is the one line those sites had
+    // that this dictionary did not, and dropping it would have lost the only
+    // pointer to the elevation case (BackgroundInputNotDelivered and
+    // BackgroundKeyNotDelivered carry the same advice).
+    "If the target runs elevated (admin) and this server does not, foreground delivery may be required — UIPI blocks WM_CHAR across that boundary",
   ],
   BackgroundInputNotDelivered: [
     "Retry with method:'foreground' — post-send UIA read-back could not find the input echoed in the terminal buffer.",
@@ -702,6 +718,16 @@ function classify(message: string): { code: string; suggest: string[] } {
   if (m.includes("cursorplacementblocked")) {
     return { code: "CursorPlacementBlocked", suggest: SUGGESTS.CursorPlacementBlocked ?? [] };
   }
+  // OQ8 follow-up: the flash paste sequence failed partway. MUST stay BEFORE
+  // the generic arms — the producers (keyboard.ts / terminal.ts
+  // foreground_flash paths) append the snake_case step reason to the message
+  // ("ForegroundFlashFailed: focus_wait_timeout"), and `focus_wait_timeout`
+  // contains "timeout", which the UiaTimeout arm below would otherwise poach.
+  // Unknown native reasons pass through raw, so early placement also shields
+  // against arbitrary tails. Same early-placement rationale as SpawnFailed.
+  if (m.includes("foregroundflashfailed")) {
+    return { code: "ForegroundFlashFailed", suggest: SUGGESTS.ForegroundFlashFailed };
+  }
   if (m.includes("window not found") || m.includes("no window")) {
     return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };
   }
@@ -774,9 +800,20 @@ function classify(message: string): { code: string; suggest: string[] } {
   // let SUGGESTS carry the advice. Producers: keyboard.ts (RequiresTarget /
   // Unsupported), terminal.ts (Unsupported), mouse.ts (both drag blocks).
   //
-  // Placed AFTER the ForegroundFlashNotApplicableTo* arms: those codes share the
-  // "foregroundflash" stem, and matching the longer, more specific ones first
-  // keeps this shorter arm from poaching them.
+  // Ordering note: none of the ForegroundFlash* codes is a substring of
+  // another (`foregroundflashunsupported` is NOT contained in
+  // `foregroundflashnotapplicableto*`), so these arms are order-independent
+  // with respect to each other — they sit after the NotApplicableTo* arms
+  // purely to keep the family adjacent and readable.
+  //
+  // Wording caution (Opus R1): the TabDragBlocked / CrossWindowDragBlocked
+  // producers in mouse.ts append prose to the message, and these arms sit
+  // AFTER the generic "window not found" / "timeout" arms above. Today the
+  // prose only carries hwnd numbers, but if a future edit interpolates a
+  // window TITLE (or any phrase containing "no window" / "timeout"), the
+  // generic arms would poach the match. Keep the messages title-free, and the
+  // routing test (oq8-failwith-suggest-routing.test.ts) pins the current
+  // production strings as a tripwire.
   if (m.includes("foregroundflashrequirestarget")) {
     return { code: "ForegroundFlashRequiresTarget", suggest: SUGGESTS.ForegroundFlashRequiresTarget };
   }

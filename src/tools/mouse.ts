@@ -887,8 +887,7 @@ export const mouseDragHandler = async ({
           if (tabRisk.risk) {
             return failWith(
               new Error("TabDragBlocked: drag starts in the tab-strip area of a tabbed application"),
-              "mouse_drag",
-              {}
+              "mouse_drag"
             );
           }
         }
@@ -907,8 +906,7 @@ export const mouseDragHandler = async ({
               `CrossWindowDragBlocked: start hwnd=${startHwnd ?? "desktop"} → end hwnd=${endHwnd ?? "desktop"}. ` +
               `Pass allowCrossWindowDrag:true to confirm intent (e.g. for desktop range selection).`
             ),
-            "mouse_drag",
-            {}
+            "mouse_drag"
           );
         }
       }

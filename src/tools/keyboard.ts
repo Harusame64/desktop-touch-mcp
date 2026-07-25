@@ -811,8 +811,7 @@ export const keyboardTypeHandler = async ({
       if (!effectiveWindowTitle) {
         return failWith(
           new Error("ForegroundFlashRequiresTarget"),
-          "keyboard:type",
-          {}
+          "keyboard:type"
         );
       }
       const wins = enumWindowsInZOrder();
@@ -926,8 +925,13 @@ export const keyboardTypeHandler = async ({
         // `r.context.reason`, not `r.context.context.reason`. E2E tests
         // `tests/e2e/foreground-flash-verification.test.ts` pin
         // `r.context.reason` directly.
+        //
+        // OQ8 follow-up: prefix the code so classify() routes this to
+        // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
+        // adviceless generic `ToolError` a bare snake_case reason produced.
+        // The reason stays in the message tail AND in context.reason.
         return failWith(
-          new Error(flashResult.reason ?? "ForegroundFlashFailed"),
+          new Error(`ForegroundFlashFailed: ${flashResult.reason ?? "unknown"}`),
           "keyboard:type",
           {
             reason: flashResult.reason,
@@ -1343,11 +1347,12 @@ export const keyboardTypeHandler = async ({
           //     a target the engine knows it cannot deliver to should
           //     return the same code, mirroring terminal.ts:439-470).
           //   - other reasons (`chromium` / `uwp_sandboxed` /
-          //     `class_unknown`) → `BackgroundInputUnsupported` with the
-          //     existing call-site suggest ("For Chrome/Edge: use
-          //     browser_fill instead"). Splitting by reason preserves
-          //     each reason's existing recovery hint contract (PR #174
-          //     round 2 P1-1: same code → same suggest).
+          //     `class_unknown`) → `BackgroundInputUnsupported`, whose
+          //     SUGGESTS entry carries the recovery copy ("For Chrome/Edge:
+          //     use browser_fill instead" — OQ8 moved it off this call
+          //     site). Splitting by reason preserves each reason's
+          //     existing recovery hint contract (PR #174 round 2 P1-1:
+          //     same code → same suggest).
           if (check.reason === "wt_xaml_pipeline") {
             return failWith(
               new Error("BackgroundInputNotDelivered"),
@@ -1373,8 +1378,13 @@ export const keyboardTypeHandler = async ({
         }
         // auto + not supported → fall through to foreground path
       } else if (effectiveMethod === "background") {
+        // OQ8 follow-up: this is the `if (target)` ELSE path — no window
+        // matched the title, so the accurate code is WindowNotFound (its
+        // SUGGESTS entry says "verify the title / run desktop_discover").
+        // The old BackgroundInputUnsupported claimed the app rejects
+        // background input, which was never the situation here.
         return failWith(
-          new Error("BackgroundInputUnsupported"),
+          new Error("WindowNotFound"),
           "keyboard:type",
           { windowTitle: effectiveWindowTitle }
         );
@@ -1814,6 +1824,22 @@ export const keyboardPressHandler = async ({
           ...(bgPerception && { _perceptionForPost: bgPerception }),
         });
       } else if (effectiveMethod === "background") {
+        // OQ8 follow-up. Unlike the type handler, the guard above is the
+        // COMPOUND `target && canInjectViaPostMessage(...)`, so this else
+        // covers two distinct situations that need different codes:
+        //   - no window matched the title → WindowNotFound (verify the
+        //     title / run desktop_discover);
+        //   - window found but its class rejects the WM_CHAR channel →
+        //     BackgroundInputUnsupported (switch to method:'foreground').
+        // Collapsing both into BackgroundInputUnsupported mis-advised the
+        // not-found case, which the removed call-site suggest used to patch.
+        if (!target) {
+          return failWith(
+            new Error("WindowNotFound"),
+            "keyboard:press",
+            { windowTitle: effectiveWindowTitle }
+          );
+        }
         return failWith(
           new Error("BackgroundInputUnsupported"),
           "keyboard:press",
@@ -1965,15 +1991,13 @@ export const keyboardSequenceHandler = async ({
   if (rawMethod === "background" || rawMethod === "background-auto") {
     return failWith(
       new Error("BackgroundNotApplicableToSequence"),
-      "keyboard:sequence",
-      {}
+      "keyboard:sequence"
     );
   }
   if (rawMethod === "foreground_flash") {
     return failWith(
       new Error("ForegroundFlashNotApplicableToSequence"),
-      "keyboard:sequence",
-      {}
+      "keyboard:sequence"
     );
   }
 

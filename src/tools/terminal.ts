@@ -1234,8 +1234,12 @@ export const terminalSendHandler = async ({
         { pressEnter: flashPressEnter }, // terminal:send default true、改行終端なら抑止
       );
       if (!flashResult.ok) {
+        // OQ8 follow-up: prefix the code so classify() routes this to
+        // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
+        // adviceless generic `ToolError` a bare snake_case reason produced.
+        // The reason stays in the message tail AND in context.reason.
         return failWith(
-          new Error(flashResult.reason ?? "ForegroundFlashFailed"),
+          new Error(`ForegroundFlashFailed: ${flashResult.reason ?? "unknown"}`),
           "terminal:send",
           {
             reason: flashResult.reason,

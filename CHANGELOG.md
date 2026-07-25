@@ -1,5 +1,41 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Error responses now put recovery advice where it can be found.** Several failures
+  used to come back as the generic code `ToolError` with no top-level `suggest` list,
+  because their recovery hints had been written into the `context` detail object where
+  nothing reads them. They now return their own typed codes with recovery steps in the
+  top-level `suggest` field:
+  - `ForegroundFlashRequiresTarget` — `method:'foreground_flash'` was called without a
+    target window; pass `windowTitle` (or `hwnd`), or use `method:'foreground'` to type
+    into whatever is already focused.
+  - `ForegroundFlashUnsupported` — the target window cannot accept the flash-paste
+    channel. `context.reason` says why (for example `chromium`, `uwp_sandboxed`,
+    `elevated_target`); `method:'foreground'` is the usual fallback.
+  - `ForegroundFlashFailed` — the flash-paste sequence itself failed partway.
+    `context.reason` names the failed step (for example `foreground_steal_denied`,
+    `focus_wait_timeout`, `clipboard_lock_contention`); transient steps often clear on a
+    retry. The error message now starts with `ForegroundFlashFailed:` followed by that
+    reason — previously the bare reason string was the whole message.
+  - `TabDragBlocked` / `CrossWindowDragBlocked` — the `mouse_drag` safety gates that
+    stop accidental tab tear-offs and cross-window drags. Pass `allowTabDrag:true` /
+    `allowCrossWindowDrag:true` when the drag is intentional.
+- **Failure details are no longer double-nested.** In 21 failure responses across the
+  `keyboard`, `terminal`, `mouse`, `clipboard` and `browser_eval` tools, detail fields
+  that used to render as `context.context.<field>` (for example `context.context.sent`)
+  now render flat as `context.<field>`, matching every other failure and matching the
+  wording of the built-in suggestions ("Check context.sent vs context.total").
+- **`keyboard` with `method:'background'` now says so when the window doesn't exist.**
+  When no window matched `windowTitle`, `keyboard:type` and `keyboard:press` returned
+  `BackgroundInputUnsupported` — advice about apps that reject background input, which
+  could never fix a wrong title. They now return `WindowNotFound`, whose suggestions
+  (try a shorter partial title, run `desktop_discover`, focus the window first) actually
+  apply. A window that exists but rejects background input still returns
+  `BackgroundInputUnsupported`.
+
 ## [1.13.0] - 2026-07-25 — multi-monitor: acting on a window that isn't focused, and mouse input that reaches every monitor
 
 ### Fixed

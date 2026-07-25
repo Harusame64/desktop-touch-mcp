@@ -10,7 +10,11 @@
  *
  * The fix was to classify the code each producer already names in its message
  * and let SUGGESTS carry the advice (the same move SpawnFailed made earlier).
- * These tests pin that, plus the substring ordering the four new arms depend on.
+ * These tests pin that, plus the production message wordings whose prose must
+ * never grow a phrase an earlier generic arm would poach ("no window" /
+ * "window not found" / "timeout"), plus `ForegroundFlashFailed` — the sixth
+ * hole of the same class, whose message tail is a snake_case step reason that
+ * the generic timeout arm WOULD poach if its arm were not placed early.
  */
 import { describe, it, expect } from "vitest";
 import { failWith } from "../../src/tools/_errors.js";
@@ -22,8 +26,20 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
   const cases: [string, string][] = [
     ["ForegroundFlashRequiresTarget", "ForegroundFlashRequiresTarget"],
     ["ForegroundFlashUnsupported", "ForegroundFlashUnsupported"],
+    // The two mouse_drag messages are the EXACT production strings — a
+    // tripwire for the wording caution in the classify arm comment: these
+    // arms sit after the generic "window not found" / "timeout" arms, so the
+    // prose must stay free of any phrase those arms match (hwnd numbers are
+    // fine; interpolated window titles would not be).
     ["TabDragBlocked", "TabDragBlocked: drag starts in the tab-strip area of a tabbed application"],
-    ["CrossWindowDragBlocked", "CrossWindowDragBlocked: start hwnd=1 → end hwnd=2. Pass allowCrossWindowDrag:true."],
+    [
+      "CrossWindowDragBlocked",
+      "CrossWindowDragBlocked: start hwnd=131074 → end hwnd=desktop. " +
+        "Pass allowCrossWindowDrag:true to confirm intent (e.g. for desktop range selection).",
+    ],
+    // OQ8 follow-up (sixth hole): flash paste sequence failure. The producers
+    // append the snake_case step reason to the message.
+    ["ForegroundFlashFailed", "ForegroundFlashFailed: foreground_steal_denied"],
   ];
 
   it.each(cases)("%s classifies to its own code with root advice", (code, message) => {
@@ -33,10 +49,13 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
     expect(body.suggest.length).toBeGreaterThan(0);
   });
 
-  // The producers write `ForegroundFlash…` messages for four different codes.
-  // The two `NotApplicableTo*` arms are longer and more specific, so they must
-  // keep matching ahead of the bare `foregroundflashunsupported` arm.
-  it("does not let the shorter foreground-flash arm poach the longer ones", () => {
+  // The producers write `ForegroundFlash…` messages for five different codes.
+  // None of the matched substrings is contained in another (e.g.
+  // `foregroundflashunsupported` is NOT a substring of
+  // `foregroundflashnotapplicableto*`), so the arms are order-independent
+  // within the family — this pins that every member still resolves to itself
+  // if the wordings or arm order ever change.
+  it("each foreground-flash code classifies to itself (no substring containment in the family)", () => {
     expect(render("ForegroundFlashNotApplicableToKeyPress").code).toBe(
       "ForegroundFlashNotApplicableToKeyPress",
     );
@@ -45,6 +64,16 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
     );
     expect(render("ForegroundFlashRequiresTarget").code).toBe("ForegroundFlashRequiresTarget");
     expect(render("ForegroundFlashUnsupported").code).toBe("ForegroundFlashUnsupported");
+    expect(render("ForegroundFlashFailed: unknown").code).toBe("ForegroundFlashFailed");
+  });
+
+  // The `ForegroundFlashFailed` arm sits BEFORE the generic arms because its
+  // message tail is an arbitrary snake_case reason: `focus_wait_timeout`
+  // contains "timeout", which the UiaTimeout arm would otherwise capture.
+  it("keeps the timeout-bearing flash reason out of the generic UiaTimeout arm", () => {
+    const body = render("ForegroundFlashFailed: focus_wait_timeout");
+    expect(body.code).toBe("ForegroundFlashFailed");
+    expect(body.suggest.length).toBeGreaterThan(0);
   });
 });
 

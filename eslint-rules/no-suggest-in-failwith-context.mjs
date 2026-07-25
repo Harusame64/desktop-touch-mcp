@@ -31,13 +31,18 @@
  *
  * Scope (wired in eslint.config.mjs): `src/**` minus `_errors.ts`, which
  * defines the helpers and mentions the key names in its own documentation.
+ *
+ * What this rule cannot see, by construction: a third argument that is a
+ * variable or a spread rather than an object literal, and an aliased import
+ * (`import { failWith as f }`). Both are matched on the name at the call site.
+ * The routing tests and the failWith call-site fixtures cover what slips past.
  */
 
 const BANNED = {
   suggest:
-    "`suggest` in failWith's third argument lands at `context.suggest`, not the root `suggest` the model reads. Put the advice in SUGGESTS (add a classify arm for the code), or use failCode(code, error, { suggest }).",
+    "`suggest` in the third argument of failWith / errorFromMessage / failArgs lands at `context.suggest`, not the root `suggest` the model reads. Put the advice in SUGGESTS (add a classify arm for the code), or use failCode(code, error, { suggest }).",
   context:
-    "`context` in failWith's third argument renders as `context.context`. Pass the context keys flat — the whole argument already IS the context record.",
+    "`context` in the third argument of failWith / errorFromMessage / failArgs renders as `context.context`. Pass the context keys flat — the whole argument already IS the context record.",
 };
 
 /** @type {import("eslint").Rule.RuleModule} */
@@ -46,15 +51,18 @@ export default {
     type: "problem",
     docs: {
       description:
-        "Disallow `suggest` / `context` keys in the third argument of failWith / errorFromMessage — that argument is a flat context record, so they end up nested where nothing reads them (ADR-029 OQ8).",
+        "Disallow `suggest` / `context` keys in the third argument of failWith / errorFromMessage / failArgs — that argument is a flat context record, so they end up nested where nothing reads them (ADR-029 OQ8).",
     },
     schema: [],
     messages: { banned: "{{detail}}" },
   },
 
   create(context) {
-    /** The third argument is the context record for these two. */
-    const CHECKED_CALLEES = new Set(["failWith", "errorFromMessage"]);
+    // The third argument is the context record for all three. `failArgs`
+    // differs only in that its whole third argument becomes `context`
+    // verbatim (no root-hoisting) — a `suggest` / `context` key inside it
+    // mis-nests the same way (Opus R1 P3-2).
+    const CHECKED_CALLEES = new Set(["failWith", "errorFromMessage", "failArgs"]);
 
     function calleeName(node) {
       if (node.type === "Identifier") return node.name;
