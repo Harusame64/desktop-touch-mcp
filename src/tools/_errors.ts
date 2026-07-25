@@ -691,9 +691,38 @@ export function getSuggestsForCode(code: string): string[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function classify(message: string): { code: string; suggest: string[] } {
+  // Declared-code arm (Codex round 8) — checked before ANY detail scanning: a
+  // producer that spells `<Code>: detail` has DECLARED its code, and that
+  // declaration must beat every substring arm below. Without this, a detail
+  // that interpolates caller-controlled text can smuggle a generic keyword
+  // past the prefix — the production case: `_resolve-window.ts` emits
+  // `WindowNotFound: hwnd "${params.hwnd}" is not a valid integer`, and
+  // `hwnd: "timeout"` (an LLM-typed argument) made the UiaTimeout arm poach
+  // it, shipping "the app may be unresponsive — wait and retry" advice for a
+  // malformed argument. Same class as the BrowserSearchTimeout /
+  // KeyLockerSpawnFailed arms below — this arm closes the whole class for
+  // every explicit-prefix producer instead of adding one arm per collision.
+  //
+  // Deliberately STRICT — PascalCase token + immediate colon, exact-case match
+  // against a registered SUGGESTS key — so it cannot poach prose ("Terminal
+  // window not found…" has a space, not a colon, after the first token) and
+  // cannot invent a code. Messages that merely CONTAIN a code mid-string
+  // (wrapper prefixes, `AutoGuardBlocked[endpoint]:` bracket variants) fall
+  // through to the substring cascade below, which is why the
+  // ordering-sensitive arms and their comments remain load-bearing. The bare
+  // `new Error("<Code>")` form (no colon) stays with the leading-code arm at
+  // the END of the cascade — it carries no detail to poach, so it still lets
+  // every specific arm decide first (round-6 rationale, unchanged).
+  const declared = /^\s*([A-Z][A-Za-z0-9]*):/.exec(message)?.[1];
+  if (declared && Object.hasOwn(SUGGESTS, declared)) {
+    return { code: declared, suggest: SUGGESTS[declared] ?? [] };
+  }
+
   const m = message.toLowerCase();
 
-  // Key locker (ADR-014 R3) — checked FIRST: both codes carry the unique `keylocker` prefix, so a
+  // Key locker (ADR-014 R3) — checked FIRST among the substring arms (only the
+  // declared-code arm above precedes it, and for these codes it resolves to the
+  // same result because the producers prefix the code): both codes carry the unique `keylocker` prefix, so a
   // keylocker message only matches these branches, never an existing generic one (e.g. `KeyLockerDisabled`
   // must not be swallowed by a future generic branch; and when the host codes land, `KeyLockerSpawnFailed`
   // ⊃ `spawnfailed` / `KeyLockerTargetNotForeground` ⊃ `foreground` would be mis-routed if placed after the
@@ -800,13 +829,14 @@ function classify(message: string): { code: string; suggest: string[] } {
   if (m.includes("cursorplacementblocked")) {
     return { code: "CursorPlacementBlocked", suggest: SUGGESTS.CursorPlacementBlocked ?? [] };
   }
-  // OQ8 follow-up: the flash paste sequence failed partway. MUST stay BEFORE
-  // the generic arms — the producers (keyboard.ts / terminal.ts
-  // foreground_flash paths) append the snake_case step reason to the message
-  // ("ForegroundFlashFailed: focus_wait_timeout"), and `focus_wait_timeout`
-  // contains "timeout", which the UiaTimeout arm below would otherwise poach.
-  // Unknown native reasons pass through raw, so early placement also shields
-  // against arbitrary tails. Same early-placement rationale as SpawnFailed.
+  // OQ8 follow-up: the flash paste sequence failed partway. The producers
+  // (keyboard.ts / terminal.ts foreground_flash paths) append the snake_case
+  // step reason to the message ("ForegroundFlashFailed: focus_wait_timeout"),
+  // and `focus_wait_timeout` contains "timeout" — the leading `<Code>:` form
+  // is resolved by the declared-code arm at the top of the cascade, so this
+  // arm MUST stay BEFORE the generic arms only for the shapes that still reach
+  // the substring cascade (a wrapper prefix ahead of the code). Same
+  // early-placement rationale as SpawnFailed.
   if (m.includes("foregroundflashfailed")) {
     return { code: "ForegroundFlashFailed", suggest: SUGGESTS.ForegroundFlashFailed };
   }
@@ -895,14 +925,16 @@ function classify(message: string): { code: string; suggest: string[] } {
   // with respect to each other — they sit after the NotApplicableTo* arms
   // purely to keep the family adjacent and readable.
   //
-  // Wording caution (Opus R1): the TabDragBlocked / CrossWindowDragBlocked
-  // producers in mouse.ts append prose to the message, and these arms sit
-  // AFTER the generic "window not found" / "timeout" arms above. Today the
-  // prose only carries hwnd numbers, but if a future edit interpolates a
-  // window TITLE (or any phrase containing "no window" / "timeout"), the
-  // generic arms would poach the match. Keep the messages title-free, and the
-  // routing test (oq8-failwith-suggest-routing.test.ts) pins the current
-  // production strings as a tripwire.
+  // Wording caution (Opus R1, narrowed by Codex round 8): the TabDragBlocked /
+  // CrossWindowDragBlocked producers in mouse.ts append prose to the message,
+  // and these arms sit AFTER the generic "window not found" / "timeout" arms
+  // above. The leading `<Code>:` form is now immune — the declared-code arm at
+  // the top of the cascade resolves it before any detail scan — so the poach
+  // risk only remains for shapes that reach the substring cascade: a wrapper
+  // that prepends its own prefix ("…: TabDragBlocked: …") with a title-bearing
+  // tail. Keep the messages title-free anyway, and the routing test
+  // (oq8-failwith-suggest-routing.test.ts) pins the current production strings
+  // as a tripwire.
   if (m.includes("foregroundflashrequirestarget")) {
     return { code: "ForegroundFlashRequiresTarget", suggest: SUGGESTS.ForegroundFlashRequiresTarget };
   }
@@ -1014,7 +1046,11 @@ function classify(message: string): { code: string; suggest: string[] } {
   // prose message (those do not start with a bare code token) and cannot invent
   // a code, since the key must already exist in the dictionary. It runs LAST so
   // every specific arm above — including the ordering-sensitive ones — decides
-  // first.
+  // first. The `<Code>:` colon form of this match was later promoted to the
+  // declared-code arm at the TOP of the cascade (Codex round 8) — a colon
+  // prefix is a producer declaration and must beat the substring arms — so
+  // this tail arm now decides the bare / whitespace-separated forms; its `:`
+  // alternative is kept only as a backstop.
   const leadingCode = /^([A-Z][A-Za-z0-9]*)(?::|\s|$)/.exec(message.trim())?.[1];
   if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode)) {
     return { code: leadingCode, suggest: SUGGESTS[leadingCode] ?? [] };

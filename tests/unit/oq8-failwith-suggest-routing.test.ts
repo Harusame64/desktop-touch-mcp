@@ -140,31 +140,31 @@ describe("OQ8 — a message that is only the code still gets that code's advice"
 // such keys out of 81: BrowserSearchTimeout (⊃ "timeout", poached by
 // UiaTimeout) and KeyLockerSpawnFailed (⊃ "spawnfailed", poached by
 // SpawnFailed) — both now have their own arms ahead of the generic ones.
-describe("OQ8 — every SUGGESTS key round-trips through classify to itself", () => {
-  /** SUGGESTS keys, derived from the source (a hand-kept list would rot). */
-  const suggestsKeys = (): string[] => {
-    const src = readFileSync(
-      join(import.meta.dirname, "..", "..", "src", "tools", "_errors.ts"),
-      "utf8",
-    );
-    const start = src.indexOf("const SUGGESTS");
-    expect(start).toBeGreaterThan(-1);
-    let i = src.indexOf("{", start);
-    expect(i).toBeGreaterThan(-1);
-    let depth = 1;
+/** SUGGESTS keys, derived from the source (a hand-kept list would rot). */
+const suggestsKeys = (): string[] => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "..", "src", "tools", "_errors.ts"),
+    "utf8",
+  );
+  const start = src.indexOf("const SUGGESTS");
+  expect(start).toBeGreaterThan(-1);
+  let i = src.indexOf("{", start);
+  expect(i).toBeGreaterThan(-1);
+  let depth = 1;
+  i++;
+  const bodyStart = i;
+  while (i < src.length && depth > 0) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") depth--;
     i++;
-    const bodyStart = i;
-    while (i < src.length && depth > 0) {
-      if (src[i] === "{") depth++;
-      else if (src[i] === "}") depth--;
-      i++;
-    }
-    const body = src.slice(bodyStart, i - 1);
-    // Top-level keys sit at exactly two spaces of indentation; nested advice
-    // strings never match the `<ident>:` shape at that indent.
-    return [...body.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]!);
-  };
+  }
+  const body = src.slice(bodyStart, i - 1);
+  // Top-level keys sit at exactly two spaces of indentation; nested advice
+  // strings never match the `<ident>:` shape at that indent.
+  return [...body.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]!);
+};
 
+describe("OQ8 — every SUGGESTS key round-trips through classify to itself", () => {
   it("bare and `<Code>: tail` messages both classify to the key itself", () => {
     const keys = suggestsKeys();
     // Sanity floor: 81 keys when this was written; a drastic drop means the
@@ -185,6 +185,75 @@ describe("OQ8 — every SUGGESTS key round-trips through classify to itself", ()
       "a SUGGESTS key must classify to itself in both producer message shapes — " +
         "a key whose name embeds a generic keyword needs its own arm ahead of the generic one",
     ).toEqual([]);
+  });
+});
+
+// Codex round 8 — the round-trip invariant above only fed a harmless tail
+// ("detail tail"), which is exactly why it missed this: a detail that carries a
+// GENERIC classifier keyword used to let an earlier substring arm poach an
+// explicitly prefixed message. Production reproduction: `_resolve-window.ts`
+// interpolates the caller-supplied `hwnd` string into
+// `WindowNotFound: hwnd "${params.hwnd}" is not a valid integer`, so
+// `hwnd: "timeout"` (an LLM-typed argument) classified as UiaTimeout and
+// shipped "wait and retry" advice for a malformed argument. The declared-code
+// arm at the TOP of classify now resolves any `<Code>:` prefix before the
+// detail is scanned.
+describe("OQ8 — an explicit `<Code>:` prefix beats generic keywords in the detail", () => {
+  // The two production strings whose detail is caller-controlled (worst case:
+  // the caller literally passes a classifier keyword as the argument).
+  it.each([
+    ['WindowNotFound: hwnd "timeout" is not a valid integer'],
+    ['WindowNotFound: no visible window with hwnd "timeout"'],
+  ])("resolve-window message %s keeps WindowNotFound", (message) => {
+    const body = render(message);
+    expect(body.code).toBe("WindowNotFound");
+    expect(body.suggest.length).toBeGreaterThan(0);
+  });
+
+  // Structural invariant over the whole dictionary. Scope note: the full
+  // matrix (81 keys × every generic keyword) would add nothing — the
+  // declared-code arm returns before the detail is scanned at all, so ONE
+  // worst-case tail that concatenates every generic-arm phrase covers the
+  // same ground as the matrix while keeping the pin readable. Reachability
+  // rationale: only WindowNotFound interpolates caller text today, but any
+  // future producer that does gets the same protection, and this loop covers
+  // future SUGGESTS keys automatically.
+  it("every SUGGESTS key keeps its code when the detail is nothing but generic keywords", () => {
+    const keys = suggestsKeys();
+    expect(keys.length).toBeGreaterThanOrEqual(75);
+
+    const adversarialTail =
+      "timeout timed out window not found no window element not found " +
+      "no element is disabled guard failed no scrollbar spawn failed";
+    const misrouted = keys.flatMap((key) => {
+      const body = render(`${key}: ${adversarialTail}`);
+      return body.code !== key || (body.suggest ?? []).length === 0
+        ? [`${key} → code:${body.code} suggest:${(body.suggest ?? []).length}`]
+        : [];
+    });
+
+    expect(
+      misrouted,
+      "an explicit `<Code>:` prefix is a producer declaration — no generic substring arm may poach it",
+    ).toEqual([]);
+  });
+
+  // The declared-code arm is deliberately strict (PascalCase token + immediate
+  // colon). The production bracket variant `AutoGuardBlocked[endpoint]: …`
+  // (mouse.ts) must NOT match it — it falls through to the substring cascade,
+  // whose AutoGuardBlocked arm still resolves it.
+  it("the bracket variant still routes through the substring cascade", () => {
+    const body = render("AutoGuardBlocked[endpoint]: press Escape to dismiss the menu");
+    expect(body.code).toBe("AutoGuardBlocked");
+    expect(body.suggest.length).toBeGreaterThan(0);
+  });
+
+  // Prose that happens to START with a capitalized word must not be promoted:
+  // no colon after the first token, so the strict arm cannot fire and the
+  // prose arms keep deciding ("Terminal window not found" must stay
+  // TerminalWindowNotFound, not be re-routed by any leading-token logic).
+  it("prose without a colon is untouched by the declared-code arm", () => {
+    expect(render("Terminal window not found for pane").code).toBe("TerminalWindowNotFound");
   });
 });
 
