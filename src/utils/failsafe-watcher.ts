@@ -6,11 +6,17 @@
  * the exit gate is unit-testable with every dependency injected.
  *
  * Proposal A: the watcher's `process.exit(1)` only fires while a tool call is
- * actually executing (`getActiveToolCallCount() > 0` — handlers past the
- * failsafe pre-check; see `failsafe-wrap.ts`). While idle, the server stays
- * up: the per-tool gate refuses new calls and the key-locker background guard
- * suspends the credential flow, so "nothing executes" is preserved without
- * tearing down the MCP session (stdio cannot reconnect).
+ * actually executing (`getActiveToolCallIds()` — handlers past the failsafe
+ * pre-check; see `failsafe-wrap.ts`). While idle, the server stays up: the
+ * per-tool gate refuses new calls and the key-locker background guard cancels
+ * the credential flow, so "nothing executes" is preserved without tearing down
+ * the MCP session (stdio cannot reconnect).
+ *
+ * More precisely, it fires only while one of the calls the stop was AIMED at is
+ * still executing: the ids observed at trigger time are intersected with the
+ * ids observed after the notify await, so a call that started during that
+ * window — legitimately, having passed its own pre-check once the cursor left
+ * the corner — never authorises the exit (Codex Round 5 P2).
  *
  * NOTE: the gate input is deliberately NOT the transport-level
  * `inflightIds` — that set counts requests before tool dispatch, so calls the
@@ -47,11 +53,14 @@ export interface FailsafeWatcherDeps {
    *  (the "watcher" origin suppresses checkFailsafe's own logging; this tick
    *  owns the watcher-path observability — plan §3.2). */
   checkFailsafe: () => Promise<void>;
-  /** Exit-gate input: tool handlers past the pre-check, still executing
-   *  (`getActiveToolCallCount` from failsafe-wrap — plan Round 4). Read TWICE
-   *  on the trigger path: once to open the exit branch, once after the notify
-   *  await to confirm the gate is still open (the `exit_averted` recheck). */
-  getActiveToolCallCount: () => number;
+  /** Exit-gate input: the IDS of tool handlers past the pre-check, still
+   *  executing (`getActiveToolCallIds` from failsafe-wrap — plan Round 4).
+   *  Read TWICE on the trigger path: once to open the exit branch and snapshot
+   *  WHICH calls the stop was aimed at, once after the notify await to see how
+   *  many of THOSE are still running (the `exit_averted` recheck). Ids rather
+   *  than a count because the two reads must be intersected, not compared —
+   *  Codex Round 5 P2. */
+  getActiveToolCallIds: () => number[];
   /** For the existing `kind:"exit"` log line only: transport-level inflight
    *  (`inflightIds.size` — refusals included, per its shutdown-grace semantics). */
   getTransportInflight: () => number;
@@ -70,8 +79,9 @@ export interface FailsafeWatcherDeps {
  *   - `FailsafeError` + active tool calls > 0 → notify (≤1 s), console line,
  *     two log lines (new `kind:"failsafe"` with coordinates + the existing
  *     `kind:"exit"` with its unchanged fields), stopTray, exit(1).
- *   - `FailsafeError` + active > 0, but the count fell to 0 during the notify
- *     await → log `exit_averted` once per dwell episode, send a correcting
+ *   - `FailsafeError` + active tool calls, but NONE OF THOSE is still running
+ *     after the notify await (they finished; anything running now started
+ *     later) → log `exit_averted` once per dwell episode, send a correcting
  *     balloon (the exit balloon already went out) and stay alive.
  *   - `FailsafeError` + idle → log `armed_idle` once per dwell episode and
  *     keep the server alive.
@@ -98,8 +108,12 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
       armedIdleLogged = false;
     } catch (err) {
       if (!(err instanceof FailsafeError)) return;
-      const active = deps.getActiveToolCallCount();
-      if (active > 0) {
+      const activeIds = deps.getActiveToolCallIds();
+      if (activeIds.length > 0) {
+        // WHICH calls this stop was aimed at. The recheck after the notify
+        // await intersects against this set, so a call that starts later is
+        // never mistaken for one of them.
+        const triggerIds = new Set(activeIds);
         stopping = true;
         // Anything between here and `deps.exit` can throw (a diagnostic write
         // failing, a tray handle already gone). Leaving `stopping` latched in
@@ -130,14 +144,22 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
             if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
           }
           // Recheck the gate: the await above can span up to NOTIFY_TIMEOUT_MS,
-          // and the last active handler may have returned in the meantime. The
-          // balloon has already claimed the server "has exited", which is now
-          // wrong — standing down is still the right call (killing an idle
-          // session costs the user the whole MCP connection; stdio cannot
-          // reconnect), so we correct the record instead: a second balloon says
-          // the server survived and that the corner still blocks new calls.
-          const activeAfterNotify = deps.getActiveToolCallCount();
-          if (activeAfterNotify === 0) {
+          // and the handlers this stop was aimed at may have returned in the
+          // meantime. Intersect rather than re-count (Codex Round 5 P2): an
+          // aggregate count cannot tell a surviving TRIGGERING call from a
+          // brand-new one, and the new one is legitimate — the user can lift
+          // the cursor out of the corner during that same second, after which
+          // a fresh call passes its own pre-check and starts. Killing the
+          // session for it would be indefensible.
+          //
+          // With no survivors the balloon has already claimed the server "has
+          // exited", which is now wrong — standing down is still the right
+          // call (killing a session costs the user the whole MCP connection;
+          // stdio cannot reconnect), so we correct the record instead: a
+          // second balloon says the server survived and that the corner still
+          // blocks new calls.
+          const survivors = deps.getActiveToolCallIds().filter((id) => triggerIds.has(id));
+          if (survivors.length === 0) {
             deps.logDiagnostic({
               kind: "failsafe",
               event: "exit_averted",
@@ -163,8 +185,10 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
             x: err.x,
             y: err.y,
             holdMs: err.holdMs,
-            // The post-await value: the gate that actually authorised this exit.
-            activeToolCalls: activeAfterNotify,
+            // The gate that actually authorised this exit: how many of the
+            // TRIGGERING calls were still running after the notify await.
+            // Calls that started later are deliberately not counted.
+            activeToolCalls: survivors.length,
           });
           // The existing exit record, unchanged: `inflight` stays the
           // TRANSPORT count (same semantics as every other kind:"exit"

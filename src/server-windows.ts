@@ -58,7 +58,7 @@ import {
 } from "./engine/process-health.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe } from "./utils/failsafe.js";
-import { wrapHandlerArg, getActiveToolCallCount } from "./utils/failsafe-wrap.js";
+import { wrapHandlerArg, getActiveToolCallIds } from "./utils/failsafe-wrap.js";
 import { createFailsafeWatcherTick } from "./utils/failsafe-watcher.js";
 import { showBalloonTip } from "./utils/balloon.js";
 import {
@@ -299,14 +299,14 @@ function createMcpServer(): McpServer {
 // Backup: catches cases where a tool is mid-execution (e.g. long PowerShell call).
 // ADR-030 Phase 1 (plan §3.3 W5): the tick body lives in
 // `utils/failsafe-watcher.ts` (unit-testable factory). The exit gate is the
-// ACTIVE tool-call count (failsafe-wrap) — NOT `inflightIds`, which counts
+// ACTIVE tool-call IDS (failsafe-wrap) — NOT `inflightIds`, which counts
 // refused calls too (shutdown-grace semantics; see the factory's header).
 // `inflightIds` / `shutdownPending` are read lazily via closures — they are
 // declared below and only dereferenced when the tick runs.
 const failsafeTimer = setInterval(
   createFailsafeWatcherTick({
     checkFailsafe: () => checkFailsafe("watcher"),
-    getActiveToolCallCount,
+    getActiveToolCallIds,
     getTransportInflight: () => inflightIds.size,
     getShutdownPending: () => shutdownPending,
     notify: showBalloonTip,

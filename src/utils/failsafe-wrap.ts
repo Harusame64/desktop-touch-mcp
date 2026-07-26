@@ -19,29 +19,47 @@
 
 export type HandlerLike = (...args: unknown[]) => Promise<unknown>;
 
-// ADR-030 Phase 1 (plan §3.3 W6): the ACTIVE tool-call counter — the number
-// of tool handlers that passed the failsafe pre-check and have not settled
+// ADR-030 Phase 1 (plan §3.3 W6): the ACTIVE tool-call registry — the IDENTITY
+// of every tool handler that passed the failsafe pre-check and has not settled
 // yet. This is the failsafe watcher's exit-gate input. Module-level so every
 // McpServer instance shares it: the per-tool wrap is applied inside
 // `createMcpServer`, which the HTTP transport calls per request too, so one
-// counter covers both transports.
+// registry covers both transports.
+//
+// IDENTITIES, not a count (Codex Round 5 P2): the watcher's exit decision spans
+// an await of up to a second, and an aggregate count cannot tell "the call that
+// triggered the stop is still running" from "that call finished and a DIFFERENT
+// one has since started". The second case must NOT exit — a call that started
+// after the cursor left the corner passed its own pre-check and is legitimate.
+// Per-call ids let the watcher intersect instead of compare.
 //
 // DO NOT confuse this with the transport-level `inflightIds` in
 // server-windows.ts (shutdown grace): that one counts requests BEFORE tool
 // dispatch, so a call the failsafe merely refuses is still "in flight" there
 // (a refusal response must still be delivered). Gating the watcher on it
 // would let an idle corner-park + LLM retry burst kill the server (plan
-// Round 4 Codex P2) — which is exactly the bug this counter exists to avoid.
-let _activeToolCalls = 0;
+// Round 4 Codex P2) — which is exactly the bug this registry exists to avoid.
+let _nextCallId = 1;
+const _activeCallIds = new Set<number>();
+
+/**
+ * Ids of the tool handlers currently executing past the failsafe pre-check.
+ * A FRESH copy every call — the watcher holds onto its snapshot across an
+ * await, and handing out the live Set would let it mutate underneath.
+ */
+export function getActiveToolCallIds(): number[] {
+  return [..._activeCallIds];
+}
 
 /** Number of tool handlers currently executing past the failsafe pre-check. */
 export function getActiveToolCallCount(): number {
-  return _activeToolCalls;
+  return _activeCallIds.size;
 }
 
-/** Test-only: reset the counter between cases. Not exposed via the public index. */
+/** Test-only: reset the registry between cases. Not exposed via the public index. */
 export function _resetActiveToolCallsForTest(): void {
-  _activeToolCalls = 0;
+  _activeCallIds.clear();
+  _nextCallId = 1;
 }
 
 /**
@@ -63,20 +81,22 @@ export function wrapHandlerArg(
   const originalHandler = toolArgs[lastIdx] as HandlerLike;
   if (typeof originalHandler !== "function") return toolArgs;
   toolArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
-    // A refused call never reaches the increment: `preCheck` throws here and
-    // the counter stays untouched (plan §3.3 — refusals are NOT active).
+    // A refused call never reaches the registration: `preCheck` throws here and
+    // the registry stays untouched (plan §3.3 — refusals are NOT active).
     await preCheck();
     // Same synchronous segment as the preCheck resolution — no await between
-    // the increment and the `try`, so no exception can skip the `finally`
+    // the registration and the `try`, so no exception can skip the `finally`
     // and the watcher tick cannot interleave.
-    _activeToolCalls++;
+    const id = _nextCallId++;
+    _activeCallIds.add(id);
     try {
       // `return await` (NOT `return originalHandler(...)`) so the `finally`
-      // runs after the handler settles — a bare return would decrement
-      // before the promise resolves and the watcher would see 0 mid-call.
+      // runs after the handler settles — a bare return would deregister
+      // before the promise resolves and the watcher would see an idle server
+      // mid-call.
       return await originalHandler(...handlerArgs);
     } finally {
-      _activeToolCalls--;
+      _activeCallIds.delete(id);
     }
   };
   return toolArgs;

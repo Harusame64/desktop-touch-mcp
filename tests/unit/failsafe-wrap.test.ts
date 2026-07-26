@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   wrapHandlerArg,
   getActiveToolCallCount,
+  getActiveToolCallIds,
   _resetActiveToolCallsForTest,
 } from "../../src/utils/failsafe-wrap.js";
 
@@ -205,6 +206,49 @@ describe("wrapHandlerArg — active tool-call counter (ADR-030)", () => {
     releaseB();
     await pB;
     expect(getActiveToolCallCount()).toBe(0);
+  });
+
+  it("concurrent calls get DISTINCT ids, and each id disappears when its own call settles", async () => {
+    // The watcher intersects trigger-time ids with post-await ids to tell a surviving triggering
+    // call from a brand-new one (Codex Round 5 P2). That only works if ids are unique per call and
+    // the `finally` removes exactly the call's own id.
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const wrappedA = wrap(async () => new Promise<void>((r) => (releaseA = r)));
+    const wrappedB = wrap(async () => new Promise<void>((r) => (releaseB = r)));
+
+    const pA = wrappedA();
+    const pB = wrappedB();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const both = getActiveToolCallIds();
+    expect(both).toHaveLength(2);
+    expect(new Set(both).size).toBe(2); // distinct — not one id reused
+    const [idA, idB] = both;
+
+    releaseA();
+    await pA;
+    expect(getActiveToolCallIds()).toEqual([idB]); // A's id, and only A's, was removed
+
+    releaseB();
+    await pB;
+    expect(getActiveToolCallIds()).toEqual([]);
+    void idA;
+  });
+
+  it("getActiveToolCallIds hands out a fresh copy (the watcher holds its snapshot across an await)", async () => {
+    let release!: () => void;
+    const wrapped = wrap(async () => new Promise<void>((r) => (release = r)));
+    const p = wrapped();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const snapshot = getActiveToolCallIds();
+    expect(snapshot).toHaveLength(1);
+    release();
+    await p;
+    // Mutating the registry must not rewrite a snapshot taken earlier.
+    expect(snapshot).toHaveLength(1);
+    expect(getActiveToolCallIds()).toEqual([]);
   });
 
   it("_resetActiveToolCallsForTest zeroes the counter (test isolation)", async () => {

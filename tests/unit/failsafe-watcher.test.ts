@@ -34,7 +34,7 @@ interface Harness {
   tick: () => Promise<void>;
   deps: {
     checkFailsafe: ReturnType<typeof vi.fn>;
-    getActiveToolCallCount: ReturnType<typeof vi.fn>;
+    getActiveToolCallIds: ReturnType<typeof vi.fn>;
     getTransportInflight: ReturnType<typeof vi.fn>;
     getShutdownPending: ReturnType<typeof vi.fn>;
     notify: ReturnType<typeof vi.fn>;
@@ -49,7 +49,7 @@ function makeHarness(o: Partial<FailsafeWatcherDeps> = {}): Harness {
   const order: string[] = [];
   const deps = {
     checkFailsafe: vi.fn(async () => {}),
-    getActiveToolCallCount: vi.fn(() => 0),
+    getActiveToolCallIds: vi.fn(() => []),
     getTransportInflight: vi.fn(() => 0),
     getShutdownPending: vi.fn(() => false),
     notify: vi.fn(async () => {
@@ -128,7 +128,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr(2, 6, 500);
       }),
-      getActiveToolCallCount: vi.fn(() => 2),
+      getActiveToolCallIds: vi.fn(() => [1, 2]),
       getTransportInflight: vi.fn(() => 7), // transport view (refusals included) — deliberately ≠ active
       getShutdownPending: vi.fn(() => true),
     });
@@ -170,7 +170,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr();
       }),
-      getActiveToolCallCount: vi.fn(() => 1),
+      getActiveToolCallIds: vi.fn(() => [1]),
       notify: vi.fn(async () => {
         throw new Error("notification pipeline down");
       }),
@@ -185,7 +185,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr();
       }),
-      getActiveToolCallCount: vi.fn(() => 1),
+      getActiveToolCallIds: vi.fn(() => [1]),
       notify: vi.fn(() => new Promise<void>(() => {})), // never settles
     });
     const p = h.tick();
@@ -204,7 +204,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr(1, 1, 700);
       }),
-      getActiveToolCallCount: vi.fn(() => (++calls === 1 ? 1 : 0)),
+      getActiveToolCallIds: vi.fn(() => (++calls === 1 ? [1] : [])),
     });
     await h.tick();
 
@@ -241,7 +241,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr(2, 6, 500);
       }),
-      getActiveToolCallCount: vi.fn(() => (++calls === 1 ? 2 : 1)), // one of the two finished
+      getActiveToolCallIds: vi.fn(() => (++calls === 1 ? [1, 2] : [1])), // one of the two finished
       getTransportInflight: vi.fn(() => 7),
       getShutdownPending: vi.fn(() => false),
     });
@@ -257,6 +257,51 @@ describe("createFailsafeWatcherTick", () => {
     });
   });
 
+  it("the triggering call finished and a DIFFERENT one started → averted, not killed (Codex Round 5 P2)", async () => {
+    // The notify await lasts up to a second. In it the user can lift the cursor out of the corner,
+    // the triggering call (id 1) can finish, and a fresh call (id 2) can pass its own pre-check and
+    // start. An aggregate count sees "still >0" and kills the session for a call that was never in
+    // scope; intersecting the ids sees that nothing the stop was aimed at survives.
+    let calls = 0;
+    const h = makeHarness({
+      checkFailsafe: vi.fn(async () => {
+        throw failsafeErr(1, 1, 500);
+      }),
+      getActiveToolCallIds: vi.fn(() => (++calls === 1 ? [1] : [2])),
+    });
+    await h.tick();
+
+    expect(h.deps.exit).not.toHaveBeenCalled();
+    expect(h.deps.stopTray).not.toHaveBeenCalled();
+    expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].kind === "exit")).toHaveLength(0);
+    expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].event === "exit_averted")).toHaveLength(1);
+    expect(h.deps.notify).toHaveBeenCalledTimes(2); // exit balloon + the correction
+  });
+
+  it("a triggering call survives ALONGSIDE a new one → exits, and activeToolCalls counts only the survivor", async () => {
+    // Same window as above, except id 1 is still running. The exit is correct here — but the log
+    // must say ONE triggering call survived, not two active calls, or the record overstates what
+    // authorised the stop.
+    let calls = 0;
+    const h = makeHarness({
+      checkFailsafe: vi.fn(async () => {
+        throw failsafeErr(2, 6, 500);
+      }),
+      getActiveToolCallIds: vi.fn(() => (++calls === 1 ? [1] : [1, 2])),
+      getTransportInflight: vi.fn(() => 9),
+      getShutdownPending: vi.fn(() => false),
+    });
+    await h.tick();
+
+    expect(h.deps.exit).toHaveBeenCalledWith(1);
+    expect(h.deps.logDiagnostic.mock.calls[0][0]).toMatchObject({
+      event: "triggered",
+      activeToolCalls: 1, // NOT 2 — the post-trigger call is not part of the gate
+    });
+    // The transport line keeps its own (different) semantics.
+    expect(h.deps.logDiagnostic.mock.calls[1][0]).toMatchObject({ kind: "exit", inflight: 9 });
+  });
+
   it("averted → a CORRECTING balloon follows the exit balloon (Opus Round 1 P2-2)", async () => {
     // The exit balloon has already told the user the server "has exited"; when
     // the recheck stands the exit down, that claim must not be left standing.
@@ -265,7 +310,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr(1, 1, 500);
       }),
-      getActiveToolCallCount: vi.fn(() => (++calls === 1 ? 1 : 0)),
+      getActiveToolCallIds: vi.fn(() => (++calls === 1 ? [1] : [])),
     });
     await h.tick();
 
@@ -297,7 +342,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr();
       }),
-      getActiveToolCallCount: vi.fn(() => 1),
+      getActiveToolCallIds: vi.fn(() => [1]),
       notify: vi.fn(
         () =>
           new Promise<void>((resolve) => {
@@ -325,13 +370,13 @@ describe("createFailsafeWatcherTick", () => {
   it("averted RELEASES the re-entrancy guard: a later tick can still exit when a new call is active", async () => {
     // tick 1: 1 → 0 (averted, guard must be cleared); tick 2: a fresh call is
     // running, so the runaway brake has to work again.
-    const counts = [1, 0, 2, 2];
+    const idSets = [[1], [], [2, 3], [2, 3]];
     let i = 0;
     const h = makeHarness({
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr();
       }),
-      getActiveToolCallCount: vi.fn(() => counts[i++] ?? 0),
+      getActiveToolCallIds: vi.fn(() => idSets[i++] ?? []),
     });
     await h.tick();
     expect(h.deps.exit).not.toHaveBeenCalled();
@@ -352,7 +397,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr();
       }),
-      getActiveToolCallCount: vi.fn(() => 1),
+      getActiveToolCallIds: vi.fn(() => [1]),
       logDiagnostic: vi.fn(() => {
         if (boom) throw new Error("diagnostic log write failed");
       }),
@@ -375,7 +420,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw failsafeErr();
       }),
-      getActiveToolCallCount: vi.fn(() => 1),
+      getActiveToolCallIds: vi.fn(() => [1]),
     });
     await h.tick();
     expect(h.deps.exit).toHaveBeenCalledTimes(1);
@@ -392,7 +437,7 @@ describe("createFailsafeWatcherTick", () => {
       checkFailsafe: vi.fn(async () => {
         throw new Error("some transient failure");
       }),
-      getActiveToolCallCount: vi.fn(() => 5),
+      getActiveToolCallIds: vi.fn(() => [1, 2, 3, 4, 5]),
     });
     await h.tick();
     expect(h.deps.exit).not.toHaveBeenCalled();
