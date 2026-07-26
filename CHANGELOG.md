@@ -21,6 +21,11 @@
   was stood down — as a follow-up that corrects the earlier one. Arming the stop while
   nothing is running is recorded in the log only, so resting the cursor in the corner
   does not spam notifications.
+- **Long balloon notifications no longer end mid-word.** Windows caps a balloon tip at 255
+  characters of body and 63 of title, and silently drops everything past that — so a long
+  `notification_show` message simply stopped, with no sign it had been cut. Over-long text is
+  now shortened with a trailing "…" so you can tell something was left out, and the failsafe's
+  own notifications were rewritten to fit.
 - Docs: the failsafe was still described as "immediately terminate" from the pre-1.7.2
   era; README (en/ja), SECURITY.md and the MCP server instructions now describe the
   500ms dwell, the primary-monitor corner, and `DESKTOP_TOUCH_FAILSAFE_HOLD_MS`.

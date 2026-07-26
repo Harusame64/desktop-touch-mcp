@@ -356,7 +356,10 @@ describe("checkFailsafe — ghost-zone miss notice (ADR-030 Proposal B)", () => 
     expect(ghostLogs()).toHaveLength(1);
     expect(ghostLogs()[0][0]).toMatchObject({ x: -1000, y: 5, holdMs: 500 });
     expect(balloonMock).toHaveBeenCalledTimes(1);
-    expect(String(balloonMock.mock.calls[0][0])).toContain("PRIMARY monitor");
+    // The title had to shrink to fit NotifyIcon's 63-character szInfoTitle (see
+    // tests/unit/balloon-length.test.ts), so the "which corner" detail now lives in the body.
+    expect(String(balloonMock.mock.calls[0][0])).toContain("emergency stop corner");
+    expect(String(balloonMock.mock.calls[0][1])).toContain("PRIMARY monitor");
   });
 
   it("a second ghost episode in the same process shows NO further notice (once per process)", async () => {

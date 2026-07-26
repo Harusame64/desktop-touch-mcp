@@ -27,7 +27,8 @@ import { FailsafeError } from "./failsafe.js";
  *  a stalled notification pipeline (ADR-030 R5 / plan R-P4). */
 const NOTIFY_TIMEOUT_MS = 1000;
 
-const EXIT_BALLOON_TITLE = "desktop-touch-mcp: emergency stop";
+/** Exported for the balloon-length guard test (titles only carry 63 characters — see `balloon.ts`). */
+export const EXIT_BALLOON_TITLE = "desktop-touch-mcp: emergency stop";
 /** Exported for the balloon-length guard test (`NotifyIcon` rejects bodies over 255 chars). */
 export function exitBalloonBody(holdMs: number): string {
   return (

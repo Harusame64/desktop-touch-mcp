@@ -96,19 +96,23 @@ let _ghostEnteredAt: number | null = null;
 let _ghostLastInZoneAt: number | null = null;
 let _ghostNoticeShown = false;
 
-const BALLOON_TITLE = "desktop-touch-mcp: emergency stop";
+/** Exported for the balloon-length guard test — see `ghostBalloonBody`. */
+export const BALLOON_TITLE = "desktop-touch-mcp: emergency stop";
 /** Exported for the balloon-length guard test — see `ghostBalloonBody`. */
 export const PER_TOOL_BALLOON_BODY =
   "Tool calls are being refused: the mouse has stayed in the top-left corner of the primary monitor. " +
   "Move the cursor away from the corner to resume.";
-const GHOST_BALLOON_TITLE = "desktop-touch-mcp: emergency stop corner is on the PRIMARY monitor";
+/** Exported for the balloon-length guard test — `szInfoTitle` only carries 63 characters, and the
+ *  previous 66-character wording lost its last three ("...PRIMARY monit") with no warning. */
+export const GHOST_BALLOON_TITLE = "desktop-touch-mcp: emergency stop corner moved";
 /**
  * Exported for the balloon-length guard test (`tests/unit/balloon-length.test.ts`).
  *
- * MUST stay well inside `NOTIFYICON_BALLOON_TEXT_MAX`: the earlier wording was 272 characters, which
- * `NotifyIcon.BalloonTipText` refuses outright — and because `showBalloonTip` resolves on SPAWN while
- * `_ghostNoticeShown` is already latched, the once-per-session notice vanished with no error anywhere
- * (Codex Round 2). Keep it at ≤240 so the interpolated `holdMs` can grow by several digits safely.
+ * MUST stay well inside `NOTIFYICON_BALLOON_TEXT_MAX`: the earlier wording was 272 characters, and
+ * the shell silently drops everything past 255 — the notice arrived cut off mid-sentence, once per
+ * session, with nothing anywhere recording that it had been clipped (Codex Round 2; the mechanism is
+ * truncation, not rejection — see `balloon.ts`). Keep it at ≤240 so the interpolated `holdMs` can
+ * grow by several digits safely.
  */
 export function ghostBalloonBody(holdMs: number): string {
   return (
