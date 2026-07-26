@@ -119,6 +119,22 @@ export type DiagnosticEvent =
       idle_ms?: number;
       elapsed_ms?: number;
       inflight: number;
+    }
+  | {
+      // ADR-030 Phase 1 (plan §3.2): failsafe observability. `x`/`y` are the
+      // trigger coordinates (ADR OQ1 — was it a negative-band trigger?).
+      kind: "failsafe";
+      event: "triggered" | "armed_idle" | "ghost_zone_notice";
+      origin?: "watcher" | "per-tool" | "background";
+      x: number;
+      y: number;
+      holdMs: number;
+      // Watcher trigger only: the number of tool handlers that passed the
+      // failsafe pre-check and are still executing (the watcher exit gate's
+      // input). DELIBERATELY not named `inflight` — the `kind:"exit"` field
+      // of that name counts transport-level requests (refused calls
+      // included), a different semantics (plan Round 5 Opus P2).
+      activeToolCalls?: number;
     };
 
 /**

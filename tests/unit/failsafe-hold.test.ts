@@ -20,7 +20,20 @@ vi.mock("../../src/engine/nutjs.js", () => ({
   },
 }));
 
+// ADR-030 Phase 1 (plan §4.2): `checkFailsafe` now emits diagnostics + balloon
+// notifications on the throw path. Mock both — without these, every throw
+// case below would spawn a real PowerShell NotifyIcon (visible balloon) and
+// append to the real diagnostic.log.
+vi.mock("../../src/utils/balloon.js", () => ({
+  showBalloonTip: vi.fn(async () => {}),
+}));
+vi.mock("../../src/engine/diagnostic-log.js", () => ({
+  logDiagnostic: vi.fn(),
+}));
+
 import { mouse } from "../../src/engine/nutjs.js";
+import { showBalloonTip } from "../../src/utils/balloon.js";
+import { logDiagnostic } from "../../src/engine/diagnostic-log.js";
 import {
   checkFailsafe,
   FailsafeError,
@@ -28,6 +41,8 @@ import {
 } from "../../src/utils/failsafe.js";
 
 const getPositionMock = mouse.getPosition as unknown as ReturnType<typeof vi.fn>;
+const balloonMock = showBalloonTip as unknown as ReturnType<typeof vi.fn>;
+const logMock = logDiagnostic as unknown as ReturnType<typeof vi.fn>;
 
 function setCursor(x: number, y: number): void {
   getPositionMock.mockResolvedValue({ x, y });
@@ -38,6 +53,9 @@ describe("checkFailsafe — dwell-based trigger", () => {
 
   beforeEach(() => {
     getPositionMock.mockReset();
+    balloonMock.mockClear();
+    balloonMock.mockResolvedValue(undefined);
+    logMock.mockClear();
     _resetFailsafeForTest();
     delete process.env.DESKTOP_TOUCH_FAILSAFE_HOLD_MS;
     vi.useFakeTimers({ shouldAdvanceTime: false });
@@ -187,5 +205,211 @@ describe("checkFailsafe — dwell-based trigger", () => {
     setCursor(1, 1);
     vi.setSystemTime(new Date(Date.now() + 600));
     await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+  });
+
+  // ── ADR-030 Phase 1 — primary-monitor zone limit (AC1 dwell integration) ──
+  //
+  // Each negative-coordinate case runs TWO calls with the dwell window
+  // elapsed in between: a single call would resolve under the PRE-fix code
+  // too (the first in-zone sample only arms), so it would be a vacuous
+  // regression test (plan §4.2 / Round 2 P2-4).
+
+  it.each([
+    [-1000, 5, "monitor left of the primary"],
+    [5, -500, "monitor above the primary"],
+    [-1000, -500, "monitor upper-left of the primary"],
+  ])("negative coordinates (%i, %i) — %s — never fire even after a full dwell", async (x, y) => {
+    setCursor(x, y);
+    await checkFailsafe(); // pre-fix code would ARM here
+    vi.setSystemTime(new Date(Date.now() + 600));
+    // Pre-fix code would THROW here (dwell elapsed in the boundless zone).
+    await expect(checkFailsafe()).resolves.toBeUndefined();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await expect(checkFailsafe()).resolves.toBeUndefined();
+  });
+
+  it("moving from the real zone into the negative band resets the dwell timer", async () => {
+    setCursor(5, 5);
+    await checkFailsafe(); // arm
+    vi.setSystemTime(new Date(Date.now() + 300));
+    setCursor(-1000, 5); // ghost band = OUT of the fixed zone → reset
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 300));
+    setCursor(5, 5);
+    await checkFailsafe(); // re-arm — total wall time 600ms but dwell restarted
+    vi.setSystemTime(new Date(Date.now() + 300));
+    await expect(checkFailsafe()).resolves.toBeUndefined(); // only 300ms since re-entry
+    vi.setSystemTime(new Date(Date.now() + 200));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError); // 500ms since re-entry
+  });
+
+  it("FailsafeError carries the trigger coordinates and the effective holdMs", async () => {
+    setCursor(3, 7);
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    let caught: unknown;
+    await checkFailsafe().catch((e) => (caught = e));
+    expect(caught).toBeInstanceOf(FailsafeError);
+    const err = caught as FailsafeError;
+    expect(err.x).toBe(3);
+    expect(err.y).toBe(7);
+    expect(err.holdMs).toBe(500);
+    expect(err.message).toContain("primary monitor");
+  });
+});
+
+describe("checkFailsafe — origin split (ADR-030 plan §3.2)", () => {
+  const savedEnv = { ...process.env };
+
+  beforeEach(() => {
+    getPositionMock.mockReset();
+    balloonMock.mockClear();
+    balloonMock.mockResolvedValue(undefined);
+    logMock.mockClear();
+    _resetFailsafeForTest();
+    delete process.env.DESKTOP_TOUCH_FAILSAFE_HOLD_MS;
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env = { ...savedEnv };
+    _resetFailsafeForTest();
+  });
+
+  const triggeredLogs = () =>
+    logMock.mock.calls.filter((c) => c[0]?.kind === "failsafe" && c[0]?.event === "triggered");
+
+  async function armAndTrigger(origin?: "per-tool" | "watcher" | "background"): Promise<void> {
+    setCursor(5, 5);
+    await checkFailsafe(origin);
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await expect(checkFailsafe(origin)).rejects.toBeInstanceOf(FailsafeError);
+  }
+
+  it("per-tool: one diagnostic log line PER refusal, one balloon PER dwell episode", async () => {
+    await armAndTrigger(); // default origin = per-tool
+    expect(triggeredLogs()).toHaveLength(1);
+    expect(triggeredLogs()[0][0]).toMatchObject({ origin: "per-tool", x: 5, y: 5, holdMs: 500 });
+    expect(balloonMock).toHaveBeenCalledTimes(1);
+
+    // An LLM retry burst against the SAME episode: logs again, balloon does not.
+    vi.setSystemTime(new Date(Date.now() + 100));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+    expect(triggeredLogs()).toHaveLength(2);
+    expect(balloonMock).toHaveBeenCalledTimes(1);
+
+    // A NEW episode (leave → re-enter → dwell) notifies once more.
+    setCursor(500, 500);
+    await checkFailsafe(); // reset
+    await armAndTrigger();
+    expect(balloonMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("background: diagnostic log per refusal, NO balloon", async () => {
+    await armAndTrigger("background");
+    expect(triggeredLogs()).toHaveLength(1);
+    expect(triggeredLogs()[0][0]).toMatchObject({ origin: "background" });
+    expect(balloonMock).not.toHaveBeenCalled();
+  });
+
+  it("watcher: neither log nor balloon from inside checkFailsafe (the watcher tick owns both)", async () => {
+    await armAndTrigger("watcher");
+    expect(triggeredLogs()).toHaveLength(0);
+    expect(balloonMock).not.toHaveBeenCalled();
+  });
+
+  it("a rejected balloon promise does not break the per-tool throw path", async () => {
+    balloonMock.mockRejectedValue(new Error("notification pipeline down"));
+    await armAndTrigger();
+    // Still the typed FailsafeError, not the balloon error — best-effort only.
+  });
+});
+
+describe("checkFailsafe — ghost-zone miss notice (ADR-030 Proposal B)", () => {
+  const savedEnv = { ...process.env };
+
+  beforeEach(() => {
+    getPositionMock.mockReset();
+    balloonMock.mockClear();
+    balloonMock.mockResolvedValue(undefined);
+    logMock.mockClear();
+    _resetFailsafeForTest();
+    delete process.env.DESKTOP_TOUCH_FAILSAFE_HOLD_MS;
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env = { ...savedEnv };
+    _resetFailsafeForTest();
+  });
+
+  const ghostLogs = () =>
+    logMock.mock.calls.filter((c) => c[0]?.kind === "failsafe" && c[0]?.event === "ghost_zone_notice");
+
+  it("a 500ms ghost-zone dwell shows one balloon + one coordinate-carrying log, and never throws", async () => {
+    setCursor(-1000, 5);
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await expect(checkFailsafe()).resolves.toBeUndefined();
+    expect(ghostLogs()).toHaveLength(1);
+    expect(ghostLogs()[0][0]).toMatchObject({ x: -1000, y: 5, holdMs: 500 });
+    expect(balloonMock).toHaveBeenCalledTimes(1);
+    expect(String(balloonMock.mock.calls[0][0])).toContain("PRIMARY monitor");
+  });
+
+  it("a second ghost episode in the same process shows NO further notice (once per process)", async () => {
+    setCursor(-1000, 5);
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await checkFailsafe(); // notice #1
+    setCursor(500, 500);
+    await checkFailsafe(); // leave
+    setCursor(-1000, 5);
+    await checkFailsafe(); // re-enter
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await checkFailsafe(); // full second dwell — silent
+    expect(ghostLogs()).toHaveLength(1);
+    expect(balloonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a real-zone dwell produces no ghost notice", async () => {
+    setCursor(5, 5);
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+    expect(ghostLogs()).toHaveLength(0);
+  });
+
+  it("ghost samples flow in from the background origin too (the notice is origin-independent)", async () => {
+    setCursor(-1000, 5);
+    await checkFailsafe("background");
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await checkFailsafe("background");
+    expect(ghostLogs()).toHaveLength(1);
+    expect(balloonMock).toHaveBeenCalledTimes(1); // ghost balloon is NOT suppressed for background
+  });
+
+  it("_resetFailsafeForTest clears the once-per-process flag (test isolation)", async () => {
+    setCursor(-1000, 5);
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await checkFailsafe();
+    expect(ghostLogs()).toHaveLength(1);
+    _resetFailsafeForTest();
+    setCursor(-1000, 5);
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await checkFailsafe();
+    expect(ghostLogs()).toHaveLength(2);
+  });
+
+  it("a rejected ghost balloon promise never surfaces (fire-and-forget)", async () => {
+    balloonMock.mockRejectedValue(new Error("down"));
+    setCursor(-1000, 5);
+    await checkFailsafe();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await expect(checkFailsafe()).resolves.toBeUndefined();
   });
 });

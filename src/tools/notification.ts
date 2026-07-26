@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { execFile } from "node:child_process";
+import { showBalloonTip } from "../utils/balloon.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
@@ -28,43 +28,10 @@ export const notificationShowHandler = async ({
   body: string;
 }): Promise<ToolResult> => {
   try {
-    // Escape single quotes in user-supplied strings for PowerShell embedding
-    const safeTitle = title.replace(/'/g, "''");
-    const safeBody = body.replace(/'/g, "''");
-
-    // System.Windows.Forms.NotifyIcon balloon tip — no WinRT dependency,
-    // no external modules. Works on Windows 10 / 11.
-    // The sleep ensures the balloon stays alive before the PowerShell process exits.
-    const script = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "Add-Type -AssemblyName System.Drawing",
-      "$icon = [System.Drawing.SystemIcons]::Information",
-      "$notify = New-Object System.Windows.Forms.NotifyIcon",
-      "$notify.Icon = $icon",
-      "$notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info",
-      `$notify.BalloonTipTitle = '${safeTitle}'`,
-      `$notify.BalloonTipText = '${safeBody}'`,
-      "$notify.Visible = $true",
-      "$notify.ShowBalloonTip(6000)",
-      "Start-Sleep -Milliseconds 6500",
-      "$notify.Dispose()",
-    ].join("; ");
-
-    // Fire-and-forget — spawn PowerShell, unref immediately so Node doesn't wait for it.
-    // The 6.5 s sleep inside the PS script keeps the balloon alive without blocking MCP.
-    await new Promise<void>((resolve, reject) => {
-      const child = execFile(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", script],
-        { timeout: 15000 }
-      );
-      child.on("spawn", () => {
-        // Detach from the Node process lifecycle — child runs independently
-        child.unref();
-        resolve();
-      });
-      child.on("error", (err) => reject(err));
-    });
+    // ADR-030 Phase 1 W2: the raw NotifyIcon helper lives in
+    // `src/utils/balloon.ts` (shared with the failsafe notification paths);
+    // this handler is a thin tool wrapper around it.
+    await showBalloonTip(title, body);
 
     return ok({
       ok: true,
