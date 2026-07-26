@@ -104,6 +104,9 @@ function makeHarness(o: Partial<CaptureDriverDeps> = {}, initialTree: Record<num
     readPaneAfterAuth: vi.fn(async () => ({ tail: "", stillHiddenPrompt: false })),
     readPromptTail: vi.fn(async () => PROMPT(false)), // no prompt by default
     nowMs: vi.fn(() => clock.ms),
+    // ADR-030 Phase 1 W7: failsafe NOT armed by default — both guard layers pass through, so every
+    // pre-existing test doubles as the "non-armed reaches inject" verification (AC-P8 (4)).
+    checkFailsafe: vi.fn(async () => {}),
     ...o,
   };
   const driver = new KeyLockerCaptureDriver(deps);
@@ -785,5 +788,166 @@ describe("KeyLockerCaptureDriver — wt pane close prune (tickWatch)", () => {
     h.setTree({}); // buildProcessParentMap failure shape — empty map
     h.driver.tickWatch();
     expect(h.driver.hasPane("wt:1000:10")).toBe(true); // a degenerate tick must not tear panes down
+  });
+});
+
+// ─── ADR-030 Phase 1 W7 — the two-layer background failsafe guard (AC8 / plan §4.6) ────────────────────
+//
+// While the emergency stop is armed, the background credential flow must stop BEFORE any of its dialogs
+// open (primary guard: the poll early-decline slot) — and a stop that arms WHILE a dialog is open must
+// still be caught at the injection instant (backstop: the injectPane wrapper, evaluated BEFORE the session
+// re-verify so the re-verify → inject adjacency is untouched). The driver identifies the failsafe rejection
+// structurally (err.name === "FailsafeError" — engine purity: no utils/failsafe import), so these tests
+// throw a name-pinned Error rather than the real class.
+
+/** A FailsafeError as the driver sees it (structural: name-pinned). */
+function failsafeEngagedError(): Error {
+  const e = new Error("FAILSAFE triggered (test)");
+  e.name = "FailsafeError";
+  return e;
+}
+
+describe("KeyLockerCaptureDriver — ADR-030 background failsafe guard (2 layers)", () => {
+  it("PRIMARY: armed stop at poll time → declined BEFORE any dialog (no confirm/capture/inject), arm cleared", async () => {
+    const h = makeHarness(
+      {
+        readPromptTail: vi.fn(async () => PROMPT(true)),
+        checkFailsafe: vi.fn(async () => { throw failsafeEngagedError(); }),
+      },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("declined");
+    // No user-facing UI of any kind was opened, and nothing was injected.
+    expect(h.deps.confirmInjection).not.toHaveBeenCalled();
+    expect(h.deps.capture).not.toHaveBeenCalled();
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
+    // The arm was cleared (guarded disarm) — no wasted polls against a stopped flow.
+    expect(h.driver.armedPaneIds()).toEqual([]);
+  });
+
+  it("PRIMARY: a NEWER arm that lands during the probe await survives the guarded disarm (throw path)", async () => {
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    vi.mocked(h.deps.checkFailsafe).mockImplementation(async () => {
+      // A newer credential dispatch replaces the arm while the probe is in flight.
+      h.driver.onDispatch("pane-1", "sudo -u alice other");
+      throw failsafeEngagedError();
+    });
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("declined");
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // the NEWER arm was NOT cleared
+    expect(h.deps.capture).not.toHaveBeenCalled();
+  });
+
+  it("PRIMARY: a NEWER arm that lands during a RESOLVING probe → superseded (the :389-shaped re-check)", async () => {
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    vi.mocked(h.deps.checkFailsafe).mockImplementation(async () => {
+      h.driver.onDispatch("pane-1", "sudo -u alice other"); // arm swap mid-probe; probe itself resolves
+    });
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("superseded"); // never fills the newer prompt under the older binding
+    expect(h.deps.capture).not.toHaveBeenCalled();
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // the newer arm survives to be polled next
+  });
+
+  it("PRIMARY: a non-FailsafeError probe failure retries next tick (polling) without disarming", async () => {
+    const h = makeHarness(
+      {
+        readPromptTail: vi.fn(async () => PROMPT(true)),
+        checkFailsafe: vi.fn(async () => { throw new Error("mock-only transient"); }),
+      },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("polling");
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // NOT disarmed — the poller lifetime bounds retries
+    expect(h.deps.capture).not.toHaveBeenCalled();
+  });
+
+  it("BACKSTOP: the stop arms WHILE the capture dialog is open → injectPane wrapper drops with failsafe_engaged; the captured secret is reverse-orphan deleted", async () => {
+    let engaged = false;
+    const checkFailsafe = vi.fn(async () => {
+      if (engaged) throw failsafeEngagedError();
+    });
+    let releaseCapture!: () => void;
+    const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
+    const h = makeHarness(
+      { readPromptTail: vi.fn(async () => PROMPT(true)), capture, checkFailsafe },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x"); // NO-MATCH path (resolveBinding → undefined)
+
+    const loopP = h.driver.poll("pane-1"); // primary guard passes (not engaged); loop BLOCKS in capture()
+    await new Promise((r) => setTimeout(r, 0));
+    expect(capture).toHaveBeenCalledTimes(1);
+
+    engaged = true; // the emergency stop arms while the secure dialog is open
+    releaseCapture();
+    const r = await loopP;
+
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toMatchObject({
+      kind: "fill_aborted",
+      matched: false,
+      code: "failsafe_engaged",
+    });
+    expect(h.deps.injectPane).not.toHaveBeenCalled(); // the secret was never typed
+    expect(h.deps.deleteSecret).toHaveBeenCalled();   // reverse-orphan closure (existing finally)
+  });
+
+  it("BACKSTOP: a non-FailsafeError probe failure drops via executor_failed and never rejects", async () => {
+    let blowUp = false;
+    const checkFailsafe = vi.fn(async () => {
+      if (blowUp) throw new Error("mock-only transient");
+    });
+    let releaseCapture!: () => void;
+    const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
+    const h = makeHarness(
+      { readPromptTail: vi.fn(async () => PROMPT(true)), capture, checkFailsafe },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const loopP = h.driver.poll("pane-1");
+    await new Promise((r) => setTimeout(r, 0));
+    blowUp = true;
+    releaseCapture();
+    const r = await loopP; // resolves — a probe hiccup must never crash the poll
+
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toMatchObject({
+      kind: "fill_aborted",
+      code: "executor_failed",
+    });
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
+  });
+
+  it("NON-ARMED: a resolving probe passes BOTH layers — the flow reaches inject and saves (AC8 (4))", async () => {
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toMatchObject({ kind: "saved" });
+    expect(h.deps.injectPane).toHaveBeenCalledTimes(1);
+    // Both layers actually probed (early-decline + injection instant). The
+    // origin:"background" diagnostic line is emitted INSIDE the real
+    // checkFailsafe (§3.2), so the unit-level substitute is the probe count.
+    expect(h.deps.checkFailsafe).toHaveBeenCalledTimes(2);
   });
 });

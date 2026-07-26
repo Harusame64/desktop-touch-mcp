@@ -89,7 +89,11 @@ export type InjectResult =
   | { ok: true; injector: "console"; verified: boolean }
   | { ok: true; injector: "askpass"; spawn: ConsumerSpawnConfig }
   // `InjectAbortCode` (the locker-side inject abort reasons, §2.1) is the SSOT in key-locker-host.
-  | { ok: false; code: SelectErrorCode | "target_required" | InjectAbortCode };
+  // `target_required` / `failsafe_engaged` are ORCHESTRATOR-side codes (never emitted by the locker
+  // host, so they are NOT added to the wire-contract `InjectAbortCode` — `normalizeAbort` must keep
+  // rejecting spoofed wire values). `failsafe_engaged` = the emergency stop was armed at the injection
+  // instant; the pending injection is dropped (ADR-030 Phase 1 W7 backstop).
+  | { ok: false; code: SelectErrorCode | "target_required" | "failsafe_engaged" | InjectAbortCode };
 
 /**
  * Orchestrate an injection. Returns booleans / config / typed reasons — NEVER a secret.

@@ -161,6 +161,22 @@ export interface CaptureDriverDeps {
   nowMs(): number;
   /** Abandon a prompt poll after this many ms (a key-based ssh / cached sudo prints no prompt). */
   pollTimeoutMs?: number;
+
+  /** ADR-030 Phase 1 (W7): the emergency-stop probe — resolves while the failsafe is NOT armed; throws
+   *  `FailsafeError` (identified structurally by `err.name` — the driver stays engine-pure and never
+   *  imports `utils/failsafe`, which loads nut-js) while it is. The wiring binds
+   *  `() => checkFailsafe("background")`. REQUIRED, not optional: an unwired guard would silently
+   *  disappear, so the type system forces the two construction sites (wiring + tests) to provide it.
+   *  Probed at TWO layers (plan §3.3): the poll's early-decline slot (before any credential dialog
+   *  opens) and the injectPane wrapper (injection-instant backstop). */
+  checkFailsafe(): Promise<void>;
+}
+
+/** Is this throw the failsafe's typed rejection? Structural check on `err.name` — the driver must not
+ *  import `utils/failsafe.js` (it would drag the nut-js native module into the engine-pure graph); the
+ *  `FailsafeError` class pins `name = "FailsafeError"` as its contract. */
+function isFailsafeEngaged(err: unknown): boolean {
+  return err instanceof Error && err.name === "FailsafeError";
 }
 
 /** A credential dispatch armed for the prompt poller (the frozen frame is the W3 closure). */
@@ -389,6 +405,29 @@ export class KeyLockerCaptureDriver {
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
+      // ADR-030 Phase 1 W7 — PRIMARY failsafe guard (early-decline, BEFORE any dialog opens). While the
+      // emergency stop is armed, the background credential flow must not show its confirm/capture UI nor
+      // inject — "the stop asks nothing of the user and writes nothing" starts here, ahead of
+      // `runCaptureLoopFor` (plan §3.3: a guard at injectPane alone would still pop a credential dialog
+      // mid-stop and only drop the injection afterwards). The prompt stays untouched in the pane; the
+      // user re-runs the flow after leaving the corner.
+      try {
+        await this.deps.checkFailsafe();
+      } catch (err) {
+        if (isFailsafeEngaged(err)) {
+          // Guarded disarm — never clear a NEWER arm that replaced ours during the probe await (same
+          // principle as the stale-arm re-check above).
+          if (rec.armed === armed) rec.armed = null;
+          return { status: "declined" };
+        }
+        // Non-FailsafeError probe failure: mock-only in production (`checkFailsafe` is fail-open —
+        // plan R-P10). Retry next tick without disarming; the poller lifetime is the natural bound.
+        return { status: "polling" };
+      }
+      // The probe awaited — re-check the arm exactly like the post-read check above before continuing
+      // (a newer dispatch may have replaced it during the probe).
+      if (rec.armed !== armed) return { status: "superseded" };
+
       // EARLY-DECLINE before opening the capture UI (Codex R2/R3 P1). The arm's `frozen` was reconciled at
       // DISPATCH, but an async change between arm and this poll — a user hand-ssh out of the launched pane
       // (doubt markUnknown), or a registered ssh exiting (session-end POP) — moves the pane out from under it.
@@ -564,10 +603,25 @@ export class KeyLockerCaptureDriver {
       // loop maps it to `fill_aborted` and, on the NO-MATCH path, its `finally` deletes the just-captured
       // secret — reverse-orphan). This is the local-vs-remote analog of L2's window/title injection-instant
       // re-verify, which does NOT catch a session change (plan §3 W3).
-      injectPane: (b, id, sub) =>
-        this.liveSessionMatchesExpected(paneId, armed.expected)
+      injectPane: async (b, id, sub) => {
+        // ADR-030 Phase 1 W7 — BACKSTOP failsafe guard at the injection instant (defense in depth): the
+        // confirm/capture dialogs above await for arbitrary user time, during which the stop can arm —
+        // a case the poll's early-decline (which ran before the loop) cannot see. Evaluate the failsafe
+        // FIRST, so the session re-verify below stays IMMEDIATELY adjacent to the actual injection
+        // (`liveSessionMatchesExpected` is synchronous — inserting an await between it and
+        // `deps.injectPane` would widen the TOCTOU window the Codex-R4 guard exists to close).
+        try {
+          await this.deps.checkFailsafe();
+        } catch (err) {
+          if (isFailsafeEngaged(err)) return { ok: false, code: "failsafe_engaged" } as InjectResult;
+          // Non-FailsafeError probe failure (mock-only in production — plan R-P10): drop via the
+          // existing executor abort, never reject (a locker hiccup must not crash the server).
+          return { ok: false, code: "executor_failed" } as InjectResult;
+        }
+        return this.liveSessionMatchesExpected(paneId, armed.expected)
           ? this.deps.injectPane(rec.anchor, b, id, sub)
-          : Promise.resolve({ ok: false, code: "target_mismatch" } as InjectResult),
+          : ({ ok: false, code: "target_mismatch" } as InjectResult);
+      },
       awaitLanded: async (cmd) => {
         const result = await awaitLanded(
           {
