@@ -57,8 +57,10 @@ import {
   clearShutdownPending,
 } from "./engine/process-health.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
-import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
-import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
+import { checkFailsafe } from "./utils/failsafe.js";
+import { wrapHandlerArg, getActiveToolCallCount } from "./utils/failsafe-wrap.js";
+import { createFailsafeWatcherTick } from "./utils/failsafe-watcher.js";
+import { showBalloonTip } from "./utils/balloon.js";
 import {
   logDiagnostic,
   normalizeThrown,
@@ -178,7 +180,7 @@ function createMcpServer(): McpServer {
         "  DESKTOP_TOUCH_DOCK_CORNER=bottom-right  DESKTOP_TOUCH_DOCK_WIDTH=480  DESKTOP_TOUCH_DOCK_HEIGHT=360",
         "",
         "## Emergency stop (Failsafe)",
-        "Move mouse to the top-left corner of the screen (within 10px of 0,0) to immediately terminate the MCP server.",
+        "Park the mouse in the top-left corner of the PRIMARY monitor (within 10px of 0,0) for 500ms to trigger the emergency stop. If a tool call is in flight the server exits; when idle, tool calls fail with FailsafeError until the cursor leaves the corner.",
       ].join("\n"),
     }
   );
@@ -295,24 +297,25 @@ function createMcpServer(): McpServer {
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
 // Primary check: per-tool call via the wrapper above.
 // Backup: catches cases where a tool is mid-execution (e.g. long PowerShell call).
-const failsafeTimer = setInterval(async () => {
-  try {
-    await checkFailsafe();
-  } catch (err) {
-    if (err instanceof FailsafeError) {
-      console.error("[desktop-touch] FAILSAFE triggered: mouse at top-left corner. Exiting.");
-      logDiagnostic({
-        kind: "exit",
-        trigger: "failsafe",
-        exitCode: 1,
-        inflight: inflightIds.size,
-        shutdownPending,
-      });
-      stopTray();
-      process.exit(1);
-    }
-  }
-}, 500);
+// ADR-030 Phase 1 (plan §3.3 W5): the tick body lives in
+// `utils/failsafe-watcher.ts` (unit-testable factory). The exit gate is the
+// ACTIVE tool-call count (failsafe-wrap) — NOT `inflightIds`, which counts
+// refused calls too (shutdown-grace semantics; see the factory's header).
+// `inflightIds` / `shutdownPending` are read lazily via closures — they are
+// declared below and only dereferenced when the tick runs.
+const failsafeTimer = setInterval(
+  createFailsafeWatcherTick({
+    checkFailsafe: () => checkFailsafe("watcher"),
+    getActiveToolCallCount,
+    getTransportInflight: () => inflightIds.size,
+    getShutdownPending: () => shutdownPending,
+    notify: showBalloonTip,
+    logDiagnostic,
+    stopTray,
+    exit: (code) => process.exit(code),
+  }),
+  500,
+);
 failsafeTimer.unref(); // don't keep process alive for this alone
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
