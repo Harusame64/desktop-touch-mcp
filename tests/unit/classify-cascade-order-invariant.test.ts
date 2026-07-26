@@ -47,8 +47,19 @@
  *     arms (TabDragBlocked and the flash family) AFTER the generic arms by
  *     design, so "code token beats generic keyword" is not a global truth of
  *     this cascade. Those few intent anchors stay as hand pins that carry a
- *     real competitor: phase7-f3-spawn-failed-typed-code.test.ts (case 6) and
- *     reachable-bounds.test.ts (both "wins over the generic arms" loops).
+ *     real competitor — all FOUR of them (Round 12: this list was dropping
+ *     the fourth, and a stale enumeration misleads harder than prose):
+ *       - SpawnFailed above the generic "window not found" arm →
+ *         phase7-f3-spawn-failed-typed-code.test.ts (case 6)
+ *       - CoordinateOutsideReachableBounds above the generic arms →
+ *         reachable-bounds.test.ts ("wins over the generic classify arms" loop)
+ *       - CursorPlacementBlocked above the generic arms →
+ *         reachable-bounds.test.ts (its sibling "wins over…" loop)
+ *       - ForegroundFlashFailed above the generic timeout arm →
+ *         oq8-failwith-suggest-routing.test.ts ("keeps the timeout-bearing
+ *         flash reason out of the generic UiaTimeout arm", which feeds the
+ *         wrapper-prefixed "CDP: ForegroundFlashFailed: focus_wait_timeout"
+ *         — a message that carries the competing "timeout" keyword).
  *   - Production wording tripwires (a producer's prose must not grow a generic
  *     keyword while its arm sits below the generic arms):
  *     oq8-failwith-suggest-routing.test.ts pins the real producer strings.
@@ -79,6 +90,24 @@
  *     ONLY as a whole disjunct; any other non-includes predicate, or an
  *     immune predicate conjoined into a `&&` set (where dropping it would
  *     silently erase the set from the model), fails the extraction loudly.
+ *   - Tokenizer churn caution: the tokenizer has no comment syntax, so a
+ *     comment written INSIDE an arm's condition parentheses is "unmodeled
+ *     predicate syntax" and bails the whole suite. Deliberate strictness — a
+ *     comment could hide an unmodeled predicate from the model — but it means
+ *     future classify() edits must keep comments on the lines ABOVE the
+ *     `if`, never inside the condition expression.
+ *   - Extraction completeness is five counts over the region agreeing (arm
+ *     regex, `return { code:`, `return {`, line-leading `return`, line-leading
+ *     `if (`). Round 12 (mutation C, measured): a TAIL arm returning something
+ *     other than an object literal — `return classify(…)`, a helper
+ *     delegation, a constant — slipped through the first three counts and
+ *     every rule below; the two line-anchored statement counts now catch it
+ *     (mid-region the arm regex swallows the next arm's condition and the
+ *     tokenizer bails, so the tail was the silent position). KNOWN LIMIT: an
+ *     arm added OUTSIDE the region — above `const m = message.toLowerCase();`
+ *     or below the `const leadingCode` marker — is invisible to every count
+ *     here in principle; the two boundary markers are the trust anchor, and
+ *     moving them moves what this file can see.
  *
  * Cost, measured at Round 11: 62 arms, 95 firing sets, 4,431 pairwise
  * messages; the whole file runs in ~0.6s (classify is pure string scanning),
@@ -265,6 +294,25 @@ function extractCascade(): Arm[] {
     returnBraceCount,
     'every return in the region must be the `return { code: "…" }` shape',
   ).toBe(returnCount);
+  // …and both brace-shaped counts must equal the STATEMENT-level counts: a
+  // TAIL arm that returns something other than an object literal
+  // (`return classify(…)`, `return SOME_CONST;`, a helper call) matches
+  // neither the arm regex nor either `return {` count — measured in Round 12
+  // (mutation C): such a tail arm sailed through all three counts above and
+  // every rule below, 6/6 green. Line-anchored statement counts see every
+  // `return` / `if (` the region contains, whatever the body shape. (The
+  // anchors must be line-leading: a bare /\breturn\b/ would also count prose
+  // inside comments.) See the header for the remaining out-of-region limit.
+  const lineReturnCount = [...region.matchAll(/^\s*return\b/gm)].length;
+  expect(
+    lineReturnCount,
+    "every line-leading return in the region must be a captured arm's `return { code: … }`",
+  ).toBe(returnCount);
+  const lineIfCount = [...region.matchAll(/^\s*if \(/gm)].length;
+  expect(
+    lineIfCount,
+    "every line-leading `if (` in the region must open a captured arm",
+  ).toBe(arms.length);
   // Every `m.includes(` in the region must have been captured as a literal
   // token (counted pre-DNF, since the cross product duplicates literals).
   const includesCount = [...region.matchAll(/m\.includes\(/g)].length;
