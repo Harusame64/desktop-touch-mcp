@@ -63,15 +63,31 @@ describe("Phase 7 F3: SpawnFailed typed code", () => {
   });
 
   it("SpawnFailed classify has higher priority than generic 'not found' classify cascades", () => {
-    // Pin the classify branch ordering: when a synthesized message contains
-    // BOTH "spawnfailed" (SpawnFailed substring) AND "window not found"
-    // (WindowNotFound substring), branch ordering ensures the more-specific
-    // match wins (SpawnFailed branch placed before WindowNotFound in
-    // `src/tools/_errors.ts::classify()`). This is the only defense layer
-    // — there is no test-time guard against a future refactor accidentally
-    // moving SpawnFailed below WindowNotFound. This test fails immediately
-    // if the ordering invariant is violated.
-    const err = new Error(`SpawnFailed: Command "x.exe" not found. some window not found context appended`);
+    // Pin the classify branch ordering with a message that actually REACHES
+    // the substring cascade: a leading "SpawnFailed: …" message resolves at
+    // the declared-code arm at the top of classify() before any arm ordering
+    // applies (Codex round 8 added that arm, silently making the old
+    // leading-form pin vacuous; Opus round 9 restored it with this shape), so
+    // this pin prefixes a lowercase wrapper ("workspace_launch: …") the
+    // declared-code arm cannot match. The synthesized message contains BOTH
+    // "spawnfailed" (SpawnFailed substring) AND "window not found"
+    // (WindowNotFound substring); branch ordering (SpawnFailed placed before
+    // WindowNotFound in `src/tools/_errors.ts::classify()`) is what makes
+    // SpawnFailed win, and this test fails immediately if that ordering is
+    // violated. No src producer emits this wrapper shape today — the arm
+    // position and this pin are defense-in-depth for future compositions
+    // (e.g. a `CDP:`-style prefix around an inner message).
+    //
+    // Round 10 boundary note: this pin is an INTENT ANCHOR that the
+    // machine-generated cascade invariant
+    // (classify-cascade-order-invariant.test.ts) deliberately does not
+    // replace. "spawnfailed" and "window not found" have no containment
+    // relation, so a swap of the two arms re-derives as a self-consistent
+    // order under the source-extracted invariant (measured in the Round 10
+    // mutation run: the invariant stayed green while THIS test failed).
+    // Non-containment precedence intent can only be pinned by a hand-written
+    // expectation like this one — keep it.
+    const err = new Error(`workspace_launch: SpawnFailed: Command "x.exe" not found. some window not found context appended`);
     const result = failWith(err, "workspace_launch");
     const body = JSON.parse(result.content[0]!.text);
     expect(body.code).toBe("SpawnFailed");

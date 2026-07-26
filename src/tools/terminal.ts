@@ -1180,11 +1180,8 @@ export const terminalSendHandler = async ({
           new Error("ForegroundFlashUnsupported"),
           "terminal:send",
           {
-            context: { reason: channel.reason, windowTitle: win.title },
-            suggest: [
-              "method:'foreground_flash' resolved to unsupported channel",
-              "Try method:'foreground' for non-terminal targets",
-            ],
+            reason: channel.reason,
+            windowTitle: win.title,
           }
         );
       }
@@ -1198,7 +1195,7 @@ export const terminalSendHandler = async ({
           return failWith(
             new Error("BackgroundInputIncomplete"),
             "terminal:send",
-            { context: { sent: r.sent, total: input.length } }
+            { sent: r.sent, total: input.length }
           );
         }
         // Codex Round 1 P2-B 反映: input が CR/LF 終端なら Enter 重複送信を回避
@@ -1221,7 +1218,7 @@ export const terminalSendHandler = async ({
         return failWith(
           new Error("ForegroundFlashChannelNotImplemented"),
           "terminal:send",
-          { context: { kind: channel.kind, windowTitle: win.title } }
+          { kind: channel.kind, windowTitle: win.title }
         );
       }
       // Codex Round 1 P2-B 同型対応: input 末尾改行で Enter 重複送信を回避。
@@ -1237,15 +1234,23 @@ export const terminalSendHandler = async ({
         { pressEnter: flashPressEnter }, // terminal:send default true、改行終端なら抑止
       );
       if (!flashResult.ok) {
+        // OQ8 follow-up: prefix the code so classify() routes this to
+        // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
+        // adviceless generic `ToolError` a bare snake_case reason produced.
+        // The reason stays in the message tail AND in context.reason — same
+        // `?? "unknown"` fallback on both, so the advice cannot point at a key
+        // dropped from the JSON (Round 3 P3-10). `injectViaForegroundFlash`
+        // always sets `reason` on failure, so the fallback covers the optional
+        // field rather than a live branch; an unknown native error arrives here
+        // as its raw message, which the advice routes to `context.rawError`
+        // (Round 4 P3-6).
         return failWith(
-          new Error(flashResult.reason ?? "ForegroundFlashFailed"),
+          new Error(`ForegroundFlashFailed: ${flashResult.reason ?? "unknown"}`),
           "terminal:send",
           {
-            context: {
-              reason: flashResult.reason,
-              rawError: flashResult.rawError,
-              windowTitle: win.title,
-            },
+            reason: flashResult.reason ?? "unknown",
+            rawError: flashResult.rawError,
+            windowTitle: win.title,
           }
         );
       }
@@ -1401,12 +1406,10 @@ export const terminalSendHandler = async ({
             new Error(errorCode),
             "terminal:send",
             {
-              context: {
-                hint: "target rejects PostMessage (WM_CHAR) channel — explicit method:'background' cannot proceed",
-                reason: injectCheck.reason,
-                ...(injectCheck.className !== undefined && { className: injectCheck.className }),
-                ...(injectCheck.processName !== undefined && { processName: injectCheck.processName }),
-              },
+              hint: "target rejects PostMessage (WM_CHAR) channel — explicit method:'background' cannot proceed",
+              reason: injectCheck.reason,
+              ...(injectCheck.className !== undefined && { className: injectCheck.className }),
+              ...(injectCheck.processName !== undefined && { processName: injectCheck.processName }),
             }
           );
         }
@@ -1459,14 +1462,7 @@ export const terminalSendHandler = async ({
           return failWith(
             new Error("BackgroundInputIncomplete"),
             "terminal:send",
-            {
-              suggest: [
-                "Input sent partially - retry with method:'foreground' for full input",
-                "Check context.sent vs context.total",
-                "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
-              ],
-              context: { sent: totalSent, total: input.length },
-            }
+            { sent: totalSent, total: input.length }
           );
         }
       }
@@ -1558,10 +1554,8 @@ export const terminalSendHandler = async ({
           new Error("BackgroundInputNotDelivered"),
           "terminal:send",
           {
-            context: {
-              hint: "post-send UIA read-back did not contain the input substring",
-              targetClass,
-            },
+            hint: "post-send UIA read-back did not contain the input substring",
+            targetClass,
           }
         );
       }

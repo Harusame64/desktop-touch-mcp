@@ -811,11 +811,7 @@ export const keyboardTypeHandler = async ({
       if (!effectiveWindowTitle) {
         return failWith(
           new Error("ForegroundFlashRequiresTarget"),
-          "keyboard:type",
-          {
-            suggest: ["method:'foreground_flash' requires windowTitle or hwnd"],
-            context: {},
-          }
+          "keyboard:type"
         );
       }
       const wins = enumWindowsInZOrder();
@@ -826,7 +822,7 @@ export const keyboardTypeHandler = async ({
         return failWith(
           new Error("WindowNotFound"),
           "keyboard:type",
-          { context: { windowTitle: effectiveWindowTitle } }
+          { windowTitle: effectiveWindowTitle }
         );
       }
       // Lens / auto-guard: foregroundVerified=false because flash will steal
@@ -852,11 +848,8 @@ export const keyboardTypeHandler = async ({
           new Error("ForegroundFlashUnsupported"),
           "keyboard:type",
           {
-            context: { reason: channel.reason, windowTitle: effectiveWindowTitle },
-            suggest: [
-              "method:'foreground_flash' resolved to unsupported channel",
-              "Try method:'foreground' for Chromium / UWP / unknown classes",
-            ],
+            reason: channel.reason,
+            windowTitle: effectiveWindowTitle,
             ...(ffPerception && { _perceptionForPost: ffPerception }),
           }
         );
@@ -878,7 +871,8 @@ export const keyboardTypeHandler = async ({
             new Error("BackgroundInputIncomplete"),
             "keyboard:type",
             {
-              context: { sent: r.sent, total: effectiveText.length },
+              sent: r.sent,
+              total: effectiveText.length,
               ...(ffPerception && { _perceptionForPost: ffPerception }),
             }
           );
@@ -901,7 +895,7 @@ export const keyboardTypeHandler = async ({
         return failWith(
           new Error("ForegroundFlashChannelNotImplemented"),
           "keyboard:type",
-          { context: { kind: channel.kind, windowTitle: effectiveWindowTitle } }
+          { kind: channel.kind, windowTitle: effectiveWindowTitle }
         );
       }
       // Opus Round 2 P1-3 反映: Codex Round 1 P2-A の clipboard_flash 経路
@@ -931,11 +925,23 @@ export const keyboardTypeHandler = async ({
         // `r.context.reason`, not `r.context.context.reason`. E2E tests
         // `tests/e2e/foreground-flash-verification.test.ts` pin
         // `r.context.reason` directly.
+        //
+        // OQ8 follow-up: prefix the code so classify() routes this to
+        // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
+        // adviceless generic `ToolError` a bare snake_case reason produced.
+        // The reason stays in the message tail AND in context.reason, with the
+        // same `?? "unknown"` fallback on both so an undefined key can never be
+        // dropped from the JSON while the advice promises to name the step
+        // (Round 3 P3-10). `injectViaForegroundFlash` does always set `reason`
+        // on failure, so this is the optional-field belt rather than a live
+        // branch — and when the native error is not a known reason, `reason`
+        // carries its raw message, which is why the advice also points at
+        // `context.rawError` (Round 4 P3-6).
         return failWith(
-          new Error(flashResult.reason ?? "ForegroundFlashFailed"),
+          new Error(`ForegroundFlashFailed: ${flashResult.reason ?? "unknown"}`),
           "keyboard:type",
           {
-            reason: flashResult.reason,
+            reason: flashResult.reason ?? "unknown",
             rawError: flashResult.rawError,
             windowTitle: effectiveWindowTitle,
             ...(ffPerception && { _perceptionForPost: ffPerception }),
@@ -1097,11 +1103,8 @@ export const keyboardTypeHandler = async ({
               new Error("BackgroundInputIncomplete"),
               "keyboard:type",
               {
-                suggest: [
-                  "Input sent partially - retry with method:'foreground' for full input",
-                  "Check context.sent vs context.total",
-                ],
-                context: { sent: result.sent, total: effectiveText.length },
+                sent: result.sent,
+                total: effectiveText.length,
                 ...(bgPerception && { _perceptionForPost: bgPerception }),
               }
             );
@@ -1300,10 +1303,8 @@ export const keyboardTypeHandler = async ({
               new Error("BackgroundInputNotDelivered"),
               "keyboard:type",
               {
-                context: {
-                  hint: "post-send UIA read-back did not contain the input substring",
-                  targetClass,
-                },
+                hint: "post-send UIA read-back did not contain the input substring",
+                targetClass,
                 ...(bgPerception && { _perceptionForPost: bgPerception }),
               }
             );
@@ -1353,11 +1354,12 @@ export const keyboardTypeHandler = async ({
           //     a target the engine knows it cannot deliver to should
           //     return the same code, mirroring terminal.ts:439-470).
           //   - other reasons (`chromium` / `uwp_sandboxed` /
-          //     `class_unknown`) → `BackgroundInputUnsupported` with the
-          //     existing call-site suggest ("For Chrome/Edge: use
-          //     browser_fill instead"). Splitting by reason preserves
-          //     each reason's existing recovery hint contract (PR #174
-          //     round 2 P1-1: same code → same suggest).
+          //     `class_unknown`) → `BackgroundInputUnsupported`, whose
+          //     SUGGESTS entry carries the recovery copy ("For Chrome/Edge:
+          //     use browser_fill instead" — OQ8 moved it off this call
+          //     site). Splitting by reason preserves each reason's
+          //     existing recovery hint contract (PR #174 round 2 P1-1:
+          //     same code → same suggest).
           if (check.reason === "wt_xaml_pipeline") {
             return failWith(
               new Error("BackgroundInputNotDelivered"),
@@ -1365,12 +1367,10 @@ export const keyboardTypeHandler = async ({
               {
                 // suggest[] from SUGGESTS dictionary (matrix §2.3 SSOT) —
                 // keep this call site free of duplicated copy.
-                context: {
-                  hint: "target's WinUI/XAML pipeline silently swallows WM_CHAR — use method:'foreground'",
-                  reason: check.reason,
-                  ...(check.className !== undefined && { className: check.className }),
-                  ...(check.processName !== undefined && { processName: check.processName }),
-                },
+                hint: "target's WinUI/XAML pipeline silently swallows WM_CHAR — use method:'foreground'",
+                reason: check.reason,
+                ...(check.className !== undefined && { className: check.className }),
+                ...(check.processName !== undefined && { processName: check.processName }),
               }
             );
           }
@@ -1378,20 +1378,22 @@ export const keyboardTypeHandler = async ({
             new Error("BackgroundInputUnsupported"),
             "keyboard:type",
             {
-              suggest: [
-                "Target app does not accept background input - use method:'foreground' or omit",
-                "For Chrome/Edge: use browser_fill instead",
-              ],
-              context: { className: check.className, processName: check.processName },
+              className: check.className,
+              processName: check.processName,
             }
           );
         }
         // auto + not supported → fall through to foreground path
       } else if (effectiveMethod === "background") {
+        // OQ8 follow-up: this is the `if (target)` ELSE path — no window
+        // matched the title, so the accurate code is WindowNotFound (its
+        // SUGGESTS entry says "verify the title / run desktop_discover").
+        // The old BackgroundInputUnsupported claimed the app rejects
+        // background input, which was never the situation here.
         return failWith(
-          new Error("BackgroundInputUnsupported"),
+          new Error("WindowNotFound"),
           "keyboard:type",
-          { suggest: ["Window not found - verify windowTitle"], context: { windowTitle: effectiveWindowTitle } }
+          { windowTitle: effectiveWindowTitle }
         );
       }
     }
@@ -1657,13 +1659,7 @@ export const keyboardPressHandler = async ({
       return failWith(
         new Error("ForegroundFlashNotApplicableToKeyPress"),
         "keyboard:press",
-        {
-          suggest: [
-            "method:'foreground_flash' is for keyboard:type / terminal:send only",
-            "Use method:'foreground' or method:'background' for keyboard:press",
-          ],
-          context: { keys },
-        }
+        { keys }
       );
     }
 
@@ -1738,11 +1734,7 @@ export const keyboardPressHandler = async ({
             new Error("BackgroundInputIncomplete"),
             "keyboard:press",
             {
-              suggest: [
-                "Key press failed in background mode - retry with method:'foreground'",
-                "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
-              ],
-              context: { keys },
+              keys,
               ...(bgPerception && { _perceptionForPost: bgPerception }),
             }
           );
@@ -1806,11 +1798,9 @@ export const keyboardPressHandler = async ({
             new Error("BackgroundKeyNotDelivered"),
             "keyboard:press",
             {
-              context: {
-                hint: "post-send UIA read-back did not observe the expected buffer mutation",
-                keys,
-                targetClass,
-              },
+              hint: "post-send UIA read-back did not observe the expected buffer mutation",
+              keys,
+              targetClass,
               ...(bgPerception && { _perceptionForPost: bgPerception }),
             }
           );
@@ -1841,10 +1831,26 @@ export const keyboardPressHandler = async ({
           ...(bgPerception && { _perceptionForPost: bgPerception }),
         });
       } else if (effectiveMethod === "background") {
+        // OQ8 follow-up. Unlike the type handler, the guard above is the
+        // COMPOUND `target && canInjectViaPostMessage(...)`, so this else
+        // covers two distinct situations that need different codes:
+        //   - no window matched the title → WindowNotFound (verify the
+        //     title / run desktop_discover);
+        //   - window found but its class rejects the WM_CHAR channel →
+        //     BackgroundInputUnsupported (switch to method:'foreground').
+        // Collapsing both into BackgroundInputUnsupported mis-advised the
+        // not-found case, which the removed call-site suggest used to patch.
+        if (!target) {
+          return failWith(
+            new Error("WindowNotFound"),
+            "keyboard:press",
+            { windowTitle: effectiveWindowTitle }
+          );
+        }
         return failWith(
           new Error("BackgroundInputUnsupported"),
           "keyboard:press",
-          { suggest: ["Target app does not accept background input - use method:'foreground' or omit"], context: { windowTitle: effectiveWindowTitle } }
+          { windowTitle: effectiveWindowTitle }
         );
       }
     }
@@ -1992,15 +1998,13 @@ export const keyboardSequenceHandler = async ({
   if (rawMethod === "background" || rawMethod === "background-auto") {
     return failWith(
       new Error("BackgroundNotApplicableToSequence"),
-      "keyboard:sequence",
-      { suggest: ["sequence is foreground-only; omit method or pass 'foreground'"] }
+      "keyboard:sequence"
     );
   }
   if (rawMethod === "foreground_flash") {
     return failWith(
       new Error("ForegroundFlashNotApplicableToSequence"),
-      "keyboard:sequence",
-      { suggest: ["sequence is foreground-only; omit method or pass 'foreground'"] }
+      "keyboard:sequence"
     );
   }
 

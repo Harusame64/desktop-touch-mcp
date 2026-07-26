@@ -887,11 +887,7 @@ export const mouseDragHandler = async ({
           if (tabRisk.risk) {
             return failWith(
               new Error("TabDragBlocked: drag starts in the tab-strip area of a tabbed application"),
-              "mouse_drag",
-              { suggest: [
-                "To move the window, drag from the window border or use Win+Arrow keys instead",
-                "Pass allowTabDrag:true if you intend to rearrange or detach a tab",
-              ] }
+              "mouse_drag"
             );
           }
         }
@@ -910,8 +906,7 @@ export const mouseDragHandler = async ({
               `CrossWindowDragBlocked: start hwnd=${startHwnd ?? "desktop"} → end hwnd=${endHwnd ?? "desktop"}. ` +
               `Pass allowCrossWindowDrag:true to confirm intent (e.g. for desktop range selection).`
             ),
-            "mouse_drag",
-            { suggest: ["Pass allowCrossWindowDrag:true to confirm cross-window or desktop drag intent"] }
+            "mouse_drag"
           );
         }
       }
@@ -1725,7 +1720,7 @@ export function registerMouseTools(server: McpServer): void {
   );
   server.tool(
     "mouse_drag",
-    "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent. hints.verifyDelivery:{status:'delivered'|'focus_only'|'unverifiable', reason} reports the post-drop observation in the same 3-value shape as mouse_click. MouseDragNotDelivered is SUGGESTS-registered but reserved-only (not emitted) — degradation is expressed via the 'unverifiable' status rather than a typed code. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false from the homing path.",
+    "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent; that refusal is code:'CrossWindowDragBlocked'. A drag starting in a tabbed application's tab strip returns code:'TabDragBlocked' — pass allowTabDrag:true when tearing off or rearranging a tab is intended. hints.verifyDelivery:{status:'delivered'|'focus_only'|'unverifiable', reason} reports the post-drop observation in the same 3-value shape as mouse_click. MouseDragNotDelivered is SUGGESTS-registered but reserved-only (not emitted) — degradation is expressed via the 'unverifiable' status rather than a typed code. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false from the homing path.",
     mouseDragRegistrationSchema,
     mouseDragRegistrationHandler as typeof mouseDragHandler
   );

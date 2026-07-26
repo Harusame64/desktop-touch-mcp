@@ -254,6 +254,15 @@ function findFirstProducer(branch: ClassifyBranch, srcFiles: string[]): string |
     // much a producer as `new Error("<Code>: …")`; without this pattern a
     // classify branch fed by the typed-error family reads as dead.
     new RegExp(`new ${escCode}Error\\(`),
+    // Round 7 P2-2: `new <Family>Error("<code>", …)` — a typed error class
+    // that takes the code as its FIRST ctor argument (`KeyLockerError` in
+    // key-locker-manager.ts / key-locker-host.ts). Its message carries prose
+    // only — the code never appears in it — so the message-based keyword
+    // regexes below cannot see these producers; this shape was a blind spot
+    // of this detector until the KeyLockerSpawnFailed classify arm (added for
+    // the dictionary round-trip invariant) was flagged dead despite having
+    // seven real producers.
+    new RegExp(`new \\w+Error\\(\\s*"${escCode}"`),
   ];
   // Per-keyword regexes — match any string-literal (double-quote OR
   // backtick template) in src/ that contains the keyword and is wrapped
@@ -292,13 +301,19 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
     const errorsContent = readFileSync(ERRORS_FILE, "utf8");
     const branches = parseClassifyBranches(errorsContent);
 
-    // Sanity: parser should find ~30 branches today (currently 30 after
-    // Phase 6 PR-B AutoGuardBlocked classify branch addition; PR-A removed
-    // 3 dead codes, PR-B added 1 → net 32→29→30). If the count drops
-    // drastically the parser is miss-matching the regex (e.g., due to a
-    // refactor of the if-chain shape).
+    // Sanity: the bounds only guard the PARSER (a drastic drop or explosion
+    // means the branch-extraction regex stopped matching the if-chain shape) —
+    // the substantive per-branch producer check runs below regardless of
+    // count. Measured history: ~30 after Phase 6 PR-B (32→29→30), then growth
+    // across later phases that this comment did not track — 55 immediately
+    // before the ADR-029 OQ8 arms, 60 after them (the OQ8 change adds five:
+    // the ForegroundFlash* additions plus TabDragBlocked /
+    // CrossWindowDragBlocked). The ceiling moved 60→90 for that, so the slack
+    // is now ~1.5x rather than the ~2x it used to be; bump it when arms
+    // approach 80. Every added arm is still individually pinned to a producer
+    // by the loop below.
     expect(branches.length).toBeGreaterThanOrEqual(20);
-    expect(branches.length).toBeLessThan(60);
+    expect(branches.length).toBeLessThan(90);
 
     const srcFiles = walkSrcTs(SRC_DIR);
     expect(srcFiles.length).toBeGreaterThan(20); // sanity: src walker found .ts files
@@ -327,7 +342,13 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
           `  (d) Remove the classify branch (and SUGGESTS entry) entirely`,
       );
     }
-  });
+    // This test reads every .ts under src/ and scans it once per classify arm,
+    // so its cost grows with both the tree and the arm count (60 arms as of the
+    // ADR-029 OQ8 additions). Standalone it takes ~2.5s; sharing the machine
+    // with the other 294 files it has exceeded the 10s default. The work is
+    // I/O-bound, not a hang, so the timeout is raised rather than the scan
+    // trimmed — trimming would cost coverage of exactly what this pins.
+  }, 60_000);
 
   it("allow-listed dead codes are still classify-registered (negative pin)", () => {
     const errorsContent = readFileSync(ERRORS_FILE, "utf8");

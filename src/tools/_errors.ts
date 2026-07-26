@@ -206,9 +206,112 @@ const SUGGESTS: Record<string, string[]> = {
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
     "If the message says the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates.",
   ],
+  // Reserved (currently unreachable): the producers (the keyboard.ts /
+  // terminal.ts flash paths) reject with this compact code when the resolver
+  // picks a channel this build does not implement (`cooperative_bridge`,
+  // ADR-013 Option F) — but the resolver never constructs that kind (it exists
+  // only in the type union in engine/background-channel-resolver.ts), so today
+  // no call reaches the reject. Pre-registered per the matrix §5.2
+  // false-positive policy: the compact-message sweep in round 6 found that if
+  // it ever fired it would have shipped as `ToolError` with no advice (the
+  // producers write only the code; the leading-code arm in `classify` covers
+  // that shape). No `method:'background'` line here on purpose: the only
+  // terminal class that reaches this path is Windows Terminal, and WT rejects
+  // the background channel (`bg-input.ts` reports `wt_xaml_pipeline`), so that
+  // advice would send the caller into a second dead end (Round 7 P2-3).
+  ForegroundFlashChannelNotImplemented: [
+    "method:'foreground_flash' is only implemented for the Windows Terminal clipboard path; this window resolved to a different channel (context.kind names it).",
+    "Use method:'foreground' — it types into the window after focusing it and does not depend on the flash channel.",
+  ],
+  // OQ8 — see the classify arms for these four (RequiresTarget / Unsupported /
+  // TabDragBlocked / CrossWindowDragBlocked). The advice moved here verbatim
+  // from the call sites, where it was being nested under `context` instead of
+  // reaching the root `suggest` the server instructions tell the model to read.
+  ForegroundFlashRequiresTarget: [
+    "method:'foreground_flash' needs a target window — pass windowTitle (or hwnd).",
+    "Without a target there is nothing to flash to the foreground; use method:'foreground' to type into whatever is already focused.",
+  ],
+  ForegroundFlashUnsupported: [
+    "method:'foreground_flash' resolved to a channel this window cannot accept.",
+    "Try method:'foreground' — it works for Chromium, UWP and other non-terminal windows, and for terminal targets that reject the flash path.",
+    // The values a resolver can actually produce ON THIS PATH — see
+    // `BackgroundUnsupportedReason` in engine/background-channel-resolver.ts.
+    // Naming a reason no path emits would send the model looking for a cause
+    // that never applies (Round 3 P2-2). `no_supported_channel` was listed here
+    // until Codex round 6 pointed out that both producers pass
+    // `allowedChannels: ["wm_char", "clipboard_flash"]`, so `wt_xaml_pipeline`
+    // becomes a channel and the remaining rejections always carry one of the
+    // three below — `no_supported_channel` needs wm_char to be excluded, which
+    // no flash call site does.
+    "context.reason says why the channel was rejected (`chromium`, `uwp_sandboxed` or `class_unknown`).",
+  ],
+  // OQ8 follow-up (6th hole of the same class): the flash channel WAS
+  // available but the sequence failed. `context.reason` names where.
+  //
+  // The advice is keyed to the reason because the reasons do not share a
+  // recovery, and the wrong one is worse than none (Round 3 P1 / Round 4 P1).
+  // The three groups that matter, traced through
+  // `win32/foreground_flash.rs::foreground_flash_inject`:
+  //   - NOTHING WAS PASTED: the two `validate_input` rejects, every
+  //     `ClipboardError` (they fire while saving/writing the clipboard, before
+  //     the paste keystroke), `foreground_steal_denied`, `focus_wait_timeout`,
+  //     and the addon-missing shortcut in `engine/bg-input.ts`. "Not pasted" is
+  //     not the same as "no side effect": steps 4-10 live in one IIFE, so an
+  //     early return from step 5 (`focus_wait_timeout`) or step 6/8
+  //     (`send_input_failed`) skips the foreground-restore block at its tail
+  //     and LEAVES THE TARGET IN FRONT. Only the clipboard restore runs after
+  //     the IIFE. That is why those reasons carry a focus_window line — hedged,
+  //     because `already_foreground` (target was the front window to begin
+  //     with) skips the steal while both reasons can still fire, and then there
+  //     is no earlier window to return to. The native side knows which case it
+  //     was (`foregroundStealMethod`) but only puts it on the SUCCESS result,
+  //     so the failure envelope cannot say (Round 6 P2-1).
+  //   - ALREADY PASTED: `foreground_restore_failed` is raised after step 6/8,
+  //     so a resend double-inputs. Caveat: `inner?` propagates before the
+  //     `paste_warning_detected` check, so this reason can MASK an intercepted
+  //     paste where nothing landed — hence "read the target", not "assume".
+  //   - AMBIGUOUS: `send_input_failed` covers both the Ctrl+V of step 6 (not
+  //     pasted) and the Enter of step 8 (pasted, Enter missing), and the two
+  //     are indistinguishable from the reason alone.
+  // A clipboard paste is never partial, so no reason means "truncated".
+  // `context.reason` may also be a value not listed here — an unknown native
+  // error passes its raw message through (`bg-input.ts` KNOWN_FLASH_REASONS),
+  // which is why the first line points at `context.rawError` too.
+  ForegroundFlashFailed: [
+    "Read context.reason first — it says where the sequence stopped, and the recoveries are mutually exclusive. If the reason is not one of the ones below, context.rawError carries the raw message from the native path.",
+    "Nothing was pasted, and an identical retry fails identically: input_contains_newline (send one line per call — terminal(action:'send') can add the Enter itself via pressEnter, and for keyboard:type follow the line with keyboard({action:'press', keys:'enter'})), input_exceeds_paste_warning_threshold (split the text into smaller calls — for terminal(action:'send') pass pressEnter:false on every chunk but the last, or each chunk runs as its own command), clipboard_empty_failed / clipboard_alloc_failed / clipboard_set_data_failed (the clipboard could not be written) / hidden_owner_create_failed (the helper window that clipboard write needs could not be created) — for all four, use method:'foreground').",
+    "wt_paste_warning_intercepted: the terminal's paste warning appeared, so the text was NOT pasted, and it may still be on screen — check the target and dismiss the dialog before retrying, then use method:'foreground'.",
+    "send_input_failed: either the paste keystroke or the Enter after it was refused, so the text may be fully pasted with only the Enter missing, or not pasted at all. Read the target before resending — a blind resend can double-input. Unless the target was already the front window, it was also left in front and not switched back, so focus_window returns you to the window you were using. If context.rawError says the native addon is missing, nothing was sent at all and the server needs reinstalling.",
+    "foreground_restore_failed: the paste had already been sent; what failed was switching back to the window that was in front. Bring it back with focus_window, and read the target rather than resending — for a Windows Terminal target this reason can also hide an intercepted paste where nothing landed.",
+    "focus_wait_timeout: nothing was pasted. Unless the target was already the front window, it was brought forward and not switched back, so restore the window you were using with focus_window; then retry once, or fall back to method:'foreground'.",
+    "foreground_steal_denied / clipboard_lock_contention: nothing was pasted and the foreground was left as it was — usually transient, so retry once, then fall back to method:'foreground'. For foreground_steal_denied specifically: if the target runs elevated (admin) and this server does not, Windows refuses the steal for good, so match elevation levels instead of retrying.",
+  ],
+  TabDragBlocked: [
+    "To move the window, drag from the window border or use Win+Arrow keys instead.",
+    "Pass allowTabDrag:true if you intend to rearrange or detach a tab.",
+  ],
+  CrossWindowDragBlocked: [
+    "Pass allowCrossWindowDrag:true to confirm cross-window or desktop drag intent.",
+    "If the drag was meant to stay inside one window, re-read the coordinates — one of the endpoints is landing outside it.",
+  ],
   BackgroundInputIncomplete: [
-    "Input sent partially - retry with method:'foreground' for full input",
-    "Check context.sent vs context.total",
+    // Conditioned on the tool: for keyboard:press, retrying via the foreground
+    // path replays a combo whose modifiers may still be held — the opposite of
+    // what the last line warns about (Round 4 P3-8).
+    "Input sent partially - for keyboard:type and terminal:send, retry with method:'foreground' for full input",
+    "Check context.sent vs context.total when the failure carries them — they say how much arrived",
+    // keyboard:press has no count to report: a combo fails as a whole boolean,
+    // and the code deliberately does NOT fall through to the foreground path
+    // because that would replay the combo (PR #64 Codex P1). Saying "check
+    // sent vs total" at that site pointed at fields its envelope never carries
+    // (Round 3 P2-3).
+    "keyboard:press reports context.keys instead: a combo has no partial count, and a modifier may still be held down in the target, so confirm the window with desktop_state before resending",
+    // Kept from the keyboard:press / terminal:send call sites when their
+    // hand-written suggests were removed. It is the one line those sites had
+    // that this dictionary did not, and dropping it would have lost the only
+    // pointer to the elevation case (BackgroundInputNotDelivered and
+    // BackgroundKeyNotDelivered carry the same advice).
+    "If the target runs elevated (admin) and this server does not, foreground delivery may be required — UIPI blocks WM_CHAR across that boundary",
   ],
   BackgroundInputNotDelivered: [
     "Retry with method:'foreground' — post-send UIA read-back could not find the input echoed in the terminal buffer.",
@@ -524,6 +627,11 @@ const SUGGESTS: Record<string, string[]> = {
   // Emitted EXPLICITLY by the key_locker tool via `failCode` (not classify): the host-lifecycle codes
   // are surfaced dynamically from a caught `KeyLockerError.code`, and the two tool-specific codes below
   // have no classify branch on purpose (SUGGESTS-only — the tool sets the code directly).
+  // Exception: `KeyLockerSpawnFailed` carries a defensive classify arm (first block) because its name
+  // contains "spawnfailed" and a code-shaped message in the cascade-reaching shapes (bare /
+  // wrapper-prefixed; the leading colon form resolves at the declared-code arm) would otherwise be
+  // poached by the generic SpawnFailed arm (Round 7 P2-2) — emission is still failCode; the arm only
+  // pins routing.
   KeyLockerSpawnFailed: [
     "The locker helper could not start. Ensure key-locker.exe is present (build it: cd tools/key-locker && dotnet publish -c Release -o ../../bin/).",
     "This tool is Windows-only.",
@@ -585,19 +693,72 @@ export function getSuggestsForCode(code: string): string[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function classify(message: string): { code: string; suggest: string[] } {
+  // Declared-code arm (Codex round 8) — checked before ANY detail scanning: a
+  // producer that spells `<Code>: detail` has DECLARED its code, and that
+  // declaration must beat every substring arm below. Without this, a detail
+  // that interpolates caller-controlled text can smuggle a generic keyword
+  // past the prefix — the production case: `_resolve-window.ts` emits
+  // `WindowNotFound: hwnd "${params.hwnd}" is not a valid integer`, and
+  // `hwnd: "timeout"` (an LLM-typed argument) made the UiaTimeout arm poach
+  // it, shipping "the app may be unresponsive — wait and retry" advice for a
+  // malformed argument. Same class as the BrowserSearchTimeout /
+  // KeyLockerSpawnFailed arms below — this arm closes the whole class for
+  // every explicit-prefix producer instead of adding one arm per collision.
+  //
+  // Deliberately STRICT — PascalCase token + immediate colon, exact-case match
+  // against a registered SUGGESTS key — so it cannot poach prose ("Terminal
+  // window not found…" has a space, not a colon, after the first token) and
+  // cannot invent a code. Messages that merely CONTAIN a code mid-string
+  // (wrapper prefixes, `AutoGuardBlocked[endpoint]:` bracket variants) fall
+  // through to the substring cascade below. NOTE (Opus round 9): no src
+  // producer emits a wrapper-prefixed SUGGESTS code today — the only
+  // prefix-composing producers are `cdp-bridge.ts` (`CDP: ${inner}`; `CDP`
+  // is not a SUGGESTS key, so it falls through here and the cascade is
+  // genuinely load-bearing for that inner message) and
+  // `launch.ts::spawnDetached` (`SpawnFailed: …`, a LEADING form this arm
+  // resolves). The ordering-sensitive arms below are therefore
+  // defense-in-depth for such compositions, not a live production path —
+  // kept because a `CDP:`-style wrapper around an inner message that names
+  // a code can appear at any time. The bare
+  // `new Error("<Code>")` form (no colon) stays with the leading-code arm at
+  // the END of the cascade — it carries no detail to poach, so it still lets
+  // every specific arm decide first (round-6 rationale, unchanged).
+  const declared = /^\s*([A-Z][A-Za-z0-9]*):/.exec(message)?.[1];
+  if (declared && Object.hasOwn(SUGGESTS, declared)) {
+    return { code: declared, suggest: SUGGESTS[declared] ?? [] };
+  }
+
   const m = message.toLowerCase();
 
-  // Key locker (ADR-014 R3) — checked FIRST: both codes carry the unique `keylocker` prefix, so a
+  // Key locker (ADR-014 R3) — checked FIRST among the substring arms (only the
+  // declared-code arm above precedes it; for the producers that DO prefix the
+  // code — ConsentRequired / Disabled and the wt paths, per the shape note
+  // below — the leading form resolves there to the same result, while the
+  // spawn-path producers emit prose via failCode and never reach these arms):
+  // both codes carry the unique `keylocker` prefix, so a
   // keylocker message only matches these branches, never an existing generic one (e.g. `KeyLockerDisabled`
   // must not be swallowed by a future generic branch; and when the host codes land, `KeyLockerSpawnFailed`
   // ⊃ `spawnfailed` / `KeyLockerTargetNotForeground` ⊃ `foreground` would be mis-routed if placed after the
-  // generic branches — Opus L4-R1 P3-7 collision check). Producers: the KeyLocker*Error constructors in
-  // key-locker-manager.ts (`super("<code>: …")`). Host/inject codes are added when their producers land.
+  // generic branches — Opus L4-R1 P3-7 collision check). Producer message shapes are NOT uniform within
+  // the family (Round 7 P2-2d): ConsentRequired / Disabled prefix the code into the message
+  // (`super("<code>: …")`), and the wt producers do too, but the `KeyLockerError` throws in
+  // key-locker-manager.ts (spawn paths) carry prose only — those reach the tool as a caught `.code`
+  // (failCode) rather than through these arms, so routing here also depends on messages keeping the
+  // prefix where they have it. Remaining host/inject codes are added when their producers land.
   if (m.includes("keylockerconsentrequired")) {
     return { code: "KeyLockerConsentRequired", suggest: SUGGESTS.KeyLockerConsentRequired };
   }
   if (m.includes("keylockerdisabled")) {
     return { code: "KeyLockerDisabled", suggest: SUGGESTS.KeyLockerDisabled };
+  }
+  // `KeyLockerSpawnFailed` ⊃ "spawnfailed": exactly the mis-route the block comment above predicts —
+  // this arm must live in this FIRST block, ahead of the generic SpawnFailed arm, or a code-shaped
+  // message in the cascade-reaching shapes (bare "KeyLockerSpawnFailed", or a wrapper-prefixed one —
+  // the leading "KeyLockerSpawnFailed: …" form resolves at the declared-code arm) is poached by it. Found by the
+  // dictionary round-trip invariant (Round 7 P2-2): latent today because the producers emit via
+  // failCode, but one switch to failWith would have silently rerouted the advice to SpawnFailed.
+  if (m.includes("keylockerspawnfailed")) {
+    return { code: "KeyLockerSpawnFailed", suggest: SUGGESTS.KeyLockerSpawnFailed };
   }
 
   // Order matters: check more-specific patterns first, then fall back to general ones.
@@ -655,15 +816,19 @@ function classify(message: string): { code: string; suggest: string[] } {
     return { code: "InvokePatternNotSupported", suggest: SUGGESTS.InvokePatternNotSupported };
   }
   // Phase 7 F3: workspace_launch spawnDetached rejection (ENOENT / EACCES /
-  // EPERM 等). MUST stay BEFORE WindowNotFound — branch ordering is the
-  // only defense layer (no test-time guard) for the case where a SpawnFailed
-  // message tail accidentally contains "window not found" substring. Today
-  // the literal SpawnFailed messages emitted by `src/utils/launch.ts:153-157`
-  // do not contain that substring, but messages can grow over time (extra
-  // context appended by `failWith(err, ...)` callers). The Phase 7 F3 unit
-  // test (`tests/unit/phase7-f3-spawn-failed-typed-code.test.ts` case #6)
-  // pins this ordering by feeding a synthesized message with both substrings
-  // and asserting SpawnFailed wins.
+  // EPERM 等). The producer (`src/utils/launch.ts::spawnDetached`, the
+  // `SpawnFailed:`-prefixed rejects) emits the LEADING form, which the
+  // declared-code arm at the top resolves before any ordering applies. This
+  // arm decides the shapes that still reach the cascade — the bare code and
+  // a wrapper-prefixed message ("…: SpawnFailed: …"); no src producer emits
+  // that wrapper today (defense-in-depth, see the declared-arm note above).
+  // For those shapes it MUST stay BEFORE WindowNotFound: a SpawnFailed
+  // message tail can accidentally contain "window not found" (messages grow
+  // over time — extra context appended by `failWith(err, ...)` callers).
+  // The Phase 7 F3 unit test
+  // (`tests/unit/phase7-f3-spawn-failed-typed-code.test.ts` case #6) pins
+  // this ordering by feeding a wrapper-prefixed message carrying both
+  // substrings and asserting SpawnFailed wins.
   if (m.includes("spawnfailed") || m.includes("spawn failed:")) {
     return { code: "SpawnFailed", suggest: SUGGESTS.SpawnFailed };
   }
@@ -682,11 +847,32 @@ function classify(message: string): { code: string; suggest: string[] } {
   if (m.includes("cursorplacementblocked")) {
     return { code: "CursorPlacementBlocked", suggest: SUGGESTS.CursorPlacementBlocked ?? [] };
   }
+  // OQ8 follow-up: the flash paste sequence failed partway. The producers
+  // (keyboard.ts / terminal.ts foreground_flash paths) append the snake_case
+  // step reason to the message ("ForegroundFlashFailed: focus_wait_timeout"),
+  // and `focus_wait_timeout` contains "timeout" — the leading `<Code>:` form
+  // is resolved by the declared-code arm at the top of the cascade, so this
+  // arm MUST stay BEFORE the generic arms only for the shapes that still reach
+  // the substring cascade (a wrapper prefix ahead of the code) — a shape no
+  // src producer emits today (defense-in-depth, see the declared-arm note
+  // above). Same early-placement rationale as SpawnFailed.
+  if (m.includes("foregroundflashfailed")) {
+    return { code: "ForegroundFlashFailed", suggest: SUGGESTS.ForegroundFlashFailed };
+  }
   if (m.includes("window not found") || m.includes("no window")) {
     return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };
   }
   if (m.includes("element not found") || m.includes("no element")) {
     return { code: "ElementNotFound", suggest: SUGGESTS.ElementNotFound };
+  }
+  // `BrowserSearchTimeout` ⊃ "timeout": the code's own name contains the
+  // generic keyword, so this arm must stay ABOVE the UiaTimeout arm below or a
+  // code-shaped message in the cascade-reaching shapes (bare / wrapper-
+  // prefixed; the leading `<Code>:` form resolves at the declared-code arm)
+  // is poached by it. Found by the dictionary round-trip
+  // invariant (Round 7 P2-2); latent today (browser.ts emits via failCode).
+  if (m.includes("browsersearchtimeout")) {
+    return { code: "BrowserSearchTimeout", suggest: SUGGESTS.BrowserSearchTimeout };
   }
   if (m.includes("timeout") || m.includes("timed out")) {
     return { code: "UiaTimeout", suggest: SUGGESTS.UiaTimeout };
@@ -728,8 +914,10 @@ function classify(message: string): { code: string; suggest: string[] } {
   // Issue #257: keyboard(action:'sequence') typed codes. Substrings are
   // long and unique enough that subsequent generic arms (timeout / window
   // not found) cannot poach the match, but the test pin in
-  // tests/unit/keyboard-input-serialization.test.ts asserts the ordering
-  // so future SUGGESTS additions cannot regress it silently.
+  // tests/unit/keyboard-input-serialization.test.ts asserts the routing —
+  // including a wrapper-prefixed shape that exercises this cascade arm (the
+  // leading `<Code>:` form resolves at the declared-code arm) — so future
+  // SUGGESTS additions cannot regress it silently.
   if (m.includes("menufocuslostmidsequence") || m.includes("menu focus lost mid sequence")) {
     return { code: "MenuFocusLostMidSequence", suggest: SUGGESTS.MenuFocusLostMidSequence };
   }
@@ -745,6 +933,44 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundnotapplicabletosequence")) {
     return { code: "BackgroundNotApplicableToSequence", suggest: SUGGESTS.BackgroundNotApplicableToSequence };
+  }
+  // OQ8: four codes whose producers wrote their recovery advice into failWith's
+  // third argument, which is a CONTEXT record — so it landed under
+  // `context.suggest` while the classified code stayed the generic `ToolError`
+  // with no root `suggest` at all. Same bug class as SpawnFailed above, and the
+  // same fix: classify the code the producer already names in its message and
+  // let SUGGESTS carry the advice. Producers: keyboard.ts (RequiresTarget /
+  // Unsupported), terminal.ts (Unsupported), mouse.ts (both drag blocks).
+  //
+  // Ordering note: none of the ForegroundFlash* codes is a substring of
+  // another (`foregroundflashunsupported` is NOT contained in
+  // `foregroundflashnotapplicableto*`), so these arms are order-independent
+  // with respect to each other — they sit after the NotApplicableTo* arms
+  // purely to keep the family adjacent and readable.
+  //
+  // Wording caution (Opus R1, narrowed by Codex round 8): the TabDragBlocked /
+  // CrossWindowDragBlocked producers in mouse.ts append prose to the message,
+  // and these arms sit AFTER the generic "window not found" / "timeout" arms
+  // above. The leading `<Code>:` form is now immune — the declared-code arm at
+  // the top of the cascade resolves it before any detail scan — so the poach
+  // risk only remains for shapes that reach the substring cascade: a wrapper
+  // that prepends its own prefix ("…: TabDragBlocked: …") with a title-bearing
+  // tail. No src producer composes that wrapper today (defense-in-depth, see
+  // the declared-arm note above). Keep the messages title-free anyway, and
+  // the routing test (oq8-failwith-suggest-routing.test.ts) pins the
+  // production strings AND their wrapper-prefixed cascade variants as the
+  // tripwire.
+  if (m.includes("foregroundflashrequirestarget")) {
+    return { code: "ForegroundFlashRequiresTarget", suggest: SUGGESTS.ForegroundFlashRequiresTarget };
+  }
+  if (m.includes("foregroundflashunsupported")) {
+    return { code: "ForegroundFlashUnsupported", suggest: SUGGESTS.ForegroundFlashUnsupported };
+  }
+  if (m.includes("tabdragblocked")) {
+    return { code: "TabDragBlocked", suggest: SUGGESTS.TabDragBlocked };
+  }
+  if (m.includes("crosswindowdragblocked")) {
+    return { code: "CrossWindowDragBlocked", suggest: SUGGESTS.CrossWindowDragBlocked };
   }
   if (m.includes("clipboardwritenotdelivered") || m.includes("clipboard write not delivered")) {
     return { code: "ClipboardWriteNotDelivered", suggest: SUGGESTS.ClipboardWriteNotDelivered };
@@ -791,6 +1017,10 @@ function classify(message: string): { code: string; suggest: string[] } {
   // (`codeDeclaresMacro`) already returns VbaMacroNotFound BEFORE any
   // COM call, so the chain scenario is structurally impossible — this
   // ordering is belt-and-suspenders documentation (Opus Round 1 P2-3).
+  // Note (Opus round 9): that reasoning governs only chains that REACH this
+  // cascade (prose-leading / wrapper shapes). In the leading `<Code>:` form
+  // the declared-code arm makes the FIRST (declared) code win regardless of
+  // the arm order here — the opposite of the "latter wins" chain intuition.
   if (m.includes("vbaaccesslockedbypolicy")) {
     return { code: "VbaAccessLockedByPolicy", suggest: SUGGESTS.VbaAccessLockedByPolicy };
   }
@@ -826,6 +1056,35 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("sessionnotfound")) {
     return { code: "SessionNotFound", suggest: SUGGESTS.SessionNotFound };
+  }
+
+  // Last resort before the adviceless generic: a producer that writes ONLY the
+  // code as its message (`new Error("WindowNotFound")`) still gets its own code
+  // and its dictionary advice.
+  //
+  // Why this exists (Codex, round 6): the arms above match prose — the
+  // WindowNotFound arm looks for "window not found" / "no window" — so a
+  // message that is just the PascalCase code matched nothing and shipped as
+  // `ToolError` with an empty `suggest`. That is the exact defect this PR is
+  // about, and it was re-introduced BY this PR: the round-2 change that made
+  // `keyboard` with `method:'background'` return `WindowNotFound` emits the
+  // compact form. A sweep of every compact `new Error("<Pascal>")` in src found
+  // one other, pre-existing: `ForegroundFlashChannelNotImplemented`.
+  //
+  // Matching the leading token exactly against SUGGESTS keys cannot poach a
+  // prose message (those do not start with a bare code token) and cannot invent
+  // a code, since the key must already exist in the dictionary. It runs LAST so
+  // every specific arm above — including the ordering-sensitive ones — decides
+  // first. The `<Code>:` colon form of this match was promoted to the
+  // declared-code arm at the TOP of the cascade (Codex round 8) — a colon
+  // prefix is a producer declaration and must beat the substring arms. That
+  // arm is a strict superset for colon forms (same token pattern, immediate
+  // colon, same SUGGESTS membership check), so a `:` alternative here would
+  // be unreachable — the regex is deliberately bare/whitespace-only so it
+  // states exactly what this arm decides (Opus round 9 P3-1).
+  const leadingCode = /^([A-Z][A-Za-z0-9]*)(?:\s|$)/.exec(message.trim())?.[1];
+  if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode)) {
+    return { code: leadingCode, suggest: SUGGESTS[leadingCode] ?? [] };
   }
 
   return { code: "ToolError", suggest: [] };

@@ -42,14 +42,30 @@ export type BackgroundInputChannel =
     } // Option F (将来)
   | { kind: "unsupported"; reason: BackgroundUnsupportedReason };
 
+/**
+ * Why no background channel was available.
+ *
+ * Only four of these are produced by any code path — `reasonFromInjectCheck`
+ * below is the single writer, and it emits `chromium` / `uwp_sandboxed` /
+ * `class_unknown` / `no_supported_channel` (`wt_xaml_pipeline` too, but only
+ * when `clipboard_flash` is disallowed; the flash path turns it into a channel
+ * instead). `elevated_target` and `user_disabled_foreground_flash` are
+ * **reserved and currently unreachable** — nothing constructs them. They are
+ * kept because both name a rejection this resolver may learn to detect, but
+ * user-facing advice must not cite them as examples: naming a reason no path
+ * emits sends the model looking for a cause that never applies (Round 3 P2-2 —
+ * `SUGGESTS.ForegroundFlashUnsupported` used to list `elevated_target`).
+ */
 export type BackgroundUnsupportedReason =
-  | "elevated_target"
+  // Produced today:
   | "no_supported_channel"
-  | "wt_xaml_pipeline"
-  | "user_disabled_foreground_flash"
   | "chromium"
   | "uwp_sandboxed"
-  | "class_unknown";
+  | "class_unknown"
+  | "wt_xaml_pipeline"
+  // Reserved, not produced by any path today:
+  | "elevated_target"
+  | "user_disabled_foreground_flash";
 
 export interface ResolveBackgroundInputOptions {
   /**
