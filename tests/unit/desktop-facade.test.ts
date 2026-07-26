@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type CandidateIngress } from "../../src/tools/desktop.js";
+import { DesktopFacade, type CandidateProvider, type CandidateIngress } from "../../src/tools/desktop.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 import {
   updateUiaCache,

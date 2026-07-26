@@ -12,16 +12,12 @@
  *
  * @see src/tools/macro.ts runInnerToolAsResult / InnerToolOutcome
  */
-
 import { describe, it, expect } from "vitest";
 import { runInnerToolAsResult } from "../../../src/tools/macro.js";
-
 /** A fake TOOL_REGISTRY entry whose handler returns a single text content block. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function textEntry(text: string): any {
   return { schema: { parse: (x: unknown) => x }, handler: async () => ({ content: [{ type: "text", text }] }) };
 }
-
 describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
   it("ok:true envelope → Result.ok=true, carries the text", async () => {
     const r = await runInnerToolAsResult(textEntry(JSON.stringify({ ok: true, data: 1 })), {});
@@ -32,7 +28,6 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
       expect(r.value.error).toBeUndefined();
     }
   });
-
   it("ok:false envelope → Result.ok=false, carries code + error (silent-success → typed failure)", async () => {
     const r = await runInnerToolAsResult(
       textEntry(JSON.stringify({ ok: false, code: "WindowNotFound", error: "Window not found: x" })),
@@ -45,7 +40,6 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
       expect(r.error.textLines).toHaveLength(1);
     }
   });
-
   it("ok:false without code/error fields → Result.ok=false, fields undefined", async () => {
     const r = await runInnerToolAsResult(textEntry(JSON.stringify({ ok: false })), {});
     expect(r.ok).toBe(false);
@@ -54,14 +48,11 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
       expect(r.error.error).toBeUndefined();
     }
   });
-
   it("non-JSON first text block → treated as success (Result.ok=true)", async () => {
     const r = await runInnerToolAsResult(textEntry("raw screenshot text, not json"), {});
     expect(r.ok).toBe(true);
   });
-
   it("image blocks are carried in the outcome", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const entry: any = {
       schema: { parse: (x: unknown) => x },
       handler: async () => ({ content: [{ type: "image", data: "abc", mimeType: "image/png" }] }),
@@ -70,9 +61,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
     expect(r.ok).toBe(true); // no text block → not a failure
     if (r.ok) expect(r.value.images[0]).toEqual({ data: "abc", mimeType: "image/png" });
   });
-
   it("resource_link blocks are carried in the outcome (ADR-026 by-ref macro forwarding)", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const entry: any = {
       schema: { parse: (x: unknown) => x },
       handler: async () => ({
@@ -95,9 +84,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
       expect(r.value.images).toHaveLength(0); // ref-only, no inline pixels
     }
   });
-
   it("ok:true with a trailing image block → success + both carried", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const entry: any = {
       schema: { parse: (x: unknown) => x },
       handler: async () => ({

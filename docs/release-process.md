@@ -91,9 +91,13 @@ Run:
 ```bash
 node --check bin/launcher.js
 npm run check:launcher-manifest
+npm run lint            # stale eslint-disable directives are errors, so CI would fail on them
 npm run build
 npm publish --dry-run
 ```
+
+`npm run lint` is here so the guard is local: `.githooks/pre-push` only blocks
+direct pushes to `main`, and lint otherwise runs for the first time in CI.
 
 ### Dogfood Pass (Required, v1.3 lesson)
 
@@ -454,7 +458,7 @@ wrong version, etc.) that the stdio smoke test above cannot detect.
 rm -rf "$USERPROFILE/.desktop-touch-mcp/releases/vX.Y.Z"
 npm cache clean --force
 
-# 2. Download via npx and verify --help
+# 2. Download via npx and verify --help output (download + SHA + extraction + arg forwarding)
 #    ⚠️ Run this from a cwd OUTSIDE the project source dir first
 #    (PowerShell: `cd $env:TEMP`  |  bash: `cd /tmp`).
 #    The project's own package.json has name=@harusame64/desktop-touch-mcp; once its
@@ -464,8 +468,24 @@ npm cache clean --force
 #    That is a false negative (wrong cwd), NOT a release bug — re-run from a temp dir.
 #    (`npx @...@<older-version>` works from the project root because the local version
 #    no longer satisfies the spec, which is why a 1.7.2 cross-check can mislead.)
+#    (`--help` exits on its own — no stdin redirect needed. `src/server-windows.ts`
+#    handles it before the stdio transport starts, so unlike a normal launch the
+#    process does not sit waiting for input.)
 npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
-# Expected: "desktop-touch-mcp vX.Y.Z" and usage text
+# Expected (measured on v1.13.0): the launcher prints
+#   [desktop-touch-mcp] Downloading desktop-touch-mcp-windows.zip from vX.Y.Z
+#   [desktop-touch-mcp] Installed vX.Y.Z to ...
+# then the SERVER prints its own usage and exits 0:
+#   desktop-touch-mcp vX.Y.Z
+#   Usage: desktop-touch-mcp [options]
+#   Options:  --http / --port <port> / -h, --help
+# Check the printed version equals X.Y.Z. Silence, or a version mismatch, is a
+# REGRESSION: it means the launcher stopped forwarding arguments, the wrong release
+# was extracted, or the runtime died before parsing flags.
+# So this step proves download + SHA verification + extraction + argument forwarding
+# + the runtime starting far enough to parse flags.
+# What this step does NOT prove is that the server answers MCP requests; for that,
+# run the stdio initialize / tools-list smoke test in the "Smoke Test" section above.
 
 # 3. Verify installed files
 RELEASE_DIR="$USERPROFILE/.desktop-touch-mcp/releases/vX.Y.Z"

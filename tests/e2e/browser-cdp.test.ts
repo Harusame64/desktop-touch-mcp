@@ -10,7 +10,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";

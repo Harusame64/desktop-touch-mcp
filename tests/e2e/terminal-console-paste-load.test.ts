@@ -16,7 +16,6 @@
  * fall-through) is pinned by the mocked unit test (terminal-send-console-paste.test.ts
  * case b) — forcing a native paste failure in a live e2e is not deterministic.
  */
-
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -25,13 +24,10 @@ import { terminalSendHandler, terminalReadHandler } from "../../src/tools/termin
 import { isSshWslAvailable, launchSshWslBash, type SshBashInstance } from "./helpers/ssh-wsl-launcher.js";
 import { enumWindowsInZOrder } from "../../src/engine/win32.js";
 import { sleep } from "./helpers/wait.js";
-
 const execFileAsync = promisify(execFile);
-
 function parse(r: { content: { type: string; text: string }[] }) {
   return JSON.parse(r.content[0]!.text);
 }
-
 /** SW_MINIMIZE the window so the load run steals no foreground. */
 async function minimize(hwnd: bigint): Promise<void> {
   const sig = '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);';
@@ -42,7 +38,6 @@ async function minimize(hwnd: bigint): Promise<void> {
     { timeout: 5000, windowsHide: true },
   );
 }
-
 async function sendAuto(title: string, input: string) {
   return parse(await terminalSendHandler({
     windowTitle: title, input, method: "auto", chunkSize: 100,
@@ -50,22 +45,18 @@ async function sendAuto(title: string, input: string) {
     preferClipboard: true, pasteKey: "auto", trackFocus: false, settleMs: 0,
   }));
 }
-
 async function readBack(title: string, lines = 8): Promise<string> {
   const r = parse(await terminalReadHandler({
     windowTitle: title, lines, stripAnsi: true, source: "auto", ocrLanguage: "ja",
   }));
   return typeof r.text === "string" ? r.text : "";
 }
-
 function pct(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))]!;
 }
-
 let available = false;
 let sh: SshBashInstance | null = null;
-
 describe("[bash@wsl-ssh] terminal action=send console-paste — LOAD/STRESS gate", () => {
   beforeAll(async () => {
     available = await isSshWslAvailable();
@@ -74,9 +65,7 @@ describe("[bash@wsl-ssh] terminal action=send console-paste — LOAD/STRESS gate
     try { await minimize(sh.hwnd); } catch { /* best-effort; e2e focus steal is acceptable */ }
     await sleep(300);
   }, 60_000);
-
   afterAll(() => { sh?.kill(); });
-
   it("L1: 40 rapid auto sends all deliver byte-intact via console-paste (+latency)", async ({ skip }) => {
     if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
     const title = sh!.title;
@@ -95,12 +84,10 @@ describe("[bash@wsl-ssh] terminal action=send console-paste — LOAD/STRESS gate
       expect(text, `read-back #${i}`).toContain(marker);
     }
     latencies.sort((a, b) => a - b);
-    // eslint-disable-next-line no-console
     console.log(`[L1] N=${N} channel=console_paste:${consolePasteCount}/${N} ` +
       `p50=${pct(latencies, 50)}ms p95=${pct(latencies, 95)}ms p99=${pct(latencies, 99)}ms`);
     expect(consolePasteCount).toBe(N); // every send used the new path (no secret prompt)
   }, 120_000);
-
   it("L2: clipboard integrity under contention + 100% delivery at realistic interval", async ({ skip }) => {
     if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
     const title = sh!.title;
@@ -113,7 +100,6 @@ describe("[bash@wsl-ssh] terminal action=send console-paste — LOAD/STRESS gate
     // conhost's read) — the same property the shipped action=run exit-mode path
     // has. An aggressive 15ms write-hammer is PATHOLOGICAL: it drops a fraction of
     // sends (observed ~14/20). That is logged as an observation below, NOT gated.
-
     // (ii) Realistic interval (250ms — far more aggressive than real clipboard
     // managers, which mostly POLL/read) → require 100% delivery.
     const realisticHammer = execFile("powershell.exe",
@@ -132,10 +118,8 @@ describe("[bash@wsl-ssh] terminal action=send console-paste — LOAD/STRESS gate
     } finally {
       realisticHammer.kill();
     }
-    // eslint-disable-next-line no-console
     console.log(`[L2] realistic-250ms-hammer delivered=${delivered}/15`);
     expect(delivered).toBe(15); // 100% at a realistic contention interval
-
     await sleep(150);
     // (i) Clipboard integrity: our pasted command text must NOT persist on the
     // clipboard (saved/restored across the paste). No CPL2 marker may remain.
@@ -143,7 +127,6 @@ describe("[bash@wsl-ssh] terminal action=send console-paste — LOAD/STRESS gate
       ["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"], { timeout: 5000 });
     expect(stdout).not.toContain("CPL2_");
   }, 120_000);
-
   it("L3: large >1KB single-line payload delivers byte-intact", async ({ skip }) => {
     if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
     const title = sh!.title;
@@ -159,7 +142,6 @@ describe("[bash@wsl-ssh] terminal action=send console-paste — LOAD/STRESS gate
     // The full payload (marker + 1300 X's + END) must appear contiguous — no drop.
     expect(text).toContain(`${marker}_${big}_END`);
   }, 60_000);
-
   it("L5: no window-count growth across a burst (coarse leak check)", async ({ skip }) => {
     if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
     const title = sh!.title;

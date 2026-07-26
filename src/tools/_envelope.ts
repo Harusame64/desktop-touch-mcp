@@ -657,7 +657,7 @@ function mergeFlatField(schemas: z.ZodTypeAny[]): z.ZodTypeAny {
     if (firstDesc) mergedEnum = mergedEnum.describe(firstDesc);
     return mergedEnum.optional();
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   return z.union(bases as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]).optional();
 }
 

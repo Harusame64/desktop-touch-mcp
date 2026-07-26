@@ -25,10 +25,8 @@
  * so a Linux / minimal CI environment skips cleanly instead of failing at
  * module load (Codex PR #290 Round 1 P1).
  */
-
 import { describe, it, expect, beforeAll } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
 const FLATTENED_TOOLS = [
   "scroll",
   "keyboard",
@@ -38,21 +36,16 @@ const FLATTENED_TOOLS = [
   "terminal",
   "clipboard",
 ] as const;
-
 interface ListedTool {
   name: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   inputSchema?: any;
 }
-
 describe.skipIf(process.platform !== "win32")(
   "ADR-018 Phase 2a — tools/list inputSchema CI gate",
   () => {
     let tools: ListedTool[] = [];
-
     beforeAll(async () => {
       const s = new McpServer({ name: "tools-list-schema-test", version: "0" });
-
       // Mirror server-windows.ts::createMcpServer registration list (the
       // failsafe wrapper + tray + transport are not needed for a tools/list dump).
       const regs: Array<[string, string]> = [
@@ -89,8 +82,6 @@ describe.skipIf(process.platform !== "win32")(
       } catch {
         /* v2 module optional in some envs */
       }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const handler = (s.server as any)._requestHandlers.get("tools/list");
       const res = await handler(
         { method: "tools/list", params: {} },
@@ -98,7 +89,6 @@ describe.skipIf(process.platform !== "win32")(
       );
       tools = res.tools as ListedTool[];
     });
-
     it("registers the full public tool surface", () => {
       // The server registers ~32 tools (30 stub catalog incl. ADR-026 Phase 3
       // screenshot_query/screenshot_gc + ADR-014 key_locker, + 2 v2; V1 fallbacks
@@ -106,7 +96,6 @@ describe.skipIf(process.platform !== "win32")(
       // regression dropping a tool family.
       expect(tools.length).toBeGreaterThanOrEqual(30);
     });
-
     it("registers the ADR-026 Phase 3 disk-cache tools by name (catches a registration drop a >= bound would miss)", () => {
       // A loose `>=` count can't tell which tool went missing; assert the two new
       // maintenance tools explicitly (ADR-026 AC6).
@@ -114,14 +103,12 @@ describe.skipIf(process.platform !== "win32")(
       expect(names.has("screenshot_query"), "screenshot_query registered").toBe(true);
       expect(names.has("screenshot_gc"), "screenshot_gc registered").toBe(true);
     });
-
     it("NO registered tool has empty `properties` (server-wide top-level-union regression guard)", () => {
       const empty = tools
         .filter((t) => Object.keys(t.inputSchema?.properties ?? {}).length === 0)
         .map((t) => t.name);
       expect(empty).toEqual([]);
     });
-
     it("NO registered tool has a TOP-LEVEL oneOf/anyOf/allOf (Anthropic API rejects those)", () => {
       const bad = tools
         .filter(
@@ -133,7 +120,6 @@ describe.skipIf(process.platform !== "win32")(
         .map((t) => t.name);
       expect(bad).toEqual([]);
     });
-
     it("each of the 7 flattened tools exposes non-empty `properties` with an `action` enum", () => {
       for (const name of FLATTENED_TOOLS) {
         const tool = tools.find((t) => t.name === name);
@@ -146,7 +132,6 @@ describe.skipIf(process.platform !== "win32")(
         expect(action!.enum!.length, `${name}.action enum non-empty`).toBeGreaterThan(0);
       }
     });
-
     it("terminal.until — a nested z.discriminatedUnion — renders as a PROPERTY-LEVEL oneOf, intact (ADR-018 §3 G2a #6)", () => {
       const terminal = tools.find((t) => t.name === "terminal");
       expect(terminal).toBeDefined();
