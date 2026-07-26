@@ -77,6 +77,16 @@ describe("Phase 7 F3: SpawnFailed typed code", () => {
     // violated. No src producer emits this wrapper shape today — the arm
     // position and this pin are defense-in-depth for future compositions
     // (e.g. a `CDP:`-style prefix around an inner message).
+    //
+    // Round 10 boundary note: this pin is an INTENT ANCHOR that the
+    // machine-generated cascade invariant
+    // (classify-cascade-order-invariant.test.ts) deliberately does not
+    // replace. "spawnfailed" and "window not found" have no containment
+    // relation, so a swap of the two arms re-derives as a self-consistent
+    // order under the source-extracted invariant (measured in the Round 10
+    // mutation run: the invariant stayed green while THIS test failed).
+    // Non-containment precedence intent can only be pinned by a hand-written
+    // expectation like this one — keep it.
     const err = new Error(`workspace_launch: SpawnFailed: Command "x.exe" not found. some window not found context appended`);
     const result = failWith(err, "workspace_launch");
     const body = JSON.parse(result.content[0]!.text);

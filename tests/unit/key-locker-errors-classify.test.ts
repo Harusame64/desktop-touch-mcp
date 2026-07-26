@@ -36,13 +36,13 @@ describe("KeyLocker manager typed-error wiring (classify + SUGGESTS)", () => {
 
   it("KeyLockerDisabled is not swallowed by a generic branch (checked before them)", () => {
     // Its message would otherwise fall through to the generic ToolError tail with an empty suggest.
-    // The leading form resolves at the declared-code arm; the wrapper-prefixed shape is the one
-    // that reaches the substring cascade and exercises the KeyLocker arm placement (no src
-    // producer emits that wrapper today; defense-in-depth).
-    for (const message of ["KeyLockerDisabled: off via env", "wrapped: KeyLockerDisabled: off via env"]) {
-      const body = JSON.parse(failWith(new Error(message), "key_locker").content[0]!.text);
-      expect(body.code, message).toBe("KeyLockerDisabled");
-      expect(body.suggest.length).toBeGreaterThan(0);
-    }
+    // This pins the production message shape end-to-end (leading form, resolved at the declared-code
+    // arm). The cascade-arm placement itself — including "keylockerspawnfailed" ⊃ "spawnfailed"
+    // shadowing — is machine-pinned by classify-cascade-order-invariant.test.ts, which Round 10
+    // introduced after a hand-written "wrapped:" variant here turned out to carry no competing
+    // keyword and therefore pinned nothing (Codex round 9).
+    const body = JSON.parse(failWith(new Error("KeyLockerDisabled: off via env"), "key_locker").content[0]!.text);
+    expect(body.code).toBe("KeyLockerDisabled");
+    expect(body.suggest.length).toBeGreaterThan(0);
   });
 });

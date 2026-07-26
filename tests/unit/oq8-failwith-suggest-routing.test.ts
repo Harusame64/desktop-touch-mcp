@@ -16,10 +16,15 @@
  * hole of the same class, whose message tail is a snake_case step reason that
  * the generic timeout arm WOULD poach in the shapes that reach the substring
  * cascade. Since Codex round 8 the production leading `<Code>:` form resolves
- * at the declared-code arm at the TOP of classify(), so the cascade-ordering
- * pins below feed wrapper-prefixed variants — the shape that still falls
- * through to the substring arms (no src producer emits it today;
- * defense-in-depth).
+ * at the declared-code arm at the TOP of classify().
+ *
+ * Division of labor since Round 10: the cascade ARM ORDERING itself is
+ * machine-pinned by classify-cascade-order-invariant.test.ts (literals and
+ * their order extracted from the classify source). This file pins what that
+ * invariant cannot know: the PRODUCTION strings — derived from the producer
+ * sources where they are composed there — classify end-to-end to their code
+ * with root advice, and their prose stays free of generic keywords (wording
+ * tripwires on the wrapper-prefixed cascade shape).
  */
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
@@ -29,23 +34,46 @@ import { failWith } from "../../src/tools/_errors.js";
 const render = (message: string, context?: Record<string, unknown>) =>
   JSON.parse(failWith(new Error(message), "t", context).content[0]!.text);
 
+// ── Production-string derivation (Codex round 9) ────────────────────────────
+// A hand-copied producer string does not follow production wording drift: the
+// old test hard-coded the two mouse.ts drag messages, so rewording the
+// producer would have left the tripwire pinning a string no code emits. The
+// messages are now read out of the producer source instead — the
+// TabDragBlocked string verbatim, the CrossWindowDragBlocked template with
+// its `${…}` interpolations instantiated to the `?? "desktop"` fallback both
+// carry. If mouse.ts stops building the messages in these shapes, the
+// extraction fails loudly; if it rewords them, the tripwires below re-run
+// against the NEW wording automatically.
+const SRC_ROOT = join(import.meta.dirname, "..", "..", "src");
+const mouseSrc = readFileSync(join(SRC_ROOT, "tools", "mouse.ts"), "utf8");
+
+const tabDragMessage = (): string => {
+  const m = /new Error\("(TabDragBlocked: [^"]*)"\)/.exec(mouseSrc);
+  expect(m, "mouse.ts no longer builds the TabDragBlocked message as a plain string literal").not.toBeNull();
+  return m![1]!;
+};
+
+const crossWindowDragMessage = (): string => {
+  const m = /`(CrossWindowDragBlocked: [^`]*)` \+\s*`([^`]*)`/.exec(mouseSrc);
+  expect(m, "mouse.ts no longer builds the CrossWindowDragBlocked message from two template chunks").not.toBeNull();
+  return (m![1]! + m![2]!).replace(/\$\{[^}]*\}/g, "desktop");
+};
+
 describe("OQ8 — codes that used to fall through to ToolError", () => {
   const cases: [string, string][] = [
+    // The bare-code forms are the EXACT production messages (pinned against
+    // the producer sources in the companion test below).
     ["ForegroundFlashRequiresTarget", "ForegroundFlashRequiresTarget"],
     ["ForegroundFlashUnsupported", "ForegroundFlashUnsupported"],
-    // The two mouse_drag messages are the EXACT production strings. As
-    // leading `<Code>:` forms they resolve at the declared-code arm — this
-    // it.each pins the end-to-end production behavior; the wording-caution
-    // tripwire for the substring cascade lives in the wrapper-prefixed
-    // variants below.
-    ["TabDragBlocked", "TabDragBlocked: drag starts in the tab-strip area of a tabbed application"],
-    [
-      "CrossWindowDragBlocked",
-      "CrossWindowDragBlocked: start hwnd=131074 → end hwnd=desktop. " +
-        "Pass allowCrossWindowDrag:true to confirm intent (e.g. for desktop range selection).",
-    ],
+    // The two mouse_drag messages are DERIVED from mouse.ts above. As leading
+    // `<Code>:` forms they resolve at the declared-code arm — this it.each
+    // pins the end-to-end production behavior; the wording tripwire for the
+    // substring cascade lives in the wrapper-prefixed variants below.
+    ["TabDragBlocked", tabDragMessage()],
+    ["CrossWindowDragBlocked", crossWindowDragMessage()],
     // OQ8 follow-up (sixth hole): flash paste sequence failure. The producers
-    // append the snake_case step reason to the message.
+    // append the snake_case step reason (`bg-input.ts` KNOWN_FLASH_REASONS)
+    // to the message.
     ["ForegroundFlashFailed", "ForegroundFlashFailed: foreground_steal_denied"],
   ];
 
@@ -56,38 +84,49 @@ describe("OQ8 — codes that used to fall through to ToolError", () => {
     expect(body.suggest.length).toBeGreaterThan(0);
   });
 
-  // The wording-caution tripwire (classify arm comment, "keep the messages
-  // title-free"): the shapes that REACH the substring cascade are the ones a
-  // generic "window not found" / "timeout" arm could poach, and a leading
-  // `<Code>:` form never reaches it (declared-code arm). `CDP:` is the one
-  // real prefix-composing producer shape in src (cdp-bridge.ts) and is not a
-  // SUGGESTS key, so it falls through the declared-code arm — these variants
-  // fail if the family arms move below the generic arms OR if the production
-  // prose ever grows a phrase a generic arm matches. No src producer
-  // composes a wrapper around these codes today (defense-in-depth).
-  it.each(cases)("%s still classifies through the substring cascade under a wrapper prefix", (code, message) => {
+  // The bare-code / template message shapes fed above must be what the
+  // producers actually emit, or the it.each pins a fiction (same drift class
+  // as the hard-coded mouse.ts strings Codex round 9 flagged).
+  it("the pinned message shapes exist verbatim in their producers", () => {
+    const keyboardSrc = readFileSync(join(SRC_ROOT, "tools", "keyboard.ts"), "utf8");
+    const terminalSrc = readFileSync(join(SRC_ROOT, "tools", "terminal.ts"), "utf8");
+    expect(keyboardSrc).toContain('new Error("ForegroundFlashRequiresTarget")');
+    expect(keyboardSrc).toContain('new Error("ForegroundFlashUnsupported")');
+    expect(terminalSrc).toContain('new Error("ForegroundFlashUnsupported")');
+    expect(keyboardSrc).toContain("`ForegroundFlashFailed: ${");
+    expect(terminalSrc).toContain("`ForegroundFlashFailed: ${");
+    // The reason token fed above is a registered flash reason, not an invention.
+    const bgInputSrc = readFileSync(join(SRC_ROOT, "engine", "bg-input.ts"), "utf8");
+    expect(bgInputSrc).toContain('"foreground_steal_denied"');
+  });
+
+  // PRODUCTION-WORDING TRIPWIRE, not an ordering pin (Codex round 9 measured
+  // that for every case except ForegroundFlashFailed, neutralizing the code
+  // token leaves no competing generic keyword — so these variants never
+  // verified arm ORDER; the cascade arm placement and its containment
+  // constraints are machine-pinned by
+  // classify-cascade-order-invariant.test.ts). What they DO pin: these arms
+  // sit BELOW the generic "window not found" / "timeout" arms, so the one
+  // discipline protecting a cascade-reaching shape is the producer prose
+  // staying free of generic keywords ("keep the messages title-free", classify
+  // arm comment). Because the drag messages are derived from mouse.ts above,
+  // the moment production prose grows such a phrase, the wrapped variant here
+  // classifies to the generic code and fails. `CDP:` is the one real
+  // prefix-composing producer shape in src (cdp-bridge.ts) and is not a
+  // SUGGESTS key, so it falls through the declared-code arm into the cascade
+  // (no src producer composes it around these codes today; defense-in-depth).
+  it.each(cases)("%s wording stays free of generic keywords under a wrapper prefix", (code, message) => {
     const body = render(`CDP: ${message}`);
     expect(body.code).toBe(code);
     expect(body.suggest.length).toBeGreaterThan(0);
   });
 
-  // The producers write `ForegroundFlash…` messages for five different codes.
-  // None of the matched substrings is contained in another (e.g.
-  // `foregroundflashunsupported` is NOT a substring of
-  // `foregroundflashnotapplicableto*`), so the arms are order-independent
-  // within the family — this pins that every member still resolves to itself
-  // if the wordings or arm order ever change.
-  it("each foreground-flash code classifies to itself (no substring containment in the family)", () => {
-    expect(render("ForegroundFlashNotApplicableToKeyPress").code).toBe(
-      "ForegroundFlashNotApplicableToKeyPress",
-    );
-    expect(render("ForegroundFlashNotApplicableToSequence").code).toBe(
-      "ForegroundFlashNotApplicableToSequence",
-    );
-    expect(render("ForegroundFlashRequiresTarget").code).toBe("ForegroundFlashRequiresTarget");
-    expect(render("ForegroundFlashUnsupported").code).toBe("ForegroundFlashUnsupported");
-    expect(render("ForegroundFlashFailed: unknown").code).toBe("ForegroundFlashFailed");
-  });
+  // (Round 10) The hand-written "each foreground-flash code classifies to
+  // itself" sweep that used to live here was redundant three ways over: the
+  // bare and `<Code>: tail` shapes are pinned for every SUGGESTS key by the
+  // dictionary round-trip invariant below, and the family's no-containment
+  // fact plus cascade-shape routing are machine-pinned by the literal
+  // uniqueness + self-routing rules in classify-cascade-order-invariant.test.ts.
 
   // The `ForegroundFlashFailed` arm sits BEFORE the generic arms because its
   // message tail is an arbitrary snake_case reason: `focus_wait_timeout`

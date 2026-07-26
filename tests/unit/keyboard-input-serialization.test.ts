@@ -202,7 +202,7 @@ describe("keyboard(action='sequence') — issue #257 contract pins", () => {
     expect(headPressEnds).toBe(2);   // each finished inside the lock
   });
 
-  // ── Pin 2: classify() routes the typed code in both message shapes ─────────
+  // ── Pin 2: classify() routes the typed code end-to-end ─────────────────────
   it("classify() routes MenuFocusLostMidSequence to its typed code, not ToolError", () => {
     // The production leading `<Code>:` form resolves at classify()'s
     // declared-code arm (Codex round 8) — this pins the end-to-end behavior.
@@ -216,19 +216,13 @@ describe("keyboard(action='sequence') — issue #257 contract pins", () => {
 
     // Verify the failure envelope text encodes the typed code, not the
     // generic ToolError. ToolFailure shape: content[0].text is a JSON string.
+    // (The cascade-arm reachability of "menufocuslostmidsequence" itself —
+    // the wrapper-prefixed shape — is machine-pinned by the literal
+    // self-routing rule in classify-cascade-order-invariant.test.ts; the
+    // hand-written wrapped variant that used to live here carried no
+    // competing keyword, so it pinned nothing beyond that — Round 10.)
     const text = (failure.content?.[0] as { text?: string })?.text ?? "";
     expect(text).toMatch(/"code":\s*"MenuFocusLostMidSequence"/);
-
-    // A wrapper-prefixed shape is what actually reaches the substring cascade
-    // arm (the declared-code arm cannot match a lowercase prefix) — proof
-    // that the cascade arm itself still routes (no src producer emits this
-    // wrapper today; defense-in-depth).
-    const wrapped = failWith(
-      new Error("wrapped: MenuFocusLostMidSequence: focus left target before step 1"),
-      "keyboard:sequence",
-    );
-    const wrappedText = (wrapped.content?.[0] as { text?: string })?.text ?? "";
-    expect(wrappedText).toMatch(/"code":\s*"MenuFocusLostMidSequence"/);
   });
 
   // ── Pin 3: macro pre-validate scans steps[].keys ────────────────────────────
