@@ -29,7 +29,7 @@ const NOTIFY_TIMEOUT_MS = 1000;
 
 /** Exported for the balloon-length guard test (titles only carry 63 characters — see `balloon.ts`). */
 export const EXIT_BALLOON_TITLE = "desktop-touch-mcp: emergency stop";
-/** Exported for the balloon-length guard test (`NotifyIcon` rejects bodies over 255 chars). */
+/** Exported for the balloon-length guard test (`NotifyIcon` silently truncates past 255 — see `balloon.ts`). */
 export function exitBalloonBody(holdMs: number): string {
   return (
     "Failsafe triggered while an operation was running: the mouse stayed in the top-left corner " +
