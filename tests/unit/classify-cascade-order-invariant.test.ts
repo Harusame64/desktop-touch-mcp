@@ -1,8 +1,10 @@
 /**
  * classify-cascade-order-invariant.test.ts — Round 10: machine-generated
  * cascade-order invariant for `_errors.ts::classify()`. Round 11 (Codex P2):
- * compound (`&&`) arms are modeled instead of skipped — see the modeling
- * notes below.
+ * compound (`&&`) arms are modeled instead of skipped. Round 14 (Codex P2):
+ * the extraction is an AST walk of the WHOLE classify() body (TypeScript
+ * compiler API), not a regex over a marker-delimited region — see the
+ * modeling notes below.
  *
  * Why this exists: rounds 7-9 kept hand-writing "collision" strings to pin the
  * substring-arm ordering (BrowserSearchTimeout above UiaTimeout,
@@ -76,12 +78,37 @@
  * shape-pinned; wrapper-immune disjuncts → dropped AND ownership-pinned AND
  * behaviorally pinned on their own messages (Round 13 closed this, the last
  * unpinned drop); any other syntax → bail.
- *   - Conditions are parsed by a tiny tokenizer + recursive-descent parser
- *     into disjunctive normal form: each arm becomes a list of FIRING SETS,
- *     where a set fires iff every token in it is present. `a || b` yields
- *     {a},{b}; `a && (b || c)` yields {a,b},{a,c}. Compound arms therefore
- *     participate in every rule below. Round 11 (Codex P2): the previous
- *     version skipped `&&` conditions wholesale, so grafting an independent
+ *   - Round 14 (Codex P2, measured): the previous extraction was a regex +
+ *     hand-rolled tokenizer over a marker-delimited source region, and its
+ *     completeness guarantee was five REGEX COUNTS agreeing — a guarantee
+ *     that only held for the formatting the regexes assumed. A tail arm
+ *     written as `} else if (m.endsWith("legacy condition")) return
+ *     classify("disabled");` has no line-leading `if`, no line-leading
+ *     `return`, and no `return {` — it slipped past the arm regex AND all
+ *     five counts, 8/8 green, while production rerouted the message. The
+ *     extraction is now an AST WALK of classify() via the TypeScript
+ *     compiler API: the PARSER enumerates every statement, so formatting can
+ *     hide nothing, and the five counts are retired. What replaces them is a
+ *     total statement model — every statement of the classify body is either
+ *     (a) one of the four frame shapes, exact-pinned by position and shape
+ *     (the `const declared` + declared-code guard arm, `const m =
+ *     message.toLowerCase()`, the `const leadingCode` + leading-code guard
+ *     arm, the final `return { code: "ToolError" … }`; the two guard arms'
+ *     ROUTING behavior is separately pinned end-to-end by oq8's dictionary
+ *     round-trip + adversarial-tail invariants), or (b) a cascade `if` /
+ *     `else if` chain link captured as an arm (flattening is sound because
+ *     every arm body is proven to be a lone return), or (c) a loud bail:
+ *     unmodeled statement kinds (switch / for / a stray declaration), else
+ *     branches that are not another `if`, arm bodies that are not a single
+ *     `return { code: "…" }` object literal of plain properties (a spread
+ *     could override `code` at runtime), and condition expressions outside
+ *     the modeled grammar all fail the extraction by name.
+ *   - Conditions are turned into disjunctive normal form from the AST
+ *     expression nodes: each arm becomes a list of FIRING SETS, where a set
+ *     fires iff every token in it is present. `a || b` yields {a},{b};
+ *     `a && (b || c)` yields {a,b},{a,c}. Compound arms therefore participate
+ *     in every rule below. Round 11 (Codex P2): the pre-DNF version skipped
+ *     `&&` conditions wholesale, so grafting an independent
  *     `|| m.includes("browser offline")` disjunct onto the BrowserNotConnected
  *     arm sailed through every check — measured before this fix; the same
  *     mutation now fails the compound-shape pin below.
@@ -93,10 +120,12 @@
  *     must fail here and force an explicit decision.
  *   - `m.startsWith("guard failed")` and `m === "disabled"`: wrapper-immune
  *     predicates (mechanically asserted in the preconditions — WRAP defeats
- *     both), accepted by the tokenizer ONLY in exactly these two spellings and
- *     ONLY as a whole disjunct; any other non-includes predicate, or an
- *     immune predicate conjoined into a `&&` set (where dropping it would
- *     silently erase the set from the model), fails the extraction loudly.
+ *     both), accepted by the condition walk ONLY in exactly these two shapes
+ *     and ONLY as a whole disjunct; any other non-includes predicate (any
+ *     other startsWith argument included — that closes Round 12's mutation C
+ *     at the grammar, not at a count), or an immune predicate conjoined into
+ *     a `&&` set (where dropping it would silently erase the set from the
+ *     model), fails the extraction loudly.
  *     Round 13 (Codex P2, measured): dropping the whole disjunct SILENTLY was
  *     itself a hole — grafting `|| m === "disabled"` onto the
  *     BrowserNotConnected arm (which already owns reachable firing sets) kept
@@ -105,31 +134,30 @@
  *     disjuncts are therefore RECORDED per arm and exact-pinned to their
  *     owner arm in the preconditions, plus routed end-to-end on the very
  *     messages WRAP cannot synthesize ("disabled", "guard failed …").
- *   - Tokenizer churn caution: the tokenizer has no comment syntax, so a
- *     comment written INSIDE an arm's condition parentheses is "unmodeled
- *     predicate syntax" and bails the whole suite. Deliberate strictness — a
- *     comment could hide an unmodeled predicate from the model — but it means
- *     future classify() edits must keep comments on the lines ABOVE the
- *     `if`, never inside the condition expression.
- *   - Extraction completeness is five counts over the region agreeing (arm
- *     regex, `return { code:`, `return {`, line-leading `return`, line-leading
- *     `if (`). Round 12 (mutation C, measured): a TAIL arm returning something
- *     other than an object literal — `return classify(…)`, a helper
- *     delegation, a constant — slipped through the first three counts and
- *     every rule below; the two line-anchored statement counts now catch it
- *     (mid-region the arm regex swallows the next arm's condition and the
- *     tokenizer bails, so the tail was the silent position). KNOWN LIMIT: an
- *     arm added OUTSIDE the region — above `const m = message.toLowerCase();`
- *     or below the `const leadingCode` marker — is invisible to every count
- *     here in principle; the two boundary markers are the trust anchor, and
- *     moving them moves what this file can see.
+ *   - Comments: the AST discards them, so a comment anywhere — including
+ *     inside an arm's condition parentheses — can no longer hide anything
+ *     from the model. This retires Round 13's tokenizer-churn caution (the
+ *     string tokenizer had no comment syntax and bailed on them).
+ *   - TRUST ANCHOR, moved and shrunk (Round 14): Round 12's known limit was
+ *     that an arm added OUTSIDE the two string markers (`const m = …` /
+ *     `const leadingCode`) was invisible in principle. The walk now starts at
+ *     classify()'s FIRST statement and ends at its LAST, and every statement
+ *     is modeled, frame-pinned, or bailed — so for the classify body that
+ *     limit is RESOLVED: there is no position inside the function where a
+ *     statement can sit unseen. What remains out of view is routing done
+ *     OUTSIDE classify() — in failWith / errorFromMessage before classify
+ *     runs, or a hypothetical second classifier — plus the SUGGESTS table
+ *     contents themselves; the anchor is now the single FunctionDeclaration
+ *     named `classify` in _errors.ts (the extraction bails if that name
+ *     stops resolving to exactly one function with a body), and the seams
+ *     around it belong to the oq8 end-to-end suites.
  *   - Extraction is LAZY (memoized `getArms()`), invoked first by a dedicated
- *     named test: in Round 12 the counts ran at module scope, so a count break
- *     surfaced as a file-collection error ("no tests") instead of naming the
- *     broken count (measured in the mutation C run). A bail or count mismatch
- *     now fails that named test with the assertion message, and every later
- *     test re-runs the (cheap) extraction and fails too — the all-tests-fail
- *     property of module scope is kept without its diagnostics loss.
+ *     named test: in Round 12 it ran at module scope, so a break surfaced as
+ *     a file-collection error ("no tests") instead of naming what broke
+ *     (measured in the mutation C run). A bail now fails that named test with
+ *     the assertion message, and every later test re-runs the (cheap)
+ *     extraction and fails too — the all-tests-fail property of module scope
+ *     is kept without its diagnostics loss.
  *
  * Cost, measured at Round 11: 62 arms, 95 firing sets, 4,431 pairwise
  * messages; the whole file runs in ~0.6s (classify is pure string scanning),
@@ -138,6 +166,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { failWith } from "../../src/tools/_errors.js";
 
 const render = (message: string) =>
@@ -157,7 +186,6 @@ const WRAP = "wrapped: ";
 const SEP = " ~ ";
 
 type Atom = { kind: "lit"; value: string } | { kind: "immune"; src: string };
-type Tok = Atom | { kind: "open" | "close" | "and" | "or" };
 
 interface Arm {
   code: string;
@@ -181,182 +209,302 @@ function bail(message: string): never {
   throw new Error(`classify-cascade extraction: ${message}`);
 }
 
+/** Human-readable node kind for bail messages. */
+const kindName = (node: ts.Node): string => ts.SyntaxKind[node.kind] ?? String(node.kind);
+
 /**
- * Tokenize one arm condition. Every character must be consumed by a known
- * form — a new predicate shape (a regex test, a helper call, a renamed
- * variable) must be modeled or pinned HERE, explicitly, never silently
- * dropped. This is strictly stronger than Round 10's leftover check, which
- * never looked inside `&&` conditions at all.
+ * DNF of one arm condition, built from the AST expression nodes. Every node
+ * must be a known form — a new predicate shape (a regex test, a helper call,
+ * a renamed variable, a different `startsWith` argument) bails loudly, never
+ * silently drops. `&&` distributes as the cross product of the operand DNFs,
+ * so `a && (b || c)` becomes [{a,b},{a,c}]. `countLiteral` is invoked once
+ * per SOURCE literal (pre-cross-product), feeding the sanity floor.
  */
-function tokenizeCondition(condition: string, code: string): Tok[] {
-  const re =
-    /\s+|m\.includes\("([^"]+)"\)|m\.startsWith\("guard failed"\)|m === "disabled"|&&|\|\||\(|\)/y;
-  const toks: Tok[] = [];
-  let pos = 0;
-  while (pos < condition.length) {
-    re.lastIndex = pos;
-    const match = re.exec(condition);
-    if (!match) {
+function conditionToDnf(
+  expr: ts.Expression,
+  code: string,
+  sf: ts.SourceFile,
+  countLiteral: () => void,
+): Atom[][] {
+  if (ts.isParenthesizedExpression(expr)) {
+    return conditionToDnf(expr.expression, code, sf, countLiteral);
+  }
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    if (op === ts.SyntaxKind.BarBarToken) {
+      return [
+        ...conditionToDnf(expr.left, code, sf, countLiteral),
+        ...conditionToDnf(expr.right, code, sf, countLiteral),
+      ];
+    }
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      const left = conditionToDnf(expr.left, code, sf, countLiteral);
+      const right = conditionToDnf(expr.right, code, sf, countLiteral);
+      return left.flatMap((l) => right.map((r) => [...l, ...r]));
+    }
+    if (
+      op === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+      ts.isIdentifier(expr.left) &&
+      expr.left.text === "m" &&
+      ts.isStringLiteral(expr.right) &&
+      expr.right.text === "disabled"
+    ) {
+      // Canonical spelling, not getText(): the ownership pin below must stay
+      // formatting-independent too.
+      return [[{ kind: "immune", src: 'm === "disabled"' }]];
+    }
+    bail(
+      `unmodeled binary expression in the ${code} arm: ${expr.getText(sf).slice(0, 60)}`,
+    );
+  }
+  if (
+    ts.isCallExpression(expr) &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    ts.isIdentifier(expr.expression.expression) &&
+    expr.expression.expression.text === "m" &&
+    expr.arguments.length === 1 &&
+    ts.isStringLiteral(expr.arguments[0]!)
+  ) {
+    const method = expr.expression.name.text;
+    const arg = (expr.arguments[0] as ts.StringLiteral).text;
+    if (method === "includes") {
+      countLiteral();
+      return [[{ kind: "lit", value: arg }]];
+    }
+    if (method === "startsWith" && arg === "guard failed") {
+      return [[{ kind: "immune", src: 'm.startsWith("guard failed")' }]];
+    }
+    bail(`unmodeled predicate m.${method}(${JSON.stringify(arg)}) in the ${code} arm`);
+  }
+  bail(
+    `unmodeled ${kindName(expr)} in the ${code} arm condition: ${expr.getText(sf).slice(0, 60)}`,
+  );
+}
+
+/**
+ * The arm body must be a single `return { code: "…", … }` of plain property
+ * assignments; the string code is returned. `return classify(…)` (Round 12's
+ * mutation C, Round 14's mutation E), a helper delegation, a computed code, a
+ * spread that could override `code` at runtime, or extra statements all bail.
+ */
+function armReturnCode(body: ts.Statement, sf: ts.SourceFile): string {
+  let ret: ts.Statement = body;
+  if (ts.isBlock(ret)) {
+    if (ret.statements.length !== 1) {
       bail(
-        `unmodeled predicate syntax in the ${code} arm at ${JSON.stringify(condition.slice(pos, pos + 60))}`,
+        `an arm body must be a single return statement, got ${ret.statements.length} statements: ${ret.getText(sf).slice(0, 80)}`,
       );
     }
-    const text = match[0];
-    if (match[1] !== undefined) toks.push({ kind: "lit", value: match[1] });
-    else if (text.startsWith("m.") || text.startsWith("m ")) toks.push({ kind: "immune", src: text });
-    else if (text === "&&") toks.push({ kind: "and" });
-    else if (text === "||") toks.push({ kind: "or" });
-    else if (text === "(") toks.push({ kind: "open" });
-    else if (text === ")") toks.push({ kind: "close" });
-    // else: whitespace — skipped.
-    pos = re.lastIndex;
+    ret = ret.statements[0]!;
   }
-  return toks;
+  if (!ts.isReturnStatement(ret) || ret.expression === undefined) {
+    bail(`an arm body must be a return statement, got ${kindName(ret)}: ${ret.getText(sf).slice(0, 80)}`);
+  }
+  const obj = ret.expression;
+  if (!ts.isObjectLiteralExpression(obj)) {
+    bail(
+      `an arm must return an object literal, got ${kindName(obj)}: ${obj.getText(sf).slice(0, 80)}`,
+    );
+  }
+  let code: string | undefined;
+  for (const prop of obj.properties) {
+    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
+      bail(
+        `non-plain property in an arm return (a spread could override "code" at runtime): ${prop.getText(sf).slice(0, 80)}`,
+      );
+    }
+    if (prop.name.text === "code") {
+      if (!ts.isStringLiteral(prop.initializer)) {
+        bail(`an arm's code must be a string literal, got: ${prop.initializer.getText(sf).slice(0, 80)}`);
+      }
+      if (code !== undefined) bail(`duplicate code property in an arm return: ${obj.getText(sf).slice(0, 80)}`);
+      code = prop.initializer.text;
+    }
+  }
+  if (code === undefined) {
+    bail(`an arm return carries no code property: ${obj.getText(sf).slice(0, 80)}`);
+  }
+  return code;
+}
+
+/** Single-declaration `const <name> = …` matcher for the frame statements. */
+function singleConstNamed(s: ts.Statement | undefined, name: string): ts.VariableDeclaration | undefined {
+  if (s === undefined || !ts.isVariableStatement(s)) return undefined;
+  const decls = s.declarationList.declarations;
+  if (decls.length !== 1) return undefined;
+  const d = decls[0]!;
+  return ts.isIdentifier(d.name) && d.name.text === name ? d : undefined;
 }
 
 /**
- * Recursive-descent `expr := term (|| term)*; term := factor (&& factor)*;
- * factor := atom | ( expr )` → DNF. `&&` distributes as the cross product of
- * the operand DNFs, so `a && (b || c)` becomes [{a,b},{a,c}].
+ * `if (<name> && Object.hasOwn(SUGGESTS, <name>)) { return …; }` — the two
+ * frame guard arms (declared-code / leading-code). Only the frame SHAPE is
+ * pinned here, so nothing else can stand in their position; their ROUTING
+ * behavior is pinned end-to-end by oq8's dictionary round-trip and
+ * adversarial-tail invariants.
  */
-function parseFiringSets(toks: Tok[], code: string): Atom[][] {
-  let pos = 0;
-  const parseExpr = (): Atom[][] => {
-    let sets = parseTerm();
-    while (toks[pos]?.kind === "or") {
-      pos++;
-      sets = sets.concat(parseTerm());
+function expectSuggestsGuardArm(s: ts.Statement | undefined, name: string, sf: ts.SourceFile): void {
+  const shapeOk = ((): boolean => {
+    if (s === undefined || !ts.isIfStatement(s) || s.elseStatement !== undefined) return false;
+    const c = s.expression;
+    if (!ts.isBinaryExpression(c) || c.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken) {
+      return false;
     }
-    return sets;
-  };
-  const parseTerm = (): Atom[][] => {
-    let sets = parseFactor();
-    while (toks[pos]?.kind === "and") {
-      pos++;
-      const right = parseFactor();
-      sets = sets.flatMap((left) => right.map((r) => [...left, ...r]));
-    }
-    return sets;
-  };
-  const parseFactor = (): Atom[][] => {
-    const t = toks[pos];
-    if (t?.kind === "open") {
-      pos++;
-      const inner = parseExpr();
-      if (toks[pos]?.kind !== "close") bail(`unbalanced parentheses in the ${code} arm condition`);
-      pos++;
-      return inner;
-    }
-    if (t?.kind === "lit" || t?.kind === "immune") {
-      pos++;
-      return [[t]];
-    }
-    bail(`unexpected token in the ${code} arm condition`);
-  };
-  const sets = parseExpr();
-  if (pos !== toks.length) bail(`trailing tokens in the ${code} arm condition`);
-  return sets;
+    if (!ts.isIdentifier(c.left) || c.left.text !== name) return false;
+    const call = c.right;
+    if (!ts.isCallExpression(call) || call.arguments.length !== 2) return false;
+    const callee = call.expression;
+    if (!ts.isPropertyAccessExpression(callee)) return false;
+    if (!ts.isIdentifier(callee.expression) || callee.expression.text !== "Object") return false;
+    if (callee.name.text !== "hasOwn") return false;
+    const dict = call.arguments[0]!;
+    const key = call.arguments[1]!;
+    if (!ts.isIdentifier(dict) || dict.text !== "SUGGESTS") return false;
+    if (!ts.isIdentifier(key) || key.text !== name) return false;
+    const body = s.thenStatement;
+    return ts.isBlock(body) && body.statements.length === 1 && ts.isReturnStatement(body.statements[0]!);
+  })();
+  if (!shapeOk) {
+    bail(
+      `the ${name} frame arm is not in its pinned shape at: ${(s?.getText(sf) ?? "<missing>").slice(0, 80)}`,
+    );
+  }
 }
 
-/** Substring arms of classify(), parsed from the source in occurrence order. */
+/**
+ * Substring arms of classify(), walked from the AST in execution order. The
+ * walk covers the ENTIRE function body: frame statements are exact-pinned by
+ * position and shape, everything between `const m` and `const leadingCode`
+ * must be a cascade arm chain, and anything else bails (see the header).
+ */
 function extractCascade(): Arm[] {
   const src = readFileSync(
     join(import.meta.dirname, "..", "..", "src", "tools", "_errors.ts"),
     "utf8",
   );
-  // The substring cascade is everything between the lowercasing of the
-  // message and the trailing leading-code arm.
-  const start = src.indexOf("const m = message.toLowerCase();");
-  const end = src.indexOf("const leadingCode");
-  expect(start).toBeGreaterThan(-1);
-  expect(end).toBeGreaterThan(start);
-  const region = src.slice(start, end);
+  const sf = ts.createSourceFile("_errors.ts", src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const classifyDecls = sf.statements.filter(
+    (s): s is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(s) && s.name !== undefined && s.name.text === "classify",
+  );
+  if (classifyDecls.length !== 1 || classifyDecls[0]!.body === undefined) {
+    bail(
+      `the trust anchor broke: expected exactly one classify() declaration with a body, found ${classifyDecls.length}`,
+    );
+  }
+  const stmts = classifyDecls[0]!.body.statements;
+  const at = (idx: number): ts.Statement | undefined => stmts[idx];
 
+  // ── Frame head: `const declared` + its guard arm + `const m` — pinned by
+  // position AND shape, so no routing statement can hide above the cascade.
+  let i = 0;
+  if (singleConstNamed(at(i), "declared") === undefined) {
+    bail(`classify() must open with \`const declared = …\`, got: ${(at(i)?.getText(sf) ?? "<missing>").slice(0, 80)}`);
+  }
+  i += 1;
+  expectSuggestsGuardArm(at(i), "declared", sf);
+  i += 1;
+  // `const m = message.toLowerCase();` — the model's lowercase assumption is
+  // pinned structurally (a switch to a different normalization must bail).
+  const mInit = singleConstNamed(at(i), "m")?.initializer;
+  const mShapeOk =
+    mInit !== undefined &&
+    ts.isCallExpression(mInit) &&
+    mInit.arguments.length === 0 &&
+    ts.isPropertyAccessExpression(mInit.expression) &&
+    ts.isIdentifier(mInit.expression.expression) &&
+    mInit.expression.expression.text === "message" &&
+    mInit.expression.name.text === "toLowerCase";
+  if (!mShapeOk) {
+    bail(`expected \`const m = message.toLowerCase();\`, got: ${(at(i)?.getText(sf) ?? "<missing>").slice(0, 80)}`);
+  }
+  i += 1;
+
+  // ── The cascade: every statement until `const leadingCode` must be an arm
+  // chain — the parser enumerates them, so formatting can hide nothing.
   const arms: Arm[] = [];
   let literalTokenCount = 0;
-  for (const match of region.matchAll(
-    /if \(([\s\S]*?)\)\s*\{\s*return \{\s*code: "([A-Za-z0-9]+)"/g,
-  )) {
-    const condition = match[1]!;
-    const code = match[2]!;
-    const toks = tokenizeCondition(condition, code);
-    literalTokenCount += toks.filter((t) => t.kind === "lit").length;
-
-    const sets: string[][] = [];
-    const immune: string[] = [];
-    for (const set of parseFiringSets(toks, code)) {
-      const immuneAtom = set.find(
-        (a): a is Extract<Atom, { kind: "immune" }> => a.kind === "immune",
-      );
-      if (immuneAtom) {
-        // A wrapper-immune predicate may only stand as a WHOLE disjunct: WRAP
-        // defeats it (asserted mechanically in the preconditions), so the
-        // disjunct contributes nothing to wrapper-reachable routing and is
-        // dropped from `sets`. Conjoined with literals it would erase those
-        // literals from the model too — that shape must be decided here, not
-        // vanish. Round 13 (Codex P2): the drop itself is RECORDED, never
-        // silent — the ownership precondition exact-pins where each immune
-        // disjunct may live, so grafting one onto any other arm (a real
-        // production routing change, measured) fails loudly there.
-        if (set.length !== 1) {
-          bail(`immune predicate conjoined with other predicates in the ${code} arm`);
-        }
-        immune.push(immuneAtom.src);
-        continue;
-      }
-      sets.push(
-        set.map((a) => {
-          if (a.kind !== "lit") bail("unreachable: immune atoms are handled above");
-          return a.value;
-        }),
-      );
+  const countLiteral = (): void => {
+    literalTokenCount += 1;
+  };
+  for (; i < stmts.length && singleConstNamed(at(i), "leadingCode") === undefined; i += 1) {
+    const stmt = at(i)!;
+    if (!ts.isIfStatement(stmt)) {
+      bail(`unmodeled ${kindName(stmt)} inside the cascade: ${stmt.getText(sf).slice(0, 80)}`);
     }
-    // An arm whose every disjunct dropped would be invisible to every rule
-    // below — silent omission, the one unacceptable bug.
-    if (sets.length === 0) bail(`the ${code} arm has no wrapper-reachable firing set`);
-    arms.push({ code, sets, immune, condition });
+    // Flatten the if / else-if chain: because every arm body is proven to be
+    // a lone return, `else if` is semantically identical to a sequential
+    // `if` — and an else branch that is NOT another if (a block, a bare
+    // statement, a delegation) is unmodeled and bails.
+    let link: ts.Statement | undefined = stmt;
+    while (link !== undefined) {
+      if (!ts.isIfStatement(link)) {
+        bail(`unmodeled else branch (${kindName(link)}) in the cascade: ${link.getText(sf).slice(0, 80)}`);
+      }
+      const code = armReturnCode(link.thenStatement, sf);
+      const sets: string[][] = [];
+      const immune: string[] = [];
+      for (const set of conditionToDnf(link.expression, code, sf, countLiteral)) {
+        const immuneAtom = set.find(
+          (a): a is Extract<Atom, { kind: "immune" }> => a.kind === "immune",
+        );
+        if (immuneAtom) {
+          // A wrapper-immune predicate may only stand as a WHOLE disjunct:
+          // WRAP defeats it (asserted mechanically in the preconditions), so
+          // the disjunct contributes nothing to wrapper-reachable routing and
+          // is dropped from `sets`. Conjoined with literals it would erase
+          // those literals from the model too — that shape must be decided
+          // here, not vanish. Round 13 (Codex P2): the drop itself is
+          // RECORDED, never silent — the ownership precondition exact-pins
+          // where each immune disjunct may live, so grafting one onto any
+          // other arm (a real production routing change, measured) fails
+          // loudly there.
+          if (set.length !== 1) {
+            bail(`immune predicate conjoined with other predicates in the ${code} arm`);
+          }
+          immune.push(immuneAtom.src);
+          continue;
+        }
+        sets.push(
+          set.map((a) => {
+            if (a.kind !== "lit") bail("unreachable: immune atoms are handled above");
+            return a.value;
+          }),
+        );
+      }
+      // An arm whose every disjunct dropped would be invisible to every rule
+      // below — silent omission, the one unacceptable bug.
+      if (sets.length === 0) bail(`the ${code} arm has no wrapper-reachable firing set`);
+      arms.push({ code, sets, immune, condition: link.expression.getText(sf) });
+      link = link.elseStatement;
+    }
   }
 
-  // ── Extraction completeness — a silent miss is the one unacceptable bug ──
-  // Every `return { code: "…"` in the region must belong to a captured arm. An
-  // arm whose body is not an immediate return would glue two arms into one
-  // condition group and break this count.
-  const returnCount = [...region.matchAll(/return \{\s*code: "/g)].length;
-  expect(arms.length, "every cascade return must be captured as an arm").toBe(returnCount);
-  // …and every `return {` must be that string-literal-code shape: a
-  // `return { code: someConst }` arm would be invisible to BOTH counts above,
-  // a symmetric blind spot (Round 11 sweep).
-  const returnBraceCount = [...region.matchAll(/return \{/g)].length;
-  expect(
-    returnBraceCount,
-    'every return in the region must be the `return { code: "…" }` shape',
-  ).toBe(returnCount);
-  // …and both brace-shaped counts must equal the STATEMENT-level counts: a
-  // TAIL arm that returns something other than an object literal
-  // (`return classify(…)`, `return SOME_CONST;`, a helper call) matches
-  // neither the arm regex nor either `return {` count — measured in Round 12
-  // (mutation C): such a tail arm sailed through all three counts above and
-  // every rule below, 6/6 green. Line-anchored statement counts see every
-  // `return` / `if (` the region contains, whatever the body shape. (The
-  // anchors must be line-leading: a bare /\breturn\b/ would also count prose
-  // inside comments.) See the header for the remaining out-of-region limit.
-  const lineReturnCount = [...region.matchAll(/^\s*return\b/gm)].length;
-  expect(
-    lineReturnCount,
-    "every line-leading return in the region must be a captured arm's `return { code: … }`",
-  ).toBe(returnCount);
-  const lineIfCount = [...region.matchAll(/^\s*if \(/gm)].length;
-  expect(
-    lineIfCount,
-    "every line-leading `if (` in the region must open a captured arm",
-  ).toBe(arms.length);
-  // Every `m.includes(` in the region must have been captured as a literal
-  // token (counted pre-DNF, since the cross product duplicates literals).
-  const includesCount = [...region.matchAll(/m\.includes\(/g)].length;
-  expect(literalTokenCount, "every m.includes literal must be captured").toBe(includesCount);
+  // ── Frame tail: `const leadingCode` + its guard arm + the ToolError
+  // fallback — pinned by position AND shape, and nothing may follow.
+  if (i >= stmts.length) {
+    bail("the `const leadingCode` frame marker is missing from classify()");
+  }
+  i += 1; // the leadingCode declaration itself — routing pinned by oq8's adversarial-tail invariants.
+  expectSuggestsGuardArm(at(i), "leadingCode", sf);
+  i += 1;
+  const fallback = at(i);
+  if (fallback === undefined || !ts.isReturnStatement(fallback)) {
+    bail(
+      `classify() must end with the ToolError fallback return, got: ${(fallback?.getText(sf) ?? "<missing>").slice(0, 80)}`,
+    );
+  }
+  const fallbackCode = armReturnCode(fallback, sf);
+  if (fallbackCode !== "ToolError") {
+    bail(`the fallback return's code is ${JSON.stringify(fallbackCode)}, expected "ToolError"`);
+  }
+  i += 1;
+  if (i !== stmts.length) {
+    bail(`unmodeled trailing statement after the ToolError fallback: ${at(i)!.getText(sf).slice(0, 80)}`);
+  }
 
   // Sanity floors (62 arms / 96 literal tokens at Round 11): a drastic drop
-  // means the arm regex stopped matching the source shape.
+  // means the walk landed on the wrong function, not that the cascade shrank.
   expect(arms.length).toBeGreaterThanOrEqual(55);
   expect(literalTokenCount).toBeGreaterThanOrEqual(80);
 
@@ -364,12 +512,12 @@ function extractCascade(): Arm[] {
 }
 
 /**
- * Lazy + memoized extraction: Round 12 ran this at module scope, so a bail or
- * a completeness-count break failed the FILE COLLECTION ("no tests") instead
- * of naming what broke. Called first from the dedicated extraction test below;
- * a failure re-throws in every later test too (extraction is ~ms, so the
- * unmemoized failure path costs nothing), keeping the everything-fails
- * property without the diagnostics loss.
+ * Lazy + memoized extraction: Round 12 ran this at module scope, so a bail
+ * failed the FILE COLLECTION ("no tests") instead of naming what broke.
+ * Called first from the dedicated extraction test below; a failure re-throws
+ * in every later test too (extraction is ~ms, so the unmemoized failure path
+ * costs nothing), keeping the everything-fails property without the
+ * diagnostics loss.
  */
 let extracted: Arm[] | undefined;
 const getArms = (): Arm[] => (extracted ??= extractCascade());
@@ -382,11 +530,12 @@ const pairMessage = (earlier: string[], later: string[]) =>
   WRAP + earlier.join(SEP) + SEP + later.join(SEP);
 
 describe("classify substring cascade — extraction", () => {
-  it("extracts the cascade with every completeness count agreeing (named test so a count break is diagnosable, not a collection error)", () => {
-    // The five completeness counts, the tokenizer bails, and the sanity
-    // floors all run inside extractCascade(); first invocation is HERE so a
-    // break fails this test with the offending assertion message (Round 13 —
-    // Round 12's module-scope run reported mutation C as "no tests").
+  it("walks the whole classify() AST with every statement modeled, frame-pinned, or bailed (named test so a bail is diagnosable, not a collection error)", () => {
+    // The frame-shape pins, the total statement walk, every condition /
+    // arm-body bail, and the sanity floors all run inside extractCascade();
+    // first invocation is HERE so a break fails this test with the offending
+    // bail message (Round 13 — Round 12's module-scope run reported mutation
+    // C as "no tests").
     expect(getArms().length).toBeGreaterThanOrEqual(55);
   });
 });
