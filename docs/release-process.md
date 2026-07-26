@@ -624,8 +624,62 @@ Verify at: `https://registry.modelcontextprotocol.io/servers/io.github.Harusame6
 
 ## Operational Notes
 
-- `docs/release-process.md` is intentionally local-only and ignored by git in this checkout.
-  Keep it useful locally, but do not rely on it being present in a fresh clone unless the ignore policy changes.
+### The release zip does not inherit `overrides` (checked 2026-07-26)
+
+The zip's dependency tree is **not** the tree we test. Two facts about the
+"Install production dependencies" step in `release.yml`:
+
+1. It synthesises a minimal `package.json` containing only `name`, `version`,
+   `type` and `dependencies`. The root **`overrides` block is dropped.**
+2. It runs `npm install --no-package-lock`, so every range resolves fresh at
+   build time rather than to the versions in our `package-lock.json`.
+
+So a security fix applied through `overrides` protects local development and CI
+but has **no guaranteed effect on what users download**. Whether the zip is safe
+depends on what the ranges happen to resolve to that day.
+
+Measured on the v1.13.1 zip, for the `ip-address` advisory
+(GHSA-v2v4-37r5-5v8g) that `overrides` pins to 10.1.1:
+
+| | `express-rate-limit` | `ip-address` |
+|---|---|---|
+| lockfile (what we test) | 8.3.2, which pins `ip-address` to exactly 10.1.0 | 10.1.1 — via `overrides` |
+| shipped zip | 8.6.0, declaring `^10.2.0` | 10.3.1 |
+
+No exposure today: the shipped 10.3.1 is newer than the patched 10.1.1. But that
+is luck — the range resolved forward past the advisory on its own, not because
+the override reached the zip.
+
+**When you fix a runtime-dependency advisory with `overrides`, verify the fix in
+the built zip, not just in `npm ls`.** Check **every** installed copy, not the
+hoisted one: npm nests a second copy under a dependent whenever versions
+conflict, which is exactly the shape an incomplete override leaves behind. The
+v1.13.1 zip contains 114 nested `node_modules` entries (`body-parser/node_modules/content-type`,
+`execa/node_modules/semver`, …), so reading a single path can certify a release
+while a vulnerable nested copy ships beside it.
+
+```bash
+curl -sL -o rel.zip "https://github.com/Harusame64/desktop-touch-mcp/releases/download/vX.Y.Z/desktop-touch-mcp-windows.zip"
+
+# Every copy of <pkg>, hoisted and nested. For a scoped package pass the full
+# name, e.g. @modelcontextprotocol/sdk.
+for p in $(unzip -Z1 rel.zip | grep -E "(^|/)node_modules/<pkg>/package\.json$"); do
+  printf '%s -> ' "$p"
+  unzip -p rel.zip "$p" | grep -m1 '"version"'
+done
+```
+
+Expect one line per installed copy, and check the version on each. No output at
+all means the package is not in the zip — confirm that is what you expected
+rather than reading it as a pass.
+
+Dev-only advisories (anything reached through `devDependencies`, e.g. `postcss`
+via `vitest` → `vite`) never enter the zip and are unaffected by this gap.
+
+### Other notes
+
+- `docs/release-process.md` is tracked in git. An older note here claimed it was
+  local-only and gitignored; that stopped being true and the claim is removed.
 - `npm version X.Y.Z --no-git-tag-version` can update `package.json`, `package-lock.json`,
   `src/version.ts`, and `bin/launcher.js` even if the lifecycle `git add` fails with an index permission error.
   Check the file contents after a failed version command before retrying or editing.
