@@ -19,6 +19,16 @@
 //   * every CaptureLoopOutcome flows through as { status: "filled", outcome }.
 //   * W2 close: unwatchPane + forget same-turn.
 import { describe, expect, it, vi } from "vitest";
+
+// The `FailsafeError.name` contract pin at the bottom of this file imports the REAL
+// `src/utils/failsafe.js`, which loads the nut-js mouse at module scope — mock the native
+// module away. (The driver itself never touches it: that is exactly why the contract is a
+// bare string and needs pinning.)
+vi.mock("../../src/engine/nutjs.js", () => ({
+  mouse: { getPosition: vi.fn() },
+}));
+
+import { FailsafeError } from "../../src/utils/failsafe.js";
 import {
   KeyLockerCaptureDriver,
   type CaptureDriverDeps,
@@ -104,6 +114,9 @@ function makeHarness(o: Partial<CaptureDriverDeps> = {}, initialTree: Record<num
     readPaneAfterAuth: vi.fn(async () => ({ tail: "", stillHiddenPrompt: false })),
     readPromptTail: vi.fn(async () => PROMPT(false)), // no prompt by default
     nowMs: vi.fn(() => clock.ms),
+    // ADR-030 Phase 1 W7: failsafe NOT armed by default — both guard layers pass through, so every
+    // pre-existing test doubles as the "non-armed reaches inject" verification (AC-P8 (4)).
+    checkFailsafe: vi.fn(async () => {}),
     ...o,
   };
   const driver = new KeyLockerCaptureDriver(deps);
@@ -785,5 +798,270 @@ describe("KeyLockerCaptureDriver — wt pane close prune (tickWatch)", () => {
     h.setTree({}); // buildProcessParentMap failure shape — empty map
     h.driver.tickWatch();
     expect(h.driver.hasPane("wt:1000:10")).toBe(true); // a degenerate tick must not tear panes down
+  });
+});
+
+// ─── ADR-030 Phase 1 W7 — the three-layer background failsafe guard (AC8 / plan §4.6) ──────────────────
+//
+// While the emergency stop is armed, the background credential flow must stop BEFORE any of its dialogs
+// open. Three layers, each closing a window the previous one cannot see:
+//   L1 PRIMARY    — the poll's early-decline slot, before the capture loop starts.
+//   L2 PRE-DIALOG — in front of capture / confirmInjection / offerSave, for a stop that arms during the
+//                   loop's OWN awaits (deriveBinding / resolveBinding / awaitLanded) — Codex Round 2 P2.
+//   L3 BACKSTOP   — the injectPane wrapper, for a stop that arms while a dialog is already OPEN
+//                   (evaluated BEFORE the session re-verify so the re-verify → inject adjacency is untouched).
+// The driver identifies the failsafe rejection structurally (err.name === "FailsafeError" — engine purity:
+// no utils/failsafe import), so these tests throw a name-pinned Error rather than the real class.
+
+/** A FailsafeError as the driver sees it (structural: name-pinned). */
+function failsafeEngagedError(): Error {
+  const e = new Error("FAILSAFE triggered (test)");
+  e.name = "FailsafeError";
+  return e;
+}
+
+describe("KeyLockerCaptureDriver — ADR-030 background failsafe guard (3 layers)", () => {
+  it("PRIMARY: armed stop at poll time → declined BEFORE any dialog (no confirm/capture/inject), arm cleared", async () => {
+    const h = makeHarness(
+      {
+        readPromptTail: vi.fn(async () => PROMPT(true)),
+        checkFailsafe: vi.fn(async () => { throw failsafeEngagedError(); }),
+      },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("declined");
+    // No user-facing UI of any kind was opened, and nothing was injected.
+    expect(h.deps.confirmInjection).not.toHaveBeenCalled();
+    expect(h.deps.capture).not.toHaveBeenCalled();
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
+    // The arm was cleared (guarded disarm) — no wasted polls against a stopped flow.
+    expect(h.driver.armedPaneIds()).toEqual([]);
+  });
+
+  it("PRIMARY: a NEWER arm that lands during the probe await survives the guarded disarm (throw path)", async () => {
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    vi.mocked(h.deps.checkFailsafe).mockImplementation(async () => {
+      // A newer credential dispatch replaces the arm while the probe is in flight.
+      h.driver.onDispatch("pane-1", "sudo -u alice other");
+      throw failsafeEngagedError();
+    });
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("declined");
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // the NEWER arm was NOT cleared
+    expect(h.deps.capture).not.toHaveBeenCalled();
+  });
+
+  it("PRIMARY: a NEWER arm that lands during a RESOLVING probe → superseded (the :389-shaped re-check)", async () => {
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    vi.mocked(h.deps.checkFailsafe).mockImplementation(async () => {
+      h.driver.onDispatch("pane-1", "sudo -u alice other"); // arm swap mid-probe; probe itself resolves
+    });
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("superseded"); // never fills the newer prompt under the older binding
+    expect(h.deps.capture).not.toHaveBeenCalled();
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // the newer arm survives to be polled next
+  });
+
+  it("PRIMARY: a non-FailsafeError probe failure retries next tick (polling) without disarming", async () => {
+    const h = makeHarness(
+      {
+        readPromptTail: vi.fn(async () => PROMPT(true)),
+        checkFailsafe: vi.fn(async () => { throw new Error("mock-only transient"); }),
+      },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("polling");
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]); // NOT disarmed — the poller lifetime bounds retries
+    expect(h.deps.capture).not.toHaveBeenCalled();
+  });
+
+  it("BACKSTOP: the stop arms WHILE the capture dialog is open → injectPane wrapper drops with failsafe_engaged; the captured secret is reverse-orphan deleted", async () => {
+    let engaged = false;
+    const checkFailsafe = vi.fn(async () => {
+      if (engaged) throw failsafeEngagedError();
+    });
+    let releaseCapture!: () => void;
+    const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
+    const h = makeHarness(
+      { readPromptTail: vi.fn(async () => PROMPT(true)), capture, checkFailsafe },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x"); // NO-MATCH path (resolveBinding → undefined)
+
+    const loopP = h.driver.poll("pane-1"); // primary guard passes (not engaged); loop BLOCKS in capture()
+    await new Promise((r) => setTimeout(r, 0));
+    expect(capture).toHaveBeenCalledTimes(1);
+
+    engaged = true; // the emergency stop arms while the secure dialog is open
+    releaseCapture();
+    const r = await loopP;
+
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toMatchObject({
+      kind: "fill_aborted",
+      matched: false,
+      code: "failsafe_engaged",
+    });
+    expect(h.deps.injectPane).not.toHaveBeenCalled(); // the secret was never typed
+    expect(h.deps.deleteSecret).toHaveBeenCalled();   // reverse-orphan closure (existing finally)
+  });
+
+  it("BACKSTOP: a non-FailsafeError probe failure drops via executor_failed and never rejects", async () => {
+    let blowUp = false;
+    const checkFailsafe = vi.fn(async () => {
+      if (blowUp) throw new Error("mock-only transient");
+    });
+    let releaseCapture!: () => void;
+    const capture = vi.fn(() => new Promise<{ captured: boolean }>((res) => { releaseCapture = () => res({ captured: true }); }));
+    const h = makeHarness(
+      { readPromptTail: vi.fn(async () => PROMPT(true)), capture, checkFailsafe },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const loopP = h.driver.poll("pane-1");
+    await new Promise((r) => setTimeout(r, 0));
+    blowUp = true;
+    releaseCapture();
+    const r = await loopP; // resolves — a probe hiccup must never crash the poll
+
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toMatchObject({
+      kind: "fill_aborted",
+      code: "executor_failed",
+    });
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
+  });
+
+  // ── L2 PRE-DIALOG (Codex Round 2 P2): the stop arms AFTER the primary guard passed, while the loop is
+  // still awaiting `deriveBinding` / `resolveBinding` / `awaitLanded`. Before this layer existed, the very
+  // next thing to happen was a dialog asking the user something — the guarantee "the stop asks nothing of
+  // the user and writes nothing" was violated in that window; the L3 backstop only fires afterwards.
+  // Each test arms the stop from INSIDE the dep whose await is the window (not by counting probes).
+
+  it("PRE-DIALOG: a stop arming during resolveBinding blocks the CONFIRM dialog (MATCH path)", async () => {
+    let engaged = false;
+    const h = makeHarness(
+      {
+        readPromptTail: vi.fn(async () => PROMPT(true)),
+        confirmPolicyFor: vi.fn(() => true), // D2 backstop on → the MATCH path opens the confirm dialog
+        resolveBinding: vi.fn(async () => {
+          engaged = true; // the cursor reaches the corner during THIS await
+          return { opaqueId: "stored-1" }; // MATCH
+        }),
+        checkFailsafe: vi.fn(async () => { if (engaged) throw failsafeEngagedError(); }),
+      },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(h.deps.confirmInjection).not.toHaveBeenCalled(); // the dialog never opened
+    expect(h.deps.injectPane).not.toHaveBeenCalled();       // and the stored secret was never typed
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toEqual({ kind: "confirm_rejected" });
+  });
+
+  it("PRE-DIALOG: a stop arming during resolveBinding blocks the secure CAPTURE dialog (NO-MATCH path)", async () => {
+    let engaged = false;
+    const h = makeHarness(
+      {
+        readPromptTail: vi.fn(async () => PROMPT(true)),
+        resolveBinding: vi.fn(async () => {
+          engaged = true;
+          return undefined; // NO MATCH → the loop would open the locker's secure capture dialog next
+        }),
+        checkFailsafe: vi.fn(async () => { if (engaged) throw failsafeEngagedError(); }),
+      },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(h.deps.capture).not.toHaveBeenCalled();     // no secret was ever requested from the user
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
+    expect(h.deps.deleteSecret).not.toHaveBeenCalled(); // nothing was captured, so nothing to clean up
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toEqual({ kind: "capture_cancelled" });
+  });
+
+  it("PRE-DIALOG: a stop arming during awaitLanded blocks the SAVE offer (no bind, no Never tombstone)", async () => {
+    let engaged = false;
+    const onNever = vi.fn();
+    const h = makeHarness(
+      {
+        readPromptTail: vi.fn(async () => PROMPT(true)),
+        // The capture + injection already happened; the stop arms while the landed-detection runs, i.e.
+        // right before the [Save]/[Not now]/[Never] offer would pop.
+        injectPane: vi.fn(async () => { engaged = true; return CONSOLE_INJECT_OK(); }),
+        checkFailsafe: vi.fn(async () => { if (engaged) throw failsafeEngagedError(); }),
+        onNever,
+      },
+      shellTree(),
+    );
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(h.deps.offerSave).not.toHaveBeenCalled(); // the offer never popped
+    expect(h.deps.bindBinding).not.toHaveBeenCalled(); // nothing persisted...
+    expect(onNever).not.toHaveBeenCalled();            // ...and no [Never] tombstone was invented either
+    expect(r.status).toBe("filled");
+    // "not_now" is the only SaveChoice that neither saves nor tombstones; the loop discards and its
+    // existing `finally` deletes the captured secret.
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toEqual({ kind: "discarded", reason: "not_now" });
+    expect(h.deps.deleteSecret).toHaveBeenCalled();
+  });
+
+  it("NON-ARMED: a resolving probe passes ALL THREE layers — the flow reaches inject and saves (AC8 (4))", async () => {
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", anchorOf(1000));
+    h.driver.onDispatch("pane-1", "sudo x");
+
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("filled");
+    expect((r as { outcome: CaptureLoopOutcome }).outcome).toMatchObject({ kind: "saved" });
+    expect(h.deps.injectPane).toHaveBeenCalledTimes(1);
+    // Every layer actually probed. The origin:"background" diagnostic line is
+    // emitted INSIDE the real checkFailsafe (§3.2), so the unit-level substitute
+    // is the probe count: L1 early-decline, L2 before capture, L3 at the
+    // injection instant, L2 again before the save offer (this NO-MATCH path
+    // never opens the confirm dialog, which is MATCH-only).
+    expect(h.deps.checkFailsafe).toHaveBeenCalledTimes(4);
+  });
+});
+
+/**
+ * ADR-030 Phase 1 (Opus Round 1 P2-4) — the cross-module string contract.
+ *
+ * The driver deliberately does NOT import `utils/failsafe.js` (it would drag the nut-js native module
+ * into the engine-pure graph), so it identifies the failsafe rejection structurally, by name:
+ * `isFailsafeEngaged` in `src/engine/key-locker/key-locker-capture-driver.ts` (`err.name === "FailsafeError"`).
+ * Nothing else pins that literal, so a rename / a subclass that forgets `this.name` would silently turn
+ * both W7 guards into no-ops. This test imports the REAL class and pins the name it must keep.
+ */
+describe("FailsafeError.name — the contract the driver's structural check depends on", () => {
+  it("is exactly 'FailsafeError' (and the instance is an Error, as the check also requires)", () => {
+    const err = new FailsafeError(0, 0, 500);
+    expect(err.name).toBe("FailsafeError");
+    expect(err).toBeInstanceOf(Error);
   });
 });

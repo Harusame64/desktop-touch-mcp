@@ -1,5 +1,38 @@
 # Changelog
 
+## [Unreleased] — Emergency stop: primary-monitor corner only, and no more silent exits
+
+- **The failsafe corner is now the top-left of the primary monitor only.** The trigger
+  zone had no lower bound, so on multi-monitor setups with a monitor left of or above
+  the primary, the zone silently expanded into a full-height/width band (or the whole
+  monitor) — parking the cursor on a title bar could kill the server. Negative
+  virtual-screen coordinates no longer trigger the stop. If the cursor dwells in an
+  area that used to trigger it, a one-time notification explains where the real
+  corner is.
+- **The emergency stop only exits the server while a tool call is running.** When the
+  server is idle it now stays up and refuses new tool calls until the cursor leaves the
+  corner, instead of tearing down the whole MCP session (stdio cannot reconnect).
+  Background credential autofill (`key_locker`) is cancelled before any of its dialogs
+  open; it does not pick up again by itself, so move the cursor away from the corner
+  and run the command again.
+- **A stop is no longer silent.** Every trigger writes a diagnostic log entry with the
+  cursor coordinates. A Windows balloon appears when the server exits, when a tool call
+  is refused, and — in the rare case where the running call finished first and the exit
+  was stood down — as a follow-up that corrects the earlier one. Arming the stop while
+  nothing is running is recorded in the log only, so resting the cursor in the corner
+  does not spam notifications.
+- **Long balloon notifications no longer end mid-word.** Windows caps a balloon tip at 255
+  characters of body and 63 of title, and silently drops everything past that — so a long
+  `notification_show` message simply stopped, with no sign it had been cut. Over-long text is
+  now shortened with a trailing "…" so you can tell something was left out, and the failsafe's
+  own notifications were rewritten to fit.
+- Docs: the failsafe was still described as "immediately terminate" from the pre-1.7.2
+  era; README (en/ja), SECURITY.md and the MCP server instructions now describe the
+  500ms dwell, the primary-monitor corner, and `DESKTOP_TOUCH_FAILSAFE_HOLD_MS`.
+
+Nothing to configure: no new environment variables; defaults are unchanged
+(10px corner, 500ms dwell).
+
 ## [1.13.1] - 2026-07-26 — failures now carry recovery advice you can actually find
 
 ### Changed

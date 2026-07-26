@@ -62,6 +62,7 @@ import { keyLockerManager } from "./key-locker-tool.js";
 import { KeyLockerError } from "../engine/key-locker-host.js";
 import { setCredentialAdvisor, type AdvisoryHint } from "./_advisory.js";
 import { isKnownSession } from "../engine/key-locker/session-tracker.js";
+import { checkFailsafe } from "../utils/failsafe.js";
 
 /** Max simultaneously-live anchored consoles the tool will open (Risk R2 — a `fresh:true` loop can't spray
  *  windows). Dead ones are pruned first, so this bounds LIVE panes, not lifetime launches. */
@@ -359,6 +360,11 @@ export class KeyLockerWiring {
       readPromptTail: (paneId) => this.readPromptTail(paneId),
 
       nowMs: () => Date.now(),
+
+      // ADR-030 Phase 1 W7: the emergency-stop probe for the driver's two background guards
+      // (poll early-decline + injectPane backstop). "background" origin = diagnostic log per
+      // refusal, no balloon (plan §3.2 — the dropped prompt stays visible in the pane).
+      checkFailsafe: () => checkFailsafe("background"),
     };
   }
 

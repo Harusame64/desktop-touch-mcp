@@ -33,7 +33,7 @@ npx -y @harusame64/desktop-touch-mcp
 - **Chromium smart fallback** — `detail="text"` on Chrome/Edge/Brave auto-skips UIA (prohibitively slow there) and runs Windows OCR. `hints.chromiumGuard` + `hints.ocrFallbackFired` flag the path taken.
 - **UIA element extraction** — `detail="text"` returns button names and `clickAt` coords as JSON. Claude can click the right element without ever looking at a screenshot.
 - **Auto-dock CLI** — `window_dock(action='dock')` snaps any window to a screen corner with always-on-top. Set `DESKTOP_TOUCH_DOCK_TITLE='@parent'` to auto-dock the terminal hosting Claude on MCP startup — the process-tree walker finds the right window regardless of title.
-- **Emergency stop (Failsafe)** — Move the mouse to the **top-left corner (within 10px of 0,0)** to immediately terminate the MCP server.
+- **Emergency stop (Failsafe)** — Park the mouse in the **top-left corner of the primary monitor** (within 10px of 0,0) for 500ms to trigger the emergency stop.
 
 ---
 
@@ -527,11 +527,13 @@ screenshot(diffMode=true)                → check only what changed (~160 tok)
 
 ### Emergency stop (Failsafe)
 
-**Move the mouse to the top-left corner of the screen (within 10px of 0,0) to immediately terminate the MCP server.**
+**Park the mouse in the top-left corner of the primary monitor (within 10px of 0,0) for 500ms continuously to trigger the emergency stop.**
 
-- **Per-tool check**: `checkFailsafe()` runs before every tool handler
-- **Background monitor**: 500ms polling as a backup for long-running operations
-- Trigger radius: 10px
+- The trigger corner is on the **primary monitor only**. Areas that used to trigger the stop in older versions (monitors left of or above the primary) no longer do; if the cursor dwells there, a one-time balloon notification points you to the right corner.
+- **While a tool call is running**: the server exits (exit code 1) — the runaway-automation brake. A balloon notification and a diagnostic log entry (with cursor coordinates) record why it stopped. Only a call that is actually mid-flight triggers the exit; in the rare case where that call finishes during the ~1 second the notification takes, the server stays up instead and a follow-up balloon corrects the first one.
+- **While idle**: the server stays up and refuses new tool calls until the cursor leaves the corner. Background credential autofill (`key_locker`) is cancelled **before any of its dialogs open** — while you hold the corner, no credential prompt dialog appears and no credential is typed. It does not pick up again by itself: move the cursor away from the corner and run the command again.
+- **Per-tool check**: runs before every tool handler. **Background monitor**: 500ms polling as a backup for long-running operations. Trigger radius: 10px.
+- `DESKTOP_TOUCH_FAILSAFE_HOLD_MS` — dwell time in ms before the stop fires (default `500`; `0` = fire immediately on corner entry).
 
 ### Blocked operations
 
