@@ -1,6 +1,17 @@
 # Changelog
 
-## [Unreleased]
+## [1.13.1] - 2026-07-26 — failures now carry recovery advice you can actually find
+
+### Changed
+
+- **If you branch on the `code` field of a failure, some values changed.** The fixes
+  below replace the generic `ToolError` with the specific code for that failure, so
+  failures that used to arrive as `ToolError` now arrive as `ForegroundFlashRequiresTarget`,
+  `ForegroundFlashUnsupported`, `ForegroundFlashFailed`, `TabDragBlocked`,
+  `CrossWindowDragBlocked` or `WindowNotFound`. One existing code also changed:
+  `keyboard` with `method:'background'` returns `WindowNotFound` instead of
+  `BackgroundInputUnsupported` when the window title matched nothing. Detail fields
+  that used to sit under `context.context` now sit directly under `context`.
 
 ### Fixed
 
@@ -39,7 +50,7 @@
   failure used to come back as `UiaTimeout` with wait-and-retry advice, which cannot
   fix a malformed argument. Any declared code that has suggestions registered now
   wins, so the suggestions match the actual failure.
-- **Failure details are no longer double-nested.** In 23 failure responses across the
+- **Failure details are no longer double-nested.** In 22 failure responses across the
   `keyboard`, `terminal`, `clipboard` and `browser_eval` tools, detail fields that used
   to render as `context.context.<field>` (for example `context.context.sent`) now render
   flat as `context.<field>`, matching every other failure in the server.
