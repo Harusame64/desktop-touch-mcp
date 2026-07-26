@@ -66,9 +66,16 @@
  *   - The declared-code arm and the trailing leading-code arm: dictionary
  *     round-trip + adversarial-tail invariants in oq8 already cover both.
  *
- * Modeling notes (silent omission is the failure mode this file exists to
- * kill, so every non-trivial condition shape is either modeled or fails the
- * extraction loudly):
+ * Modeling notes. Silent omission is the failure mode this file exists to
+ * kill, and after four rounds of the same bug class the rule is now stated
+ * once, as an invariant of the EXTRACTION itself: every piece of condition
+ * syntax is (a) modeled, or (b) dropped from the routing model WITH an
+ * owner-and-shape pin that fails when it moves, appears, or disappears, or
+ * (c) bails the extraction loudly. Nothing leaves the model without a pin.
+ * Concretely: literals → modeled; compound (&&) shapes → modeled AND
+ * shape-pinned; wrapper-immune disjuncts → dropped AND ownership-pinned AND
+ * behaviorally pinned on their own messages (Round 13 closed this, the last
+ * unpinned drop); any other syntax → bail.
  *   - Conditions are parsed by a tiny tokenizer + recursive-descent parser
  *     into disjunctive normal form: each arm becomes a list of FIRING SETS,
  *     where a set fires iff every token in it is present. `a || b` yields
@@ -90,6 +97,14 @@
  *     ONLY as a whole disjunct; any other non-includes predicate, or an
  *     immune predicate conjoined into a `&&` set (where dropping it would
  *     silently erase the set from the model), fails the extraction loudly.
+ *     Round 13 (Codex P2, measured): dropping the whole disjunct SILENTLY was
+ *     itself a hole — grafting `|| m === "disabled"` onto the
+ *     BrowserNotConnected arm (which already owns reachable firing sets) kept
+ *     the compound-shape pin and all six routing rules green while production
+ *     rerouted the real "disabled" message to BrowserNotConnected. Dropped
+ *     disjuncts are therefore RECORDED per arm and exact-pinned to their
+ *     owner arm in the preconditions, plus routed end-to-end on the very
+ *     messages WRAP cannot synthesize ("disabled", "guard failed …").
  *   - Tokenizer churn caution: the tokenizer has no comment syntax, so a
  *     comment written INSIDE an arm's condition parentheses is "unmodeled
  *     predicate syntax" and bails the whole suite. Deliberate strictness — a
@@ -108,6 +123,13 @@
  *     or below the `const leadingCode` marker — is invisible to every count
  *     here in principle; the two boundary markers are the trust anchor, and
  *     moving them moves what this file can see.
+ *   - Extraction is LAZY (memoized `getArms()`), invoked first by a dedicated
+ *     named test: in Round 12 the counts ran at module scope, so a count break
+ *     surfaced as a file-collection error ("no tests") instead of naming the
+ *     broken count (measured in the mutation C run). A bail or count mismatch
+ *     now fails that named test with the assertion message, and every later
+ *     test re-runs the (cheap) extraction and fails too — the all-tests-fail
+ *     property of module scope is kept without its diagnostics loss.
  *
  * Cost, measured at Round 11: 62 arms, 95 firing sets, 4,431 pairwise
  * messages; the whole file runs in ~0.6s (classify is pure string scanning),
@@ -145,6 +167,12 @@ interface Arm {
    * every token of SOME set is a substring of it.
    */
   sets: string[][];
+  /**
+   * Source spellings of the wrapper-immune disjuncts DROPPED from `sets`,
+   * in occurrence order. A drop is never silent (Round 13): the ownership
+   * precondition exact-pins which arm may carry which immune disjunct.
+   */
+  immune: string[];
   condition: string;
 }
 
@@ -255,16 +283,25 @@ function extractCascade(): Arm[] {
     literalTokenCount += toks.filter((t) => t.kind === "lit").length;
 
     const sets: string[][] = [];
+    const immune: string[] = [];
     for (const set of parseFiringSets(toks, code)) {
-      if (set.some((a) => a.kind === "immune")) {
+      const immuneAtom = set.find(
+        (a): a is Extract<Atom, { kind: "immune" }> => a.kind === "immune",
+      );
+      if (immuneAtom) {
         // A wrapper-immune predicate may only stand as a WHOLE disjunct: WRAP
         // defeats it (asserted mechanically in the preconditions), so the
         // disjunct contributes nothing to wrapper-reachable routing and is
-        // dropped. Conjoined with literals it would erase those literals from
-        // the model too — that shape must be decided here, not vanish.
+        // dropped from `sets`. Conjoined with literals it would erase those
+        // literals from the model too — that shape must be decided here, not
+        // vanish. Round 13 (Codex P2): the drop itself is RECORDED, never
+        // silent — the ownership precondition exact-pins where each immune
+        // disjunct may live, so grafting one onto any other arm (a real
+        // production routing change, measured) fails loudly there.
         if (set.length !== 1) {
           bail(`immune predicate conjoined with other predicates in the ${code} arm`);
         }
+        immune.push(immuneAtom.src);
         continue;
       }
       sets.push(
@@ -277,7 +314,7 @@ function extractCascade(): Arm[] {
     // An arm whose every disjunct dropped would be invisible to every rule
     // below — silent omission, the one unacceptable bug.
     if (sets.length === 0) bail(`the ${code} arm has no wrapper-reachable firing set`);
-    arms.push({ code, sets, condition });
+    arms.push({ code, sets, immune, condition });
   }
 
   // ── Extraction completeness — a silent miss is the one unacceptable bug ──
@@ -326,17 +363,37 @@ function extractCascade(): Arm[] {
   return arms;
 }
 
-const arms = extractCascade();
+/**
+ * Lazy + memoized extraction: Round 12 ran this at module scope, so a bail or
+ * a completeness-count break failed the FILE COLLECTION ("no tests") instead
+ * of naming what broke. Called first from the dedicated extraction test below;
+ * a failure re-throws in every later test too (extraction is ~ms, so the
+ * unmemoized failure path costs nothing), keeping the everything-fails
+ * property without the diagnostics loss.
+ */
+let extracted: Arm[] | undefined;
+const getArms = (): Arm[] => (extracted ??= extractCascade());
 
 // ── Pure model of the extracted cascade ─────────────────────────────────────
 const armFires = (arm: Arm, msg: string) => arm.sets.some((s) => s.every((t) => msg.includes(t)));
-const modelRoute = (msg: string) => arms.find((a) => armFires(a, msg));
+const modelRoute = (msg: string) => getArms().find((a) => armFires(a, msg));
 const setMessage = (set: string[]) => WRAP + set.join(SEP);
 const pairMessage = (earlier: string[], later: string[]) =>
   WRAP + earlier.join(SEP) + SEP + later.join(SEP);
 
+describe("classify substring cascade — extraction", () => {
+  it("extracts the cascade with every completeness count agreeing (named test so a count break is diagnosable, not a collection error)", () => {
+    // The five completeness counts, the tokenizer bails, and the sanity
+    // floors all run inside extractCascade(); first invocation is HERE so a
+    // break fails this test with the offending assertion message (Round 13 —
+    // Round 12's module-scope run reported mutation C as "no tests").
+    expect(getArms().length).toBeGreaterThanOrEqual(55);
+  });
+});
+
 describe("classify substring cascade — structural preconditions", () => {
   it("tokens are unique across arms, cannot fuse across the separator, and WRAP defeats the immune predicates", () => {
+    const arms = getArms();
     const owner = new Map<string, string>();
     for (const arm of arms) {
       // Dedupe per arm: a compound arm legitimately reuses its shared token
@@ -370,7 +427,7 @@ describe("classify substring cascade — structural preconditions", () => {
     // check (measured). Pinning the full firing-set shape makes ANY compound
     // change — new disjunct, new compound arm, de-compounded arm — fail here
     // and forces an explicit decision.
-    const compound = arms.filter((a) => a.sets.some((s) => s.length > 1));
+    const compound = getArms().filter((a) => a.sets.some((s) => s.length > 1));
     expect(
       Object.fromEntries(compound.map((a) => [a.code, a.sets])),
       "a compound arm changed shape (or appeared/disappeared) — update this pin CONSCIOUSLY and re-check the dormancy reasoning above it",
@@ -382,6 +439,40 @@ describe("classify substring cascade — structural preconditions", () => {
     });
   });
 
+  it("wrapper-immune disjuncts are exact-pinned to their owner arms and route to them end-to-end", () => {
+    // Round 13 (Codex P2, measured): the model DROPS immune disjuncts (WRAP
+    // defeats them — justified mechanically above), so a mutation that grafts
+    // `|| m === "disabled"` onto the BrowserNotConnected arm changed nothing
+    // in the model: the compound-shape pin kept its shape, all six routing
+    // rules stayed green — yet production rerouted the real "disabled"
+    // message from ElementDisabled to BrowserNotConnected. The general rule
+    // (see header): whatever the model drops must be pinned by owner and
+    // shape. This map (owner code → immune spellings, per-arm occurrence
+    // order) fails on ANY immune-disjunct add / move / removal / duplication
+    // and forces a conscious classifier decision.
+    const ownership = Object.fromEntries(
+      getArms()
+        .filter((a) => a.immune.length > 0)
+        .map((a) => [a.code, a.immune]),
+    );
+    expect(
+      ownership,
+      "an immune disjunct moved arms (or appeared/disappeared) — this is a real routing change for the unwrapped message shapes; update this pin CONSCIOUSLY",
+    ).toEqual({
+      GuardFailed: ['m.startsWith("guard failed")'],
+      ElementDisabled: ['m === "disabled"'],
+    });
+    // Behavioral teeth for the very shapes WRAP cannot synthesize: each immune
+    // predicate's own message must reach its owner arm with advice. This is
+    // the end-to-end behavior the mutation above actually regressed.
+    const disabled = render("disabled"); // exactly `m === "disabled"` — no substring arm matches the bare word
+    expect(disabled.code).toBe("ElementDisabled");
+    expect((disabled.suggest ?? []).length).toBeGreaterThan(0);
+    const guard = render("guard failed for lens"); // no colon, no "guardfailed" — only the startsWith disjunct fires
+    expect(guard.code).toBe("GuardFailed");
+    expect((guard.suggest ?? []).length).toBeGreaterThan(0);
+  });
+
   it("model well-posedness: every firing set's own message routes to its own arm (shadow lemma)", () => {
     // The generalization of Round 10's literal-containment lemma to firing
     // sets: an earlier arm firing on a later arm's own message means the set
@@ -391,7 +482,7 @@ describe("classify substring cascade — structural preconditions", () => {
     // Violations are also caught behaviorally by the self-routing rule; this
     // assertion names the offending pair directly.
     const violations: string[] = [];
-    for (const arm of arms) {
+    for (const arm of getArms()) {
       for (const set of arm.sets) {
         const route = modelRoute(setMessage(set));
         if (route !== arm) {
@@ -412,6 +503,7 @@ describe("classify substring cascade — structural preconditions", () => {
     // carry "not connected"/"econnrefused"): if any token combination from
     // two other arms completed a compound set sitting above them, it would
     // surface here with the culprit named.
+    const arms = getArms();
     const violations: string[] = [];
     for (let i = 0; i < arms.length; i++) {
       for (let j = i + 1; j < arms.length; j++) {
@@ -435,7 +527,7 @@ describe("classify substring cascade — structural preconditions", () => {
 describe("classify substring cascade — firing-set self-routing (order-independent intent)", () => {
   it("every firing set, wrapped to reach the cascade, classifies to its own arm with advice", () => {
     const misrouted: string[] = [];
-    for (const arm of arms) {
+    for (const arm of getArms()) {
       for (const set of arm.sets) {
         const body = render(setMessage(set));
         if (body.code !== arm.code || (body.suggest ?? []).length === 0) {
@@ -454,6 +546,7 @@ describe("classify substring cascade — firing-set self-routing (order-independ
 
 describe("classify substring cascade — pairwise earlier-arm-wins (extraction faithfulness)", () => {
   it("for every ordered arm pair, a message carrying both sets' tokens resolves to the earlier arm", () => {
+    const arms = getArms();
     const mismatches: string[] = [];
     let pairCount = 0;
     for (let i = 0; i < arms.length; i++) {
