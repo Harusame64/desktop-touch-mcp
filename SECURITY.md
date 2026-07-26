@@ -21,7 +21,7 @@ You can expect a response within 72 hours.
 
 ## Security Design
 
-- **Failsafe**: Moving the mouse to the top-left corner (within 10px of 0,0) immediately terminates the server.
+- **Emergency stop (Failsafe)**: Park the mouse in the top-left corner of the primary monitor (within 10px of 0,0) for 500ms to trigger the emergency stop. The server exits if a tool call is running; while idle it stays up and refuses tool calls — background credential autofill is also suspended before any of its dialogs open — until the cursor leaves the corner.
 - **Shell interpreter blocklist**: `cmd.exe`, `powershell.exe`, and other interpreters cannot be launched via `workspace_launch`.
 - **Script extension blocklist**: `.bat`, `.ps1`, `.vbs`, etc. are rejected.
 - **Shell metacharacter rejection**: Arguments containing `;`, `&`, `|`, `` ` ``, `$(`, `${` are blocked.

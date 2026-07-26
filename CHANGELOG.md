@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased] — Emergency stop: primary-monitor corner only, and no more silent exits
+
+- **The failsafe corner is now the top-left of the primary monitor only.** The trigger
+  zone had no lower bound, so on multi-monitor setups with a monitor left of or above
+  the primary, the zone silently expanded into a full-height/width band (or the whole
+  monitor) — parking the cursor on a title bar could kill the server. Negative
+  virtual-screen coordinates no longer trigger the stop. If the cursor dwells in an
+  area that used to trigger it, a one-time notification explains where the real
+  corner is.
+- **The emergency stop only exits the server while a tool call is running.** When the
+  server is idle it now stays up and refuses new tool calls — and suspends background
+  credential autofill (`key_locker`) before any of its dialogs open — until the cursor
+  leaves the corner, instead of tearing down the whole MCP session (stdio cannot
+  reconnect).
+- **A stop is never silent anymore.** Both trigger paths show a Windows balloon
+  notification and write a diagnostic log entry with the cursor coordinates.
+- Docs: the failsafe was still described as "immediately terminate" from the pre-1.7.2
+  era; README (en/ja), SECURITY.md and the MCP server instructions now describe the
+  500ms dwell, the primary-monitor corner, and `DESKTOP_TOUCH_FAILSAFE_HOLD_MS`.
+
+Nothing to configure: no new environment variables; defaults are unchanged
+(10px corner, 500ms dwell).
+
 ## [1.13.1] - 2026-07-26 — failures now carry recovery advice you can actually find
 
 ### Changed
