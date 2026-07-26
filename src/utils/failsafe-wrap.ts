@@ -51,12 +51,21 @@ export function getActiveToolCallIds(): number[] {
   return [..._activeCallIds];
 }
 
-/** Number of tool handlers currently executing past the failsafe pre-check. */
+/**
+ * Number of tool handlers currently executing past the failsafe pre-check.
+ *
+ * DO NOT gate anything that spans an await on this aggregate — across that gap a call admitted
+ * AFTER the failsafe released is indistinguishable from one that was running when it fired
+ * (Codex Round 5 P2). Take `getActiveToolCallIds()` on both sides and intersect instead. Kept as
+ * a size accessor for the unit tests.
+ */
 export function getActiveToolCallCount(): number {
   return _activeCallIds.size;
 }
 
-/** Test-only: reset the registry between cases. Not exposed via the public index. */
+/** Test-only: reset the registry between cases. Not exposed via the public index.
+ *  Do not call while calls are in flight: resetting `_nextCallId` lets a stale handler's
+ *  `finally` delete an id that has since been handed to a different call. */
 export function _resetActiveToolCallsForTest(): void {
   _activeCallIds.clear();
   _nextCallId = 1;
