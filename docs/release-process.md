@@ -651,12 +651,27 @@ is luck — the range resolved forward past the advisory on its own, not because
 the override reached the zip.
 
 **When you fix a runtime-dependency advisory with `overrides`, verify the fix in
-the built zip, not just in `npm ls`:**
+the built zip, not just in `npm ls`.** Check **every** installed copy, not the
+hoisted one: npm nests a second copy under a dependent whenever versions
+conflict, which is exactly the shape an incomplete override leaves behind. The
+v1.13.1 zip contains 114 nested `node_modules` entries (`body-parser/node_modules/content-type`,
+`execa/node_modules/semver`, …), so reading a single path can certify a release
+while a vulnerable nested copy ships beside it.
 
 ```bash
 curl -sL -o rel.zip "https://github.com/Harusame64/desktop-touch-mcp/releases/download/vX.Y.Z/desktop-touch-mcp-windows.zip"
-unzip -p rel.zip "node_modules/<pkg>/package.json" | grep '"version"'
+
+# Every copy of <pkg>, hoisted and nested. For a scoped package pass the full
+# name, e.g. @modelcontextprotocol/sdk.
+for p in $(unzip -Z1 rel.zip | grep -E "(^|/)node_modules/<pkg>/package\.json$"); do
+  printf '%s -> ' "$p"
+  unzip -p rel.zip "$p" | grep -m1 '"version"'
+done
 ```
+
+Expect one line per installed copy, and check the version on each. No output at
+all means the package is not in the zip — confirm that is what you expected
+rather than reading it as a pass.
 
 Dev-only advisories (anything reached through `devDependencies`, e.g. `postcss`
 via `vitest` → `vite`) never enter the zip and are unaffected by this gap.
