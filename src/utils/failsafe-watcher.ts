@@ -28,7 +28,8 @@ import { FailsafeError } from "./failsafe.js";
 const NOTIFY_TIMEOUT_MS = 1000;
 
 const EXIT_BALLOON_TITLE = "desktop-touch-mcp: emergency stop";
-function exitBalloonBody(holdMs: number): string {
+/** Exported for the balloon-length guard test (`NotifyIcon` rejects bodies over 255 chars). */
+export function exitBalloonBody(holdMs: number): string {
   return (
     "Failsafe triggered while an operation was running: the mouse stayed in the top-left corner " +
     `of the primary monitor for ${holdMs}ms. The MCP server has exited.`
@@ -36,7 +37,7 @@ function exitBalloonBody(holdMs: number): string {
 }
 /** The correction sent when the exit is averted after the exit balloon has
  *  already claimed the server is gone — see the `exit_averted` branch below. */
-const AVERTED_BALLOON_BODY =
+export const AVERTED_BALLOON_BODY =
   "The operation finished before shutdown. The server is still running; new tool calls stay " +
   "blocked while the mouse stays in the corner.";
 
@@ -84,8 +85,9 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
   // 500 ms `setInterval`, which does NOT await the previous invocation, while
   // the trigger path awaits the notifier for up to NOTIFY_TIMEOUT_MS (1 s) —
   // so up to two further ticks can enter the same branch and double-fire the
-  // balloon / the `triggered` log line. Set before the await, cleared only on
-  // the averted path (an exiting process never needs it back).
+  // balloon / the `triggered` log line. Set before the await and released by
+  // the guarded `finally` below on every path EXCEPT the one that ordered the
+  // exit (an exiting process never needs it back).
   let stopping = false;
 
   return async () => {
@@ -98,73 +100,87 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
       const active = deps.getActiveToolCallCount();
       if (active > 0) {
         stopping = true;
-        // Runaway brake: a tool handler is mid-execution — exit, as before.
-        // Notify BEFORE exiting (the spawned balloon child survives the
-        // parent), but never let a stalled notifier delay the stop by more
-        // than NOTIFY_TIMEOUT_MS.
-        let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+        // Anything between here and `deps.exit` can throw (a diagnostic write
+        // failing, a tray handle already gone). Leaving `stopping` latched in
+        // that case would wedge the watcher permanently — the failsafe would
+        // go deaf for the rest of the session (P3-4). A NAKED `finally` is
+        // wrong though: on the exit path `stopping` must STAY set, because
+        // `deps.exit` is only `process.exit` in production — in tests (and any
+        // fake) it RETURNS, and a re-armed guard would let the next tick fire
+        // a second exit. Hence the reset is conditional on no exit having been
+        // ordered; the averted path reaches it via its `return`.
+        let exitCalled = false;
         try {
-          await Promise.race([
-            deps.notify(EXIT_BALLOON_TITLE, exitBalloonBody(err.holdMs)).catch(() => {}),
-            new Promise<void>((resolve) => {
-              timeoutTimer = setTimeout(resolve, NOTIFY_TIMEOUT_MS);
-            }),
-          ]);
-        } finally {
-          // The averted path keeps the process alive, so a still-pending 1 s
-          // timer would hold the event loop for no reason (P3-9).
-          if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
-        }
-        // Recheck the gate: the await above can span up to NOTIFY_TIMEOUT_MS,
-        // and the last active handler may have returned in the meantime. The
-        // balloon has already claimed the server "has exited", which is now
-        // wrong — standing down is still the right call (killing an idle
-        // session costs the user the whole MCP connection; stdio cannot
-        // reconnect), so we correct the record instead: a second balloon says
-        // the server survived and that the corner still blocks new calls.
-        const activeAfterNotify = deps.getActiveToolCallCount();
-        if (activeAfterNotify === 0) {
+          // Runaway brake: a tool handler is mid-execution — exit, as before.
+          // Notify BEFORE exiting (the spawned balloon child survives the
+          // parent), but never let a stalled notifier delay the stop by more
+          // than NOTIFY_TIMEOUT_MS.
+          let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              deps.notify(EXIT_BALLOON_TITLE, exitBalloonBody(err.holdMs)).catch(() => {}),
+              new Promise<void>((resolve) => {
+                timeoutTimer = setTimeout(resolve, NOTIFY_TIMEOUT_MS);
+              }),
+            ]);
+          } finally {
+            // The averted path keeps the process alive, so a still-pending 1 s
+            // timer would hold the event loop for no reason (P3-9).
+            if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+          }
+          // Recheck the gate: the await above can span up to NOTIFY_TIMEOUT_MS,
+          // and the last active handler may have returned in the meantime. The
+          // balloon has already claimed the server "has exited", which is now
+          // wrong — standing down is still the right call (killing an idle
+          // session costs the user the whole MCP connection; stdio cannot
+          // reconnect), so we correct the record instead: a second balloon says
+          // the server survived and that the corner still blocks new calls.
+          const activeAfterNotify = deps.getActiveToolCallCount();
+          if (activeAfterNotify === 0) {
+            deps.logDiagnostic({
+              kind: "failsafe",
+              event: "exit_averted",
+              x: err.x,
+              y: err.y,
+              holdMs: err.holdMs,
+            });
+            // Same dwell episode as the idle path: don't also log armed_idle on
+            // the next tick while the cursor stays in the corner.
+            armedIdleLogged = true;
+            // Fire-and-forget: the process survives here, so there is no race
+            // against `exit` to await (unlike the exit balloon above).
+            deps.notify(EXIT_BALLOON_TITLE, AVERTED_BALLOON_BODY).catch(() => {});
+            return; // the `finally` below clears `stopping`
+          }
+          console.error(
+            "[desktop-touch] FAILSAFE triggered: mouse at top-left corner of the primary monitor. Exiting."
+          );
           deps.logDiagnostic({
             kind: "failsafe",
-            event: "exit_averted",
+            event: "triggered",
+            origin: "watcher",
             x: err.x,
             y: err.y,
             holdMs: err.holdMs,
+            // The post-await value: the gate that actually authorised this exit.
+            activeToolCalls: activeAfterNotify,
           });
-          // Same dwell episode as the idle path: don't also log armed_idle on
-          // the next tick while the cursor stays in the corner.
-          armedIdleLogged = true;
-          // Fire-and-forget: the process survives here, so there is no race
-          // against `exit` to await (unlike the exit balloon above).
-          deps.notify(EXIT_BALLOON_TITLE, AVERTED_BALLOON_BODY).catch(() => {});
-          stopping = false;
-          return;
+          // The existing exit record, unchanged: `inflight` stays the
+          // TRANSPORT count (same semantics as every other kind:"exit"
+          // writer), `shutdownPending` stays required.
+          deps.logDiagnostic({
+            kind: "exit",
+            trigger: "failsafe",
+            exitCode: 1,
+            inflight: deps.getTransportInflight(),
+            shutdownPending: deps.getShutdownPending(),
+          });
+          deps.stopTray();
+          exitCalled = true;
+          deps.exit(1);
+        } finally {
+          if (!exitCalled) stopping = false;
         }
-        console.error(
-          "[desktop-touch] FAILSAFE triggered: mouse at top-left corner of the primary monitor. Exiting."
-        );
-        deps.logDiagnostic({
-          kind: "failsafe",
-          event: "triggered",
-          origin: "watcher",
-          x: err.x,
-          y: err.y,
-          holdMs: err.holdMs,
-          // The post-await value: the gate that actually authorised this exit.
-          activeToolCalls: activeAfterNotify,
-        });
-        // The existing exit record, unchanged: `inflight` stays the
-        // TRANSPORT count (same semantics as every other kind:"exit"
-        // writer), `shutdownPending` stays required.
-        deps.logDiagnostic({
-          kind: "exit",
-          trigger: "failsafe",
-          exitCode: 1,
-          inflight: deps.getTransportInflight(),
-          shutdownPending: deps.getShutdownPending(),
-        });
-        deps.stopTray();
-        deps.exit(1);
       } else if (!armedIdleLogged) {
         armedIdleLogged = true;
         deps.logDiagnostic({

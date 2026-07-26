@@ -97,15 +97,24 @@ let _ghostLastInZoneAt: number | null = null;
 let _ghostNoticeShown = false;
 
 const BALLOON_TITLE = "desktop-touch-mcp: emergency stop";
-const PER_TOOL_BALLOON_BODY =
+/** Exported for the balloon-length guard test — see `ghostBalloonBody`. */
+export const PER_TOOL_BALLOON_BODY =
   "Tool calls are being refused: the mouse has stayed in the top-left corner of the primary monitor. " +
   "Move the cursor away from the corner to resume.";
 const GHOST_BALLOON_TITLE = "desktop-touch-mcp: emergency stop corner is on the PRIMARY monitor";
-function ghostBalloonBody(holdMs: number): string {
+/**
+ * Exported for the balloon-length guard test (`tests/unit/balloon-length.test.ts`).
+ *
+ * MUST stay well inside `NOTIFYICON_BALLOON_TEXT_MAX`: the earlier wording was 272 characters, which
+ * `NotifyIcon.BalloonTipText` refuses outright — and because `showBalloonTip` resolves on SPAWN while
+ * `_ghostNoticeShown` is already latched, the once-per-session notice vanished with no error anywhere
+ * (Codex Round 2). Keep it at ≤240 so the interpolated `holdMs` can grow by several digits safely.
+ */
+export function ghostBalloonBody(holdMs: number): string {
   return (
-    "The cursor dwelled in an area that used to trigger the emergency stop in older versions, " +
-    "but no longer does. The emergency stop now fires only in the top-left corner of the PRIMARY " +
-    `monitor (within 10px of 0,0), held for ${holdMs}ms. This notice is shown once per server session.`
+    "The cursor rested where older versions triggered the emergency stop, but it no longer fires there. " +
+    "The stop is now the top-left corner of the PRIMARY monitor only (within 10px of 0,0), held for " +
+    `${holdMs}ms. Shown once per session.`
   );
 }
 

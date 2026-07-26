@@ -167,8 +167,10 @@ export interface CaptureDriverDeps {
    *  imports `utils/failsafe`, which loads nut-js) while it is. The wiring binds
    *  `() => checkFailsafe("background")`. REQUIRED, not optional: an unwired guard would silently
    *  disappear, so the type system forces the two construction sites (wiring + tests) to provide it.
-   *  Probed at TWO layers (plan §3.3): the poll's early-decline slot (before any credential dialog
-   *  opens) and the injectPane wrapper (injection-instant backstop). */
+   *  Probed at THREE layers (plan §3.3 + Codex Round 2): L1 the poll's early-decline slot (before the
+   *  capture loop starts), L2 immediately before each credential dialog opens — `capture` /
+   *  `confirmInjection` / `offerSave`, for a stop arming during the loop's own awaits — and L3 the
+   *  injectPane wrapper (injection-instant backstop, for a stop arming while a dialog is open). */
   checkFailsafe(): Promise<void>;
 }
 
@@ -567,6 +569,21 @@ export class KeyLockerCaptureDriver {
    * (fail-safe — the current fill still uses the frozen frame, only subsequent commands decline). 0 ⇒ the
    * child has not spawned yet, leave pending for the next poll/tick.
    */
+  private correlateSshChild(paneId: string, shellPid: number, ssh: PendingSshCorrelation): void {
+    const snap = this.deps.snapshot();
+    if (snap.parentMap.size === 0) return; // native failure this poll — retry next poll (no baseline change)
+
+    const newMatch: number[] = [];
+    for (const [pid, info] of sshDescendants(snap, shellPid)) {
+      if (ssh.baseline.has(pid)) continue; // pre-existing (tunnel/sibling) — not this dispatch
+      if (info.host === ssh.dHost) newMatch.push(pid);
+    }
+
+    if (newMatch.length > 1) { this.tracker.markUnknown(paneId); ssh.registered = true; return; }
+    if (newMatch.length === 1) { this.watch.noteSshOpened(paneId, newMatch[0]); ssh.registered = true; }
+    // 0 ⇒ not spawned yet — leave unresolved so a later poll/tick retries.
+  }
+
   /**
    * ADR-030 Phase 1 W7, LAYER 2 (pre-dialog probe — Codex Round 2 P2). Should the caller stand down
    * instead of opening a user-facing dialog?
@@ -582,6 +599,12 @@ export class KeyLockerCaptureDriver {
    * someone else's prompt, whereas opening a dialog writes nothing — and if the stop really is armed,
    * layer 3 still refuses the injection behind it.
    *
+   * That "layer 3 is behind it" argument covers `capture` and `confirmInjection` ONLY: by the time
+   * `offerSave` runs, the injection has already happened, so a fail-open there genuinely does pop a
+   * dialog during an armed stop. It is still the right trade: the branch is unreachable in production
+   * (R-P10 — the real `checkFailsafe` never throws anything but `FailsafeError`), and the save offer
+   * discloses no secret — it only asks whether to persist a binding, which the user can decline.
+   *
    * The decline VALUE is the caller's, not this helper's: each seam has its own contract for "the user
    * declined", and only the call site knows which one keeps the loop on its existing safe path.
    */
@@ -592,21 +615,6 @@ export class KeyLockerCaptureDriver {
     } catch (err) {
       return isFailsafeEngaged(err);
     }
-  }
-
-  private correlateSshChild(paneId: string, shellPid: number, ssh: PendingSshCorrelation): void {
-    const snap = this.deps.snapshot();
-    if (snap.parentMap.size === 0) return; // native failure this poll — retry next poll (no baseline change)
-
-    const newMatch: number[] = [];
-    for (const [pid, info] of sshDescendants(snap, shellPid)) {
-      if (ssh.baseline.has(pid)) continue; // pre-existing (tunnel/sibling) — not this dispatch
-      if (info.host === ssh.dHost) newMatch.push(pid);
-    }
-
-    if (newMatch.length > 1) { this.tracker.markUnknown(paneId); ssh.registered = true; return; }
-    if (newMatch.length === 1) { this.watch.noteSshOpened(paneId, newMatch[0]); ssh.registered = true; }
-    // 0 ⇒ not spawned yet — leave unresolved so a later poll/tick retries.
   }
 
   /**

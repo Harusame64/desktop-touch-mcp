@@ -343,6 +343,50 @@ describe("createFailsafeWatcherTick", () => {
     expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].event === "armed_idle")).toHaveLength(0);
   });
 
+  it("a dependency throwing AFTER the notify does not wedge the watcher (Opus Round 2 P3-4)", async () => {
+    // `stopping` is latched before the notify await; if a later dependency blows up, an unguarded
+    // latch would leave the watcher permanently deaf — the emergency stop would stop working for
+    // the rest of the session, silently. The guarded `finally` releases it on every non-exit path.
+    let boom = true;
+    const h = makeHarness({
+      checkFailsafe: vi.fn(async () => {
+        throw failsafeErr();
+      }),
+      getActiveToolCallCount: vi.fn(() => 1),
+      logDiagnostic: vi.fn(() => {
+        if (boom) throw new Error("diagnostic log write failed");
+      }),
+    });
+
+    await expect(h.tick()).rejects.toThrow("diagnostic log write failed");
+    expect(h.deps.exit).not.toHaveBeenCalled(); // it blew up before the exit was ordered
+
+    // The watcher must still be listening: the next tick probes and exits as it should.
+    boom = false;
+    await h.tick();
+    expect(h.deps.checkFailsafe).toHaveBeenCalledTimes(2);
+    expect(h.deps.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("after an exit is ordered the guard STAYS latched (a fake `exit` that returns must not double-fire)", async () => {
+    // `deps.exit` is `process.exit` in production, but returns in tests and in any fake — releasing
+    // `stopping` on that path would let the very next tick run the whole exit sequence again.
+    const h = makeHarness({
+      checkFailsafe: vi.fn(async () => {
+        throw failsafeErr();
+      }),
+      getActiveToolCallCount: vi.fn(() => 1),
+    });
+    await h.tick();
+    expect(h.deps.exit).toHaveBeenCalledTimes(1);
+
+    await h.tick();
+    await h.tick();
+    expect(h.deps.exit).toHaveBeenCalledTimes(1); // still once
+    expect(h.deps.notify).toHaveBeenCalledTimes(1);
+    expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].kind === "exit")).toHaveLength(1);
+  });
+
   it("a non-FailsafeError throw is ignored (matches the previous inline watcher)", async () => {
     const h = makeHarness({
       checkFailsafe: vi.fn(async () => {
