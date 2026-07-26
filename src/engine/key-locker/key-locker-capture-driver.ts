@@ -405,12 +405,17 @@ export class KeyLockerCaptureDriver {
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
-      // ADR-030 Phase 1 W7 — PRIMARY failsafe guard (early-decline, BEFORE any dialog opens). While the
-      // emergency stop is armed, the background credential flow must not show its confirm/capture UI nor
-      // inject — "the stop asks nothing of the user and writes nothing" starts here, ahead of
-      // `runCaptureLoopFor` (plan §3.3: a guard at injectPane alone would still pop a credential dialog
-      // mid-stop and only drop the injection afterwards). The prompt stays untouched in the pane; the
-      // user re-runs the flow after leaving the corner.
+      // ADR-030 Phase 1 W7 — LAYER 1 of three: the PRIMARY failsafe guard (early-decline, BEFORE the
+      // capture loop starts). While the emergency stop is armed, the background credential flow must not
+      // show its confirm/capture UI nor inject — "the stop asks nothing of the user and writes nothing"
+      // starts here, ahead of `runCaptureLoopFor` (plan §3.3: a guard at injectPane alone would still pop
+      // a credential dialog mid-stop and only drop the injection afterwards). The prompt stays untouched
+      // in the pane; the user re-runs the flow after leaving the corner.
+      //
+      // The other two layers close the windows this one cannot see (Codex Round 2 P2):
+      //   L2 pre-dialog   — `failsafeDeclines()` in front of capture / confirmInjection / offerSave, for a
+      //                     stop that arms during the loop's own awaits (deriveBinding, resolveBinding, …).
+      //   L3 injection    — the `injectPane` wrapper below, for a stop that arms while a dialog is OPEN.
       try {
         await this.deps.checkFailsafe();
       } catch (err) {
@@ -562,6 +567,33 @@ export class KeyLockerCaptureDriver {
    * (fail-safe — the current fill still uses the frozen frame, only subsequent commands decline). 0 ⇒ the
    * child has not spawned yet, leave pending for the next poll/tick.
    */
+  /**
+   * ADR-030 Phase 1 W7, LAYER 2 (pre-dialog probe — Codex Round 2 P2). Should the caller stand down
+   * instead of opening a user-facing dialog?
+   *
+   * The poll's layer-1 guard runs BEFORE the capture loop starts, but `deriveBinding` / `resolveBinding`
+   * / `awaitLanded` await in between, and the stop can arm during those awaits — the layer-3 backstop
+   * (`injectPane`) then only fires AFTER a dialog has already asked the user something. "The stop asks
+   * nothing of the user and writes nothing" needs a probe immediately before each dialog opens.
+   *
+   * FAIL-OPEN on a non-`FailsafeError` probe failure (plan R-P10: the real `checkFailsafe` is fail-open,
+   * so this branch is mock-only in production). Note the DELIBERATE asymmetry with `injectPane`, which
+   * drops the operation (`executor_failed`) on the same input: injection is an IRREVERSIBLE write into
+   * someone else's prompt, whereas opening a dialog writes nothing — and if the stop really is armed,
+   * layer 3 still refuses the injection behind it.
+   *
+   * The decline VALUE is the caller's, not this helper's: each seam has its own contract for "the user
+   * declined", and only the call site knows which one keeps the loop on its existing safe path.
+   */
+  private async failsafeDeclines(): Promise<boolean> {
+    try {
+      await this.deps.checkFailsafe();
+      return false;
+    } catch (err) {
+      return isFailsafeEngaged(err);
+    }
+  }
+
   private correlateSshChild(paneId: string, shellPid: number, ssh: PendingSshCorrelation): void {
     const snap = this.deps.snapshot();
     if (snap.parentMap.size === 0) return; // native failure this poll — retry next poll (no baseline change)
@@ -590,8 +622,12 @@ export class KeyLockerCaptureDriver {
       deriveBinding: (cmd, session) => this.deps.deriveBinding(cmd, session),
       resolveBinding: (k) => this.deps.resolveBinding(k),
       bindBinding: (k, id, meta) => this.deps.bindBinding(k, id, meta),
+      // `confirmPolicyFor` is a SYNCHRONOUS policy read, not UI — nothing to probe before.
       confirmPolicyFor: (k) => this.deps.confirmPolicyFor(k),
-      capture: (id) => this.deps.capture(id),
+      // PRE-DIALOG probe (layer 2 — see `failsafeDeclines`): the secure capture dialog must not open
+      // while the stop is armed. `{ captured: false }` is the loop's existing "user gave nothing"
+      // path (`capture_cancelled`): no secret is ever requested, stored, or touched.
+      capture: async (id) => ((await this.failsafeDeclines()) ? { captured: false } : this.deps.capture(id)),
       deleteSecret: (id) => this.deps.deleteSecret(id),
       // INJECTION-INSTANT re-check (Codex R4 line 524 — the AUTHORITATIVE disclosure guard). The poll's
       // early-decline ran BEFORE the loop; but `confirmPolicyFor`/`confirmInjection`/`capture` (a secure UI
@@ -604,9 +640,12 @@ export class KeyLockerCaptureDriver {
       // secret — reverse-orphan). This is the local-vs-remote analog of L2's window/title injection-instant
       // re-verify, which does NOT catch a session change (plan §3 W3).
       injectPane: async (b, id, sub) => {
-        // ADR-030 Phase 1 W7 — BACKSTOP failsafe guard at the injection instant (defense in depth): the
-        // confirm/capture dialogs above await for arbitrary user time, during which the stop can arm —
-        // a case the poll's early-decline (which ran before the loop) cannot see. Evaluate the failsafe
+        // ADR-030 Phase 1 W7 — LAYER 3, the BACKSTOP guard at the injection instant (defense in depth):
+        // the confirm/capture dialogs above await for arbitrary USER time, during which the stop can arm —
+        // a case neither the poll's early-decline (layer 1, before the loop) nor the pre-dialog probes
+        // (layer 2, before each dialog OPENS) can see. This is also the layer that makes layer 2's
+        // fail-open safe: a probe hiccup there may let a dialog open, but the write still stops here.
+        // Evaluate the failsafe
         // FIRST, so the session re-verify below stays IMMEDIATELY adjacent to the actual injection
         // (`liveSessionMatchesExpected` is synchronous — inserting an await between it and
         // `deps.injectPane` would widen the TOCTOU window the Codex-R4 guard exists to close).
@@ -635,8 +674,13 @@ export class KeyLockerCaptureDriver {
         if (result.accepted) rec.loopPhase = "post-landed";
         return result;
       },
-      confirmInjection: (b) => this.deps.confirmInjection(b),
-      offerSave: (b) => this.deps.offerSave(b),
+      // PRE-DIALOG probe (layer 2): `false` is the loop's existing user-rejected path
+      // (`confirm_rejected`) — the autofill is declined and nothing is typed.
+      confirmInjection: async (b) => ((await this.failsafeDeclines()) ? false : this.deps.confirmInjection(b)),
+      // PRE-DIALOG probe (layer 2): `"not_now"` — the ONLY SaveChoice that neither persists a binding
+      // nor records a [Never] tombstone. The loop discards (its `finally` deletes the captured secret),
+      // so an armed stop leaves NO durable trace of a decision the user was never asked to make.
+      offerSave: async (b) => ((await this.failsafeDeclines()) ? "not_now" : this.deps.offerSave(b)),
       mintOpaqueId: () => this.deps.mintOpaqueId(),
       now: () => this.deps.now(),
       ...(this.deps.isNever ? { isNever: (k: string) => this.deps.isNever!(k) } : {}),
