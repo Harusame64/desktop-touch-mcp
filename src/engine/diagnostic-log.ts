@@ -124,7 +124,9 @@ export type DiagnosticEvent =
       // ADR-030 Phase 1 (plan §3.2): failsafe observability. `x`/`y` are the
       // trigger coordinates (ADR OQ1 — was it a negative-band trigger?).
       kind: "failsafe";
-      event: "triggered" | "armed_idle" | "ghost_zone_notice";
+      // "exit_averted": the watcher was about to exit, but the last active
+      // tool call finished during the pre-exit notify await, so it stood down.
+      event: "triggered" | "armed_idle" | "ghost_zone_notice" | "exit_averted";
       origin?: "watcher" | "per-tool" | "background";
       x: number;
       y: number;

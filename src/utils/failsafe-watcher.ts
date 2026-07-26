@@ -41,7 +41,9 @@ export interface FailsafeWatcherDeps {
    *  owns the watcher-path observability — plan §3.2). */
   checkFailsafe: () => Promise<void>;
   /** Exit-gate input: tool handlers past the pre-check, still executing
-   *  (`getActiveToolCallCount` from failsafe-wrap — plan Round 4). */
+   *  (`getActiveToolCallCount` from failsafe-wrap — plan Round 4). Read TWICE
+   *  on the trigger path: once to open the exit branch, once after the notify
+   *  await to confirm the gate is still open (the `exit_averted` recheck). */
   getActiveToolCallCount: () => number;
   /** For the existing `kind:"exit"` log line only: transport-level inflight
    *  (`inflightIds.size` — refusals included, per its shutdown-grace semantics). */
@@ -61,6 +63,8 @@ export interface FailsafeWatcherDeps {
  *   - `FailsafeError` + active tool calls > 0 → notify (≤1 s), console line,
  *     two log lines (new `kind:"failsafe"` with coordinates + the existing
  *     `kind:"exit"` with its unchanged fields), stopTray, exit(1).
+ *   - `FailsafeError` + active > 0, but the count fell to 0 during the notify
+ *     await → log `exit_averted` once per dwell episode and stay alive.
  *   - `FailsafeError` + idle → log `armed_idle` once per dwell episode and
  *     keep the server alive.
  *   - any other throw → ignore (matches the previous inline watcher).
@@ -87,6 +91,28 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
           deps.notify(EXIT_BALLOON_TITLE, exitBalloonBody(err.holdMs)).catch(() => {}),
           new Promise<void>((resolve) => setTimeout(resolve, NOTIFY_TIMEOUT_MS)),
         ]);
+        // Recheck the gate: the await above can span up to NOTIFY_TIMEOUT_MS,
+        // and the last active handler may have returned in the meantime. The
+        // balloon has already claimed the server "has exited", which is now
+        // wrong — but standing down is still the cheaper error: killing an
+        // idle session costs the user the whole MCP connection (stdio cannot
+        // reconnect), while the stale balloon costs one confusing line and
+        // the per-tool gate keeps refusing calls for as long as the cursor
+        // stays parked.
+        const activeAfterNotify = deps.getActiveToolCallCount();
+        if (activeAfterNotify === 0) {
+          deps.logDiagnostic({
+            kind: "failsafe",
+            event: "exit_averted",
+            x: err.x,
+            y: err.y,
+            holdMs: err.holdMs,
+          });
+          // Same dwell episode as the idle path: don't also log armed_idle on
+          // the next tick while the cursor stays in the corner.
+          armedIdleLogged = true;
+          return;
+        }
         console.error(
           "[desktop-touch] FAILSAFE triggered: mouse at top-left corner of the primary monitor. Exiting."
         );
@@ -97,7 +123,8 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
           x: err.x,
           y: err.y,
           holdMs: err.holdMs,
-          activeToolCalls: active,
+          // The post-await value: the gate that actually authorised this exit.
+          activeToolCalls: activeAfterNotify,
         });
         // The existing exit record, unchanged: `inflight` stays the
         // TRANSPORT count (same semantics as every other kind:"exit"
