@@ -211,8 +211,10 @@ describe("createFailsafeWatcherTick", () => {
     expect(h.deps.exit).not.toHaveBeenCalled();
     expect(h.deps.stopTray).not.toHaveBeenCalled();
     expect(consoleSpy).not.toHaveBeenCalled();
-    expect(h.deps.notify).toHaveBeenCalledTimes(1); // balloon already went out
-    expect(h.order).toEqual(["notify", "log:failsafe"]);
+    // Two balloons: the exit balloon already went out before the recheck, so a
+    // second one corrects it (content pinned in the dedicated test below).
+    expect(h.deps.notify).toHaveBeenCalledTimes(2);
+    expect(h.order).toEqual(["notify", "log:failsafe", "notify"]);
     expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].kind === "exit")).toHaveLength(0);
 
     const averted = h.deps.logDiagnostic.mock.calls.filter((c) => c[0].event === "exit_averted");
@@ -253,6 +255,92 @@ describe("createFailsafeWatcherTick", () => {
       event: "triggered",
       activeToolCalls: 1,
     });
+  });
+
+  it("averted → a CORRECTING balloon follows the exit balloon (Opus Round 1 P2-2)", async () => {
+    // The exit balloon has already told the user the server "has exited"; when
+    // the recheck stands the exit down, that claim must not be left standing.
+    let calls = 0;
+    const h = makeHarness({
+      checkFailsafe: vi.fn(async () => {
+        throw failsafeErr(1, 1, 500);
+      }),
+      getActiveToolCallCount: vi.fn(() => (++calls === 1 ? 1 : 0)),
+    });
+    await h.tick();
+
+    expect(h.deps.exit).not.toHaveBeenCalled();
+    expect(h.deps.notify).toHaveBeenCalledTimes(2);
+    const [firstTitle, firstBody] = h.deps.notify.mock.calls[0];
+    const [secondTitle, secondBody] = h.deps.notify.mock.calls[1];
+    expect(firstBody).toContain("has exited"); // the claim being corrected
+    expect(secondTitle).toBe(firstTitle); // same balloon identity, so it reads as a correction
+    expect(secondBody).toContain("still running");
+    expect(secondBody).not.toContain("has exited");
+    expect(secondBody).toMatch(/blocked/); // ...but new calls are still refused
+    // The correction is fire-and-forget AFTER the log line (the process lives on,
+    // so there is no exit to race).
+    expect(h.order).toEqual(["notify", "log:failsafe", "notify"]);
+  });
+
+  it("re-entrancy: a tick landing DURING the notify await returns immediately (no double balloon / double log)", async () => {
+    // The server drives this tick from a 500 ms setInterval that does not await
+    // the previous invocation, while the trigger path awaits the notifier for up
+    // to 1 s — without the `stopping` guard the overlapping tick fires a second
+    // balloon and a second `triggered` line (Opus Round 1 P2-3).
+    let releaseNotify!: () => void;
+    let notifyEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      notifyEntered = resolve;
+    });
+    const h = makeHarness({
+      checkFailsafe: vi.fn(async () => {
+        throw failsafeErr();
+      }),
+      getActiveToolCallCount: vi.fn(() => 1),
+      notify: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseNotify = resolve;
+            notifyEntered();
+          }),
+      ),
+    });
+    const first = h.tick();
+    await entered; // the first tick is now parked on the notify await
+
+    await h.tick(); // the overlapping 500 ms tick — must no-op
+    expect(h.deps.notify).toHaveBeenCalledTimes(1);
+    expect(h.deps.checkFailsafe).toHaveBeenCalledTimes(1); // it returned before even probing
+    expect(h.deps.logDiagnostic).not.toHaveBeenCalled();
+
+    releaseNotify();
+    await first;
+    expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].event === "triggered")).toHaveLength(1);
+    expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].kind === "exit")).toHaveLength(1);
+    expect(h.deps.notify).toHaveBeenCalledTimes(1);
+    expect(h.deps.exit).toHaveBeenCalledTimes(1);
+  });
+
+  it("averted RELEASES the re-entrancy guard: a later tick can still exit when a new call is active", async () => {
+    // tick 1: 1 → 0 (averted, guard must be cleared); tick 2: a fresh call is
+    // running, so the runaway brake has to work again.
+    const counts = [1, 0, 2, 2];
+    let i = 0;
+    const h = makeHarness({
+      checkFailsafe: vi.fn(async () => {
+        throw failsafeErr();
+      }),
+      getActiveToolCallCount: vi.fn(() => counts[i++] ?? 0),
+    });
+    await h.tick();
+    expect(h.deps.exit).not.toHaveBeenCalled();
+
+    await h.tick();
+    expect(h.deps.exit).toHaveBeenCalledWith(1);
+    expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].event === "triggered")).toHaveLength(1);
+    // Still the same dwell episode — averting already spent its log line.
+    expect(h.deps.logDiagnostic.mock.calls.filter((c) => c[0].event === "armed_idle")).toHaveLength(0);
   });
 
   it("a non-FailsafeError throw is ignored (matches the previous inline watcher)", async () => {

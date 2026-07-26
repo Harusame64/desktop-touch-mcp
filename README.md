@@ -530,8 +530,8 @@ screenshot(diffMode=true)                → check only what changed (~160 tok)
 **Park the mouse in the top-left corner of the primary monitor (within 10px of 0,0) for 500ms continuously to trigger the emergency stop.**
 
 - The trigger corner is on the **primary monitor only**. Areas that used to trigger the stop in older versions (monitors left of or above the primary) no longer do; if the cursor dwells there, a one-time balloon notification points you to the right corner.
-- **While a tool call is running**: the server exits immediately (exit code 1) — the runaway-automation brake. A balloon notification and a diagnostic log entry (with cursor coordinates) record why it stopped.
-- **While idle**: the server stays up and refuses new tool calls until the cursor leaves the corner. Background credential autofill (`key_locker`) is also suspended **before any of its dialogs open** — while you hold the corner, no credential prompt dialog appears and no credential is typed.
+- **While a tool call is running**: the server exits (exit code 1) — the runaway-automation brake. A balloon notification and a diagnostic log entry (with cursor coordinates) record why it stopped. Only a call that is actually mid-flight triggers the exit; in the rare case where that call finishes during the ~1 second the notification takes, the server stays up instead and a follow-up balloon corrects the first one.
+- **While idle**: the server stays up and refuses new tool calls until the cursor leaves the corner. Background credential autofill (`key_locker`) is cancelled **before any of its dialogs open** — while you hold the corner, no credential prompt dialog appears and no credential is typed. It does not pick up again by itself: move the cursor away from the corner and run the command again.
 - **Per-tool check**: runs before every tool handler. **Background monitor**: 500ms polling as a backup for long-running operations. Trigger radius: 10px.
 - `DESKTOP_TOUCH_FAILSAFE_HOLD_MS` — dwell time in ms before the stop fires (default `500`; `0` = fire immediately on corner entry).
 

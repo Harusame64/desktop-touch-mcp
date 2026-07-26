@@ -10,12 +10,17 @@
   area that used to trigger it, a one-time notification explains where the real
   corner is.
 - **The emergency stop only exits the server while a tool call is running.** When the
-  server is idle it now stays up and refuses new tool calls — and suspends background
-  credential autofill (`key_locker`) before any of its dialogs open — until the cursor
-  leaves the corner, instead of tearing down the whole MCP session (stdio cannot
-  reconnect).
-- **A stop is never silent anymore.** Both trigger paths show a Windows balloon
-  notification and write a diagnostic log entry with the cursor coordinates.
+  server is idle it now stays up and refuses new tool calls until the cursor leaves the
+  corner, instead of tearing down the whole MCP session (stdio cannot reconnect).
+  Background credential autofill (`key_locker`) is cancelled before any of its dialogs
+  open; it does not pick up again by itself, so move the cursor away from the corner
+  and run the command again.
+- **A stop is no longer silent.** Every trigger writes a diagnostic log entry with the
+  cursor coordinates. A Windows balloon appears when the server exits, when a tool call
+  is refused, and — in the rare case where the running call finished first and the exit
+  was stood down — as a follow-up that corrects the earlier one. Arming the stop while
+  nothing is running is recorded in the log only, so resting the cursor in the corner
+  does not spam notifications.
 - Docs: the failsafe was still described as "immediately terminate" from the pre-1.7.2
   era; README (en/ja), SECURITY.md and the MCP server instructions now describe the
   500ms dwell, the primary-monitor corner, and `DESKTOP_TOUCH_FAILSAFE_HOLD_MS`.

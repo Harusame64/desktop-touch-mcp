@@ -19,6 +19,16 @@
 //   * every CaptureLoopOutcome flows through as { status: "filled", outcome }.
 //   * W2 close: unwatchPane + forget same-turn.
 import { describe, expect, it, vi } from "vitest";
+
+// The `FailsafeError.name` contract pin at the bottom of this file imports the REAL
+// `src/utils/failsafe.js`, which loads the nut-js mouse at module scope — mock the native
+// module away. (The driver itself never touches it: that is exactly why the contract is a
+// bare string and needs pinning.)
+vi.mock("../../src/engine/nutjs.js", () => ({
+  mouse: { getPosition: vi.fn() },
+}));
+
+import { FailsafeError } from "../../src/utils/failsafe.js";
 import {
   KeyLockerCaptureDriver,
   type CaptureDriverDeps,
@@ -949,5 +959,22 @@ describe("KeyLockerCaptureDriver — ADR-030 background failsafe guard (2 layers
     // origin:"background" diagnostic line is emitted INSIDE the real
     // checkFailsafe (§3.2), so the unit-level substitute is the probe count.
     expect(h.deps.checkFailsafe).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * ADR-030 Phase 1 (Opus Round 1 P2-4) — the cross-module string contract.
+ *
+ * The driver deliberately does NOT import `utils/failsafe.js` (it would drag the nut-js native module
+ * into the engine-pure graph), so it identifies the failsafe rejection structurally, by name:
+ * `isFailsafeEngaged` in `src/engine/key-locker/key-locker-capture-driver.ts` (`err.name === "FailsafeError"`).
+ * Nothing else pins that literal, so a rename / a subclass that forgets `this.name` would silently turn
+ * both W7 guards into no-ops. This test imports the REAL class and pins the name it must keep.
+ */
+describe("FailsafeError.name — the contract the driver's structural check depends on", () => {
+  it("is exactly 'FailsafeError' (and the instance is an Error, as the check also requires)", () => {
+    const err = new FailsafeError(0, 0, 500);
+    expect(err.name).toBe("FailsafeError");
+    expect(err).toBeInstanceOf(Error);
   });
 });

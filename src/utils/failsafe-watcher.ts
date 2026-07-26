@@ -34,6 +34,11 @@ function exitBalloonBody(holdMs: number): string {
     `of the primary monitor for ${holdMs}ms. The MCP server has exited.`
   );
 }
+/** The correction sent when the exit is averted after the exit balloon has
+ *  already claimed the server is gone — see the `exit_averted` branch below. */
+const AVERTED_BALLOON_BODY =
+  "The operation finished before shutdown. The server is still running; new tool calls stay " +
+  "blocked while the mouse stays in the corner.";
 
 export interface FailsafeWatcherDeps {
   /** The shared failsafe probe — `() => checkFailsafe("watcher")` in production
@@ -64,7 +69,8 @@ export interface FailsafeWatcherDeps {
  *     two log lines (new `kind:"failsafe"` with coordinates + the existing
  *     `kind:"exit"` with its unchanged fields), stopTray, exit(1).
  *   - `FailsafeError` + active > 0, but the count fell to 0 during the notify
- *     await → log `exit_averted` once per dwell episode and stay alive.
+ *     await → log `exit_averted` once per dwell episode, send a correcting
+ *     balloon (the exit balloon already went out) and stay alive.
  *   - `FailsafeError` + idle → log `armed_idle` once per dwell episode and
  *     keep the server alive.
  *   - any other throw → ignore (matches the previous inline watcher).
@@ -74,8 +80,16 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
   // the current dwell episode, cleared on the first tick where the probe
   // resolves (cursor left the corner / dwell restarted).
   let armedIdleLogged = false;
+  // Re-entrancy guard for the trigger path. The server drives this tick from a
+  // 500 ms `setInterval`, which does NOT await the previous invocation, while
+  // the trigger path awaits the notifier for up to NOTIFY_TIMEOUT_MS (1 s) —
+  // so up to two further ticks can enter the same branch and double-fire the
+  // balloon / the `triggered` log line. Set before the await, cleared only on
+  // the averted path (an exiting process never needs it back).
+  let stopping = false;
 
   return async () => {
+    if (stopping) return;
     try {
       await deps.checkFailsafe();
       armedIdleLogged = false;
@@ -83,22 +97,31 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
       if (!(err instanceof FailsafeError)) return;
       const active = deps.getActiveToolCallCount();
       if (active > 0) {
+        stopping = true;
         // Runaway brake: a tool handler is mid-execution — exit, as before.
         // Notify BEFORE exiting (the spawned balloon child survives the
         // parent), but never let a stalled notifier delay the stop by more
         // than NOTIFY_TIMEOUT_MS.
-        await Promise.race([
-          deps.notify(EXIT_BALLOON_TITLE, exitBalloonBody(err.holdMs)).catch(() => {}),
-          new Promise<void>((resolve) => setTimeout(resolve, NOTIFY_TIMEOUT_MS)),
-        ]);
+        let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            deps.notify(EXIT_BALLOON_TITLE, exitBalloonBody(err.holdMs)).catch(() => {}),
+            new Promise<void>((resolve) => {
+              timeoutTimer = setTimeout(resolve, NOTIFY_TIMEOUT_MS);
+            }),
+          ]);
+        } finally {
+          // The averted path keeps the process alive, so a still-pending 1 s
+          // timer would hold the event loop for no reason (P3-9).
+          if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+        }
         // Recheck the gate: the await above can span up to NOTIFY_TIMEOUT_MS,
         // and the last active handler may have returned in the meantime. The
         // balloon has already claimed the server "has exited", which is now
-        // wrong — but standing down is still the cheaper error: killing an
-        // idle session costs the user the whole MCP connection (stdio cannot
-        // reconnect), while the stale balloon costs one confusing line and
-        // the per-tool gate keeps refusing calls for as long as the cursor
-        // stays parked.
+        // wrong — standing down is still the right call (killing an idle
+        // session costs the user the whole MCP connection; stdio cannot
+        // reconnect), so we correct the record instead: a second balloon says
+        // the server survived and that the corner still blocks new calls.
         const activeAfterNotify = deps.getActiveToolCallCount();
         if (activeAfterNotify === 0) {
           deps.logDiagnostic({
@@ -111,6 +134,10 @@ export function createFailsafeWatcherTick(deps: FailsafeWatcherDeps): () => Prom
           // Same dwell episode as the idle path: don't also log armed_idle on
           // the next tick while the cursor stays in the corner.
           armedIdleLogged = true;
+          // Fire-and-forget: the process survives here, so there is no race
+          // against `exit` to await (unlike the exit balloon above).
+          deps.notify(EXIT_BALLOON_TITLE, AVERTED_BALLOON_BODY).catch(() => {});
+          stopping = false;
           return;
         }
         console.error(
