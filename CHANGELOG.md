@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — Emergency stop: primary-monitor corner only, and no more silent exits
+## [1.14.0] - 2026-07-26 — the emergency stop guards the primary-monitor corner only, and never stops silently
 
 - **The failsafe corner is now the top-left of the primary monitor only.** The trigger
   zone had no lower bound, so on multi-monitor setups with a monitor left of or above
