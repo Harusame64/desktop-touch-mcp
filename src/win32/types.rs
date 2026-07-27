@@ -64,6 +64,18 @@ pub struct NativeWgcResult {
     pub height: u32,
 }
 
+/// ADR-031 — result of `win32_capture_screen_region`. `data` is RGBA8
+/// top-down, length equals `width * height * 4`, same shape as
+/// `NativePrintWindowResult` so the engine's encode step treats every capture
+/// source uniformly. The pixels come from the screen DC, which spans the whole
+/// virtual desktop, so the requested origin may be negative.
+#[napi(object)]
+pub struct NativeCaptureRegionResult {
+    pub data: Buffer,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// ADR-027 — optional knobs for `win32_wgc_capture_window`. All fields are
 /// optional; the engine applies defaults (cursor off, border-suppression best
 /// effort, 1500ms drain timeout). `include_cursor` / `remove_border` are

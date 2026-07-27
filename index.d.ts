@@ -119,6 +119,14 @@ export interface NativeWgcCaptureOptions {
   timeoutMs?: number
 }
 
+// ─── ADR-031: absolute-coordinate screen / region capture ────────────────────
+
+export interface NativeCaptureRegionResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
 export interface NativeMonitorInfo {
   handle: bigint
   primary: boolean
@@ -368,6 +376,10 @@ export declare function win32GetWindowLongPtrW(hwnd: bigint, nIndex: number): nu
 export declare function win32PrintWindowToBuffer(hwnd: bigint, flags: number): NativePrintWindowResult
 // ─── ADR-027: Windows.Graphics.Capture (WGC) ─────────────────────────────────
 export declare function win32WgcCaptureWindow(hwnd: bigint, opts?: NativeWgcCaptureOptions): Promise<NativeWgcResult>
+// ─── ADR-031: absolute-coordinate screen / region capture ────────────────────
+// `x` / `y` are signed virtual-screen pixels — negative values address a
+// monitor left of or above the primary one.
+export declare function win32CaptureScreenRegion(x: number, y: number, width: number, height: number): NativeCaptureRegionResult
 export declare function win32EnumMonitors(): NativeMonitorInfo[]
 export declare function win32GetWindowDpi(hwnd: bigint): number
 export declare function win32SetProcessDpiAwareness(level: number): boolean

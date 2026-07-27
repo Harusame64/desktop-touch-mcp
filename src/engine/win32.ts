@@ -566,6 +566,36 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
 }
 
 /**
+ * ADR-031 — copy a rectangle of the virtual desktop into an RGBA top-down
+ * buffer (length = width*height*4).
+ *
+ * `x` / `y` are signed virtual-screen pixels, the same space `enumMonitors`
+ * reports, so a monitor left of or above the primary one is addressed with
+ * negative values — the case libnut's absolute-coordinate capture rejects
+ * outright.
+ *
+ * Throws when the requested rectangle is empty, too large for Win32's i32
+ * extents, or the GDI sequence fails. It does NOT validate the coordinates
+ * against the monitor layout: that is the capture choke point's job
+ * (`engine/image.ts`), which turns an out-of-range rectangle into a typed
+ * error before any backend is called.
+ */
+export function captureScreenRegion(region: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): { data: Buffer; width: number; height: number } {
+  const r = requireNativeWin32().win32CaptureScreenRegion!(
+    region.x,
+    region.y,
+    region.width,
+    region.height,
+  );
+  return { data: r.data, width: r.width, height: r.height };
+}
+
+/**
  * ADR-027 — capture a window via Windows.Graphics.Capture (WGC).
  *
  * Reads the *real* pixels from the DWM composition surface, so it works for

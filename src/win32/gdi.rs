@@ -1,8 +1,14 @@
 //! GDI capture (ADR-007 P2) — `print_window_to_buffer`.
+//! GDI capture (ADR-031) — `capture_screen_region`.
 //!
 //! Replaces the koffi-driven sequence in `printWindowToBuffer`:
 //!   GetWindowRect → GetDC(NULL) → CreateCompatibleDC → CreateCompatibleBitmap
 //!   → SelectObject → PrintWindow → GetDIBits → reshape BGRA→RGBA → cleanup.
+//!
+//! `win32_capture_screen_region` runs the same sequence with `BitBlt` in place
+//! of `PrintWindow`, reading straight from the screen DC — which covers the
+//! whole virtual desktop, so a monitor placed left of or above the primary one
+//! is addressed by a negative origin rather than being out of range.
 //!
 //! Every Win32 handle is owned by a small RAII guard. The let-binding order
 //! in `print_window_to_buffer` therefore matters: `screen_dc` lives longest,
@@ -18,15 +24,15 @@ use napi::bindgen_prelude::{BigInt, Buffer};
 use napi_derive::napi;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
-    HGDIOBJ,
+    HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 use super::safety::napi_safe_call;
-use super::types::NativePrintWindowResult;
+use super::types::{NativeCaptureRegionResult, NativePrintWindowResult};
 
 fn hwnd_from_bigint(b: BigInt) -> HWND {
     let (_sign, val, _lossless) = b.get_u64();
@@ -197,4 +203,218 @@ pub fn win32_print_window_to_buffer(
             height: height as u32,
         })
     })
+}
+
+// ── ADR-031: absolute-coordinate screen / region capture ────────────────────
+
+/// Byte length of the RGBA buffer for a `width` × `height` capture, or an
+/// error describing why those dimensions cannot be captured.
+///
+/// Split out from the napi entry point because it is the only part of the
+/// capture that does not depend on the machine's monitor geometry, and CI is
+/// single-monitor: the geometry-dependent behaviour (negative origins, a
+/// region spanning two monitors) is covered by the multi-monitor E2E and the
+/// dogfood checklist instead (ADR-031 §4.3).
+fn capture_buffer_len(width: u32, height: u32) -> napi::Result<usize> {
+    // An empty rect is a caller bug, not a capture: CreateCompatibleBitmap
+    // would hand back a 1x1 monochrome stub and the caller would decode it as
+    // a real frame.
+    if width == 0 || height == 0 {
+        return Err(napi::Error::from_reason(format!(
+            "Invalid capture dimensions: {width}x{height}"
+        )));
+    }
+    // BitBlt / CreateCompatibleBitmap take i32 extents; anything past that
+    // would wrap to a negative width when cast.
+    if width > i32::MAX as u32 || height > i32::MAX as u32 {
+        return Err(napi::Error::from_reason(format!(
+            "Capture dimensions exceed the Win32 limit: {width}x{height}"
+        )));
+    }
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| {
+            napi::Error::from_reason(format!(
+                "Capture buffer size overflows: {width}x{height}"
+            ))
+        })
+}
+
+/// Capture a rectangle of the virtual desktop into an RGBA top-down buffer.
+///
+/// `x` / `y` are **signed virtual-screen pixels** — the same coordinate space
+/// `win32EnumMonitors` reports and dot-by-dot screenshots hand back — so a
+/// monitor left of or above the primary one is addressed with negative values.
+/// The screen DC returned by `GetDC(None)` spans the entire virtual desktop,
+/// which is what makes that work.
+///
+/// The raster op is `SRCCOPY` only. `CAPTUREBLT` would pull layered windows
+/// (tooltips, IME candidate popups) into the frame and make consecutive
+/// captures differ for reasons the caller did not cause, which breaks the
+/// frame-diff comparisons downstream (ADR-031 §4.2).
+///
+/// Guard order matches `win32_print_window_to_buffer` above and the lifecycle
+/// invariant in this file's header: `screen_dc` lives longest, then `mem_dc`,
+/// then `bitmap`, then `select_guard`.
+#[napi]
+pub fn win32_capture_screen_region(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> napi::Result<NativeCaptureRegionResult> {
+    napi_safe_call("win32_capture_screen_region", || {
+        let buffer_len = capture_buffer_len(width, height)?;
+        let w = width as i32;
+        let h = height as i32;
+
+        // 1. Screen DC — covers the whole virtual desktop, negative origins
+        //    included. Dropped LAST (LIFO) so everything selected into it is
+        //    already gone by then.
+        let screen_dc_raw = unsafe { GetDC(None) };
+        if screen_dc_raw.0.is_null() {
+            return Err(napi::Error::from_reason("GetDC failed"));
+        }
+        let screen_dc = DcGuard {
+            target: None,
+            dc: screen_dc_raw,
+            is_mem: false,
+        };
+
+        // 2. Memory DC compatible with the screen.
+        let mem_dc_raw = unsafe { CreateCompatibleDC(Some(screen_dc.dc)) };
+        if mem_dc_raw.0.is_null() {
+            return Err(napi::Error::from_reason("CreateCompatibleDC failed"));
+        }
+        let mem_dc = DcGuard {
+            target: None,
+            dc: mem_dc_raw,
+            is_mem: true,
+        };
+
+        // 3. Bitmap the size of the requested region. Compatible with the
+        //    SCREEN dc, not the memory dc — a memory DC starts out holding a
+        //    1x1 monochrome bitmap, so asking it for a compatible bitmap
+        //    yields a monochrome one.
+        let bitmap_raw = unsafe { CreateCompatibleBitmap(screen_dc.dc, w, h) };
+        if bitmap_raw.0.is_null() {
+            return Err(napi::Error::from_reason("CreateCompatibleBitmap failed"));
+        }
+        let _bitmap = BitmapGuard(bitmap_raw);
+
+        // 4. Bind the bitmap; the previous selection is restored on drop.
+        let prev = unsafe { SelectObject(mem_dc.dc, HGDIOBJ(bitmap_raw.0 as *mut _)) };
+        let _select_guard = SelectGuard {
+            dc: mem_dc.dc,
+            old: if prev.0.is_null() { None } else { Some(prev) },
+        };
+
+        // 5. Copy the requested rectangle out of the screen DC. Unlike
+        //    PrintWindow above, a FALSE here means no pixels were produced at
+        //    all, so it is an error rather than something to fall through.
+        unsafe { BitBlt(mem_dc.dc, 0, 0, w, h, Some(screen_dc.dc), x, y, SRCCOPY) }
+            .map_err(|e| napi::Error::from_reason(format!("BitBlt failed: {e}")))?;
+
+        // 6. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
+        let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
+        bmi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h, // negative = top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..unsafe { std::mem::zeroed() }
+        };
+        let mut pixels: Vec<u8> = vec![0u8; buffer_len];
+        let scanlines = unsafe {
+            GetDIBits(
+                mem_dc.dc,
+                bitmap_raw,
+                0,
+                height,
+                Some(pixels.as_mut_ptr() as *mut std::ffi::c_void),
+                &mut bmi,
+                DIB_RGB_COLORS,
+            )
+        };
+        if scanlines == 0 {
+            return Err(napi::Error::from_reason("GetDIBits returned 0 scanlines"));
+        }
+
+        // 7. BGRA → RGBA + opaque alpha (GDI leaves the alpha byte as garbage
+        //    for a screen BitBlt, so it is forced rather than trusted).
+        for px in pixels.chunks_exact_mut(4) {
+            px.swap(0, 2);
+            px[3] = 255;
+        }
+
+        Ok(NativeCaptureRegionResult {
+            data: Buffer::from(pixels),
+            width,
+            height,
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Only the geometry-independent half of the capture is unit-testable here:
+    // CI runs a single headless monitor, so negative origins and cross-monitor
+    // regions are pinned by the multi-monitor E2E and the dogfood checklist
+    // (ADR-031 §4.3). What these pin is the argument contract the napi entry
+    // relies on before it touches any Win32 handle.
+
+    #[test]
+    fn buffer_len_is_four_bytes_per_pixel() {
+        assert_eq!(capture_buffer_len(1, 1).unwrap(), 4);
+        assert_eq!(capture_buffer_len(1920, 1080).unwrap(), 1920 * 1080 * 4);
+    }
+
+    #[test]
+    fn empty_dimensions_are_rejected() {
+        for (w, h) in [(0u32, 1080u32), (1920, 0), (0, 0)] {
+            let err = capture_buffer_len(w, h).unwrap_err();
+            assert!(
+                err.reason.contains("Invalid capture dimensions"),
+                "unexpected reason: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn dimensions_past_the_win32_extent_limit_are_rejected() {
+        let err = capture_buffer_len(i32::MAX as u32 + 1, 1).unwrap_err();
+        assert!(
+            err.reason.contains("exceed the Win32 limit"),
+            "unexpected reason: {}",
+            err.reason
+        );
+        let err = capture_buffer_len(1, u32::MAX).unwrap_err();
+        assert!(
+            err.reason.contains("exceed the Win32 limit"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    // The largest pair that clears the extent check still multiplies out to
+    // more than usize::MAX on a 32-bit target; on 64-bit it simply succeeds.
+    // Either way the calculation must not wrap silently.
+    #[test]
+    fn buffer_size_never_wraps() {
+        let max = i32::MAX as u32;
+        match capture_buffer_len(max, max) {
+            Ok(len) => assert_eq!(len, (max as usize) * (max as usize) * 4),
+            Err(e) => assert!(
+                e.reason.contains("overflows"),
+                "unexpected reason: {}",
+                e.reason
+            ),
+        }
+    }
 }

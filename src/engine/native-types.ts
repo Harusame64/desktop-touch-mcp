@@ -292,6 +292,17 @@ export interface NativeWgcResult {
   height: number
 }
 
+/** ADR-031 — result of `win32CaptureScreenRegion`: RGBA top-down pixels
+ *  (length = w*h*4) copied straight off the screen DC. Same shape as
+ *  `NativePrintWindowResult` so the engine's encode step is shared. The
+ *  requested origin is in signed virtual-screen pixels, so `width` / `height`
+ *  echo the request rather than being derived from a window rect. */
+export interface NativeCaptureRegionResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
 /** ADR-027 — optional knobs for `win32WgcCaptureWindow`. All optional; the
  *  engine defaults to cursor off, best-effort border suppression, 1500ms drain
  *  timeout. `includeCursor` / `removeBorder` are feature-detected and silently

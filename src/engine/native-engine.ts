@@ -37,6 +37,7 @@ import type {
   NativePrintWindowResult,
   NativeWgcResult,
   NativeWgcCaptureOptions,
+  NativeCaptureRegionResult,
   NativeMonitorInfo,
   NativeCursorPoint,
   NativeCursorMoveResult,
@@ -150,6 +151,9 @@ export interface NativeWin32 {
   win32PrintWindowToBuffer?(hwnd: bigint, flags: number): NativePrintWindowResult;
   // ADR-027 WGC capture (async — runs on the dedicated desktop-wgc worker thread)
   win32WgcCaptureWindow?(hwnd: bigint, opts?: NativeWgcCaptureOptions): Promise<NativeWgcResult>;
+  // ADR-031 absolute-coordinate screen / region capture. `x` / `y` are signed
+  // virtual-screen pixels; probe with `hasNativeCaptureRegion()` below.
+  win32CaptureScreenRegion?(x: number, y: number, width: number, height: number): NativeCaptureRegionResult;
   win32EnumMonitors?(): NativeMonitorInfo[];
   win32GetWindowDpi?(hwnd: bigint): number;
   win32SetProcessDpiAwareness?(level: number): boolean;
@@ -413,6 +417,23 @@ export function hasNativeCursorMove(): boolean {
     typeof nativeWin32?.win32MoveCursorPath === "function" &&
     typeof nativeWin32?.win32GetCursorPos === "function"
   );
+}
+
+/**
+ * ADR-031 — can this build capture an absolute screen rectangle natively?
+ *
+ * One binding, so one probe: unlike `hasNativeCursorMove()` above — where a
+ * single move needs three functions and a partial addon would throw mid-gesture
+ * — the capture path calls `win32CaptureScreenRegion` and nothing else. Should
+ * the capture surface ever grow a second function, probe both here, for the
+ * same reason that one does.
+ *
+ * This is the capability half of the static backend choice made in
+ * `reachable-bounds.ts::selectCaptureBackend()`: false means the process
+ * captures through nut.js / libnut, which addresses the primary monitor only.
+ */
+export function hasNativeCaptureRegion(): boolean {
+  return typeof nativeWin32?.win32CaptureScreenRegion === "function";
 }
 
 // ─── L1 capture surface (ADR-007 P5a) ────────────────────────────────────────
