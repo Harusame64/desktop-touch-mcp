@@ -20,11 +20,22 @@
  *
  * Every caller must run this BEFORE moving the cursor — once a coordinate has
  * been clamped, the wrong position is already in effect.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ADR-031 adds a sibling resolver for SCREEN CAPTURE at the bottom of this
+ * file. It shares the shape of the input one — a region chosen by capability,
+ * `null` for "the layout could not be read" — because the question is the same
+ * one ("what can this backend reach?") and answering it in two files is how the
+ * two answers drift apart. The deliberate differences are documented there.
  */
 
 import { enumMonitors, getPrimaryMonitorBounds } from "./win32.js";
-import { hasNativeCursorMove } from "./native-engine.js";
-import { CoordinateOutsideReachableBoundsError } from "../errors/typed-errors.js";
+import { hasNativeCursorMove, hasNativeCaptureRegion } from "./native-engine.js";
+import {
+  CoordinateOutsideReachableBoundsError,
+  RegionOutsideCapturableBoundsError,
+} from "../errors/typed-errors.js";
+import { logDiagnostic } from "./diagnostic-log.js";
 
 export interface ReachableBounds {
   x: number;
@@ -199,4 +210,267 @@ function describeUnreachable(x: number, y: number, region: ReachableRegion | nul
     `CoordinateOutsideReachableBounds: (${x}, ${y}) is outside ${where}. Acting on this ` +
     `coordinate would click somewhere else instead.`
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-031 — the same question for screen capture
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Two things differ from the cursor resolver above, both on purpose:
+//
+//   - The region is the virtual screen's BOUNDING RECTANGLE, not each monitor.
+//     Capture is read-only: a coordinate in the gap of a staggered layout comes
+//     back black, which the blank-capture detector already hedges, and no click
+//     fires anywhere the caller did not ask for. The per-monitor containment
+//     the cursor needs would only refuse captures that would have worked.
+//
+//   - The layout is read on every call, with no cache. The 250ms window above
+//     exists because one drag asks three times and must get one answer; a
+//     capture asks once, and `EnumDisplayMonitors` is nothing next to the
+//     BitBlt and the PNG encode that follow it.
+
+/** The pixel source a process captures through. Recorded in diagnostic.log. */
+export type CaptureBackend = "gdi-bitblt" | "nutjs";
+
+/**
+ * The chosen backend and what chose it. The determinant is carried because the
+ * refusal message has to name it: "this build has no capture module" and "you
+ * set DESKTOP_TOUCH_CAPTURE_BACKEND" have different fixes.
+ */
+export interface CaptureBackendSelection {
+  backend: CaptureBackend;
+  determinant: "native-module" | "no-native-module" | "env-override";
+}
+
+/**
+ * What the capture backend can read.
+ *
+ * - `virtual-rect` — native path: the bounding rectangle of every connected
+ *   monitor, negative origins included.
+ * - `primary-rect` — nut.js path: the primary monitor, because libnut
+ *   validates absolute coordinates against that monitor alone.
+ * - `null` — unknown. Monitor enumeration failed, so nothing can be judged.
+ */
+export type CaptureRegionResolution =
+  | { kind: "virtual-rect"; rect: ReachableBounds }
+  | { kind: "primary-rect"; rect: ReachableBounds };
+
+/** Environment override. Only the nut.js direction is defined — the native
+ *  path is already preferred wherever it exists, so forcing it would express
+ *  nothing. */
+const CAPTURE_BACKEND_ENV = "DESKTOP_TOUCH_CAPTURE_BACKEND";
+
+let captureSelection: CaptureBackendSelection | null = null;
+let warnedUnknownCaptureBounds = false;
+
+/** Test-only: forget the memoised backend choice and the warn-once latch. */
+export function _resetCaptureBackendForTests(): void {
+  captureSelection = null;
+  warnedUnknownCaptureBounds = false;
+}
+
+/**
+ * Which backend this process captures through — decided once, on first use,
+ * and never again.
+ *
+ * The choice is static by design (ADR-031 §2(b)). A per-call "native failed,
+ * try nut.js" would hand a rectangle that was validated against the virtual
+ * screen to a library that rejects anything off the primary monitor, and it
+ * would let the returned dimensions of one region change between two captures
+ * in a session under a non-100% DPI layout, which is exactly what frame diffing
+ * cannot survive.
+ */
+export function selectCaptureBackend(): CaptureBackendSelection {
+  if (captureSelection) return captureSelection;
+
+  const raw = process.env[CAPTURE_BACKEND_ENV];
+  const requested = raw?.trim().toLowerCase();
+  let selection: CaptureBackendSelection;
+  if (requested === "nutjs") {
+    selection = { backend: "nutjs", determinant: "env-override" };
+  } else {
+    selection = hasNativeCaptureRegion()
+      ? { backend: "gdi-bitblt", determinant: "native-module" }
+      : { backend: "nutjs", determinant: "no-native-module" };
+    if (requested !== undefined && requested !== "") {
+      // Ignored rather than fatal: an unreadable value should not take
+      // screenshots away. Said once, at the moment it stops mattering.
+      logDiagnostic({
+        kind: "capture",
+        event: "backend_override_ignored",
+        backend: selection.backend,
+        determinant: selection.determinant,
+        reason: `${CAPTURE_BACKEND_ENV}=${JSON.stringify(raw)} is not a backend this build supports (only "nutjs")`,
+      });
+    }
+  }
+  captureSelection = selection;
+  // Recorded once so a capture can be attributed to a pixel source afterwards
+  // (ADR-031 §4.4). Per-capture would say the same thing every time — the
+  // choice cannot change while the process lives.
+  logDiagnostic({
+    kind: "capture",
+    event: "backend_selected",
+    backend: selection.backend,
+    determinant: selection.determinant,
+  });
+  return selection;
+}
+
+/** Bounding rectangle of every monitor. */
+function boundingRect(rects: ReachableBounds[]): ReachableBounds {
+  const minX = Math.min(...rects.map((r) => r.x));
+  const minY = Math.min(...rects.map((r) => r.y));
+  const maxX = Math.max(...rects.map((r) => r.x + r.width));
+  const maxY = Math.max(...rects.map((r) => r.y + r.height));
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Resolve what the capture backend can read, or `null` when the monitor layout
+ * cannot be determined.
+ *
+ * `null` means "do not judge": a machine whose enumeration fails keeps taking
+ * screenshots rather than being refused every one of them. The rectangle then
+ * goes to the backend unchecked, and a region that turns out to be off-screen
+ * comes back black — which the blank-capture detector already flags.
+ *
+ * `getVirtualScreen()` is deliberately not reused: it substitutes a hard-coded
+ * 1920x1080 rectangle when enumeration returns nothing, which would turn this
+ * unknown into a confident wrong answer.
+ */
+export function resolveCaptureRegion(): CaptureRegionResolution | null {
+  const { backend, determinant } = selectCaptureBackend();
+  let resolution: CaptureRegionResolution | null;
+  try {
+    if (backend === "gdi-bitblt") {
+      const monitors = enumMonitors().map((m) => m.bounds);
+      resolution = monitors.length > 0 ? { kind: "virtual-rect", rect: boundingRect(monitors) } : null;
+    } else {
+      const primary = getPrimaryMonitorBounds();
+      resolution = primary ? { kind: "primary-rect", rect: primary } : null;
+    }
+  } catch {
+    resolution = null; // Win32 failure → unknown → allow (same stance as the cursor guard)
+  }
+  if (resolution === null && !warnedUnknownCaptureBounds) {
+    warnedUnknownCaptureBounds = true;
+    logDiagnostic({
+      kind: "capture",
+      event: "bounds_unknown",
+      backend,
+      determinant,
+      reason:
+        "monitor bounds unavailable — capture regions cannot be checked; an off-screen region will come back black",
+    });
+  }
+  return resolution;
+}
+
+/** Is `inner` entirely inside `outer`? */
+function containsRect(outer: ReachableBounds, inner: ReachableBounds): boolean {
+  return (
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
+}
+
+/**
+ * Can `region` be captured? An unknown (`null`) resolution cannot be judged, so
+ * it allows.
+ *
+ * Containment, not overlap: a rectangle half off the capturable area returns
+ * black for the half that is off it, and a partly-black frame presented as a
+ * successful capture is worse than a refusal the caller can act on.
+ */
+export function isCaptureRegionInBounds(
+  region: ReachableBounds,
+  resolution: CaptureRegionResolution | null,
+): boolean {
+  if (!resolution) return true;
+  return containsRect(resolution.rect, region);
+}
+
+/**
+ * Throw {@link RegionOutsideCapturableBoundsError} when `region` is outside
+ * what this process can capture. No-op otherwise.
+ */
+export function assertCaptureRegionInBounds(
+  region: ReachableBounds,
+  resolution: CaptureRegionResolution | null,
+  selection: CaptureBackendSelection = selectCaptureBackend(),
+): void {
+  if (isCaptureRegionInBounds(region, resolution)) return;
+  throw new RegionOutsideCapturableBoundsError(describeUncapturable(region, resolution, selection));
+}
+
+/**
+ * The user-facing half of the refusal. As with the cursor guard, which wording
+ * applies is decided by the capability that was actually used, not by the shape
+ * of the rectangle — a single rectangle can equally well be a test override.
+ */
+function describeUncapturable(
+  region: ReachableBounds,
+  resolution: CaptureRegionResolution | null,
+  selection: CaptureBackendSelection,
+): string {
+  const asked = `${region.width}x${region.height} at (${region.x}, ${region.y})`;
+  const where = resolution
+    ? `${resolution.rect.width}x${resolution.rect.height} at (${resolution.rect.x}, ${resolution.rect.y})`
+    : "the capturable area";
+  if (selection.backend === "gdi-bitblt") {
+    return (
+      `RegionOutsideCapturableBounds: the requested region ${asked} is not on any connected ` +
+      `monitor (the screen area spans ${where}). Screen capture covers every monitor, so this ` +
+      `usually means the coordinates are stale — the window moved or closed after they were ` +
+      `read. Re-run desktop_discover (or take a fresh screenshot) and capture the new region.`
+    );
+  }
+  const why =
+    selection.determinant === "env-override"
+      ? `the ${CAPTURE_BACKEND_ENV} environment variable pins this server to the nut.js capture backend`
+      : "this installation is running without its built-in Windows capture module";
+  return (
+    `RegionOutsideCapturableBounds: the requested region ${asked} is outside the primary ` +
+    `monitor ${where}. Because ${why}, capture is limited to the primary monitor — the region ` +
+    `cannot be read from here. Capture the window directly with screenshot(windowTitle=…), ` +
+    `move the target window onto the primary monitor, or (for the missing module) reinstall / ` +
+    `update the server to restore multi-monitor capture.`
+  );
+}
+
+/**
+ * Grow `rect` by `padding` on every side for a capture, trimming the overhang
+ * back to the capturable area.
+ *
+ * The trim applies only when `rect` itself is inside the capturable area — then
+ * the overhang is padding the caller does not need and cutting it keeps the
+ * capture working. When `rect` is OUTSIDE (say an element on a monitor a
+ * nut.js-backed process cannot read), the padded region is returned untouched
+ * so the choke point refuses it: pulling it into the primary monitor instead
+ * would answer with a picture of somewhere else and call it a success.
+ *
+ * An unknown (`null`) resolution trims nothing, matching the choke point, which
+ * checks nothing.
+ */
+export function padCaptureRegion(
+  rect: ReachableBounds,
+  padding: number,
+  resolution: CaptureRegionResolution | null,
+): ReachableBounds {
+  const padded = {
+    x: rect.x - padding,
+    y: rect.y - padding,
+    width: rect.width + padding * 2,
+    height: rect.height + padding * 2,
+  };
+  if (!resolution || !containsRect(resolution.rect, rect)) return padded;
+  const bounds = resolution.rect;
+  const left = Math.max(padded.x, bounds.x);
+  const top = Math.max(padded.y, bounds.y);
+  const right = Math.min(padded.x + padded.width, bounds.x + bounds.width);
+  const bottom = Math.min(padded.y + padded.height, bounds.y + bounds.height);
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }

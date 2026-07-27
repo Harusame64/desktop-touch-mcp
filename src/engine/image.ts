@@ -1,7 +1,24 @@
 import sharp from "sharp";
 import { screen, Region } from "./nutjs.js";
-import { printWindowToBuffer, captureWindowWgc, canCaptureWindowViaWgc } from "./win32.js";
+import {
+  printWindowToBuffer,
+  captureWindowWgc,
+  canCaptureWindowViaWgc,
+  captureScreenRegion,
+  getPrimaryMonitorBounds,
+} from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
+import {
+  selectCaptureBackend,
+  resolveCaptureRegion,
+  assertCaptureRegionInBounds,
+  type CaptureRegionResolution,
+} from "./reachable-bounds.js";
+import { logDiagnostic } from "./diagnostic-log.js";
+import {
+  CaptureBackendFailedError,
+  RegionOutsideCapturableBoundsError,
+} from "../errors/typed-errors.js";
 
 export interface CaptureOptions {
   /** Scale longest edge to this value (PNG mode). Default 1280. Ignored when format="webp". */
@@ -157,6 +174,135 @@ async function encode(
 // Public capture functions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Raw pixels straight off the screen, before any encoding. */
+export interface RawScreenCapture {
+  data: Buffer;
+  width: number;
+  height: number;
+  channels: 3 | 4;
+}
+
+/**
+ * ADR-031 — the primary monitor's rectangle, for the full-screen path.
+ *
+ * The one place capture refuses instead of failing open. Everywhere else an
+ * unreadable monitor layout means "pass the caller's rectangle through
+ * unchecked", but a full-screen capture has no rectangle of its own: it IS the
+ * primary monitor's. With the layout unknown there is nothing to pass through,
+ * and inventing a rectangle would answer a question about the screen with a
+ * picture of some assumed one.
+ *
+ * `getPrimaryMonitorBounds` reports the failure two ways — `null`, or a throw
+ * from the enumeration underneath it — and both mean the same thing here, so
+ * both leave through the same message and end as `CaptureBackendFailed`.
+ */
+function resolvePrimaryCaptureRect(): { x: number; y: number; width: number; height: number } {
+  let primary: { x: number; y: number; width: number; height: number } | null;
+  try {
+    primary = getPrimaryMonitorBounds();
+  } catch (err) {
+    throw new Error(
+      `monitor enumeration failed: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  if (!primary) {
+    throw new Error("monitor enumeration failed: no connected monitor reports itself primary");
+  }
+  return primary;
+}
+
+/**
+ * ADR-031 §2(c) — the capture choke point. Every absolute-coordinate read of
+ * the screen goes through here, and nothing else in `src/` calls
+ * `screen.grab` / `screen.grabRegion` (pinned by the invariant test in
+ * `tests/unit/adr-031-capture-choke-point.test.ts`).
+ *
+ * Four things happen, in order:
+ *   1. the backend is resolved — once per process, never per call;
+ *   2. a requested region is checked against what that backend can read, and
+ *      refused as `RegionOutsideCapturableBounds` when it cannot;
+ *   3. the backend runs (native BitBlt over the virtual desktop, or nut.js);
+ *   4. anything that escapes 1-3 leaves as `CaptureBackendFailed`.
+ *
+ * Step 4 wraps the WHOLE pipeline, not just the backend call, because the
+ * full-screen path resolves the primary monitor inside it and that lookup can
+ * throw. A raw libnut / Win32 error reaching a caller is precisely what this
+ * choke point exists to prevent.
+ *
+ * The failure is also written to diagnostic.log here — above the two callers
+ * that swallow it whole (`ui-elements.ts` continues text-only, `workspace.ts`
+ * drops the thumbnail), which is the only reason those failures are
+ * diagnosable at all.
+ *
+ * @internal Not part of the public capture API — `captureScreen` is. Exported
+ * solely so `tools/scroll-capture.ts`, which needs raw frames rather than an
+ * encoded image, reaches the screen through this function instead of holding
+ * its own unvalidated `grabRegion`.
+ */
+export async function grabScreenRegionValidated(
+  region?: { x: number; y: number; width: number; height: number },
+): Promise<RawScreenCapture> {
+  const selection = selectCaptureBackend();
+  let resolution: CaptureRegionResolution | null = null;
+  try {
+    if (region) {
+      resolution = resolveCaptureRegion();
+      assertCaptureRegionInBounds(region, resolution, selection);
+    }
+
+    if (selection.backend === "gdi-bitblt") {
+      // No region means the primary monitor, exactly as it always has: this
+      // ADR changes where the pixels come from, not what "full screen" means.
+      const target = region ?? resolvePrimaryCaptureRect();
+      const shot = captureScreenRegion(target);
+      return { data: shot.data, width: shot.width, height: shot.height, channels: 4 };
+    }
+
+    const image = region
+      ? await screen.grabRegion(new Region(region.x, region.y, region.width, region.height))
+      : await screen.grab();
+    // nut-js returns BGR(A) — convert to RGB(A)
+    const rgb = await image.toRGB();
+    return {
+      data: rgb.data,
+      width: rgb.width,
+      height: rgb.height,
+      channels: (rgb.hasAlphaChannel ? 4 : 3) as 3 | 4,
+    };
+  } catch (err) {
+    if (err instanceof RegionOutsideCapturableBoundsError) {
+      logDiagnostic({
+        kind: "capture",
+        event: "region_rejected",
+        backend: selection.backend,
+        determinant: selection.determinant,
+        ...(region ? { region } : {}),
+        bounds: resolution?.kind ?? "unknown",
+        reason: err.message,
+      });
+      throw err;
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    logDiagnostic({
+      kind: "capture",
+      event: "backend_failed",
+      backend: selection.backend,
+      determinant: selection.determinant,
+      ...(region ? { region } : {}),
+      reason,
+    });
+    const what = region
+      ? `the region ${region.width}x${region.height} at (${region.x}, ${region.y})`
+      : "the primary monitor";
+    const label = selection.backend === "gdi-bitblt" ? "built-in Windows" : "nut.js";
+    throw new CaptureBackendFailedError(
+      `CaptureBackendFailed: the ${label} screen-capture backend could not read ${what}: ${reason}`,
+      { cause: err },
+    );
+  }
+}
+
 /** Capture the full screen (primary) or a specific region. */
 export async function captureScreen(
   region?: { x: number; y: number; width: number; height: number },
@@ -165,18 +311,9 @@ export async function captureScreen(
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
 
-  let image = await screen.grab();
+  const raw = await grabScreenRegionValidated(region);
 
-  if (region) {
-    const grabRegion = new Region(region.x, region.y, region.width, region.height);
-    image = await screen.grabRegion(grabRegion);
-  }
-
-  // nut-js returns BGR(A) — convert to RGB(A)
-  const rgbImage = await image.toRGB();
-  const channels = rgbImage.hasAlphaChannel ? 4 : 3;
-
-  return encode(rgbImage.data, rgbImage.width, rgbImage.height, channels as 3 | 4, opts);
+  return encode(raw.data, raw.width, raw.height, raw.channels, opts);
 }
 
 /** Capture a specific monitor by its index. */
@@ -503,10 +640,12 @@ export async function captureWindowRawWithFallback(
   // BitBlt fallback grabs the full window rect, NOT a sub-region. Sub-region
   // crops are applied uniformly at encode time via opts.crop (window-local
   // coordinates) so both source branches share the same crop semantics.
-  const grabRegion = new Region(windowRect.x, windowRect.y, windowRect.width, windowRect.height);
-  const image = await screen.grabRegion(grabRegion);
-  const rgbImage = await image.toRGB();
-  const channels = (rgbImage.hasAlphaChannel ? 4 : 3) as 3 | 4;
+  // ADR-031 — through the capture choke point, so this rung gets the same
+  // bounds check and the same typed failures as every other screen read. It
+  // used to call `grabRegion` directly, which is why a window on a monitor
+  // left of the primary one failed here with a raw libnut error.
+  const rgbImage = await grabScreenRegionValidated(windowRect);
+  const channels = rgbImage.channels;
   // ADR-027 R9/AC8 — BitBlt is the LAST rung. We only reach it because
   // PrintWindow was blank/failed AND WGC did not serve, so if this final frame
   // is ALSO all-black then NO rung produced non-black pixels: the result is an

@@ -96,6 +96,51 @@ export class CursorPlacementBlockedError extends HandlerError {
 }
 
 /**
+ * ADR-031 — a screen rectangle the current capture backend cannot read.
+ *
+ * Which rectangle counts as capturable is decided by the backend the process
+ * chose at startup, so the two cases this error covers have opposite
+ * recoveries and the message says which one applies. On the native path the
+ * whole virtual desktop is capturable, so being outside it means the
+ * coordinates went stale — the window moved or closed after they were read. On
+ * the nut.js path capture is limited to the primary monitor, and the message
+ * names what put the process there: a build without the native capture module,
+ * or the `DESKTOP_TOUCH_CAPTURE_BACKEND` override.
+ *
+ * Distinct from {@link CaptureBackendFailedError}: nothing was attempted here.
+ * The rectangle was refused before any pixels were read, so retrying it
+ * unchanged fails identically.
+ */
+export class RegionOutsideCapturableBoundsError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RegionOutsideCapturableBounds";
+  }
+}
+
+/**
+ * ADR-031 — the capture backend was called and did not produce pixels.
+ *
+ * Covers the native GDI path failing on a rectangle that passed the bounds
+ * check (a secure desktop, a disconnected remote session, a GDI resource
+ * failure), the same failure through nut.js / libnut, and the full-screen case
+ * where the primary monitor's rectangle could not be resolved at all — the one
+ * place ADR-031 refuses instead of failing open, because there is no rectangle
+ * to pass through.
+ *
+ * A per-call fall back to the other backend is deliberately NOT attempted:
+ * both read the desktop through the same GDI surface, so the conditions that
+ * break one break the other, and switching mid-session would change capture
+ * dimensions under a non-100% DPI layout (ADR-031 §2(b)).
+ */
+export class CaptureBackendFailedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "CaptureBackendFailed";
+  }
+}
+
+/**
  * Generic typed error whose `name` is set from a code passed at construction
  * time. Used by wrapper-internal callsites (`makeQueryWrapper`'s N upper
  * bound checks, `makeCommitWrapper`'s lease validation / handler-throw

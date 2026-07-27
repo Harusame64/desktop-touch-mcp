@@ -137,6 +137,41 @@ export type DiagnosticEvent =
       // of that name counts transport-level requests (refused calls
       // included), a different semantics (plan Round 5 Opus P2).
       activeToolCalls?: number;
+    }
+  | {
+      // ADR-031 §2(c) — screen / region capture. The two callers that reach
+      // the capture choke point through a `catch {}` (ui-elements' text-only
+      // continuation, workspace's missing thumbnail) swallow the failure
+      // entirely, so this record is the only place a typed reason survives.
+      // It is written UPSTREAM of those catches, which is why it is part of
+      // the choke point rather than of the callers.
+      kind: "capture";
+      // "backend_selected": the once-per-process backend choice, so a capture
+      //   can be attributed to a pixel source afterwards (ADR-031 §4.4).
+      // "backend_override_ignored": DESKTOP_TOUCH_CAPTURE_BACKEND named a
+      //   backend that does not exist; the choice fell through to capability.
+      // "bounds_unknown": monitor enumeration failed, so the requested
+      //   rectangle was passed through unchecked (fail-open, warn once).
+      // "region_rejected": the rectangle is outside what this backend can
+      //   capture — refused before the backend was called.
+      // "backend_failed": the backend (or the primary-rectangle lookup the
+      //   full-screen path needs) threw; surfaced as CaptureBackendFailed.
+      event:
+        | "backend_selected"
+        | "backend_override_ignored"
+        | "bounds_unknown"
+        | "region_rejected"
+        | "backend_failed";
+      /** The pixel source this process uses — `gdi-bitblt` or `nutjs`. */
+      backend: string;
+      /** What decided the backend: capability probe or the env override. */
+      determinant?: string;
+      /** The rectangle the caller asked for; absent for full-screen captures. */
+      region?: { x: number; y: number; width: number; height: number };
+      /** Which boundary the request was judged against, when it was judged. */
+      bounds?: string;
+      /** Typed reason / underlying message. */
+      reason?: string;
     };
 
 /**
