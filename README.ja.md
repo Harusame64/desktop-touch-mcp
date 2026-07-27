@@ -602,6 +602,16 @@ V1 ツールはすべてそのまま動作します。再インストール不�
 | `DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE` | `on` | 新規保存のたびに自動で間引く。`0` で無効化。 |
 | `DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS` | `60000` | この時間（ms）より新しいキャプチャは自動退避しない。同一 PC 上で別の AI/プロセスが大量キャプチャしていても、渡したばかりの by-ref リンクが開けるよう保護。`0` で無効化。 |
 
+### マルチモニタのスクリーンショット
+
+`screenshot(displayId=…)` / `screenshot(region=…)` は、プライマリより左・上に置かれたモニタも含め、どのモニタでもキャプチャできます。これらのモニタの座標は負の値になりますが、`screenshot(detail='meta')` が返した値をそのまま渡してください。領域を指定しない `screenshot()` は従来どおりプライマリモニタ全面です。
+
+どのモニタにも載っていない領域は、Windows の生エラーではなく `RegionOutsideCapturableBounds` として返り、座標が古くなったのか、このサーバーがプライマリモニタしかキャプチャできない構成なのかをメッセージが示します。Windows が画素を返さなかった場合（ロック画面・UAC ダイアログ・切断されたリモートデスクトップなど）は `CaptureBackendFailed` です。この場合でも `screenshot(windowTitle=…)` は別の Windows API を使うため成功することが多いです。
+
+| 環境変数 | デフォルト | 効果 |
+|---|---|---|
+| `DESKTOP_TOUCH_CAPTURE_BACKEND` | *(未設定 = 自動)* | 画面キャプチャ経路の切り分け用オーバーライド。`nutjs` を指定すると旧キャプチャ経路を強制でき、この経路では**プライマリモニタのみ**キャプチャ可能になります。バックエンドは起動時に一度だけ決まるため、MCP クライアント設定を変更してサーバーを再起動してください。それ以外の値は無視されます。 |
+
 ### 削除済み: `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2`
 
 v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON のため、このフラグは効果を持たず、設定から削除して問題ありません。V2 を無効化するには `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` を設定してください。

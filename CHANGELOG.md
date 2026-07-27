@@ -1,5 +1,38 @@
 # Changelog
 
+## [Unreleased] — screenshots work on every monitor, not just the primary one
+
+- **`screenshot(displayId=…)` and `screenshot(region=…)` now capture any monitor.**
+  On a setup with a second monitor placed left of or above the primary, both failed
+  outright with `screenshot failed: Error: x coordinate outside of display` — the
+  capture library validated absolute coordinates against the primary monitor's size,
+  so every other monitor was unreachable and negative desktop coordinates were
+  rejected on principle. Screen capture now reads the whole desktop directly, so the
+  coordinates `screenshot(detail='meta')` reports are the coordinates you can capture,
+  negative ones included, and a region may span the seam between two monitors.
+- **Three things that failed quietly on those monitors now work.** `scope_element`
+  padded its capture region by clamping to `(0, 0)`, which on a left-hand monitor
+  pulled the shot onto the primary one and returned a picture of somewhere else as if
+  it were the element; `workspace_snapshot` dropped thumbnails for windows there; and
+  `scroll(action='capture')` could not stitch a page on them. All three read through
+  the same corrected path now.
+- **A capture that cannot be taken says so.** A region on no monitor comes back as
+  `RegionOutsideCapturableBounds`, whose message distinguishes stale coordinates from a
+  server that can only capture the primary monitor; a capture Windows refuses (locked
+  screen, UAC prompt, disconnected remote-desktop session) comes back as
+  `CaptureBackendFailed`. Both carry recovery steps, and both are recorded in the
+  diagnostic log with the requested region — including on the paths that continue
+  silently without an image, where previously nothing was written down at all.
+- **New: `DESKTOP_TOUCH_CAPTURE_BACKEND`.** Set it to `nutjs` to force the previous
+  capture path, which reads the primary monitor only. It exists for isolating a capture
+  problem; leave it unset for normal use. The backend is chosen once at startup, so a
+  change needs a server restart.
+- Unchanged on purpose: `screenshot()` with no region is still the primary monitor with
+  no origin offset. It was tempting to widen it to the whole desktop, but that would
+  change the size, the coordinate origin and the token cost of every screenshot for
+  everyone with more than one monitor. Ask for a `displayId` or a `region` to capture
+  anything else.
+
 ## [1.14.0] - 2026-07-26 — the emergency stop guards the primary-monitor corner only, and never stops silently
 
 - **The failsafe corner is now the top-left of the primary monitor only.** The trigger
