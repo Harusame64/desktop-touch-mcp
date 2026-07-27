@@ -218,11 +218,23 @@ function describeUnreachable(x: number, y: number, region: ReachableRegion | nul
 //
 // Two things differ from the cursor resolver above, both on purpose:
 //
-//   - The region is the virtual screen's BOUNDING RECTANGLE, not each monitor.
-//     Capture is read-only: a coordinate in the gap of a staggered layout comes
-//     back black, which the blank-capture detector already hedges, and no click
-//     fires anywhere the caller did not ask for. The per-monitor containment
-//     the cursor needs would only refuse captures that would have worked.
+//   - The answer carries BOTH the virtual screen's bounding rectangle and the
+//     individual monitors, and the caller says which question to ask of them
+//     (see `CaptureBoundsMode`). A rectangle the CALLER supplied has to clear
+//     both: inside the bounding rectangle, and overlapping a real monitor. The
+//     second half is not redundant — a rectangle sitting in the gap of a
+//     staggered layout is inside the bounding rectangle and on no monitor at
+//     all, and BitBlt answers it with black pixels reported as a successful
+//     capture. Nothing downstream catches that on this path: the blank-capture
+//     check runs on the per-window capture ladder only, so this guard is the
+//     only thing between the caller and a black picture presented as the place
+//     they asked for.
+//     A rectangle the MACHINE derived — a window's own screen rect — is held
+//     to the overlap half alone. `GetWindowRect` reports a maximised window a
+//     few pixels outside the monitor (the invisible resize border), and a
+//     window straddling the desktop edge runs off it for real; BitBlt returns
+//     those with the off-screen part black, which is the honest picture of
+//     where the window is. Refusing them would take away a capture that works.
 //
 //   - The layout is read on every call, with no cache. The 250ms window above
 //     exists because one drag asks three times and must get one answer; a
@@ -250,10 +262,31 @@ export interface CaptureBackendSelection {
  * - `primary-rect` — nut.js path: the primary monitor, because libnut
  *   validates absolute coordinates against that monitor alone.
  * - `null` — unknown. Monitor enumeration failed, so nothing can be judged.
+ *
+ * `monitors` carries the rectangles the bounding one was built from — one
+ * element on the `primary-rect` path, where the primary monitor IS the whole
+ * capturable area. It is what makes the gap of a staggered layout visible: the
+ * bounding rectangle alone cannot tell "on a monitor" from "in the hole
+ * between two of them".
  */
 export type CaptureRegionResolution =
-  | { kind: "virtual-rect"; rect: ReachableBounds }
-  | { kind: "primary-rect"; rect: ReachableBounds };
+  | { kind: "virtual-rect"; rect: ReachableBounds; monitors: readonly ReachableBounds[] }
+  | { kind: "primary-rect"; rect: ReachableBounds; monitors: readonly [ReachableBounds] };
+
+/**
+ * Which question to ask of a resolution.
+ *
+ * - `contain` — the caller named this rectangle, so hold it to both halves:
+ *   inside the capturable area AND overlapping a monitor. Anything else would
+ *   answer with black pixels where the caller expected content.
+ * - `overlap` — the rectangle came from Windows (a window's own screen rect),
+ *   so only require that it touches a monitor. It is passed to the backend
+ *   UNCHANGED: the off-screen part comes back black, which is the truthful
+ *   picture of a window hanging off the desktop edge, and clamping it would
+ *   silently change the buffer's dimensions out from under the window-local
+ *   crop the caller applies afterwards.
+ */
+export type CaptureBoundsMode = "contain" | "overlap";
 
 /** Environment override. Only the nut.js direction is defined — the native
  *  path is already preferred wherever it exists, so forcing it would express
@@ -333,7 +366,10 @@ function boundingRect(rects: ReachableBounds[]): ReachableBounds {
  * `null` means "do not judge": a machine whose enumeration fails keeps taking
  * screenshots rather than being refused every one of them. The rectangle then
  * goes to the backend unchecked, and a region that turns out to be off-screen
- * comes back black — which the blank-capture detector already flags.
+ * comes back black AND UNANNOUNCED — the blank-capture check runs on the
+ * per-window capture ladder, not on this path, so nothing downstream notices.
+ * That is the price of failing open, and the reason this check is worth making
+ * whenever the layout CAN be read.
  *
  * `getVirtualScreen()` is deliberately not reused: it substitutes a hard-coded
  * 1920x1080 rectangle when enumeration returns nothing, which would turn this
@@ -345,10 +381,13 @@ export function resolveCaptureRegion(): CaptureRegionResolution | null {
   try {
     if (backend === "gdi-bitblt") {
       const monitors = enumMonitors().map((m) => m.bounds);
-      resolution = monitors.length > 0 ? { kind: "virtual-rect", rect: boundingRect(monitors) } : null;
+      resolution =
+        monitors.length > 0
+          ? { kind: "virtual-rect", rect: boundingRect(monitors), monitors }
+          : null;
     } else {
       const primary = getPrimaryMonitorBounds();
-      resolution = primary ? { kind: "primary-rect", rect: primary } : null;
+      resolution = primary ? { kind: "primary-rect", rect: primary, monitors: [primary] } : null;
     }
   } catch {
     resolution = null; // Win32 failure → unknown → allow (same stance as the cursor guard)
@@ -377,20 +416,41 @@ function containsRect(outer: ReachableBounds, inner: ReachableBounds): boolean {
   );
 }
 
+/** Do `a` and `b` share any area? Touching edges do not count. */
+function intersectsRect(a: ReachableBounds, b: ReachableBounds): boolean {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
 /**
  * Can `region` be captured? An unknown (`null`) resolution cannot be judged, so
  * it allows.
  *
- * Containment, not overlap: a rectangle half off the capturable area returns
- * black for the half that is off it, and a partly-black frame presented as a
- * successful capture is worse than a refusal the caller can act on.
+ * In `contain` mode (the default, for a rectangle the caller named) the region
+ * must be inside the capturable area AND overlap a monitor. Containment alone
+ * would let through a rectangle lying in the gap of a staggered layout —
+ * inside the bounding rectangle, on no monitor — which comes back entirely
+ * black and is reported as a success. Overlap alone would let through a
+ * rectangle running past the desktop edge, half of which is black for the same
+ * reason. Both failures look identical to the caller, so both are refused.
+ *
+ * In `overlap` mode (for a rectangle Windows produced — a window's own screen
+ * rect) only the overlap half applies, and the rectangle reaches the backend
+ * unchanged. See {@link CaptureBoundsMode}.
  */
 export function isCaptureRegionInBounds(
   region: ReachableBounds,
   resolution: CaptureRegionResolution | null,
+  mode: CaptureBoundsMode = "contain",
 ): boolean {
   if (!resolution) return true;
-  return containsRect(resolution.rect, region);
+  const onSomeMonitor = resolution.monitors.some((m) => intersectsRect(m, region));
+  if (mode === "overlap") return onSomeMonitor;
+  return onSomeMonitor && containsRect(resolution.rect, region);
 }
 
 /**
@@ -401,8 +461,9 @@ export function assertCaptureRegionInBounds(
   region: ReachableBounds,
   resolution: CaptureRegionResolution | null,
   selection: CaptureBackendSelection = selectCaptureBackend(),
+  mode: CaptureBoundsMode = "contain",
 ): void {
-  if (isCaptureRegionInBounds(region, resolution)) return;
+  if (isCaptureRegionInBounds(region, resolution, mode)) return;
   throw new RegionOutsideCapturableBoundsError(describeUncapturable(region, resolution, selection));
 }
 

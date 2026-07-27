@@ -13,6 +13,7 @@ import {
   resolveCaptureRegion,
   assertCaptureRegionInBounds,
   type CaptureRegionResolution,
+  type CaptureBoundsMode,
 } from "./reachable-bounds.js";
 import { logDiagnostic } from "./diagnostic-log.js";
 import {
@@ -239,16 +240,23 @@ function resolvePrimaryCaptureRect(): { x: number; y: number; width: number; hei
  * solely so `tools/scroll-capture.ts`, which needs raw frames rather than an
  * encoded image, reaches the screen through this function instead of holding
  * its own unvalidated `grabRegion`.
+ *
+ * @param mode How strictly `region` is judged. `"contain"` (the default) is
+ *   for a rectangle the CALLER named. `"overlap"` is for one Windows produced —
+ *   a window's own screen rect, which legitimately runs a few pixels past the
+ *   monitor — and passes it to the backend unchanged so the returned buffer
+ *   still matches the window rect the caller will crop against.
  */
 export async function grabScreenRegionValidated(
   region?: { x: number; y: number; width: number; height: number },
+  mode: CaptureBoundsMode = "contain",
 ): Promise<RawScreenCapture> {
   const selection = selectCaptureBackend();
   let resolution: CaptureRegionResolution | null = null;
   try {
     if (region) {
       resolution = resolveCaptureRegion();
-      assertCaptureRegionInBounds(region, resolution, selection);
+      assertCaptureRegionInBounds(region, resolution, selection, mode);
     }
 
     if (selection.backend === "gdi-bitblt") {
@@ -279,6 +287,10 @@ export async function grabScreenRegionValidated(
         determinant: selection.determinant,
         ...(region ? { region } : {}),
         bounds: resolution?.kind ?? "unknown",
+        // Which question was asked of those bounds — a refusal in "overlap"
+        // mode means the window rect is on no monitor at all, which is a
+        // different diagnosis from a caller-named region that overhangs.
+        mode,
         reason: err.message,
       });
       throw err;
@@ -303,15 +315,23 @@ export async function grabScreenRegionValidated(
   }
 }
 
-/** Capture the full screen (primary) or a specific region. */
+/**
+ * Capture the full screen (primary) or a specific region.
+ *
+ * `mode` is a separate argument rather than a `CaptureOptions` field because it
+ * decides whether the capture HAPPENS; everything in `CaptureOptions` decides
+ * how the pixels are encoded afterwards. Pass `"overlap"` when the rectangle is
+ * a window's own screen rect (see {@link grabScreenRegionValidated}).
+ */
 export async function captureScreen(
   region?: { x: number; y: number; width: number; height: number },
-  optsOrMaxDim: CaptureOptions | number = 1280
+  optsOrMaxDim: CaptureOptions | number = 1280,
+  mode: CaptureBoundsMode = "contain",
 ): Promise<CaptureResult> {
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
 
-  const raw = await grabScreenRegionValidated(region);
+  const raw = await grabScreenRegionValidated(region, mode);
 
   return encode(raw.data, raw.width, raw.height, raw.channels, opts);
 }
@@ -579,13 +599,17 @@ export interface CaptureWindowRawResult {
  * the BitBlt branch and crash sharp's `extract()` when offsets are non-zero.
  *
  * Note on dimension parity: on high-DPI monitors PrintWindow returns the
- * window's drawn surface in device pixels, and `screen.grabRegion` of the
- * same screen rect returns logical pixels — the two branches may therefore
- * differ in dimensions. WGC (ADR-027) is a third source whose `ContentSize`
- * is device-pixel-like (close to PrintWindow) but can still differ from the
- * BitBlt logical-pixel branch. Callers (e.g. `captureAndDiff`) that compare
- * frames across captures must tolerate a one-time `sizeChanged` when the
- * source switches among PrintWindow / WGC / BitBlt for the same window.
+ * window's drawn surface in device pixels. What the BitBlt rung returns now
+ * depends on which capture backend this process uses: the native one (ADR-031,
+ * the default wherever the module is present) BitBlts the screen DC and returns
+ * DEVICE pixels, matching PrintWindow; the nut.js fallback returns LOGICAL
+ * pixels, so on a non-100% display it comes back smaller. WGC (ADR-027) is a
+ * third source whose `ContentSize` is device-pixel-like (close to PrintWindow).
+ * Callers (e.g. `captureAndDiff`) that compare frames across captures must
+ * still tolerate a one-time `sizeChanged` when the source switches among
+ * PrintWindow / WGC / BitBlt for the same window — the backend itself never
+ * changes mid-process, so the switch can only come from the rung, not from the
+ * pixel source underneath it.
  */
 export async function captureWindowRawWithFallback(
   hwnd: unknown,
@@ -644,7 +668,15 @@ export async function captureWindowRawWithFallback(
   // bounds check and the same typed failures as every other screen read. It
   // used to call `grabRegion` directly, which is why a window on a monitor
   // left of the primary one failed here with a raw libnut error.
-  const rgbImage = await grabScreenRegionValidated(windowRect);
+  //
+  // "overlap", not the default "contain": `windowRect` comes from
+  // `GetWindowRect`, which reports a maximised window ~8px outside its monitor
+  // on every side (the invisible resize border), and a window straddling the
+  // desktop edge runs off it for real. Those must still be captured — BitBlt
+  // blackens the off-screen part, which is the honest picture — and the
+  // rectangle must reach the backend UNCLAMPED so the returned buffer keeps the
+  // window's own dimensions, which is what `opts.crop` is expressed in.
+  const rgbImage = await grabScreenRegionValidated(windowRect, "overlap");
   const channels = rgbImage.channels;
   // ADR-027 R9/AC8 — BitBlt is the LAST rung. We only reach it because
   // PrintWindow was blank/failed AND WGC did not serve, so if this final frame

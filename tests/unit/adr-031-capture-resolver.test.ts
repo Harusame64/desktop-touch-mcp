@@ -125,12 +125,19 @@ describe("resolveCaptureRegion", () => {
     expect(resolveCaptureRegion()).toEqual({
       kind: "virtual-rect",
       rect: { x: -1920, y: 0, width: 3840, height: 1080 },
+      // The individual rectangles come back too: the bounding one cannot tell
+      // "on a monitor" from "in the gap between two of them".
+      monitors: [PRIMARY, LEFT],
     });
   });
 
   it("stops at the primary monitor on a build without the capture binding", () => {
     hoisted.state.nativeCapture = false;
-    expect(resolveCaptureRegion()).toEqual({ kind: "primary-rect", rect: PRIMARY });
+    expect(resolveCaptureRegion()).toEqual({
+      kind: "primary-rect",
+      rect: PRIMARY,
+      monitors: [PRIMARY],
+    });
   });
 
   // The boundary follows the backend, whichever of the two determinants put the
@@ -138,7 +145,11 @@ describe("resolveCaptureRegion", () => {
   // validates against an area it cannot read.
   it("stops at the primary monitor when the env override forces nut.js", () => {
     process.env.DESKTOP_TOUCH_CAPTURE_BACKEND = "nutjs";
-    expect(resolveCaptureRegion()).toEqual({ kind: "primary-rect", rect: PRIMARY });
+    expect(resolveCaptureRegion()).toEqual({
+      kind: "primary-rect",
+      rect: PRIMARY,
+      monitors: [PRIMARY],
+    });
   });
 
   it("reports unknown, once, when no monitor is enumerated", () => {
@@ -175,8 +186,12 @@ describe("resolveCaptureRegion", () => {
 });
 
 describe("isCaptureRegionInBounds", () => {
-  const virtual = { kind: "virtual-rect", rect: { x: -1920, y: 0, width: 3840, height: 1080 } } as const;
-  const primary = { kind: "primary-rect", rect: PRIMARY } as const;
+  const virtual = {
+    kind: "virtual-rect",
+    rect: { x: -1920, y: 0, width: 3840, height: 1080 },
+    monitors: [PRIMARY, LEFT],
+  } as const;
+  const primary = { kind: "primary-rect", rect: PRIMARY, monitors: [PRIMARY] } as const;
 
   it("accepts a region on the monitor left of the primary one", () => {
     expect(isCaptureRegionInBounds({ x: -1920, y: 0, width: 1920, height: 1080 }, virtual)).toBe(true);
@@ -200,6 +215,86 @@ describe("isCaptureRegionInBounds", () => {
   // fails keeps taking screenshots.
   it("allows anything when the layout is unknown", () => {
     expect(isCaptureRegionInBounds({ x: -9999, y: -9999, width: 100, height: 100 }, null)).toBe(true);
+  });
+});
+
+// Round 1 (Opus P1 / Codex P2) — the bounding rectangle answered two different
+// questions with one number, and both answers were wrong at the edges:
+//
+//   - a rectangle in the GAP of a staggered layout is inside the bounding
+//     rectangle and on no monitor. BitBlt fills it with black and the caller is
+//     told the capture succeeded. Nothing else on this path notices — the
+//     blank-capture check belongs to the per-window ladder.
+//   - a WINDOW's rectangle routinely leaves the bounding rectangle: Windows
+//     reports a maximised window ~8px outside its monitor on every side (the
+//     invisible resize border). Those were refused outright, though BitBlt
+//     captures them fine with a black border.
+describe("isCaptureRegionInBounds — the two modes", () => {
+  // Staggered: the second monitor sits to the right AND 600px lower, so the
+  // rectangle x∈[1920, 3840), y∈[0, 600) is desktop-shaped emptiness.
+  const TOP_LEFT = { x: 0, y: 0, width: 1920, height: 1080 };
+  const LOW_RIGHT = { x: 1920, y: 600, width: 1920, height: 1080 };
+  const staggered = {
+    kind: "virtual-rect",
+    rect: { x: 0, y: 0, width: 3840, height: 1680 },
+    monitors: [TOP_LEFT, LOW_RIGHT],
+  } as const;
+  /** nut.js layout: the primary monitor is the whole capturable area. */
+  const primaryOnly = { kind: "primary-rect", rect: PRIMARY, monitors: [PRIMARY] } as const;
+
+  const IN_THE_GAP = { x: 2000, y: 100, width: 400, height: 300 };
+  const ACROSS_THE_SEAM = { x: 1500, y: 300, width: 1000, height: 500 };
+  /** A maximised window as GetWindowRect reports it: 8px out on every side. */
+  const MAXIMISED_WINDOW = { x: -8, y: -8, width: 1936, height: 1096 };
+  const NOWHERE = { x: 5000, y: 5000, width: 800, height: 600 };
+
+  it("refuses a caller's region that falls entirely in the gap between two monitors", () => {
+    // Inside the bounding rectangle — containment alone would wave it through.
+    expect(isCaptureRegionInBounds(IN_THE_GAP, staggered, "contain")).toBe(false);
+  });
+
+  it("still accepts a region spanning both monitors, gap and all", () => {
+    // The gap is only a refusal when the WHOLE region sits in it: a rectangle
+    // covering real content on both monitors is exactly what a seam-spanning
+    // capture is for, and the black wedge between them is the desktop.
+    expect(isCaptureRegionInBounds(ACROSS_THE_SEAM, staggered, "contain")).toBe(true);
+  });
+
+  it("accepts a maximised window's rect in overlap mode, and refuses it in contain mode", () => {
+    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, staggered, "overlap")).toBe(true);
+    // The contain half is what made this a bug report: the same rectangle,
+    // judged as if the caller had named it, is outside the desktop.
+    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, staggered, "contain")).toBe(false);
+  });
+
+  it("refuses a window rect that is on no monitor at all, even in overlap mode", () => {
+    // Overlap is a relaxation, not a bypass: a window whose coordinates are
+    // stale still has to be refused, or the capture answers with black.
+    expect(isCaptureRegionInBounds(NOWHERE, staggered, "overlap")).toBe(false);
+    expect(isCaptureRegionInBounds(IN_THE_GAP, staggered, "overlap")).toBe(false);
+  });
+
+  it("defaults to contain, so an un-annotated caller keeps the strict rule", () => {
+    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, staggered)).toBe(false);
+    expect(isCaptureRegionInBounds(IN_THE_GAP, staggered)).toBe(false);
+  });
+
+  it("applies both modes the same way on the single-monitor nut.js resolution", () => {
+    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, primaryOnly, "overlap")).toBe(true);
+    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, primaryOnly, "contain")).toBe(false);
+    expect(isCaptureRegionInBounds({ x: -1920, y: 0, width: 1920, height: 1080 }, primaryOnly, "overlap")).toBe(false);
+    expect(isCaptureRegionInBounds({ x: 10, y: 10, width: 100, height: 100 }, primaryOnly, "contain")).toBe(true);
+  });
+
+  it("cannot judge an unknown layout in either mode", () => {
+    expect(isCaptureRegionInBounds(NOWHERE, null, "contain")).toBe(true);
+    expect(isCaptureRegionInBounds(NOWHERE, null, "overlap")).toBe(true);
+  });
+
+  it("a rectangle that only touches a monitor's edge shares no pixels with it", () => {
+    // Zero-area contact is not coverage: a capture there is all black.
+    expect(isCaptureRegionInBounds({ x: 1920, y: 0, width: 80, height: 600 }, staggered, "overlap")).toBe(false);
+    expect(isCaptureRegionInBounds({ x: 1919, y: 0, width: 80, height: 600 }, staggered, "overlap")).toBe(true);
   });
 });
 
@@ -294,8 +389,12 @@ describe("ADR-031 typed codes classify with recovery advice", () => {
 // the primary one and returned that as the element: a picture of somewhere
 // else, presented as a success.
 describe("padCaptureRegion", () => {
-  const virtual = { kind: "virtual-rect", rect: { x: -1920, y: 0, width: 3840, height: 1080 } } as const;
-  const primary = { kind: "primary-rect", rect: PRIMARY } as const;
+  const virtual = {
+    kind: "virtual-rect",
+    rect: { x: -1920, y: 0, width: 3840, height: 1080 },
+    monitors: [PRIMARY, LEFT],
+  } as const;
+  const primary = { kind: "primary-rect", rect: PRIMARY, monitors: [PRIMARY] } as const;
 
   it("adds the padding when there is room for it", () => {
     expect(padCaptureRegion({ x: 500, y: 400, width: 100, height: 50 }, 20, virtual)).toEqual({

@@ -119,6 +119,13 @@ import { _resetCaptureBackendForTests } from "../../src/engine/reachable-bounds.
 const PRIMARY = { x: 0, y: 0, width: 1920, height: 1080 };
 const ON_LEFT_MONITOR = { x: -1500, y: 200, width: 400, height: 300 };
 const OFF_EVERY_MONITOR = { x: -5000, y: 200, width: 400, height: 300 };
+/** A second monitor to the right AND 600px lower, leaving a hole above it. */
+const STAGGERED_TOP_LEFT = { x: 0, y: 0, width: 1920, height: 1080 };
+const STAGGERED_LOW_RIGHT = { x: 1920, y: 600, width: 1920, height: 1080 };
+/** Inside the desktop's bounding box, on neither monitor. */
+const IN_THE_GAP = { x: 2000, y: 100, width: 400, height: 300 };
+/** A maximised window as GetWindowRect reports it: 8px out on every side. */
+const MAXIMISED_WINDOW = { x: -8, y: -8, width: 1936, height: 1096 };
 
 const eventsOfKind = (event: string) => hoisted.events.filter((e) => e.event === event);
 
@@ -202,8 +209,9 @@ describe("capture choke point — bounds", () => {
   });
 
   // Fail-open: a machine whose enumeration fails keeps taking screenshots. The
-  // region goes through unchecked and an off-screen one comes back black, which
-  // the blank-capture detector already hedges.
+  // region goes through unchecked and an off-screen one comes back black with
+  // nothing to announce it — the blank-capture check lives on the per-window
+  // ladder, not here — which is the acknowledged price of staying usable.
   it("passes a region through unchecked when the layout cannot be read", async () => {
     hoisted.state.monitors = [];
     await grabScreenRegionValidated(OFF_EVERY_MONITOR);
@@ -214,6 +222,50 @@ describe("capture choke point — bounds", () => {
     hoisted.state.nativeCapture = false;
     const err = await thrownBy(() => captureDisplay(ON_LEFT_MONITOR));
     expect(err.name).toBe("RegionOutsideCapturableBounds");
+  });
+
+  // Round 1 (Opus P1 / Codex P2). The two failures the single containment test
+  // above could not tell apart, one on each side of the boundary.
+  it("refuses a caller's region lying in the gap of a staggered layout", async () => {
+    hoisted.state.monitors = [STAGGERED_TOP_LEFT, STAGGERED_LOW_RIGHT];
+    const err = await thrownBy(() => grabScreenRegionValidated(IN_THE_GAP));
+    expect(err.name).toBe("RegionOutsideCapturableBounds");
+    // The point: the rectangle IS inside the desktop's bounding box. Without
+    // the per-monitor half it would have reached BitBlt and come back a black
+    // image reported as a successful capture.
+    expect(hoisted.calls.native).toEqual([]);
+  });
+
+  it("hands a maximised window's rect to the backend unchanged in overlap mode", async () => {
+    hoisted.state.monitors = [PRIMARY];
+    await grabScreenRegionValidated(MAXIMISED_WINDOW, "overlap");
+    // Unchanged, not clamped: the buffer must keep the window's own dimensions
+    // because the caller's crop is expressed in window-local coordinates.
+    expect(hoisted.calls.native).toEqual([MAXIMISED_WINDOW]);
+  });
+
+  it("refuses that same rect when the caller named it rather than Windows", async () => {
+    hoisted.state.monitors = [PRIMARY];
+    const err = await thrownBy(() => grabScreenRegionValidated(MAXIMISED_WINDOW));
+    expect(err.name).toBe("RegionOutsideCapturableBounds");
+    expect(hoisted.calls.native).toEqual([]);
+  });
+
+  it("refuses a window rect that is on no monitor, overlap mode or not", async () => {
+    hoisted.state.monitors = [PRIMARY];
+    const err = await thrownBy(() => grabScreenRegionValidated(OFF_EVERY_MONITOR, "overlap"));
+    expect(err.name).toBe("RegionOutsideCapturableBounds");
+    expect(hoisted.calls.native).toEqual([]);
+  });
+
+  it("applies both modes on the nut.js resolution too", async () => {
+    hoisted.state.nativeCapture = false;
+    hoisted.state.monitors = [PRIMARY];
+    await grabScreenRegionValidated(MAXIMISED_WINDOW, "overlap");
+    expect(hoisted.calls.nutGrabRegion).toEqual([MAXIMISED_WINDOW]);
+    const err = await thrownBy(() => grabScreenRegionValidated(MAXIMISED_WINDOW));
+    expect(err.name).toBe("RegionOutsideCapturableBounds");
+    expect(hoisted.calls.nutGrabRegion).toHaveLength(1);
   });
 });
 
@@ -276,8 +328,19 @@ describe("capture choke point — the failure reaches the diagnostic log", () =>
       determinant: "no-native-module",
       region: ON_LEFT_MONITOR,
       bounds: "primary-rect",
+      // Which question was asked of those bounds: a refusal under "overlap"
+      // means the window rect is on no monitor at all, a different diagnosis
+      // from a caller-named region that merely overhangs one.
+      mode: "contain",
     });
     expect(String(record!.reason)).toContain("RegionOutsideCapturableBounds");
+  });
+
+  it("records the mode when a window rect is refused, so the two diagnoses stay apart", async () => {
+    hoisted.state.monitors = [PRIMARY];
+    await thrownBy(() => grabScreenRegionValidated(OFF_EVERY_MONITOR, "overlap"));
+    const [record] = eventsOfKind("region_rejected");
+    expect(record).toMatchObject({ mode: "overlap", region: OFF_EVERY_MONITOR });
   });
 
   it("records a backend failure with the underlying message", async () => {
@@ -322,6 +385,15 @@ describe("screen capture — only the choke point may grab the screen", () => {
   const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src");
   const CHOKE_POINT = join(SRC, "engine", "image.ts");
   const GRABS_SCREEN = /\bscreen\.(grab|grabRegion)[ \t]*\(/g;
+  // Round 1 (Opus P2-3): nut.js is no longer the only way to read absolute
+  // screen pixels — the native binding is the DEFAULT one, and the pattern
+  // above cannot see it. Matching the bare identifier (not a call) is
+  // deliberate: a module that merely IMPORTS the binding has already left the
+  // choke point behind, and the import line is where that starts. `image.ts`
+  // is the choke point; `win32.ts` is the binding's own wrapper, i.e. the
+  // definition site.
+  const NATIVE_GRAB = /(?<!`)\bcaptureScreenRegion\b(?!`)/g;
+  const NATIVE_WRAPPER = join(SRC, "engine", "win32.ts");
 
   function tsFiles(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -342,11 +414,34 @@ describe("screen capture — only the choke point may grab the screen", () => {
     expect(new RegExp(GRABS_SCREEN.source).test("import { screen } from './nutjs.js';")).toBe(false);
   });
 
+  // Same self-check for the native pattern, and the reason it is looser: the
+  // IMPORT is the violation, so the call parentheses are not required. Only
+  // backticked prose is exempt.
+  it("recognises the native binding by import as well as by call", () => {
+    const fresh = () => new RegExp(NATIVE_GRAB.source);
+    expect(fresh().test('import { captureScreenRegion } from "../engine/win32.js";')).toBe(true);
+    expect(fresh().test("const shot = captureScreenRegion(target);")).toBe(true);
+    expect(fresh().test("// `captureScreenRegion` reads the virtual desktop")).toBe(false);
+  });
+
   it("no file other than image.ts grabs the screen", () => {
     const grabbers = tsFiles(SRC).filter(
       (f) => f !== CHOKE_POINT && new RegExp(GRABS_SCREEN.source).test(readFileSync(f, "utf8")),
     );
     expect(grabbers.map(rel)).toEqual([]);
+  });
+
+  it("no file other than image.ts and the binding wrapper touches the native capture", () => {
+    const users = tsFiles(SRC).filter(
+      (f) =>
+        f !== CHOKE_POINT &&
+        f !== NATIVE_WRAPPER &&
+        new RegExp(NATIVE_GRAB.source).test(readFileSync(f, "utf8")),
+    );
+    expect(
+      users.map(rel),
+      "route the new caller through grabScreenRegionValidated instead of adding it here",
+    ).toEqual([]);
   });
 
   it("image.ts grabs the screen in exactly the two places inside the helper", () => {

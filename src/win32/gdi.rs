@@ -207,6 +207,19 @@ pub fn win32_print_window_to_buffer(
 
 // ── ADR-031: absolute-coordinate screen / region capture ────────────────────
 
+/// Ceiling on the RGBA buffer a single capture may allocate, in bytes.
+///
+/// `vec![0u8; n]` has no failure path: an oversized request aborts the whole
+/// process instead of returning an error the caller could report. A rectangle
+/// that survives the extent and overflow checks below can still be absurd (the
+/// largest `width` × `height` pair those admit is ~1.5 x 10^19 bytes), so the
+/// size is bounded before anything is allocated.
+///
+/// 1 GiB sits far above any real virtual desktop: eight 8K monitors side by
+/// side (61440 × 4320) come to ~1.06 x 10^9 bytes, which still fits, and no
+/// consumer layout approaches even that.
+const MAX_CAPTURE_BUFFER_BYTES: usize = 1024 * 1024 * 1024;
+
 /// Byte length of the RGBA buffer for a `width` × `height` capture, or an
 /// error describing why those dimensions cannot be captured.
 ///
@@ -231,14 +244,21 @@ fn capture_buffer_len(width: u32, height: u32) -> napi::Result<usize> {
             "Capture dimensions exceed the Win32 limit: {width}x{height}"
         )));
     }
-    (width as usize)
+    let len = (width as usize)
         .checked_mul(height as usize)
         .and_then(|px| px.checked_mul(4))
         .ok_or_else(|| {
             napi::Error::from_reason(format!(
                 "Capture buffer size overflows: {width}x{height}"
             ))
-        })
+        })?;
+    if len > MAX_CAPTURE_BUFFER_BYTES {
+        return Err(napi::Error::from_reason(format!(
+            "Capture buffer size exceeds the {MAX_CAPTURE_BUFFER_BYTES} byte limit: \
+             {width}x{height} would need {len} bytes"
+        )));
+    }
+    Ok(len)
 }
 
 /// Capture a rectangle of the virtual desktop into an RGBA top-down buffer.
@@ -402,19 +422,43 @@ mod tests {
         );
     }
 
-    // The largest pair that clears the extent check still multiplies out to
-    // more than usize::MAX on a 32-bit target; on 64-bit it simply succeeds.
-    // Either way the calculation must not wrap silently.
+    // The largest pair that clears the extent check multiplies out to more
+    // than usize::MAX on a 32-bit target and to ~1.5 x 10^19 bytes on 64-bit.
+    // Neither may wrap, and neither may reach the allocator: on 32-bit the
+    // overflow check catches it, on 64-bit the size ceiling does.
     #[test]
     fn buffer_size_never_wraps() {
         let max = i32::MAX as u32;
-        match capture_buffer_len(max, max) {
-            Ok(len) => assert_eq!(len, (max as usize) * (max as usize) * 4),
-            Err(e) => assert!(
-                e.reason.contains("overflows"),
-                "unexpected reason: {}",
-                e.reason
-            ),
-        }
+        let e = capture_buffer_len(max, max).unwrap_err();
+        assert!(
+            e.reason.contains("overflows") || e.reason.contains("exceeds the"),
+            "unexpected reason: {}",
+            e.reason
+        );
+    }
+
+    // `vec![0u8; n]` aborts instead of erroring, so an absurd-but-arithmetically
+    // fine rectangle has to be refused here or it takes the process down.
+    #[test]
+    fn buffer_size_past_the_ceiling_is_rejected() {
+        // 40000 x 40000 x 4 = 6.4 x 10^9 bytes — no overflow, no extent
+        // violation, and ~6x the ceiling.
+        let err = capture_buffer_len(40_000, 40_000).unwrap_err();
+        assert!(
+            err.reason.contains("exceeds the"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    // The other half of the same guard: a virtual desktop far larger than any
+    // machine this runs on must still be capturable, or the ceiling has become
+    // a functional limit rather than a safety net.
+    #[test]
+    fn a_very_large_but_real_virtual_desktop_still_fits() {
+        // Eight 8K monitors side by side.
+        let len = capture_buffer_len(61_440, 4_320).unwrap();
+        assert_eq!(len, 61_440usize * 4_320 * 4);
+        assert!(len <= MAX_CAPTURE_BUFFER_BYTES);
     }
 }

@@ -49,8 +49,9 @@
  *     arms (TabDragBlocked and the flash family) AFTER the generic arms by
  *     design, so "code token beats generic keyword" is not a global truth of
  *     this cascade. Those few intent anchors stay as hand pins that carry a
- *     real competitor — all FOUR of them (Round 12: this list was dropping
- *     the fourth, and a stale enumeration misleads harder than prose):
+ *     real competitor — all SIX of them (Round 12: this list was dropping the
+ *     fourth, and a stale enumeration misleads harder than prose; the last two
+ *     arrived with the capture choke point):
  *       - SpawnFailed above the generic "window not found" arm →
  *         phase7-f3-spawn-failed-typed-code.test.ts (case 6)
  *       - CoordinateOutsideReachableBounds above the generic arms →
@@ -62,6 +63,13 @@
  *         flash reason out of the generic UiaTimeout arm", which feeds the
  *         wrapper-prefixed "CDP: ForegroundFlashFailed: focus_wait_timeout"
  *         — a message that carries the competing "timeout" keyword).
+ *       - RegionOutsideCapturableBounds above the generic arms →
+ *         adr-031-capture-resolver.test.ts ("both codes win over the generic
+ *         classify arms", which feeds "window not found" / "timed out" /
+ *         "element not found" tails)
+ *       - CaptureBackendFailed above the generic arms →
+ *         adr-031-capture-resolver.test.ts (the same loop; its production
+ *         message also carries the backend's own uncontrolled text)
  *   - Production wording tripwires (a producer's prose must not grow a generic
  *     keyword while its arm sits below the generic arms):
  *     oq8-failwith-suggest-routing.test.ts pins the real producer strings.

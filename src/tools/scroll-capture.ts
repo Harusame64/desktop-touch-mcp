@@ -79,10 +79,16 @@ interface RawFrame {
 // primary one failed with a raw libnut error like the rest of them.
 // `Buffer.from` still copies: consecutive frames are compared against each
 // other, so a buffer the backend may reuse cannot be retained.
+//
+// "overlap": the rectangle is the target window's own screen rect, which
+// Windows reports a few pixels outside the monitor for a maximised window and
+// genuinely off-screen for one straddling the desktop edge. Those pages must
+// still be stitchable, and the rectangle must reach the backend unclamped so
+// every frame in the loop has identical dimensions to diff against.
 async function captureRawRegion(
   region: { x: number; y: number; width: number; height: number }
 ): Promise<RawFrame> {
-  const raw = await grabScreenRegionValidated(region);
+  const raw = await grabScreenRegionValidated(region, "overlap");
   return {
     data: Buffer.from(raw.data),
     width: raw.width,

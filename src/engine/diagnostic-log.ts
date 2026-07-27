@@ -170,6 +170,12 @@ export type DiagnosticEvent =
       region?: { x: number; y: number; width: number; height: number };
       /** Which boundary the request was judged against, when it was judged. */
       bounds?: string;
+      /**
+       * How strictly it was judged: `contain` for a rectangle the caller named,
+       * `overlap` for one Windows produced (a window's own screen rect, which
+       * may legitimately run past the monitor edge).
+       */
+      mode?: string;
       /** Typed reason / underlying message. */
       reason?: string;
     };

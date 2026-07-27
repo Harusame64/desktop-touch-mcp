@@ -23,6 +23,15 @@
   `CaptureBackendFailed`. Both carry recovery steps, and both are recorded in the
   diagnostic log with the requested region — including on the paths that continue
   silently without an image, where previously nothing was written down at all.
+- **Screenshots of a monitor or a region now come back at full resolution.** They are
+  returned in the display's real pixels instead of the scaled-down size earlier versions
+  produced, so on a monitor running at anything other than 100% display scaling the
+  returned image is larger than before — a 3840x2160 monitor at 150% scaling gives you
+  3840x2160 where it used to give 2560x1440. `screenshot(windowTitle=…)` has always
+  worked this way, so images from the two routes are finally the same scale. Screen
+  coordinates did not change: what `screenshot(detail='meta')` reports is still what you
+  pass in and what you click. Re-take a screenshot rather than reusing an image size or
+  a crop rectangle saved from an earlier version.
 - **New: `DESKTOP_TOUCH_CAPTURE_BACKEND`.** Set it to `nutjs` to force the previous
   capture path, which reads the primary monitor only. It exists for isolating a capture
   problem; leave it unset for normal use. The backend is chosen once at startup, so a
