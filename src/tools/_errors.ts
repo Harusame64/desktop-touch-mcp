@@ -215,7 +215,7 @@ const SUGGESTS: Record<string, string[]> = {
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no desktop to capture. A lock screen or a UAC prompt blocks capture the same way until it is dismissed.",
     "Transient failures happen while displays are being added, removed or rearranged: retry once after the layout settles.",
     "If the message says the monitor layout could not be read, the whole-screen capture cannot pick a rectangle at all; screenshot(windowTitle=…) and screenshot(detail='text') do not depend on it.",
-    "The failure is recorded in the diagnostic log (~/.desktop-touch-mcp/logs/diagnostic.log, `\"kind\":\"capture\"` entries) with the requested region and the capture backend in use.",
+    "The failure is recorded in the diagnostic log (%USERPROFILE%\\.desktop-touch-mcp\\logs\\diagnostic.log, `\"kind\":\"capture\"` entries) with the requested region and the capture backend in use.",
   ],
   // ADR-029 Phase 2a: the coordinate was fine, but Windows would not put the
   // pointer there. Nothing was clicked. Recovery has nothing in common with the

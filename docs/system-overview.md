@@ -30,12 +30,15 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   │   ├── dHash — 64-bit perceptual hash (0.09 ms)
     │   │   └── hammingDistance — bitwise comparison
     │   │
+    │   ├── Screen Capture Engine (GDI — ADR-031)
+    │   │   └── gdi.rs — BitBlt of any virtual-screen rectangle (signed coords, multi-monitor) + PrintWindow
+    │   │
     │   └── Image Processing Engine (SoM pipeline — v0.15.4)
     │       ├── preprocessImage() — grayscale (BT.601 u8) + bilinear upscale (2×/3×, Q16 fixed-point) + contrast stretch
     │       └── drawSomLabels()  — red bounding boxes + 5×7 bitmap-font ID badges ([1],[2],…) on RGBA buffer
     │
     ├── Layer 1: Engine (TypeScript)
-    │   ├── nutjs.js        — mouse / keyboard / screen capture (nut-js)
+    │   ├── nutjs.js        — mouse / keyboard (nut-js) + screen capture fallback (primary monitor only)
     │   ├── win32.ts        — Win32 API via koffi: window enum, DPI, PrintWindow, SetWindowPos,
     │   │                     getForegroundHwnd, getWindowClassName, isWindowTopmost, getWindowOwner
     │   ├── uia-bridge.ts   — UIA bridge: routes to Rust native → PowerShell fallback
@@ -47,6 +50,7 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   │                     clusterOcrWords(): 2-stage merge (char→word→element) via proximity heuristics
     │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas)
     │   ├── image.ts        — image encode (sharp): PNG / WebP 1:1 / crop
+    │   │                     + screen-capture choke point (native GDI default, nut-js fallback — ADR-031)
     │   ├── layer-buffer.ts — per-window layer buffer: frame-diff detection (MPEG P-frame style)
     │   │                     Uses Rust SSE2 engine for computeChangeFraction / dHash when available
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket sessions + DOM→screen coords

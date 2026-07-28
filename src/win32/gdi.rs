@@ -158,6 +158,14 @@ pub fn win32_print_window_to_buffer(
 
         // 5. Bind bitmap to the memory DC; the previous selection is
         //    restored on drop (skipped when SelectObject returned NULL).
+        //
+        //    Tolerating NULL is safe HERE, and only here. Every caller of this
+        //    function sits inside the window-capture ladder, and both outcomes
+        //    of a failed selection are caught by the rungs below it: an Err
+        //    trips the null/exception fallback, and a black frame trips the
+        //    all-black / zero-variance check (`captureWindowRawWithFallback`
+        //    in engine/image.ts). `win32_capture_screen_region` has no such
+        //    net underneath it, which is why that one treats NULL as an error.
         let prev = unsafe { SelectObject(mem_dc.dc, HGDIOBJ(bitmap_raw.0 as *mut _)) };
         let select_guard = SelectGuard {
             dc: mem_dc.dc,
@@ -228,7 +236,7 @@ pub fn win32_print_window_to_buffer(
 /// `vec![0u8; n]` has no failure path: an oversized request aborts the whole
 /// process instead of returning an error the caller could report. A rectangle
 /// that survives the extent and overflow checks below can still be absurd (the
-/// largest `width` × `height` pair those admit is ~1.5 x 10^19 bytes), so the
+/// largest `width` × `height` pair those admit is ~1.8 x 10^19 bytes), so the
 /// size is bounded before anything is allocated.
 ///
 /// 1 GiB sits far above any real virtual desktop: eight 8K monitors side by
@@ -340,10 +348,21 @@ pub fn win32_capture_screen_region(
         let _bitmap = BitmapGuard(bitmap_raw);
 
         // 4. Bind the bitmap; the previous selection is restored on drop.
+        //
+        //    Unlike `win32_print_window_to_buffer` above, a NULL return is
+        //    fatal here. Nothing downstream would notice it: BitBlt would draw
+        //    into the memory DC's default 1x1 monochrome bitmap, GetDIBits
+        //    would then read OUR bitmap — which was never drawn into — and the
+        //    all-zero buffer would leave this function as a successful black
+        //    frame. The screen-region path has no blank-capture detection to
+        //    catch that, so the failure is reported instead of returned.
         let prev = unsafe { SelectObject(mem_dc.dc, HGDIOBJ(bitmap_raw.0 as *mut _)) };
+        if prev.0.is_null() {
+            return Err(napi::Error::from_reason("SelectObject failed"));
+        }
         let select_guard = SelectGuard {
             dc: mem_dc.dc,
-            old: if prev.0.is_null() { None } else { Some(prev) },
+            old: Some(prev),
         };
 
         // 5. Copy the requested rectangle out of the screen DC. Unlike
@@ -446,7 +465,7 @@ mod tests {
     }
 
     // The largest pair that clears the extent check multiplies out to more
-    // than usize::MAX on a 32-bit target and to ~1.5 x 10^19 bytes on 64-bit.
+    // than usize::MAX on a 32-bit target and to ~1.8 x 10^19 bytes on 64-bit.
     // Neither may wrap, and neither may reach the allocator: on 32-bit the
     // overflow check catches it, on 64-bit the size ceiling does.
     #[test]

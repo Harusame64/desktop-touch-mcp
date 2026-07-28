@@ -226,10 +226,12 @@ function resolvePrimaryCaptureRect(): { x: number; y: number; width: number; hei
  *   3. the backend runs (native BitBlt over the virtual desktop, or nut.js);
  *   4. anything that escapes 1-3 leaves as `CaptureBackendFailed`.
  *
- * Step 4 wraps the WHOLE pipeline, not just the backend call, because the
- * full-screen path resolves the primary monitor inside it and that lookup can
- * throw. A raw libnut / Win32 error reaching a caller is precisely what this
- * choke point exists to prevent.
+ * Step 4 wraps steps 2-3, not just the backend call, because the full-screen
+ * path resolves the primary monitor inside it and that lookup can throw. A raw
+ * libnut / Win32 error reaching a caller is precisely what this choke point
+ * exists to prevent. Step 1 sits outside the `try` deliberately: it is
+ * memoised per process and resolves to nut.js when the native module is
+ * absent rather than throwing, so there is no failure of its own to catch.
  *
  * The failure is also written to diagnostic.log here — above the two callers
  * that swallow it whole (`ui-elements.ts` continues text-only, `workspace.ts`
@@ -601,10 +603,13 @@ export interface CaptureWindowRawResult {
  * Note on dimension parity: on high-DPI monitors PrintWindow returns the
  * window's drawn surface in device pixels. What the BitBlt rung returns now
  * depends on which capture backend this process uses: the native one (ADR-031,
- * the default wherever the module is present) BitBlts the screen DC and returns
- * DEVICE pixels, matching PrintWindow; the nut.js fallback returns LOGICAL
- * pixels, so on a non-100% display it comes back smaller. WGC (ADR-027) is a
- * third source whose `ContentSize` is device-pixel-like (close to PrintWindow).
+ * the default wherever the module is present) BitBlts the screen DC, which by
+ * construction should yield DEVICE pixels matching PrintWindow — this is the
+ * design expectation, not a measured result, and the dogfood passes the
+ * implementation plan schedules are what will settle it. The nut.js fallback
+ * returns LOGICAL pixels, so on a non-100% display it comes back smaller. WGC
+ * (ADR-027) is a third source whose `ContentSize` is device-pixel-like (close
+ * to PrintWindow).
  * Callers (e.g. `captureAndDiff`) that compare frames across captures must
  * still tolerate a one-time `sizeChanged` when the source switches among
  * PrintWindow / WGC / BitBlt for the same window — the backend itself never
