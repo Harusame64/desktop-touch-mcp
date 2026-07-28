@@ -677,8 +677,10 @@ export async function captureWindowRawWithFallback(
   // "overlap", not the default "contain": `windowRect` comes from
   // `GetWindowRect`, which reports a maximised window ~8px outside its monitor
   // on every side (the invisible resize border), and a window straddling the
-  // desktop edge runs off it for real. Those must still be captured — BitBlt
-  // blackens the off-screen part, which is the honest picture — and the
+  // desktop edge runs off it for real. Those must still be captured — the
+  // native capture clears its bitmap to black before the BitBlt, so the
+  // off-screen part comes back black rather than uninitialised, which is the
+  // honest picture — and the
   // rectangle must reach the backend UNCLAMPED so the returned buffer keeps the
   // window's own dimensions, which is what `opts.crop` is expressed in.
   const rgbImage = await grabScreenRegionValidated(windowRect, "overlap");

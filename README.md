@@ -422,7 +422,9 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 
 `screenshot(displayId=…)` and `screenshot(region=…)` capture any monitor, including one placed left of or above the primary — those have negative desktop coordinates, and you pass them exactly as `screenshot(detail='meta')` reports them. `screenshot()` with no region is the primary monitor, as it has always been.
 
-A region that is on no monitor comes back as `RegionOutsideCapturableBounds` rather than a raw Windows error, and the message says whether the coordinates went stale or whether this server can only capture the primary monitor. If Windows returns no pixels at all — a locked screen, a UAC prompt, a disconnected remote-desktop session — you get `CaptureBackendFailed`; capturing the window itself with `screenshot(windowTitle=…)` usually still works, because it reads through a different Windows API.
+A region that cannot be captured comes back as `RegionOutsideCapturableBounds` rather than a raw Windows error, and the message says which of three things happened. The region may be on no monitor at all, which usually means the coordinates went stale because the window moved or closed — take a fresh screenshot and use the new numbers. It may overlap a monitor but stretch past the edge of the screen area, in which case the coordinates are fine and the region is simply too big: ask for a smaller one, or capture the window itself with `screenshot(windowTitle=…)`. Or this server may be limited to the primary monitor, which the message says outright.
+
+If Windows returns no pixels at all — a locked screen, a UAC prompt, a disconnected remote-desktop session — you get `CaptureBackendFailed`; capturing the window itself with `screenshot(windowTitle=…)` usually still works, because it reads through a different Windows API.
 
 | Env var | Default | Notes |
 |---|---|---|

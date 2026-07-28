@@ -16,13 +16,23 @@
   it were the element; `workspace_snapshot` dropped thumbnails for windows there; and
   `scroll(action='capture')` could not stitch a page on them. All three read through
   the same corrected path now.
-- **A capture that cannot be taken says so.** A region on no monitor comes back as
-  `RegionOutsideCapturableBounds`, whose message distinguishes stale coordinates from a
-  server that can only capture the primary monitor; a capture Windows refuses (locked
+- **A capture that cannot be taken says so.** A region that cannot be captured comes back
+  as `RegionOutsideCapturableBounds`, whose message separates three cases: the region is
+  on no monitor (stale coordinates — take a fresh screenshot), it overlaps a monitor but
+  runs past the edge of the screen area (the coordinates are fine, the region is too big
+  — ask for a smaller one or capture the window itself), or this server can only capture
+  the primary monitor; a capture Windows refuses (locked
   screen, UAC prompt, disconnected remote-desktop session) comes back as
   `CaptureBackendFailed`. Both carry recovery steps, and both are recorded in the
   diagnostic log with the requested region — including on the paths that continue
   silently without an image, where previously nothing was written down at all.
+- **Window captures no longer show leftover noise where nothing was drawn.** When a window
+  hangs off the edge of the screen, or Windows draws only part of it, the areas the
+  capture could not fill were left as whatever happened to be in memory — random coloured
+  pixels rather than the empty margin you would expect. Those areas now come back black
+  every time, so two captures of an unchanged window are identical. The warning that tells
+  you an image came back blank depends on this, and it now fires when it should instead of
+  being thrown off by the noise.
 - **New: `DESKTOP_TOUCH_CAPTURE_BACKEND`.** Set it to `nutjs` to force the previous
   capture path, which reads the primary monitor only. It exists for isolating a capture
   problem; leave it unset for normal use. The backend is chosen once at startup, so a

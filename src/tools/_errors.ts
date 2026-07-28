@@ -195,13 +195,18 @@ const SUGGESTS: Record<string, string[]> = {
     "If the target exposes UIA, click_element(name=…) invokes the element directly and never moves the cursor.",
   ],
   // ADR-031: a screenshot region that the capture backend of this process
-  // cannot read. Like its cursor-side twin above, the two cases have opposite
-  // recoveries — off every monitor (stale coordinates) versus a process limited
-  // to the primary monitor — so the first line sends the caller to the message,
-  // which names which one applies and why.
+  // cannot read. Like its cursor-side twin above, the three cases have opposite
+  // recoveries — off every monitor (stale coordinates), overlapping a monitor
+  // but running past the capturable area (coordinates are CURRENT; the
+  // rectangle is what has to change), or a process limited to the primary
+  // monitor — so the first line sends the caller to the message, which names
+  // which one applies and why. The middle case must never inherit the
+  // re-discover advice: re-discovering hands back the same rectangle, so that
+  // loop cannot terminate.
   RegionOutsideCapturableBounds: [
-    "Read the error message first: it says whether the region is off every monitor (stale coordinates) or whether this server is limited to capturing the primary monitor.",
+    "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor.",
     "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then capture the new region.",
+    "Overlaps a monitor but extends beyond the capturable area → the coordinates are NOT stale; re-discovering returns the same rectangle. Shrink the region to fit the monitor, or capture the window itself with screenshot(windowTitle=…).",
     "Limited to the primary monitor → capture the window itself with screenshot(windowTitle=…), which works on every monitor, or move the window onto the primary monitor first.",
     "Retrying the same region fails the same way — the region is the problem, not the tool. screenshot(detail='meta') still lists every monitor and window, including the ones that cannot be captured this way.",
   ],

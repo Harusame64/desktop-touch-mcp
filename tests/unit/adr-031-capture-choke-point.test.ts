@@ -212,6 +212,10 @@ describe("capture choke point — bounds", () => {
   // region goes through unchecked and an off-screen one comes back black with
   // nothing to announce it — the blank-capture check lives on the per-window
   // ladder, not here — which is the acknowledged price of staying usable.
+  // "Black" is only guaranteed on the native backend, which clears the bitmap
+  // before the copy; the nut.js backend does not reach a black frame at all —
+  // it throws on any rectangle off the primary monitor, so that process fails
+  // loudly instead of returning a silent black image.
   it("passes a region through unchecked when the layout cannot be read", async () => {
     hoisted.state.monitors = [];
     await grabScreenRegionValidated(OFF_EVERY_MONITOR);

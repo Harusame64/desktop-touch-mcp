@@ -99,13 +99,17 @@ export class CursorPlacementBlockedError extends HandlerError {
  * ADR-031 — a screen rectangle the current capture backend cannot read.
  *
  * Which rectangle counts as capturable is decided by the backend the process
- * chose at startup, so the two cases this error covers have opposite
+ * chose at startup, so the three cases this error covers have opposite
  * recoveries and the message says which one applies. On the native path the
- * whole virtual desktop is capturable, so being outside it means the
- * coordinates went stale — the window moved or closed after they were read. On
- * the nut.js path capture is limited to the primary monitor, and the message
- * names what put the process there: a build without the native capture module,
- * or the `DESKTOP_TOUCH_CAPTURE_BACKEND` override.
+ * whole virtual desktop is capturable, so a rectangle touching no monitor at
+ * all means the coordinates went stale — the window moved or closed after they
+ * were read. A rectangle that DOES overlap a monitor but runs past the
+ * capturable area is the opposite: those coordinates are current, and
+ * re-discovering returns the same rectangle, so the region itself has to shrink
+ * (or the window be captured directly). On the nut.js path capture is limited
+ * to the primary monitor, and the message names what put the process there: a
+ * build without the native capture module, or the
+ * `DESKTOP_TOUCH_CAPTURE_BACKEND` override.
  *
  * Distinct from {@link CaptureBackendFailedError}: nothing was attempted here.
  * The rectangle was refused before any pixels were read, so retrying it

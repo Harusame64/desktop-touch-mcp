@@ -296,8 +296,12 @@ export type CaptureRegionResolution =
  *
  * The relaxation applies to the GDI backend only (`virtual-rect`). It is a
  * statement about what the backend can do, not a preference: BitBlt clips
- * against the screen DC and fills the rest with black, while libnut cannot
- * clip at all and throws on any rectangle leaving the primary monitor. On a
+ * against the screen DC, and the native capture clears the bitmap to black
+ * before the copy, so the part BitBlt does not write is black rather than
+ * uninitialised. (BitBlt itself writes nothing there — the clear is what makes
+ * the margin black. The relaxation is unaffected either way: what earns it is
+ * that BitBlt CLIPS instead of failing.) libnut cannot clip at all and throws
+ * on any rectangle leaving the primary monitor. On a
  * `primary-rect` resolution `overlap` therefore still requires containment —
  * a refusal there is `RegionOutsideCapturableBounds`, which names the missing
  * native module, whereas letting the rectangle through would surface libnut's

@@ -170,7 +170,7 @@ function createMcpServer(): McpServer {
         "- WaitTimeout → read suggest[] in the error; increase timeoutMs or verify target exists",
         "- keyboard(action='press') or keyboard(action='type') wrong window → call focus_window(windowTitle) first",
         "- scroll(action='capture') sizeReduced=true → reduce maxScrolls or add grayscale=true",
-        "- RegionOutsideCapturableBounds → the screenshot region is not on any monitor this server can capture. Read the message: it says whether the coordinates are stale (re-run desktop_discover or take a fresh screenshot) or whether this server captures the primary monitor only (use screenshot(windowTitle=…), which works on every monitor)",
+        "- RegionOutsideCapturableBounds → the screenshot region cannot be captured as given. Read the message: it says whether the region is on no monitor at all (stale coordinates — re-run desktop_discover or take a fresh screenshot), or overlaps a monitor but runs past the capturable area (coordinates are current; shrink the region, or use screenshot(windowTitle=…)), or whether this server captures the primary monitor only (use screenshot(windowTitle=…), which works on every monitor)",
         "- CaptureBackendFailed → Windows returned no pixels for that capture (locked screen, UAC prompt, disconnected remote session, displays being rearranged). Try screenshot(windowTitle=…) — it reads through a different path — or retry once after the screen settles",
         "",
         "## Multi-monitor capture",
