@@ -447,6 +447,42 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     expect(err.message).not.toContain("Capture the window directly");
   });
 
+  // The overhang branch has its own copy of the determinant split, so it needs
+  // its own pins — the off-primary pair above cannot reach this code path. A
+  // region overlapping the primary and running past its right edge, judged
+  // against a primary-rect resolution.
+  const OVERHANG_ON_PRIMARY = { x: 1900, y: 100, width: 100, height: 100 };
+  const refusalForOverhang = (): Error => {
+    try {
+      assertCaptureRegionInBounds(OVERHANG_ON_PRIMARY, resolveCaptureRegion());
+    } catch (e) {
+      return e as Error;
+    }
+    throw new Error("expected a refusal");
+  };
+
+  it("offers per-window capture for an overhang only when the module is installed", () => {
+    process.env.DESKTOP_TOUCH_CAPTURE_BACKEND = "nutjs"; // module present, region path pinned
+    const err = refusalForOverhang();
+    expect(err.message).toContain("overlaps the primary monitor");
+    expect(err.message).toMatch(/shrink the region/i);
+    expect(err.message).toContain("capture the window itself with screenshot");
+    expect(err.message).toContain("PrintWindow");
+    expect(err.message).not.toContain("Reinstalling");
+  });
+
+  it("does not offer per-window capture for an overhang on a module-less build", () => {
+    hoisted.state.nativeCapture = false;
+    const err = refusalForOverhang();
+    expect(err.message).toContain("overlaps the primary monitor");
+    // Shrinking is the answer that holds whatever the determinant is.
+    expect(err.message).toMatch(/shrink the region/i);
+    expect(err.message).toContain("needs the same missing module");
+    expect(err.message).toContain("Reinstalling");
+    // windowTitle may be NAMED as a dead end, but must not be offered as a route.
+    expect(err.message).not.toContain("capture the window itself with screenshot");
+  });
+
   it("names the missing module when that is what limits the process", () => {
     hoisted.state.nativeCapture = false;
     const err = refusalFor();
