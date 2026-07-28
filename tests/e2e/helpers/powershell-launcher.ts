@@ -388,7 +388,9 @@ export async function launchPowerShell(opts?: {
   // conhost/wt). Size is preserved and the move uses SWP_NOZORDER +
   // SWP_NOACTIVATE, so Z-order, TopMost state and the current foreground window
   // are all left alone — if Windows' foreground lock kept the user's editor
-  // active while the console came up, this move does not yank it away.
+  // active while the console came up, this move does not yank it away. (Measured
+  // on Windows 11 in PR #558: a SWP_NOZORDER-only move did not steal the
+  // foreground either, so NOACTIVATE is a guarantee, not an observed fix.)
   // Single-monitor machines are a no-op and keep the previous behaviour exactly.
   if (found.region.width > 0 && found.region.height > 0) {
     moveWindowToE2eScreen(found.hwnd, { width: found.region.width, height: found.region.height });

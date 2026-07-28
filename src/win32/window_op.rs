@@ -95,6 +95,13 @@ pub fn win32_clear_window_topmost(hwnd: BigInt) -> napi::Result<bool> {
 /// the caller says so — which is wrong for any caller that repositions a window
 /// it does not want to bring forward (e.g. relocating a test window off the
 /// user's screen must not steal the focus that user is typing into).
+///
+/// Measured on Windows 11 (PR #558): moving a background window with
+/// `SWP_NOZORDER` alone did NOT change the foreground, with or without this
+/// flag — activation appears tied to the Z-order move that `SWP_NOZORDER`
+/// suppresses. So this is a contract guarantee, not a fix for an observed
+/// focus steal; do not weaken it on the strength of that measurement, which
+/// covers one OS build.
 #[napi]
 pub fn win32_set_window_bounds(
     hwnd: BigInt,

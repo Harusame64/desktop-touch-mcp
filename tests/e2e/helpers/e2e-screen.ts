@@ -145,7 +145,9 @@ export function pickE2eScreen(
  * brings the window forward. Without that flag SetWindowPos may activate the
  * window it moves, which would steal the foreground from whatever the user is
  * typing into whenever the spawned window has not (yet) become foreground
- * itself — the containment goal inverted.
+ * itself — the containment goal inverted. Measured on Windows 11 (PR #558):
+ * the no-flag move did not steal the foreground either, so this is a contract
+ * guarantee rather than a fix for an observed steal.
  *
  * No-op returning false on a single-monitor machine, when the window does not
  * fit the target screen, or when the move fails — callers treat placement as
