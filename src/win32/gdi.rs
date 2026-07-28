@@ -207,8 +207,18 @@ pub fn win32_print_window_to_buffer(
             biCompression: BI_RGB.0,
             ..unsafe { std::mem::zeroed() }
         };
+        // Allocated fallibly: `vec![0u8; n]` aborts the whole process on OOM,
+        // which turns a recoverable capture failure into a dead server. The
+        // GDI bitmap of the same dimensions is already resident here, so the
+        // peak requirement is roughly twice this buffer. `resize` afterwards
+        // cannot reallocate — the capacity is already reserved — so it cannot
+        // abort either.
         let pixel_count = (width as usize) * (height as usize);
-        let mut pixels: Vec<u8> = vec![0u8; pixel_count * 4];
+        let mut pixels: Vec<u8> = Vec::new();
+        pixels.try_reserve_exact(pixel_count * 4).map_err(|_| {
+            napi::Error::from_reason("capture buffer allocation failed (out of memory)")
+        })?;
+        pixels.resize(pixel_count * 4, 0);
         let scanlines = unsafe {
             GetDIBits(
                 mem_dc.dc,
@@ -245,11 +255,15 @@ pub fn win32_print_window_to_buffer(
 
 /// Ceiling on the RGBA buffer a single capture may allocate, in bytes.
 ///
-/// `vec![0u8; n]` has no failure path: an oversized request aborts the whole
-/// process instead of returning an error the caller could report. A rectangle
-/// that survives the extent and overflow checks below can still be absurd (the
-/// largest `width` × `height` pair those admit is ~1.8 x 10^19 bytes), so the
-/// size is bounded before anything is allocated.
+/// A rectangle that survives the extent and overflow checks below can still be
+/// absurd (the largest `width` × `height` pair those admit is ~1.8 x 10^19
+/// bytes), so the size is bounded before anything is allocated.
+///
+/// The pixel buffer itself is allocated fallibly, so this ceiling is no longer
+/// what stands between an oversized request and a process abort. It still
+/// earns its place: it refuses a nonsensical rectangle by NAME, before a
+/// bitmap of the same dimensions is asked of GDI, rather than letting the
+/// attempt fail later as an opaque out-of-memory.
 ///
 /// 1 GiB sits far above any real virtual desktop: eight 8K monitors side by
 /// side (61440 × 4320) come to ~1.06 x 10^9 bytes, which still fits, and no
@@ -414,7 +428,20 @@ pub fn win32_capture_screen_region(
             biCompression: BI_RGB.0,
             ..unsafe { std::mem::zeroed() }
         };
-        let mut pixels: Vec<u8> = vec![0u8; buffer_len];
+        // Allocated fallibly. `MAX_CAPTURE_BUFFER_BYTES` bounds how large this
+        // request may be, but a bound is not a guarantee that the allocation
+        // succeeds — and it cannot be: when monitor enumeration fails the
+        // bounds check deliberately fails open, so a region just under the
+        // ceiling can reach here on a machine that cannot satisfy it. The GDI
+        // bitmap of the same size is already resident, so the real peak is
+        // about double. `vec![0u8; n]` would abort the process; this reports
+        // `CaptureBackendFailed` instead. `resize` cannot reallocate after the
+        // reservation, so it cannot abort either.
+        let mut pixels: Vec<u8> = Vec::new();
+        pixels.try_reserve_exact(buffer_len).map_err(|_| {
+            napi::Error::from_reason("capture buffer allocation failed (out of memory)")
+        })?;
+        pixels.resize(buffer_len, 0);
         let scanlines = unsafe {
             GetDIBits(
                 mem_dc.dc,
@@ -504,8 +531,10 @@ mod tests {
         );
     }
 
-    // `vec![0u8; n]` aborts instead of erroring, so an absurd-but-arithmetically
-    // fine rectangle has to be refused here or it takes the process down.
+    // An absurd-but-arithmetically-fine rectangle is refused by name here. The
+    // buffer is allocated fallibly now, so this is no longer what keeps the
+    // process alive — it is what keeps the failure legible, and what stops a
+    // bitmap of those dimensions being asked of GDI in the first place.
     #[test]
     fn buffer_size_past_the_ceiling_is_rejected() {
         // 40000 x 40000 x 4 = 6.4 x 10^9 bytes — no overflow, no extent
