@@ -394,7 +394,8 @@ export declare function win32ShowWindow(hwnd: bigint, nCmdShow: number): boolean
 export declare function win32SetForegroundWindow(hwnd: bigint): boolean
 export declare function win32SetWindowTopmost(hwnd: bigint): boolean
 export declare function win32ClearWindowTopmost(hwnd: bigint): boolean
-export declare function win32SetWindowBounds(hwnd: bigint, x: number, y: number, cx: number, cy: number): boolean
+/** `noActivate` (optional): adds SWP_NOACTIVATE so the move never brings the window forward. Omitted/false = SWP_NOZORDER only (historical behaviour). */
+export declare function win32SetWindowBounds(hwnd: bigint, x: number, y: number, cx: number, cy: number, noActivate?: boolean): boolean
 export declare function win32ForceSetForegroundWindow(hwnd: bigint): NativeForceFocusResult
 export declare function win32ForegroundFlashInject(targetHwnd: bigint, targetPid: number, text: string, options: NativeForegroundFlashOptions): NativeForegroundFlashResult
 export declare function win32GetFocusedChildHwnd(targetHwnd: bigint): bigint | null

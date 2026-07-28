@@ -15,6 +15,7 @@ import { spawn } from "child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { enumWindowsInZOrder } from "../../../src/engine/win32.js";
+import { moveWindowToE2eScreen } from "./e2e-screen.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // tests/e2e/helpers → repo root → benches/fixtures/visual-only-canvas.ps1
@@ -38,6 +39,15 @@ export interface VisualOnlyCanvas {
  */
 export async function spawnVisualOnlyCanvas(opts: { fontSize?: number } = {}): Promise<VisualOnlyCanvas | null> {
   const title = `dt-visualonly-e2e-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  // DPI: unlike blank-window.ts / untitled-window.ts, this fixture is NOT made
+  // per-monitor DPI aware. It does not need to be: it is placed by reading its
+  // real (physical) rect back after spawn and relocating it with that physical
+  // size, so the fit check compares physical with physical either way — the
+  // logical-vs-physical mismatch Codex flagged (PR #558) cannot occur here.
+  // The residual mixed-DPI concern is different: a DPI-unaware window that
+  // crosses a scale boundary is stretched by the OS, so its physical size
+  // changes after the move. That is left for the multi-DPI dogfood to measure;
+  // it is not reproducible on the 100%-scale displays available here.
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", FIXTURE, "-Title", title];
   if (opts.fontSize !== undefined) args.push("-FontSize", String(opts.fontSize));
   const child = spawn("powershell", args, { stdio: "ignore" });
@@ -52,6 +62,18 @@ export async function spawnVisualOnlyCanvas(opts: { fontSize?: number } = {}): P
   while (Date.now() < deadline) {
     const w = enumWindowsInZOrder().find((x) => x.title === title && !x.isMinimized);
     if (w && w.region.width > 0 && w.region.height > 0) {
+      // Multi-monitor placement: keep the suite off the user's working screen.
+      // The move happens HERE rather than in the .ps1 because that fixture is
+      // shared byte-for-byte with the ADR-024 round-trip bench — the e2e
+      // placement policy must not leak into the bench's canvas definition.
+      // The window stays CENTRED in its monitor's WORK AREA — the same rect
+      // WinForms' `StartPosition='CenterScreen'` centres in, so the placement
+      // matches the primary-monitor original exactly and keeps the property the
+      // fixture's own comment relies on (clear of the top-left desktop-icon /
+      // Recycle Bin column). One `pickE2eScreen` call happens inside the helper,
+      // so the centring and the fit-clamp read one monitor enumeration.
+      // Single-monitor machines are a no-op.
+      moveWindowToE2eScreen(w.hwnd, { width: w.region.width, height: w.region.height }, "centre");
       return { title, close };
     }
     await new Promise((res) => setTimeout(res, 200));

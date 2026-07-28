@@ -13,7 +13,7 @@ use napi_derive::napi;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetWindowPos, ShowWindow, SET_WINDOW_POS_FLAGS, SHOW_WINDOW_CMD,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
 };
 
 use super::safety::napi_safe_call;
@@ -85,6 +85,23 @@ pub fn win32_clear_window_topmost(hwnd: BigInt) -> napi::Result<bool> {
 }
 
 /// Move and resize a window without changing Z-order (`SWP_NOZORDER`).
+///
+/// `no_activate` is an OPTIONAL trailing argument and defaults to the previous
+/// behaviour when omitted (`None`) or false: flags stay exactly `SWP_NOZORDER`,
+/// so every pre-existing caller is bit-for-bit unchanged.
+///
+/// Pass `true` to add `SWP_NOACTIVATE`. Without that flag SetWindowPos may
+/// activate the window it moves — Windows only leaves the foreground alone when
+/// the caller says so — which is wrong for any caller that repositions a window
+/// it does not want to bring forward (e.g. relocating a test window off the
+/// user's screen must not steal the focus that user is typing into).
+///
+/// Measured on Windows 11 (PR #558): moving a background window with
+/// `SWP_NOZORDER` alone did NOT change the foreground, with or without this
+/// flag — activation appears tied to the Z-order move that `SWP_NOZORDER`
+/// suppresses. So this is a contract guarantee, not a fix for an observed
+/// focus steal; do not weaken it on the strength of that measurement, which
+/// covers one OS build.
 #[napi]
 pub fn win32_set_window_bounds(
     hwnd: BigInt,
@@ -92,14 +109,19 @@ pub fn win32_set_window_bounds(
     y: i32,
     cx: i32,
     cy: i32,
+    no_activate: Option<bool>,
 ) -> napi::Result<bool> {
     napi_safe_call("win32_set_window_bounds", || {
+        let mut flags = SWP_NOZORDER.0;
+        if no_activate == Some(true) {
+            flags |= SWP_NOACTIVATE.0;
+        }
         let result = unsafe {
             SetWindowPos(
                 hwnd_from_bigint(hwnd),
                 None, // SWP_NOZORDER => hwndInsertAfter ignored
                 x, y, cx, cy,
-                SWP_NOZORDER,
+                SET_WINDOW_POS_FLAGS(flags),
             )
         };
         Ok(result.is_ok())
