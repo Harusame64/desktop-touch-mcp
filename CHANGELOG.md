@@ -32,7 +32,9 @@
   pixels rather than the empty margin you would expect. Those areas now come back black
   every time, so two captures of an unchanged window are identical. The warning that tells
   you an image came back blank depends on this, and it now fires when it should instead of
-  being thrown off by the noise.
+  being thrown off by the noise. (This applies to the normal capture path; it does not
+  apply if you have set `DESKTOP_TOUCH_CAPTURE_BACKEND=nutjs`, described below, which uses
+  the older path.)
 - **New: `DESKTOP_TOUCH_CAPTURE_BACKEND`.** Set it to `nutjs` to force the previous
   capture path, which reads the primary monitor only. It exists for isolating a capture
   problem; leave it unset for normal use. The backend is chosen once at startup, so a

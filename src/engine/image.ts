@@ -680,9 +680,9 @@ export async function captureWindowRawWithFallback(
   // desktop edge runs off it for real. Those must still be captured — the
   // native capture clears its bitmap to black before the BitBlt, so the
   // off-screen part comes back black rather than uninitialised, which is the
-  // honest picture — and the
-  // rectangle must reach the backend UNCLAMPED so the returned buffer keeps the
-  // window's own dimensions, which is what `opts.crop` is expressed in.
+  // honest picture — and the rectangle must reach the backend UNCLAMPED so the
+  // returned buffer keeps the window's own dimensions, which is what
+  // `opts.crop` is expressed in.
   const rgbImage = await grabScreenRegionValidated(windowRect, "overlap");
   const channels = rgbImage.channels;
   // ADR-027 R9/AC8 — BitBlt is the LAST rung. We only reach it because

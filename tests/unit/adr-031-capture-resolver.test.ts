@@ -379,6 +379,39 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     expect(err.message).not.toContain("NOT stale");
   });
 
+  // The nut.js twin of the overhang case above. `GetWindowRect` reports a
+  // maximised window ~8px outside its own monitor, so its rect overlaps the
+  // primary while overhanging it — and "move the window onto the primary
+  // monitor" is then an instruction to do what has already been done. Both
+  // directions are asserted here, so deleting the branch fails the first half
+  // and making it unconditional fails the second.
+  it("does not tell a maximised window on the primary monitor to move there", () => {
+    hoisted.state.nativeCapture = false;
+    const maximised = { x: -8, y: -8, width: 1936, height: 1096 };
+    let err!: Error;
+    try {
+      assertCaptureRegionInBounds(maximised, resolveCaptureRegion());
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err.name).toBe("RegionOutsideCapturableBounds");
+    expect(err.message).toContain("overlaps the primary monitor");
+    expect(err.message).toContain("already on the primary monitor");
+    expect(err.message).toMatch(/shrink the region/i);
+    expect(err.message).not.toContain("move the target window");
+
+    // A region that misses the primary entirely CAN be fixed by moving the
+    // window, so that wording has to stay put.
+    let offErr!: Error;
+    try {
+      assertCaptureRegionInBounds({ x: -1920, y: 0, width: 1920, height: 1080 }, resolveCaptureRegion());
+    } catch (e) {
+      offErr = e as Error;
+    }
+    expect(offErr.message).toContain("move the target window");
+    expect(offErr.message).not.toContain("already on the primary monitor");
+  });
+
   it("names the missing module when that is what limits the process", () => {
     hoisted.state.nativeCapture = false;
     const err = refusalFor();

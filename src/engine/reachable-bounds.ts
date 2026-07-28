@@ -542,6 +542,21 @@ function describeUncapturable(
     selection.determinant === "env-override"
       ? `the ${CAPTURE_BACKEND_ENV} environment variable pins this server to the nut.js capture backend`
       : "this installation is running without its built-in Windows capture module";
+  // Same split as the GDI branch above, for the same reason. A maximised window
+  // is reported by `GetWindowRect` a few pixels outside its own monitor, so its
+  // rect overlaps the primary monitor while overhanging it — and "move the
+  // target window onto the primary monitor" is then advice to do what has
+  // already been done. Only a region that misses the primary entirely can be
+  // fixed by moving the window.
+  if (resolution?.monitors.some((m) => intersectsRect(m, region))) {
+    return (
+      `RegionOutsideCapturableBounds: the requested region ${asked} overlaps the primary ` +
+      `monitor ${where} but extends past its edge. Because ${why}, capture is limited to the ` +
+      `primary monitor and the overhanging part cannot be read. Moving the window will not ` +
+      `help — it is already on the primary monitor. Shrink the region so it fits, or capture ` +
+      `the window itself with screenshot(windowTitle=…), which returns the whole window.`
+    );
+  }
   return (
     `RegionOutsideCapturableBounds: the requested region ${asked} is outside the primary ` +
     `monitor ${where}. Because ${why}, capture is limited to the primary monitor — the region ` +
