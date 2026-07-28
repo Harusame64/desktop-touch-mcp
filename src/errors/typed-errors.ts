@@ -109,7 +109,11 @@ export class CursorPlacementBlockedError extends HandlerError {
  * (or the window be captured directly). On the nut.js path capture is limited
  * to the primary monitor, and the message names what put the process there: a
  * build without the native capture module, or the
- * `DESKTOP_TOUCH_CAPTURE_BACKEND` override.
+ * `DESKTOP_TOUCH_CAPTURE_BACKEND` override. Those two do NOT share a recovery.
+ * The override leaves the native module installed, so per-window capture still
+ * reads through PrintWindow on any monitor; a missing module takes that route
+ * down as well, so the message offers moving the window or reinstalling
+ * instead of sending the caller to a second guaranteed failure.
  *
  * Distinct from {@link CaptureBackendFailedError}: nothing was attempted here.
  * The rectangle was refused before any pixels were read, so retrying it

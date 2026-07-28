@@ -422,6 +422,31 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     expect(offErr.message).not.toContain("already on the primary monitor");
   });
 
+  // Whether `screenshot(windowTitle=…)` is a way out depends on WHY the process
+  // is primary-limited. Under the env override the native module is installed
+  // and per-window capture still works. Without the module it does not:
+  // PrintWindow needs that same binding, and the ladder's BitBlt fallback comes
+  // back to this very guard — so recommending it is a second guaranteed
+  // failure. Both directions are asserted, so deleting the branch fails one and
+  // making it unconditional fails the other.
+  it("offers per-window capture only when the module is actually installed", () => {
+    process.env.DESKTOP_TOUCH_CAPTURE_BACKEND = "nutjs";
+    const pinned = refusalFor();
+    expect(pinned.message).toContain("screenshot(windowTitle=…)");
+    expect(pinned.message).toContain("PrintWindow");
+    expect(pinned.message).not.toContain("reinstall");
+  });
+
+  it("does not send a module-less build to per-window capture, which needs that module", () => {
+    hoisted.state.nativeCapture = false;
+    const err = refusalFor();
+    expect(err.message).toContain("needs the same missing module");
+    expect(err.message).toContain("move the target window");
+    expect(err.message).toContain("reinstall");
+    // The advice that would fail a second time must not be offered as a route.
+    expect(err.message).not.toContain("Capture the window directly");
+  });
+
   it("names the missing module when that is what limits the process", () => {
     hoisted.state.nativeCapture = false;
     const err = refusalFor();

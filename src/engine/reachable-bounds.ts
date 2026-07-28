@@ -624,6 +624,20 @@ function describeUncapturable(
     selection.determinant === "env-override"
       ? `the ${CAPTURE_BACKEND_ENV} environment variable pins this server to the nut.js capture backend`
       : "this installation is running without its built-in Windows capture module";
+  // Whether `screenshot(windowTitle=…)` is a way out depends on WHY this
+  // process is primary-limited, so the advice cannot be a constant.
+  //
+  // With the env override the native module is present and only the region
+  // path is pinned to nut.js, so per-window capture still reads through
+  // PrintWindow and genuinely works on any monitor.
+  //
+  // Without the module it does not: `printWindowToBuffer` needs the very
+  // binding that is missing, the ladder turns that throw into "no data", and
+  // its BitBlt-of-window-rect fallback comes straight back to this same guard
+  // and is refused for an off-primary window. Recommending it there sends the
+  // caller into a second guaranteed failure, so that case names the two things
+  // that do work instead.
+  const perWindowWorks = selection.determinant === "env-override";
   // Same split as the GDI branch above, for the same reason. A maximised window
   // is reported by `GetWindowRect` a few pixels outside its own monitor, so its
   // rect overlaps the primary monitor while overhanging it — and "move the
@@ -634,17 +648,25 @@ function describeUncapturable(
     return (
       `RegionOutsideCapturableBounds: the requested region ${asked} overlaps the primary ` +
       `monitor ${where} but extends past its edge. Because ${why}, capture is limited to the ` +
-      `primary monitor and the overhanging part cannot be read. Moving the window will not ` +
-      `help — it is already on the primary monitor. Shrink the region so it fits, or capture ` +
-      `the window itself with screenshot(windowTitle=…), which returns the whole window.`
+      `primary monitor and the overhanging part cannot be read. Shrink the region so it fits — ` +
+      `the window is already on the primary monitor, so moving it will not help — ` +
+      (perWindowWorks
+        ? `or capture the window itself with screenshot(windowTitle=…), which still reads ` +
+          `through PrintWindow on any monitor.`
+        : `and screenshot(windowTitle=…) needs the same missing module, so it would fail too. ` +
+          `Reinstalling / updating the server restores multi-monitor capture.`)
     );
   }
   return (
     `RegionOutsideCapturableBounds: the requested region ${asked} is outside the primary ` +
     `monitor ${where}. Because ${why}, capture is limited to the primary monitor — the region ` +
-    `cannot be read from here. Capture the window directly with screenshot(windowTitle=…), ` +
-    `move the target window onto the primary monitor, or (for the missing module) reinstall / ` +
-    `update the server to restore multi-monitor capture.`
+    `cannot be read from here. ` +
+    (perWindowWorks
+      ? `Capture the window directly with screenshot(windowTitle=…), which still reads through ` +
+        `PrintWindow on any monitor, or move the target window onto the primary monitor.`
+      : `screenshot(windowTitle=…) needs the same missing module and would fail too, so ` +
+        `move the target window onto the primary monitor, or reinstall / update the server to ` +
+        `restore multi-monitor capture.`)
   );
 }
 

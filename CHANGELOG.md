@@ -21,7 +21,10 @@
   on no monitor (stale coordinates — take a fresh screenshot), it overlaps a monitor but
   runs past the edge of the screen area (the coordinates are fine, the region is too big
   — ask for a smaller one or capture the window itself), or this server can only capture
-  the primary monitor; a capture Windows refuses (locked
+  the primary monitor — and in that last case the message also says why, because it decides
+  the fix: an env override leaves `screenshot(windowTitle=…)` working everywhere, while a
+  missing capture module breaks that route too, so move the window or reinstall. A capture
+  Windows refuses (locked
   screen, UAC prompt, disconnected remote-desktop session) comes back as
   `CaptureBackendFailed`. Both carry recovery steps, and both are recorded in the
   diagnostic log with the requested region — including on the paths that continue
