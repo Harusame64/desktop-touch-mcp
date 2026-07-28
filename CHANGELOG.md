@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — screenshots work on every monitor, not just the primary one
+## [1.14.1] - 2026-07-28 — screenshots work on every monitor, not just the primary one
 
 - **`screenshot(displayId=…)` and `screenshot(region=…)` now capture any monitor.**
   On a setup with a second monitor placed left of or above the primary, both failed
@@ -21,10 +21,12 @@
   on no monitor (stale coordinates — take a fresh screenshot), it overlaps a monitor but
   runs past the edge of the screen area (the coordinates are fine, the region is too big
   — ask for a smaller one or capture the window itself), or this server can only capture
-  the primary monitor — and in that last case the message also says why, because it decides
-  the fix: an env override leaves `screenshot(windowTitle=…)` working everywhere, while a
-  missing capture module breaks that route too, so move the window or reinstall. A capture
-  Windows refuses (locked
+  the primary monitor — and in that last case the message says whether capturing the window
+  itself with `screenshot(windowTitle=…)` still works here, because whole-screen capture and
+  single-window capture are separate parts of the module and a server can end up with one
+  but not the other. Where it does not work, the message says to move the window onto the
+  primary monitor or reinstall instead of sending you down a route that would fail again.
+  A capture Windows refuses (locked
   screen, UAC prompt, disconnected remote-desktop session) comes back as
   `CaptureBackendFailed`. Both carry recovery steps, and both are recorded in the
   diagnostic log with the requested region — including on the paths that continue
