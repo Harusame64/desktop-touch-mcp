@@ -130,18 +130,70 @@ if (stale.length > 0) {
 // Declarations are matched for functions AND classes: `DirtyRectSubscription`
 // is a class, and matching functions alone would report it as a phantom
 // index.js-only export.
+//
+// Relationship to the `stale` set above, so the two rules cannot contradict
+// each other: `stale` names are declared in index.d.ts with no matching Rust
+// export, which is only a soft warning because they may be feature-gated. It
+// would be incoherent to soft-warn that a declaration might not correspond to
+// anything and simultaneously hard-fail because index.js does not re-export
+// it, so `stale` names are excluded from the missing-in-index.js check. They
+// are still checked in the other direction.
 const INDEX_JS = join(ROOT, "index.js");
 const js = readFileSync(INDEX_JS, "utf8");
 
-const dtsDeclared = new Set([
-  ...Array.from(dts.matchAll(/^export declare function (\w+)\s*\(/gm), (m) => m[1]),
-  ...Array.from(dts.matchAll(/^export declare class (\w+)\b/gm), (m) => m[1]),
-]);
-const jsExported = new Set(
-  Array.from(js.matchAll(/^export\s+(?:const|function|class)\s+(\w+)/gm), (m) => m[1]),
-);
+// Export forms this parser understands. Anything else is reported rather than
+// silently skipped: an unparsed `export` line would drop a name out of BOTH
+// sets and read as parity while proving nothing.
+//   index.d.ts — `export declare function|class` are the runtime surface;
+//                `export interface|type` are type-only and have no index.js
+//                counterpart by design.
+//   index.js   — `export const|function|class` are the named re-exports;
+//                `export default` is the whole binding object, not a name.
+const DTS_VALUE = /^export declare (?:function|class) (\w+)/;
+const DTS_TYPE_ONLY = /^export (?:interface|type) \w+/;
+const JS_NAMED = /^export (?:const|function|class) (\w+)/;
+const JS_DEFAULT = /^export default\b/;
 
-const notInJs = [...dtsDeclared].filter((n) => !jsExported.has(n));
+/** Names captured by `valuePat`, plus any `export` line matching nothing. */
+function scanExports(source, valuePat, ignorePat) {
+  const names = new Set();
+  const unrecognized = [];
+  for (const raw of source.split("\n")) {
+    const line = raw.trimEnd();
+    if (!/^export\b/.test(line)) continue;
+    const m = line.match(valuePat);
+    if (m) {
+      names.add(m[1]);
+      continue;
+    }
+    if (ignorePat.test(line)) continue;
+    unrecognized.push(line.trim());
+  }
+  return { names, unrecognized };
+}
+
+const dtsScan = scanExports(dts, DTS_VALUE, DTS_TYPE_ONLY);
+const jsScan = scanExports(js, JS_NAMED, JS_DEFAULT);
+
+for (const [file, scan] of [["index.d.ts", dtsScan], ["index.js", jsScan]]) {
+  if (scan.unrecognized.length === 0) continue;
+  failed = true;
+  console.error(
+    `\n[check-native-types] FAIL — unrecognized export form in ${file} — extend the parser:\n`,
+  );
+  for (const l of scan.unrecognized) console.error(`  ${l}`);
+  console.error(
+    "\n  This guard compares names it can parse. An export shape it does not" +
+      "\n  recognise is invisible to BOTH directions of the parity check, so it" +
+      "\n  is failed loudly instead of being skipped.",
+  );
+}
+
+const dtsDeclared = dtsScan.names;
+const jsExported = jsScan.names;
+const staleSet = new Set(stale);
+
+const notInJs = [...dtsDeclared].filter((n) => !jsExported.has(n) && !staleSet.has(n));
 const notInDts = [...jsExported].filter((n) => !dtsDeclared.has(n));
 
 if (notInJs.length > 0) {

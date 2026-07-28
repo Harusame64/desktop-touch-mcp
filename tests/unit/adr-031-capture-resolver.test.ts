@@ -50,6 +50,7 @@ vi.mock("../../src/engine/diagnostic-log.js", () => ({
 import {
   selectCaptureBackend,
   resolveCaptureRegion,
+  resolveCaptureRegionAsync,
   isCaptureRegionInBounds,
   assertCaptureRegionInBounds,
   padCaptureRegion,
@@ -152,10 +153,19 @@ describe("resolveCaptureRegion", () => {
     });
   });
 
-  it("reports unknown, once, when no monitor is enumerated", () => {
+  // The sync core answers "cannot say"; only the async wrapper knows whether a
+  // fallback remains. So the record belongs to the wrapper, and the core stays
+  // silent — otherwise a nut.js process that goes on to recover bounds and
+  // refuse the region would still have logged "passed through unchecked", and
+  // the warn-once latch would be spent before the first real unknown.
+  it("reports unknown, once, when no monitor is enumerated", async () => {
     hoisted.state.monitors = [];
     expect(resolveCaptureRegion()).toBeNull();
     expect(resolveCaptureRegion()).toBeNull();
+    expect(captureEvents("bounds_unknown")).toHaveLength(0);
+
+    expect(await resolveCaptureRegionAsync()).toBeNull();
+    expect(await resolveCaptureRegionAsync()).toBeNull();
     expect(captureEvents("bounds_unknown")).toHaveLength(1);
   });
 

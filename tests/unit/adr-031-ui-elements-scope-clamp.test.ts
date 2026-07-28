@@ -44,6 +44,16 @@ vi.mock("../../src/engine/win32.js", async () => {
 });
 vi.mock("../../src/engine/diagnostic-log.js", () => ({ logDiagnostic: () => undefined }));
 
+// Pre-emptive, not currently reached: `resolveCaptureRegionAsync` consults the
+// nut.js backend for a primary screen size when monitor enumeration yields
+// nothing. The win32 mock below still returns bounds, so that path is dormant
+// — but if it ever stops doing so, the real nut.js module would load its
+// native backend inside a unit test. One line keeps that from happening
+// silently.
+vi.mock("../../src/engine/nutjs.js", () => ({
+  getPrimaryScreenSize: async () => null,
+}));
+
 // The capture itself is the choke point's job and is pinned by its own tests;
 // here it only has to record what it was asked for and refuse what the real
 // one would refuse.

@@ -396,9 +396,17 @@ function boundingRect(rects: ReachableBounds[]): ReachableBounds {
  * `getVirtualScreen()` is deliberately not reused: it substitutes a hard-coded
  * 1920x1080 rectangle when enumeration returns nothing, which would turn this
  * unknown into a confident wrong answer.
+ *
+ * A `null` from here is NOT yet a fail-open, so nothing is recorded at this
+ * point: on the nut.js path {@link resolveCaptureRegionAsync} can still
+ * recover bounds and go on to refuse the region. The `bounds_unknown` record
+ * and its warn-once latch therefore live in that wrapper, at the point where
+ * failing open becomes final — recording here would both contradict a capture
+ * that was actually checked and burn the latch, so the first REAL unknown
+ * would never be written down.
  */
 export function resolveCaptureRegion(): CaptureRegionResolution | null {
-  const { backend, determinant } = selectCaptureBackend();
+  const { backend } = selectCaptureBackend();
   let resolution: CaptureRegionResolution | null;
   try {
     if (backend === "gdi-bitblt") {
@@ -414,18 +422,26 @@ export function resolveCaptureRegion(): CaptureRegionResolution | null {
   } catch {
     resolution = null; // Win32 failure → unknown → allow (same stance as the cursor guard)
   }
-  if (resolution === null && !warnedUnknownCaptureBounds) {
-    warnedUnknownCaptureBounds = true;
-    logDiagnostic({
-      kind: "capture",
-      event: "bounds_unknown",
-      backend,
-      determinant,
-      reason:
-        "monitor bounds unavailable — capture regions cannot be checked; an off-screen region will come back black",
-    });
-  }
   return resolution;
+}
+
+/**
+ * Record that this process is about to capture without a bounds check — once.
+ *
+ * Called only where no fallback remains, so the record always describes a
+ * capture that really did go through unchecked.
+ */
+function noteBoundsUnknown(backend: string, determinant: string): void {
+  if (warnedUnknownCaptureBounds) return;
+  warnedUnknownCaptureBounds = true;
+  logDiagnostic({
+    kind: "capture",
+    event: "bounds_unknown",
+    backend,
+    determinant,
+    reason:
+      "monitor bounds unavailable — capture regions cannot be checked; an off-screen region will come back black",
+  });
 }
 
 /**
@@ -462,28 +478,36 @@ export async function resolveCaptureRegionAsync(): Promise<CaptureRegionResoluti
   if (resolution) return resolution;
 
   const { backend, determinant } = selectCaptureBackend();
-  if (backend !== "nutjs") return null;
 
-  let size: { width: number; height: number } | null = null;
-  try {
-    const { getPrimaryScreenSize } = await import("./nutjs.js");
-    size = await getPrimaryScreenSize();
-  } catch {
-    size = null; // nut.js unavailable too → genuinely unknown
+  // GDI has no fallback: if monitors cannot be enumerated there, failing open
+  // is already decided and is recorded here rather than in the sync core.
+  if (backend === "nutjs") {
+    let size: { width: number; height: number } | null = null;
+    try {
+      const { getPrimaryScreenSize } = await import("./nutjs.js");
+      size = await getPrimaryScreenSize();
+    } catch {
+      size = null; // nut.js unavailable too → genuinely unknown
+    }
+    if (size) {
+      // nut.js reads the primary display, whose origin is (0, 0) by definition.
+      const rect = { x: 0, y: 0, width: size.width, height: size.height };
+      logDiagnostic({
+        kind: "capture",
+        event: "bounds_from_nutjs",
+        backend,
+        determinant,
+        reason:
+          "monitor enumeration unavailable (no native module); primary-monitor bounds read from the nut.js backend instead",
+      });
+      // Bounds recovered — the region WILL be checked, so this is not an
+      // unknown and the warn-once latch stays unburnt for a real one.
+      return { kind: "primary-rect", rect, monitors: [rect] };
+    }
   }
-  if (!size) return null;
 
-  // nut.js reads the primary display, whose origin is (0, 0) by definition.
-  const rect = { x: 0, y: 0, width: size.width, height: size.height };
-  logDiagnostic({
-    kind: "capture",
-    event: "bounds_from_nutjs",
-    backend,
-    determinant,
-    reason:
-      "monitor enumeration unavailable (no native module); primary-monitor bounds read from the nut.js backend instead",
-  });
-  return { kind: "primary-rect", rect, monitors: [rect] };
+  noteBoundsUnknown(backend, determinant);
+  return null;
 }
 
 /** Is `inner` entirely inside `outer`? */

@@ -150,8 +150,11 @@ export type DiagnosticEvent =
       //   can be attributed to a pixel source afterwards (ADR-031 §4.4).
       // "backend_override_ignored": DESKTOP_TOUCH_CAPTURE_BACKEND named a
       //   backend that does not exist; the choice fell through to capability.
-      // "bounds_unknown": monitor enumeration failed, so the requested
-      //   rectangle was passed through unchecked (fail-open, warn once).
+      // "bounds_unknown": no bounds could be established by ANY route, so the
+      //   requested rectangle was passed through unchecked (fail-open, warn
+      //   once). Written where failing open becomes final — after the nut.js
+      //   fallback below has been tried and failed — so it never describes a
+      //   capture that was in fact checked.
       // "bounds_from_nutjs": monitor enumeration was unavailable (a build with
       //   no native addon), so the primary-monitor bounds came from the nut.js
       //   backend instead — the limitation is still enforced, not failed open.

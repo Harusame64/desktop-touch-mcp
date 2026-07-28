@@ -237,6 +237,10 @@ describe("capture choke point — bounds", () => {
     expect(hoisted.calls.nutGrabRegion).toEqual([]);
     expect(hoisted.calls.nutGrab).toBe(0);
     expect(eventsOfKind("bounds_from_nutjs")).toHaveLength(1);
+    // Bounds were recovered and the region WAS checked, so nothing failed open
+    // here — recording it would contradict the refusal above and would spend
+    // the warn-once latch that a genuine unknown needs.
+    expect(eventsOfKind("bounds_unknown")).toHaveLength(0);
   });
 
   // The contrast: when nut.js cannot report a size either, nothing is known
@@ -248,6 +252,9 @@ describe("capture choke point — bounds", () => {
     await grabScreenRegionValidated(ON_LEFT_MONITOR);
     expect(hoisted.calls.nutGrabRegion).toEqual([ON_LEFT_MONITOR]);
     expect(eventsOfKind("bounds_from_nutjs")).toHaveLength(0);
+    // No route left, so failing open is final here — and this is the one place
+    // it gets written down.
+    expect(eventsOfKind("bounds_unknown")).toHaveLength(1);
   });
 
   it("passes a region through unchecked when the layout cannot be read", async () => {
