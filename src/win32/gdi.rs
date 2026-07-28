@@ -34,8 +34,8 @@ use napi_derive::napi;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
-    HGDIOBJ, SRCCOPY,
+    PatBlt, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLACKNESS,
+    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -172,19 +172,31 @@ pub fn win32_print_window_to_buffer(
             old: if prev.0.is_null() { None } else { Some(prev) },
         };
 
-        // 6. PrintWindow. We tolerate FALSE because some windows still
+        // 6. Clear the bitmap to black before drawing into it.
+        //    `CreateCompatibleBitmap` does not initialise its contents, and
+        //    step 7 tolerates a FALSE / partial PrintWindow — so without this
+        //    the untouched area would carry undefined heap-ish colours. The
+        //    downstream all-black + zero-variance blank check would then see
+        //    noise instead of black and pass a frame it was meant to catch.
+        //    Clearing makes that check meaningful and repeated captures of an
+        //    unchanged window byte-identical.
+        if !unsafe { PatBlt(mem_dc.dc, 0, 0, width, height, BLACKNESS) }.as_bool() {
+            return Err(napi::Error::from_reason("PatBlt failed"));
+        }
+
+        // 7. PrintWindow. We tolerate FALSE because some windows still
         //    render partially — the legacy TS behavior was to fall through
         //    to GetDIBits and let the caller use whatever was produced.
         let _ = unsafe { PrintWindow(target, mem_dc.dc, PRINT_WINDOW_FLAGS(flags)) };
 
-        // 7. Release the selection before reading the bits. GetDIBits requires
+        // 8. Release the selection before reading the bits. GetDIBits requires
         //    the bitmap not to be selected into any DC; dropping the guard here
         //    restores the memory DC's original object, which is what unselects
         //    ours. The BitmapGuard is untouched — GetDIBits still needs the
         //    handle, just not the selection.
         drop(select_guard);
 
-        // 8. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
+        // 9. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
         let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
         bmi.bmiHeader = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -212,7 +224,7 @@ pub fn win32_print_window_to_buffer(
             return Err(napi::Error::from_reason("GetDIBits returned 0 scanlines"));
         }
 
-        // 9. BGRA → RGBA + opaque alpha. `chunks_exact_mut(4)` lets the
+        // 10. BGRA → RGBA + opaque alpha. `chunks_exact_mut(4)` lets the
         //    autovectorizer collapse the swap into a couple of pshufb-style
         //    instructions on x86_64; explicit SIMD is deferred to P5a per
         //    Opus review §11.7 / scope creep list.
@@ -365,20 +377,33 @@ pub fn win32_capture_screen_region(
             old: Some(prev),
         };
 
-        // 5. Copy the requested rectangle out of the screen DC. Unlike
+        // 5. Clear the bitmap to black before the copy.
+        //    `CreateCompatibleBitmap` does not initialise its contents, and
+        //    BitBlt only writes the part of the destination the source
+        //    actually covers. In `"overlap"` mode the requested rectangle is
+        //    allowed to run past the desktop (a window rect overhanging its
+        //    monitor), so the uncovered strip would otherwise be undefined
+        //    memory rather than the black margin every caller assumes. This
+        //    is what makes the strip black by construction instead of by luck,
+        //    and what makes two captures of an unchanged region compare equal.
+        if !unsafe { PatBlt(mem_dc.dc, 0, 0, w, h, BLACKNESS) }.as_bool() {
+            return Err(napi::Error::from_reason("PatBlt failed"));
+        }
+
+        // 6. Copy the requested rectangle out of the screen DC. Unlike
         //    PrintWindow above, a FALSE here means no pixels were produced at
         //    all, so it is an error rather than something to fall through.
         unsafe { BitBlt(mem_dc.dc, 0, 0, w, h, Some(screen_dc.dc), x, y, SRCCOPY) }
             .map_err(|e| napi::Error::from_reason(format!("BitBlt failed: {e}")))?;
 
-        // 6. Release the selection before reading the bits. GetDIBits requires
+        // 7. Release the selection before reading the bits. GetDIBits requires
         //    the bitmap not to be selected into any DC; dropping the guard here
         //    restores the memory DC's original object, which is what unselects
         //    ours. The BitmapGuard is untouched — GetDIBits still needs the
         //    handle, just not the selection.
         drop(select_guard);
 
-        // 7. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
+        // 8. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
         let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
         bmi.bmiHeader = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -405,7 +430,7 @@ pub fn win32_capture_screen_region(
             return Err(napi::Error::from_reason("GetDIBits returned 0 scanlines"));
         }
 
-        // 8. BGRA → RGBA + opaque alpha (GDI leaves the alpha byte as garbage
+        // 9. BGRA → RGBA + opaque alpha (GDI leaves the alpha byte as garbage
         //    for a screen BitBlt, so it is forced rather than trusted).
         for px in pixels.chunks_exact_mut(4) {
             px.swap(0, 2);

@@ -340,6 +340,45 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     expect(err.message).toMatch(/desktop_discover/);
   });
 
+  // A region that overlaps a real monitor but runs past the capturable area is
+  // NOT stale: re-discovering hands back the very same rectangle, so the
+  // stale-coordinate advice sends the caller round a loop that cannot
+  // terminate. The two GDI refusals must therefore not share wording — these
+  // two cases pin each side, so deleting the branch fails the first and making
+  // it unconditional fails the second.
+  it("tells an overhanging region that its coordinates are current", () => {
+    // Overlaps the primary and runs 80px past the right edge of the screen area
+    // spanned by [LEFT, PRIMARY].
+    const overhang = { x: 1900, y: 100, width: 100, height: 100 };
+    let err!: Error;
+    try {
+      assertCaptureRegionInBounds(overhang, resolveCaptureRegion());
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err.name).toBe("RegionOutsideCapturableBounds");
+    expect(err.message).toContain("does overlap");
+    expect(err.message).toContain("NOT stale");
+    expect(err.message).toMatch(/shrink the region/i);
+    // The re-discovery advice belongs to the no-intersection branch alone.
+    expect(err.message).not.toContain("take a fresh screenshot");
+  });
+
+  it("keeps the stale-coordinate wording for a region on no monitor at all", () => {
+    const nowhere = { x: 0, y: 3000, width: 100, height: 100 };
+    let err!: Error;
+    try {
+      assertCaptureRegionInBounds(nowhere, resolveCaptureRegion());
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err.message).toContain("is not on any connected monitor");
+    expect(err.message).toContain("take a fresh screenshot");
+    expect(err.message).toMatch(/stale/);
+    expect(err.message).not.toContain("does overlap");
+    expect(err.message).not.toContain("NOT stale");
+  });
+
   it("names the missing module when that is what limits the process", () => {
     hoisted.state.nativeCapture = false;
     const err = refusalFor();

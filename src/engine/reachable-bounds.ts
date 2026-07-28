@@ -232,8 +232,10 @@ function describeUnreachable(x: number, y: number, region: ReachableRegion | nul
 //     A rectangle the MACHINE derived — a window's own screen rect — is held
 //     to the overlap half alone. `GetWindowRect` reports a maximised window a
 //     few pixels outside the monitor (the invisible resize border), and a
-//     window straddling the desktop edge runs off it for real; BitBlt returns
-//     those with the off-screen part black, which is the honest picture of
+//     window straddling the desktop edge runs off it for real; the native
+//     capture clears its bitmap to black before the BitBlt, so the off-screen
+//     part comes back black BY CONSTRUCTION rather than as whatever the
+//     uninitialised bitmap happened to hold — which is the honest picture of
 //     where the window is. Refusing them would take away a capture that works.
 //     That last sentence is true of BitBlt and false of libnut, so the
 //     relaxation follows the BACKEND, not the caller: libnut cannot clip and
@@ -493,6 +495,13 @@ export function assertCaptureRegionInBounds(
  * The user-facing half of the refusal. As with the cursor guard, which wording
  * applies is decided by the capability that was actually used, not by the shape
  * of the rectangle — a single rectangle can equally well be a test override.
+ *
+ * On the GDI backend there are two ways to be refused, and they need opposite
+ * advice. A region that touches NO monitor is usually stale — the window moved
+ * or closed — so re-discovering fixes it. A region that DOES overlap a monitor
+ * but runs past the capturable area is not stale at all: re-discovering hands
+ * back the very same rectangle, and telling the caller to re-discover sends
+ * them round a loop that cannot terminate. That case is named separately.
  */
 function describeUncapturable(
   region: ReachableBounds,
@@ -504,6 +513,20 @@ function describeUncapturable(
     ? `${resolution.rect.width}x${resolution.rect.height} at (${resolution.rect.x}, ${resolution.rect.y})`
     : "the capturable area";
   if (selection.backend === "gdi-bitblt") {
+    const overlapped = resolution?.monitors.filter((m) => intersectsRect(m, region)) ?? [];
+    if (overlapped.length > 0) {
+      const which = overlapped
+        .map((m) => `${m.width}x${m.height} at (${m.x}, ${m.y})`)
+        .join(" and ");
+      return (
+        `RegionOutsideCapturableBounds: the requested region ${asked} does overlap ` +
+        `${overlapped.length === 1 ? "monitor" : "monitors"} ${which}, but it extends past the ` +
+        `capturable screen area (which spans ${where}). The coordinates are NOT stale — ` +
+        `re-running desktop_discover returns this same region. Shrink the region so it fits ` +
+        `inside the screen area, or capture the window itself with screenshot(windowTitle=…), ` +
+        `which reads the window wherever it sits.`
+      );
+    }
     return (
       `RegionOutsideCapturableBounds: the requested region ${asked} is not on any connected ` +
       `monitor (the screen area spans ${where}). Screen capture covers every monitor, so this ` +

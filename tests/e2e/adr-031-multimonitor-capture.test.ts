@@ -90,12 +90,59 @@ describe.skipIf(!eligible)("ADR-031 — capture across every monitor", () => {
     expect({ width: shot.width, height: shot.height }).toEqual({ width: 400, height: 300 });
   });
 
-  it("captures a region that spans the seam between two monitors", async () => {
-    const left = Math.min(primary.x, secondary.x) === secondary.x ? secondary : primary;
-    const seam = left.x + left.width; // the boundary between the two
-    const region: Rect = { x: seam - 200, y: Math.max(primary.y, secondary.y) + 100, width: 400, height: 200 };
+  // A seam only exists where two monitors genuinely abut AND their shared edge
+  // is long enough to hold the region. Deriving it from "the left monitor's
+  // right edge" assumed a side-by-side layout: on a stacked layout, or on one
+  // with a gap, that edge continues into nothing, so the region lands off the
+  // monitor union and is correctly refused — failing this test for a layout the
+  // implementation supports. Find a real shared edge instead, and say so when
+  // the current layout has none.
+  const SEAM_LONG = 400; // extent along the seam
+  const SEAM_DEEP = 200; // extent across it
+
+  /** A region straddling a shared edge, centred on the overlap, or null. */
+  const findSeamRegion = (): Rect | null => {
+    for (const a of monitors) {
+      for (const b of monitors) {
+        if (a.id === b.id) continue;
+        const A = a.bounds;
+        const B = b.bounds;
+        // Vertical seam: A's right edge is B's left edge.
+        if (A.x + A.width === B.x) {
+          const top = Math.max(A.y, B.y);
+          const bottom = Math.min(A.y + A.height, B.y + B.height);
+          if (bottom - top >= SEAM_LONG) {
+            const mid = top + Math.floor((bottom - top - SEAM_LONG) / 2);
+            return { x: B.x - SEAM_DEEP, y: mid, width: SEAM_DEEP * 2, height: SEAM_LONG };
+          }
+        }
+        // Horizontal seam: A's bottom edge is B's top edge.
+        if (A.y + A.height === B.y) {
+          const left = Math.max(A.x, B.x);
+          const right = Math.min(A.x + A.width, B.x + B.width);
+          if (right - left >= SEAM_LONG) {
+            const mid = left + Math.floor((right - left - SEAM_LONG) / 2);
+            return { x: mid, y: B.y - SEAM_DEEP, width: SEAM_LONG, height: SEAM_DEEP * 2 };
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  it("captures a region that spans the seam between two monitors", async (ctx) => {
+    const region = findSeamRegion();
+    if (!region) {
+      ctx.skip(`no shared edge in this layout: ${monitors
+        .map((m) => `${m.bounds.width}x${m.bounds.height}@(${m.bounds.x},${m.bounds.y})`)
+        .join(" ")}`);
+      return;
+    }
     const shot = await captureScreen(region, { format: "webp", webpQuality: 50 });
-    expect({ width: shot.width, height: shot.height }).toEqual({ width: 400, height: 200 });
+    expect({ width: shot.width, height: shot.height }).toEqual({
+      width: region.width,
+      height: region.height,
+    });
   });
 
   // dot-by-dot coordinates are what the model clicks on afterwards, so the

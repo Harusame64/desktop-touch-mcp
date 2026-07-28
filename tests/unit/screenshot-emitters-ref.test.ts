@@ -265,3 +265,51 @@ describe("capture-blocked surfacing — background path (ADR-027 Phase 3 / AC8)"
     expect(hints?.captureBlocked).toBeUndefined();
   });
 });
+
+// ADR-031 Phase V — the full-screen disclosure is a public contract, not a
+// cosmetic string. `(full screen, no origin offset)` is what tells the caller
+// that coordinates read off this image need no translation before they are
+// clicked; a region capture says `origin: (x, y)` instead. ADR-031 moved the
+// pixels to BitBlt but deliberately did NOT widen "full screen" to the virtual
+// desktop, so this wording has to survive the backend change untouched.
+//
+// It lives in this file because this is the only unit harness that mocks the
+// image engine and invokes the real `screenshotHandler`; the e2e full-screen
+// case cannot reach it, since it passes a maxDimension no smaller than the
+// primary monitor and `scale` is then undefined.
+describe("full-screen dot-by-dot disclosure (ADR-031)", () => {
+  it("reports the scale as full screen with no origin offset", async () => {
+    // `vi.clearAllMocks()` clears calls but NOT implementations, so a window
+    // resolved by an earlier test in this file would still be in place and
+    // route us down the window branch (`if (effectiveTitle)`). Say explicitly
+    // that no window is targeted — that is what selects the full-screen path.
+    mockResolveWindowTarget.mockResolvedValue(undefined);
+
+    const image = await import("../../src/engine/image.js");
+    vi.mocked(image.captureScreen).mockResolvedValue({
+      base64: B64,
+      mimeType: "image/webp",
+      width: 960,
+      height: 540,
+      scale: 0.5,
+    } as unknown as Awaited<ReturnType<typeof image.captureScreen>>);
+
+    const result = await screenshotHandler({
+      ...baseArgs,
+      dotByDot: true,
+      confirmImage: false,
+      detail: undefined,
+    });
+
+    const text = result.content
+      .filter((c) => c.type === "text")
+      .map((c) => (c as { text: string }).text)
+      .join("\n");
+    expect(text).toContain("Screenshot (dot-by-dot): 960x540px");
+    expect(text).toContain("(full screen, no origin offset)");
+    // The origin form belongs to a region capture; a full-screen one must not
+    // grow one, or callers would start offsetting coordinates that are already
+    // absolute.
+    expect(text).not.toContain("origin: (");
+  });
+});
