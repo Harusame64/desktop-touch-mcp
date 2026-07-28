@@ -31,6 +31,7 @@
  */
 import { spawn } from "child_process";
 import { enumWindowsInZOrder } from "../../../src/engine/win32.js";
+import { pickE2eScreen } from "./e2e-screen.js";
 
 export interface BlankWindow {
   /** Screen-coordinate centre of the empty client area — safe to click. */
@@ -39,10 +40,11 @@ export interface BlankWindow {
   close: () => void;
 }
 
-const X = 120;
-const Y = 120;
 const W = 480;
 const H = 360;
+// Fallback placement (single-monitor machines): the historical 120,120.
+const DEFAULT_X = 120;
+const DEFAULT_Y = 120;
 
 /**
  * Spawn the blank window and resolve once it is on screen. Returns null if the
@@ -53,6 +55,14 @@ export async function spawnBlankWindow(): Promise<BlankWindow | null> {
   // Unique title so the rect lookup unambiguously picks OUR window (defensive —
   // the e2e project runs files serially, so concurrent spawns shouldn't occur).
   const title = `dt-blank-click-target-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  // Placement: on a multi-monitor desktop this TopMost form is spawned on a
+  // NON-PRIMARY monitor so the E2E suite never covers — or steals focus and
+  // synthetic clicks away from — the screen the user is actually working on.
+  // On a single-monitor machine pickE2eScreen() returns null and we keep the
+  // historical 120,120. Coordinates may be negative (monitor left of primary).
+  const screen = pickE2eScreen({ width: W, height: H });
+  const x = screen?.origin.x ?? DEFAULT_X;
+  const y = screen?.origin.y ?? DEFAULT_Y;
   // Spawn-config caveats (verified empirically — do not "simplify"):
   //   - NO detached:true — a detached GUI process exits immediately (no desktop).
   //   - NO windowsHide:true / -WindowStyle Hidden — that hides the FORM too.
@@ -69,7 +79,7 @@ export async function spawnBlankWindow(): Promise<BlankWindow | null> {
     "$f.FormBorderStyle='FixedSingle';",
     "$f.MaximizeBox=$false; $f.MinimizeBox=$false;",
     "$f.StartPosition='Manual';",
-    `$f.Location=New-Object System.Drawing.Point(${X},${Y});`,
+    `$f.Location=New-Object System.Drawing.Point(${x},${y});`,
     `$f.Size=New-Object System.Drawing.Size(${W},${H});`,
     "$f.TopMost=$true;",
     "[System.Windows.Forms.Application]::Run($f);",

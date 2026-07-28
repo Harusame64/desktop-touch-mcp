@@ -41,6 +41,7 @@ import {
   postMessageToHwnd,
   WM_CLOSE,
 } from "../../../src/engine/win32.js";
+import { moveWindowToE2eScreen } from "./e2e-screen.js";
 import { sleep } from "./wait.js";
 
 const execFileAsync = promisify(execFile);
@@ -137,9 +138,11 @@ export interface PsInstance {
   kill(): void;
 }
 
-function findByTag(tag: string): { hwnd: bigint; title: string } | null {
+function findByTag(
+  tag: string
+): { hwnd: bigint; title: string; region: { x: number; y: number; width: number; height: number } } | null {
   for (const w of enumWindowsInZOrder()) {
-    if (w.title.includes(tag)) return { hwnd: w.hwnd, title: w.title };
+    if (w.title.includes(tag)) return { hwnd: w.hwnd, title: w.title, region: w.region };
   }
   return null;
 }
@@ -366,7 +369,7 @@ export async function launchPowerShell(opts?: {
   proc!.unref(); // don't block vitest exit
 
   const deadline = Date.now() + 10_000;
-  let found: { hwnd: bigint; title: string } | null = null;
+  let found: ReturnType<typeof findByTag> = null;
   while (Date.now() < deadline) {
     found = findByTag(tag);
     if (found) break;
@@ -376,6 +379,17 @@ export async function launchPowerShell(opts?: {
     try { proc.kill(); } catch { /* ignore */ }
     try { unlinkSync(pidFile); } catch { /* ignore */ }
     throw new Error(`PowerShell window with tag "${tag}" did not appear within 10s`);
+  }
+
+  // Multi-monitor placement: move the freshly spawned console onto a
+  // NON-PRIMARY monitor when one exists, so the E2E suite does not take over
+  // the screen the user is working on (Windows always spawns a new console on
+  // the primary monitor — there is no launch-time placement flag for
+  // conhost/wt). Size is preserved and the move uses SWP_NOZORDER, so nothing
+  // about Z-order, TopMost state or foreground focus changes. Single-monitor
+  // machines are a no-op and keep the previous behaviour exactly.
+  if (found.region.width > 0 && found.region.height > 0) {
+    moveWindowToE2eScreen(found.hwnd, { width: found.region.width, height: found.region.height });
   }
 
   // Give PowerShell a moment to actually print the banner into the buffer
