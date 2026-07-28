@@ -166,7 +166,8 @@ export interface NativeWin32 {
   win32SetForegroundWindow?(hwnd: bigint): boolean;
   win32SetWindowTopmost?(hwnd: bigint): boolean;
   win32ClearWindowTopmost?(hwnd: bigint): boolean;
-  win32SetWindowBounds?(hwnd: bigint, x: number, y: number, cx: number, cy: number): boolean;
+  /** `noActivate` is optional; omitting it keeps the pre-existing flag set (SWP_NOZORDER only). */
+  win32SetWindowBounds?(hwnd: bigint, x: number, y: number, cx: number, cy: number, noActivate?: boolean): boolean;
   win32ForceSetForegroundWindow?(hwnd: bigint): NativeForceFocusResult;
   win32GetFocusedChildHwnd?(targetHwnd: bigint): bigint | null;
   win32BuildProcessParentMap?(): NativeProcessParentEntry[];

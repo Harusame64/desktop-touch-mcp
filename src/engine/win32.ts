@@ -534,16 +534,22 @@ export function findAncestorWindow(startPid: number): {
  * Move and resize a window in a single SetWindowPos call, without changing Z-order.
  * x/y/width/height are in virtual screen coordinates (Per-Monitor DPI aware).
  * Returns true on success.
+ *
+ * `noActivate` is optional and defaults to the historical behaviour (flags =
+ * SWP_NOZORDER only), so existing callers are unaffected. Pass `true` to add
+ * SWP_NOACTIVATE when the window must be repositioned WITHOUT being brought to
+ * the foreground — SetWindowPos may otherwise activate the window it moves.
  */
 export function setWindowBounds(
   hwnd: unknown,
   x: number,
   y: number,
   width: number,
-  height: number
+  height: number,
+  noActivate?: boolean
 ): boolean {
   if (typeof hwnd !== "bigint") return false;
-  return requireNativeWin32().win32SetWindowBounds!(hwnd, x, y, width, height);
+  return requireNativeWin32().win32SetWindowBounds!(hwnd, x, y, width, height, noActivate);
 }
 
 /**

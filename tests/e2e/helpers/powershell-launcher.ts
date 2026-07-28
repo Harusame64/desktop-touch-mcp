@@ -385,11 +385,10 @@ export async function launchPowerShell(opts?: {
   // NON-PRIMARY monitor when one exists, so the E2E suite does not take over
   // the screen the user is working on (Windows always spawns a new console on
   // the primary monitor — there is no launch-time placement flag for
-  // conhost/wt). Size is preserved and the move uses SWP_NOZORDER, so Z-order
-  // and TopMost state are unchanged. NOTE: SWP_NOACTIVATE is NOT passed, so
-  // SetWindowPos may activate the moved window — harmless here because the
-  // console was just spawned and is already the foreground window, but this is
-  // why the move happens at spawn time and never against a background window.
+  // conhost/wt). Size is preserved and the move uses SWP_NOZORDER +
+  // SWP_NOACTIVATE, so Z-order, TopMost state and the current foreground window
+  // are all left alone — if Windows' foreground lock kept the user's editor
+  // active while the console came up, this move does not yank it away.
   // Single-monitor machines are a no-op and keep the previous behaviour exactly.
   if (found.region.width > 0 && found.region.height > 0) {
     moveWindowToE2eScreen(found.hwnd, { width: found.region.width, height: found.region.height });

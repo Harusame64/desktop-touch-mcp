@@ -20,13 +20,16 @@
  *   - single monitor (or monitor enumeration unavailable / no primary
  *     reported) → `null`, and callers keep their previous, unchanged
  *     placement. Nothing about single-monitor runs changes.
- *   - the chosen monitor is assumed to be at least as large as the primary,
- *     which is where the fixtures' historical coordinates come from. On a
- *     smaller secondary the fit-clamp below pulls windows back toward the
- *     work-area origin, and fixture rects that never overlapped on the primary
- *     can start to intersect. That does not fail silently: the ADR-029
- *     viewport-gate premise ("a point inside the canvas and outside the blank
- *     window exists") is asserted, so such a layout fails loudly.
+ *   - a window that does not FIT the chosen monitor's work area → `null` as
+ *     well, i.e. it stays where it is. Moving it would hang it off the edge and
+ *     back onto the primary, covering both screens.
+ *   - the chosen monitor is otherwise assumed to be at least as large as the
+ *     primary, which is where the fixtures' historical coordinates come from.
+ *     On a smaller (but still fitting) secondary the offset clamp pulls windows
+ *     back toward the work-area origin, and fixture rects that never overlapped
+ *     on the primary can start to intersect. That does not fail silently: the
+ *     ADR-029 viewport-gate premise ("a point inside the canvas and outside the
+ *     blank window exists") is asserted, so such a layout fails loudly.
  *
  * Scope: the window-spawning fixtures the suite fully owns — blank-window,
  * untitled-window, visual-only-canvas and the PowerShell/console launcher. The
@@ -109,10 +112,18 @@ export function pickE2eScreen(
     target.workArea.width > 0 && target.workArea.height > 0 ? target.workArea : target.bounds;
   const w = size?.width ?? 0;
   const h = size?.height ?? 0;
-  // Clamp: never push the window past the far edge, and never before the
-  // near edge (a window larger than the monitor simply starts at the origin).
-  const maxX = area.x + Math.max(0, area.width - w);
-  const maxY = area.y + Math.max(0, area.height - h);
+  // Fit gate: a window that does not fit the target work area must NOT be
+  // moved. Clamping its origin to the work-area corner would leave the window
+  // hanging off the edge and spilling back onto the primary monitor — it would
+  // then cover BOTH screens, the exact opposite of what this placement is for
+  // (e.g. a maximised console from a 4K primary sent to a 1080p secondary).
+  // Leaving it where it already is, on one screen, is the least harmful answer.
+  if (w > area.width || h > area.height) return null;
+  // Clamp: never push the window past the far edge, and never before the near
+  // edge. With the fit gate above both `area.width - w` and `area.height - h`
+  // are non-negative, so the clamp only pulls an over-large OFFSET back.
+  const maxX = area.x + (area.width - w);
+  const maxY = area.y + (area.height - h);
   // "centre" is computed against the SAME work-area rect the clamp uses, so the
   // centring reference and the fit-clamp can never disagree.
   const dx = offset === "centre" ? Math.round((area.width - w) / 2) : offset?.x ?? MARGIN;
@@ -130,15 +141,15 @@ export function pickE2eScreen(
  * Move an already-spawned window onto the E2E screen, keeping its current size
  * and Z-order (`setWindowBounds` passes SWP_NOZORDER).
  *
- * CAVEAT — activation: `win32SetWindowBounds` does NOT pass SWP_NOACTIVATE, so
- * SetWindowPos may activate the window it moves. Every caller here runs
- * immediately after spawning its own window, which is already the foreground
- * one, so nothing observable changes. Do NOT reuse this to reposition a
- * background window mid-test: it can steal the foreground and silently
- * invalidate a focus assertion.
+ * Activation: the move passes `noActivate: true` (SWP_NOACTIVATE), so it never
+ * brings the window forward. Without that flag SetWindowPos may activate the
+ * window it moves, which would steal the foreground from whatever the user is
+ * typing into whenever the spawned window has not (yet) become foreground
+ * itself — the containment goal inverted.
  *
- * No-op returning false on a single-monitor machine or when the move fails —
- * callers treat placement as best-effort cosmetics, never as a precondition.
+ * No-op returning false on a single-monitor machine, when the window does not
+ * fit the target screen, or when the move fails — callers treat placement as
+ * best-effort cosmetics, never as a precondition.
  */
 export function moveWindowToE2eScreen(
   hwnd: bigint,
@@ -148,7 +159,14 @@ export function moveWindowToE2eScreen(
   const screen = pickE2eScreen(currentSize, offset);
   if (!screen) return false;
   try {
-    return setWindowBounds(hwnd, screen.origin.x, screen.origin.y, currentSize.width, currentSize.height);
+    return setWindowBounds(
+      hwnd,
+      screen.origin.x,
+      screen.origin.y,
+      currentSize.width,
+      currentSize.height,
+      true // noActivate — repositioning must never steal the foreground
+    );
   } catch {
     return false;
   }

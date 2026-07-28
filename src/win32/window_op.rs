@@ -13,7 +13,7 @@ use napi_derive::napi;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetWindowPos, ShowWindow, SET_WINDOW_POS_FLAGS, SHOW_WINDOW_CMD,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
 };
 
 use super::safety::napi_safe_call;
@@ -85,6 +85,16 @@ pub fn win32_clear_window_topmost(hwnd: BigInt) -> napi::Result<bool> {
 }
 
 /// Move and resize a window without changing Z-order (`SWP_NOZORDER`).
+///
+/// `no_activate` is an OPTIONAL trailing argument and defaults to the previous
+/// behaviour when omitted (`None`) or false: flags stay exactly `SWP_NOZORDER`,
+/// so every pre-existing caller is bit-for-bit unchanged.
+///
+/// Pass `true` to add `SWP_NOACTIVATE`. Without that flag SetWindowPos may
+/// activate the window it moves — Windows only leaves the foreground alone when
+/// the caller says so — which is wrong for any caller that repositions a window
+/// it does not want to bring forward (e.g. relocating a test window off the
+/// user's screen must not steal the focus that user is typing into).
 #[napi]
 pub fn win32_set_window_bounds(
     hwnd: BigInt,
@@ -92,14 +102,19 @@ pub fn win32_set_window_bounds(
     y: i32,
     cx: i32,
     cy: i32,
+    no_activate: Option<bool>,
 ) -> napi::Result<bool> {
     napi_safe_call("win32_set_window_bounds", || {
+        let mut flags = SWP_NOZORDER.0;
+        if no_activate == Some(true) {
+            flags |= SWP_NOACTIVATE.0;
+        }
         let result = unsafe {
             SetWindowPos(
                 hwnd_from_bigint(hwnd),
                 None, // SWP_NOZORDER => hwndInsertAfter ignored
                 x, y, cx, cy,
-                SWP_NOZORDER,
+                SET_WINDOW_POS_FLAGS(flags),
             )
         };
         Ok(result.is_ok())
