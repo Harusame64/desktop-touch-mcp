@@ -61,12 +61,14 @@ export async function spawnBlankWindow(): Promise<BlankWindow | null> {
   // On a single-monitor machine pickE2eScreen() returns null and we keep the
   // historical 120,120. Coordinates may be negative (monitor left of primary).
   //
-  // DPI caveat: `$f.Location` is applied by a DPI-unaware-by-default PowerShell
-  // host, so on a secondary monitor at a scale other than 100% the form can land
-  // at a virtualised offset rather than exactly here. That is cosmetic only —
-  // every consumer derives its click point from the window's REAL rect (read
-  // back via enumWindowsInZOrder below), never from these requested
-  // coordinates. Measured on a 100%-scale virtual display only.
+  // DPI: the script below makes its own process per-monitor DPI aware (PMv2)
+  // BEFORE creating the form, so `$f.Location` / `$f.Size` are physical pixels
+  // — the same units `pickE2eScreen` reads the work area in. Without that, a
+  // DPI-unaware PowerShell host would treat W/H as logical units and a form on
+  // a scaled secondary would come out physically larger than the fit check
+  // allowed, hang off the far edge and spill back onto the primary — the very
+  // screen this placement protects. (Codex review, PR #558.) Verified at 100%
+  // scale here; mixed-DPI verification is deferred to the multi-DPI dogfood.
   const screen = pickE2eScreen({ width: W, height: H });
   const x = screen?.origin.x ?? DEFAULT_X;
   const y = screen?.origin.y ?? DEFAULT_Y;
@@ -75,9 +77,16 @@ export async function spawnBlankWindow(): Promise<BlankWindow | null> {
   //   - NO windowsHide:true / -WindowStyle Hidden — that hides the FORM too.
   //   - Instead, hide only the PowerShell host CONSOLE via P/Invoke ShowWindow
   //     (SW_HIDE) at the top of the script, so just the blank form is visible.
+  //   - SetProcessDpiAwarenessContext(-4 = PER_MONITOR_AWARE_V2) must run before
+  //     the Form is constructed. powershell.exe is DPI-UNAWARE by default (probed
+  //     on Windows 11: awareness 0 -> 2 after the call, return true), so this is
+  //     the switch that makes Size/Location physical. A false return (a host that
+  //     already declared awareness in its manifest) is ignored: nothing is worse
+  //     than before, and the historical behaviour still applies.
   const script = [
-    `$s='[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h,int n);';`,
+    `$s='[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(System.IntPtr c);';`,
     "$w=Add-Type -MemberDefinition $s -Name Native -PassThru;",
+    "[void]$w::SetProcessDpiAwarenessContext([System.IntPtr](-4));",
     "[void]$w::ShowWindow($w::GetConsoleWindow(),0);",
     "Add-Type -AssemblyName System.Windows.Forms;",
     "Add-Type -AssemblyName System.Drawing;",

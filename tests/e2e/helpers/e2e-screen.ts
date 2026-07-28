@@ -37,6 +37,16 @@
  * go through the PowerShell launcher already or drive a real application whose
  * own window placement is part of what the test observes.
  *
+ * Units: everything here is PHYSICAL pixels. This process is per-monitor DPI
+ * aware (`win32.ts` calls `SetProcessDpiAwareness(2)` at module init), so the
+ * work area and window rects read here are physical; the fixtures spawn their
+ * PowerShell hosts as per-monitor-v2 aware for the same reason, so the sizes
+ * they hand to the fit check below are physical too. Mixing the two — a
+ * DPI-unaware fixture reporting logical sizes against a physical work area —
+ * is what lets an over-large window pass the fit check on a scaled monitor
+ * (Codex review, PR #558). Measured at 100% scale; mixed-DPI verification is
+ * deferred to the multi-DPI dogfood.
+ *
  * Coordinates are virtual-screen coordinates and are frequently NEGATIVE for a
  * monitor placed to the left of the primary (e.g. a virtual display at
  * x = -1920), which is exactly the interesting case for multi-monitor

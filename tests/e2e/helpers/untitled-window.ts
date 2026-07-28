@@ -56,7 +56,10 @@ export async function spawnUntitledWindow(): Promise<UntitledWindow | null> {
   // Safe for the only consumer (adr-029-viewport-gate.test.ts): its assertions
   // are relative to this window's OWN rect, and the viewport gate compares an
   // entity against its origin window's rect with no monitor-level logic.
-  // Same DPI caveat as blank-window.ts — the rect is always read back below.
+  // Like blank-window.ts, the script makes its process per-monitor DPI aware
+  // (PMv2) before creating the form, so W/H and the location are physical
+  // pixels and the fit check in pickE2eScreen compares like with like on a
+  // scaled secondary (Codex review, PR #558).
   // The historical offset is passed through so this window keeps its former
   // relative position to the blank window (120,120) instead of stacking on it.
   const screen = pickE2eScreen({ width: W, height: H }, { x: DEFAULT_X, y: DEFAULT_Y });
@@ -69,8 +72,11 @@ export async function spawnUntitledWindow(): Promise<UntitledWindow | null> {
   const hwndFile = join(tmpdir(), `dt-untitled-${process.pid}-${Math.random().toString(36).slice(2, 8)}.txt`);
   const psafeHwndFile = hwndFile.replace(/'/g, "''");
   const script = [
-    `$s='[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h,int n);';`,
+    `$s='[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(System.IntPtr c);';`,
     "$w=Add-Type -MemberDefinition $s -Name NativeUntitled -PassThru;",
+    // PMv2 (-4) before the Form exists — see blank-window.ts for the rationale
+    // and the probe result. A false return is ignored.
+    "[void]$w::SetProcessDpiAwarenessContext([System.IntPtr](-4));",
     "[void]$w::ShowWindow($w::GetConsoleWindow(),0);",
     "Add-Type -AssemblyName System.Windows.Forms;",
     "Add-Type -AssemblyName System.Drawing;",

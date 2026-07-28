@@ -39,6 +39,15 @@ export interface VisualOnlyCanvas {
  */
 export async function spawnVisualOnlyCanvas(opts: { fontSize?: number } = {}): Promise<VisualOnlyCanvas | null> {
   const title = `dt-visualonly-e2e-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  // DPI: unlike blank-window.ts / untitled-window.ts, this fixture is NOT made
+  // per-monitor DPI aware. It does not need to be: it is placed by reading its
+  // real (physical) rect back after spawn and relocating it with that physical
+  // size, so the fit check compares physical with physical either way — the
+  // logical-vs-physical mismatch Codex flagged (PR #558) cannot occur here.
+  // The residual mixed-DPI concern is different: a DPI-unaware window that
+  // crosses a scale boundary is stretched by the OS, so its physical size
+  // changes after the move. That is left for the multi-DPI dogfood to measure;
+  // it is not reproducible on the 100%-scale displays available here.
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", FIXTURE, "-Title", title];
   if (opts.fontSize !== undefined) args.push("-FontSize", String(opts.fontSize));
   const child = spawn("powershell", args, { stdio: "ignore" });
