@@ -21,21 +21,28 @@
  *     reported) → `null`, and callers keep their previous, unchanged
  *     placement. Nothing about single-monitor runs changes.
  *
+ * Scope: the window-spawning fixtures the suite fully owns — blank-window,
+ * untitled-window, visual-only-canvas and the PowerShell/console launcher. The
+ * app launchers (notepad, chrome, ssh-wsl) are out of scope here: they either
+ * go through the PowerShell launcher already or drive a real application whose
+ * own window placement is part of what the test observes.
+ *
  * Coordinates are virtual-screen coordinates and are frequently NEGATIVE for a
  * monitor placed to the left of the primary (e.g. a virtual display at
  * x = -1920), which is exactly the interesting case for multi-monitor
  * regressions — so helpers here never clamp to a non-negative origin.
  */
 import { enumMonitors, setWindowBounds } from "../../../src/engine/win32.js";
+import { hasNativeCursorMove } from "../../../src/engine/native-engine.js";
 
-/** Gap between the monitor's work area edge and the spawned window. */
+/** Default gap between the monitor's work area edge and the spawned window. */
 const MARGIN = 120;
 
 export interface E2eScreen {
   /**
    * Top-left corner to place a test window at: the target monitor's work-area
-   * origin plus `MARGIN`, pulled back so a window of the requested size still
-   * fits inside the work area.
+   * origin plus the requested offset, pulled back so a window of the requested
+   * size still fits inside the work area.
    */
   origin: { x: number; y: number };
   /** Full (non-work-area) bounds of the chosen monitor, for callers that need the extent. */
@@ -46,10 +53,19 @@ export interface E2eScreen {
  * Pick the monitor E2E windows should be placed on, or null when the suite
  * should keep its default (primary-monitor) placement.
  *
- * @param size Optional window size; when given, the returned origin is clamped
- *             so a window of that size stays inside the target work area.
+ * @param size   Optional window size; when given, the returned origin is clamped
+ *               so a window of that size stays inside the target work area.
+ * @param offset Optional offset from the target work-area origin, defaulting to
+ *               `MARGIN` on both axes. Fixtures pass their historical
+ *               primary-monitor coordinates here so the relative layout between
+ *               them (e.g. the blank window at 120,120 vs. the untitled window
+ *               at 700,420 — deliberately non-overlapping) is translated onto
+ *               the E2E screen instead of collapsing to one shared corner.
  */
-export function pickE2eScreen(size?: { width: number; height: number }): E2eScreen | null {
+export function pickE2eScreen(
+  size?: { width: number; height: number },
+  offset?: { x: number; y: number }
+): E2eScreen | null {
   let monitors;
   try {
     monitors = enumMonitors();
@@ -62,6 +78,15 @@ export function pickE2eScreen(size?: { width: number; height: number }): E2eScre
   // primary) would make the single connected display look "non-primary" and
   // the placement logic would fire on a single-monitor machine.
   if (monitors.length < 2 || !monitors.some((m) => m.primary)) return null;
+  // Input-side gate: a test window may only leave the primary monitor when the
+  // input side can follow it there. Without the native cursor-move bindings the
+  // reachable-bounds guard falls back to its primary-monitor variant and every
+  // real click aimed at a non-primary window is refused
+  // (`coordinate_outside_reachable_bounds`), which would turn a partial addon
+  // build into a suite-wide failure instead of the usual nut.js fallback. A
+  // partial addon (monitor enumeration present, cursor-move bindings missing)
+  // is exactly the build `hasNativeCursorMove()` exists to detect.
+  if (!hasNativeCursorMove()) return null;
   const target = monitors.find((m) => !m.primary);
   if (!target) return null;
 
@@ -75,10 +100,12 @@ export function pickE2eScreen(size?: { width: number; height: number }): E2eScre
   // near edge (a window larger than the monitor simply starts at the origin).
   const maxX = area.x + Math.max(0, area.width - w);
   const maxY = area.y + Math.max(0, area.height - h);
+  const dx = offset?.x ?? MARGIN;
+  const dy = offset?.y ?? MARGIN;
   return {
     origin: {
-      x: Math.max(area.x, Math.min(area.x + MARGIN, maxX)),
-      y: Math.max(area.y, Math.min(area.y + MARGIN, maxY)),
+      x: Math.max(area.x, Math.min(area.x + dx, maxX)),
+      y: Math.max(area.y, Math.min(area.y + dy, maxY)),
     },
     bounds: { ...target.bounds },
   };
@@ -86,16 +113,24 @@ export function pickE2eScreen(size?: { width: number; height: number }): E2eScre
 
 /**
  * Move an already-spawned window onto the E2E screen, keeping its current size
- * and Z-order (`setWindowBounds` uses SWP_NOZORDER, so TopMost / foreground
- * state is untouched). No-op returning false on a single-monitor machine or
- * when the move fails — callers treat placement as best-effort cosmetics, never
- * as a precondition.
+ * and Z-order (`setWindowBounds` passes SWP_NOZORDER).
+ *
+ * CAVEAT — activation: `win32SetWindowBounds` does NOT pass SWP_NOACTIVATE, so
+ * SetWindowPos may activate the window it moves. Every caller here runs
+ * immediately after spawning its own window, which is already the foreground
+ * one, so nothing observable changes. Do NOT reuse this to reposition a
+ * background window mid-test: it can steal the foreground and silently
+ * invalidate a focus assertion.
+ *
+ * No-op returning false on a single-monitor machine or when the move fails —
+ * callers treat placement as best-effort cosmetics, never as a precondition.
  */
 export function moveWindowToE2eScreen(
   hwnd: bigint,
-  currentSize: { width: number; height: number }
+  currentSize: { width: number; height: number },
+  offset?: { x: number; y: number }
 ): boolean {
-  const screen = pickE2eScreen(currentSize);
+  const screen = pickE2eScreen(currentSize, offset);
   if (!screen) return false;
   try {
     return setWindowBounds(hwnd, screen.origin.x, screen.origin.y, currentSize.width, currentSize.height);

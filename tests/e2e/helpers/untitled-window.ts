@@ -19,6 +19,7 @@
  */
 import { spawn } from "child_process";
 import { nativeWin32 } from "../../../src/engine/native-engine.js";
+import { pickE2eScreen } from "./e2e-screen.js";
 
 export interface UntitledWindow {
   hwnd: bigint;
@@ -27,10 +28,11 @@ export interface UntitledWindow {
   close: () => void;
 }
 
-const X = 700;
-const Y = 420;
 const W = 320;
 const H = 240;
+// Fallback placement (single-monitor machines): the historical 700,420.
+const DEFAULT_X = 700;
+const DEFAULT_Y = 420;
 
 /** All top-level HWNDs owned by `pid`, whether or not they have a title. */
 function windowsOfPid(pid: number): bigint[] {
@@ -52,6 +54,18 @@ function windowsOfPid(pid: number): bigint[] {
  * are unavailable — callers should skip rather than assert.
  */
 export async function spawnUntitledWindow(): Promise<UntitledWindow | null> {
+  // Placement: like blank-window.ts, this TopMost form is spawned on a
+  // non-primary monitor when one exists so the suite stays off the user's
+  // working screen; single-monitor machines keep the historical 700,420.
+  // Safe for the only consumer (adr-029-viewport-gate.test.ts): its assertions
+  // are relative to this window's OWN rect, and the viewport gate compares an
+  // entity against its origin window's rect with no monitor-level logic.
+  // Same DPI caveat as blank-window.ts — the rect is always read back below.
+  // The historical offset is passed through so this window keeps its former
+  // relative position to the blank window (120,120) instead of stacking on it.
+  const screen = pickE2eScreen({ width: W, height: H }, { x: DEFAULT_X, y: DEFAULT_Y });
+  const x = screen?.origin.x ?? DEFAULT_X;
+  const y = screen?.origin.y ?? DEFAULT_Y;
   const script = [
     `$s='[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h,int n);';`,
     "$w=Add-Type -MemberDefinition $s -Name NativeUntitled -PassThru;",
@@ -62,7 +76,7 @@ export async function spawnUntitledWindow(): Promise<UntitledWindow | null> {
     "$f.Text='';", // ← the point of this fixture
     "$f.FormBorderStyle='None';",
     "$f.StartPosition='Manual';",
-    `$f.Location=New-Object System.Drawing.Point(${X},${Y});`,
+    `$f.Location=New-Object System.Drawing.Point(${x},${y});`,
     `$f.Size=New-Object System.Drawing.Size(${W},${H});`,
     "$f.BackColor=[System.Drawing.Color]::DarkSlateGray;",
     "$f.TopMost=$true;",

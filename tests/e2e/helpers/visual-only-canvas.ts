@@ -15,6 +15,7 @@ import { spawn } from "child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { enumWindowsInZOrder } from "../../../src/engine/win32.js";
+import { moveWindowToE2eScreen, pickE2eScreen } from "./e2e-screen.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // tests/e2e/helpers → repo root → benches/fixtures/visual-only-canvas.ps1
@@ -52,6 +53,21 @@ export async function spawnVisualOnlyCanvas(opts: { fontSize?: number } = {}): P
   while (Date.now() < deadline) {
     const w = enumWindowsInZOrder().find((x) => x.title === title && !x.isMinimized);
     if (w && w.region.width > 0 && w.region.height > 0) {
+      // Multi-monitor placement: keep the suite off the user's working screen.
+      // The move happens HERE rather than in the .ps1 because that fixture is
+      // shared byte-for-byte with the ADR-024 round-trip bench — the e2e
+      // placement policy must not leak into the bench's canvas definition.
+      // The window stays CENTRED on its monitor, which is the property the
+      // fixture's own comment relies on (clear of the top-left desktop-icon /
+      // Recycle Bin column). Single-monitor machines are a no-op.
+      const size = { width: w.region.width, height: w.region.height };
+      const screen = pickE2eScreen(size);
+      if (screen) {
+        moveWindowToE2eScreen(w.hwnd, size, {
+          x: Math.round((screen.bounds.width - size.width) / 2),
+          y: Math.round((screen.bounds.height - size.height) / 2),
+        });
+      }
       return { title, close };
     }
     await new Promise((res) => setTimeout(res, 200));

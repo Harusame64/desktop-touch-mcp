@@ -80,10 +80,14 @@ describe.skipIf(canvas === null || blank === null)("ADR-029 AC1 — viewport gat
     restoreAndFocusWindow(foreground!.hwnd);
     await new Promise((r) => setTimeout(r, 300));
 
-    // The canvas fixture opens centred and the blank window sits at the top-left,
-    // so a point inside the canvas and outside the foreground window always
-    // exists. Asserted rather than skipped: a layout change that makes the
-    // scenario un-stageable must fail loudly, not pass vacuously.
+    // Geometry premise: both fixtures land on the SAME screen — the non-primary
+    // monitor when the machine has one, the primary otherwise (see
+    // helpers/e2e-screen.ts) — with the canvas centred on it and the blank
+    // window near its top-left corner. A point inside the canvas and outside the
+    // blank window therefore always exists, and the coordinates involved may be
+    // negative when that screen sits left of the primary. Asserted rather than
+    // skipped: a layout change that makes the scenario un-stageable must fail
+    // loudly, not pass vacuously.
     const point = pointInsideButOutside(origin!.region, foreground!.region);
     expect(point, "canvas must not be fully covered by the foreground window").not.toBeNull();
 

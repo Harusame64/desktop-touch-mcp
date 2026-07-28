@@ -60,6 +60,13 @@ export async function spawnBlankWindow(): Promise<BlankWindow | null> {
   // synthetic clicks away from — the screen the user is actually working on.
   // On a single-monitor machine pickE2eScreen() returns null and we keep the
   // historical 120,120. Coordinates may be negative (monitor left of primary).
+  //
+  // DPI caveat: `$f.Location` is applied by a DPI-unaware-by-default PowerShell
+  // host, so on a secondary monitor at a scale other than 100% the form can land
+  // at a virtualised offset rather than exactly here. That is cosmetic only —
+  // every consumer derives its click point from the window's REAL rect (read
+  // back via enumWindowsInZOrder below), never from these requested
+  // coordinates. Measured on a 100%-scale virtual display only.
   const screen = pickE2eScreen({ width: W, height: H });
   const x = screen?.origin.x ?? DEFAULT_X;
   const y = screen?.origin.y ?? DEFAULT_Y;
