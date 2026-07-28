@@ -428,6 +428,64 @@ export function resolveCaptureRegion(): CaptureRegionResolution | null {
   return resolution;
 }
 
+/**
+ * {@link resolveCaptureRegion} plus the one bounds source that outlives a
+ * missing native addon. Prefer this wherever the caller is already async.
+ *
+ * The sync core is deliberately unchanged: the plan specifies it as
+ * cache-free and synchronous, and every existing caller and test of it keeps
+ * that contract. This is an ADDITION on top, not a divergence from it.
+ *
+ * Why it is needed: `hasNativeCaptureRegion()` selects nut.js when the addon
+ * is absent entirely — a supported build. But the primary-rect branch of the
+ * sync core reaches its bounds through `getPrimaryMonitorBounds()` →
+ * `enumMonitors()` → `requireNativeWin32()`, which throws on exactly that
+ * build. The catch turns it into "unknown", the resolver fails open, and an
+ * off-primary region then reaches libnut and comes back as
+ * `CaptureBackendFailed` — advice about locked screens and UAC prompts for a
+ * process whose real problem is that it has no multi-monitor capture. The
+ * limitation is knowable without the addon, so it is enforced instead.
+ *
+ * The GDI path is untouched: a `virtual-rect` resolution never needs this, and
+ * a GDI process that cannot enumerate monitors keeps failing open as before —
+ * that fail-open is deliberate (a machine whose enumeration breaks keeps
+ * taking screenshots).
+ *
+ * `nutjs.js` is imported dynamically rather than at module scope on purpose:
+ * it loads nut.js's own native backend at import time, and pulling that into
+ * this module would drag it into every unit test that touches the resolver,
+ * including those that mock neither. Loading it only when the fallback
+ * actually fires keeps the sync path free of it.
+ */
+export async function resolveCaptureRegionAsync(): Promise<CaptureRegionResolution | null> {
+  const resolution = resolveCaptureRegion();
+  if (resolution) return resolution;
+
+  const { backend, determinant } = selectCaptureBackend();
+  if (backend !== "nutjs") return null;
+
+  let size: { width: number; height: number } | null = null;
+  try {
+    const { getPrimaryScreenSize } = await import("./nutjs.js");
+    size = await getPrimaryScreenSize();
+  } catch {
+    size = null; // nut.js unavailable too → genuinely unknown
+  }
+  if (!size) return null;
+
+  // nut.js reads the primary display, whose origin is (0, 0) by definition.
+  const rect = { x: 0, y: 0, width: size.width, height: size.height };
+  logDiagnostic({
+    kind: "capture",
+    event: "bounds_from_nutjs",
+    backend,
+    determinant,
+    reason:
+      "monitor enumeration unavailable (no native module); primary-monitor bounds read from the nut.js backend instead",
+  });
+  return { kind: "primary-rect", rect, monitors: [rect] };
+}
+
 /** Is `inner` entirely inside `outer`? */
 function containsRect(outer: ReachableBounds, inner: ReachableBounds): boolean {
   return (

@@ -34,6 +34,8 @@ const hoisted = vi.hoisted(() => ({
     nativeThrows: false,
     /** Make the nut.js grab throw. */
     nutjsThrows: false,
+    /** What the nut.js backend reports as the primary screen size, or null. */
+    nutScreenSize: { width: 1920, height: 1080 } as { width: number; height: number } | null,
   },
   calls: {
     native: [] as { x: number; y: number; width: number; height: number }[],
@@ -105,6 +107,7 @@ vi.mock("../../src/engine/nutjs.js", () => ({
       public height: number,
     ) {}
   },
+  getPrimaryScreenSize: async () => hoisted.state.nutScreenSize,
 }));
 
 vi.mock("../../src/engine/diagnostic-log.js", () => ({
@@ -146,6 +149,7 @@ beforeEach(() => {
   hoisted.state.primaryFailure = null;
   hoisted.state.nativeThrows = false;
   hoisted.state.nutjsThrows = false;
+  hoisted.state.nutScreenSize = { width: 1920, height: 1080 };
   hoisted.calls.native.length = 0;
   hoisted.calls.nutGrab = 0;
   hoisted.calls.nutGrabRegion.length = 0;
@@ -216,6 +220,36 @@ describe("capture choke point — bounds", () => {
   // before the copy; the nut.js backend does not reach a black frame at all —
   // it throws on any rectangle off the primary monitor, so that process fails
   // loudly instead of returning a silent black image.
+  // A build with NO native addon at all is supported, and it is the one build
+  // whose capture really is limited to the primary monitor — yet it was the one
+  // that could not enforce the limit: every monitor lookup goes through the
+  // addon and throws, the resolver called that "unknown" and failed open, and
+  // the off-primary region then reached libnut and came back as
+  // CaptureBackendFailed. nut.js knows the primary screen size without the
+  // addon, so the limitation is enforced from there instead.
+  it("still refuses an off-primary region on a build with no native module at all", async () => {
+    hoisted.state.nativeCapture = false;
+    hoisted.state.primaryFailure = "throw"; // every monitor lookup needs the addon
+    const err = await thrownBy(() => grabScreenRegionValidated(ON_LEFT_MONITOR));
+    expect(err.name).toBe("RegionOutsideCapturableBounds");
+    // The refusal has to happen BEFORE libnut is asked, or the caller gets
+    // libnut's throw dressed up as a backend failure instead.
+    expect(hoisted.calls.nutGrabRegion).toEqual([]);
+    expect(hoisted.calls.nutGrab).toBe(0);
+    expect(eventsOfKind("bounds_from_nutjs")).toHaveLength(1);
+  });
+
+  // The contrast: when nut.js cannot report a size either, nothing is known
+  // and the long-standing fail-open stance is unchanged.
+  it("still fails open when nut.js cannot report a screen size either", async () => {
+    hoisted.state.nativeCapture = false;
+    hoisted.state.primaryFailure = "throw";
+    hoisted.state.nutScreenSize = null;
+    await grabScreenRegionValidated(ON_LEFT_MONITOR);
+    expect(hoisted.calls.nutGrabRegion).toEqual([ON_LEFT_MONITOR]);
+    expect(eventsOfKind("bounds_from_nutjs")).toHaveLength(0);
+  });
+
   it("passes a region through unchecked when the layout cannot be read", async () => {
     hoisted.state.monitors = [];
     await grabScreenRegionValidated(OFF_EVERY_MONITOR);

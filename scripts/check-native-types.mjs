@@ -117,6 +117,53 @@ if (stale.length > 0) {
   for (const n of stale) console.warn(`  - ${n}`);
 }
 
+// ── index.d.ts ⇄ index.js parity ────────────────────────────────────────────
+//
+// The two files are hand-maintained in lockstep and `npm run build:rs`
+// restores both, so nothing forces them to agree. A name declared in
+// index.d.ts but never re-exported from index.js type-checks perfectly and
+// then fails at MODULE LINK time for any consumer writing
+// `import { thatName } from "./index.js"` — the native binding exists, the
+// wrapper simply never surfaced it. The reverse (exported, undeclared) hands
+// TS consumers an untyped export. Both directions are drift, so both fail.
+//
+// Declarations are matched for functions AND classes: `DirtyRectSubscription`
+// is a class, and matching functions alone would report it as a phantom
+// index.js-only export.
+const INDEX_JS = join(ROOT, "index.js");
+const js = readFileSync(INDEX_JS, "utf8");
+
+const dtsDeclared = new Set([
+  ...Array.from(dts.matchAll(/^export declare function (\w+)\s*\(/gm), (m) => m[1]),
+  ...Array.from(dts.matchAll(/^export declare class (\w+)\b/gm), (m) => m[1]),
+]);
+const jsExported = new Set(
+  Array.from(js.matchAll(/^export\s+(?:const|function|class)\s+(\w+)/gm), (m) => m[1]),
+);
+
+const notInJs = [...dtsDeclared].filter((n) => !jsExported.has(n));
+const notInDts = [...jsExported].filter((n) => !dtsDeclared.has(n));
+
+if (notInJs.length > 0) {
+  failed = true;
+  console.error(
+    "\n[check-native-types] FAIL — declared in index.d.ts but NOT exported from index.js:\n",
+  );
+  for (const n of notInJs) console.error(`  - ${n}`);
+  console.error(
+    "\n  A named import of these throws at module link time. Add" +
+      "\n  `export const <name> = nativeBinding.<name>;` to index.js.",
+  );
+}
+if (notInDts.length > 0) {
+  failed = true;
+  console.error(
+    "\n[check-native-types] FAIL — exported from index.js but NOT declared in index.d.ts:\n",
+  );
+  for (const n of notInDts) console.error(`  - ${n}`);
+  console.error("\n  TS consumers get an untyped export. Add the declaration to index.d.ts.");
+}
+
 if (failed) {
   console.error("\nAdd the missing `export declare function <name>(...)` lines to index.d.ts.");
   console.error("Source of truth for shared types: src/engine/native-types.ts.\n");
@@ -124,5 +171,6 @@ if (failed) {
 }
 
 console.log(
-  `[check-native-types] OK — ${rustExports.size} Rust exports all declared in index.d.ts.`,
+  `[check-native-types] OK — ${rustExports.size} Rust exports all declared in index.d.ts, ` +
+    `and all ${dtsDeclared.size} declarations are exported from index.js.`,
 );

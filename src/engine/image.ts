@@ -10,7 +10,7 @@ import {
 import { nativeEngine } from "./native-engine.js";
 import {
   selectCaptureBackend,
-  resolveCaptureRegion,
+  resolveCaptureRegionAsync,
   assertCaptureRegionInBounds,
   type CaptureRegionResolution,
   type CaptureBoundsMode,
@@ -257,7 +257,7 @@ export async function grabScreenRegionValidated(
   let resolution: CaptureRegionResolution | null = null;
   try {
     if (region) {
-      resolution = resolveCaptureRegion();
+      resolution = await resolveCaptureRegionAsync();
       assertCaptureRegionInBounds(region, resolution, selection, mode);
     }
 

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
 import { keyboardTypeHandler } from "./keyboard.js";
 import { captureScreen } from "../engine/image.js";
-import { padCaptureRegion, resolveCaptureRegion } from "../engine/reachable-bounds.js";
+import { padCaptureRegion, resolveCaptureRegionAsync } from "../engine/reachable-bounds.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
@@ -318,7 +318,7 @@ export const scopeElementHandler = async ({
       // element itself is inside the capturable area, and otherwise hands the
       // region through untouched for the choke point to refuse — the catch
       // below then continues text-only, which is an honest degradation.
-      const region = padCaptureRegion(r, padding, resolveCaptureRegion());
+      const region = padCaptureRegion(r, padding, await resolveCaptureRegionAsync());
       try {
         const captured = await captureScreen(region, 1280);
         content.push({ type: "image" as const, data: captured.base64, mimeType: captured.mimeType });

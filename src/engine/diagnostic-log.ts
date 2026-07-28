@@ -152,6 +152,9 @@ export type DiagnosticEvent =
       //   backend that does not exist; the choice fell through to capability.
       // "bounds_unknown": monitor enumeration failed, so the requested
       //   rectangle was passed through unchecked (fail-open, warn once).
+      // "bounds_from_nutjs": monitor enumeration was unavailable (a build with
+      //   no native addon), so the primary-monitor bounds came from the nut.js
+      //   backend instead — the limitation is still enforced, not failed open.
       // "region_rejected": the rectangle is outside what this backend can
       //   capture — refused before the backend was called.
       // "backend_failed": the backend (or the primary-rectangle lookup the
@@ -160,6 +163,7 @@ export type DiagnosticEvent =
         | "backend_selected"
         | "backend_override_ignored"
         | "bounds_unknown"
+        | "bounds_from_nutjs"
         | "region_rejected"
         | "backend_failed";
       /** The pixel source this process uses — `gdi-bitblt` or `nutjs`. */
