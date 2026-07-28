@@ -235,6 +235,12 @@ function describeUnreachable(x: number, y: number, region: ReachableRegion | nul
 //     window straddling the desktop edge runs off it for real; BitBlt returns
 //     those with the off-screen part black, which is the honest picture of
 //     where the window is. Refusing them would take away a capture that works.
+//     That last sentence is true of BitBlt and false of libnut, so the
+//     relaxation follows the BACKEND, not the caller: libnut cannot clip and
+//     throws on any rectangle leaving the primary monitor, so a `primary-rect`
+//     resolution keeps the containment requirement in both modes. The boundary
+//     is what the backend can read — a rule this file would be undoing if it
+//     let a rectangle through on the strength of who supplied it.
 //
 //   - The layout is read on every call, with no cache. The 250ms window above
 //     exists because one drag asks three times and must get one answer; a
@@ -285,6 +291,16 @@ export type CaptureRegionResolution =
  *   picture of a window hanging off the desktop edge, and clamping it would
  *   silently change the buffer's dimensions out from under the window-local
  *   crop the caller applies afterwards.
+ *
+ * The relaxation applies to the GDI backend only (`virtual-rect`). It is a
+ * statement about what the backend can do, not a preference: BitBlt clips
+ * against the screen DC and fills the rest with black, while libnut cannot
+ * clip at all and throws on any rectangle leaving the primary monitor. On a
+ * `primary-rect` resolution `overlap` therefore still requires containment —
+ * a refusal there is `RegionOutsideCapturableBounds`, which names the missing
+ * native module, whereas letting the rectangle through would surface libnut's
+ * throw as `CaptureBackendFailed` and send the caller after a locked screen or
+ * a UAC prompt that has nothing to do with it.
  */
 export type CaptureBoundsMode = "contain" | "overlap";
 
@@ -440,7 +456,8 @@ function intersectsRect(a: ReachableBounds, b: ReachableBounds): boolean {
  *
  * In `overlap` mode (for a rectangle Windows produced — a window's own screen
  * rect) only the overlap half applies, and the rectangle reaches the backend
- * unchanged. See {@link CaptureBoundsMode}.
+ * unchanged — but only on the GDI resolution, which can clip. See
+ * {@link CaptureBoundsMode}.
  */
 export function isCaptureRegionInBounds(
   region: ReachableBounds,
@@ -449,7 +466,12 @@ export function isCaptureRegionInBounds(
 ): boolean {
   if (!resolution) return true;
   const onSomeMonitor = resolution.monitors.some((m) => intersectsRect(m, region));
-  if (mode === "overlap") return onSomeMonitor;
+  // The relaxation is BitBlt's ability to clip, so it is spelled against the
+  // resolution kind rather than the mode alone. libnut has no such ability:
+  // an overhanging rectangle there throws, and the throw arrives as
+  // `CaptureBackendFailed` — advice about locked screens and UAC prompts, for
+  // a process whose real problem is that it has no native capture module.
+  if (mode === "overlap" && resolution.kind === "virtual-rect") return onSomeMonitor;
   return onSomeMonitor && containsRect(resolution.rect, region);
 }
 
@@ -512,6 +534,13 @@ function describeUncapturable(
  * nut.js-backed process cannot read), the padded region is returned untouched
  * so the choke point refuses it: pulling it into the primary monitor instead
  * would answer with a picture of somewhere else and call it a success.
+ *
+ * "Inside the capturable area" here means inside the BOUNDING rectangle only —
+ * an element sitting in the gap of a staggered layout passes this test and is
+ * padded normally, and is then refused by the choke point, which does look at
+ * the individual monitors. Both outcomes are the same for this function's
+ * purpose (hand the region over unpulled and let the check decide), so the
+ * cheaper test is the one used.
  *
  * An unknown (`null`) resolution trims nothing, matching the choke point, which
  * checks nothing.

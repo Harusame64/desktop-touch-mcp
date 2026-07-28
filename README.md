@@ -424,8 +424,6 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 
 A region that is on no monitor comes back as `RegionOutsideCapturableBounds` rather than a raw Windows error, and the message says whether the coordinates went stale or whether this server can only capture the primary monitor. If Windows returns no pixels at all — a locked screen, a UAC prompt, a disconnected remote-desktop session — you get `CaptureBackendFailed`; capturing the window itself with `screenshot(windowTitle=…)` usually still works, because it reads through a different Windows API.
 
-**If your display scaling is not 100%**, `screenshot(displayId=…)` and `screenshot(region=…)` now come back at the monitor's real pixel size instead of the scaled-down size earlier versions returned — a 3840×2160 monitor at 150% scaling gives you 3840×2160, where it used to give 2560×1440. This matches what `screenshot(windowTitle=…)` has always returned, so images from the two are finally the same scale. Screen coordinates are unchanged: what `screenshot(detail='meta')` reports is still what you pass in and what you click. If you have a saved size or a hard-coded crop from an earlier version, re-take the screenshot rather than reusing the old numbers.
-
 | Env var | Default | Notes |
 |---|---|---|
 | `DESKTOP_TOUCH_CAPTURE_BACKEND` | *(unset = automatic)* | Diagnostic override for the screen-capture path. Set to `nutjs` to force the older capture backend, which can only read the **primary** monitor — useful for isolating a capture problem. The server picks the backend once at startup, so change this in your MCP client config and restart. Any other value is ignored. |

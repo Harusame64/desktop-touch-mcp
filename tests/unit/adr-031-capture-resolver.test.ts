@@ -229,6 +229,10 @@ describe("isCaptureRegionInBounds", () => {
 //     reports a maximised window ~8px outside its monitor on every side (the
 //     invisible resize border). Those were refused outright, though BitBlt
 //     captures them fine with a black border.
+//
+// Round 2 (Opus P2) narrowed the second half: "BitBlt captures them fine" is a
+// fact about BitBlt, so the relaxation is spelled against the resolution kind.
+// libnut cannot clip, so `primary-rect` keeps containment in both modes.
 describe("isCaptureRegionInBounds — the two modes", () => {
   // Staggered: the second monitor sits to the right AND 600px lower, so the
   // rectangle x∈[1920, 3840), y∈[0, 600) is desktop-shaped emptiness.
@@ -279,11 +283,28 @@ describe("isCaptureRegionInBounds — the two modes", () => {
     expect(isCaptureRegionInBounds(IN_THE_GAP, staggered)).toBe(false);
   });
 
-  it("applies both modes the same way on the single-monitor nut.js resolution", () => {
-    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, primaryOnly, "overlap")).toBe(true);
+  // Round 2 (Opus P2) — the relaxation follows the BACKEND, not the caller.
+  // BitBlt clips an overhanging rectangle and blackens the rest; libnut cannot
+  // clip at all and throws, and that throw would arrive as
+  // `CaptureBackendFailed` with advice about locked screens and UAC prompts
+  // for a process whose real problem is a missing native module. So
+  // `primary-rect` keeps containment in BOTH modes — the boundary is what the
+  // backend can read, which is the invariant this file exists to hold.
+  it("does not relax overlap on the nut.js resolution, which cannot clip", () => {
+    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, primaryOnly, "overlap")).toBe(false);
     expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, primaryOnly, "contain")).toBe(false);
-    expect(isCaptureRegionInBounds({ x: -1920, y: 0, width: 1920, height: 1080 }, primaryOnly, "overlap")).toBe(false);
-    expect(isCaptureRegionInBounds({ x: 10, y: 10, width: 100, height: 100 }, primaryOnly, "contain")).toBe(true);
+    // …while the same rectangle IS relaxed on the GDI resolution.
+    expect(isCaptureRegionInBounds(MAXIMISED_WINDOW, staggered, "overlap")).toBe(true);
+  });
+
+  it("still admits a fully-contained rect on the nut.js resolution in either mode", () => {
+    const inside = { x: 10, y: 10, width: 100, height: 100 };
+    expect(isCaptureRegionInBounds(inside, primaryOnly, "contain")).toBe(true);
+    expect(isCaptureRegionInBounds(inside, primaryOnly, "overlap")).toBe(true);
+    // And a region on a monitor it cannot read stays refused in both.
+    const offPrimary = { x: -1920, y: 0, width: 1920, height: 1080 };
+    expect(isCaptureRegionInBounds(offPrimary, primaryOnly, "overlap")).toBe(false);
+    expect(isCaptureRegionInBounds(offPrimary, primaryOnly, "contain")).toBe(false);
   });
 
   it("cannot judge an unknown layout in either mode", () => {

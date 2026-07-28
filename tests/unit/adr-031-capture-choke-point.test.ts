@@ -258,14 +258,32 @@ describe("capture choke point — bounds", () => {
     expect(hoisted.calls.native).toEqual([]);
   });
 
-  it("applies both modes on the nut.js resolution too", async () => {
+  // Round 2 (Opus P2). The relaxation is BitBlt's ability to clip, so it stops
+  // where that ability does. libnut throws on any rectangle leaving the primary
+  // monitor, and that throw would leave here as `CaptureBackendFailed` —
+  // advice about locked screens and UAC prompts for a process whose actual
+  // problem is a missing native module. The refusal names that instead.
+  it("keeps the containment requirement in overlap mode on the nut.js resolution", async () => {
     hoisted.state.nativeCapture = false;
     hoisted.state.monitors = [PRIMARY];
-    await grabScreenRegionValidated(MAXIMISED_WINDOW, "overlap");
-    expect(hoisted.calls.nutGrabRegion).toEqual([MAXIMISED_WINDOW]);
-    const err = await thrownBy(() => grabScreenRegionValidated(MAXIMISED_WINDOW));
+    const err = await thrownBy(() => grabScreenRegionValidated(MAXIMISED_WINDOW, "overlap"));
     expect(err.name).toBe("RegionOutsideCapturableBounds");
-    expect(hoisted.calls.nutGrabRegion).toHaveLength(1);
+    expect(err.message).toContain("built-in Windows capture module");
+    // Never handed to libnut: the whole point is that it cannot clip this.
+    expect(hoisted.calls.nutGrabRegion).toEqual([]);
+    // Contain mode was already refusing it; both modes agree here.
+    const same = await thrownBy(() => grabScreenRegionValidated(MAXIMISED_WINDOW));
+    expect(same.name).toBe("RegionOutsideCapturableBounds");
+    expect(hoisted.calls.nutGrabRegion).toEqual([]);
+  });
+
+  it("still lets a fully-contained rect through on the nut.js resolution in either mode", async () => {
+    hoisted.state.nativeCapture = false;
+    hoisted.state.monitors = [PRIMARY];
+    const inside = { x: 10, y: 20, width: 100, height: 50 };
+    await grabScreenRegionValidated(inside, "overlap");
+    await grabScreenRegionValidated(inside);
+    expect(hoisted.calls.nutGrabRegion).toEqual([inside, inside]);
   });
 });
 
@@ -389,11 +407,21 @@ describe("screen capture — only the choke point may grab the screen", () => {
   // screen pixels — the native binding is the DEFAULT one, and the pattern
   // above cannot see it. Matching the bare identifier (not a call) is
   // deliberate: a module that merely IMPORTS the binding has already left the
-  // choke point behind, and the import line is where that starts. `image.ts`
-  // is the choke point; `win32.ts` is the binding's own wrapper, i.e. the
-  // definition site.
-  const NATIVE_GRAB = /(?<!`)\bcaptureScreenRegion\b(?!`)/g;
+  // choke point behind, and the import line is where that starts.
+  //
+  // Round 2 (Opus P3a): the raw napi export is named too. `win32.ts` wraps it,
+  // but nothing stops a module reaching past that wrapper with
+  // `nativeWin32.win32CaptureScreenRegion!(…)` — one property access, no
+  // import of the wrapper, invisible to the first half of this pattern.
+  const NATIVE_GRAB = /(?<!`)\b(?:captureScreenRegion|win32CaptureScreenRegion)\b(?!`)/g;
+  // The three legitimate homes, enumerated by reading them rather than by
+  // assuming symmetry: `image.ts` is the choke point (import + call),
+  // `win32.ts` is the wrapper (definition + the one raw-binding call), and
+  // `native-engine.ts` declares the binding's type and probes for its
+  // presence. Prose elsewhere writes the name in backticks, which the pattern
+  // excludes.
   const NATIVE_WRAPPER = join(SRC, "engine", "win32.ts");
+  const NATIVE_BINDING_HOST = join(SRC, "engine", "native-engine.ts");
 
   function tsFiles(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -417,11 +445,14 @@ describe("screen capture — only the choke point may grab the screen", () => {
   // Same self-check for the native pattern, and the reason it is looser: the
   // IMPORT is the violation, so the call parentheses are not required. Only
   // backticked prose is exempt.
-  it("recognises the native binding by import as well as by call", () => {
+  it("recognises the native binding by import, by call, and by raw property access", () => {
     const fresh = () => new RegExp(NATIVE_GRAB.source);
     expect(fresh().test('import { captureScreenRegion } from "../engine/win32.js";')).toBe(true);
     expect(fresh().test("const shot = captureScreenRegion(target);")).toBe(true);
+    // The wrapper-bypass shape: no import of win32.ts at all.
+    expect(fresh().test("nativeWin32.win32CaptureScreenRegion!(x, y, w, h);")).toBe(true);
     expect(fresh().test("// `captureScreenRegion` reads the virtual desktop")).toBe(false);
+    expect(fresh().test("/** result of `win32CaptureScreenRegion` */")).toBe(false);
   });
 
   it("no file other than image.ts grabs the screen", () => {
@@ -432,11 +463,9 @@ describe("screen capture — only the choke point may grab the screen", () => {
   });
 
   it("no file other than image.ts and the binding wrapper touches the native capture", () => {
+    const allowed = new Set([CHOKE_POINT, NATIVE_WRAPPER, NATIVE_BINDING_HOST]);
     const users = tsFiles(SRC).filter(
-      (f) =>
-        f !== CHOKE_POINT &&
-        f !== NATIVE_WRAPPER &&
-        new RegExp(NATIVE_GRAB.source).test(readFileSync(f, "utf8")),
+      (f) => !allowed.has(f) && new RegExp(NATIVE_GRAB.source).test(readFileSync(f, "utf8")),
     );
     expect(
       users.map(rel),

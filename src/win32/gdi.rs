@@ -11,14 +11,23 @@
 //! is addressed by a negative origin rather than being out of range.
 //!
 //! Every Win32 handle is owned by a small RAII guard. The let-binding order
-//! in `print_window_to_buffer` therefore matters: `screen_dc` lives longest,
+//! in both capture functions therefore matters: `screen_dc` lives longest,
 //! then `mem_dc`, then `bitmap`, then `select_guard`. drop order is LIFO, so
 //! the SelectObject undo runs first, then DeleteObject(bitmap), then
 //! DeleteDC(mem_dc), then ReleaseDC(NULL, screen_dc) — matching the Win32
-//! lifecycle invariant ("unselect before destroy").
+//! lifecycle invariant ("unselect before destroy"): select must unwind before
+//! bitmap is destroyed, bitmap before its memory DC, memory DC before its
+//! source screen DC.
 //!
-//! drop order is LIFO; select must unwind before bitmap is destroyed,
-//! bitmap before its memory DC, memory DC before its source screen DC.
+//! One guard does NOT wait for the end of scope. `GetDIBits` documents that
+//! the bitmap it reads must not be selected into a DC at the time of the call
+//! — with the bitmap still selected the call is out of contract and may
+//! return 0 scanlines or stale bits. So `select_guard` is dropped EXPLICITLY
+//! as soon as the drawing call (PrintWindow / BitBlt) has finished, which
+//! restores the DC's previous object and thereby releases ours. The bitmap
+//! guard deliberately outlives it: GetDIBits is still handed the handle, and
+//! only the SELECTION has to be gone, not the bitmap. Everything left at the
+//! end of scope then unwinds in the order above.
 
 use napi::bindgen_prelude::{BigInt, Buffer};
 use napi_derive::napi;
@@ -150,7 +159,7 @@ pub fn win32_print_window_to_buffer(
         // 5. Bind bitmap to the memory DC; the previous selection is
         //    restored on drop (skipped when SelectObject returned NULL).
         let prev = unsafe { SelectObject(mem_dc.dc, HGDIOBJ(bitmap_raw.0 as *mut _)) };
-        let _select_guard = SelectGuard {
+        let select_guard = SelectGuard {
             dc: mem_dc.dc,
             old: if prev.0.is_null() { None } else { Some(prev) },
         };
@@ -160,7 +169,14 @@ pub fn win32_print_window_to_buffer(
         //    to GetDIBits and let the caller use whatever was produced.
         let _ = unsafe { PrintWindow(target, mem_dc.dc, PRINT_WINDOW_FLAGS(flags)) };
 
-        // 7. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
+        // 7. Release the selection before reading the bits. GetDIBits requires
+        //    the bitmap not to be selected into any DC; dropping the guard here
+        //    restores the memory DC's original object, which is what unselects
+        //    ours. The BitmapGuard is untouched — GetDIBits still needs the
+        //    handle, just not the selection.
+        drop(select_guard);
+
+        // 8. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
         let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
         bmi.bmiHeader = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -188,7 +204,7 @@ pub fn win32_print_window_to_buffer(
             return Err(napi::Error::from_reason("GetDIBits returned 0 scanlines"));
         }
 
-        // 8. BGRA → RGBA + opaque alpha. `chunks_exact_mut(4)` lets the
+        // 9. BGRA → RGBA + opaque alpha. `chunks_exact_mut(4)` lets the
         //    autovectorizer collapse the swap into a couple of pshufb-style
         //    instructions on x86_64; explicit SIMD is deferred to P5a per
         //    Opus review §11.7 / scope creep list.
@@ -325,7 +341,7 @@ pub fn win32_capture_screen_region(
 
         // 4. Bind the bitmap; the previous selection is restored on drop.
         let prev = unsafe { SelectObject(mem_dc.dc, HGDIOBJ(bitmap_raw.0 as *mut _)) };
-        let _select_guard = SelectGuard {
+        let select_guard = SelectGuard {
             dc: mem_dc.dc,
             old: if prev.0.is_null() { None } else { Some(prev) },
         };
@@ -336,7 +352,14 @@ pub fn win32_capture_screen_region(
         unsafe { BitBlt(mem_dc.dc, 0, 0, w, h, Some(screen_dc.dc), x, y, SRCCOPY) }
             .map_err(|e| napi::Error::from_reason(format!("BitBlt failed: {e}")))?;
 
-        // 6. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
+        // 6. Release the selection before reading the bits. GetDIBits requires
+        //    the bitmap not to be selected into any DC; dropping the guard here
+        //    restores the memory DC's original object, which is what unselects
+        //    ours. The BitmapGuard is untouched — GetDIBits still needs the
+        //    handle, just not the selection.
+        drop(select_guard);
+
+        // 7. Pull the DIB into a CPU buffer (32bpp top-down BI_RGB).
         let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
         bmi.bmiHeader = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -363,7 +386,7 @@ pub fn win32_capture_screen_region(
             return Err(napi::Error::from_reason("GetDIBits returned 0 scanlines"));
         }
 
-        // 7. BGRA → RGBA + opaque alpha (GDI leaves the alpha byte as garbage
+        // 8. BGRA → RGBA + opaque alpha (GDI leaves the alpha byte as garbage
         //    for a screen BitBlt, so it is forced rather than trusted).
         for px in pixels.chunks_exact_mut(4) {
             px.swap(0, 2);
