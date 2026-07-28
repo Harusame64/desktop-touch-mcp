@@ -50,6 +50,11 @@ vi.mock("../../src/engine/native-engine.js", () => ({
   nativeEngine: null,
   hasNativeCursorMove: () => true,
   hasNativeCaptureRegion: () => hoisted.state.nativeCapture,
+  // This file exercises whole-addon-present / whole-addon-absent builds only —
+  // it asserts routing and diagnostics, never the wording of the advice — so
+  // the two capture bindings move together here. The resolver test is where
+  // they are driven apart.
+  hasNativePerWindowCapture: () => hoisted.state.nativeCapture,
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({

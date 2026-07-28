@@ -204,15 +204,18 @@ const SUGGESTS: Record<string, string[]> = {
   // re-discover advice: re-discovering hands back the same rectangle, so that
   // loop cannot terminate.
   RegionOutsideCapturableBounds: [
-    "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor. In that last case it also says WHY, which decides the recovery below.",
+    "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor. In that last case it also says whether per-window capture still works here, which decides the recovery below.",
     "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then capture the new region.",
     // No per-window route named here on purpose: an overhang can occur on
     // either backend, and whether screenshot(windowTitle=…) works depends on
     // the determinant — which the two lines below own. Shrinking is the one
     // answer that holds in every case.
     "Overlaps a monitor but extends beyond the capturable area → the coordinates are NOT stale; re-discovering returns the same rectangle. Shrink the region to fit the monitor.",
-    "Limited to the primary monitor BY THE ENV OVERRIDE → the capture module is present and only the region path is pinned, so screenshot(windowTitle=…) still works on every monitor.",
-    "Limited to the primary monitor BY A MISSING MODULE → screenshot(windowTitle=…) needs that same module and fails too: move the window onto the primary monitor, or reinstall / update the server to restore multi-monitor capture.",
+    // Keyed on what the message OFFERS, not on why the process is limited:
+    // per-window capture and region capture are separate bindings, so an addon
+    // can have one without the other. The message asks that question directly.
+    "Limited to the primary monitor, and the message offers screenshot(windowTitle=…) → per-window capture still reads every monitor on this build, so use it.",
+    "Limited to the primary monitor, and the message says window capture would fail too → this build cannot read another monitor either way: move the window onto the primary monitor, or reinstall / update the server to restore multi-monitor capture.",
     "Retrying the same region fails the same way — the region is the problem, not the tool. screenshot(detail='meta') still lists every monitor and window, including the ones that cannot be captured this way.",
   ],
   // ADR-031: the capture backend ran and produced nothing. Distinct from the

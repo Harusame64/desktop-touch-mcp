@@ -19,6 +19,9 @@ const hoisted = vi.hoisted(() => ({
       height: number;
     }[],
     enumThrows: false,
+    /** Per-window capture (PrintWindow binding) — a SEPARATE binding from
+     *  region capture, so the two are mocked independently. */
+    nativePerWindow: true,
   },
   enumCalls: { n: 0 },
   events: [] as Record<string, unknown>[],
@@ -28,6 +31,7 @@ vi.mock("../../src/engine/native-engine.js", () => ({
   nativeWin32: {},
   hasNativeCursorMove: () => true,
   hasNativeCaptureRegion: () => hoisted.state.nativeCapture,
+  hasNativePerWindowCapture: () => hoisted.state.nativePerWindow,
 }));
 vi.mock("../../src/engine/win32.js", () => ({
   enumMonitors: () => {
@@ -67,6 +71,7 @@ const captureEvents = (event: string) => hoisted.events.filter((e) => e.event ==
 beforeEach(() => {
   delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
   hoisted.state.nativeCapture = true;
+  hoisted.state.nativePerWindow = true;
   hoisted.state.monitors = [PRIMARY, LEFT];
   hoisted.state.enumThrows = false;
   hoisted.enumCalls.n = 0;
@@ -84,6 +89,7 @@ describe("selectCaptureBackend", () => {
 
   it("falls back to nut.js on a build without the capture binding", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     expect(selectCaptureBackend()).toEqual({
       backend: "nutjs",
       determinant: "no-native-module",
@@ -134,6 +140,7 @@ describe("resolveCaptureRegion", () => {
 
   it("stops at the primary monitor on a build without the capture binding", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     expect(resolveCaptureRegion()).toEqual({
       kind: "primary-rect",
       rect: PRIMARY,
@@ -179,6 +186,7 @@ describe("resolveCaptureRegion", () => {
 
   it("does the same on the nut.js path, where the primary lookup throws", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     hoisted.state.enumThrows = true;
     expect(resolveCaptureRegion()).toBeNull();
   });
@@ -397,6 +405,7 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
   // and making it unconditional fails the second.
   it("does not tell a maximised window on the primary monitor to move there", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     const maximised = { x: -8, y: -8, width: 1936, height: 1096 };
     let err!: Error;
     try {
@@ -429,7 +438,7 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
   // back to this very guard — so recommending it is a second guaranteed
   // failure. Both directions are asserted, so deleting the branch fails one and
   // making it unconditional fails the other.
-  it("offers per-window capture only when the module is actually installed", () => {
+  it("offers per-window capture when this build can capture a window anywhere", () => {
     process.env.DESKTOP_TOUCH_CAPTURE_BACKEND = "nutjs";
     const pinned = refusalFor();
     expect(pinned.message).toContain("screenshot(windowTitle=…)");
@@ -437,8 +446,9 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     expect(pinned.message).not.toContain("reinstall");
   });
 
-  it("does not send a module-less build to per-window capture, which needs that module", () => {
+  it("does not send a build without per-window capture to that route", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     const err = refusalFor();
     expect(err.message).toContain("needs the same missing module");
     expect(err.message).toContain("move the target window");
@@ -461,8 +471,8 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     throw new Error("expected a refusal");
   };
 
-  it("offers per-window capture for an overhang only when the module is installed", () => {
-    process.env.DESKTOP_TOUCH_CAPTURE_BACKEND = "nutjs"; // module present, region path pinned
+  it("offers per-window capture for an overhang when this build can do it", () => {
+    process.env.DESKTOP_TOUCH_CAPTURE_BACKEND = "nutjs"; // PrintWindow present, region path pinned
     const err = refusalForOverhang();
     expect(err.message).toContain("overlaps the primary monitor");
     expect(err.message).toMatch(/shrink the region/i);
@@ -471,11 +481,12 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     expect(err.message).not.toContain("Reinstalling");
   });
 
-  it("does not offer per-window capture for an overhang on a module-less build", () => {
+  it("does not offer per-window capture for an overhang when this build cannot do it", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     const err = refusalForOverhang();
     expect(err.message).toContain("overlaps the primary monitor");
-    // Shrinking is the answer that holds whatever the determinant is.
+    // Shrinking is the answer that holds whatever the build can do.
     expect(err.message).toMatch(/shrink the region/i);
     expect(err.message).toContain("needs the same missing module");
     expect(err.message).toContain("Reinstalling");
@@ -483,8 +494,33 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
     expect(err.message).not.toContain("capture the window itself with screenshot");
   });
 
+  // The two capabilities are separate bindings, so the determinant is NOT a
+  // proxy for them. These are the two configurations where inferring the advice
+  // from the determinant gets it exactly backwards.
+  it("offers per-window capture on a stale addon that has PrintWindow but not region capture", () => {
+    hoisted.state.nativeCapture = false; // determinant will read "no-native-module"
+    hoisted.state.nativePerWindow = true; // ...yet PrintWindow is right there
+    const err = refusalFor();
+    expect(err.message).toContain("built-in Windows capture module"); // why: unchanged
+    expect(err.message).toContain("Capture the window directly with screenshot");
+    expect(err.message).toContain("PrintWindow");
+    expect(err.message).not.toContain("would fail too");
+  });
+
+  it("withholds per-window capture when the override hides a completely absent addon", () => {
+    process.env.DESKTOP_TOUCH_CAPTURE_BACKEND = "nutjs"; // determinant will read "env-override"
+    hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // ...but nothing is actually installed
+    const err = refusalFor();
+    expect(err.message).toContain("DESKTOP_TOUCH_CAPTURE_BACKEND"); // why: unchanged
+    expect(err.message).toContain("would fail too");
+    expect(err.message).toContain("move the target window");
+    expect(err.message).not.toContain("Capture the window directly with screenshot");
+  });
+
   it("names the missing module when that is what limits the process", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     const err = refusalFor();
     expect(err.message).toContain("built-in Windows capture module");
     expect(err.message).toContain("primary monitor");
@@ -508,6 +544,7 @@ describe("assertCaptureRegionInBounds — capability-variant wording", () => {
 describe("ADR-031 typed codes classify with recovery advice", () => {
   it("RegionOutsideCapturableBounds survives failWith and keeps its advice", () => {
     hoisted.state.nativeCapture = false;
+    hoisted.state.nativePerWindow = false; // a module-less build has neither binding
     let thrown: unknown;
     try {
       assertCaptureRegionInBounds({ x: -1920, y: 0, width: 1920, height: 1080 }, resolveCaptureRegion());

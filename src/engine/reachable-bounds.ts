@@ -30,7 +30,11 @@
  */
 
 import { enumMonitors, getPrimaryMonitorBounds } from "./win32.js";
-import { hasNativeCursorMove, hasNativeCaptureRegion } from "./native-engine.js";
+import {
+  hasNativeCursorMove,
+  hasNativeCaptureRegion,
+  hasNativePerWindowCapture,
+} from "./native-engine.js";
 import {
   CoordinateOutsideReachableBoundsError,
   RegionOutsideCapturableBoundsError,
@@ -482,7 +486,11 @@ export async function resolveCaptureRegionAsync(): Promise<CaptureRegionResoluti
   // GDI has no fallback: if monitors cannot be enumerated there, failing open
   // is already decided and is recorded here rather than in the sync core.
   if (backend === "nutjs") {
-    let size: { width: number; height: number } | null = null;
+    // Definite-assignment analysis: both paths through this block assign, so
+    // no initializer is needed — and an initial `null` would be dead code per
+    // eslint `no-useless-assignment` (same idiom as `fallbackReason` in
+    // engine/image.ts).
+    let size: { width: number; height: number } | null;
     try {
       const { getPrimaryScreenSize } = await import("./nutjs.js");
       size = await getPrimaryScreenSize();
@@ -624,20 +632,25 @@ function describeUncapturable(
     selection.determinant === "env-override"
       ? `the ${CAPTURE_BACKEND_ENV} environment variable pins this server to the nut.js capture backend`
       : "this installation is running without its built-in Windows capture module";
-  // Whether `screenshot(windowTitle=…)` is a way out depends on WHY this
-  // process is primary-limited, so the advice cannot be a constant.
+  // Whether `screenshot(windowTitle=…)` is a way out is a CAPABILITY question,
+  // so it is asked directly rather than inferred from the determinant. The two
+  // come apart in both directions:
   //
-  // With the env override the native module is present and only the region
-  // path is pinned to nut.js, so per-window capture still reads through
-  // PrintWindow and genuinely works on any monitor.
+  //   - an addon predating ADR-031 exports PrintWindow but not
+  //     `win32CaptureScreenRegion`, so the determinant reads
+  //     "no-native-module" while per-window capture works on every monitor;
+  //   - an addon missing entirely while `DESKTOP_TOUCH_CAPTURE_BACKEND` is set
+  //     reports "env-override", yet PrintWindow is gone and per-window capture
+  //     fails too.
   //
-  // Without the module it does not: `printWindowToBuffer` needs the very
-  // binding that is missing, the ladder turns that throw into "no data", and
-  // its BitBlt-of-window-rect fallback comes straight back to this same guard
-  // and is refused for an off-primary window. Recommending it there sends the
-  // caller into a second guaranteed failure, so that case names the two things
-  // that do work instead.
-  const perWindowWorks = selection.determinant === "env-override";
+  // Recommending the per-window route where it cannot work sends the caller
+  // into a second guaranteed failure: the ladder's PrintWindow rung throws,
+  // that becomes "no data", and its BitBlt-of-window-rect fallback returns to
+  // this very guard and is refused for an off-primary window.
+  //
+  // `why` above still explains what made this process primary-limited, which
+  // genuinely IS a determinant question. Only the advice keys on capability.
+  const perWindowWorks = hasNativePerWindowCapture();
   // Same split as the GDI branch above, for the same reason. A maximised window
   // is reported by `GetWindowRect` a few pixels outside its own monitor, so its
   // rect overlaps the primary monitor while overhanging it — and "move the

@@ -436,6 +436,32 @@ export function hasNativeCaptureRegion(): boolean {
   return typeof nativeWin32?.win32CaptureScreenRegion === "function";
 }
 
+/**
+ * Can this build capture a WINDOW on any monitor, wherever that window sits?
+ *
+ * Deliberately a separate probe from {@link hasNativeCaptureRegion}, because
+ * the two capabilities are not the same binding and do not always travel
+ * together. An addon predating ADR-031 exports `win32PrintWindowToBuffer` but
+ * not `win32CaptureScreenRegion`: region capture is limited to the primary
+ * monitor there, yet per-window capture reads any monitor perfectly well. The
+ * inverse — an addon absent altogether while `DESKTOP_TOUCH_CAPTURE_BACKEND`
+ * happens to be set — leaves neither working, though the backend *choice* was
+ * made by the override rather than by capability.
+ *
+ * So this answers a capability question, not a configuration one, and callers
+ * that want to recommend `screenshot(windowTitle=…)` must ask it rather than
+ * inferring an answer from which backend was selected or why.
+ *
+ * PrintWindow alone decides it. WGC (ADR-027) is a rescue rung layered above
+ * it, not an independent route, and the ladder's last rung — BitBlt of the
+ * window rect — goes through the capture choke point and is refused for an
+ * off-primary window on a build without region capture. PrintWindow is
+ * therefore the one binding that makes per-window capture work everywhere.
+ */
+export function hasNativePerWindowCapture(): boolean {
+  return typeof nativeWin32?.win32PrintWindowToBuffer === "function";
+}
+
 // ─── L1 capture surface (ADR-007 P5a) ────────────────────────────────────────
 //
 // Ring buffer + typed push helpers + polling API. Probe key is `l1PushFailure`
