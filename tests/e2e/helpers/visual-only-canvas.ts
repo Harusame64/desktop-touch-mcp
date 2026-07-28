@@ -15,7 +15,7 @@ import { spawn } from "child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { enumWindowsInZOrder } from "../../../src/engine/win32.js";
-import { moveWindowToE2eScreen, pickE2eScreen } from "./e2e-screen.js";
+import { moveWindowToE2eScreen } from "./e2e-screen.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // tests/e2e/helpers → repo root → benches/fixtures/visual-only-canvas.ps1
@@ -57,17 +57,14 @@ export async function spawnVisualOnlyCanvas(opts: { fontSize?: number } = {}): P
       // The move happens HERE rather than in the .ps1 because that fixture is
       // shared byte-for-byte with the ADR-024 round-trip bench — the e2e
       // placement policy must not leak into the bench's canvas definition.
-      // The window stays CENTRED on its monitor, which is the property the
+      // The window stays CENTRED in its monitor's WORK AREA — the same rect
+      // WinForms' `StartPosition='CenterScreen'` centres in, so the placement
+      // matches the primary-monitor original exactly and keeps the property the
       // fixture's own comment relies on (clear of the top-left desktop-icon /
-      // Recycle Bin column). Single-monitor machines are a no-op.
-      const size = { width: w.region.width, height: w.region.height };
-      const screen = pickE2eScreen(size);
-      if (screen) {
-        moveWindowToE2eScreen(w.hwnd, size, {
-          x: Math.round((screen.bounds.width - size.width) / 2),
-          y: Math.round((screen.bounds.height - size.height) / 2),
-        });
-      }
+      // Recycle Bin column). One `pickE2eScreen` call happens inside the helper,
+      // so the centring and the fit-clamp read one monitor enumeration.
+      // Single-monitor machines are a no-op.
+      moveWindowToE2eScreen(w.hwnd, { width: w.region.width, height: w.region.height }, "centre");
       return { title, close };
     }
     await new Promise((res) => setTimeout(res, 200));

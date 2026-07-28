@@ -20,6 +20,13 @@
  *   - single monitor (or monitor enumeration unavailable / no primary
  *     reported) → `null`, and callers keep their previous, unchanged
  *     placement. Nothing about single-monitor runs changes.
+ *   - the chosen monitor is assumed to be at least as large as the primary,
+ *     which is where the fixtures' historical coordinates come from. On a
+ *     smaller secondary the fit-clamp below pulls windows back toward the
+ *     work-area origin, and fixture rects that never overlapped on the primary
+ *     can start to intersect. That does not fail silently: the ADR-029
+ *     viewport-gate premise ("a point inside the canvas and outside the blank
+ *     window exists") is asserted, so such a layout fails loudly.
  *
  * Scope: the window-spawning fixtures the suite fully owns — blank-window,
  * untitled-window, visual-only-canvas and the PowerShell/console launcher. The
@@ -61,10 +68,16 @@ export interface E2eScreen {
  *               them (e.g. the blank window at 120,120 vs. the untitled window
  *               at 700,420 — deliberately non-overlapping) is translated onto
  *               the E2E screen instead of collapsing to one shared corner.
+ *               `"centre"` centres `size` in the target WORK AREA, which is what
+ *               WinForms' `StartPosition='CenterScreen'` does — the fixtures
+ *               that were centred on the primary stay centred here, with the
+ *               same taskbar-aware reference rect.
  */
+export type E2ePlacement = { x: number; y: number } | "centre";
+
 export function pickE2eScreen(
   size?: { width: number; height: number },
-  offset?: { x: number; y: number }
+  offset?: E2ePlacement
 ): E2eScreen | null {
   let monitors;
   try {
@@ -100,8 +113,10 @@ export function pickE2eScreen(
   // near edge (a window larger than the monitor simply starts at the origin).
   const maxX = area.x + Math.max(0, area.width - w);
   const maxY = area.y + Math.max(0, area.height - h);
-  const dx = offset?.x ?? MARGIN;
-  const dy = offset?.y ?? MARGIN;
+  // "centre" is computed against the SAME work-area rect the clamp uses, so the
+  // centring reference and the fit-clamp can never disagree.
+  const dx = offset === "centre" ? Math.round((area.width - w) / 2) : offset?.x ?? MARGIN;
+  const dy = offset === "centre" ? Math.round((area.height - h) / 2) : offset?.y ?? MARGIN;
   return {
     origin: {
       x: Math.max(area.x, Math.min(area.x + dx, maxX)),
@@ -128,7 +143,7 @@ export function pickE2eScreen(
 export function moveWindowToE2eScreen(
   hwnd: bigint,
   currentSize: { width: number; height: number },
-  offset?: { x: number; y: number }
+  offset?: E2ePlacement
 ): boolean {
   const screen = pickE2eScreen(currentSize, offset);
   if (!screen) return false;
