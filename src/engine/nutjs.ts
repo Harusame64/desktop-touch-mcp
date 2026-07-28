@@ -172,6 +172,32 @@ export const DEFAULT_MOUSE_SPEED: number = _envSpeed !== undefined
 
 mouse.config.mouseSpeed = DEFAULT_MOUSE_SPEED > 0 ? DEFAULT_MOUSE_SPEED : 3000;
 
+/**
+ * Size of the PRIMARY screen as the nut.js backend sees it, or `null` when it
+ * cannot be read.
+ *
+ * This is the only screen-geometry source that survives a build without the
+ * native Win32 addon. Everything monitor-derived — `enumMonitors`,
+ * `getVirtualScreen`, `getPrimaryMonitorBounds` — goes through
+ * `requireNativeWin32()` and throws there, which left the capture-bounds
+ * resolver with no bounds at all and forced it to fail open on exactly the
+ * builds whose capture is limited to the primary monitor (ADR-031).
+ *
+ * nut.js reports the primary display only, and its origin is always (0, 0).
+ * That is not a loss here: it describes precisely the area the nut.js capture
+ * backend is able to read, which is what the bounds check needs to enforce.
+ */
+export async function getPrimaryScreenSize(): Promise<{ width: number; height: number } | null> {
+  try {
+    const [width, height] = await Promise.all([screen.width(), screen.height()]);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    if (width <= 0 || height <= 0) return null;
+    return { width, height };
+  } catch {
+    return null;
+  }
+}
+
 export {
   mouse,
   keyboard,

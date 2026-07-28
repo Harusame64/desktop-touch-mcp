@@ -194,6 +194,42 @@ const SUGGESTS: Record<string, string[]> = {
     "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act / browser_click fails the same way — the coordinate is the problem, not the tool.",
     "If the target exposes UIA, click_element(name=…) invokes the element directly and never moves the cursor.",
   ],
+  // ADR-031: a screenshot region that the capture backend of this process
+  // cannot read. Like its cursor-side twin above, the three cases have opposite
+  // recoveries — off every monitor (stale coordinates), overlapping a monitor
+  // but running past the capturable area (coordinates are CURRENT; the
+  // rectangle is what has to change), or a process limited to the primary
+  // monitor — so the first line sends the caller to the message, which names
+  // which one applies and why. The middle case must never inherit the
+  // re-discover advice: re-discovering hands back the same rectangle, so that
+  // loop cannot terminate.
+  RegionOutsideCapturableBounds: [
+    "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor. In that last case it also says whether per-window capture still works here, which decides the recovery below.",
+    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then capture the new region.",
+    // No per-window route named here on purpose: an overhang can occur on
+    // either backend, and whether screenshot(windowTitle=…) works depends on
+    // the determinant — which the two lines below own. Shrinking is the one
+    // answer that holds in every case.
+    "Overlaps a monitor but extends beyond the capturable area → the coordinates are NOT stale; re-discovering returns the same rectangle. Shrink the region to fit the monitor.",
+    // Keyed on what the message OFFERS, not on why the process is limited:
+    // per-window capture and region capture are separate bindings, so an addon
+    // can have one without the other. The message asks that question directly.
+    "Limited to the primary monitor, and the message offers screenshot(windowTitle=…) → per-window capture still reads every monitor on this build, so use it.",
+    "Limited to the primary monitor, and the message says window capture would fail too → this build cannot read another monitor either way: move the window onto the primary monitor, or reinstall / update the server to restore multi-monitor capture.",
+    "Retrying the same region fails the same way — the region is the problem, not the tool. screenshot(detail='meta') still lists every monitor and window, including the ones that cannot be captured this way.",
+  ],
+  // ADR-031: the capture backend ran and produced nothing. Distinct from the
+  // bounds refusal above: the region was fine, so re-discovering it changes
+  // nothing. Per-window capture leads because it reads through a different
+  // Windows API (PrintWindow / WGC) and routinely works when a screen read
+  // does not.
+  CaptureBackendFailed: [
+    "Capture the window directly with screenshot(windowTitle=…) — it reads through a different Windows path (PrintWindow / Windows.Graphics.Capture) that usually works when a whole-screen read does not.",
+    "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no desktop to capture. A lock screen or a UAC prompt blocks capture the same way until it is dismissed.",
+    "Transient failures happen while displays are being added, removed or rearranged: retry once after the layout settles.",
+    "If the message says the monitor layout could not be read, the whole-screen capture cannot pick a rectangle at all; screenshot(windowTitle=…) and screenshot(detail='text') do not depend on it.",
+    "The failure is recorded in the diagnostic log (%USERPROFILE%\\.desktop-touch-mcp\\logs\\diagnostic.log, `\"kind\":\"capture\"` entries) with the requested region and the capture backend in use.",
+  ],
   // ADR-029 Phase 2a: the coordinate was fine, but Windows would not put the
   // pointer there. Nothing was clicked. Recovery has nothing in common with the
   // unreachable-coordinate case above, which is why it is a separate code:
@@ -846,6 +882,19 @@ function classify(message: string): { code: string; suggest: string[] } {
   // could otherwise poach after a wording change.
   if (m.includes("cursorplacementblocked")) {
     return { code: "CursorPlacementBlocked", suggest: SUGGESTS.CursorPlacementBlocked ?? [] };
+  }
+  // ADR-031: the capture choke point's two codes. Same early placement as the
+  // ADR-029 pair above and for the same reason — both messages name a window,
+  // a monitor layout or a remote-desktop session, any of which the generic
+  // "window not found" / "timeout" arms below could poach in the shapes that
+  // reach this cascade (bare code / wrapper-prefixed; the leading `<Code>:`
+  // form resolves at the declared-code arm). `CaptureBackendFailed` also wraps
+  // the backend's own message, which is caller-visible text we do not control.
+  if (m.includes("regionoutsidecapturablebounds")) {
+    return { code: "RegionOutsideCapturableBounds", suggest: SUGGESTS.RegionOutsideCapturableBounds ?? [] };
+  }
+  if (m.includes("capturebackendfailed")) {
+    return { code: "CaptureBackendFailed", suggest: SUGGESTS.CaptureBackendFailed ?? [] };
   }
   // OQ8 follow-up: the flash paste sequence failed partway. The producers
   // (keyboard.ts / terminal.ts foreground_flash paths) append the snake_case

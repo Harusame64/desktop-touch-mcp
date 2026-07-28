@@ -37,6 +37,7 @@ import type {
   NativePrintWindowResult,
   NativeWgcResult,
   NativeWgcCaptureOptions,
+  NativeCaptureRegionResult,
   NativeMonitorInfo,
   NativeCursorPoint,
   NativeCursorMoveResult,
@@ -150,6 +151,9 @@ export interface NativeWin32 {
   win32PrintWindowToBuffer?(hwnd: bigint, flags: number): NativePrintWindowResult;
   // ADR-027 WGC capture (async — runs on the dedicated desktop-wgc worker thread)
   win32WgcCaptureWindow?(hwnd: bigint, opts?: NativeWgcCaptureOptions): Promise<NativeWgcResult>;
+  // ADR-031 absolute-coordinate screen / region capture. `x` / `y` are signed
+  // virtual-screen pixels; probe with `hasNativeCaptureRegion()` below.
+  win32CaptureScreenRegion?(x: number, y: number, width: number, height: number): NativeCaptureRegionResult;
   win32EnumMonitors?(): NativeMonitorInfo[];
   win32GetWindowDpi?(hwnd: bigint): number;
   win32SetProcessDpiAwareness?(level: number): boolean;
@@ -413,6 +417,49 @@ export function hasNativeCursorMove(): boolean {
     typeof nativeWin32?.win32MoveCursorPath === "function" &&
     typeof nativeWin32?.win32GetCursorPos === "function"
   );
+}
+
+/**
+ * ADR-031 — can this build capture an absolute screen rectangle natively?
+ *
+ * One binding, so one probe: unlike `hasNativeCursorMove()` above — where a
+ * single move needs three functions and a partial addon would throw mid-gesture
+ * — the capture path calls `win32CaptureScreenRegion` and nothing else. Should
+ * the capture surface ever grow a second function, probe both here, for the
+ * same reason that one does.
+ *
+ * This is the capability half of the static backend choice made in
+ * `reachable-bounds.ts::selectCaptureBackend()`: false means the process
+ * captures through nut.js / libnut, which addresses the primary monitor only.
+ */
+export function hasNativeCaptureRegion(): boolean {
+  return typeof nativeWin32?.win32CaptureScreenRegion === "function";
+}
+
+/**
+ * Can this build capture a WINDOW on any monitor, wherever that window sits?
+ *
+ * Deliberately a separate probe from {@link hasNativeCaptureRegion}, because
+ * the two capabilities are not the same binding and do not always travel
+ * together. An addon predating ADR-031 exports `win32PrintWindowToBuffer` but
+ * not `win32CaptureScreenRegion`: region capture is limited to the primary
+ * monitor there, yet per-window capture reads any monitor perfectly well. The
+ * inverse — an addon absent altogether while `DESKTOP_TOUCH_CAPTURE_BACKEND`
+ * happens to be set — leaves neither working, though the backend *choice* was
+ * made by the override rather than by capability.
+ *
+ * So this answers a capability question, not a configuration one, and callers
+ * that want to recommend `screenshot(windowTitle=…)` must ask it rather than
+ * inferring an answer from which backend was selected or why.
+ *
+ * PrintWindow alone decides it. WGC (ADR-027) is a rescue rung layered above
+ * it, not an independent route, and the ladder's last rung — BitBlt of the
+ * window rect — goes through the capture choke point and is refused for an
+ * off-primary window on a build without region capture. PrintWindow is
+ * therefore the one binding that makes per-window capture work everywhere.
+ */
+export function hasNativePerWindowCapture(): boolean {
+  return typeof nativeWin32?.win32PrintWindowToBuffer === "function";
 }
 
 // ─── L1 capture surface (ADR-007 P5a) ────────────────────────────────────────

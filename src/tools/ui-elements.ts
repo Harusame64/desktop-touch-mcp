@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
 import { keyboardTypeHandler } from "./keyboard.js";
 import { captureScreen } from "../engine/image.js";
+import { padCaptureRegion, resolveCaptureRegionAsync } from "../engine/reachable-bounds.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
@@ -309,12 +310,15 @@ export const scopeElementHandler = async ({
 
     if (bounds.boundingRect) {
       const r = bounds.boundingRect;
-      const region = {
-        x: Math.max(0, r.x - padding),
-        y: Math.max(0, r.y - padding),
-        width: r.width + padding * 2,
-        height: r.height + padding * 2,
-      };
+      // ADR-031 §2(d) — the padding may overhang the screen; the element must
+      // not be moved. Clamping x/y to 0 assumed the screen starts at the
+      // origin, so on a monitor placed left of the primary one it pulled the
+      // capture onto a different monitor and returned that picture as if it
+      // were the element. `padCaptureRegion` trims the overhang only when the
+      // element itself is inside the capturable area, and otherwise hands the
+      // region through untouched for the choke point to refuse — the catch
+      // below then continues text-only, which is an honest degradation.
+      const region = padCaptureRegion(r, padding, await resolveCaptureRegionAsync());
       try {
         const captured = await captureScreen(region, 1280);
         content.push({ type: "image" as const, data: captured.base64, mimeType: captured.mimeType });

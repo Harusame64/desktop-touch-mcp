@@ -90,6 +90,8 @@ export const win32GetWindowLongPtrW         = nativeBinding.win32GetWindowLongPt
 export const win32PrintWindowToBuffer       = nativeBinding.win32PrintWindowToBuffer;
 // ─── ADR-027: Windows.Graphics.Capture (WGC) ─────────────────────────────────
 export const win32WgcCaptureWindow          = nativeBinding.win32WgcCaptureWindow;
+// ─── ADR-031: absolute-coordinate virtual-screen capture ─────────────────────
+export const win32CaptureScreenRegion       = nativeBinding.win32CaptureScreenRegion;
 export const win32EnumMonitors              = nativeBinding.win32EnumMonitors;
 export const win32GetWindowDpi              = nativeBinding.win32GetWindowDpi;
 export const win32SetProcessDpiAwareness    = nativeBinding.win32SetProcessDpiAwareness;
@@ -116,6 +118,24 @@ export const win32GetAncestor                 = nativeBinding.win32GetAncestor;
 export const win32IsWindowEnabled             = nativeBinding.win32IsWindowEnabled;
 export const win32GetLastActivePopup          = nativeBinding.win32GetLastActivePopup;
 export const win32IsWindowCloaked             = nativeBinding.win32IsWindowCloaked;
+
+// ─── Bindings that index.d.ts declared but this wrapper never re-exported ────
+// Each of these has a matching `export declare function` in index.d.ts, so a
+// consumer writing `import { win32GetCursorPos } from "./index.js"` type-checks
+// and then fails at module link time. Nothing in src/ hit it because
+// native-engine.ts takes the whole binding object (`addon.default`) rather than
+// named imports. `scripts/check-native-types.mjs` now fails on this class of
+// drift in both directions.
+export const win32MoveCursorAbsolute          = nativeBinding.win32MoveCursorAbsolute;
+export const win32MoveCursorPath              = nativeBinding.win32MoveCursorPath;
+export const win32GetCursorPos                = nativeBinding.win32GetCursorPos;
+export const win32ForegroundFlashInject       = nativeBinding.win32ForegroundFlashInject;
+export const win32ConsolePasteNoFocus         = nativeBinding.win32ConsolePasteNoFocus;
+export const win32GetImeOpenStatus            = nativeBinding.win32GetImeOpenStatus;
+export const win32SetImeOpenStatus            = nativeBinding.win32SetImeOpenStatus;
+export const win32GetProcessSessionId         = nativeBinding.win32GetProcessSessionId;
+export const win32GetActiveConsoleSessionId   = nativeBinding.win32GetActiveConsoleSessionId;
+export const wtsEnumerateSessions             = nativeBinding.wtsEnumerateSessions;
 
 // ─── Desktop Duplication subscription (ADR-007 P5c-2, ADR-019 Stage 5) ──────
 export const DirtyRectSubscription = nativeBinding.DirtyRectSubscription;

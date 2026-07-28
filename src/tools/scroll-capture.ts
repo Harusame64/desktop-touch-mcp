@@ -1,7 +1,8 @@
 import { z } from "zod";
 import sharp from "sharp";
-import { screen, keyboard, mouse, Region } from "../engine/nutjs.js";
+import { keyboard, mouse } from "../engine/nutjs.js";
 import { restoreAndFocusWindow } from "../engine/win32.js";
+import { grabScreenRegionValidated } from "../engine/image.js";
 import { failWith, failCode } from "./_errors.js";
 import { parseKeys } from "../utils/key-map.js";
 import {
@@ -71,14 +72,29 @@ interface RawFrame {
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ADR-031 — the stitching loop needs raw frames rather than an encoded image,
+// so it goes through the capture choke point's raw entry point instead of
+// holding its own `grabRegion`. Before this it was a fourth site reading
+// absolute coordinates unchecked, and scroll capture on a monitor left of the
+// primary one failed with a raw libnut error like the rest of them.
+// `Buffer.from` still copies: consecutive frames are compared against each
+// other, so a buffer the backend may reuse cannot be retained.
+//
+// "overlap": the rectangle is the target window's own screen rect, which
+// Windows reports a few pixels outside the monitor for a maximised window and
+// genuinely off-screen for one straddling the desktop edge. Those pages must
+// still be stitchable, and the rectangle must reach the backend unclamped so
+// every frame in the loop has identical dimensions to diff against.
 async function captureRawRegion(
   region: { x: number; y: number; width: number; height: number }
 ): Promise<RawFrame> {
-  const grabRegion = new Region(region.x, region.y, region.width, region.height);
-  const image = await screen.grabRegion(grabRegion);
-  const rgb = await image.toRGB();
-  const channels = (rgb.hasAlphaChannel ? 4 : 3) as 3 | 4;
-  return { data: Buffer.from(rgb.data), width: rgb.width, height: rgb.height, channels };
+  const raw = await grabScreenRegionValidated(region, "overlap");
+  return {
+    data: Buffer.from(raw.data),
+    width: raw.width,
+    height: raw.height,
+    channels: raw.channels,
+  };
 }
 
 async function pressAndRelease(keyCombo: string): Promise<void> {

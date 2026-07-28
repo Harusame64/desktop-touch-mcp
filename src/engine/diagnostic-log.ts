@@ -137,6 +137,54 @@ export type DiagnosticEvent =
       // of that name counts transport-level requests (refused calls
       // included), a different semantics (plan Round 5 Opus P2).
       activeToolCalls?: number;
+    }
+  | {
+      // ADR-031 §2(c) — screen / region capture. The two callers that reach
+      // the capture choke point through a `catch {}` (ui-elements' text-only
+      // continuation, workspace's missing thumbnail) swallow the failure
+      // entirely, so this record is the only place a typed reason survives.
+      // It is written UPSTREAM of those catches, which is why it is part of
+      // the choke point rather than of the callers.
+      kind: "capture";
+      // "backend_selected": the once-per-process backend choice, so a capture
+      //   can be attributed to a pixel source afterwards (ADR-031 §4.4).
+      // "backend_override_ignored": DESKTOP_TOUCH_CAPTURE_BACKEND named a
+      //   backend that does not exist; the choice fell through to capability.
+      // "bounds_unknown": no bounds could be established by ANY route, so the
+      //   requested rectangle was passed through unchecked (fail-open, warn
+      //   once). Written where failing open becomes final — after the nut.js
+      //   fallback below has been tried and failed — so it never describes a
+      //   capture that was in fact checked.
+      // "bounds_from_nutjs": monitor enumeration was unavailable (a build with
+      //   no native addon), so the primary-monitor bounds came from the nut.js
+      //   backend instead — the limitation is still enforced, not failed open.
+      // "region_rejected": the rectangle is outside what this backend can
+      //   capture — refused before the backend was called.
+      // "backend_failed": the backend (or the primary-rectangle lookup the
+      //   full-screen path needs) threw; surfaced as CaptureBackendFailed.
+      event:
+        | "backend_selected"
+        | "backend_override_ignored"
+        | "bounds_unknown"
+        | "bounds_from_nutjs"
+        | "region_rejected"
+        | "backend_failed";
+      /** The pixel source this process uses — `gdi-bitblt` or `nutjs`. */
+      backend: string;
+      /** What decided the backend: capability probe or the env override. */
+      determinant?: string;
+      /** The rectangle the caller asked for; absent for full-screen captures. */
+      region?: { x: number; y: number; width: number; height: number };
+      /** Which boundary the request was judged against, when it was judged. */
+      bounds?: string;
+      /**
+       * How strictly it was judged: `contain` for a rectangle the caller named,
+       * `overlap` for one Windows produced (a window's own screen rect, which
+       * may legitimately run past the monitor edge).
+       */
+      mode?: string;
+      /** Typed reason / underlying message. */
+      reason?: string;
     };
 
 /**

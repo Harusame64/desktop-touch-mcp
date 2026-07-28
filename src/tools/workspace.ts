@@ -47,7 +47,13 @@ async function buildWindowSnapshot(
     let thumbnail: string | null = null;
     let thumbnailSize: { width: number; height: number } | null = null;
     try {
-      const captured = await captureScreen(region, thumbnailMaxDim);
+      // "overlap": `region` is the window's own screen rect as Windows reports
+      // it, which for a maximised window extends a few pixels beyond the
+      // monitor (the invisible resize border) and for a window pushed off the
+      // desktop edge extends further still. A thumbnail with a black strip is
+      // the truthful picture of where that window is; refusing it would drop
+      // the thumbnail of every maximised window instead.
+      const captured = await captureScreen(region, thumbnailMaxDim, "overlap");
       thumbnail = captured.base64;
       thumbnailSize = { width: captured.width, height: captured.height };
     } catch { /* screen grab can fail for some windows */ }

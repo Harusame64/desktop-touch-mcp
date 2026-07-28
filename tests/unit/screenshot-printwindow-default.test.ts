@@ -16,15 +16,30 @@
  * triggers fallback. Even all-black fallback emits a warning so callers can
  * treat the result as ambiguous when they expected a black window
  * (terminal / dark editor / video frame / dark mode IDE).
+ *
+ * ── The last rung changed backends ───────────────────────────────────────────
+ * The final rung is still "copy the window's on-screen rect", but it now goes
+ * through the capture choke point instead of calling nut.js directly, so on an
+ * installation carrying the native capture module it reaches the screen via
+ * `captureScreenRegion` — which is what makes that rung work for a window on a
+ * monitor other than the primary one. Every routing assertion below therefore
+ * watches `mockCaptureScreenRegion` where it used to watch `mockGrabRegion`;
+ * what each one asserts (rung reached / not reached, with which rectangle) is
+ * unchanged. `source: "bitblt-fallback"` keeps its name: it is still a BitBlt
+ * of the window rect, just this repo's own one.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const { mockPrintWindowToBuffer, mockGrabRegion, mockCaptureWindowWgc, mockCanUseWgc } = vi.hoisted(() => ({
+const { mockPrintWindowToBuffer, mockGrabRegion, mockCaptureScreenRegion, mockCaptureWindowWgc, mockCanUseWgc } = vi.hoisted(() => ({
   mockPrintWindowToBuffer: vi.fn(),
+  // Kept as a tripwire: with the native backend selected below, nothing in this
+  // file may reach nut.js. It stands in for the real `screen` so a regression
+  // that routes back to it is a wrong-mock failure rather than a real grab.
   mockGrabRegion: vi.fn(),
+  mockCaptureScreenRegion: vi.fn(),
   // ADR-027 WGC rescue (Phase 2). Default OFF so the pre-existing PrintWindow /
   // BitBlt routing tests are unaffected; the WGC-rescue describe flips them on.
   mockCaptureWindowWgc: vi.fn(),
@@ -38,6 +53,12 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     printWindowToBuffer: mockPrintWindowToBuffer,
     captureWindowWgc: mockCaptureWindowWgc,
     canCaptureWindowViaWgc: mockCanUseWgc,
+    captureScreenRegion: mockCaptureScreenRegion,
+    // Pinned so the choke point's bounds check does not depend on the machine's
+    // real monitor layout: every window rect used below is inside this one, so
+    // the routing under test is what decides the outcome, not the display setup.
+    enumMonitors: () => [{ primary: true, bounds: { x: 0, y: 0, width: 1920, height: 1080 } }],
+    getPrimaryMonitorBounds: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
   };
 });
 
@@ -49,8 +70,18 @@ vi.mock("../../src/engine/nutjs.js", async (importOriginal) => {
   };
 });
 
+// The capture backend is chosen from this probe once per process. Pinned true
+// so the file exercises one rung on every machine — otherwise a checkout
+// without the built addon would route the last rung to nut.js and the routing
+// assertions would be testing a different path than CI's.
+vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/native-engine.js")>();
+  return { ...actual, hasNativeCaptureRegion: () => true };
+});
+
 // Import the SUT after the mocks so the module picks up the mocked deps.
 const { isLikelyBlankCapture, captureWindowRawWithFallback, captureWindowWithFallback, captureWindowBackground, _resetWgcSupportForTest } = await import("../../src/engine/image.js");
+const { _resetCaptureBackendForTests } = await import("../../src/engine/reachable-bounds.js");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -95,18 +126,13 @@ function makeGradientRgba(width: number, height: number): Buffer {
   return buf;
 }
 
-/** nutjs Image-like stub returned from screen.grabRegion. */
-function makeNutjsImage(width: number, height: number, fill: { r: number; g: number; b: number }): {
-  toRGB: () => Promise<{ data: Buffer; width: number; height: number; hasAlphaChannel: boolean }>;
-} {
-  return {
-    toRGB: async () => ({
-      data: makeUniformRgba(width, height, fill.r, fill.g, fill.b),
-      width,
-      height,
-      hasAlphaChannel: true,
-    }),
-  };
+/** Native capture stub returned from `captureScreenRegion` — RGBA, top-down. */
+function makeCaptureRegionResult(
+  width: number,
+  height: number,
+  fill: { r: number; g: number; b: number },
+): { data: Buffer; width: number; height: number } {
+  return { data: makeUniformRgba(width, height, fill.r, fill.g, fill.b), width, height };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,6 +224,9 @@ describe("captureWindowRawWithFallback", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetWgcSupportForTest();
+    // The capture backend is a per-process decision, memoised on first use.
+    delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
+    _resetCaptureBackendForTests();
     mockCanUseWgc.mockReturnValue(false); // WGC off by default; rescue tests flip it
   });
 
@@ -214,7 +243,7 @@ describe("captureWindowRawWithFallback", () => {
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("printwindow");
     expect(result.fallbackReason).toBeNull();
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCaptureScreenRegion).not.toHaveBeenCalled();
   });
 
   it("CRITICAL: PrintWindow returns all-white → source='printwindow', no fallback", async () => {
@@ -228,19 +257,19 @@ describe("captureWindowRawWithFallback", () => {
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("printwindow");
     expect(result.fallbackReason).toBeNull();
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCaptureScreenRegion).not.toHaveBeenCalled();
   });
 
   it("PrintWindow throws → source='bitblt-fallback', reason='printwindow-failed'", async () => {
     mockPrintWindowToBuffer.mockImplementation(() => {
       throw new Error("PrintWindow native error");
     });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
     expect(result.fallbackReason).toBe("printwindow-failed");
-    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
+    expect(mockCaptureScreenRegion).toHaveBeenCalledTimes(1);
   });
 
   it("PrintWindow returns zero-size → source='bitblt-fallback', reason='printwindow-failed'", async () => {
@@ -249,7 +278,7 @@ describe("captureWindowRawWithFallback", () => {
       width: 0,
       height: 0,
     });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
@@ -262,12 +291,12 @@ describe("captureWindowRawWithFallback", () => {
       width: 64,
       height: 64,
     });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
     expect(result.fallbackReason).toBe("printwindow-all-black");
-    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
+    expect(mockCaptureScreenRegion).toHaveBeenCalledTimes(1);
   });
 
   it("BitBlt fallback grabs the FULL window rect, not a sub-region", async () => {
@@ -280,17 +309,20 @@ describe("captureWindowRawWithFallback", () => {
     mockPrintWindowToBuffer.mockImplementation(() => {
       throw new Error("forced failure to exercise fallback");
     });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(800, 600, { r: 1, g: 2, b: 3 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(800, 600, { r: 1, g: 2, b: 3 }));
 
     const result = await captureWindowRawWithFallback(hwnd, fullWindow);
     expect(result.source).toBe("bitblt-fallback");
     // Buffer dimensions must match the full window rect, not any sub-region.
     expect(result.width).toBe(800);
     expect(result.height).toBe(600);
-    // Verify grabRegion was called with the full window rect.
-    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
-    const grabArg = mockGrabRegion.mock.calls[0]?.[0];
-    expect(grabArg).toMatchObject({ left: 100, top: 200, width: 800, height: 600 });
+    // Verify the last rung was called with the full window rect.
+    expect(mockCaptureScreenRegion).toHaveBeenCalledTimes(1);
+    const grabArg = mockCaptureScreenRegion.mock.calls[0]?.[0];
+    expect(grabArg).toMatchObject({ x: 100, y: 200, width: 800, height: 600 });
+    // …and that the rung really is the native one on this configuration, so the
+    // assertions above are watching the call the code actually makes.
+    expect(mockGrabRegion).not.toHaveBeenCalled();
   });
 });
 
@@ -302,6 +334,9 @@ describe("captureWindowWithFallback — sub-region crop", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetWgcSupportForTest();
+    // The capture backend is a per-process decision, memoised on first use.
+    delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
+    _resetCaptureBackendForTests();
     mockCanUseWgc.mockReturnValue(false); // WGC off by default; rescue tests flip it
   });
 
@@ -328,7 +363,7 @@ describe("captureWindowWithFallback — sub-region crop", () => {
     expect(result.fallbackReason).toBeNull();
     expect(result.width).toBe(100);
     expect(result.height).toBe(60);
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCaptureScreenRegion).not.toHaveBeenCalled();
   });
 
   it("BitBlt fallback + opts.crop → encode crops to sub-region without sharp throwing", async () => {
@@ -340,7 +375,7 @@ describe("captureWindowWithFallback — sub-region crop", () => {
     mockPrintWindowToBuffer.mockImplementation(() => {
       throw new Error("forced failure to exercise fallback");
     });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(200, 150, { r: 100, g: 100, b: 100 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(200, 150, { r: 100, g: 100, b: 100 }));
 
     const result = await captureWindowWithFallback(
       hwnd,
@@ -351,7 +386,7 @@ describe("captureWindowWithFallback — sub-region crop", () => {
     expect(result.fallbackReason).toBe("printwindow-failed");
     expect(result.width).toBe(100);
     expect(result.height).toBe(60);
-    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
+    expect(mockCaptureScreenRegion).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -363,6 +398,9 @@ describe("captureWindowRawWithFallback — WGC rescue (ADR-027 Phase 2)", () => 
   beforeEach(() => {
     vi.clearAllMocks();
     _resetWgcSupportForTest();
+    // The capture backend is a per-process decision, memoised on first use.
+    delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
+    _resetCaptureBackendForTests();
     mockCanUseWgc.mockReturnValue(false);
   });
 
@@ -378,7 +416,7 @@ describe("captureWindowRawWithFallback — WGC rescue (ADR-027 Phase 2)", () => 
     expect(result.source).toBe("wgc");
     expect(result.fallbackReason).toBe("printwindow-all-black"); // records why PrintWindow was abandoned
     expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1);
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCaptureScreenRegion).not.toHaveBeenCalled();
   });
 
   it("PrintWindow throws + WGC eligible + WGC real → source='wgc', reason='printwindow-failed'", async () => {
@@ -389,37 +427,37 @@ describe("captureWindowRawWithFallback — WGC rescue (ADR-027 Phase 2)", () => 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("wgc");
     expect(result.fallbackReason).toBe("printwindow-failed");
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCaptureScreenRegion).not.toHaveBeenCalled();
   });
 
   it("WGC returns an all-black frame → rejected (never returns black as real), falls to BitBlt", async () => {
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(true);
     mockCaptureWindowWgc.mockResolvedValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
     expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1);
-    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
+    expect(mockCaptureScreenRegion).toHaveBeenCalledTimes(1);
   });
 
   it("WGC ineligible (D3 gate false) → BitBlt, WGC not attempted", async () => {
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(false); // minimised / hidden / cloaked
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
     expect(mockCaptureWindowWgc).not.toHaveBeenCalled();
-    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
+    expect(mockCaptureScreenRegion).toHaveBeenCalledTimes(1);
   });
 
   it("WGC 'unsupported' rejection latches → subsequent eligible captures skip WGC", async () => {
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(true);
     mockCaptureWindowWgc.mockRejectedValue(new Error("WGC unsupported on this OS"));
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const first = await captureWindowRawWithFallback(hwnd, region);
     expect(first.source).toBe("bitblt-fallback");
@@ -438,7 +476,7 @@ describe("captureWindowRawWithFallback — WGC rescue (ADR-027 Phase 2)", () => 
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(true);
     mockCaptureWindowWgc.mockResolvedValue({ data: makeGradientRgba(64, 64), width: 64, height: 64 });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region, 0);
     expect(result.source).toBe("bitblt-fallback");
@@ -451,7 +489,7 @@ describe("captureWindowRawWithFallback — WGC rescue (ADR-027 Phase 2)", () => 
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(true);
     mockCaptureWindowWgc.mockResolvedValue({ data: makeGradientRgba(64, 64), width: 64, height: 64 });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 10, g: 20, b: 30 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region, 3);
     expect(result.source).toBe("bitblt-fallback");
@@ -463,6 +501,9 @@ describe("captureWindowBackground — WGC primary (ADR-027 Phase 2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetWgcSupportForTest();
+    // The capture backend is a per-process decision, memoised on first use.
+    delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
+    _resetCaptureBackendForTests();
     mockCanUseWgc.mockReturnValue(false);
   });
 
@@ -535,6 +576,9 @@ describe("captureWindowRawWithFallback — capture-blocked (ADR-027 Phase 3 / AC
   beforeEach(() => {
     vi.clearAllMocks();
     _resetWgcSupportForTest();
+    // The capture backend is a per-process decision, memoised on first use.
+    delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
+    _resetCaptureBackendForTests();
     mockCanUseWgc.mockReturnValue(false);
   });
 
@@ -544,7 +588,7 @@ describe("captureWindowRawWithFallback — capture-blocked (ADR-027 Phase 3 / AC
   it("PrintWindow all-black + WGC ineligible + BitBlt ALSO all-black → captureBlocked=true", async () => {
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(false);
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 0, g: 0, b: 0 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 0, g: 0, b: 0 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
@@ -556,7 +600,7 @@ describe("captureWindowRawWithFallback — capture-blocked (ADR-027 Phase 3 / AC
   it("PrintWindow throws + WGC ineligible + BitBlt all-black → captureBlocked=true (printwindow-failed reason)", async () => {
     mockPrintWindowToBuffer.mockImplementation(() => { throw new Error("PrintWindow native error"); });
     mockCanUseWgc.mockReturnValue(false);
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 0, g: 0, b: 0 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 0, g: 0, b: 0 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
@@ -570,7 +614,7 @@ describe("captureWindowRawWithFallback — capture-blocked (ADR-027 Phase 3 / AC
     // claim capture-blocked.
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(false);
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 80, g: 90, b: 100 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 80, g: 90, b: 100 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
@@ -602,7 +646,7 @@ describe("captureWindowRawWithFallback — capture-blocked (ADR-027 Phase 3 / AC
     mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
     mockCanUseWgc.mockReturnValue(true);
     mockCaptureWindowWgc.mockResolvedValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
-    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 0, g: 0, b: 0 }));
+    mockCaptureScreenRegion.mockReturnValue(makeCaptureRegionResult(64, 64, { r: 0, g: 0, b: 0 }));
 
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
@@ -615,6 +659,9 @@ describe("captureWindowBackground — capture-blocked (ADR-027 Phase 3 / AC8)", 
   beforeEach(() => {
     vi.clearAllMocks();
     _resetWgcSupportForTest();
+    // The capture backend is a per-process decision, memoised on first use.
+    delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
+    _resetCaptureBackendForTests();
     mockCanUseWgc.mockReturnValue(false);
   });
 
@@ -688,6 +735,9 @@ describe("captureWindowWithFallback — crop-aware capture-blocked (ADR-027 Phas
   beforeEach(() => {
     vi.clearAllMocks();
     _resetWgcSupportForTest();
+    // The capture backend is a per-process decision, memoised on first use.
+    delete process.env.DESKTOP_TOUCH_CAPTURE_BACKEND;
+    _resetCaptureBackendForTests();
     mockCanUseWgc.mockReturnValue(false);
   });
 

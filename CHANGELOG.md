@@ -1,5 +1,53 @@
 # Changelog
 
+## [Unreleased] — screenshots work on every monitor, not just the primary one
+
+- **`screenshot(displayId=…)` and `screenshot(region=…)` now capture any monitor.**
+  On a setup with a second monitor placed left of or above the primary, both failed
+  outright with `screenshot failed: Error: x coordinate outside of display` — the
+  capture library validated absolute coordinates against the primary monitor's size,
+  so every other monitor was unreachable and negative desktop coordinates were
+  rejected on principle. Screen capture now reads the whole desktop directly, so the
+  coordinates `screenshot(detail='meta')` reports are the coordinates you can capture,
+  negative ones included, and a region may span the seam between two monitors.
+- **Three things that failed quietly on those monitors now work.** `scope_element`
+  padded its capture region by clamping to `(0, 0)`, which on a left-hand monitor
+  pulled the shot onto the primary one and returned a picture of somewhere else as if
+  it were the element; `workspace_snapshot` dropped thumbnails for windows there; and
+  `scroll(action='capture')` could not stitch a page on them. All three read through
+  the same corrected path now.
+- **A capture that cannot be taken says so.** A region that cannot be captured comes back
+  as `RegionOutsideCapturableBounds`, whose message separates three cases: the region is
+  on no monitor (stale coordinates — take a fresh screenshot), it overlaps a monitor but
+  runs past the edge of the screen area (the coordinates are fine, the region is too big
+  — ask for a smaller one or capture the window itself), or this server can only capture
+  the primary monitor — and in that last case the message also says why, because it decides
+  the fix: an env override leaves `screenshot(windowTitle=…)` working everywhere, while a
+  missing capture module breaks that route too, so move the window or reinstall. A capture
+  Windows refuses (locked
+  screen, UAC prompt, disconnected remote-desktop session) comes back as
+  `CaptureBackendFailed`. Both carry recovery steps, and both are recorded in the
+  diagnostic log with the requested region — including on the paths that continue
+  silently without an image, where previously nothing was written down at all.
+- **Window captures no longer show leftover noise where nothing was drawn.** When a window
+  hangs off the edge of the screen, or Windows draws only part of it, the areas the
+  capture could not fill were left as whatever happened to be in memory — random coloured
+  pixels rather than the empty margin you would expect. Those areas now come back black
+  every time, so two captures of an unchanged window are identical. The warning that tells
+  you an image came back blank depends on this, and it now fires when it should instead of
+  being thrown off by the noise. (This applies to the normal capture path; it does not
+  apply if you have set `DESKTOP_TOUCH_CAPTURE_BACKEND=nutjs`, described below, which uses
+  the older path.)
+- **New: `DESKTOP_TOUCH_CAPTURE_BACKEND`.** Set it to `nutjs` to force the previous
+  capture path, which reads the primary monitor only. It exists for isolating a capture
+  problem; leave it unset for normal use. The backend is chosen once at startup, so a
+  change needs a server restart.
+- Unchanged on purpose: `screenshot()` with no region is still the primary monitor with
+  no origin offset. It was tempting to widen it to the whole desktop, but that would
+  change the size, the coordinate origin and the token cost of every screenshot for
+  everyone with more than one monitor. Ask for a `displayId` or a `region` to capture
+  anything else.
+
 ## [1.14.0] - 2026-07-26 — the emergency stop guards the primary-monitor corner only, and never stops silently
 
 - **The failsafe corner is now the top-left of the primary monitor only.** The trigger

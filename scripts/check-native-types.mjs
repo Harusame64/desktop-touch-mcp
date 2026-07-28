@@ -117,6 +117,105 @@ if (stale.length > 0) {
   for (const n of stale) console.warn(`  - ${n}`);
 }
 
+// ── index.d.ts ⇄ index.js parity ────────────────────────────────────────────
+//
+// The two files are hand-maintained in lockstep and `npm run build:rs`
+// restores both, so nothing forces them to agree. A name declared in
+// index.d.ts but never re-exported from index.js type-checks perfectly and
+// then fails at MODULE LINK time for any consumer writing
+// `import { thatName } from "./index.js"` — the native binding exists, the
+// wrapper simply never surfaced it. The reverse (exported, undeclared) hands
+// TS consumers an untyped export. Both directions are drift, so both fail.
+//
+// Declarations are matched for functions AND classes: `DirtyRectSubscription`
+// is a class, and matching functions alone would report it as a phantom
+// index.js-only export.
+//
+// Relationship to the `stale` set above, so the two rules cannot contradict
+// each other: `stale` names are declared in index.d.ts with no matching Rust
+// export, which is only a soft warning because they may be feature-gated. It
+// would be incoherent to soft-warn that a declaration might not correspond to
+// anything and simultaneously hard-fail because index.js does not re-export
+// it, so `stale` names are excluded from the missing-in-index.js check. They
+// are still checked in the other direction.
+const INDEX_JS = join(ROOT, "index.js");
+const js = readFileSync(INDEX_JS, "utf8");
+
+// Export forms this parser understands. Anything else is reported rather than
+// silently skipped: an unparsed `export` line would drop a name out of BOTH
+// sets and read as parity while proving nothing.
+//   index.d.ts — `export declare function|class` are the runtime surface;
+//                `export interface|type` are type-only and have no index.js
+//                counterpart by design.
+//   index.js   — `export const|function|class` are the named re-exports;
+//                `export default` is the whole binding object, not a name.
+const DTS_VALUE = /^export declare (?:function|class) (\w+)/;
+const DTS_TYPE_ONLY = /^export (?:interface|type) \w+/;
+const JS_NAMED = /^export (?:const|function|class) (\w+)/;
+const JS_DEFAULT = /^export default\b/;
+
+/** Names captured by `valuePat`, plus any `export` line matching nothing. */
+function scanExports(source, valuePat, ignorePat) {
+  const names = new Set();
+  const unrecognized = [];
+  for (const raw of source.split("\n")) {
+    const line = raw.trimEnd();
+    if (!/^export\b/.test(line)) continue;
+    const m = line.match(valuePat);
+    if (m) {
+      names.add(m[1]);
+      continue;
+    }
+    if (ignorePat.test(line)) continue;
+    unrecognized.push(line.trim());
+  }
+  return { names, unrecognized };
+}
+
+const dtsScan = scanExports(dts, DTS_VALUE, DTS_TYPE_ONLY);
+const jsScan = scanExports(js, JS_NAMED, JS_DEFAULT);
+
+for (const [file, scan] of [["index.d.ts", dtsScan], ["index.js", jsScan]]) {
+  if (scan.unrecognized.length === 0) continue;
+  failed = true;
+  console.error(
+    `\n[check-native-types] FAIL — unrecognized export form in ${file} — extend the parser:\n`,
+  );
+  for (const l of scan.unrecognized) console.error(`  ${l}`);
+  console.error(
+    "\n  This guard compares names it can parse. An export shape it does not" +
+      "\n  recognise is invisible to BOTH directions of the parity check, so it" +
+      "\n  is failed loudly instead of being skipped.",
+  );
+}
+
+const dtsDeclared = dtsScan.names;
+const jsExported = jsScan.names;
+const staleSet = new Set(stale);
+
+const notInJs = [...dtsDeclared].filter((n) => !jsExported.has(n) && !staleSet.has(n));
+const notInDts = [...jsExported].filter((n) => !dtsDeclared.has(n));
+
+if (notInJs.length > 0) {
+  failed = true;
+  console.error(
+    "\n[check-native-types] FAIL — declared in index.d.ts but NOT exported from index.js:\n",
+  );
+  for (const n of notInJs) console.error(`  - ${n}`);
+  console.error(
+    "\n  A named import of these throws at module link time. Add" +
+      "\n  `export const <name> = nativeBinding.<name>;` to index.js.",
+  );
+}
+if (notInDts.length > 0) {
+  failed = true;
+  console.error(
+    "\n[check-native-types] FAIL — exported from index.js but NOT declared in index.d.ts:\n",
+  );
+  for (const n of notInDts) console.error(`  - ${n}`);
+  console.error("\n  TS consumers get an untyped export. Add the declaration to index.d.ts.");
+}
+
 if (failed) {
   console.error("\nAdd the missing `export declare function <name>(...)` lines to index.d.ts.");
   console.error("Source of truth for shared types: src/engine/native-types.ts.\n");
@@ -124,5 +223,6 @@ if (failed) {
 }
 
 console.log(
-  `[check-native-types] OK — ${rustExports.size} Rust exports all declared in index.d.ts.`,
+  `[check-native-types] OK — ${rustExports.size} Rust exports all declared in index.d.ts, ` +
+    `and all ${dtsDeclared.size} declarations are exported from index.js.`,
 );

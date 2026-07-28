@@ -418,6 +418,18 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 | `DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE` | `on` | Auto-trim the cache as new captures are saved. Set `0` to disable. |
 | `DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS` | `60000` | Never auto-evict a capture younger than this (ms), so a by-ref link you were just handed survives long enough to open even when another AI/process on the same PC is also capturing. `0` disables. |
 
+### Multi-monitor screenshots
+
+`screenshot(displayId=…)` and `screenshot(region=…)` capture any monitor, including one placed left of or above the primary — those have negative desktop coordinates, and you pass them exactly as `screenshot(detail='meta')` reports them. `screenshot()` with no region is the primary monitor, as it has always been.
+
+A region that cannot be captured comes back as `RegionOutsideCapturableBounds` rather than a raw Windows error, and the message says which of three things happened. The region may be on no monitor at all, which usually means the coordinates went stale because the window moved or closed — take a fresh screenshot and use the new numbers. It may overlap a monitor but stretch past the edge of the screen area, in which case the coordinates are fine and the region is simply too big: ask for a smaller one, or capture the window itself with `screenshot(windowTitle=…)`. Or this server may be limited to the primary monitor, which the message says outright — along with why, because that decides the fix: if an env override pinned it, `screenshot(windowTitle=…)` normally still works on every monitor, whereas if the built-in capture module is missing then window capture usually needs that same module and fails too, so move the window onto the primary monitor or reinstall the server. Whole-screen capture and single-window capture are separate parts of that module, though, and a server can end up with one but not the other — so rather than working it out from the cause, read the message: it says plainly whether `screenshot(windowTitle=…)` is available on this server.
+
+If Windows returns no pixels at all — a locked screen, a UAC prompt, a disconnected remote-desktop session — you get `CaptureBackendFailed`; capturing the window itself with `screenshot(windowTitle=…)` usually still works, because it reads through a different Windows API.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `DESKTOP_TOUCH_CAPTURE_BACKEND` | *(unset = automatic)* | Diagnostic override for the screen-capture path. Set to `nutjs` to force the older capture backend, which can only read the **primary** monitor — useful for isolating a capture problem. The server picks the backend once at startup, so change this in your MCP client config and restart. Any other value is ignored. |
+
 ### Auto Perception (always-on)
 
 Phase 4 privatizes the explicit `perception_*` tool family — the v0.12 Auto
