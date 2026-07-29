@@ -417,6 +417,13 @@ describe("ADR-033 — PowerShell fallback (addon absent)", () => {
     expect(r.ok).toBe(true);
     expect(r.backend).toBe("powershell");
     expect(nativeState.write).not.toHaveBeenCalled();
+    // This path's single `Get-Clipboard -Raw` runs after `Set-Clipboard`
+    // released the lock, so it IS the post-close leg — the key means the same
+    // thing on both backends rather than being native-only trivia.
+    expect(r.postCloseChecked).toBe(true);
+    // ...but PowerShell never observes GetClipboardSequenceNumber, so emitting
+    // one here would be a diagnostic that lies. Absence is the contract.
+    expect(r).not.toHaveProperty("sequenceAfterWrite");
   });
 
   it("write still fails the read-back mismatch as ClipboardWriteNotDelivered (#180)", async () => {

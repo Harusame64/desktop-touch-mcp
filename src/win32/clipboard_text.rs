@@ -281,31 +281,43 @@ fn map_write_outcome(
             Err(reason) => (false, 0, false, Some(reason.clone())),
         };
 
-    let reason = if !in_session_readable {
-        // The in-session leg could not be READ. That is a failed verification,
-        // not evidence of a failed store — and the post-close leg answers the
-        // same question the old `Set-Clipboard; Get-Clipboard -Raw` pair did.
-        // If it ran and matched, delivery is proven and the write stands
-        // (`in_session_readable=false` discloses which leg answered). Only when
-        // that leg is also silent — mismatched or never run — is there nothing
-        // left backing the write.
+    // Ordering principle, applied twice below: a leg that actually OBSERVED
+    // the clipboard outranks a leg that failed to observe it. `ok` never
+    // changes because of this ordering — only which reason, and therefore which
+    // recovery advice, the caller gets.
+    let reason = if in_session_readable && !in_session_match {
+        // Readable but WRONG, and nothing could interleave while we held the
+        // lock: the OS (or a filter driver) stored something other than what we
+        // handed it. That is more fundamental than anything the post-close leg
+        // can add, so it is reported first and this branch is never relaxed by
+        // a later matching read.
+        Some("readback_mismatch".to_string())
+    } else if post_close_checked && !post_close_match {
+        // Someone consumed WM_CLIPBOARDUPDATE and replaced our payload: a
+        // clipboard manager, a DLP agent, or an RDP/Citrix redirector. This
+        // sits ABOVE the unreadable-in-session case on purpose. When the
+        // in-session read failed AND the post-close read saw a different
+        // payload, the interception is the thing we actually observed;
+        // reporting `clipboard_get_data_failed` instead would replace it with a
+        // note about our own failed read and drop the clipboard-manager / DLP
+        // recovery advice the caller needs.
+        Some("clipboard_replaced_after_write".to_string())
+    } else if !in_session_readable {
+        // The in-session read failed, and — since the arm above already took
+        // every observed mismatch — the post-close read either matched or never
+        // ran. The old `Set-Clipboard; Get-Clipboard -Raw` pair's semantics
+        // live in the post-close leg, so when IT agrees, delivery is proven and
+        // the write stands with `in_session_readable=false` disclosing which
+        // leg answered. Only when nothing is left backing the write does the
+        // failed verification become the verdict.
         if post_close_checked && post_close_match {
             None
         } else {
             Some("clipboard_get_data_failed".to_string())
         }
-    } else if !in_session_match {
-        // Readable but WRONG is a different fact: nothing could interleave
-        // while we held the lock, so the OS (or a filter driver) stored
-        // something other than what we handed it. A matching post-close read
-        // does not excuse that, and this branch is deliberately not relaxed.
-        Some("readback_mismatch".to_string())
-    } else if post_close_checked && !post_close_match {
-        // Someone consumed WM_CLIPBOARDUPDATE and replaced our payload: a
-        // clipboard manager, a DLP agent, or an RDP/Citrix redirector.
-        Some("clipboard_replaced_after_write".to_string())
     } else {
-        // Includes `post_close_checked == false`: see the module doc.
+        // Both legs agreed, or the post-close leg never ran and the in-session
+        // read already proved the store: see the module doc.
         None
     };
 
@@ -811,11 +823,19 @@ mod tests {
     }
 
     #[test]
-    fn outcome_in_session_unreadable_and_post_close_mismatched_is_get_data_failed() {
+    fn outcome_in_session_unreadable_and_post_close_mismatched_reports_the_interception() {
+        // Both legs have something to say and they say different things: one
+        // failed to read, the other READ A DIFFERENT PAYLOAD. The observed fact
+        // wins. Calling this `clipboard_get_data_failed` would describe our own
+        // failed read and drop the clipboard-manager / DLP recovery advice that
+        // an actual interception earns — the write fails either way, so this is
+        // purely about which diagnosis the caller receives.
         let e = utf16le("hello");
         let r = map_write_outcome(None, e.len() as u32, None, Ok(utf16le("other")), 9, &e);
         assert!(!r.ok);
-        assert_eq!(r.reason.as_deref(), Some("clipboard_get_data_failed"));
+        assert_eq!(r.reason.as_deref(), Some("clipboard_replaced_after_write"));
+        assert!(!r.in_session_readable);
+        assert!(r.post_close_checked);
     }
 
     #[test]
