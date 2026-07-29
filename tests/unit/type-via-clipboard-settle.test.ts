@@ -32,6 +32,12 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WRITE_TIMEOUT_MS } from "../../src/tools/clipboard.js";
+import {
+  PASTE_SETTLE_MS,
+  POST_CHORD_BUDGET_MS,
+  PASTE_DEADLINE_BUDGET_MS,
+} from "../../src/tools/keyboard.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
@@ -70,6 +76,40 @@ describe("ADR-033 I-32 — the paste settle", () => {
     expect(flashDelay).toBe(30);
     expect(native).not.toBe(flashDelay);
     expect(native).toBeGreaterThan(flashDelay);
+  });
+
+  it("leaves the paste deadline enough room for the settle and the restore", () => {
+    // The deadline is what stops a task that outlived its caller from typing
+    // into an unrelated window later, and it is derived rather than chosen:
+    //
+    //     budget = timeout − settle − everything after the chord
+    //
+    // so a chord sent at the last permitted instant is still followed by a
+    // settle and a restore that finish before the caller gives up. Asserting
+    // the arithmetic AND the absolute value is deliberate: the identity alone
+    // would pass for any timeout, including one small enough to make the budget
+    // zero or negative — which would silently disable pasting altogether.
+    expect(PASTE_DEADLINE_BUDGET_MS).toBe(
+      WRITE_TIMEOUT_MS - PASTE_SETTLE_MS - POST_CHORD_BUDGET_MS,
+    );
+    expect(PASTE_DEADLINE_BUDGET_MS).toBeGreaterThan(0);
+    // Today's numbers. Change the timeout and this is what fails, which is the
+    // point — the three constants have to move together.
+    expect(WRITE_TIMEOUT_MS).toBe(5_000);
+    expect(POST_CHORD_BUDGET_MS).toBe(300);
+    expect(PASTE_DEADLINE_BUDGET_MS).toBe(4_580);
+    // And the post-chord allowance covers what actually happens after the
+    // chord: one restore transaction, whose clipboard-open retry is bounded at
+    // 10x10ms (I-12), plus margin for the snapshot write itself.
+    expect(POST_CHORD_BUDGET_MS).toBeGreaterThan(200);
+  });
+
+  it("is the same settle the TypeScript constant and the source agree on", () => {
+    // The source-text pins above read the declaration; this reads the value the
+    // module actually exports, so a build that somehow diverged from its own
+    // source would still be caught.
+    expect(PASTE_SETTLE_MS).toBe(fallback);
+    expect(PASTE_SETTLE_MS).toBe(native);
   });
 
   it("is the value the addon reports to its caller", () => {

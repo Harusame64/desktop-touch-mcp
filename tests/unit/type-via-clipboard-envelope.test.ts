@@ -206,6 +206,31 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
     expect(c.restoreSkippedRace).toBeUndefined();
   });
 
+  it("reports a paste the post-close read never verified", async () => {
+    // The chord went out on the in-session read-back alone. That is the
+    // deliberate choice — requiring the second read would make typing a silent
+    // no-op whenever another application merely reads the clipboard — but the
+    // caller cannot see it any other way, and the composite pressed the keys.
+    nativeState.composite.mockResolvedValue(
+      nativeResult({
+        verify: {
+          ...nativeResult().verify,
+          postCloseChecked: false,
+          postCloseMatch: false,
+          postCloseSkipReason: "clipboard_lock_contention",
+        },
+      }),
+    );
+    const c = clipboardHints(body(await keyboardTypeHandler(keyboardArgs)))!;
+    expect(c.postCloseUnverified).toBe(true);
+  });
+
+  it("says nothing about verification when both read-backs answered", async () => {
+    nativeState.composite.mockResolvedValue(nativeResult());
+    expect(clipboardHints(body(await keyboardTypeHandler(keyboardArgs)))!.postCloseUnverified)
+      .toBeUndefined();
+  });
+
   it("says nothing about the clipboard when the call did not use it", async () => {
     // The keystroke path borrows nothing, so a `clipboard` block there would be
     // describing a side effect that never happened.
@@ -254,6 +279,16 @@ describe("ADR-033 — the clipboard side effect reaches the terminal envelope", 
     const c = clipboardHints(body(await terminalSendHandler(terminalArgs)))!;
     expect(c.restored).toBe(false);
     expect(c.restoreFailedReason).toBe("clipboard_alloc_failed");
+  });
+
+  it("reports a paste the post-close read never verified", async () => {
+    nativeState.composite.mockResolvedValue(
+      nativeResult({
+        verify: { ...nativeResult().verify, postCloseChecked: false, postCloseMatch: false },
+      }),
+    );
+    const c = clipboardHints(body(await terminalSendHandler(terminalArgs)))!;
+    expect(c.postCloseUnverified).toBe(true);
   });
 
   it("keeps the target hints it already published", async () => {

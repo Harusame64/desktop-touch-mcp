@@ -227,9 +227,14 @@ export interface NativeWin32 {
   // `hasNativeTypeViaClipboard()`). Async for the same reason as the two above,
   // plus a deliberate 120ms settle that must not run on the V8 thread. Throws
   // only on an unknown `pasteCombo`; Win32 failures come back in the result.
+  // `pasteDeadlineBudgetMs` is the second half of the timeout story: the signal
+  // cancels a QUEUED task, this refuses the chord in a task that is already
+  // running past the point where the caller has been told the call failed —
+  // otherwise the keystroke lands in whatever window has focus by then.
   win32TypeViaClipboard?(
     utf16le: Buffer,
     pasteCombo: "ctrl+v" | "ctrl+shift+v",
+    pasteDeadlineBudgetMs?: number,
     signal?: AbortSignal,
   ): Promise<NativeTypeViaClipboardResult>;
 

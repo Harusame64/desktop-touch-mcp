@@ -42,7 +42,37 @@
 //!
 //! I-3 ("never press paste for a payload we could not prove is on the
 //! clipboard") is therefore **structural** rather than a convention: the
-//! `SendInput` lives inside `if verify.ok`.
+//! `SendInput` is unreachable unless `chord_decision` returns `Send`, and that
+//! requires the verdict.
+//!
+//! The third case deserves naming, because it is the one that looks like a gap:
+//! **② not checked → we paste anyway, deliberately**. Requiring ② would turn a
+//! benign event — a clipboard manager holding the clipboard open to READ what
+//! was just copied is normal, frequent behaviour — into a silent no-op for
+//! `keyboard(action='type')` and `terminal(action='send')`, i.e. the tool would
+//! report success and nothing would be typed. ① has already proven the payload
+//! is on the clipboard; contention on a *verification read* is not evidence
+//! that anything was lost. What the composite owes the caller is not a
+//! different decision but visibility, so `verify.post_close_checked` travels up
+//! and the TS layer turns it into a `postCloseUnverified` hint whenever a chord
+//! actually went out unverified by ②.
+//!
+//! # The paste deadline
+//!
+//! The clipboard steps have no bounded worst case (see "Why this is async"), so
+//! the sequence can still be inside `GetClipboardData` long after the JS caller
+//! has given up and been told the call failed. Aborting does not help: it
+//! cancels a task that is still QUEUED, never one already running. Without a
+//! second guard, such a task would eventually reach the chord and type into
+//! whatever window has focus by *then* — minutes later, in an application the
+//! caller never named.
+//!
+//! So the caller passes a budget, the factory turns it into an absolute
+//! deadline at call time, and the chord is checked against it immediately
+//! before `SendInput`. Past the deadline nothing is typed and the result says
+//! `paste_deadline_exceeded`. The restore still runs: the 3-point race check is
+//! what makes a late restore safe — if the user has copied anything since, the
+//! sequence number has moved and the restore skips itself.
 //!
 //! # Why this does not call `foreground_flash::send_keys`
 //!
@@ -108,7 +138,7 @@
 //! nut.js path this replaces, so that is the pre-existing behaviour of the
 //! channel rather than something the native path introduced.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use napi::bindgen_prelude::{AbortSignal, AsyncTask, Buffer};
 use napi::{Env, Task};
@@ -204,6 +234,45 @@ impl PasteCombo {
                 (VK_CONTROL, true),
             ],
         }
+    }
+}
+
+// ── Chord gate ──────────────────────────────────────────────────────────────
+
+/// Whether the paste chord may be sent, and if not, why.
+///
+/// Pulled out of the sequence so both refusals are decidable — and unit
+/// testable — without a clipboard. Every `SendInput` in this module is behind
+/// `Send`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChordDecision {
+    Send,
+    /// The payload could not be proven to be on the clipboard (I-3). The
+    /// verdict's own reason is the one worth reporting, so this carries none.
+    SkipUnverified,
+    /// The transaction ran past the deadline the caller set. By now the caller
+    /// has been told the call failed, and the window that had focus when they
+    /// asked almost certainly no longer does.
+    SkipDeadlineExceeded,
+}
+
+/// The gate. `verify_ok` first: a payload that was never on the clipboard must
+/// not be pasted whether or not there is time left, and its reason is the more
+/// fundamental one to report.
+pub(crate) fn chord_decision(
+    verify_ok: bool,
+    deadline: Option<Instant>,
+    now: Instant,
+) -> ChordDecision {
+    if !verify_ok {
+        return ChordDecision::SkipUnverified;
+    }
+    match deadline {
+        // No budget = no deadline. Kept expressible so a caller that has its
+        // own lifecycle (a test, a future non-MCP embedder) is not forced to
+        // invent one.
+        Some(d) if now >= d => ChordDecision::SkipDeadlineExceeded,
+        _ => ChordDecision::Send,
     }
 }
 
@@ -359,9 +428,13 @@ fn apply_restore(result: &mut TypeViaClipboardResult, outcome: RestoreOutcome) {
 /// verify, restore), each absorbing up to 10x10 ms independently (I-12), plus the
 /// save's own open — the bounded part. The unbounded part is `GetClipboardData`
 /// against a hung delayed-rendering owner, which is why the export is async.
+///
+/// `deadline` is the instant after which the chord must NOT be sent — see "The
+/// paste deadline" in the module doc. `None` disables the guard.
 pub(crate) fn type_via_clipboard_blocking(
     utf16le: &[u8],
     combo: PasteCombo,
+    deadline: Option<Instant>,
 ) -> TypeViaClipboardResult {
     let units = to_terminated_u16(utf16le);
     // Same `expected` construction as the clipboard tool: the payload minus the
@@ -464,16 +537,28 @@ pub(crate) fn type_via_clipboard_blocking(
 
         let mut pasted = false;
         let mut reason = verify.reason.clone();
-        // I-3 is this `if`: the chord is unreachable unless the payload was
-        // proven to be on the clipboard.
-        if verify.ok {
-            if send_paste_combo(combo) {
-                pasted = true;
-                // ── 5. Settle ──────────────────────────────────────────────
-                std::thread::sleep(Duration::from_millis(PASTE_SETTLE_MS));
-            } else {
-                reason = Some("send_input_failed".to_string());
+        // The gate. I-3 lives in `chord_decision`: the chord below is
+        // unreachable unless the payload was proven to be on the clipboard —
+        // and, now, unless there is still time for the caller to receive the
+        // result. Checked HERE rather than earlier because the deadline can
+        // pass during any of the three clipboard transactions above, and the
+        // instant that matters is the one just before the keystroke goes out.
+        match chord_decision(verify.ok, deadline, Instant::now()) {
+            ChordDecision::Send => {
+                if send_paste_combo(combo) {
+                    pasted = true;
+                    // ── 5. Settle ──────────────────────────────────────────
+                    std::thread::sleep(Duration::from_millis(PASTE_SETTLE_MS));
+                } else {
+                    reason = Some("send_input_failed".to_string());
+                }
             }
+            ChordDecision::SkipDeadlineExceeded => {
+                reason = Some("paste_deadline_exceeded".to_string());
+            }
+            // `reason` already carries the verdict's own, more specific
+            // explanation (`readback_mismatch` and friends).
+            ChordDecision::SkipUnverified => {}
         }
 
         // ── 6. Restore — always attempted, the 3-point race decides ─────────
@@ -516,6 +601,11 @@ pub(crate) fn type_via_clipboard_blocking(
 pub struct TypeViaClipboardTask {
     utf16le: Vec<u8>,
     combo: PasteCombo,
+    /// Absolute instant after which the chord must not be sent. Computed in the
+    /// factory below — i.e. when the CALL was made, not when the pool got round
+    /// to it — so time spent queued counts against the budget exactly as it
+    /// does against the caller's own timeout.
+    deadline: Option<Instant>,
 }
 
 impl Task for TypeViaClipboardTask {
@@ -524,7 +614,11 @@ impl Task for TypeViaClipboardTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         napi_safe_call("win32_type_via_clipboard", || {
-            Ok(type_via_clipboard_blocking(&self.utf16le, self.combo))
+            Ok(type_via_clipboard_blocking(
+                &self.utf16le,
+                self.combo,
+                self.deadline,
+            ))
         })
     }
 
@@ -546,21 +640,35 @@ impl Task for TypeViaClipboardTask {
 /// throws; every Win32 failure is reported in the resolved value instead.
 ///
 /// The `AbortSignal` cancels a task that is still QUEUED on libuv's pool, which
-/// matters when an earlier call against a hung clipboard owner has saturated it:
-/// without it, a call the caller already gave up on could start minutes later
-/// and paste into whatever window is focused by then.
+/// matters when an earlier call against a hung clipboard owner has saturated it.
+/// It does NOT stop a task that is already running, which is what
+/// `paste_deadline_budget_ms` is for: the chord is refused once that many
+/// milliseconds have passed since this call, so a task the caller has given up
+/// on cannot surface as a keystroke in an unrelated window minutes later. Pass
+/// `None` to disable the guard.
+///
+/// The clock starts HERE, on the JS thread, so queue time counts — it is the
+/// same clock the caller's own timeout runs on, give or take the call itself.
 #[napi]
 pub fn win32_type_via_clipboard(
     utf16le: Buffer,
     paste_combo: String,
+    paste_deadline_budget_ms: Option<u32>,
     signal: Option<AbortSignal>,
 ) -> napi::Result<AsyncTask<TypeViaClipboardTask>> {
     let combo = PasteCombo::parse(&paste_combo)
         .ok_or_else(|| napi::Error::from_reason("invalid_paste_combo".to_string()))?;
+    // `checked_add` rather than `+`: an absurd budget would otherwise panic on
+    // overflow. Falling back to `None` degrades to the pre-guard behaviour,
+    // which is the right way round — a nonsense budget must not make the paste
+    // impossible.
+    let deadline = paste_deadline_budget_ms
+        .and_then(|ms| Instant::now().checked_add(Duration::from_millis(ms as u64)));
     Ok(AsyncTask::with_optional_signal(
         TypeViaClipboardTask {
             utf16le: utf16le.to_vec(),
             combo,
+            deadline,
         },
         signal,
     ))
@@ -669,6 +777,41 @@ mod tests {
         assert!(!verdict(Some(utf16le("hell")), Ok(e.clone())));
         // Neither leg observed anything → nothing backs the write → do not paste
         assert!(!verdict(None, Err("clipboard_lock_contention".into())));
+    }
+
+    /// The gate, all four combinations. No clipboard involved — which is the
+    /// point of the gate being a function.
+    #[test]
+    fn the_chord_gate_refuses_an_unverified_payload_and_a_missed_deadline() {
+        let now = Instant::now();
+        let future = now + Duration::from_secs(1);
+        let past = now - Duration::from_millis(1);
+
+        assert_eq!(chord_decision(true, Some(future), now), ChordDecision::Send);
+        // No budget = no deadline. The guard is opt-in, not mandatory.
+        assert_eq!(chord_decision(true, None, now), ChordDecision::Send);
+        assert_eq!(
+            chord_decision(true, Some(past), now),
+            ChordDecision::SkipDeadlineExceeded
+        );
+        // Exactly at the deadline counts as past it: the budget is what is
+        // still LEFT, and nothing is left at zero.
+        assert_eq!(
+            chord_decision(true, Some(now), now),
+            ChordDecision::SkipDeadlineExceeded
+        );
+        // An unverified payload is refused whether or not there is time, and
+        // the verdict's own reason is the one that gets reported (I-3 outranks
+        // the deadline — pasting the wrong text is worse than pasting late).
+        assert_eq!(
+            chord_decision(false, Some(future), now),
+            ChordDecision::SkipUnverified
+        );
+        assert_eq!(
+            chord_decision(false, Some(past), now),
+            ChordDecision::SkipUnverified
+        );
+        assert_eq!(chord_decision(false, None, now), ChordDecision::SkipUnverified);
     }
 
     #[test]
@@ -794,7 +937,7 @@ mod tests {
         let f = Fixture::new();
         let payload = utf16le(PAYLOAD);
 
-        let r = type_via_clipboard_blocking(&payload, PasteCombo::CtrlV);
+        let r = type_via_clipboard_blocking(&payload, PasteCombo::CtrlV, None);
         assert!(r.ok, "composite failed: {:?}", r.reason);
         assert!(r.pasted);
         assert!(r.verify.ok);
@@ -829,7 +972,7 @@ mod tests {
         let payload = utf16le(PAYLOAD);
 
         let p = payload.clone();
-        let r = std::thread::spawn(move || type_via_clipboard_blocking(&p, PasteCombo::CtrlV))
+        let r = std::thread::spawn(move || type_via_clipboard_blocking(&p, PasteCombo::CtrlV, None))
             .join()
             .expect("the worker thread panicked");
 
@@ -864,7 +1007,7 @@ mod tests {
         let f = Fixture::new();
         f.win.clear();
 
-        let r = type_via_clipboard_blocking(&utf16le("before\u{0}after"), PasteCombo::CtrlV);
+        let r = type_via_clipboard_blocking(&utf16le("before\u{0}after"), PasteCombo::CtrlV, None);
 
         assert!(!r.ok);
         assert!(!r.pasted, "a chord was sent for an unverified payload (I-3)");
@@ -890,6 +1033,55 @@ mod tests {
             &*read_text_blocking().bytes,
             utf16le(SENTINEL).as_slice(),
             "the user's clipboard was not put back after a failed verification"
+        );
+    }
+
+    /// The deadline guard, end to end.
+    ///
+    /// `chord_decision` is unit-tested above without Win32; what this adds is
+    /// that the sequence HONOURS it — the whole transaction runs, the chord is
+    /// refused, and the clipboard is still handed back. An already-expired
+    /// deadline stands in for the real case (the save blocked for minutes on a
+    /// hung clipboard owner) without needing one.
+    ///
+    /// `#[ignore]`d rather than pure because it exercises the real sequence:
+    /// the failure it guards against is not "the gate returns the wrong
+    /// answer", it is "the gate exists and the code walks past it".
+    #[test]
+    #[ignore = "副作用: foreground 奪取 + clipboard 書換"]
+    fn real_clipboard_an_expired_deadline_refuses_the_chord_and_still_restores() {
+        let f = Fixture::new();
+        f.win.clear();
+
+        let expired = Instant::now() - Duration::from_millis(1);
+        let payload = utf16le(PAYLOAD);
+        let r = type_via_clipboard_blocking(&payload, PasteCombo::CtrlV, Some(expired));
+
+        // The payload WAS on the clipboard — this is not a verification
+        // failure, which is what makes it a different branch.
+        assert!(r.verify.ok, "verification should have passed: {:?}", r.verify.reason);
+        assert!(!r.pasted, "a chord was sent after the deadline");
+        assert!(!r.ok);
+        assert_eq!(r.reason.as_deref(), Some("paste_deadline_exceeded"));
+
+        // Nothing reached the target.
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(
+            f.win.text().is_empty(),
+            "text reached the target after the deadline had passed"
+        );
+
+        // ...and the user's clipboard came back. A late restore is safe because
+        // the race check is what decides it: nobody wrote here, so it ran.
+        assert!(
+            r.clipboard_restored,
+            "restore did not run: {:?}",
+            r.restore_failed_reason
+        );
+        assert_eq!(
+            &*read_text_blocking().bytes,
+            utf16le(SENTINEL).as_slice(),
+            "the user's clipboard was not put back"
         );
     }
 

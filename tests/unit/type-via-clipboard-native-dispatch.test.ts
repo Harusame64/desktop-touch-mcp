@@ -67,7 +67,7 @@ vi.mock(import("../../src/engine/native-engine.js"), async (importOriginal) => {
   };
 });
 
-const { typeViaClipboard } = await import("../../src/tools/keyboard.js");
+const { typeViaClipboard, PASTE_DEADLINE_BUDGET_MS } = await import("../../src/tools/keyboard.js");
 const nutjs = await import("../../src/engine/nutjs.js");
 
 /** A native result whose verification passed and whose chord landed. */
@@ -141,6 +141,30 @@ describe("ADR-033 — with the addon present, typeViaClipboard spawns nothing", 
     expect(nativeState.composite.mock.calls[0]![1]).toBe("ctrl+shift+v");
   });
 
+  it("hands the addon a paste deadline, derived from the timeout it shares", async () => {
+    // Without this the addon has no way to know the caller has already given
+    // up: aborting the signal cancels a QUEUED task, never a running one, so a
+    // call that failed at 5s could still reach its SendInput minutes later and
+    // type into whatever window has focus by then.
+    nativeState.composite.mockResolvedValue(nativeOk());
+    await typeViaClipboard("x");
+    expect(nativeState.composite.mock.calls[0]![2]).toBe(PASTE_DEADLINE_BUDGET_MS);
+  });
+
+  it("reports a refused-because-late paste as 'nothing was typed', not as a delivery failure", async () => {
+    // These are opposite instructions to a caller. `ClipboardWriteNotDelivered`
+    // means the clipboard is suspect (a manager or DLP agent intercepted it);
+    // this means the clipboard was fine, the keystroke was withheld, and a
+    // retry is safe.
+    nativeState.composite.mockResolvedValue(
+      nativeOk({ ok: false, reason: "paste_deadline_exceeded", pasted: false }),
+    );
+    await expect(typeViaClipboard("hello")).rejects.toThrow(/nothing was typed/);
+    // Lower-case message ⇒ generic classification, so no orphaned compact code,
+    // and specifically NOT the delivery-failure code.
+    await expect(typeViaClipboard("hello")).rejects.toThrow(/^clipboard paste ran past/);
+  });
+
   it("does not send the chord itself — the addon owns the whole transaction", async () => {
     // Sending it here too would double-paste: the composite already emitted
     // ctrl+v inside the addon, between the verification and the restore.
@@ -173,7 +197,7 @@ describe("ADR-033 — with the addon present, typeViaClipboard spawns nothing", 
       nativeOk({ ok: false, reason: "send_input_failed", pasted: false }),
     );
     await expect(typeViaClipboard("hello")).rejects.toThrow(/paste keystroke was not accepted/);
-    await expect(typeViaClipboard("hello")).rejects.not.toThrow("ClipboardWriteNotDelivered");
+    await expect(typeViaClipboard("hello")).rejects.toThrow(/^clipboard paste keystroke/);
   });
 
   it("gives up on a clipboard owner that never answers, and aborts the task", async () => {
@@ -184,10 +208,12 @@ describe("ADR-033 — with the addon present, typeViaClipboard spawns nothing", 
     vi.useFakeTimers();
     try {
       const seen: AbortSignal[] = [];
-      nativeState.composite.mockImplementation((_p: unknown, _c: unknown, signal: unknown) => {
-        seen.push(signal as AbortSignal);
-        return new Promise(() => {});
-      });
+      nativeState.composite.mockImplementation(
+        (_p: unknown, _c: unknown, _budget: unknown, signal: unknown) => {
+          seen.push(signal as AbortSignal);
+          return new Promise(() => {});
+        },
+      );
 
       const pending = typeViaClipboard("hello");
       const assertion = expect(pending).rejects.toThrow(/gave up after/);
@@ -245,6 +271,46 @@ describe("ADR-033 — typeViaClipboard discloses what happened to the clipboard"
     expect(r.clipboardRestored).toBe(false);
     expect(r.restoreFailedReason).toBe("clipboard_alloc_failed");
     expect(r.restoreSkippedRace).toBeUndefined();
+  });
+
+  it("discloses a paste that the post-close read never verified", async () => {
+    // The second read-back — the only one that can catch a clipboard manager
+    // swapping the payload after the lock is released — lost the race to
+    // re-open. We paste anyway, deliberately: requiring it would make typing a
+    // silent no-op whenever another application merely READS the clipboard.
+    // But the composite pressed the keys itself, so "we pasted something we
+    // could not fully verify" is a fact only it can report.
+    nativeState.composite.mockResolvedValue(
+      nativeOk({
+        verify: {
+          ...nativeOk().verify,
+          postCloseChecked: false,
+          postCloseMatch: false,
+          postCloseSkipReason: "clipboard_lock_contention",
+        },
+      }),
+    );
+    const r = await typeViaClipboard("hello");
+    expect(r.postCloseUnverified).toBe(true);
+  });
+
+  it("does not claim an unverified paste when both legs answered", async () => {
+    nativeState.composite.mockResolvedValue(nativeOk());
+    expect((await typeViaClipboard("hello")).postCloseUnverified).toBeUndefined();
+  });
+
+  it("does not claim an unverified paste when nothing was pasted", async () => {
+    // No chord went out, so there is no unverified paste to disclose — the
+    // failure itself is the story.
+    nativeState.composite.mockResolvedValue(
+      nativeOk({
+        ok: false,
+        reason: "paste_deadline_exceeded",
+        pasted: false,
+        verify: { ...nativeOk().verify, postCloseChecked: false },
+      }),
+    );
+    await expect(typeViaClipboard("hello")).rejects.toThrow(/nothing was typed/);
   });
 
   it("does not invent a restore failure when there was none", async () => {

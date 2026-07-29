@@ -462,8 +462,11 @@ export declare function win32ClipboardWriteTextVerified(utf16le: Buffer, signal?
  *  ("ctrl+v" | "ctrl+shift+v") and restore the user's clipboard — the whole
  *  transaction in one call. Throws only on an unknown `pasteCombo`; every Win32
  *  failure comes back in the resolved value. Async: it inherits
- *  GetClipboardData's unbounded worst case and sleeps 120ms before the restore. */
-export declare function win32TypeViaClipboard(utf16le: Buffer, pasteCombo: string, signal?: AbortSignal): Promise<NativeTypeViaClipboardResult>
+ *  GetClipboardData's unbounded worst case and sleeps 120ms before the restore.
+ *  `pasteDeadlineBudgetMs` refuses the chord once that long has passed since
+ *  the call, so a task the caller already gave up on cannot type into an
+ *  unrelated window later; the restore still runs. */
+export declare function win32TypeViaClipboard(utf16le: Buffer, pasteCombo: string, pasteDeadlineBudgetMs?: number, signal?: AbortSignal): Promise<NativeTypeViaClipboardResult>
 export declare function win32GetFocus(): bigint | null
 export declare function win32VkToScanCode(vk: number): number
 

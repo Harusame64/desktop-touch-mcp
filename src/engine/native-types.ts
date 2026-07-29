@@ -543,6 +543,9 @@ export interface NativeTypeViaClipboardResult {
    *  `clipboard_replaced_after_write` / `clipboard_get_data_failed` / one of
    *  `ClipboardError::as_reason()`), or `send_input_failed` when the clipboard
    *  was proven and the chord itself was refused. */
+  /** ... or `paste_deadline_exceeded`: the transaction ran past the budget the
+   *  caller passed, so the chord was refused rather than typed into whatever
+   *  window has focus by now. Nothing was typed in that case. */
   reason?: string
   /** The same two-leg verification record the clipboard tool publishes, so the
    *  diagnostics are comparable across both paths. */

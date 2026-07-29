@@ -78,7 +78,51 @@ const execFileAsync = promisify(execFile);
  *  before it is taken away again. `tests/unit/type-via-clipboard-settle.test.ts`
  *  pins them equal, and pins both apart from `foreground_flash`'s 30ms, which
  *  answers a different question (when is it safe to send the NEXT keystroke). */
-const PASTE_SETTLE_MS = 120;
+export const PASTE_SETTLE_MS = 120;
+
+/**
+ * How long the addon is allowed for everything it does AFTER the paste chord,
+ * excluding the settle: the restore, and its share of clipboard lock
+ * contention.
+ *
+ * 300ms. `open_clipboard_with_retry` absorbs up to 10x10ms per transaction
+ * (I-12) and the restore is one transaction, so ~200ms is the bounded worst
+ * case; the rest is margin for the snapshot write itself.
+ *
+ * @internal exported for the budget pin.
+ */
+export const POST_CHORD_BUDGET_MS = 300;
+
+/**
+ * The deadline handed to the addon: after this long, it must not send the paste
+ * chord at all.
+ *
+ * This is the half of the timeout story `AbortSignal` cannot cover. Aborting
+ * cancels a task that is still QUEUED; a task already inside `GetClipboardData`
+ * against a hung clipboard owner runs to completion however long that takes. So
+ * without this, a call that failed at 5s could reach its `SendInput` minutes
+ * later and type into whatever window happens to have focus — in an application
+ * the caller never named, at a moment nobody expects. The failure mode is
+ * silent, arbitrary and destructive.
+ *
+ * The value answers "how late may the chord go out and still leave time for the
+ * work that follows it to finish before the caller gives up":
+ *
+ *     timeout − settle − everything after the chord
+ *
+ * so a chord sent exactly at the deadline is still followed by a settle and a
+ * restore that complete inside `CLIPBOARD_WRITE_TIMEOUT_MS`. Past it, nothing is
+ * typed and the addon reports `paste_deadline_exceeded` — the restore still
+ * runs, because the addon's 3-point race check is what makes a late restore
+ * safe (if the user has copied anything since, the sequence number moved and it
+ * skips itself).
+ *
+ * @internal exported for the budget pin, which is what keeps the three
+ *           constants in step: change the timeout and the derived value moves
+ *           with it.
+ */
+export const PASTE_DEADLINE_BUDGET_MS =
+  CLIPBOARD_WRITE_TIMEOUT_MS - PASTE_SETTLE_MS - POST_CHORD_BUDGET_MS;
 
 /** Which implementation served the call. Surfaced in the envelope so a
  *  Defender-related regression is diagnosable from the response. */
@@ -123,6 +167,24 @@ export interface TypeViaClipboardOutcome {
    * deliberate skips, which are not problems at all.
    */
   restoreFailedReason?: string;
+  /**
+   * The paste went out backed only by the in-session read-back: the addon's
+   * second, post-close read — the one that can catch a clipboard manager or DLP
+   * agent replacing the payload after the lock is released — could not run,
+   * because re-opening the clipboard lost a race.
+   *
+   * Not a failure and not a reason to retry: the first read-back already proved
+   * the payload was stored, and refusing to paste here would make typing a
+   * silent no-op whenever another application merely READS the clipboard, which
+   * is normal and frequent. It is disclosed because the composite sends the
+   * keystroke itself, so "we pasted something we could not fully verify" is a
+   * fact the caller cannot otherwise observe.
+   *
+   * Native only. The fallback's single `Get-Clipboard -Raw` runs after
+   * `Set-Clipboard` released the lock, so it IS the post-close read and is
+   * always checked.
+   */
+  postCloseUnverified?: boolean;
   /** Formats the snapshot could not carry, so they are gone even though the
    *  restore ran (native only — the fallback is text-only throughout). */
   skippedFormats?: Array<{ formatId: number; reason: string }>;
@@ -139,7 +201,13 @@ async function nativeTypeViaClipboard(
   // verification would then pass on mutated text.
   const payload = Buffer.from(text, "utf16le");
   const r = await withTimeout(
-    (signal) => nativeWin32!.win32TypeViaClipboard!(payload, pasteCombo, signal),
+    (signal) =>
+      nativeWin32!.win32TypeViaClipboard!(
+        payload,
+        pasteCombo,
+        PASTE_DEADLINE_BUDGET_MS,
+        signal,
+      ),
     CLIPBOARD_WRITE_TIMEOUT_MS,
     // "gave up" rather than "timed out": `_errors.ts::classify` has a generic
     // timeout arm that would answer this with "the app may be unresponsive,
@@ -151,13 +219,25 @@ async function nativeTypeViaClipboard(
   );
 
   if (!r.ok) {
+    // Lower-case messages on purpose, here and below: an Error whose whole
+    // message is one PascalCase token is this repo's compact-code producer
+    // shape and would need its own SUGGESTS entry (swept by
+    // oq8-failwith-suggest-routing.test.ts). Neither of these failures has a
+    // recovery distinct from the generic one.
+    if (r.reason === "paste_deadline_exceeded") {
+      // The clipboard work outlasted the budget, so the addon refused to send
+      // the chord. Stated as "nothing was typed" because that is the part a
+      // caller acts on: this is the one failure here that is safe to retry
+      // blind, and reporting it as a delivery failure would suggest the
+      // opposite.
+      throw new Error(
+        "clipboard paste ran past its deadline before the keystroke could be sent, so nothing was typed",
+      );
+    }
     if (r.verify.ok) {
       // The payload IS on the clipboard; `SendInput` refused the chord. Calling
       // that a delivery failure would send the caller after a clipboard problem
-      // that does not exist. Lower-case message on purpose: an Error whose whole
-      // message is one PascalCase token is this repo's compact-code producer
-      // shape and would need its own SUGGESTS entry (swept by
-      // oq8-failwith-suggest-routing.test.ts).
+      // that does not exist.
       throw new Error(
         `clipboard paste keystroke was not accepted by the OS (${r.reason ?? "unknown"})`,
       );
@@ -179,6 +259,15 @@ async function nativeTypeViaClipboard(
     // clipboard empty — so collapsing both into `restored:false` here would
     // throw away the only signal that says which one happened.
     ...(r.restoreFailedReason ? { restoreFailedReason: r.restoreFailedReason } : {}),
+    // The chord went out on the strength of the in-session read alone: the
+    // post-close re-read never ran, so a clipboard manager or DLP agent
+    // swapping the payload in that window would not have been caught. Pasting
+    // anyway is the deliberate choice (requiring the second read would make
+    // typing a silent no-op whenever something else merely READS the clipboard
+    // — normal, frequent behaviour), but it is weaker evidence than usual and
+    // the caller is told so. Only when a chord actually went out: with nothing
+    // typed there is no unverified paste to disclose.
+    ...(r.pasted && !r.verify.postCloseChecked ? { postCloseUnverified: true } : {}),
     ...(r.skippedFormats && r.skippedFormats.length > 0
       ? { skippedFormats: r.skippedFormats }
       : {}),
@@ -462,6 +551,7 @@ export function clipboardPasteHints(outcome: TypeViaClipboardOutcome): Record<st
     ...(outcome.restoreFailedReason
       ? { restoreFailedReason: outcome.restoreFailedReason }
       : {}),
+    ...(outcome.postCloseUnverified ? { postCloseUnverified: true } : {}),
     ...(outcome.skippedFormats && outcome.skippedFormats.length > 0
       ? { skippedFormats: outcome.skippedFormats }
       : {}),
