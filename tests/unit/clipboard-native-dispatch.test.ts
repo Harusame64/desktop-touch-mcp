@@ -433,6 +433,47 @@ describe("ADR-033 — payload accuracy across the TS↔addon boundary", () => {
     }
   });
 
+  it("hands the addon an AbortSignal and aborts it when it gives up", async () => {
+    // The signal is what stops a task that is still QUEUED — libuv's pool is 4
+    // threads, so under a hung clipboard owner a write can burn its whole
+    // budget without starting, then run when the pool frees up and overwrite
+    // whatever the user copied in the meantime. Passing the signal and never
+    // aborting it would look identical in every other assertion here.
+    vi.useFakeTimers();
+    try {
+      const seen: AbortSignal[] = [];
+      nativeState.write.mockImplementation((_payload: unknown, signal: unknown) => {
+        seen.push(signal as AbortSignal);
+        return new Promise(() => {});
+      });
+
+      const pending = clipboardWriteHandler({ text: "hello" });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBeInstanceOf(AbortSignal);
+      expect(seen[0]!.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(body(await pending).ok).toBe(false);
+      expect(seen[0]!.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the signal un-aborted when the call answers in time", async () => {
+    // The contrapositive: aborting unconditionally would cancel nothing on a
+    // completed task but would make the pin above vacuous.
+    const seen: AbortSignal[] = [];
+    nativeState.write.mockImplementation((payload: unknown, signal: unknown) => {
+      seen.push(signal as AbortSignal);
+      return Promise.resolve(fakeNativeWrite(payload as Buffer));
+    });
+
+    const r = body(await clipboardWriteHandler({ text: "hello" }));
+    expect(r.ok).toBe(true);
+    expect(seen[0]!.aborted).toBe(false);
+  });
+
   it("a slow-but-answering clipboard still succeeds", async () => {
     // The complement of the pin above: the timeout must not fire on a call
     // that is merely contended (the addon absorbs up to ~200ms of lock

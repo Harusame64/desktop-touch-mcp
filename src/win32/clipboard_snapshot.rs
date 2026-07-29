@@ -19,7 +19,7 @@
 //! - 失敗時は caller が `GlobalFree` する責任
 //! - `GetClipboardData(fmt)` 戻り値 HGLOBAL は OS owner (`GlobalLock`/`Unlock` のみ、`GlobalFree` 禁止)
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
 use std::time::Duration;
 
 use windows::core::{w, PCWSTR};
@@ -167,8 +167,8 @@ impl ClipboardError {
 
 const HIDDEN_OWNER_CLASS_NAME: PCWSTR = w!("DTM_ClipboardOwner");
 
-/// Window class が登録されたか (per-process、idempotent guard)。
-static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
+/// Window class 登録の per-process 1 回ガード。`ensure_class_registered` 参照。
+static CLASS_INIT: Once = Once::new();
 
 /// True extern "system" WNDPROC wrapper around DefWindowProcW.
 /// windows-rs の `DefWindowProcW` は Rust ABI wrapper のため、`WNDPROC =
@@ -183,12 +183,17 @@ unsafe extern "system" fn dtm_owner_wndproc(
 }
 
 /// Hidden owner window class を 1 度だけ登録 (per-process)。
-/// 既に登録済の場合は no-op (CAS で idempotent)。
+///
+/// `Once` であって flag の CAS ではない理由: `swap(true)` は
+/// `RegisterClassExW` の**完了前**に「登録済」を公開してしまうため、並行する
+/// 2 番目の caller が未登録の class 名で `CreateWindowExW` を呼び
+/// `hidden_owner_create_failed` になりうる。`Once::call_once` は初回の
+/// closure が完了するまで後続 caller を block し、完了後にのみ「済」を公開する。
+/// ADR-033 で clipboard 経路が libuv worker 上で並行実行されるようになり、
+/// この latent race が現実に到達可能になった (単一 thread 経路の
+/// `foreground_flash` / console-paste から見た挙動は不変)。
 fn ensure_class_registered() {
-    if CLASS_REGISTERED.swap(true, Ordering::AcqRel) {
-        return; // 既に他の thread が登録済
-    }
-    unsafe {
+    CLASS_INIT.call_once(|| unsafe {
         let hinstance = match GetModuleHandleW(None) {
             Ok(h) => h,
             Err(_) => HMODULE::default(),
@@ -210,7 +215,7 @@ fn ensure_class_registered() {
         };
         // 同 class 名の再登録は ERROR_CLASS_ALREADY_EXISTS で 0 を返す、無害。
         let _atom = RegisterClassExW(&wc);
-    }
+    });
 }
 
 /// Hidden owner window を作成 (calling thread で、per-call lifecycle)。
@@ -582,6 +587,53 @@ mod tests {
     }
 
     // ── Win32 副作用 tests (default `#[ignore]`、manual run only) ───────────
+
+    /// Concurrent `with_hidden_owner` from several threads must all succeed.
+    ///
+    /// The class registration used to publish "registered" with an
+    /// `AtomicBool::swap` BEFORE `RegisterClassExW` ran, so a second thread
+    /// arriving inside that window skipped registration and then called
+    /// `CreateWindowExW` against a class that did not exist yet —
+    /// `hidden_owner_create_failed`. `Once` closes it by making later callers
+    /// wait for the first registration to finish. ADR-033 put clipboard work on
+    /// libuv workers, which is what made this reachable in practice.
+    ///
+    /// Honest about its power: this is a stress test, not a deterministic
+    /// regression pin. It can only observe the race on the process's FIRST
+    /// registration, and only if the threads interleave inside a window of a
+    /// few instructions, so a green run does not prove the bug is absent — the
+    /// argument for `Once` is the code, not this test. It is cheap, needs no
+    /// clipboard, and would catch a future revert some of the time.
+    ///
+    /// Not `#[ignore]`d: it creates a few 0x0 non-visible top-level windows on
+    /// its own threads and destroys them, with no clipboard side effect.
+    #[test]
+    fn concurrent_hidden_owner_creation_all_succeed() {
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 8;
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    // Release them together so they contend on registration
+                    // rather than arriving one after another.
+                    barrier.wait();
+                    with_hidden_owner(|hwnd| !hwnd.0.is_null())
+                })
+            })
+            .collect();
+
+        for (i, h) in handles.into_iter().enumerate() {
+            let outcome = h.join().expect("thread panicked");
+            match outcome {
+                Ok(true) => {}
+                Ok(false) => panic!("thread {i}: hidden owner HWND was null"),
+                Err(e) => panic!("thread {i}: with_hidden_owner failed: {e:?}"),
+            }
+        }
+    }
 
     /// Hidden owner window class 登録 + create + destroy が leak-free。
     /// 副作用なし (window class が process 単位で残るが idempotent)、ただし

@@ -86,15 +86,25 @@
 //! also retires the ~200 ms contention block the write path used to impose on
 //! the event loop.
 //!
-//! **What this does NOT fix, and must not be read as fixing.** A timeout on the
-//! JS side abandons the *result*; the worker thread stays blocked inside the
-//! Win32 call until the owner answers, and there is no way to cancel or kill
-//! it — unlike the child process the old path could terminate. libuv's pool is
-//! 4 threads by default, so repeated calls against a hung owner can exhaust it
-//! and stall unrelated async native work. The hazard exists only while a hung
-//! clipboard owner exists, and in that state the clipboard is already unusable
-//! system-wide for every application; the timeout keeps the server answering
-//! instead of adding it to the casualties.
+//! Both exports take an optional `AbortSignal`, and `clipboard.ts` aborts on
+//! timeout. That matters most for the case that is easiest to miss: when the
+//! pool is already saturated by earlier calls against the same hung owner, a
+//! new task can spend its whole budget **queued**, never having touched the
+//! clipboard. Aborting cancels it at admission, so a write the caller was told
+//! had failed cannot start minutes later and overwrite whatever the user has
+//! copied since.
+//!
+//! **What this does NOT fix, and must not be read as fixing.** Abort cancels a
+//! QUEUED task; a task already inside the Win32 call runs to completion. Its
+//! result is discarded, but its side effect is not — a write that has passed
+//! `SetClipboardData` has landed. That is why `clipboard.ts` tells the caller a
+//! timed-out write leaves the clipboard indeterminate rather than un-written.
+//! The worker itself also stays blocked until the owner answers and cannot be
+//! killed, unlike the child process the old path could terminate, so libuv's
+//! 4-thread default pool can still be exhausted by concurrent calls. The hazard
+//! exists only while a hung clipboard owner exists, and in that state the
+//! clipboard is already unusable system-wide for every application; the timeout
+//! keeps the server answering instead of adding it to the casualties.
 //!
 //! # Encoding: why `Buffer` and not `String`
 //!
@@ -124,7 +134,7 @@
 //!   first, so a failed allocation cannot leave the user with a clipboard we
 //!   emptied and never refilled.
 
-use napi::bindgen_prelude::{AsyncTask, Buffer};
+use napi::bindgen_prelude::{AbortSignal, AsyncTask, Buffer};
 use napi::{Env, Task};
 use napi_derive::napi;
 
@@ -743,8 +753,8 @@ impl Task for ClipboardWriteTask {
 /// `GetClipboardData` can block without a bound (module doc). `hasText:false`
 /// with `ok:true` means an empty clipboard or a non-text payload.
 #[napi]
-pub fn win32_clipboard_read_text() -> AsyncTask<ClipboardReadTask> {
-    AsyncTask::new(ClipboardReadTask)
+pub fn win32_clipboard_read_text(signal: Option<AbortSignal>) -> AsyncTask<ClipboardReadTask> {
+    AsyncTask::with_optional_signal(ClipboardReadTask, signal)
 }
 
 /// Replace the clipboard with `utf16le` and verify delivery with two byte-equal
@@ -758,8 +768,11 @@ pub fn win32_clipboard_read_text() -> AsyncTask<ClipboardReadTask> {
 /// owns them — a `Buffer` cannot cross the threadpool boundary, and the copy is
 /// bounded by the tool's 100 000-character schema ceiling (200 KB).
 #[napi]
-pub fn win32_clipboard_write_text_verified(utf16le: Buffer) -> AsyncTask<ClipboardWriteTask> {
-    AsyncTask::new(ClipboardWriteTask(utf16le.to_vec()))
+pub fn win32_clipboard_write_text_verified(
+    utf16le: Buffer,
+    signal: Option<AbortSignal>,
+) -> AsyncTask<ClipboardWriteTask> {
+    AsyncTask::with_optional_signal(ClipboardWriteTask(utf16le.to_vec()), signal)
 }
 
 // ── Test support (never compiled into the addon) ────────────────────────────

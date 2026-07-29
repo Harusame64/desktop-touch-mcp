@@ -80,13 +80,16 @@ const FALLBACK_MAX_CHARS = 12_000;
  * process that `execFile` could time out and abandon.
  *
  * IMPORTANT — what the timeout does NOT do on the native path: it abandons the
- * RESULT, not the work. The libuv worker stays blocked inside the Win32 call
- * until the clipboard owner answers, and cannot be cancelled or killed the way
- * the child process could. libuv's pool is 4 threads by default, so repeated
- * calls against a hung owner can exhaust it. That state is bounded by the hung
- * owner's lifetime, and while it lasts the clipboard is unusable system-wide
- * for every application; timing out keeps the server answering rather than
- * making it another casualty.
+ * RESULT, not the work. Giving up aborts the signal, which cancels a task still
+ * QUEUED for libuv's pool (see `withTimeout`), but a task already inside the
+ * Win32 call runs to completion — it cannot be cancelled or killed the way the
+ * child process could. Its result is discarded; its side effect is not, which
+ * is why a timed-out write reports the clipboard as indeterminate rather than
+ * un-written. The worker also stays blocked until the owner answers, so
+ * libuv's 4-thread default pool can be exhausted by concurrent calls. That
+ * state is bounded by the hung owner's lifetime, and while it lasts the
+ * clipboard is unusable system-wide for every application; timing out keeps the
+ * server answering rather than making it another casualty.
  */
 const READ_TIMEOUT_MS = 4_000;
 const WRITE_TIMEOUT_MS = 5_000;
@@ -106,24 +109,47 @@ class ClipboardTimeoutError extends Error {}
 // keywords.
 
 /**
- * Reject with `message` if `work` has not settled within `ms`.
+ * Run `start(signal)` and give up after `ms`, aborting the signal on the way
+ * out.
  *
- * A late settlement is discarded rather than leaked: `Promise.race` subscribes
- * to `work`, so a rejection arriving after the timeout is already handled and
- * cannot surface as an unhandled rejection. The timer is cleared on every exit
- * so a pending handle cannot hold the event loop open.
+ * The abort is the part that matters. Giving up abandons the result, but the
+ * addon's task may not even have STARTED: libuv's pool is 4 threads, so when
+ * earlier calls against the same hung clipboard owner have saturated it, a new
+ * task can spend its entire budget sitting in the queue. Without the abort it
+ * would then run whenever the pool frees up — a write the caller was told had
+ * failed, landing minutes later on top of whatever the user has copied since.
+ * `AsyncTask::with_optional_signal` cancels a task that is still queued.
+ * (A task already inside the Win32 call is not cancellable; that is the case
+ * `CLIPBOARD_WRITE_UNRESPONSIVE_HINT` warns about.)
+ *
+ * The rejection is raised BEFORE the abort so the envelope is this timeout
+ * rather than the addon's `AbortError`, which carries no hint. A late
+ * settlement is discarded rather than leaked: `Promise.race` subscribes to the
+ * work, so the abort-driven rejection is already handled and cannot surface as
+ * an unhandled rejection. The timer is cleared on every exit so a pending
+ * handle cannot hold the event loop open.
  */
-async function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+async function withTimeout<T>(
+  start: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    const work = start(controller.signal);
     return await Promise.race([
       work,
       new Promise<never>((_resolve, reject) => {
-        // Lower-case message on purpose: an Error whose whole message is a
-        // PascalCase token is this repo's compact-code producer shape and would
-        // need its own SUGGESTS entry. A timeout has no recovery distinct from
-        // the generic one beyond the hint attached at the catch site.
-        timer = setTimeout(() => reject(new ClipboardTimeoutError(message)), ms);
+        timer = setTimeout(() => {
+          // Lower-case message on purpose: an Error whose whole message is a
+          // PascalCase token is this repo's compact-code producer shape and
+          // would need its own SUGGESTS entry. A timeout has no recovery
+          // distinct from the generic one beyond the hint attached at the
+          // catch site.
+          reject(new ClipboardTimeoutError(message));
+          controller.abort();
+        }, ms);
       }),
     ]);
   } finally {
@@ -190,7 +216,7 @@ const selectBackend = (): ClipboardBackend =>
 
 const nativeRead = async (): Promise<ToolResult> => {
   const r = await withTimeout(
-    nativeWin32!.win32ClipboardReadText!(),
+    (signal) => nativeWin32!.win32ClipboardReadText!(signal),
     READ_TIMEOUT_MS,
     `native clipboard read gave up after ${READ_TIMEOUT_MS}ms waiting for the clipboard owner`,
   );
@@ -222,7 +248,7 @@ const nativeWrite = async (text: string): Promise<ToolResult> => {
   // verification would then pass on mutated text.
   const payload = Buffer.from(text, "utf16le");
   const r = await withTimeout(
-    nativeWin32!.win32ClipboardWriteTextVerified!(payload),
+    (signal) => nativeWin32!.win32ClipboardWriteTextVerified!(payload, signal),
     WRITE_TIMEOUT_MS,
     `native clipboard write gave up after ${WRITE_TIMEOUT_MS}ms waiting for the clipboard owner`,
   );

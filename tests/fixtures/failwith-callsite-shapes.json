@@ -195,28 +195,28 @@
     },
     {
       "file": "src/tools/clipboard.ts",
-      "line": 206,
+      "line": 232,
       "tool": "clipboard:read",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/clipboard.ts",
-      "line": 296,
+      "line": 322,
       "tool": "clipboard:read",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/clipboard.ts",
-      "line": 378,
+      "line": 404,
       "tool": "clipboard:write",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/clipboard.ts",
-      "line": 403,
+      "line": 429,
       "tool": "clipboard:write",
       "errKind": "identifier",
       "contextShape": "object-plain"

@@ -217,8 +217,8 @@ export interface NativeWin32 {
   // Both return Promises: `GetClipboardData` can block without a bound against
   // a hung delayed-rendering clipboard owner, so the work runs on a libuv
   // worker instead of freezing the V8 thread (and with it the whole server).
-  win32ClipboardReadText?(): Promise<NativeClipboardReadResult>;
-  win32ClipboardWriteTextVerified?(utf16le: Buffer): Promise<NativeClipboardWriteVerifyResult>;
+  win32ClipboardReadText?(signal?: AbortSignal): Promise<NativeClipboardReadResult>;
+  win32ClipboardWriteTextVerified?(utf16le: Buffer, signal?: AbortSignal): Promise<NativeClipboardWriteVerifyResult>;
 
   // Issue #245 系統②: IME open-status query / control via Imm32.dll +
   // WM_IME_CONTROL. Returns `false` when the target HWND has no associated
