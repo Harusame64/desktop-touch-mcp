@@ -14,6 +14,28 @@
 //!   performance 顕在化したら別 PR / Phase 1.5 で refactor)
 //! - **OLE `IDataObject` snapshot** は MVP scope 外、別 PR (Phase 1.5、option) で評価
 //!
+//! # Snapshot allocation limits (ADR-033 PR-2, Codex R5)
+//!
+//! The snapshot copies whatever OTHER applications put on the clipboard, so its
+//! size is chosen by them, not by us. A single high-resolution `CF_DIB` runs to
+//! tens of megabytes and a screenshot commonly appears three times over
+//! (`CF_DIB` + `CF_DIBV5` + PNG). `to_vec()` aborts the process on allocation
+//! failure, which would turn another application's large clipboard into a dead
+//! MCP server — and PR-2 made this a hot path: every non-ASCII
+//! `keyboard(action='type')` and every `terminal(action='send')` now snapshots.
+//!
+//! So the copy is bounded and fallible: `try_reserve_exact` instead of
+//! `to_vec()`, a per-format ceiling, and an aggregate budget. Anything refused
+//! is reported through the existing skipped-format channel rather than dropped
+//! silently — the same channel an image on the clipboard already travels on.
+//!
+//! **This deliberately departs from "do not change D/E behaviour"**
+//! (inventory 4.5): `save_one_format` is shared with the `foreground_flash`
+//! channel, so that path is bounded too. The trade is intentional — an OOM
+//! abort takes the whole server down, which is worse than the freeze the
+//! no-change rule was protecting. What D loses is the ability to restore a
+//! clipboard larger than the budget; what it gains is not dying.
+//!
 //! 注意: 全 `unsafe` ブロック内で Win32 ownership rule を厳守:
 //! - `SetClipboardData(fmt, hglobal)` 成功時 HGLOBAL の所有権は OS に移る (caller `GlobalFree` 禁止)
 //! - 失敗時は caller が `GlobalFree` する責任
@@ -81,7 +103,7 @@ const CF_DSPENHMETAFILE: u32 = 0x008E;
 
 // ── Public types ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkippedFormatReason {
     /// 既知の非 HGLOBAL format (CF_BITMAP / CF_ENHMETAFILE / CF_OWNERDISPLAY 等)。
     NonHglobal,
@@ -89,6 +111,15 @@ pub enum SkippedFormatReason {
     DeferredRender,
     /// `GetClipboardData` 自体が fail (race / permission 等)。
     GetDataFailed,
+    /// This one format is past `MAX_SNAPSHOT_FORMAT_BYTES`. Refused on the
+    /// reported SIZE alone, before anything is locked or copied.
+    TooLarge,
+    /// Earlier formats have used up `MAX_SNAPSHOT_TOTAL_BYTES`. The format may
+    /// be perfectly small; the clipboard as a whole is not.
+    SnapshotBudget,
+    /// The copy could not be allocated. Reported rather than aborting the
+    /// process, which is what `Vec::to_vec` would have done.
+    AllocFailed,
 }
 
 impl SkippedFormatReason {
@@ -97,7 +128,53 @@ impl SkippedFormatReason {
             SkippedFormatReason::NonHglobal => "non_hglobal",
             SkippedFormatReason::DeferredRender => "deferred_render",
             SkippedFormatReason::GetDataFailed => "get_data_failed",
+            SkippedFormatReason::TooLarge => "too_large",
+            SkippedFormatReason::SnapshotBudget => "snapshot_budget",
+            SkippedFormatReason::AllocFailed => "alloc_failed",
         }
+    }
+}
+
+// ── Snapshot size limits ────────────────────────────────────────────────────
+//
+// CHOSEN, not derived — stated plainly so nobody mistakes them for a
+// measurement. What they are sized against:
+
+/// Largest single clipboard format this snapshot will copy: 64 MiB.
+///
+/// A 4K BGRA `CF_DIB` is about 32 MiB, so this clears the realistic worst case
+/// by 2x while still refusing the pathological payloads that would otherwise be
+/// copied on every keystroke-by-paste call.
+pub(crate) const MAX_SNAPSHOT_FORMAT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Largest total this snapshot will hold across all formats: 128 MiB.
+///
+/// A 4K screenshot typically appears three times over — `CF_DIB` + `CF_DIBV5` +
+/// PNG, roughly 96 MiB together — and that whole set should survive.
+///
+/// For scale, the path that made this a hot concern writes at most 200 KB
+/// (the clipboard tool's 100 000-character ceiling in UTF-16LE), so nothing this
+/// server itself produces comes close to either limit.
+pub(crate) const MAX_SNAPSHOT_TOTAL_BYTES: usize = 128 * 1024 * 1024;
+
+/// What to do with a format of `size` bytes when `used` bytes are already held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotSizeVerdict {
+    Copy,
+    TooLarge,
+    BudgetExhausted,
+}
+
+/// Pure, so both ceilings are pinned without a clipboard. The per-format check
+/// runs first: a 200 MiB format is `TooLarge` on its own terms whether or not
+/// there is budget left, which is the more useful thing to tell the caller.
+pub(crate) fn snapshot_size_verdict(size: usize, used: usize) -> SnapshotSizeVerdict {
+    if size > MAX_SNAPSHOT_FORMAT_BYTES {
+        SnapshotSizeVerdict::TooLarge
+    } else if used.saturating_add(size) > MAX_SNAPSHOT_TOTAL_BYTES {
+        SnapshotSizeVerdict::BudgetExhausted
+    } else {
+        SnapshotSizeVerdict::Copy
     }
 }
 
@@ -294,6 +371,11 @@ pub fn save_clipboard_supported_formats(owner: HWND) -> Result<ClipboardSnapshot
         let sequence_number = get_clipboard_sequence_number();
         let mut entries = Vec::new();
         let mut format = 0u32;
+        // Bytes already copied. The aggregate budget is spent in enumeration
+        // order, which is the OS's preference order — the most useful
+        // representation of the clipboard is offered first, so the formats that
+        // get refused are the redundant duplicates rather than the primary one.
+        let mut used: usize = 0;
         loop {
             unsafe {
                 format = EnumClipboardFormats(format);
@@ -301,7 +383,11 @@ pub fn save_clipboard_supported_formats(owner: HWND) -> Result<ClipboardSnapshot
             if format == 0 {
                 break;
             }
-            entries.push(save_one_format(format));
+            let entry = save_one_format(format, used);
+            if let FormatEntry::Saved { bytes, .. } = &entry {
+                used = used.saturating_add(bytes.len());
+            }
+            entries.push(entry);
         }
         Ok(ClipboardSnapshot { sequence_number, entries })
     })();
@@ -312,7 +398,13 @@ pub fn save_clipboard_supported_formats(owner: HWND) -> Result<ClipboardSnapshot
     result
 }
 
-fn save_one_format(format_id: u32) -> FormatEntry {
+/// Copy one format out of the (already open) clipboard.
+///
+/// `used` is how many bytes the snapshot already holds, for the aggregate
+/// budget. See the module doc for why the copy is bounded at all — in short,
+/// the size is chosen by whichever application wrote last, and an unbounded
+/// copy on a hot path is a way to lose the whole process.
+fn save_one_format(format_id: u32, used: usize) -> FormatEntry {
     // 既知の非 HGLOBAL format を early skip (handle ベース)。
     if matches!(
         format_id,
@@ -350,6 +442,25 @@ fn save_one_format(format_id: u32) -> FormatEntry {
                 reason: SkippedFormatReason::DeferredRender,
             };
         }
+        // Decided on the REPORTED SIZE alone, before the handle is locked and
+        // before a byte is read: the check is O(1) and refusing here means the
+        // oversized payload is never touched at all.
+        match snapshot_size_verdict(size, used) {
+            SnapshotSizeVerdict::TooLarge => {
+                return FormatEntry::Skipped {
+                    format_id,
+                    reason: SkippedFormatReason::TooLarge,
+                };
+            }
+            SnapshotSizeVerdict::BudgetExhausted => {
+                return FormatEntry::Skipped {
+                    format_id,
+                    reason: SkippedFormatReason::SnapshotBudget,
+                };
+            }
+            SnapshotSizeVerdict::Copy => {}
+        }
+
         let ptr = GlobalLock(hglobal);
         if ptr.is_null() {
             return FormatEntry::Skipped {
@@ -357,7 +468,21 @@ fn save_one_format(format_id: u32) -> FormatEntry {
                 reason: SkippedFormatReason::GetDataFailed,
             };
         }
-        let bytes = std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
+        let src = std::slice::from_raw_parts(ptr as *const u8, size);
+        // Fallibly. `to_vec()` aborts the entire process on OOM, which would
+        // turn another application's oversized clipboard into a dead MCP server
+        // — the same reasoning as `clipboard_text.rs`'s read path. After a
+        // successful reserve, `extend_from_slice` cannot reallocate and so
+        // cannot abort either.
+        let mut bytes: Vec<u8> = Vec::new();
+        if bytes.try_reserve_exact(size).is_err() {
+            let _ = GlobalUnlock(hglobal);
+            return FormatEntry::Skipped {
+                format_id,
+                reason: SkippedFormatReason::AllocFailed,
+            };
+        }
+        bytes.extend_from_slice(src);
         // GlobalUnlock は ref count を 1 減、=0 で false return も "正常終了" の意味なので
         // GetLastError が NO_ERROR なら成功扱い。本 fn では結果 ignore。
         let _ = GlobalUnlock(hglobal);
@@ -514,6 +639,88 @@ mod tests {
         assert_eq!(SkippedFormatReason::NonHglobal.as_str(), "non_hglobal");
         assert_eq!(SkippedFormatReason::DeferredRender.as_str(), "deferred_render");
         assert_eq!(SkippedFormatReason::GetDataFailed.as_str(), "get_data_failed");
+        // The size-limit reasons. These strings are what reaches the caller
+        // through `skippedFormats`, so they are part of the contract.
+        assert_eq!(SkippedFormatReason::TooLarge.as_str(), "too_large");
+        assert_eq!(SkippedFormatReason::SnapshotBudget.as_str(), "snapshot_budget");
+        assert_eq!(SkippedFormatReason::AllocFailed.as_str(), "alloc_failed");
+    }
+
+    /// The snapshot copies whatever OTHER applications put on the clipboard, so
+    /// its size is their choice, not ours — and PR-2 made this a hot path.
+    /// These are the ceilings that keep another application's large clipboard
+    /// from taking the process down.
+    #[test]
+    fn snapshot_limits_are_pinned_and_clear_the_payloads_that_matter() {
+        // Chosen values, pinned so a change is a conscious one.
+        assert_eq!(MAX_SNAPSHOT_FORMAT_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_SNAPSHOT_TOTAL_BYTES, 128 * 1024 * 1024);
+
+        // What they are sized against: a 4K BGRA DIB is ~32 MiB and must fit
+        // with room to spare, and the DIB + DIBV5 + PNG triple a screenshot
+        // usually produces (~96 MiB) must survive as a set.
+        const DIB_4K: usize = 3840 * 2160 * 4;
+        assert!(MAX_SNAPSHOT_FORMAT_BYTES > DIB_4K * 3 / 2);
+        assert!(MAX_SNAPSHOT_TOTAL_BYTES >= DIB_4K * 3);
+
+        // And the relationship to what this server itself writes: the clipboard
+        // tool's ceiling is 100 000 characters = 200 KB in UTF-16LE, so a text
+        // payload of our own can never approach either limit — even multiplied
+        // by the CF_TEXT / CF_OEMTEXT / CF_LOCALE copies the OS synthesises.
+        assert!(MAX_SNAPSHOT_FORMAT_BYTES > 100_000 * 2 * 8);
+        assert!(MAX_SNAPSHOT_TOTAL_BYTES > MAX_SNAPSHOT_FORMAT_BYTES);
+    }
+
+    #[test]
+    fn snapshot_size_verdict_boundaries() {
+        use SnapshotSizeVerdict::*;
+
+        // Per-format: at the limit is allowed, one byte past is not.
+        assert_eq!(snapshot_size_verdict(0, 0), Copy);
+        assert_eq!(snapshot_size_verdict(MAX_SNAPSHOT_FORMAT_BYTES, 0), Copy);
+        assert_eq!(snapshot_size_verdict(MAX_SNAPSHOT_FORMAT_BYTES + 1, 0), TooLarge);
+
+        // Aggregate: the same boundary, applied to the running total.
+        let used = MAX_SNAPSHOT_TOTAL_BYTES - 10;
+        assert_eq!(snapshot_size_verdict(10, used), Copy);
+        assert_eq!(snapshot_size_verdict(11, used), BudgetExhausted);
+
+        // Per-format wins when both apply: "this one format is absurd" is more
+        // useful to report than "the clipboard as a whole is full".
+        assert_eq!(
+            snapshot_size_verdict(MAX_SNAPSHOT_FORMAT_BYTES + 1, MAX_SNAPSHOT_TOTAL_BYTES),
+            TooLarge
+        );
+
+        // A budget already spent refuses even an empty format's successor,
+        // and the addition cannot overflow into a false `Copy`.
+        assert_eq!(snapshot_size_verdict(1, MAX_SNAPSHOT_TOTAL_BYTES), BudgetExhausted);
+        assert_eq!(snapshot_size_verdict(1, usize::MAX), BudgetExhausted);
+    }
+
+    /// The refusals have to reach the caller, or they are indistinguishable
+    /// from a clipboard that simply had nothing else on it. `skipped_summary`
+    /// is what `foreground_flash` / console-paste / typeViaClipboard all
+    /// publish as `skippedFormats`.
+    #[test]
+    fn size_refusals_travel_on_the_existing_skipped_channel() {
+        let snapshot = ClipboardSnapshot {
+            sequence_number: 1,
+            entries: vec![
+                FormatEntry::Saved { format_id: 13, bytes: vec![1, 2] },
+                FormatEntry::Skipped { format_id: 8, reason: SkippedFormatReason::TooLarge },
+                FormatEntry::Skipped { format_id: 17, reason: SkippedFormatReason::SnapshotBudget },
+                FormatEntry::Skipped { format_id: 49_161, reason: SkippedFormatReason::AllocFailed },
+            ],
+        };
+        assert_eq!(
+            snapshot.skipped_summary(),
+            vec![
+                (8, "too_large"),
+                (17, "snapshot_budget"),
+                (49_161, "alloc_failed"),
+            ]
+        );
     }
 
     #[test]

@@ -63,8 +63,12 @@ type ClipboardBackend = "native" | "powershell";
  *
  * The schema's `max(100_000)` stays as the NATIVE path's contract, which does
  * handle the full documented range.
+ *
+ * Exported because `typeViaClipboard` (`keyboard.ts`) reaches the clipboard
+ * through the same kind of PowerShell command line and therefore hits the same
+ * wall. One measured number, one place.
  */
-const FALLBACK_MAX_CHARS = 12_000;
+export const FALLBACK_MAX_CHARS = 12_000;
 
 /**
  * How long either backend may take before the call is abandoned. Shared by
@@ -92,7 +96,10 @@ const FALLBACK_MAX_CHARS = 12_000;
  * server answering rather than making it another casualty.
  */
 const READ_TIMEOUT_MS = 4_000;
-const WRITE_TIMEOUT_MS = 5_000;
+/** Exported: `typeViaClipboard` (`keyboard.ts`) writes the clipboard through
+ *  the same two backends and must not answer a hung clipboard owner on a
+ *  different schedule than this tool does. */
+export const WRITE_TIMEOUT_MS = 5_000;
 
 /** Distinguishes "we gave up waiting" from every other failure the handlers'
  *  catch blocks see, so only the former gets the unresponsive-owner advice. */
@@ -129,7 +136,7 @@ class ClipboardTimeoutError extends Error {}
  * an unhandled rejection. The timer is cleared on every exit so a pending
  * handle cannot hold the event loop open.
  */
-async function withTimeout<T>(
+export async function withTimeout<T>(
   start: (signal: AbortSignal) => Promise<T>,
   ms: number,
   message: string,

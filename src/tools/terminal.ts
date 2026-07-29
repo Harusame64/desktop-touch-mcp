@@ -36,7 +36,12 @@ import {
 } from "../engine/identity-tracker.js";
 import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
-import { typeViaClipboard } from "./keyboard.js";
+import {
+  typeViaClipboard,
+  clipboardPasteHints,
+  TypeViaClipboardDeliveryError,
+  type TypeViaClipboardOutcome,
+} from "./keyboard.js";
 import { setTerminalReadHook } from "./wait-until.js";
 import { withRichNarration } from "./_narration.js";
 import {
@@ -129,7 +134,7 @@ export const terminalSendSchema = {
   pressEnter: coercedBoolean().default(true).describe("Press Enter after typing (default true)."),
   focusFirst: coercedBoolean().default(true).describe("Focus the terminal before sending (default true)."),
   restoreFocus: coercedBoolean().default(true).describe("Restore the previously-focused window after sending (default true)."),
-  preferClipboard: coercedBoolean().default(true).describe("Use clipboard paste (typeViaClipboard) — IME/long-text safe (default true)."),
+  preferClipboard: coercedBoolean().default(true).describe("Paste the input from the clipboard instead of typing it — safe for long text and not run through IME conversion (does not help while an IME composition is already in progress: the paste keystroke is consumed by the IME). Your clipboard is replaced for the duration of the call and put back afterwards, but the restore is skipped when another process wrote to the clipboard first, when its contents are too large for an addon-less build to carry back, or when saving it failed; hints.clipboard reports which backend served the paste and whether the restore ran. Default true."),
   pasteKey: z.enum(["auto", "ctrl+v", "ctrl+shift+v"]).default("auto").describe("Paste key combo. 'auto' picks ctrl+shift+v for WSL/bash/mintty/wezterm/alacritty, ctrl+v elsewhere. Only used when preferClipboard=true."),
   forceFocus: coercedBoolean().optional().describe(
     "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
@@ -1121,6 +1126,11 @@ export const terminalSendHandler = async ({
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   const startedAt = Date.now();
+  // Declared OUTSIDE the try so the catch can still see it. Once the paste has
+  // happened the text is IN the terminal, and a later throw — a failed Enter,
+  // a focus check — must not hide that: a caller told only "terminal:send
+  // failed" retries, and the input lands twice.
+  let clipboardOutcome: TypeViaClipboardOutcome | undefined;
   try {
     // ADR-014 R3 OQ-W-16-bis (+ S-pid E6): a paneId binds the send target — classic DIRECTLY by hwnd
     // (WM_CHAR goes to this exact window, surviving the post-login title drift AND a same-title
@@ -1685,7 +1695,7 @@ export const terminalSendHandler = async ({
           chosenKey = "ctrl+shift+v";
         }
       }
-      await typeViaClipboard(input, chosenKey);
+      clipboardOutcome = await typeViaClipboard(input, chosenKey);
     } else {
       await keyboard.type(input);
     }
@@ -1736,10 +1746,26 @@ export const terminalSendHandler = async ({
       hints: {
         target: toTargetHints(ident.identity),
         ...(warnings.length > 0 ? { warnings } : {}),
+        ...(clipboardOutcome ? { clipboard: clipboardPasteHints(clipboardOutcome) } : {}),
       },
     });
   } catch (err) {
-    return failWith(err, "terminal:send", { windowTitle });
+    // A failed clipboard paste has already replaced the user's clipboard —
+    // carry what became of it, the same way the success path carries
+    // `hints.clipboard`. Without this the fact dies at the catch.
+    return failWith(err, "terminal:send", {
+      windowTitle,
+      // Two ways the clipboard facts get here, and they are exclusive: the
+      // paste itself threw (the error carries them), or the paste SUCCEEDED and
+      // something after it threw (the hoisted outcome carries them). The second
+      // is the one worth spelling out — the text is already in the terminal, so
+      // a caller that retries on this failure double-sends.
+      ...(err instanceof TypeViaClipboardDeliveryError
+        ? { clipboard: err.clipboard }
+        : clipboardOutcome
+          ? { clipboard: clipboardPasteHints(clipboardOutcome) }
+          : {}),
+    });
   }
 };
 
@@ -2999,7 +3025,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call. action='read' / action='send' absorb the formerly-standalone read/send tools (Phase 4).",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions. read/send/run also accept a launch_console `paneId` (pass the paneId field, NOT windowTitle) to keep targeting a pane after its title changes.",
-        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when the target class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh) OR env DTM_BG_AUTO=1. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is EXCLUDED (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR, so the FG path is default — pass sendOptions:{method:'background'} only if your WT build accepts BG input.",
+        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) replaces the clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when the target class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh) OR env DTM_BG_AUTO=1. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is EXCLUDED (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR, so the FG path is default — pass sendOptions:{method:'background'} only if your WT build accepts BG input.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",

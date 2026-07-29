@@ -409,7 +409,7 @@ Responses carry the `post` block; `narrate:"rich"` attaches a UIA diff (state-tr
 
 #### `keyboard(action='type')`
 Text input.
-- `use_clipboard=true` routes via PowerShell + clipboard, **bypassing any Japanese IME**. Required when typing URLs / paths under an active IME.
+- `use_clipboard=true` pastes the text from the clipboard instead of typing it, so it is **not run through IME conversion**. Required when typing URLs / paths under an active IME. Two things to know: it does not help while an IME **composition is already in progress** (the paste keystroke is consumed by the IME and nothing is inserted — commit or cancel the composition first), and your clipboard is replaced for the duration of the call and put back afterwards. The transaction runs inside the native addon; builds without it fall back to `powershell.exe` and are capped at about 12 000 characters. `hints.clipboard` reports which backend served the paste and whether the restore ran.
 - Also required for text that contains em-dash (`—`), en-dash (`–`), smart quotes, or other non-ASCII punctuation — these can be intercepted as keyboard accelerators by Chrome/Edge. `keyboard(action='type')` detects these characters automatically and upgrades to clipboard mode (`method:'clipboard-auto'`). Opt out with `forceKeystrokes=true`.
 - `replaceAll=true` sends Ctrl+A before typing to replace any existing content (requires the field to already be focused).
 

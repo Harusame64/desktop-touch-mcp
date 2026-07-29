@@ -47,6 +47,7 @@ import type {
   NativeConsolePasteResult,
   NativeClipboardReadResult,
   NativeClipboardWriteVerifyResult,
+  NativeTypeViaClipboardResult,
   NativeProcessParentEntry,
   NativeProcessIdentity,
   NativeScrollInfo,
@@ -219,6 +220,23 @@ export interface NativeWin32 {
   // worker instead of freezing the V8 thread (and with it the whole server).
   win32ClipboardReadText?(signal?: AbortSignal): Promise<NativeClipboardReadResult>;
   win32ClipboardWriteTextVerified?(utf16le: Buffer, signal?: AbortSignal): Promise<NativeClipboardWriteVerifyResult>;
+
+  // ADR-033 PR-2 — the composite behind `typeViaClipboard`: save → set + verify
+  // → SendInput paste chord → settle → restore, in one call. Optional so an
+  // older `.node` build cleanly falls back to the PowerShell path (see
+  // `hasNativeTypeViaClipboard()`). Async for the same reason as the two above,
+  // plus a deliberate 120ms settle that must not run on the V8 thread. Throws
+  // only on an unknown `pasteCombo`; Win32 failures come back in the result.
+  // `pasteDeadlineBudgetMs` is the second half of the timeout story: the signal
+  // cancels a QUEUED task, this refuses the chord in a task that is already
+  // running past the point where the caller has been told the call failed —
+  // otherwise the keystroke lands in whatever window has focus by then.
+  win32TypeViaClipboard?(
+    utf16le: Buffer,
+    pasteCombo: "ctrl+v" | "ctrl+shift+v",
+    pasteDeadlineBudgetMs?: number,
+    signal?: AbortSignal,
+  ): Promise<NativeTypeViaClipboardResult>;
 
   // Issue #245 系統②: IME open-status query / control via Imm32.dll +
   // WM_IME_CONTROL. Returns `false` when the target HWND has no associated
@@ -451,6 +469,23 @@ export function hasNativeClipboardText(): boolean {
     typeof nativeWin32?.win32ClipboardReadText === "function" &&
     typeof nativeWin32?.win32ClipboardWriteTextVerified === "function"
   );
+}
+
+/**
+ * ADR-033 PR-2 — can this build run the whole "set the clipboard, paste it,
+ * restore" transaction natively?
+ *
+ * One binding, so one probe: the composite is self-contained — save, verify,
+ * chord, settle and restore all happen inside `win32TypeViaClipboard`, so there
+ * is no partial-addon state where half the sequence is native and half is not.
+ *
+ * When false, `typeViaClipboard()` in `src/tools/keyboard.ts` falls back to its
+ * three `powershell.exe` spawns, which still work but are the path Microsoft
+ * Defender scored as `Trojan:Win32/Commando.A!ml` and which cap the payload at
+ * ~12 000 characters.
+ */
+export function hasNativeTypeViaClipboard(): boolean {
+  return typeof nativeWin32?.win32TypeViaClipboard === "function";
 }
 
 /**

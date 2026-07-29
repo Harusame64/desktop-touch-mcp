@@ -8,7 +8,13 @@ import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd } from "../engine/win32.js";
-import { nativeWin32 } from "../engine/native-engine.js";
+import { nativeWin32, hasNativeTypeViaClipboard } from "../engine/native-engine.js";
+import type { NativeTypeViaClipboardResult } from "../engine/native-types.js";
+// ADR-033: the fallback's command-line ceiling, the shared give-up budget and
+// the abort-on-timeout helper all belong to the clipboard tool, which reaches
+// the same two backends. Imported rather than duplicated so the two paths
+// cannot drift apart on a measured number.
+import { FALLBACK_MAX_CHARS, WRITE_TIMEOUT_MS as CLIPBOARD_WRITE_TIMEOUT_MS, withTimeout } from "./clipboard.js";
 // ADR-019 Stage 4 — SSIM `local_repaint` fallback when BG verify reaches
 // terminal `unverifiable + read_back_unsupported`. See sub-plan §2.4.2.
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
@@ -50,84 +56,676 @@ const execFileAsync = promisify(execFile);
 // and any future tool that reaches into the same libnut backend. See the
 // design rationale block at the top of nutjs.ts.
 
+// ─────────────────────────────────────────────────────────────────────────────
+// typeViaClipboard — put text on the clipboard, paste it, put the clipboard back
+//
+// ADR-033 PR-2. This used to spawn THREE `powershell.exe` processes per call
+// (save / write+verify / restore), and the middle one carried a base64 blob
+// decoded inline by PowerShell — the command-line shape Microsoft Defender
+// scored as `Trojan:Win32/Commando.A!ml` before killing the server mid-session.
+// It is also the hottest clipboard path here: every non-ASCII `keyboard:type`
+// is promoted to it automatically, and `terminal(action='send')` defaults to it.
+//
+// The native path does the whole transaction in-process (`win32TypeViaClipboard`
+// — see `src/win32/type_via_clipboard.rs`). The PowerShell path is RETAINED for
+// builds without the compiled addon, because there is no other channel that can
+// deliver non-ASCII text to a foreground window.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How long to wait between the paste chord and restoring the clipboard.
+ *
+ *  Mirrors `type_via_clipboard.rs::PASTE_SETTLE_MS` — the two backends must not
+ *  give the target application different amounts of time to READ the clipboard
+ *  before it is taken away again. `tests/unit/type-via-clipboard-settle.test.ts`
+ *  pins them equal, and pins both apart from `foreground_flash`'s 30ms, which
+ *  answers a different question (when is it safe to send the NEXT keystroke). */
+export const PASTE_SETTLE_MS = 120;
+
 /**
- * Set the Windows clipboard via PowerShell, using Base64 to handle any Unicode text.
- * Then paste with Ctrl+V to bypass IME conversion.
+ * How long the addon is allowed for everything it does AFTER the paste chord,
+ * excluding the settle: the restore, and its share of clipboard lock
+ * contention.
+ *
+ * 300ms, of which only the first ~100ms is arithmetic. The restore is ONE
+ * clipboard transaction and `open_clipboard_with_retry` absorbs up to 10x10ms
+ * per transaction (I-12), so ~100ms is the bounded worst case for getting the
+ * lock.
+ *
+ * The remaining ~200ms is headroom for the write itself — the snapshot is
+ * replayed format by format (`GlobalAlloc` + memcpy + `SetClipboardData`, once
+ * per saved format), and **that has not been measured**. A clipboard populated
+ * by Word or Excel can carry 10-20 formats, so the cost is not obviously
+ * negligible; 200ms is a guess with room in it, not a derived number.
+ *
+ * Being wrong about it degrades rather than breaks: the chord has ALREADY been
+ * sent by the time this budget is being spent, so the input is delivered either
+ * way. Overrunning only means the JS timeout fires first and the caller is told
+ * the clipboard state is indeterminate — which is true, and disclosed.
+ *
+ * @internal exported for the budget pin.
  */
-export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v"): Promise<void> {
-  // Save current clipboard (best-effort — non-text content will be lost)
+export const POST_CHORD_BUDGET_MS = 300;
+
+/**
+ * The deadline handed to the addon: after this long, it must not send the paste
+ * chord at all.
+ *
+ * This is the half of the timeout story `AbortSignal` cannot cover. Aborting
+ * cancels a task that is still QUEUED; a task already inside `GetClipboardData`
+ * against a hung clipboard owner runs to completion however long that takes. So
+ * without this, a call that failed at 5s could reach its `SendInput` minutes
+ * later and type into whatever window happens to have focus — in an application
+ * the caller never named, at a moment nobody expects. The failure mode is
+ * silent, arbitrary and destructive.
+ *
+ * The value answers "how late may the chord go out and still leave time for the
+ * work that follows it to finish before the caller gives up":
+ *
+ *     timeout − settle − everything after the chord
+ *
+ * so a chord sent exactly at the deadline is still followed by a settle and a
+ * restore that complete inside `CLIPBOARD_WRITE_TIMEOUT_MS`. Past it, nothing is
+ * typed and the addon reports `paste_deadline_exceeded` — the restore still
+ * runs, because the addon's 3-point race check is what makes a late restore
+ * safe (if the user has copied anything since, the sequence number moved and it
+ * skips itself).
+ *
+ * @internal exported for the budget pin, which is what keeps the three
+ *           constants in step: change the timeout and the derived value moves
+ *           with it.
+ */
+export const PASTE_DEADLINE_BUDGET_MS =
+  CLIPBOARD_WRITE_TIMEOUT_MS - PASTE_SETTLE_MS - POST_CHORD_BUDGET_MS;
+
+/** Which implementation served the call. Surfaced in the envelope so a
+ *  Defender-related regression is diagnosable from the response. */
+export type TypeViaClipboardBackend = "native" | "powershell";
+
+/**
+ * What `typeViaClipboard` has to tell its callers.
+ *
+ * It used to return `Promise<void>`, which left no way to say that the user's
+ * clipboard was NOT put back — and that happens for reasons the caller cannot
+ * infer: another process wrote to the clipboard first (`restoreSkippedRace`),
+ * the saved content is too large for the fallback's command line
+ * (`restoreSkippedTooLarge`), the save never succeeded (`restoreUnavailable`),
+ * or the clipboard held formats a text-only snapshot cannot carry
+ * (`skippedFormats`, e.g. an image). Silently keeping the user's clipboard is a
+ * side effect they did not ask for, so every way it can happen is disclosed.
+ *
+ * The optional flags are present only when true, so `hints.clipboard` stays
+ * empty of noise on the ordinary path.
+ */
+export interface TypeViaClipboardOutcome {
+  backend: TypeViaClipboardBackend;
+  /**
+   * The call never changed the user's clipboard, so there was nothing to put
+   * back. Present only when true.
+   *
+   * It failed before `EmptyClipboard` succeeded — the hidden owner window could
+   * not be created, one of the clipboard opens lost its retries, or the payload
+   * allocation failed. `clipboardRestored:false` alone reads as the alarming
+   * half ("we replaced your clipboard and kept it"), which for these failures is
+   * the opposite of what happened. Native only: the fallback's failure modes are
+   * spawn-level and already disclosed through `restoreUnavailable`.
+   */
+  untouched?: boolean;
+  /** Whether the user's clipboard was put back. Meaningless when `untouched`. */
+  clipboardRestored: boolean;
+  /** Restore was skipped because someone else wrote to the clipboard after we
+   *  did. NOT a failure: overwriting their value would be worse. */
+  restoreSkippedRace?: boolean;
+  /** Fallback only: the saved content is past what a PowerShell command line
+   *  can carry, so it was not written back. The input still went through — see
+   *  the `powershellTypeViaClipboard` note on why the paste wins that tie. */
+  restoreSkippedTooLarge?: boolean;
+  /** The save itself failed, so there was never anything to put back. */
+  restoreUnavailable?: boolean;
+  /**
+   * The restore was ATTEMPTED and failed.
+   *
+   * A separate fact from every flag above, and the one that needs acting on:
+   * the others all leave the clipboard holding something valid (someone else's
+   * value, or ours), whereas a restore that fails partway can leave it EMPTY —
+   * `EmptyClipboard` has already run by the time an allocation can fail. Folded
+   * into a bare `restored:false` it would be indistinguishable from the
+   * deliberate skips, which are not problems at all.
+   */
+  restoreFailedReason?: string;
+  /**
+   * The paste went out backed only by the in-session read-back: the addon's
+   * second, post-close read — the one that can catch a clipboard manager or DLP
+   * agent replacing the payload after the lock is released — could not run,
+   * because re-opening the clipboard lost a race.
+   *
+   * Not a failure and not a reason to retry: the first read-back already proved
+   * the payload was stored, and refusing to paste here would make typing a
+   * silent no-op whenever another application merely READS the clipboard, which
+   * is normal and frequent. It is disclosed because the composite sends the
+   * keystroke itself, so "we pasted something we could not fully verify" is a
+   * fact the caller cannot otherwise observe.
+   *
+   * Native only. The fallback's single `Get-Clipboard -Raw` runs after
+   * `Set-Clipboard` released the lock, so it IS the post-close read and is
+   * always checked.
+   */
+  postCloseUnverified?: boolean;
+  /** Formats the snapshot could not carry, so they are gone even though the
+   *  restore ran (native only — the fallback is text-only throughout). */
+  skippedFormats?: Array<{ formatId: number; reason: string }>;
+}
+
+/**
+ * A `typeViaClipboard` failure that still has something to say about the user's
+ * clipboard.
+ *
+ * When the paste fails, the clipboard has usually already been replaced with
+ * the payload — and whether it was put back afterwards is a fact only this call
+ * knows. Thrown as a bare `Error`, all of it was lost at the catch site, so a
+ * caller was told "the paste failed" while their clipboard silently held our
+ * text (or nothing at all, after a failed restore). The failure paths that
+ * reach here — a missed paste deadline, a refused chord, a verification
+ * mismatch — are exactly the ones where the transaction ran far enough to touch
+ * the clipboard.
+ *
+ * **The message is the classification.** `_errors.ts::classify` routes on the
+ * message text, so every string thrown below is the one that shipped:
+ * `ClipboardWriteNotDelivered` stays a compact code, and the lower-case ones
+ * stay generic. This class only adds a payload alongside it — changing a word
+ * of any message would silently re-route the error.
+ */
+export class TypeViaClipboardDeliveryError extends Error {
+  constructor(
+    message: string,
+    /** Same shape as the success path's `hints.clipboard`, so a caller reads
+     *  the side effect the same way whether the call worked or not. */
+    readonly clipboard: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "TypeViaClipboardDeliveryError";
+  }
+}
+
+/** The native composite: one in-process transaction, no child process. */
+async function nativeTypeViaClipboard(
+  text: string,
+  pasteCombo: "ctrl+v" | "ctrl+shift+v",
+): Promise<TypeViaClipboardOutcome> {
+  // UTF-16LE bytes rather than a JS string: napi's String bridge transcodes
+  // through UTF-8, which cannot represent an unpaired surrogate, so it would
+  // replace one with U+FFFD *before* the addon's byte comparison ran — and the
+  // verification would then pass on mutated text.
+  const payload = Buffer.from(text, "utf16le");
+  // This `withTimeout` runs INSIDE the engine's keyboard input lock — see the
+  // nesting note in `typeViaClipboard` below. The budget starts when the addon
+  // is called, not when the caller asked, so time spent queued behind another
+  // keyboard operation does not eat into it and cannot expire before the work
+  // begins.
+  const r = await withTimeout(
+    (signal) =>
+      nativeWin32!.win32TypeViaClipboard!(
+        payload,
+        pasteCombo,
+        PASTE_DEADLINE_BUDGET_MS,
+        signal,
+      ),
+    CLIPBOARD_WRITE_TIMEOUT_MS,
+    // "gave up" rather than "timed out": `_errors.ts::classify` has a generic
+    // timeout arm that would answer this with "the app may be unresponsive,
+    // wait and retry", which is the opposite of the truth here. The state note
+    // is not decoration — giving up abandons the RESULT, not the work (see the
+    // addon's module doc), so the paste may still land afterwards and the
+    // clipboard may still be holding the payload.
+    `native clipboard paste gave up after ${CLIPBOARD_WRITE_TIMEOUT_MS}ms waiting for the clipboard owner; the paste and the clipboard contents are indeterminate after this — the keystroke may still arrive and the clipboard may not have been restored`,
+  );
+
+  if (!r.ok) {
+    // Every one of these ran far enough to replace the user's clipboard, so
+    // they all carry what became of it — built from the SAME outcome a success
+    // would have returned, so `context.clipboard` on a failure and
+    // `hints.clipboard` on a success are the same shape, read the same way.
+    const clipboard = clipboardPasteHints(nativeOutcome(r));
+
+    // Lower-case messages on purpose, here and below: an Error whose whole
+    // message is one PascalCase token is this repo's compact-code producer
+    // shape and would need its own SUGGESTS entry (swept by
+    // oq8-failwith-suggest-routing.test.ts). Neither of these failures has a
+    // recovery distinct from the generic one. `classify` routes on the message
+    // text, so these strings are a contract — the error CLASS carries the new
+    // payload precisely so the messages did not have to change.
+    if (r.reason === "paste_deadline_exceeded") {
+      // The clipboard work outlasted the budget, so the addon refused to send
+      // the chord. Stated as "nothing was typed" because that is the part a
+      // caller acts on: this is the one failure here that is safe to retry
+      // blind, and reporting it as a delivery failure would suggest the
+      // opposite.
+      throw new TypeViaClipboardDeliveryError(
+        "clipboard paste ran past its deadline before the keystroke could be sent, so nothing was typed",
+        clipboard,
+      );
+    }
+    if (r.reason === "send_input_partial") {
+      // The OS accepted a PREFIX of the chord and that prefix reached the V
+      // key-down: the target may have pasted even though the batch failed
+      // (the addon kept the settle before restoring for exactly this case).
+      // The one thing this message must not say is "nothing happened" — a
+      // blind retry here can double-paste, which is the mistake the addon's
+      // maybe-fired tracking exists to prevent. Same reasoning as the
+      // timeout's "indeterminate" wording above.
+      throw new TypeViaClipboardDeliveryError(
+        "clipboard paste keystroke batch was only partially accepted by the OS, and the accepted part may already have pasted (send_input_partial) — verify the target's content before retrying",
+        clipboard,
+      );
+    }
+    if (r.verify.ok) {
+      // The payload IS on the clipboard; `SendInput` refused the chord
+      // outright — the batch never reached the V key-down, so nothing pasted.
+      // Calling that a delivery failure would send the caller after a
+      // clipboard problem that does not exist.
+      throw new TypeViaClipboardDeliveryError(
+        `clipboard paste keystroke was not accepted by the OS (${r.reason ?? "unknown"})`,
+        clipboard,
+      );
+    }
+    // Same typed error the PowerShell path throws, and the same one
+    // `clipboard(action='write')` returns — one verification contract, one code.
+    // Do NOT put the read-back text in the message: on a mismatch it belongs to
+    // another process and may be a password or an API key (I-2).
+    throw new TypeViaClipboardDeliveryError("ClipboardWriteNotDelivered", clipboard);
+  }
+
+  return nativeOutcome(r);
+}
+
+/** What the addon reported, in the shape the callers publish. Shared by the
+ *  success return and by every failure that has to disclose the same facts. */
+function nativeOutcome(r: NativeTypeViaClipboardResult): TypeViaClipboardOutcome {
+  return {
+    backend: "native",
+    // Said first because it changes how everything below it reads: with nothing
+    // modified, `restored:false` means "there was nothing to put back".
+    ...(r.clipboardModified ? {} : { untouched: true }),
+    clipboardRestored: r.clipboardRestored,
+    ...(r.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
+    // A restore that FAILED is not a restore that was skipped. The addon
+    // reports the two separately because they end in different states — a
+    // skip leaves another process's value in place, a failure can leave the
+    // clipboard empty — so collapsing both into `restored:false` here would
+    // throw away the only signal that says which one happened.
+    ...(r.restoreFailedReason ? { restoreFailedReason: r.restoreFailedReason } : {}),
+    // The chord went out on the strength of the in-session read alone: the
+    // post-close re-read never ran, so a clipboard manager or DLP agent
+    // swapping the payload in that window would not have been caught. Pasting
+    // anyway is the deliberate choice (requiring the second read would make
+    // typing a silent no-op whenever something else merely READS the clipboard
+    // — normal, frequent behaviour), but it is weaker evidence than usual and
+    // the caller is told so. Only when a chord actually went out: with nothing
+    // typed there is no unverified paste to disclose.
+    ...(r.pasted && !r.verify.postCloseChecked ? { postCloseUnverified: true } : {}),
+    ...(r.skippedFormats && r.skippedFormats.length > 0
+      ? { skippedFormats: r.skippedFormats }
+      : {}),
+  };
+}
+
+/**
+ * The addon-less path: three `powershell.exe` spawns, kept working.
+ *
+ * Three fixes over what shipped before ADR-033 PR-2:
+ *
+ * 1. the save used `Get-Clipboard` without `-Raw` and read the child's raw
+ *    stdout, so a multi-line clipboard came back as an array joined by the
+ *    console's line endings and a trailing newline was invented. It now goes
+ *    through the same base64 round trip `clipboard(action='read')` uses, which
+ *    is byte-exact and codepage-proof;
+ * 2. the restore was unconditional, so a clipboard manager (or the user) that
+ *    copied something during the 120ms settle had it silently overwritten with
+ *    the pre-call content. The restore now runs only if the clipboard still
+ *    holds what we pasted. That check is a SHA-256 comparison inside the same
+ *    invocation rather than a sequence number — PowerShell cannot see
+ *    `GetClipboardSequenceNumber`, so this is an approximation of the native
+ *    path's 3-point race check: it cannot notice a writer that put back
+ *    byte-identical text, which is exactly the case where overwriting is
+ *    harmless anyway;
+ * 3. an over-long payload used to reach `spawn` and fail with a raw
+ *    `ENAMETOOLONG` hundreds of milliseconds later. It is now rejected up front
+ *    with the same named failure `clipboard(action='write')` uses.
+ */
+async function powershellTypeViaClipboard(
+  text: string,
+  pasteCombo: "ctrl+v" | "ctrl+shift+v",
+): Promise<TypeViaClipboardOutcome> {
+  // (3) The payload has to fit in a command line. Fail before doing anything
+  // rather than after emptying the user's clipboard.
+  if (text.length > FALLBACK_MAX_CHARS) {
+    throw new Error("ClipboardWriteTooLargeForFallback");
+  }
+
+  // (1) Save. `null` = the save failed, so there is nothing to put back.
+  // `""` is a REAL state (an empty or non-text clipboard), not a failure.
   let savedClipboard: string | null = null;
   try {
     const { stdout } = await execFileAsync(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"],
-      { timeout: 3000 }
+      [...POWERSHELL_ARGS, CLIPBOARD_SAVE_SCRIPT],
+      { timeout: 3000 },
     );
-    savedClipboard = stdout;
+    const savedB64 = stdout.trim();
+    savedClipboard = savedB64 ? Buffer.from(savedB64, "base64").toString("utf16le") : "";
   } catch {
-    // Clipboard may be empty or locked — proceed without saving
+    // The clipboard may be locked by another application — proceed without
+    // saving rather than refusing to type. Disclosed as `restoreUnavailable`.
   }
 
   // Phase 5 E1 (epic #211): combine Set-Clipboard + Get-Clipboard -Raw inside
   // a single PowerShell invocation and compare base64-encoded UTF-16LE bytes
-  // for byte-equality. Mirrors the clipboard:write contract at
-  // src/tools/clipboard.ts:60-118 — the audit's E1 finding caught that
-  // typeViaClipboard (used by terminal:send FG / keyboard:type FG clipboard
-  // paths) was missing the read-back verification that clipboard:write
-  // landed in PR #180. Without verification, DLP / clipboard manager
-  // intercepts on Set-Clipboard would silently leave stale clipboard
-  // contents and the paste would inject wrong text into the target window
-  // (silent-fail violating Phase 5 north-star).
-  const b64 = Buffer.from(text, "utf16le").toString("base64");
-  const script =
-    `$b=[System.Convert]::FromBase64String('${b64}');` +
-    `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-    `Set-Clipboard -Value $t;` +
-    `$r=Get-Clipboard -Raw;` +
-    `if($r -eq $null){Write-Output ''}else{` +
-    `[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))` +
-    `}`;
-  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    timeout: 5000,
+  // for byte-equality. Without this verification a DLP agent or clipboard
+  // manager intercepting Set-Clipboard would leave stale contents on the
+  // clipboard and the paste below would inject the WRONG TEXT into the target
+  // window — a silent failure with no signal anywhere.
+  const script = buildFallbackWriteScript(Buffer.from(text, "utf16le").toString("base64"));
+  const { stdout } = await execFileAsync("powershell.exe", [...POWERSHELL_ARGS, script], {
+    timeout: CLIPBOARD_WRITE_TIMEOUT_MS,
   });
 
   // Byte-equal compare (UTF-16LE, the native Windows clipboard format).
-  // Buffer.equals avoids any normalization (NFC/NFD), BOM, or trailing-
-  // newline coercion that string comparison could introduce. Mirror the
-  // clipboard.ts:96-118 mismatch path: throw a typed Error so classify()
-  // routes it to code:'ClipboardWriteNotDelivered' (auto-classify via
-  // _errors.ts:397-398). Do NOT include actual clipboard contents in
-  // the message — a racing app may have placed sensitive data on the
-  // clipboard.
+  // Buffer.equals avoids any normalization (NFC/NFD), BOM, or trailing-newline
+  // coercion that a string comparison could introduce. Throwing a bare
+  // PascalCase token routes it to code:'ClipboardWriteNotDelivered' via
+  // `_errors.ts::classify`. Do NOT include the actual clipboard contents — a
+  // racing app may have placed sensitive data there (I-2).
   const expectedBytes = Buffer.from(text, "utf16le");
   const readBackB64 = stdout.trim();
   const actualBytes = readBackB64 ? Buffer.from(readBackB64, "base64") : Buffer.alloc(0);
   if (!expectedBytes.equals(actualBytes)) {
-    throw new Error("ClipboardWriteNotDelivered");
+    // `restored: false`, and that is the honest answer rather than a
+    // placeholder: this throw happens BEFORE the restore below, so the user's
+    // clipboard is left holding whatever the failed write put there. The native
+    // path restores first and reports `restored: true` here — the backend
+    // divergence documented on `typeViaClipboard`, now visible in the response
+    // instead of only in a comment.
+    throw new TypeViaClipboardDeliveryError("ClipboardWriteNotDelivered", {
+      backend: "powershell",
+      restored: false,
+    });
   }
 
   const combo = parseKeys(pasteCombo);
   await keyboard.pressKey(...combo);
   await keyboard.releaseKey(...combo);
 
-  // Brief delay to let the paste complete before restoring clipboard
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  // Let the target read the clipboard before it is taken away again.
+  await new Promise((resolve) => setTimeout(resolve, PASTE_SETTLE_MS));
 
-  // Restore previous clipboard (best-effort)
-  if (savedClipboard !== null) {
-    try {
-      const restoreB64 = Buffer.from(savedClipboard, "utf16le").toString("base64");
-      const restoreScript =
-        `$b=[System.Convert]::FromBase64String('${restoreB64}');` +
-        `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-        `Set-Clipboard -Value $t`;
-      await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", restoreScript], {
-        timeout: 3000,
-      });
-    } catch {
-      // Restore is best-effort — don't fail the overall operation
-    }
+  if (savedClipboard === null) {
+    return { backend: "powershell", clipboardRestored: false, restoreUnavailable: true };
   }
+  // The saved content has to travel back through a command line too. When it
+  // does not fit, the INPUT still stands and only the restore is dropped:
+  // `terminal(action='send')` defaults to this path, non-ASCII text is promoted
+  // to it automatically, and with an IME open it is the only channel that
+  // delivers the text at all — so failing the whole call to protect a courtesy
+  // (putting the clipboard back) would strand the caller with no way through.
+  // The user's clipboard content is normally re-obtainable from wherever it was
+  // copied; a refused keystroke is not. Disclosed, never silent.
+  if (savedClipboard.length > FALLBACK_MAX_CHARS) {
+    return { backend: "powershell", clipboardRestored: false, restoreSkippedTooLarge: true };
+  }
+
+  // (2) Restore only if the clipboard still holds what we pasted.
+  try {
+    const restoreScript = buildFallbackRestoreScript(
+      Buffer.from(savedClipboard, "utf16le").toString("base64"),
+      createHash("sha256").update(expectedBytes).digest("hex"),
+    );
+    const { stdout: restoreOut } = await execFileAsync(
+      "powershell.exe",
+      [...POWERSHELL_ARGS, restoreScript],
+      { timeout: 3000 },
+    );
+    const verdict = restoreOut.trim();
+    if (verdict === "skipped_race") {
+      return { backend: "powershell", clipboardRestored: false, restoreSkippedRace: true };
+    }
+    if (verdict === "restored") {
+      return { backend: "powershell", clipboardRestored: true };
+    }
+    // Anything else is a restore that did NOT happen, and the script says so
+    // rather than being inferred from an exit status that stays 0 either way.
+    // The reachable case is a saved clipboard of "" — `Set-Clipboard -Value ''`
+    // is rejected — which leaves the call ending with our payload still on the
+    // clipboard. Reported the same way the native path reports a failed
+    // restore, so the two backends are read the same way.
+    return {
+      backend: "powershell",
+      clipboardRestored: false,
+      restoreFailedReason: "set_clipboard_failed",
+    };
+  } catch {
+    // The invocation itself failed (spawn error, timeout kill). Restore is
+    // best-effort — this must not fail an input that has already been
+    // delivered — but it is still a failure rather than a deliberate skip.
+    return {
+      backend: "powershell",
+      clipboardRestored: false,
+      restoreFailedReason: "restore_command_failed",
+    };
+  }
+}
+
+/** The save half of the fallback, identical to `clipboard(action='read')`'s
+ *  script: `-Raw` keeps line breaks intact and base64 keeps the bytes exact
+ *  across the console's codepage. */
+const CLIPBOARD_SAVE_SCRIPT =
+  "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" +
+  "$t=Get-Clipboard -Raw;" +
+  "if($t -eq $null){Write-Output ''}else{" +
+  "[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($t))" +
+  "}";
+
+/** The fixed `powershell.exe` arguments every fallback invocation uses.
+ *
+ *  @internal Exported so the command-line budget test measures the real prefix
+ *  rather than a copy of it — adding a flag here shrinks the payload budget,
+ *  and that has to show up in the test that guards it.
+ */
+export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-Command"] as const;
+
+/**
+ * Write + verify, in one invocation: decode the payload, `Set-Clipboard`, then
+ * read it straight back so a DLP agent or clipboard manager that intercepted
+ * the write is caught before anything is pasted.
+ *
+ * @param payloadB64 base64 of the payload's UTF-16LE bytes.
+ * @internal Pure and exported for the command-line budget test — this string
+ *           becomes a Windows command line, which has a hard 32 767-character
+ *           ceiling that `FALLBACK_MAX_CHARS` exists to stay under.
+ */
+export function buildFallbackWriteScript(payloadB64: string): string {
+  return (
+    `$b=[System.Convert]::FromBase64String('${payloadB64}');` +
+    `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
+    `Set-Clipboard -Value $t;` +
+    `$r=Get-Clipboard -Raw;` +
+    `if($r -eq $null){Write-Output ''}else{` +
+    `[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))` +
+    `}`
+  );
+}
+
+/**
+ * Restore, guarded by a race check in the same invocation: compare what is on
+ * the clipboard now against the hash of what we pasted, and put the saved
+ * content back only if they still match.
+ *
+ * The comparison travels as a 64-character hash rather than a second copy of
+ * the payload because both blobs together would not fit in a command line.
+ *
+ * @param savedB64        base64 of the saved clipboard's UTF-16LE bytes.
+ * @param pastedSha256Hex lower-case hex SHA-256 of the pasted payload's
+ *                        UTF-16LE bytes.
+ * @internal Pure and exported for the command-line budget test. This is the
+ *           LONGER of the two scripts, so it is the one that decides how large
+ *           `FALLBACK_MAX_CHARS` may be.
+ */
+export function buildFallbackRestoreScript(savedB64: string, pastedSha256Hex: string): string {
+  return (
+    `$c=Get-Clipboard -Raw;$h='';` +
+    `if($c -ne $null){$h=[BitConverter]::ToString(` +
+    `[Security.Cryptography.SHA256]::Create().ComputeHash(` +
+    `[Text.Encoding]::Unicode.GetBytes($c))).Replace('-','').ToLower()}` +
+    `if($h -ne '${pastedSha256Hex}'){Write-Output 'skipped_race'}else{` +
+    // `try` + `-ErrorAction Stop` are load-bearing, not defensive habit. A
+    // non-terminating `Set-Clipboard` error does not stop the enclosing block
+    // and does not change the exit status, so without them the script walks
+    // straight on to `Write-Output 'restored'` and reports a restore that never
+    // happened. The reachable case is a saved clipboard of "": `Set-Clipboard
+    // -Value ''` is rejected outright (an empty string fails the parameter's
+    // validation), and that rejection used to surface as success.
+    `try{Set-Clipboard -Value ([Text.Encoding]::Unicode.GetString(` +
+    `[Convert]::FromBase64String('${savedB64}'))) -ErrorAction Stop;` +
+    `Write-Output 'restored'}catch{Write-Output 'restore_failed'}}`
+  );
+}
+
+/**
+ * Put `text` on the clipboard, paste it with `pasteCombo`, and put the user's
+ * clipboard back.
+ *
+ * Pasting rather than typing is what preserves the exact Unicode bytes: the
+ * keystroke channel cannot deliver text outside the active keyboard layout, and
+ * an open IME would compose ASCII keystrokes into something else.
+ *
+ * **Throws** `ClipboardWriteNotDelivered` when the read-back verification fails
+ * — in that case no paste chord is sent, so the target window is untouched —
+ * and `ClipboardWriteTooLargeForFallback` when an addon-less build is handed
+ * more text than a PowerShell command line can carry.
+ *
+ * **Backend divergence on that failure (I-33).** The native path attempts the
+ * restore before it reports the failure, so a verification failure with no
+ * other writer involved still gives the user their clipboard back. The
+ * PowerShell path throws first and never reaches its restore, so the user is
+ * left holding whatever the failed write put there. That is not fixed here on
+ * purpose: the fallback's restore is gated on "the clipboard still holds what
+ * we pasted", which after a verification failure is false by definition, so
+ * running it would either be a no-op or would overwrite whatever the
+ * interceptor wrote — the outcome I-6 exists to prevent. Closing the gap needs
+ * the sequence-number machinery PowerShell cannot reach, which is precisely
+ * what the addon is for.
+ *
+ * **Returns** what happened to the user's clipboard (`TypeViaClipboardOutcome`).
+ * This used to be `Promise<void>`; callers must forward the result into their
+ * envelope, because a skipped restore is a side effect the caller cannot
+ * otherwise observe.
+ *
+ * What a successful return does NOT claim: that the target application received
+ * the text. The chord is delivered to whatever has focus, and a pending IME
+ * composition swallows it — see the tool description's IME caveat.
+ */
+export async function typeViaClipboard(
+  text: string,
+  pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v",
+): Promise<TypeViaClipboardOutcome> {
+  // ── Why the native call takes the keyboard input lock ──────────────────────
+  //
+  // The chord this replaces went out through `keyboard.pressKey/releaseKey`,
+  // which are wrapped in the engine's input queue (`nutjs.ts`), so it was
+  // serialised against every other keyboard caller. The addon sends its chord
+  // from a libuv worker, outside that queue — so without this, a Ctrl+V could
+  // splice into the middle of a `keyboard(action='sequence')` that is holding
+  // Alt or Shift down inside `withKeyboardLock`. The result is a phantom
+  // shortcut (Ctrl+Alt+V where neither party asked for Alt) or a paste into
+  // whatever window the sequence had just navigated to. Exactly the class of
+  // bug the queue was introduced for (issue #255 / #257), reintroduced through
+  // a side door.
+  //
+  // The whole transaction is wrapped, not just the chord: the composite is
+  // indivisible inside the addon by design (the save / verify / paste / restore
+  // sequence has to hold together), so there is nothing finer to take the lock
+  // around. This is safe with `withKeyboardLock`'s deadlock contract because
+  // the native path calls no nut.js primitive at all — the contract only
+  // forbids the WRAPPED `keyboard.*` inside the lock.
+  //
+  // The cost: against a hung clipboard owner this holds the keyboard queue for
+  // up to the give-up budget (~5s) instead of the milliseconds the old chord
+  // took. Accepted, because in that state the clipboard is unusable
+  // system-wide, so every other input path that would have wanted the queue is
+  // already blocked on the same thing — and the alternative is keystrokes
+  // landing in the wrong window.
+  //
+  // **The give-up timeout lives INSIDE the lock, and the order is not
+  // interchangeable.** `nativeTypeViaClipboard` starts its `withTimeout` after
+  // this lock has been acquired, so all three clocks — the JS timeout, the
+  // abort, and the addon's own paste deadline (captured in the napi factory,
+  // i.e. also after the lock) — start from the same instant: the moment the
+  // addon is actually called. Putting `withTimeout` OUTSIDE the lock would let
+  // the JS timeout expire while the call is still QUEUED; the caller would be
+  // told it failed, and then the queue would hand the turn over and the chord
+  // would go out anyway — reopening, one layer up, exactly the hole the paste
+  // deadline was added to close.
+  //
+  // Queue wait is therefore unbounded, and a caller can wait queue-time + the
+  // give-up budget. That is the same semantics the old chord had: it queued on
+  // this lock through `keyboard.pressKey` too.
+  //
+  // Asymmetric on purpose: the fallback is NOT wrapped here. Its chord already
+  // goes through the wrapped `keyboard.pressKey`, which takes this same lock
+  // itself — wrapping the transaction as well would deadlock on the shared
+  // `_inputQueueTail` chain, which is the deadlock the `rawKeyboard` CONTRACT
+  // in `nutjs.ts` describes. So: native = the whole transaction, fallback = the
+  // chord only.
+  return hasNativeTypeViaClipboard()
+    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo))
+    : powershellTypeViaClipboard(text, pasteCombo);
+}
+
+/**
+ * The `hints.clipboard` block for a call that pasted — and, on a failure, the
+ * `context.clipboard` block, built from the same outcome so both read alike.
+ *
+ * Shared by `keyboard(action='type')` and `terminal(action='send')` so the two
+ * tools describe the same side effect with the same words. `backend` is always
+ * present (it is what makes a Defender-related regression diagnosable from a
+ * response instead of by guesswork) and so is `restored`, because "we put your
+ * clipboard back" is only reassuring if its absence is equally visible. The
+ * rest appear only when they happened.
+ *
+ * **What `restored:false` means, in one place.** Exactly one of these accompanies
+ * it, and they are not interchangeable:
+ *
+ * - `untouched` — the call never changed the clipboard. Nothing to put back;
+ *   the user's content is exactly where it was.
+ * - `restoreSkippedRace` — someone else wrote to the clipboard after we did, so
+ *   the restore stood down rather than clobber them (I-6). The user's older
+ *   content is gone, replaced by whatever that writer put there.
+ * - `restoreSkippedTooLarge` — fallback only: the saved content is past what a
+ *   PowerShell command line can carry, so the clipboard still holds our payload.
+ * - `restoreUnavailable` — the save itself failed, so there was never a snapshot
+ *   to put back; the clipboard holds our payload.
+ * - `restoreFailedReason` — the restore ran and failed. The worst case, and the
+ *   only one that can leave the clipboard EMPTY: it empties before it writes.
+ * - none of the above — the restore simply has not been reported as done; treat
+ *   the clipboard as holding our payload.
+ */
+export function clipboardPasteHints(outcome: TypeViaClipboardOutcome): Record<string, unknown> {
+  return {
+    backend: outcome.backend,
+    ...(outcome.untouched ? { untouched: true } : {}),
+    restored: outcome.clipboardRestored,
+    ...(outcome.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
+    ...(outcome.restoreSkippedTooLarge ? { restoreSkippedTooLarge: true } : {}),
+    ...(outcome.restoreUnavailable ? { restoreUnavailable: true } : {}),
+    // The one that is a problem rather than a decision: a restore that ran and
+    // failed can leave the clipboard EMPTY, so it must not read as one of the
+    // deliberate skips above.
+    ...(outcome.restoreFailedReason
+      ? { restoreFailedReason: outcome.restoreFailedReason }
+      : {}),
+    ...(outcome.postCloseUnverified ? { postCloseUnverified: true } : {}),
+    ...(outcome.skippedFormats && outcome.skippedFormats.length > 0
+      ? { skippedFormats: outcome.skippedFormats }
+      : {}),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,7 +912,13 @@ const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/
  * layouts.
  *
  * When matched, the auto-clipboard upgrade routes through `typeViaClipboard`,
- * which preserves the exact Unicode bytes regardless of IME state or layout.
+ * which preserves the exact Unicode bytes regardless of keyboard layout, and
+ * whose payload is not run through IME conversion because it is pasted rather
+ * than typed. That is NOT the same as being immune to the IME: with a
+ * composition already pending, the paste chord is consumed by the IME and
+ * nothing is inserted at all (measured, ADR-033 P2-0 Q3b — and identical to
+ * what the nut.js path this replaced did, so it is a limit of the channel
+ * rather than of the native implementation).
  * The `keystroke` path is still selected for pure ASCII text (fastest path).
  *
  * Wired into the auto-clipboard upgrade in ADR-018 Phase 2b-2 below.
@@ -359,7 +963,13 @@ export const keyboardTypeSchema = {
     .describe(
       "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. " +
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
-      "prevents IME from converting characters. Default false."
+      "pasted text is not run through IME conversion. Note this does not help while an IME " +
+      "composition is already in progress: the paste keystroke is consumed by the IME and " +
+      "nothing is inserted, so commit or cancel the composition first. Your clipboard is " +
+      "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
+      "which backend served the paste and whether the restore ran. On builds without the native " +
+      "addon this path is capped at about 12000 characters and fails with " +
+      "code:'ClipboardWriteTooLargeForFallback' above it. Default false."
     ),
   replaceAll: coercedBoolean().optional().default(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
@@ -783,6 +1393,11 @@ export const keyboardTypeHandler = async ({
 
   try {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
+  // Declared OUTSIDE the try so the catch can still see it. Once the paste has
+  // happened the text is IN the target, and a later throw — `detectFocusLoss`
+  // reaching UIA, say — must not hide that: a caller told only
+  // "keyboard:type failed" retries, and the text lands twice.
+  let clipboardOutcome: TypeViaClipboardOutcome | undefined;
   try {
     // Phase G: fixId approval prologue
     let effectiveText = text;
@@ -1515,7 +2130,7 @@ export const keyboardTypeHandler = async ({
     }
 
     if (effectiveClipboard) {
-      await typeViaClipboard(effectiveText);
+      clipboardOutcome = await typeViaClipboard(effectiveText);
     } else {
       // Focus Leash Phase B: when the caller named a target window and didn't
       // opt out, split the keystroke send into chunks and verify foreground
@@ -1603,17 +2218,45 @@ export const keyboardTypeHandler = async ({
         : "clipboard"
       : "keystroke";
 
+    const hints = {
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(clipboardOutcome ? { clipboard: clipboardPasteHints(clipboardOutcome) } : {}),
+    };
+
     return ok({
       ok: true,
       typed: effectiveText.length,
       method,
       ...(autoClipboardReason && { autoClipboardReason }),
       ...(focusLost && { focusLost }),
-      ...(warnings.length > 0 && { hints: { warnings } }),
+      ...(Object.keys(hints).length > 0 && { hints }),
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
-    return failWith(err, "keyboard:type");
+    // A failed paste has already replaced the user's clipboard; whether it was
+    // put back is a fact only the call knows, and it would otherwise die here.
+    // `failWith`'s third argument is flat and auto-nests everything outside
+    // ROOT_HOISTED_KEYS, so this lands as `context.clipboard` — the failure-side
+    // mirror of `hints.clipboard` on success, same as `clipboard(action=…)`
+    // reports its backend on both.
+    //
+    // An object literal with a conditional spread, not a ternary between two
+    // objects: `scripts/extract-failwith-shape-fixtures.mjs` classifies the
+    // third argument by whether it STARTS with `{`, so a ternary is recorded as
+    // `dynamic` and the guard stops seeing the shape. Anything added inside it
+    // later — `hints`, `_perceptionForPost` — would then escape the sweep. Same
+    // form as `terminal:send`'s catch, so both tools read identically.
+    return failWith(err, "keyboard:type", {
+      // Exclusive: either the paste itself threw (the error carries the facts)
+      // or it SUCCEEDED and a later step threw (the hoisted outcome does). The
+      // second is why this is hoisted at all — the text is already delivered,
+      // so a caller that retries on this failure double-types.
+      ...(err instanceof TypeViaClipboardDeliveryError
+        ? { clipboard: err.clipboard }
+        : clipboardOutcome
+          ? { clipboard: clipboardPasteHints(clipboardOutcome) }
+          : {}),
+    });
   }
   } finally {
     // Issue #245 系統②b: restore the prior IME state. Wrap in try/catch so a
@@ -2276,7 +2919,13 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       .describe(
         "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. " +
         "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
-        "prevents IME from converting characters. Default false."
+        "pasted text is not run through IME conversion. Note this does not help while an IME " +
+        "composition is already in progress: the paste keystroke is consumed by the IME and " +
+        "nothing is inserted, so commit or cancel the composition first. Your clipboard is " +
+        "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
+        "which backend served the paste and whether the restore ran. On builds without the native " +
+        "addon this path is capped at about 12000 characters and fails with " +
+        "code:'ClipboardWriteTooLargeForFallback' above it. Default false."
       ),
     replaceAll: coercedBoolean().optional().default(false).describe(
       "When true, send Ctrl+A to select all existing text before typing. " +
@@ -2492,9 +3141,9 @@ export function registerKeyboardTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
-        details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
+        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
         prefer: "Use windowTitle to auto-focus before injection. Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
-        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}). Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
+        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard reports the backend and whether the clipboard was restored. Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",

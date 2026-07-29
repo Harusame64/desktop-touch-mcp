@@ -390,7 +390,9 @@ export interface NativeForegroundFlashOptions {
 /** One entry in `ForegroundFlashResult.clipboardSkippedFormats`. */
 export interface NativeForegroundFlashSkippedFormat {
   formatId: number
-  /** Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`。 */
+  /** Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"` /
+   *  `"too_large"` / `"snapshot_budget"` / `"alloc_failed"` (後ろ 3 つは
+   *  snapshot allocation 上限 — Rust `SkippedFormatReason::as_str()` が SSOT)。 */
   reason: string
 }
 
@@ -432,7 +434,10 @@ export interface NativeForegroundFlashResult {
 // ── issue #386 — native no-steal console-paste (conhost exit-mode path) ───────
 
 /** One clipboard format NOT preserved across the paste, with the reason
- *  (`"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`). */
+ *  (`"non_hglobal"` / `"deferred_render"` / `"get_data_failed"` /
+ *  `"too_large"` / `"snapshot_budget"` / `"alloc_failed"` — the last three are
+ *  the snapshot allocation caps; Rust `SkippedFormatReason::as_str()` is the
+ *  SSOT). */
 export interface NativeConsolePasteSkippedFormat {
   formatId: number
   reason: string
@@ -512,6 +517,67 @@ export interface NativeClipboardWriteVerifyResult {
    *  (plan D-5). Taken after `CloseClipboard`, so the OS's CF_TEXT / CF_OEMTEXT
    *  / CF_LOCALE synthesis bumps are already included. */
   sequenceAfterWrite: number
+}
+
+// ── ADR-033 PR-2 — composite "put text on the clipboard and paste it". Replaces
+//    the three powershell.exe spawns `typeViaClipboard` used to make (save /
+//    write+verify / restore), the hottest of the paths Defender scored. ───────
+
+/** One clipboard format the snapshot could not carry, so it is not coming back
+ *  even on a successful restore (I-10) — an image on the clipboard is the
+ *  common case. `reason` is `non_hglobal` / `deferred_render` /
+ *  `get_data_failed` / `too_large` / `snapshot_budget` / `alloc_failed` (the
+ *  last three are the snapshot allocation caps; Rust
+ *  `SkippedFormatReason::as_str()` is the SSOT). */
+export interface NativeTypeViaClipboardSkippedFormat {
+  formatId: number
+  reason: string
+}
+
+/** Result of `win32TypeViaClipboard`. Never throws on a Win32 failure — the
+ *  failure is reported via `ok=false` + `reason`.
+ *
+ *  `ok:true` means the payload was proven on the clipboard AND the chord was
+ *  accepted by `SendInput`. It does NOT claim the target application consumed
+ *  it: with an IME composition pending, for instance, the chord is swallowed by
+ *  the IME and the payload never reaches the control. Nothing observable from
+ *  the addon can tell the difference, and the emitted events are identical to
+ *  the nut.js path this replaces, so that is the channel's pre-existing
+ *  behaviour rather than something the native path introduced. */
+export interface NativeTypeViaClipboardResult {
+  ok: boolean
+  /** The verification verdict's reason (`readback_mismatch` /
+   *  `clipboard_replaced_after_write` / `clipboard_get_data_failed` / one of
+   *  `ClipboardError::as_reason()`), or `send_input_failed` when the clipboard
+   *  was proven and the chord itself was refused. */
+  /** ... or `paste_deadline_exceeded`: the transaction ran past the budget the
+   *  caller passed, so the chord was refused rather than typed into whatever
+   *  window has focus by now. Nothing was typed in that case. */
+  reason?: string
+  /** The same two-leg verification record the clipboard tool publishes, so the
+   *  diagnostics are comparable across both paths. */
+  verify: NativeClipboardWriteVerifyResult
+  /** Whether the chord was sent. `false` with `verify.ok:true` means
+   *  verification passed and `SendInput` refused the batch. */
+  pasted: boolean
+  /** Whether the user's clipboard was changed AT ALL. `false` for a failure
+   *  that happened before `EmptyClipboard` succeeded — the hidden owner window,
+   *  either clipboard open, or a payload allocation. Without it,
+   *  `clipboardRestored:false` reads as "we replaced your clipboard and did not
+   *  put it back" for calls that never touched it. */
+  clipboardModified: boolean
+  /** Whether the user's clipboard was put back (I-13). Only meaningful when
+   *  `clipboardModified` is `true`. */
+  clipboardRestored: boolean
+  /** Restore was skipped because someone else wrote to the clipboard after we
+   *  did (I-6). Not a failure — clobbering their value would be worse. */
+  restoreSkippedRace: boolean
+  /** Restore was attempted and failed at Win32 level. */
+  restoreFailedReason?: string
+  skippedFormats: Array<NativeTypeViaClipboardSkippedFormat>
+  /** The settle applied between the chord and the restore, echoed so a caller
+   *  can see it without reading the addon source. */
+  settleMs: number
 }
 
 /** One Toolhelp32 row. The TS wrapper builds a Map<number, number>. */

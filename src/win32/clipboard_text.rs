@@ -261,7 +261,7 @@ fn text_bytes_from_raw(raw: &[u8]) -> &[u8] {
 /// `CF_UNICODETEXT` requires. The input is already UTF-16LE (it comes straight
 /// from `Buffer.from(text, "utf16le")` on the TS side); a trailing odd byte is
 /// dropped rather than mis-paired into a bogus code unit.
-fn to_terminated_u16(utf16le: &[u8]) -> Vec<u16> {
+pub(crate) fn to_terminated_u16(utf16le: &[u8]) -> Vec<u16> {
     let usable = utf16le.len() - (utf16le.len() % 2);
     let mut out: Vec<u16> = Vec::with_capacity(usable / 2 + 1);
     let mut i = 0;
@@ -291,7 +291,7 @@ fn classify_read(read: Result<Option<Vec<u8>>, &'static str>) -> Result<(bool, V
 /// How the in-session leg's three outcomes reach `map_write_outcome`'s
 /// `Option`: `Some` = this leg produced bytes to compare, `None` = it could not
 /// read at all.
-fn in_session_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Option<Vec<u8>> {
+pub(crate) fn in_session_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Option<Vec<u8>> {
     match read {
         Ok(Some(b)) => Some(b),
         // The format is ABSENT immediately after a successful set: the store
@@ -306,7 +306,7 @@ fn in_session_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Option<Vec<u8>
 
 /// How the post-close leg's three outcomes reach `map_write_outcome`'s
 /// `Result`: `Ok` = the leg ran and produced bytes, `Err` = it did not run.
-fn post_close_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Result<Vec<u8>, String> {
+pub(crate) fn post_close_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Result<Vec<u8>, String> {
     match read {
         Ok(Some(b)) => Ok(b),
         // The format is gone: the text vanished entirely, which IS a real
@@ -324,7 +324,7 @@ fn post_close_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Result<Vec<u8>
 /// Map the executed step outcomes to the final verdict. Extracted so every
 /// branch is unit-testable without touching Win32 — same rationale as
 /// `console_paste::map_paste_outcome`.
-fn map_write_outcome(
+pub(crate) fn map_write_outcome(
     write_reason: Option<String>,
     expected_bytes: u32,
     in_session: Option<Vec<u8>>,
@@ -440,7 +440,7 @@ fn map_write_outcome(
 /// The caller must hold the clipboard open (`OpenClipboard`) for the whole
 /// call; the locked pointer is invalidated by `CloseClipboard`. The returned
 /// handle is OS-owned and is never freed here (I-9).
-unsafe fn read_unicode_text_locked() -> Result<Option<Vec<u8>>, &'static str> {
+pub(crate) unsafe fn read_unicode_text_locked() -> Result<Option<Vec<u8>>, &'static str> {
     unsafe {
         if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
             return Ok(None);
@@ -508,7 +508,7 @@ unsafe fn read_unicode_text_locked() -> Result<Option<Vec<u8>>, &'static str> {
 /// the OS; on every failure branch this function has already freed it (I-9) —
 /// including the `EmptyClipboard` branch, which now runs with a live handle in
 /// hand.
-unsafe fn set_unicode_text_locked(units: &[u16]) -> Result<(), ClipboardError> {
+pub(crate) unsafe fn set_unicode_text_locked(units: &[u16]) -> Result<(), ClipboardError> {
     unsafe {
         let byte_len = std::mem::size_of_val(units);
         let hglobal =

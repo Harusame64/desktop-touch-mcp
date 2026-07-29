@@ -133,6 +133,7 @@ export const win32ForegroundFlashInject       = nativeBinding.win32ForegroundFla
 export const win32ConsolePasteNoFocus         = nativeBinding.win32ConsolePasteNoFocus;
 export const win32ClipboardReadText           = nativeBinding.win32ClipboardReadText;
 export const win32ClipboardWriteTextVerified  = nativeBinding.win32ClipboardWriteTextVerified;
+export const win32TypeViaClipboard            = nativeBinding.win32TypeViaClipboard;
 export const win32GetImeOpenStatus            = nativeBinding.win32GetImeOpenStatus;
 export const win32SetImeOpenStatus            = nativeBinding.win32SetImeOpenStatus;
 export const win32GetProcessSessionId         = nativeBinding.win32GetProcessSessionId;
