@@ -158,7 +158,19 @@ export type TypeViaClipboardBackend = "native" | "powershell";
  */
 export interface TypeViaClipboardOutcome {
   backend: TypeViaClipboardBackend;
-  /** Whether the user's clipboard was put back. */
+  /**
+   * The call never changed the user's clipboard, so there was nothing to put
+   * back. Present only when true.
+   *
+   * It failed before `EmptyClipboard` succeeded — the hidden owner window could
+   * not be created, one of the clipboard opens lost its retries, or the payload
+   * allocation failed. `clipboardRestored:false` alone reads as the alarming
+   * half ("we replaced your clipboard and kept it"), which for these failures is
+   * the opposite of what happened. Native only: the fallback's failure modes are
+   * spawn-level and already disclosed through `restoreUnavailable`.
+   */
+  untouched?: boolean;
+  /** Whether the user's clipboard was put back. Meaningless when `untouched`. */
   clipboardRestored: boolean;
   /** Restore was skipped because someone else wrote to the clipboard after we
    *  did. NOT a failure: overwriting their value would be worse. */
@@ -316,6 +328,9 @@ async function nativeTypeViaClipboard(
 function nativeOutcome(r: NativeTypeViaClipboardResult): TypeViaClipboardOutcome {
   return {
     backend: "native",
+    // Said first because it changes how everything below it reads: with nothing
+    // modified, `restored:false` means "there was nothing to put back".
+    ...(r.clipboardModified ? {} : { untouched: true }),
     clipboardRestored: r.clipboardRestored,
     ...(r.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
     // A restore that FAILED is not a restore that was skipped. The addon
@@ -651,7 +666,8 @@ export async function typeViaClipboard(
 }
 
 /**
- * The `hints.clipboard` block for a call that pasted.
+ * The `hints.clipboard` block for a call that pasted — and, on a failure, the
+ * `context.clipboard` block, built from the same outcome so both read alike.
  *
  * Shared by `keyboard(action='type')` and `terminal(action='send')` so the two
  * tools describe the same side effect with the same words. `backend` is always
@@ -659,10 +675,28 @@ export async function typeViaClipboard(
  * response instead of by guesswork) and so is `restored`, because "we put your
  * clipboard back" is only reassuring if its absence is equally visible. The
  * rest appear only when they happened.
+ *
+ * **What `restored:false` means, in one place.** Exactly one of these accompanies
+ * it, and they are not interchangeable:
+ *
+ * - `untouched` — the call never changed the clipboard. Nothing to put back;
+ *   the user's content is exactly where it was.
+ * - `restoreSkippedRace` — someone else wrote to the clipboard after we did, so
+ *   the restore stood down rather than clobber them (I-6). The user's older
+ *   content is gone, replaced by whatever that writer put there.
+ * - `restoreSkippedTooLarge` — fallback only: the saved content is past what a
+ *   PowerShell command line can carry, so the clipboard still holds our payload.
+ * - `restoreUnavailable` — the save itself failed, so there was never a snapshot
+ *   to put back; the clipboard holds our payload.
+ * - `restoreFailedReason` — the restore ran and failed. The worst case, and the
+ *   only one that can leave the clipboard EMPTY: it empties before it writes.
+ * - none of the above — the restore simply has not been reported as done; treat
+ *   the clipboard as holding our payload.
  */
 export function clipboardPasteHints(outcome: TypeViaClipboardOutcome): Record<string, unknown> {
   return {
     backend: outcome.backend,
+    ...(outcome.untouched ? { untouched: true } : {}),
     restored: outcome.clipboardRestored,
     ...(outcome.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
     ...(outcome.restoreSkippedTooLarge ? { restoreSkippedTooLarge: true } : {}),

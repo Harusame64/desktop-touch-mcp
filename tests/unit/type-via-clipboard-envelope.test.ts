@@ -143,6 +143,7 @@ function nativeResult(over: Record<string, unknown> = {}) {
       sequenceAfterWrite: 5,
     },
     pasted: true,
+    clipboardModified: true,
     clipboardRestored: true,
     restoreSkippedRace: false,
     skippedFormats: [],
@@ -298,6 +299,36 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
     expect(clipboard.backend).toBe("native");
     expect(clipboard.restored).toBe(false);
     expect(clipboard.restoreFailedReason).toBe("clipboard_alloc_failed");
+  });
+
+  it("distinguishes a clipboard it never touched from one it did not restore", async () => {
+    // A pre-write failure: the user's clipboard is exactly where they left it.
+    // Reaching the envelope matters because `restored:false` is the alarming
+    // reading, and acting on it (re-copying, hunting for lost content) is wasted
+    // work here.
+    nativeState.composite.mockResolvedValue(
+      nativeResult({
+        ok: false,
+        reason: "hidden_owner_create_failed",
+        pasted: false,
+        clipboardModified: false,
+        clipboardRestored: false,
+        verify: { ...nativeResult().verify, ok: false, reason: "hidden_owner_create_failed" },
+      }),
+    );
+
+    const r = body(await keyboardTypeHandler(keyboardArgs));
+
+    expect(r.ok).toBe(false);
+    const clipboard = (r.context as Record<string, unknown>).clipboard as Record<string, unknown>;
+    expect(clipboard.untouched).toBe(true);
+    expect(clipboard.restored).toBe(false);
+    // No fabricated cause: nothing was attempted, so nothing was skipped or
+    // failed.
+    expect(clipboard).not.toHaveProperty("restoreSkippedRace");
+    expect(clipboard).not.toHaveProperty("restoreSkippedTooLarge");
+    expect(clipboard).not.toHaveProperty("restoreUnavailable");
+    expect(clipboard).not.toHaveProperty("restoreFailedReason");
   });
 
   it("does not change how a failed paste is classified", async () => {

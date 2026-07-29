@@ -553,7 +553,14 @@ export interface NativeTypeViaClipboardResult {
   /** Whether the chord was sent. `false` with `verify.ok:true` means
    *  verification passed and `SendInput` refused the batch. */
   pasted: boolean
-  /** Whether the user's clipboard was put back (I-13). */
+  /** Whether the user's clipboard was changed AT ALL. `false` for a failure
+   *  that happened before `EmptyClipboard` succeeded — the hidden owner window,
+   *  either clipboard open, or a payload allocation. Without it,
+   *  `clipboardRestored:false` reads as "we replaced your clipboard and did not
+   *  put it back" for calls that never touched it. */
+  clipboardModified: boolean
+  /** Whether the user's clipboard was put back (I-13). Only meaningful when
+   *  `clipboardModified` is `true`. */
   clipboardRestored: boolean
   /** Restore was skipped because someone else wrote to the clipboard after we
    *  did (I-6). Not a failure — clobbering their value would be worse. */

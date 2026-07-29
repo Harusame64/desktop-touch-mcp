@@ -153,7 +153,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 use super::clipboard_snapshot::{
     get_clipboard_sequence_number, open_clipboard_with_retry, restore_clipboard_supported_formats,
-    save_clipboard_supported_formats, with_hidden_owner, ClipboardSnapshot, RestoreOutcome,
+    save_clipboard_supported_formats, with_hidden_owner, ClipboardError, ClipboardSnapshot,
+    RestoreOutcome,
 };
 use super::clipboard_text::{
     in_session_leg, map_write_outcome, post_close_leg, read_unicode_text_locked,
@@ -390,7 +391,23 @@ pub struct TypeViaClipboardResult {
     /// Whether the chord was actually sent. `false` with `verify.ok = true`
     /// means verification passed and `SendInput` refused the batch.
     pub pasted: bool,
-    /// Whether the user's clipboard was put back (I-13).
+    /// Whether the user's clipboard was changed AT ALL by this call.
+    ///
+    /// The dividing line is `EmptyClipboard` succeeding: before that point the
+    /// user's content is still there, after it the clipboard is ours to put
+    /// back. So the three pre-write failures — the hidden owner window could
+    /// not be created, the snapshot could not open the clipboard, the write
+    /// transaction could not open it — report `false`, and so do the two
+    /// `set_unicode_text_locked` failures that happen while the payload is
+    /// still being prepared.
+    ///
+    /// It exists because `clipboard_restored: false` alone is ambiguous, and
+    /// reads as the alarming half: "we replaced your clipboard and did not put
+    /// it back". For a call that never touched it, the honest reading is "there
+    /// was nothing to put back", which no other field says.
+    pub clipboard_modified: bool,
+    /// Whether the user's clipboard was put back (I-13). Only meaningful when
+    /// `clipboard_modified` is `true`.
     pub clipboard_restored: bool,
     /// Restore was skipped because someone else wrote to the clipboard after we
     /// did (I-6). **Not** a failure: overwriting their value would be worse than
@@ -418,9 +435,34 @@ fn build_skipped(snapshot: &ClipboardSnapshot) -> Vec<TypeViaClipboardSkippedFor
         .collect()
 }
 
+/// Whether a `set_unicode_text_locked` failure left the user's clipboard
+/// changed.
+///
+/// `set_unicode_text_locked` is prepare-first (see its doc in
+/// `clipboard_text.rs`): the payload is allocated, locked, filled and unlocked
+/// BEFORE `EmptyClipboard` runs, and `EmptyClipboard` sits immediately next to
+/// the `SetClipboardData` it enables. So of its three failures, only the last
+/// one happens with the clipboard already emptied:
+///
+/// - `AllocFailed` — the allocation never succeeded, nothing was emptied;
+/// - `EmptyFailed` — `EmptyClipboard` itself failed, so by definition it did
+///   not clear anything, and the handle is freed on the way out;
+/// - `SetDataFailed` — `EmptyClipboard` succeeded and the store did not. This
+///   is the destructive one: the user's clipboard is EMPTY right now.
+///
+/// Extracted so the mapping is pinned against the contract it depends on rather
+/// than re-derived at the call site.
+fn set_failure_modified_clipboard(e: &ClipboardError) -> bool {
+    matches!(e, ClipboardError::SetDataFailed { .. })
+}
+
 /// Result for a failure that happened before the chord could be considered.
 /// `verify` is filled through `map_write_outcome`'s write-failure branch so the
 /// record's shape never depends on where the failure occurred.
+///
+/// `clipboard_modified` defaults to `false` here and is raised by the one caller
+/// that needs it: every OTHER path into this function failed before anything was
+/// written.
 fn early_fail(
     reason: &str,
     expected_bytes: u32,
@@ -440,6 +482,7 @@ fn early_fail(
             expected,
         ),
         pasted: false,
+        clipboard_modified: false,
         clipboard_restored: false,
         restore_skipped_race: false,
         restore_failed_reason: None,
@@ -542,12 +585,21 @@ pub(crate) fn type_via_clipboard_blocking(
         let seq_after_set = get_clipboard_sequence_number();
 
         if let Err(e) = set_result {
-            // `set_unicode_text_locked` prepares the payload before it empties,
-            // so only a `SetClipboardData` failure can leave the clipboard
-            // emptied — and this restore is what puts the user's content back in
-            // that case. (The pre-native TS path threw before restoring, leaving
-            // the user with whatever state the failure produced — I-33.)
-            let restore = restore_clipboard_supported_formats(&snapshot, owner, seq_after_set);
+            // `set_unicode_text_locked` prepares the payload before it empties
+            // (its doc in `clipboard_text.rs` spells the ordering out), so only
+            // a `SetClipboardData` failure can leave the clipboard emptied. The
+            // restore is what puts the user's content back in that case — the
+            // pre-native TS path threw before restoring and left them with
+            // whatever state the failure produced (I-33).
+            //
+            // For the other two failures the clipboard is untouched, and the
+            // restore is SKIPPED rather than run: writing the snapshot back
+            // over content that is still there changes nothing except the
+            // sequence number, and a bump would make the next writer's race
+            // check see a stranger where there was none. It would also
+            // contradict what this call is about to report — `modified: false`
+            // and "restored" cannot both be true of the same clipboard.
+            let modified = set_failure_modified_clipboard(&e);
             let mut r = early_fail(
                 e.as_reason(),
                 expected_bytes,
@@ -555,6 +607,11 @@ pub(crate) fn type_via_clipboard_blocking(
                 seq_after_set,
                 skipped_formats,
             );
+            r.clipboard_modified = modified;
+            if !modified {
+                return r;
+            }
+            let restore = restore_clipboard_supported_formats(&snapshot, owner, seq_after_set);
             apply_restore(&mut r, restore);
             return r;
         }
@@ -623,6 +680,9 @@ pub(crate) fn type_via_clipboard_blocking(
             reason,
             verify,
             pasted,
+            // The set succeeded to get here, so `EmptyClipboard` ran and the
+            // user's content is gone until the restore below puts it back.
+            clipboard_modified: true,
             clipboard_restored: false,
             restore_skipped_race: false,
             restore_failed_reason: None,
@@ -897,6 +957,35 @@ mod tests {
         assert_eq!(chord_decision(false, None, now), ChordDecision::SkipUnverified);
     }
 
+    /// Which `set_unicode_text_locked` failures leave the user's clipboard
+    /// changed. All three variants, so adding a fourth forces a decision here
+    /// rather than defaulting into "untouched" and telling the user their
+    /// clipboard is fine when it is empty.
+    #[test]
+    fn only_a_failed_store_leaves_the_clipboard_modified() {
+        // `EmptyClipboard` succeeded and `SetClipboardData` did not: the
+        // clipboard is EMPTY right now. The one destructive failure, and the
+        // one that must still be restored.
+        assert!(set_failure_modified_clipboard(&ClipboardError::SetDataFailed {
+            format_id: 13,
+            win32_error: 5,
+        }));
+
+        // Prepare-first: neither of these got as far as clearing anything.
+        assert!(!set_failure_modified_clipboard(&ClipboardError::AllocFailed));
+        assert!(!set_failure_modified_clipboard(&ClipboardError::EmptyFailed {
+            win32_error: 5
+        }));
+
+        // Not reachable from `set_unicode_text_locked`, but the predicate is
+        // total and must not answer "modified" for a failure that never
+        // reached the write at all.
+        assert!(!set_failure_modified_clipboard(&ClipboardError::OpenContention));
+        assert!(!set_failure_modified_clipboard(
+            &ClipboardError::HiddenOwnerCreateFailed { win32_error: 5 }
+        ));
+    }
+
     #[test]
     fn early_failures_report_no_paste_and_no_restore() {
         // Everything that fails before the set is a state the user's clipboard
@@ -905,8 +994,13 @@ mod tests {
         let r = early_fail("clipboard_lock_contention", 10, &utf16le("hello"), 7, Vec::new());
         assert!(!r.ok);
         assert!(!r.pasted);
+        // The distinction the caller needs: nothing was replaced, so
+        // `restored:false` means "there was nothing to put back" rather than
+        // "we kept your clipboard".
+        assert!(!r.clipboard_modified);
         assert!(!r.clipboard_restored);
         assert!(!r.restore_skipped_race);
+        assert!(r.restore_failed_reason.is_none());
         assert_eq!(r.reason.as_deref(), Some("clipboard_lock_contention"));
         // The verification record still has the write-failure shape rather than
         // a fabricated mismatch.

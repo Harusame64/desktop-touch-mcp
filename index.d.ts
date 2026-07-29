@@ -238,6 +238,7 @@ export interface NativeTypeViaClipboardResult {
   reason?: string
   verify: NativeClipboardWriteVerifyResult
   pasted: boolean
+  clipboardModified: boolean
   clipboardRestored: boolean
   restoreSkippedRace: boolean
   restoreFailedReason?: string

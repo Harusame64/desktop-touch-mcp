@@ -88,6 +88,7 @@ function nativeOk(over: Record<string, unknown> = {}) {
       sequenceAfterWrite: 5,
     },
     pasted: true,
+    clipboardModified: true,
     clipboardRestored: true,
     restoreSkippedRace: false,
     skippedFormats: [],
@@ -313,6 +314,55 @@ describe("ADR-033 — typeViaClipboard discloses what happened to the clipboard"
       }),
     );
     await expect(typeViaClipboard("hello")).rejects.toThrow(/nothing was typed/);
+  });
+
+  it("says the clipboard was never touched when the call failed before writing", async () => {
+    // The hidden owner window, either clipboard open, or the payload
+    // allocation. `restored:false` on its own reads as "we replaced your
+    // clipboard and kept it", which for these is the opposite of the truth.
+    nativeState.composite.mockResolvedValue(
+      nativeOk({
+        ok: false,
+        reason: "clipboard_lock_contention",
+        pasted: false,
+        clipboardModified: false,
+        clipboardRestored: false,
+        verify: { ...nativeOk().verify, ok: false, reason: "clipboard_lock_contention" },
+      }),
+    );
+
+    await expect(typeViaClipboard("hello")).rejects.toThrow("ClipboardWriteNotDelivered");
+
+    // The disclosure rides on the error, so the caller still learns it.
+    const err = await typeViaClipboard("hello").catch((e: unknown) => e);
+    const clipboard = (err as { clipboard: Record<string, unknown> }).clipboard;
+    expect(clipboard.untouched).toBe(true);
+    expect(clipboard.restored).toBe(false);
+    // Nothing was attempted, so nothing may be reported as skipped or failed.
+    expect(clipboard).not.toHaveProperty("restoreSkippedRace");
+    expect(clipboard).not.toHaveProperty("restoreFailedReason");
+  });
+
+  it("does not claim untouched when the clipboard WAS replaced", async () => {
+    // The contrapositive. Emitting the key unconditionally would make the pin
+    // above pass for a call that emptied the user's clipboard.
+    nativeState.composite.mockResolvedValue(nativeOk());
+    expect((await typeViaClipboard("hello")).untouched).toBeUndefined();
+
+    nativeState.composite.mockResolvedValue(
+      nativeOk({
+        ok: false,
+        reason: "readback_mismatch",
+        pasted: false,
+        clipboardModified: true,
+        clipboardRestored: true,
+        verify: { ...nativeOk().verify, ok: false, reason: "readback_mismatch" },
+      }),
+    );
+    const err = await typeViaClipboard("hello").catch((e: unknown) => e);
+    const clipboard = (err as { clipboard: Record<string, unknown> }).clipboard;
+    expect(clipboard).not.toHaveProperty("untouched");
+    expect(clipboard.restored).toBe(true);
   });
 
   it("does not invent a restore failure when there was none", async () => {

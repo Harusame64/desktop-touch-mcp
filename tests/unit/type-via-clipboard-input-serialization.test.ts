@@ -94,6 +94,7 @@ const nativeOk = {
     sequenceAfterWrite: 5,
   },
   pasted: true,
+  clipboardModified: true,
   clipboardRestored: true,
   restoreSkippedRace: false,
   skippedFormats: [],
