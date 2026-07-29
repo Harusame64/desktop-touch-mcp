@@ -653,10 +653,61 @@ pub fn win32_clipboard_write_text_verified(
     })
 }
 
+// ── Test support (never compiled into the addon) ────────────────────────────
+
+/// Shared by the real-clipboard (`#[ignore]`) tests in this module AND in
+/// `clipboard_snapshot.rs`. It lives here because it is built out of this
+/// module's two napi entry points, and it is `#[cfg(test)]` so none of it
+/// reaches the shipped addon.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{win32_clipboard_read_text, win32_clipboard_write_text_verified};
+    use napi::bindgen_prelude::Buffer;
+
+    /// Snapshots the clipboard on construction and puts it back on drop.
+    ///
+    /// A `Drop` guard rather than a call at the end of each test, because a
+    /// failing assertion unwinds and would skip that call — leaving the
+    /// developer's clipboard holding test junk precisely on the runs where they
+    /// are already debugging something. This is the Rust spelling of the same
+    /// hygiene the bench gets from `finally` and the e2e suite from `afterAll`.
+    ///
+    /// It is also what separates a test's CLAIM from the suite's hygiene: a
+    /// test may legitimately assert that a restore was skipped, and still owe
+    /// the developer their clipboard back afterwards.
+    ///
+    /// `None` = the snapshot read failed, so there is nothing trustworthy to
+    /// restore. `Some(vec![])` is a REAL state — an empty clipboard, or a
+    /// non-text payload — and IS restored, as empty text, which is the best a
+    /// text-only API can do for an image.
+    pub(crate) struct ClipboardGuard(Option<Vec<u8>>);
+
+    impl ClipboardGuard {
+        pub(crate) fn snapshot() -> Self {
+            match win32_clipboard_read_text() {
+                Ok(r) if r.ok => Self(Some(r.bytes.to_vec())),
+                _ => Self(None),
+            }
+        }
+    }
+
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            if let Some(bytes) = self.0.take() {
+                // Best effort: this runs during unwinding on a failing test, so
+                // it must not panic and turn a readable assertion failure into
+                // an abort.
+                let _ = win32_clipboard_write_text_verified(Buffer::from(bytes));
+            }
+        }
+    }
+}
+
 // ── Unit tests (pure, no Win32) ─────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::ClipboardGuard;
     use super::*;
 
     fn utf16le(s: &str) -> Vec<u8> {
@@ -676,40 +727,6 @@ mod tests {
     // and that the napi `Buffer` bridge really is lossless are claims about the
     // OS and the binding, and only an execution against the real clipboard
     // settles them.
-
-    /// Snapshots the clipboard on construction and puts it back on drop.
-    ///
-    /// A `Drop` guard rather than a call at the end of each test, because a
-    /// failing assertion unwinds and would skip that call — leaving the
-    /// developer's clipboard holding test junk precisely on the runs where they
-    /// are already debugging something. This is the Rust spelling of the same
-    /// hygiene the bench gets from `finally` and the e2e suite from `afterAll`.
-    ///
-    /// `None` = the snapshot read failed, so there is nothing trustworthy to
-    /// restore. `Some(vec![])` is a REAL state — an empty clipboard, or a
-    /// non-text payload — and IS restored, as empty text, which is the best a
-    /// text-only API can do for an image.
-    struct ClipboardGuard(Option<Vec<u8>>);
-
-    impl ClipboardGuard {
-        fn snapshot() -> Self {
-            match win32_clipboard_read_text() {
-                Ok(r) if r.ok => Self(Some(r.bytes.to_vec())),
-                _ => Self(None),
-            }
-        }
-    }
-
-    impl Drop for ClipboardGuard {
-        fn drop(&mut self) {
-            if let Some(bytes) = self.0.take() {
-                // Best effort: this runs during unwinding on a failing test, so
-                // it must not panic and turn a readable assertion failure into
-                // an abort.
-                let _ = win32_clipboard_write_text_verified(Buffer::from(bytes));
-            }
-        }
-    }
 
     /// Full write→read round trip through both napi entry points with a payload
     /// that mixes the cases most likely to be mangled by a transcode: CJK, a

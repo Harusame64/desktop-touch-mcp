@@ -494,6 +494,11 @@ fn _suppress_unused_imports(_w: WPARAM, _l: LPARAM) -> LRESULT {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Suite hygiene only (cfg(test)): puts the developer's clipboard back
+    // after the side-effecting #[ignore]d tests below, including the one whose
+    // whole point is that OUR restore was skipped. Separates each test's claim
+    // from leaving the machine as we found it. See clipboard_text::test_support.
+    use super::super::clipboard_text::test_support::ClipboardGuard;
 
     // Pure-logic tests: SkippedFormatReason / ClipboardError reason 文字列、
     // ClipboardSnapshot::skipped_summary 抽出ロジック。clipboard / hidden owner
@@ -585,6 +590,8 @@ mod tests {
     #[test]
     #[ignore = "Win32 副作用 (hidden owner window create/destroy)"]
     fn hidden_owner_create_and_destroy_no_leak() {
+        let _guard = ClipboardGuard::snapshot();
+
         let result = with_hidden_owner(|hwnd| {
             assert!(!hwnd.0.is_null(), "hidden owner HWND should not be null");
         });
@@ -598,6 +605,8 @@ mod tests {
     #[test]
     #[ignore = "副作用: user clipboard 書き換え"]
     fn clipboard_unicode_round_trip_via_hidden_owner() {
+        let _guard = ClipboardGuard::snapshot();
+
         let result = with_hidden_owner(|owner| -> Result<(), String> {
             // 1. Set initial sentinel text
             let initial = "phase1f_initial_sentinel";
@@ -631,6 +640,8 @@ mod tests {
     #[test]
     #[ignore = "副作用: user clipboard 書き換え"]
     fn race_detection_skips_restore() {
+        let _guard = ClipboardGuard::snapshot();
+
         let result = with_hidden_owner(|owner| -> Result<(), String> {
             set_clipboard_unicode_text(owner, "phase1f_race_initial")
                 .map_err(|e| format!("initial: {:?}", e))?;
