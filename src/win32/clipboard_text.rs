@@ -9,10 +9,17 @@
 //! PowerShell), and Microsoft Defender scored the MCP server process as
 //! `Trojan:Win32/Commando.A!ml` and killed it mid-session. Doing the clipboard
 //! transaction in-process removes the spawn, so there is no command line left
-//! for a heuristic to score. It is also far faster — measured on this branch,
-//! n=20: write+verify p50 4.15 ms against 349 ms (~84x), read p50 2.48 ms
-//! against 296 ms (~119x) — and it lifts the ~12 150-character command-line
-//! ceiling that silently capped a tool whose schema advertises 100 000.
+//! for a heuristic to score. It is also far faster — measured on this branch
+//! after the async conversion, n=20: write+verify p50 4.18 ms against 371.5 ms
+//! (~89x), read p50 3.44 ms against 317.9 ms (~92x) — and it lifts the
+//! ~12 150-character command-line ceiling that silently capped a tool whose
+//! schema advertises 100 000.
+//!
+//! Before the conversion the read measured 2.48 ms, so dispatching to a
+//! threadpool worker costs about a millisecond. Recorded here because that is
+//! the number a future reader will weigh when tempted to make these sync
+//! again: it buys ~1 ms and gives back the freeze described under "Why both
+//! exports are async". ~90x either way.
 //!
 //! # The issue #180 contract, kept and strengthened (I-1)
 //!
