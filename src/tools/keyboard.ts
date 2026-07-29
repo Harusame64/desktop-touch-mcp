@@ -2189,11 +2189,16 @@ export const keyboardTypeHandler = async ({
     // ROOT_HOISTED_KEYS, so this lands as `context.clipboard` — the failure-side
     // mirror of `hints.clipboard` on success, same as `clipboard(action=…)`
     // reports its backend on both.
-    return failWith(
-      err,
-      "keyboard:type",
-      err instanceof TypeViaClipboardDeliveryError ? { clipboard: err.clipboard } : {},
-    );
+    //
+    // An object literal with a conditional spread, not a ternary between two
+    // objects: `scripts/extract-failwith-shape-fixtures.mjs` classifies the
+    // third argument by whether it STARTS with `{`, so a ternary is recorded as
+    // `dynamic` and the guard stops seeing the shape. Anything added inside it
+    // later — `hints`, `_perceptionForPost` — would then escape the sweep. Same
+    // form as `terminal:send`'s catch, so both tools read identically.
+    return failWith(err, "keyboard:type", {
+      ...(err instanceof TypeViaClipboardDeliveryError ? { clipboard: err.clipboard } : {}),
+    });
   }
   } finally {
     // Issue #245 系統②b: restore the prior IME state. Wrap in try/catch so a
