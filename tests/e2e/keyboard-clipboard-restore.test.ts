@@ -44,7 +44,11 @@ beforeAll(async () => {
   np = await launchNotepad();
   try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
   await sleep(400);
-}, 15_000);
+  // No timeout override: the notepad launcher's own discovery deadline is 20 s,
+  // so anything shorter here would abort the hook before the launcher can give
+  // up cleanly — leaking the spawned Notepad past afterAll's np?.kill(). The
+  // e2e project's 30 s hookTimeout already covers the worst case.
+});
 
 afterAll(async () => {
   np?.kill();
@@ -54,7 +58,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!nativeAvailable)("ADR-033 I-13 — native typeViaClipboard puts the user's clipboard back", () => {
-  it("restores the pre-call clipboard text after a clipboard-routed type", async () => {
+  it("restores the pre-call clipboard text after a clipboard-routed type", async ({ skip }) => {
     // Seed the "user's clipboard" with a value the paste payload cannot be
     // mistaken for. If the restore is a no-op (or restores our own payload),
     // the final read below cannot accidentally pass.
@@ -69,9 +73,20 @@ describe.skipIf(!nativeAvailable)("ADR-033 I-13 — native typeViaClipboard puts
       text: "I-13 実機検証テキスト",
       use_clipboard: true,
       windowTitle: np.title,
-      settleMs: 200,
+      // Focus-loss detection is deliberately out of scope: this suite is about
+      // the clipboard coming back, and focus-integrity.test.ts owns the
+      // detection contract.
+      trackFocus: false,
     });
     const p = parsePayload(result);
+    // envOnly (issue #182 classification): Win11 foreground-stealing protection
+    // refusing the transfer aborts the call BEFORE typeViaClipboard runs, so
+    // I-13 was never exercised — a failure here would misread as a broken
+    // restore. Same single sanctioned skip as terminal.test.ts. Every clipboard
+    // assertion below stays strict.
+    if (!p.ok && p.code === "ForegroundRestricted") {
+      skip(`envOnly: foreground transfer refused — I-13 not exercised. payload=${JSON.stringify(p).slice(0, 300)}`);
+    }
     expect(p.ok, JSON.stringify(p).slice(0, 400)).toBe(true);
     expect(p.method).toBe("clipboard");
 
@@ -81,6 +96,11 @@ describe.skipIf(!nativeAvailable)("ADR-033 I-13 — native typeViaClipboard puts
     // would not FAIL the strict assertions below so much as make them
     // meaningless, so the backend is load-bearing, not informational.
     expect(clip!.backend).toBe("native");
+    // `untouched` alongside ok:true would mean the clipboard was never
+    // replaced — the sentinel read-back below would then pass without a
+    // restore ever happening. Asserting its absence is what makes that
+    // read-back proof rather than coincidence.
+    expect(clip!.untouched).toBeUndefined();
     expect(clip!.restored, JSON.stringify(clip)).toBe(true);
 
     // The load-bearing half: the OS clipboard, not the response envelope, says
