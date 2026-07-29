@@ -36,7 +36,7 @@ import {
 } from "../engine/identity-tracker.js";
 import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
-import { typeViaClipboard } from "./keyboard.js";
+import { typeViaClipboard, clipboardPasteHints, type TypeViaClipboardOutcome } from "./keyboard.js";
 import { setTerminalReadHook } from "./wait-until.js";
 import { withRichNarration } from "./_narration.js";
 import {
@@ -1677,6 +1677,9 @@ export const terminalSendHandler = async ({
       }
     }
 
+    // Kept for the envelope: pasting borrows the user's clipboard, and whether
+    // it was given back is a side effect only this call can report.
+    let clipboardOutcome: TypeViaClipboardOutcome | undefined;
     if (preferClipboard) {
       let chosenKey: "ctrl+v" | "ctrl+shift+v" = pasteKey === "auto" ? "ctrl+v" : pasteKey;
       if (pasteKey === "auto") {
@@ -1685,7 +1688,7 @@ export const terminalSendHandler = async ({
           chosenKey = "ctrl+shift+v";
         }
       }
-      await typeViaClipboard(input, chosenKey);
+      clipboardOutcome = await typeViaClipboard(input, chosenKey);
     } else {
       await keyboard.type(input);
     }
@@ -1736,6 +1739,7 @@ export const terminalSendHandler = async ({
       hints: {
         target: toTargetHints(ident.identity),
         ...(warnings.length > 0 ? { warnings } : {}),
+        ...(clipboardOutcome ? { clipboard: clipboardPasteHints(clipboardOutcome) } : {}),
       },
     });
   } catch (err) {

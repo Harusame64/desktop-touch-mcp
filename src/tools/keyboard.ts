@@ -342,6 +342,29 @@ export async function typeViaClipboard(
     : powershellTypeViaClipboard(text, pasteCombo);
 }
 
+/**
+ * The `hints.clipboard` block for a call that pasted.
+ *
+ * Shared by `keyboard(action='type')` and `terminal(action='send')` so the two
+ * tools describe the same side effect with the same words. `backend` is always
+ * present (it is what makes a Defender-related regression diagnosable from a
+ * response instead of by guesswork) and so is `restored`, because "we put your
+ * clipboard back" is only reassuring if its absence is equally visible. The
+ * rest appear only when they happened.
+ */
+export function clipboardPasteHints(outcome: TypeViaClipboardOutcome): Record<string, unknown> {
+  return {
+    backend: outcome.backend,
+    restored: outcome.clipboardRestored,
+    ...(outcome.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
+    ...(outcome.restoreSkippedTooLarge ? { restoreSkippedTooLarge: true } : {}),
+    ...(outcome.restoreUnavailable ? { restoreUnavailable: true } : {}),
+    ...(outcome.skippedFormats && outcome.skippedFormats.length > 0
+      ? { skippedFormats: outcome.skippedFormats }
+      : {}),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Issue #177 — BG path post-send delivery verification helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1726,8 +1749,11 @@ export const keyboardTypeHandler = async ({
       }
     }
 
+    // Kept for the envelope: pasting borrows the user's clipboard, and whether
+    // it was given back is a side effect only this call can report.
+    let clipboardOutcome: TypeViaClipboardOutcome | undefined;
     if (effectiveClipboard) {
-      await typeViaClipboard(effectiveText);
+      clipboardOutcome = await typeViaClipboard(effectiveText);
     } else {
       // Focus Leash Phase B: when the caller named a target window and didn't
       // opt out, split the keystroke send into chunks and verify foreground
@@ -1815,13 +1841,18 @@ export const keyboardTypeHandler = async ({
         : "clipboard"
       : "keystroke";
 
+    const hints = {
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(clipboardOutcome ? { clipboard: clipboardPasteHints(clipboardOutcome) } : {}),
+    };
+
     return ok({
       ok: true,
       typed: effectiveText.length,
       method,
       ...(autoClipboardReason && { autoClipboardReason }),
       ...(focusLost && { focusLost }),
-      ...(warnings.length > 0 && { hints: { warnings } }),
+      ...(Object.keys(hints).length > 0 && { hints }),
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
