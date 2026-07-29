@@ -364,7 +364,7 @@ const SUGGESTS: Record<string, string[]> = {
   // so the failure is fast and lossless — no characters have been sent yet.
   ImeOnDuringType: [
     "Pass forceImeOff:true to flip the IME OFF for the duration of this call (and restore in finally).",
-    "Pass use_clipboard:true to bypass the keystroke pipeline — the clipboard route is IME-immune.",
+    "Pass use_clipboard:true to bypass the keystroke pipeline — pasted text is not run through IME conversion. This does not help while a composition is already in progress: the paste keystroke is consumed by the IME, so commit or cancel it first.",
     "Drop forceKeystrokes (default false) so auto-clipboard promotion handles non-ASCII / IME-active windows transparently.",
     "Diagnose live state via desktop_state — hints.imeOpen reports the focused window's IME composition mode.",
   ],

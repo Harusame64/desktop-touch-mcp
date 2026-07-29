@@ -549,7 +549,13 @@ const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/
  * layouts.
  *
  * When matched, the auto-clipboard upgrade routes through `typeViaClipboard`,
- * which preserves the exact Unicode bytes regardless of IME state or layout.
+ * which preserves the exact Unicode bytes regardless of keyboard layout, and
+ * whose payload is not run through IME conversion because it is pasted rather
+ * than typed. That is NOT the same as being immune to the IME: with a
+ * composition already pending, the paste chord is consumed by the IME and
+ * nothing is inserted at all (measured, ADR-033 P2-0 Q3b — and identical to
+ * what the nut.js path this replaced did, so it is a limit of the channel
+ * rather than of the native implementation).
  * The `keystroke` path is still selected for pure ASCII text (fastest path).
  *
  * Wired into the auto-clipboard upgrade in ADR-018 Phase 2b-2 below.
@@ -594,7 +600,9 @@ export const keyboardTypeSchema = {
     .describe(
       "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. " +
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
-      "prevents IME from converting characters. Default false."
+      "pasted text is not run through IME conversion. Note this does not help while an IME " +
+      "composition is already in progress: the paste keystroke is consumed by the IME and " +
+      "nothing is inserted, so commit or cancel the composition first. Default false."
     ),
   replaceAll: coercedBoolean().optional().default(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
@@ -2519,7 +2527,9 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       .describe(
         "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. " +
         "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
-        "prevents IME from converting characters. Default false."
+        "pasted text is not run through IME conversion. Note this does not help while an IME " +
+        "composition is already in progress: the paste keystroke is consumed by the IME and " +
+        "nothing is inserted, so commit or cancel the composition first. Default false."
       ),
     replaceAll: coercedBoolean().optional().default(false).describe(
       "When true, send Ctrl+A to select all existing text before typing. " +
@@ -2735,9 +2745,9 @@ export function registerKeyboardTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
-        details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
+        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
         prefer: "Use windowTitle to auto-focus before injection. Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
-        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}). Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
+        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard reports the backend and whether the clipboard was restored. Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
