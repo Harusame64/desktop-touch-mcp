@@ -16,6 +16,16 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const execFileMock = vi.fn();
+
+// Needed only by the addon-less case at the bottom of the keyboard block — the
+// fallback reaches the clipboard through `powershell.exe`, and nothing here may
+// actually spawn one.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFile: (...args: unknown[]) => execFileMock(...args) };
+});
+
 const nativeState: { available: boolean; composite: ReturnType<typeof vi.fn> } = {
   available: true,
   composite: vi.fn(),
@@ -168,7 +178,18 @@ const terminalArgs = {
 beforeEach(() => {
   nativeState.composite.mockReset();
   nativeState.available = true;
+  execFileMock.mockReset();
 });
+
+/** Queue `{stdout}` resolutions for the fallback's successive spawns. */
+function powerShellResponses(...stdouts: string[]) {
+  let i = 0;
+  execFileMock.mockImplementation((_f: unknown, _a: unknown, _o: unknown, cb: unknown) => {
+    const stdout = stdouts[i++] ?? "";
+    (cb as (e: null, out: { stdout: string; stderr: string }) => void)(null, { stdout, stderr: "" });
+    return {};
+  });
+}
 
 describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", () => {
   it("reports the backend and a completed restore", async () => {
@@ -231,6 +252,27 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
     nativeState.composite.mockResolvedValue(nativeResult());
     expect(clipboardHints(body(await keyboardTypeHandler(keyboardArgs)))!.postCloseUnverified)
       .toBeUndefined();
+  });
+
+  it("never claims an unverified paste on the addon-less path", async () => {
+    // The same contrapositive as the outcome-level pin in
+    // `type-via-clipboard-native-dispatch.test.ts`, carried all the way to the
+    // response: the fallback's single `Get-Clipboard -Raw` runs after
+    // `Set-Clipboard` released the lock, so it IS the post-close read and is
+    // always checked. The key is native-only, and this is what would notice if
+    // it started leaking through the fallback's outcome (Opus R2 P3-3).
+    nativeState.available = false;
+    powerShellResponses(
+      Buffer.from("previous", "utf16le").toString("base64"),
+      Buffer.from("hello", "utf16le").toString("base64"),
+      "restored",
+    );
+
+    const c = clipboardHints(body(await keyboardTypeHandler(keyboardArgs)))!;
+
+    expect(c.backend).toBe("powershell");
+    expect(c.restored).toBe(true);
+    expect(c).not.toHaveProperty("postCloseUnverified");
   });
 
   it("says nothing about the clipboard when the call did not use it", async () => {

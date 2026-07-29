@@ -397,6 +397,14 @@ describe("ADR-033 — PowerShell fallback (addon absent)", () => {
     expect(scriptOf(0)).toContain("Get-Clipboard -Raw");
     expect(nutjs.keyboard.pressKey).toHaveBeenCalled();
     expect(nutjs.keyboard.releaseKey).toHaveBeenCalled();
+    // ...and it never claims an unverified paste. This path's single
+    // `Get-Clipboard -Raw` runs AFTER `Set-Clipboard` released the lock, so it
+    // IS the post-close read — always checked, never skipped, so the key is
+    // native-only by construction. Pinned because the fallback builds its
+    // outcome literal by literal today: if that ever becomes a spread of a
+    // shared shape, this key could leak in with a meaningless value and nothing
+    // else would notice (Opus R2 P3-3).
+    expect(r).not.toHaveProperty("postCloseUnverified");
   });
 
   it("(2) restores only when the clipboard still holds what we pasted", async () => {

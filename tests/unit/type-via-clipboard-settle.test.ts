@@ -98,10 +98,13 @@ describe("ADR-033 I-32 — the paste settle", () => {
     expect(WRITE_TIMEOUT_MS).toBe(5_000);
     expect(POST_CHORD_BUDGET_MS).toBe(300);
     expect(PASTE_DEADLINE_BUDGET_MS).toBe(4_580);
-    // And the post-chord allowance covers what actually happens after the
-    // chord: one restore transaction, whose clipboard-open retry is bounded at
-    // 10x10ms (I-12), plus margin for the snapshot write itself.
-    expect(POST_CHORD_BUDGET_MS).toBeGreaterThan(200);
+    // And the post-chord allowance clears the part of the work that IS bounded:
+    // one restore transaction, whose clipboard-open retry caps at 10x10ms
+    // (I-12). The gap up to 300 is headroom for replaying the snapshot format
+    // by format, which is unmeasured — see `POST_CHORD_BUDGET_MS`. Asserting
+    // against the bounded number keeps this pin honest about which half is
+    // arithmetic; the absolute value above is what pins the guess.
+    expect(POST_CHORD_BUDGET_MS).toBeGreaterThan(100);
   });
 
   it("is the same settle the TypeScript constant and the source agree on", () => {

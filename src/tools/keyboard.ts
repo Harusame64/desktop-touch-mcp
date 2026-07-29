@@ -85,9 +85,21 @@ export const PASTE_SETTLE_MS = 120;
  * excluding the settle: the restore, and its share of clipboard lock
  * contention.
  *
- * 300ms. `open_clipboard_with_retry` absorbs up to 10x10ms per transaction
- * (I-12) and the restore is one transaction, so ~200ms is the bounded worst
- * case; the rest is margin for the snapshot write itself.
+ * 300ms, of which only the first ~100ms is arithmetic. The restore is ONE
+ * clipboard transaction and `open_clipboard_with_retry` absorbs up to 10x10ms
+ * per transaction (I-12), so ~100ms is the bounded worst case for getting the
+ * lock.
+ *
+ * The remaining ~200ms is headroom for the write itself — the snapshot is
+ * replayed format by format (`GlobalAlloc` + memcpy + `SetClipboardData`, once
+ * per saved format), and **that has not been measured**. A clipboard populated
+ * by Word or Excel can carry 10-20 formats, so the cost is not obviously
+ * negligible; 200ms is a guess with room in it, not a derived number.
+ *
+ * Being wrong about it degrades rather than breaks: the chord has ALREADY been
+ * sent by the time this budget is being spent, so the input is delivered either
+ * way. Overrunning only means the JS timeout fires first and the caller is told
+ * the clipboard state is indeterminate — which is true, and disclosed.
  *
  * @internal exported for the budget pin.
  */
