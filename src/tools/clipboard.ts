@@ -6,6 +6,7 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { withRichNarration } from "./_narration.js";
+import { nativeWin32, hasNativeClipboardText } from "../engine/native-engine.js";
 import {
   makeCommitWrapper,
   withEnvelopeIncludeForUnion,
@@ -26,11 +27,105 @@ export const clipboardWriteSchema = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Backend selection
+//
+// ADR-033. The PowerShell path below reaches the clipboard by spawning
+//   powershell.exe -Command "$b=[System.Convert]::FromBase64String('<blob>');
+//                            … Set-Clipboard …"
+// which is the shape of a well-known malware TTP (base64 payload decoded inline
+// by PowerShell). Microsoft Defender scored the MCP server process as
+// `Trojan:Win32/Commando.A!ml` and killed it mid-session. The native path
+// removes the spawn entirely — there is no command line left for a heuristic to
+// score — and it is roughly two orders of magnitude faster because it does not
+// pay PowerShell's cold start.
+//
+// The PowerShell path is RETAINED rather than deleted because the compiled
+// addon is optional: a build without the `.node`, or one predating this change,
+// must still be able to read and write the clipboard. (Issue #386 hard-failed
+// in the equivalent situation, but there the addon was required to even reach
+// the code path; here there is no other channel to the clipboard at all.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Which implementation served the call. Surfaced in the envelope so a
+ *  Defender-related regression is diagnosable from the response rather than by
+ *  guesswork. */
+type ClipboardBackend = "native" | "powershell";
+
+/**
+ * Largest payload the PowerShell fallback can actually deliver.
+ *
+ * That path embeds the text as base64 in a command line, and base64 of UTF-16LE
+ * costs ~2.67 bytes per character against Windows' 32 767-character command-line
+ * ceiling. Measured by binary search (ADR-033 spike): 12 117 characters went
+ * through, 12 214 failed with a raw `ENAMETOOLONG` from `spawn` — an opaque
+ * error for a tool whose schema advertises 100 000. The limit is checked up
+ * front so the caller gets a named, actionable failure instead.
+ *
+ * The schema's `max(100_000)` stays as the NATIVE path's contract, which does
+ * handle the full documented range.
+ */
+const FALLBACK_MAX_CHARS = 12_000;
+
+const selectBackend = (): ClipboardBackend =>
+  hasNativeClipboardText() ? "native" : "powershell";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
+const nativeRead = (): ToolResult => {
+  const r = nativeWin32!.win32ClipboardReadText!();
+  if (!r.ok) {
+    // Lower-case message on purpose. An Error whose entire message is a single
+    // PascalCase token is this repo's "compact code" producer shape:
+    // `_errors.ts::classify` routes it to a code of that name, which then needs
+    // its own SUGGESTS entry or the caller gets a code with no advice (swept by
+    // oq8-failwith-suggest-routing.test.ts). A read failure has no recovery
+    // distinct from the generic one, so it stays on generic classification —
+    // exactly like the PowerShell branch, which just rethrows whatever spawn
+    // produced.
+    return failWith(
+      new Error(`native clipboard read failed: ${r.reason ?? "unknown"}`),
+      "clipboard:read",
+      { hint: r.reason ?? "native clipboard read failed", backend: "native" },
+    );
+  }
+  // A non-text payload (image / files) and an empty clipboard both yield "",
+  // which is the documented contract and what `Get-Clipboard -Raw` returns.
+  const text = r.hasText ? Buffer.from(r.bytes).toString("utf16le") : "";
+  return ok({ ok: true, text, backend: "native" satisfies ClipboardBackend });
+};
+
+const nativeWrite = (text: string): ToolResult => {
+  // UTF-16LE bytes rather than a JS string: napi's String bridge transcodes
+  // through UTF-8, which cannot represent an unpaired surrogate, so it would
+  // replace one with U+FFFD *before* the byte comparison ran — and the
+  // verification would then pass on mutated text.
+  const payload = Buffer.from(text, "utf16le");
+  const r = nativeWin32!.win32ClipboardWriteTextVerified!(payload);
+  if (!r.ok) {
+    // Do NOT echo the actual clipboard contents (I-2): on a mismatch that text
+    // belongs to another process and may be a password or an API key. Byte
+    // counts are the whole diagnosis — "0 vs N" → cleared, "N vs M" → replaced.
+    return failWith(new Error("ClipboardWriteNotDelivered"), "clipboard:write", {
+      hint:
+        r.reason === "clipboard_replaced_after_write"
+          ? "another process replaced the clipboard immediately after the write (clipboard manager / DLP agent)"
+          : (r.reason ?? "the read-back did not match the requested bytes (UTF-16LE)"),
+      expectedBytes: r.expectedBytes,
+      // The post-close read is the leg that can see an interceptor, so it is
+      // the one worth reporting whenever it ran.
+      actualBytes: r.postCloseChecked ? r.postCloseBytes : r.inSessionBytes,
+      backend: "native",
+    });
+  }
+  return ok({ ok: true, written: text.length, backend: "native" satisfies ClipboardBackend });
+};
+
 export const clipboardReadHandler = async (): Promise<ToolResult> => {
+  const backend = selectBackend();
   try {
+    if (backend === "native") return nativeRead();
     // Encode clipboard text as base64 UTF-16LE to avoid codepage and newline stripping issues.
     // PowerShell ConvertTo-Json of a string escapes special chars; base64 avoids that.
     const script =
@@ -46,9 +141,9 @@ export const clipboardReadHandler = async (): Promise<ToolResult> => {
     );
     const b64 = stdout.trim();
     const text = b64 ? Buffer.from(b64, "base64").toString("utf16le") : "";
-    return ok({ ok: true, text });
+    return ok({ ok: true, text, backend: "powershell" satisfies ClipboardBackend });
   } catch (err) {
-    return failWith(err, "clipboard:read");
+    return failWith(err, "clipboard:read", { backend });
   }
 };
 
@@ -57,7 +152,22 @@ export const clipboardWriteHandler = async ({
 }: {
   text: string;
 }): Promise<ToolResult> => {
+  const backend = selectBackend();
   try {
+    if (backend === "native") return nativeWrite(text);
+
+    // Addon-less build only. Reject an over-long payload here rather than
+    // letting `spawn` fail with `ENAMETOOLONG` several hundred milliseconds
+    // later with nothing the caller can act on.
+    if (text.length > FALLBACK_MAX_CHARS) {
+      return failWith(new Error("ClipboardWriteTooLargeForFallback"), "clipboard:write", {
+        hint: `this build has no native clipboard support, and the PowerShell fallback cannot carry more than about ${FALLBACK_MAX_CHARS} characters`,
+        requestedChars: text.length,
+        maxChars: FALLBACK_MAX_CHARS,
+        backend,
+      });
+    }
+
     // Encode as UTF-16LE (PowerShell native encoding) then base64 — same pattern as keyboard_type
     const b64 = Buffer.from(text, "utf16le").toString("base64");
 
@@ -74,9 +184,12 @@ export const clipboardWriteHandler = async ({
     // vs spawning twice) keeps the verification overhead well below the
     // <5ms target listed in the issue body's perf goal once the PowerShell
     // cold-start cost (~150-200ms) is amortised over a path that already
-    // pays it. A native Win32 clipboard implementation could shave the
-    // remaining cost but is intentionally out of scope to keep this patch
-    // focused on the SSOT verification contract.
+    // pays it.
+    //
+    // #180 recorded here that a native Win32 implementation was "intentionally
+    // out of scope". ADR-033 overturned that: Defender's detection made the
+    // spawn a liability rather than a cost, and the native path (above) is now
+    // the default. What survives is this fallback, for addon-less builds.
     const script =
       `$b=[System.Convert]::FromBase64String('${b64}');` +
       `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
@@ -116,13 +229,14 @@ export const clipboardWriteHandler = async ({
           hint: "post-write Get-Clipboard -Raw did not match the requested bytes (UTF-16LE)",
           expectedBytes: expectedBytes.length,
           actualBytes: actualBytes.length,
+          backend: "powershell" satisfies ClipboardBackend,
         }
       );
     }
 
-    return ok({ ok: true, written: text.length });
+    return ok({ ok: true, written: text.length, backend: "powershell" satisfies ClipboardBackend });
   } catch (err) {
-    return failWith(err, "clipboard:write");
+    return failWith(err, "clipboard:write", { backend });
   }
 };
 
@@ -209,7 +323,7 @@ export function registerClipboardTools(server: McpServer): void {
   server.registerTool(
     "clipboard",
     {
-      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery via Get-Clipboard -Raw read-back, comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
+      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery by reading the clipboard back and comparing the bytes (UTF-16LE) for exact equality. Every response reports backend:'native'|'powershell' — which implementation served the call. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. On builds without the native addon (backend:'powershell') writes are additionally capped at about 12000 characters and return code:'ClipboardWriteTooLargeForFallback' above it. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
       inputSchema: clipboardRegistrationSchema,
     },
     clipboardRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>

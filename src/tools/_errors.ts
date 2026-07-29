@@ -377,6 +377,16 @@ const SUGGESTS: Record<string, string[]> = {
     "Clipboard format conversion (CF_UNICODETEXT vs CF_TEXT) lost characters; try shorter ASCII text to isolate, then file an issue with the original payload's hex dump.",
     "Treat the clipboard as un-written on this failure: do not assume a paste downstream will see the requested value.",
   ],
+  // ADR-033: this build has no compiled native addon, so clipboard writes go
+  // through PowerShell, which carries the payload as base64 on a command line
+  // and therefore cannot exceed ~12000 characters (measured boundary: 12117 ok
+  // / 12214 ENAMETOOLONG). The native path handles the full documented 100000.
+  ClipboardWriteTooLargeForFallback: [
+    "Reinstall or rebuild the server so the compiled native addon is present — the native clipboard path accepts the full 100000 characters the schema allows.",
+    "Split the text into chunks below the limit and write them one at a time.",
+    "For short text, keyboard(action='type', use_clipboard=false) types directly and does not touch the clipboard at all.",
+    "Write the text to a file and have the target application open it, if the goal was to move a large payload rather than to populate the clipboard.",
+  ],
   // Issue #178: SendInput-based mouse_click delivered nothing observable.
   // Pre/post ElementFromPoint + foregroundWindow + focusedElement diff was empty.
   // matrix doc §3.1 row mouse_click; suggest[] follows §5.2 click-specific advice.
