@@ -112,6 +112,17 @@ export interface TypeViaClipboardOutcome {
   restoreSkippedTooLarge?: boolean;
   /** The save itself failed, so there was never anything to put back. */
   restoreUnavailable?: boolean;
+  /**
+   * The restore was ATTEMPTED and failed.
+   *
+   * A separate fact from every flag above, and the one that needs acting on:
+   * the others all leave the clipboard holding something valid (someone else's
+   * value, or ours), whereas a restore that fails partway can leave it EMPTY —
+   * `EmptyClipboard` has already run by the time an allocation can fail. Folded
+   * into a bare `restored:false` it would be indistinguishable from the
+   * deliberate skips, which are not problems at all.
+   */
+  restoreFailedReason?: string;
   /** Formats the snapshot could not carry, so they are gone even though the
    *  restore ran (native only — the fallback is text-only throughout). */
   skippedFormats?: Array<{ formatId: number; reason: string }>;
@@ -130,7 +141,13 @@ async function nativeTypeViaClipboard(
   const r = await withTimeout(
     (signal) => nativeWin32!.win32TypeViaClipboard!(payload, pasteCombo, signal),
     CLIPBOARD_WRITE_TIMEOUT_MS,
-    `native clipboard paste gave up after ${CLIPBOARD_WRITE_TIMEOUT_MS}ms waiting for the clipboard owner`,
+    // "gave up" rather than "timed out": `_errors.ts::classify` has a generic
+    // timeout arm that would answer this with "the app may be unresponsive,
+    // wait and retry", which is the opposite of the truth here. The state note
+    // is not decoration — giving up abandons the RESULT, not the work (see the
+    // addon's module doc), so the paste may still land afterwards and the
+    // clipboard may still be holding the payload.
+    `native clipboard paste gave up after ${CLIPBOARD_WRITE_TIMEOUT_MS}ms waiting for the clipboard owner; the paste and the clipboard contents are indeterminate after this — the keystroke may still arrive and the clipboard may not have been restored`,
   );
 
   if (!r.ok) {
@@ -156,6 +173,12 @@ async function nativeTypeViaClipboard(
     backend: "native",
     clipboardRestored: r.clipboardRestored,
     ...(r.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
+    // A restore that FAILED is not a restore that was skipped. The addon
+    // reports the two separately because they end in different states — a
+    // skip leaves another process's value in place, a failure can leave the
+    // clipboard empty — so collapsing both into `restored:false` here would
+    // throw away the only signal that says which one happened.
+    ...(r.restoreFailedReason ? { restoreFailedReason: r.restoreFailedReason } : {}),
     ...(r.skippedFormats && r.skippedFormats.length > 0
       ? { skippedFormats: r.skippedFormats }
       : {}),
@@ -272,15 +295,29 @@ async function powershellTypeViaClipboard(
     if (verdict === "skipped_race") {
       return { backend: "powershell", clipboardRestored: false, restoreSkippedRace: true };
     }
-    // `Set-Clipboard -Value ''` is rejected by PowerShell, so an originally
-    // EMPTY clipboard ends the call still holding our payload. Pre-existing
-    // behaviour of this path, and reported honestly as "not restored" rather
-    // than assumed from the exit status.
-    return { backend: "powershell", clipboardRestored: verdict === "restored" };
+    if (verdict === "restored") {
+      return { backend: "powershell", clipboardRestored: true };
+    }
+    // Anything else is a restore that did NOT happen, and the script says so
+    // rather than being inferred from an exit status that stays 0 either way.
+    // The reachable case is a saved clipboard of "" — `Set-Clipboard -Value ''`
+    // is rejected — which leaves the call ending with our payload still on the
+    // clipboard. Reported the same way the native path reports a failed
+    // restore, so the two backends are read the same way.
+    return {
+      backend: "powershell",
+      clipboardRestored: false,
+      restoreFailedReason: "set_clipboard_failed",
+    };
   } catch {
-    // Restore is best-effort: a failure here must not fail an input that has
-    // already been delivered.
-    return { backend: "powershell", clipboardRestored: false };
+    // The invocation itself failed (spawn error, timeout kill). Restore is
+    // best-effort — this must not fail an input that has already been
+    // delivered — but it is still a failure rather than a deliberate skip.
+    return {
+      backend: "powershell",
+      clipboardRestored: false,
+      restoreFailedReason: "restore_command_failed",
+    };
   }
 }
 
@@ -346,8 +383,16 @@ export function buildFallbackRestoreScript(savedB64: string, pastedSha256Hex: st
     `[Security.Cryptography.SHA256]::Create().ComputeHash(` +
     `[Text.Encoding]::Unicode.GetBytes($c))).Replace('-','').ToLower()}` +
     `if($h -ne '${pastedSha256Hex}'){Write-Output 'skipped_race'}else{` +
-    `Set-Clipboard -Value ([Text.Encoding]::Unicode.GetString(` +
-    `[Convert]::FromBase64String('${savedB64}')));Write-Output 'restored'}`
+    // `try` + `-ErrorAction Stop` are load-bearing, not defensive habit. A
+    // non-terminating `Set-Clipboard` error does not stop the enclosing block
+    // and does not change the exit status, so without them the script walks
+    // straight on to `Write-Output 'restored'` and reports a restore that never
+    // happened. The reachable case is a saved clipboard of "": `Set-Clipboard
+    // -Value ''` is rejected outright (an empty string fails the parameter's
+    // validation), and that rejection used to surface as success.
+    `try{Set-Clipboard -Value ([Text.Encoding]::Unicode.GetString(` +
+    `[Convert]::FromBase64String('${savedB64}'))) -ErrorAction Stop;` +
+    `Write-Output 'restored'}catch{Write-Output 'restore_failed'}}`
   );
 }
 
@@ -363,6 +408,18 @@ export function buildFallbackRestoreScript(savedB64: string, pastedSha256Hex: st
  * — in that case no paste chord is sent, so the target window is untouched —
  * and `ClipboardWriteTooLargeForFallback` when an addon-less build is handed
  * more text than a PowerShell command line can carry.
+ *
+ * **Backend divergence on that failure (I-33).** The native path attempts the
+ * restore before it reports the failure, so a verification failure with no
+ * other writer involved still gives the user their clipboard back. The
+ * PowerShell path throws first and never reaches its restore, so the user is
+ * left holding whatever the failed write put there. That is not fixed here on
+ * purpose: the fallback's restore is gated on "the clipboard still holds what
+ * we pasted", which after a verification failure is false by definition, so
+ * running it would either be a no-op or would overwrite whatever the
+ * interceptor wrote — the outcome I-6 exists to prevent. Closing the gap needs
+ * the sequence-number machinery PowerShell cannot reach, which is precisely
+ * what the addon is for.
  *
  * **Returns** what happened to the user's clipboard (`TypeViaClipboardOutcome`).
  * This used to be `Promise<void>`; callers must forward the result into their
@@ -399,6 +456,12 @@ export function clipboardPasteHints(outcome: TypeViaClipboardOutcome): Record<st
     ...(outcome.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
     ...(outcome.restoreSkippedTooLarge ? { restoreSkippedTooLarge: true } : {}),
     ...(outcome.restoreUnavailable ? { restoreUnavailable: true } : {}),
+    // The one that is a problem rather than a decision: a restore that ran and
+    // failed can leave the clipboard EMPTY, so it must not read as one of the
+    // deliberate skips above.
+    ...(outcome.restoreFailedReason
+      ? { restoreFailedReason: outcome.restoreFailedReason }
+      : {}),
     ...(outcome.skippedFormats && outcome.skippedFormats.length > 0
       ? { skippedFormats: outcome.skippedFormats }
       : {}),
@@ -642,7 +705,11 @@ export const keyboardTypeSchema = {
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
       "pasted text is not run through IME conversion. Note this does not help while an IME " +
       "composition is already in progress: the paste keystroke is consumed by the IME and " +
-      "nothing is inserted, so commit or cancel the composition first. Default false."
+      "nothing is inserted, so commit or cancel the composition first. Your clipboard is " +
+      "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
+      "which backend served the paste and whether the restore ran. On builds without the native " +
+      "addon this path is capped at about 12000 characters and fails with " +
+      "code:'ClipboardWriteTooLargeForFallback' above it. Default false."
     ),
   replaceAll: coercedBoolean().optional().default(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
@@ -2569,7 +2636,11 @@ export const keyboardSchema = z.discriminatedUnion("action", [
         "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
         "pasted text is not run through IME conversion. Note this does not help while an IME " +
         "composition is already in progress: the paste keystroke is consumed by the IME and " +
-        "nothing is inserted, so commit or cancel the composition first. Default false."
+        "nothing is inserted, so commit or cancel the composition first. Your clipboard is " +
+        "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
+        "which backend served the paste and whether the restore ran. On builds without the native " +
+        "addon this path is capped at about 12000 characters and fails with " +
+        "code:'ClipboardWriteTooLargeForFallback' above it. Default false."
       ),
     replaceAll: coercedBoolean().optional().default(false).describe(
       "When true, send Ctrl+A to select all existing text before typing. " +

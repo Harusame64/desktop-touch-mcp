@@ -300,56 +300,56 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 914,
+      "line": 981,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1075,
+      "line": 1142,
       "tool": "keyboard",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1660,
+      "line": 1727,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1731,
+      "line": 1798,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
-    },
-    {
-      "file": "src/tools/keyboard.ts",
-      "line": 2141,
-      "tool": "keyboard:press",
-      "errKind": "new-error",
-      "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
       "line": 2208,
       "tool": "keyboard:press",
       "errKind": "new-error",
+      "contextShape": "object-plain"
+    },
+    {
+      "file": "src/tools/keyboard.ts",
+      "line": 2275,
+      "tool": "keyboard:press",
+      "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2296,
+      "line": 2363,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2487,
+      "line": 2554,
       "tool": "keyboard:sequence",
       "errKind": "expression",
       "contextShape": "object-plain"

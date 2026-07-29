@@ -230,6 +230,30 @@ describe("ADR-033 — typeViaClipboard discloses what happened to the clipboard"
     const r = await typeViaClipboard("hello");
     expect(r.skippedFormats).toEqual([{ formatId: 2, reason: "non_hglobal" }]);
   });
+
+  it("surfaces a restore that was attempted and FAILED, distinctly from one skipped", async () => {
+    // These end in different states and the difference is the actionable part.
+    // A skip leaves another process's value on the clipboard; a failure can
+    // leave it EMPTY, because the restore empties before it writes and the
+    // write is what failed. Collapsed into `restored:false` the caller cannot
+    // tell "someone else owns your clipboard now" from "your clipboard is
+    // gone".
+    nativeState.composite.mockResolvedValue(
+      nativeOk({ clipboardRestored: false, restoreFailedReason: "clipboard_alloc_failed" }),
+    );
+    const r = await typeViaClipboard("hello");
+    expect(r.clipboardRestored).toBe(false);
+    expect(r.restoreFailedReason).toBe("clipboard_alloc_failed");
+    expect(r.restoreSkippedRace).toBeUndefined();
+  });
+
+  it("does not invent a restore failure when there was none", async () => {
+    // The contrapositive: emitting the key unconditionally would make the pin
+    // above pass no matter what the addon reported.
+    nativeState.composite.mockResolvedValue(nativeOk());
+    const r = await typeViaClipboard("hello", "ctrl+v");
+    expect(r.restoreFailedReason).toBeUndefined();
+  });
 });
 
 // ── I-33: what happens to the clipboard when verification fails ─────────────
@@ -322,6 +346,31 @@ describe("ADR-033 — PowerShell fallback (addon absent)", () => {
     expect(scriptOf(2)).toContain("Get-Clipboard -Raw");
   });
 
+  it("believes the script's own verdict, not the exit status", async () => {
+    // `Set-Clipboard` failing inside the script's `else` block does not stop
+    // the block and does not change the exit status, so a restore that never
+    // happened used to be reported as a success. The script says which one it
+    // was, and the only word that means success is `restored`.
+    powerShellResponses(b64("previous"), b64("payload"), "restore_failed");
+
+    const r = await typeViaClipboard("payload");
+
+    expect(r.clipboardRestored).toBe(false);
+    expect(r.restoreFailedReason).toBe("set_clipboard_failed");
+    expect(r.restoreSkippedRace).toBeUndefined();
+    // The mechanism: a terminating error, caught, reported.
+    expect(scriptOf(2)).toContain("-ErrorAction Stop");
+    expect(scriptOf(2)).toMatch(/catch\{Write-Output 'restore_failed'\}/);
+  });
+
+  it("treats an unrecognised verdict as a restore that did not happen", async () => {
+    // Silence from the script is not evidence of success either.
+    powerShellResponses(b64("previous"), b64("payload"), "");
+    const r = await typeViaClipboard("payload");
+    expect(r.clipboardRestored).toBe(false);
+    expect(r.restoreFailedReason).toBe("set_clipboard_failed");
+  });
+
   it("(3) rejects an over-long payload up front instead of letting spawn fail", async () => {
     await expect(typeViaClipboard("x".repeat(20_000))).rejects.toThrow(
       "ClipboardWriteTooLargeForFallback",
@@ -393,5 +442,7 @@ describe("ADR-033 — PowerShell fallback (addon absent)", () => {
     const r = await typeViaClipboard("payload");
     expect(r.backend).toBe("powershell");
     expect(r.clipboardRestored).toBe(false);
+    // ...but it is still reported as a failure rather than a deliberate skip.
+    expect(r.restoreFailedReason).toBe("restore_command_failed");
   });
 });

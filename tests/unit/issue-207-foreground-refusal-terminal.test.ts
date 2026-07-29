@@ -82,8 +82,14 @@ vi.mock("../../src/engine/nutjs.js", () => ({
   keyboard: { type: vi.fn(), pressKey: vi.fn(), releaseKey: vi.fn() },
 }));
 
-vi.mock("../../src/tools/keyboard.js", () => ({
-  typeViaClipboard: vi.fn(() => Promise.resolve()),
+// ADR-033 PR-2: `typeViaClipboard` reports what happened to the user's
+// clipboard, and `terminal(action='send')` forwards that into hints.clipboard.
+// Returning `undefined` here would skip that whole branch, so these tests
+// would keep passing while the plumbing was broken. `importOriginal` keeps the
+// real `clipboardPasteHints` formatting rather than a copy of it.
+vi.mock(import("../../src/tools/keyboard.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  typeViaClipboard: vi.fn(() => Promise.resolve({ backend: "native", clipboardRestored: true })),
 }));
 
 import { terminalSendHandler } from "../../src/tools/terminal.js";

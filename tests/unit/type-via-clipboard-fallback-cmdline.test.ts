@@ -12,9 +12,14 @@
  * characters went through and 12 214 failed with a raw `ENAMETOOLONG` from
  * `spawn`. PR-2 added a second, LONGER script — the restore, which carries the
  * saved clipboard plus a 64-character hash and more surrounding PowerShell — and
- * that one overflows ~16 characters BEFORE 12 117. So the measured boundary no
- * longer describes the binding constraint, and the only reason the fallback
- * works is that the cap sits at 12 000, below both.
+ * that one overflows before 12 117 does. So the measured boundary no longer
+ * describes the binding constraint, and the only reason the fallback works is
+ * that the cap sits at 12 000, below both.
+ *
+ * The margin is not static either: the restore script grew ~59 characters when
+ * its `Set-Clipboard` was wrapped in `try` / `-ErrorAction Stop` / `catch` so a
+ * failed restore stops reporting itself as a success, and every such correction
+ * spends the same budget. Measured at the cap: write 32 300, restore 32 530.
  *
  * That is exactly the kind of fact that survives as a comment for one release
  * and then gets edited away. Here it is arithmetic instead: raise

@@ -194,6 +194,18 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
     expect(c.skippedFormats).toEqual([{ formatId: 2, reason: "non_hglobal" }]);
   });
 
+  it("reports a restore that was attempted and failed", async () => {
+    // The one outcome that can leave the clipboard EMPTY rather than holding
+    // someone's value — so it must not arrive as an anonymous `restored:false`.
+    nativeState.composite.mockResolvedValue(
+      nativeResult({ clipboardRestored: false, restoreFailedReason: "clipboard_alloc_failed" }),
+    );
+    const c = clipboardHints(body(await keyboardTypeHandler(keyboardArgs)))!;
+    expect(c.restored).toBe(false);
+    expect(c.restoreFailedReason).toBe("clipboard_alloc_failed");
+    expect(c.restoreSkippedRace).toBeUndefined();
+  });
+
   it("says nothing about the clipboard when the call did not use it", async () => {
     // The keystroke path borrows nothing, so a `clipboard` block there would be
     // describing a side effect that never happened.
@@ -233,6 +245,15 @@ describe("ADR-033 — the clipboard side effect reaches the terminal envelope", 
     const c = clipboardHints(body(await terminalSendHandler(terminalArgs)))!;
     expect(c.restored).toBe(false);
     expect(c.restoreSkippedRace).toBe(true);
+  });
+
+  it("reports a restore that was attempted and failed", async () => {
+    nativeState.composite.mockResolvedValue(
+      nativeResult({ clipboardRestored: false, restoreFailedReason: "clipboard_alloc_failed" }),
+    );
+    const c = clipboardHints(body(await terminalSendHandler(terminalArgs)))!;
+    expect(c.restored).toBe(false);
+    expect(c.restoreFailedReason).toBe("clipboard_alloc_failed");
   });
 
   it("keeps the target hints it already published", async () => {

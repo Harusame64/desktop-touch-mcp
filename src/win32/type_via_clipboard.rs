@@ -76,6 +76,19 @@
 //! composite behaves identically to the V8 thread (ADR-033 P2-0 Q2), including
 //! the hidden owner window's create/destroy and `SendInput`.
 //!
+//! **What the `AbortSignal` does NOT fix, and must not be read as fixing.**
+//! Abort cancels a task that is still QUEUED for the pool; a task already
+//! inside the sequence runs to completion. Its result is discarded, its side
+//! effects are not — and here they are heavier than the clipboard tool's. A
+//! call the caller has given up on can still send the chord, into whatever
+//! window holds focus by then rather than the one the caller was aiming at, and
+//! can still be holding the payload on the clipboard while it waits to restore.
+//! So a timed-out `typeViaClipboard` leaves BOTH the paste and the clipboard
+//! indeterminate, which is what `keyboard.ts` tells the caller. The hazard
+//! exists only while a clipboard owner is hung, and in that state the clipboard
+//! is already unusable system-wide; timing out keeps the server answering
+//! instead of adding it to the casualties.
+//!
 //! # HGLOBAL ownership rules (I-9)
 //!
 //! Unchanged from `clipboard_text.rs` / `clipboard_snapshot.rs`, and this module
