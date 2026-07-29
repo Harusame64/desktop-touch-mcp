@@ -61,9 +61,11 @@ const ENTER_GAP_DELAY_MS: u64 = 60;
 // ── Result types (napi objects) ─────────────────────────────────────────────
 
 /// One clipboard format that was NOT preserved across the paste, with the
-/// reason (`non_hglobal` / `deferred_render` / `get_data_failed`). Surfaced as
-/// caller hints so a user who had e.g. an image on the clipboard learns it was
-/// not restored.
+/// reason (`non_hglobal` / `deferred_render` / `get_data_failed` / `too_large` /
+/// `snapshot_budget` / `alloc_failed` — the last three are the snapshot
+/// allocation caps; `SkippedFormatReason::as_str()` in `clipboard_snapshot.rs`
+/// is the contract). Surfaced as caller hints so a user who had e.g. an image
+/// on the clipboard learns it was not restored.
 #[napi(object)]
 pub struct ConsolePasteSkippedFormat {
     pub format_id: u32,

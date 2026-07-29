@@ -68,11 +68,33 @@
 //! caller never named.
 //!
 //! So the caller passes a budget, the factory turns it into an absolute
-//! deadline at call time, and the chord is checked against it immediately
-//! before `SendInput`. Past the deadline nothing is typed and the result says
-//! `paste_deadline_exceeded`. The restore still runs: the 3-point race check is
-//! what makes a late restore safe — if the user has copied anything since, the
-//! sequence number has moved and the restore skips itself.
+//! deadline at call time, and the sequence checks it at **two** points:
+//!
+//! 1. **Before the write transaction opens.** A worker that wakes from a hung
+//!    save after the caller has given up must not mutate the clipboard at all.
+//!    The JS caller's timeout also releases the input serialization lock, so by
+//!    the time an abandoned worker wakes, a NEWER `typeViaClipboard` may be
+//!    between its own verification and its chord — a stale write landing there
+//!    would be pasted by the newer call. Past the deadline the worker exits
+//!    with `paste_deadline_exceeded` and `clipboard_modified:false`: the user's
+//!    clipboard is exactly as it was.
+//! 2. **Immediately before `SendInput`** (the chord gate). The deadline can
+//!    also pass during the write/verify transactions, and the instant that
+//!    matters for typing is the one just before the keystroke goes out. Past
+//!    the deadline nothing is typed, the result says `paste_deadline_exceeded`,
+//!    and the restore still runs: the 3-point race check is what makes a late
+//!    restore safe — if anyone has written since our set, the sequence number
+//!    has moved and the restore skips itself. That same race check is why a
+//!    late restore can never clobber a newer call's payload.
+//!
+//! What the two checkpoints do NOT close: a hang inside
+//! `EmptyClipboard`/`SetClipboardData` *after* checkpoint 1 passes can still
+//! store late — the same residual `clipboard_text.rs` documents as "a write
+//! that has passed `SetClipboardData` has landed". Holding the input lock until
+//! the worker settles would close it, at the price of a hung clipboard owner
+//! freezing every keyboard operation (including plain keystroke typing, which
+//! does not need the clipboard at all) for the duration of the hang — the
+//! availability regression the async design exists to avoid.
 //!
 //! # Why this does not call `foreground_flash::send_keys`
 //!
@@ -257,6 +279,16 @@ pub(crate) enum ChordDecision {
     SkipDeadlineExceeded,
 }
 
+/// Whether `now` is at or past the caller's deadline. `None` = no budget = no
+/// deadline, kept expressible so a caller that has its own lifecycle (a test, a
+/// future non-MCP embedder) is not forced to invent one.
+///
+/// Shared by BOTH deadline checkpoints (the pre-write gate and the chord gate,
+/// module doc "The paste deadline") so they cannot drift apart on the boundary.
+pub(crate) fn past_deadline(deadline: Option<Instant>, now: Instant) -> bool {
+    matches!(deadline, Some(d) if now >= d)
+}
+
 /// The gate. `verify_ok` first: a payload that was never on the clipboard must
 /// not be pasted whether or not there is time left, and its reason is the more
 /// fundamental one to report.
@@ -268,13 +300,10 @@ pub(crate) fn chord_decision(
     if !verify_ok {
         return ChordDecision::SkipUnverified;
     }
-    match deadline {
-        // No budget = no deadline. Kept expressible so a caller that has its
-        // own lifecycle (a test, a future non-MCP embedder) is not forced to
-        // invent one.
-        Some(d) if now >= d => ChordDecision::SkipDeadlineExceeded,
-        _ => ChordDecision::Send,
+    if past_deadline(deadline, now) {
+        return ChordDecision::SkipDeadlineExceeded;
     }
+    ChordDecision::Send
 }
 
 /// How far into `seq` the target has to have received events before the paste
@@ -407,7 +436,10 @@ pub(crate) fn send_key_seq_counted(seq: &[(VIRTUAL_KEY, bool)]) -> usize {
 pub struct TypeViaClipboardSkippedFormat {
     pub format_id: u32,
     /// `"non_hglobal"` (bitmaps, metafiles) / `"deferred_render"` /
-    /// `"get_data_failed"`.
+    /// `"get_data_failed"` / `"too_large"` (past the per-format snapshot cap) /
+    /// `"snapshot_budget"` (the aggregate cap was already spent) /
+    /// `"alloc_failed"` (the copy's allocation was refused). The strings are
+    /// `SkippedFormatReason::as_str()` — pinned there as contract.
     pub reason: String,
 }
 
@@ -617,6 +649,26 @@ pub(crate) fn type_via_clipboard_blocking(
             Ok(s) => s,
         };
         let skipped_formats = build_skipped(&snapshot);
+
+        // ── 1.5. Pre-write deadline gate (module doc "The paste deadline") ──
+        // The chord gate below stops an expired worker from PASTING, but by
+        // then the clipboard has already been rewritten. The save above is the
+        // step with no bounded worst case, and the JS caller's timeout releases
+        // the input serialization lock — so a worker that wakes from a hung
+        // save may find a NEWER call between its own verification and its
+        // chord, and a stale write landing there would be pasted by that newer
+        // call. Exiting here, before the write transaction opens, leaves the
+        // user's clipboard untouched (`clipboard_modified:false`) and nothing
+        // for the newer call to trip over.
+        if past_deadline(deadline, Instant::now()) {
+            return early_fail(
+                "paste_deadline_exceeded",
+                expected_bytes,
+                &expected,
+                get_clipboard_sequence_number(),
+                skipped_formats,
+            );
+        }
 
         // ── 2. Transaction 1: set + in-session verify ① ─────────────────────
         if let Err(e) = open_clipboard_with_retry(owner) {
@@ -1069,6 +1121,14 @@ mod tests {
         let future = now + Duration::from_secs(1);
         let past = now - Duration::from_millis(1);
 
+        // The shared predicate both checkpoints run on (pre-write gate and
+        // chord gate) — pinned directly so the boundary cannot drift while the
+        // two call sites keep "agreeing" with each other.
+        assert!(!past_deadline(None, now));
+        assert!(!past_deadline(Some(future), now));
+        assert!(past_deadline(Some(now), now));
+        assert!(past_deadline(Some(past), now));
+
         assert_eq!(chord_decision(true, Some(future), now), ChordDecision::Send);
         // No budget = no deadline. The guard is opt-in, not mandatory.
         assert_eq!(chord_decision(true, None, now), ChordDecision::Send);
@@ -1367,18 +1427,23 @@ mod tests {
 
     /// The deadline guard, end to end.
     ///
-    /// `chord_decision` is unit-tested above without Win32; what this adds is
-    /// that the sequence HONOURS it — the whole transaction runs, the chord is
-    /// refused, and the clipboard is still handed back. An already-expired
-    /// deadline stands in for the real case (the save blocked for minutes on a
-    /// hung clipboard owner) without needing one.
+    /// `chord_decision` and `past_deadline` are unit-tested above without
+    /// Win32; what this adds is that the sequence HONOURS them — specifically
+    /// checkpoint 1 (module doc "The paste deadline"): an expired worker exits
+    /// **before the write transaction opens**, so the user's clipboard is not
+    /// merely restored, it was never touched. An already-expired deadline
+    /// stands in for the real case (the save blocked past the caller's timeout
+    /// on a hung clipboard owner) without needing one. The chord-side
+    /// checkpoint 2 stays covered by the pure `chord_decision` tests — with
+    /// checkpoint 1 in front of it, an at-entry-expired deadline can no longer
+    /// reach it.
     ///
     /// `#[ignore]`d rather than pure because it exercises the real sequence:
     /// the failure it guards against is not "the gate returns the wrong
     /// answer", it is "the gate exists and the code walks past it".
     #[test]
     #[ignore = "副作用: foreground 奪取 + clipboard 書換"]
-    fn real_clipboard_an_expired_deadline_refuses_the_chord_and_still_restores() {
+    fn real_clipboard_an_expired_deadline_never_touches_the_clipboard() {
         let f = Fixture::new();
         f.win.clear();
 
@@ -1386,12 +1451,17 @@ mod tests {
         let payload = utf16le(PAYLOAD);
         let r = type_via_clipboard_blocking(&payload, PasteCombo::CtrlV, Some(expired));
 
-        // The payload WAS on the clipboard — this is not a verification
-        // failure, which is what makes it a different branch.
-        assert!(r.verify.ok, "verification should have passed: {:?}", r.verify.reason);
-        assert!(!r.pasted, "a chord was sent after the deadline");
         assert!(!r.ok);
+        assert!(!r.pasted, "a chord was sent after the deadline");
         assert_eq!(r.reason.as_deref(), Some("paste_deadline_exceeded"));
+        // Checkpoint 1 fired, so the write never ran: no verification record,
+        // no modification, and therefore nothing to restore. This is what
+        // stops an abandoned worker's stale payload from landing under a newer
+        // call's paste (Codex R6).
+        assert!(!r.verify.ok, "the write transaction should never have run");
+        assert!(!r.clipboard_modified, "the clipboard was written after the deadline");
+        assert!(!r.clipboard_restored);
+        assert!(r.restore_failed_reason.is_none());
 
         // Nothing reached the target.
         std::thread::sleep(Duration::from_millis(120));
@@ -1400,17 +1470,12 @@ mod tests {
             "text reached the target after the deadline had passed"
         );
 
-        // ...and the user's clipboard came back. A late restore is safe because
-        // the race check is what decides it: nobody wrote here, so it ran.
-        assert!(
-            r.clipboard_restored,
-            "restore did not run: {:?}",
-            r.restore_failed_reason
-        );
+        // The sentinel is still there because it was never displaced — a byte
+        // comparison, not a flag we set ourselves.
         assert_eq!(
             &*read_text_blocking().bytes,
             utf16le(SENTINEL).as_slice(),
-            "the user's clipboard was not put back"
+            "the user's clipboard is not exactly as it was"
         );
     }
 

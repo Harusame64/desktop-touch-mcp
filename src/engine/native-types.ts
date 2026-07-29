@@ -390,7 +390,9 @@ export interface NativeForegroundFlashOptions {
 /** One entry in `ForegroundFlashResult.clipboardSkippedFormats`. */
 export interface NativeForegroundFlashSkippedFormat {
   formatId: number
-  /** Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`。 */
+  /** Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"` /
+   *  `"too_large"` / `"snapshot_budget"` / `"alloc_failed"` (後ろ 3 つは
+   *  snapshot allocation 上限 — Rust `SkippedFormatReason::as_str()` が SSOT)。 */
   reason: string
 }
 
@@ -432,7 +434,10 @@ export interface NativeForegroundFlashResult {
 // ── issue #386 — native no-steal console-paste (conhost exit-mode path) ───────
 
 /** One clipboard format NOT preserved across the paste, with the reason
- *  (`"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`). */
+ *  (`"non_hglobal"` / `"deferred_render"` / `"get_data_failed"` /
+ *  `"too_large"` / `"snapshot_budget"` / `"alloc_failed"` — the last three are
+ *  the snapshot allocation caps; Rust `SkippedFormatReason::as_str()` is the
+ *  SSOT). */
 export interface NativeConsolePasteSkippedFormat {
   formatId: number
   reason: string
@@ -521,7 +526,9 @@ export interface NativeClipboardWriteVerifyResult {
 /** One clipboard format the snapshot could not carry, so it is not coming back
  *  even on a successful restore (I-10) — an image on the clipboard is the
  *  common case. `reason` is `non_hglobal` / `deferred_render` /
- *  `get_data_failed`. */
+ *  `get_data_failed` / `too_large` / `snapshot_budget` / `alloc_failed` (the
+ *  last three are the snapshot allocation caps; Rust
+ *  `SkippedFormatReason::as_str()` is the SSOT). */
 export interface NativeTypeViaClipboardSkippedFormat {
   formatId: number
   reason: string

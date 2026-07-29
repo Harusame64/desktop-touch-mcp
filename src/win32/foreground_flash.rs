@@ -108,7 +108,10 @@ pub struct ForegroundFlashResult {
 #[napi(object)]
 pub struct ForegroundFlashSkippedFormat {
     pub format_id: u32,
-    /// Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`。
+    /// Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"` /
+    /// `"too_large"` / `"snapshot_budget"` / `"alloc_failed"` (後ろ 3 つは
+    /// snapshot の allocation 上限 — `clipboard_snapshot.rs` の
+    /// `SkippedFormatReason::as_str()` が contract)。
     pub reason: String,
 }
 

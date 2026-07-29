@@ -117,6 +117,7 @@ const { keyboardTypeHandler } = await import("../../src/tools/keyboard.js");
 const { terminalSendHandler } = await import("../../src/tools/terminal.js");
 const win32 = await import("../../src/engine/win32.js");
 const nutjs = await import("../../src/engine/nutjs.js");
+const focus = await import("../../src/tools/_focus.js");
 
 function body(r: { content: Array<{ type: string; text?: string }> }) {
   return JSON.parse(r.content[0]!.text!) as Record<string, unknown>;
@@ -338,15 +339,22 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
     // verification failure stays the compact code; the deadline and
     // chord-refusal messages stay lower-case and therefore generic. Getting
     // this wrong would silently re-route recovery advice.
-    const cases: Array<[reason: string, verifyOk: boolean, code: string]> = [
-      ["clipboard_replaced_after_write", false, "ClipboardWriteNotDelivered"],
-      ["paste_deadline_exceeded", true, "ToolError"],
-      ["send_input_failed", true, "ToolError"],
+    // The fourth column pins what the message CLAIMS, not just where it
+    // routes. `send_input_failed` and `send_input_partial` share a code but
+    // state opposite facts — "nothing pasted" versus "may already have
+    // pasted" — and collapsing the second into the first is what invites the
+    // blind retry that double-pastes (Opus R6 P2-1).
+    const cases: Array<
+      [reason: string, verifyOk: boolean, code: string, says: string | null]
+    > = [
+      ["clipboard_replaced_after_write", false, "ClipboardWriteNotDelivered", null],
+      ["paste_deadline_exceeded", true, "ToolError", "nothing was typed"],
+      ["send_input_failed", true, "ToolError", "not accepted"],
       // A chord whose prefix reached the V key-down: the target may have
       // pasted, so this is NOT a delivery failure to retry blindly.
-      ["send_input_partial", true, "ToolError"],
+      ["send_input_partial", true, "ToolError", "may already have pasted"],
     ];
-    for (const [reason, verifyOk, code] of cases) {
+    for (const [reason, verifyOk, code, says] of cases) {
       nativeState.composite.mockResolvedValue(
         nativeResult({
           ok: false,
@@ -358,9 +366,33 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
       const r = body(await keyboardTypeHandler(keyboardArgs));
       expect(r.ok, reason).toBe(false);
       expect(r.code, reason).toBe(code);
+      if (says !== null) {
+        expect(r.error, reason).toContain(says);
+      }
+      // The maybe-pasted case must never read as a clean refusal.
+      if (reason === "send_input_partial") {
+        expect(r.error, reason).not.toContain("not accepted");
+      }
       // ...and the payload rode along regardless of which branch threw.
       expect((r.context as Record<string, unknown>).clipboard, reason).toBeDefined();
     }
+  });
+
+  it("still reports the clipboard when a step AFTER the paste throws", async () => {
+    // keyboard's twin of the terminal pin below (Opus R6 P3-1): here the
+    // post-paste step that can throw is the focus-loss detection, which runs
+    // when `trackFocus` is on — the default the shipped tool uses, unlike this
+    // file's other cases. The paste succeeded, so without the clipboard block a
+    // caller told only "keyboard:type failed" retries and types twice.
+    nativeState.composite.mockResolvedValue(nativeResult());
+    vi.mocked(focus.detectFocusLoss).mockRejectedValueOnce(new Error("UIA exploded"));
+
+    const r = body(await keyboardTypeHandler({ ...keyboardArgs, trackFocus: true }));
+
+    expect(r.ok).toBe(false);
+    const clipboard = (r.context as Record<string, unknown>).clipboard as Record<string, unknown>;
+    expect(clipboard.backend).toBe("native");
+    expect(clipboard.restored).toBe(true);
   });
 
   it("reports the fallback's un-restored clipboard on a failed write", async () => {

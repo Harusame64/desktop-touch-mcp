@@ -304,10 +304,24 @@ async function nativeTypeViaClipboard(
         clipboard,
       );
     }
+    if (r.reason === "send_input_partial") {
+      // The OS accepted a PREFIX of the chord and that prefix reached the V
+      // key-down: the target may have pasted even though the batch failed
+      // (the addon kept the settle before restoring for exactly this case).
+      // The one thing this message must not say is "nothing happened" — a
+      // blind retry here can double-paste, which is the mistake the addon's
+      // maybe-fired tracking exists to prevent. Same reasoning as the
+      // timeout's "indeterminate" wording above.
+      throw new TypeViaClipboardDeliveryError(
+        "clipboard paste keystroke batch was only partially accepted by the OS, and the accepted part may already have pasted (send_input_partial) — verify the target's content before retrying",
+        clipboard,
+      );
+    }
     if (r.verify.ok) {
-      // The payload IS on the clipboard; `SendInput` refused the chord. Calling
-      // that a delivery failure would send the caller after a clipboard problem
-      // that does not exist.
+      // The payload IS on the clipboard; `SendInput` refused the chord
+      // outright — the batch never reached the V key-down, so nothing pasted.
+      // Calling that a delivery failure would send the caller after a
+      // clipboard problem that does not exist.
       throw new TypeViaClipboardDeliveryError(
         `clipboard paste keystroke was not accepted by the OS (${r.reason ?? "unknown"})`,
         clipboard,
