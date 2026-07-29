@@ -277,10 +277,43 @@ pub(crate) fn chord_decision(
     }
 }
 
+/// How far into `seq` the target has to have received events before the paste
+/// chord has actually been triggered: the index of the `V` key-DOWN.
+///
+/// Everything before it is modifiers going down, which on their own do nothing.
+/// The moment `V` arrives with Ctrl held, the application acts — so a batch cut
+/// off at or after that point may well have pasted, even though `SendInput`
+/// reported failure.
+///
+/// `None` for a sequence that never presses `V`, which no `PasteCombo`
+/// produces; kept total so the helper cannot lie by construction.
+pub(crate) fn v_down_index(seq: &[(VIRTUAL_KEY, bool)]) -> Option<usize> {
+    seq.iter().position(|(vk, is_up)| *vk == VK_V && !*is_up)
+}
+
 /// Send the chord. See the module doc for why this does not reuse
 /// `foreground_flash::send_keys`.
-pub(crate) fn send_paste_combo(combo: PasteCombo) -> bool {
-    send_key_seq(&combo.keys())
+///
+/// Returns `(all_sent, chord_may_have_fired)`. The second is the one that
+/// matters on failure: `SendInput` inserts a PREFIX on partial failure, and a
+/// prefix that reached the `V` key-down has already told the target to paste.
+pub(crate) fn send_paste_combo(combo: PasteCombo) -> (bool, bool) {
+    let seq = combo.keys();
+    let inserted = send_key_seq_counted(&seq);
+    (inserted == seq.len(), chord_may_have_fired(&seq, inserted))
+}
+
+/// Did a prefix of `inserted` events reach the `V` key-down?
+///
+/// `inserted` events means indices `0..inserted-1` arrived, so the key at index
+/// `i` arrived iff `inserted > i`. Pure, so the off-by-one is pinned rather than
+/// argued about — getting it wrong by one either skips a settle that was needed
+/// (the target pastes the RESTORED clipboard) or takes 120 ms for nothing.
+pub(crate) fn chord_may_have_fired(seq: &[(VIRTUAL_KEY, bool)], inserted: usize) -> bool {
+    match v_down_index(seq) {
+        Some(i) => inserted > i,
+        None => false,
+    }
 }
 
 /// `SendInput` a `(vk, is_keyup)` sequence as **one batch**, filling `wScan`
@@ -314,7 +347,14 @@ fn compensating_keyups(seq: &[(VIRTUAL_KEY, bool)]) -> Vec<(VIRTUAL_KEY, bool)> 
         .collect()
 }
 
+/// `send_key_seq_counted`, discarding the count. The chord path wants the
+/// count; everything else only asks whether the batch went out whole.
 pub(crate) fn send_key_seq(seq: &[(VIRTUAL_KEY, bool)]) -> bool {
+    send_key_seq_counted(seq) == seq.len()
+}
+
+/// Returns how many events `SendInput` actually inserted.
+pub(crate) fn send_key_seq_counted(seq: &[(VIRTUAL_KEY, bool)]) -> usize {
     unsafe {
         let mut inputs: Vec<INPUT> = vec![std::mem::zeroed(); seq.len()];
         for (i, (vk, is_up)) in seq.iter().enumerate() {
@@ -325,9 +365,9 @@ pub(crate) fn send_key_seq(seq: &[(VIRTUAL_KEY, bool)]) -> bool {
                 inputs[i].Anonymous.ki.dwFlags = KEYEVENTF_KEYUP;
             }
         }
-        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-        if sent as usize == seq.len() {
-            return true;
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize;
+        if sent == seq.len() {
+            return sent;
         }
 
         // Best effort, and deliberately not part of the verdict: this call
@@ -347,7 +387,7 @@ pub(crate) fn send_key_seq(seq: &[(VIRTUAL_KEY, bool)]) -> bool {
             }
             let _ = SendInput(&relief, std::mem::size_of::<INPUT>() as i32);
         }
-        false
+        sent
     }
 }
 
@@ -383,7 +423,10 @@ pub struct TypeViaClipboardResult {
     /// (`readback_mismatch` / `clipboard_replaced_after_write` /
     /// `clipboard_get_data_failed` / one of `ClipboardError::as_reason()`), or
     /// `send_input_failed` when the clipboard was proven and the chord was
-    /// refused.
+    /// refused outright, or `send_input_partial` when only a PREFIX of the
+    /// chord was inserted and that prefix reached the `V` key-down — the target
+    /// may have pasted, so `pasted:false` means "cannot be claimed" rather than
+    /// "did not happen".
     pub reason: Option<String>,
     /// The full two-leg verification record, in the same shape the clipboard
     /// tool publishes, so the diagnostics are comparable across both paths.
@@ -667,10 +710,23 @@ pub(crate) fn type_via_clipboard_blocking(
         // instant that matters is the one just before the keystroke goes out.
         match chord_decision(verify.ok, deadline, Instant::now()) {
             ChordDecision::Send => {
-                if send_paste_combo(combo) {
+                let (all_sent, may_have_fired) = send_paste_combo(combo);
+                if all_sent {
                     pasted = true;
                     // ── 5. Settle ──────────────────────────────────────────
                     std::thread::sleep(Duration::from_millis(PASTE_SETTLE_MS));
+                } else if may_have_fired {
+                    // A PREFIX went out, and it reached the `V` key-down: the
+                    // target has been told to paste, whatever `SendInput`
+                    // reported. Skipping the settle here would be the bug the
+                    // settle exists to prevent — an application that reads the
+                    // clipboard asynchronously would find the RESTORED (old)
+                    // content and paste that instead of the payload.
+                    //
+                    // `pasted` stays false: delivery cannot be claimed. The
+                    // distinct reason says why the two disagree.
+                    std::thread::sleep(Duration::from_millis(PASTE_SETTLE_MS));
+                    reason = Some("send_input_partial".to_string());
                 } else {
                     reason = Some("send_input_failed".to_string());
                 }
@@ -895,6 +951,72 @@ mod tests {
         // Nothing to release when the batch pressed nothing.
         assert!(compensating_keyups(&[]).is_empty());
         assert!(compensating_keyups(&[(VK_CONTROL, true)]).is_empty());
+    }
+
+    /// Where the chord becomes irreversible.
+    ///
+    /// Modifiers going down do nothing on their own; the instant `V` arrives
+    /// with Ctrl held, the target acts. So a batch that `SendInput` cut short is
+    /// only harmless if it stopped BEFORE that index — and that is what decides
+    /// whether the settle still has to run before the restore.
+    #[test]
+    fn the_chord_fires_at_the_v_key_down() {
+        assert_eq!(v_down_index(&PasteCombo::CtrlV.keys()), Some(1));
+        assert_eq!(v_down_index(&PasteCombo::CtrlShiftV.keys()), Some(2));
+
+        // Derived, not hard-coded: whatever the chord grows into, the index is
+        // the first `V` that goes DOWN — a `V` key-UP must not be mistaken for
+        // it, or a batch cut off after the paste already happened would be read
+        // as harmless.
+        for combo in [PasteCombo::CtrlV, PasteCombo::CtrlShiftV] {
+            let seq = combo.keys();
+            let i = v_down_index(&seq).expect("every paste chord presses V");
+            assert_eq!(seq[i], (VK_V, false), "{combo:?}");
+            assert!(
+                seq[..i].iter().all(|(vk, _)| *vk != VK_V),
+                "{combo:?}: an earlier V would make this index wrong"
+            );
+        }
+
+        // Total: a sequence that never presses V has no firing point.
+        assert_eq!(v_down_index(&[]), None);
+        assert_eq!(v_down_index(&[(VK_CONTROL, false), (VK_CONTROL, true)]), None);
+        // A `V` that only goes UP is not a press.
+        assert_eq!(v_down_index(&[(VK_V, true)]), None);
+    }
+
+    /// The off-by-one that decides whether the settle runs.
+    ///
+    /// One too eager costs 120 ms for nothing. One too lax skips the settle
+    /// after the target was told to paste — and an application that reads the
+    /// clipboard asynchronously then finds the RESTORED content and pastes the
+    /// user's old text instead of the payload. Silent, and wrong in the
+    /// direction that produces mystery text in a document.
+    #[test]
+    fn a_prefix_counts_as_fired_only_once_it_includes_the_v_key_down() {
+        for combo in [PasteCombo::CtrlV, PasteCombo::CtrlShiftV] {
+            let seq = combo.keys();
+            let i = v_down_index(&seq).unwrap();
+
+            // Nothing inserted, and every prefix that stops before the V.
+            for inserted in 0..=i {
+                assert!(
+                    !chord_may_have_fired(&seq, inserted),
+                    "{combo:?}: {inserted} events stop short of the V at {i}"
+                );
+            }
+            // Exactly through the V, and everything after it.
+            for inserted in (i + 1)..=seq.len() {
+                assert!(
+                    chord_may_have_fired(&seq, inserted),
+                    "{combo:?}: {inserted} events include the V at {i}"
+                );
+            }
+        }
+
+        // A sequence with no V never fires, however much of it went out.
+        let no_v = [(VK_CONTROL, false), (VK_CONTROL, true)];
+        assert!(!chord_may_have_fired(&no_v, no_v.len()));
     }
 
     #[test]
@@ -1320,7 +1442,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         rec.clear();
 
-        assert!(send_paste_combo(PasteCombo::CtrlShiftV));
+        let (all_sent, fired) = send_paste_combo(PasteCombo::CtrlShiftV);
+        assert!(all_sent, "SendInput refused the chord");
+        assert!(fired, "a fully sent chord must count as fired");
         std::thread::sleep(Duration::from_millis(80));
         let events = rec.take();
         drop(rec);

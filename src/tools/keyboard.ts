@@ -1379,6 +1379,11 @@ export const keyboardTypeHandler = async ({
 
   try {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
+  // Declared OUTSIDE the try so the catch can still see it. Once the paste has
+  // happened the text is IN the target, and a later throw — `detectFocusLoss`
+  // reaching UIA, say — must not hide that: a caller told only
+  // "keyboard:type failed" retries, and the text lands twice.
+  let clipboardOutcome: TypeViaClipboardOutcome | undefined;
   try {
     // Phase G: fixId approval prologue
     let effectiveText = text;
@@ -2110,9 +2115,6 @@ export const keyboardTypeHandler = async ({
       }
     }
 
-    // Kept for the envelope: pasting borrows the user's clipboard, and whether
-    // it was given back is a side effect only this call can report.
-    let clipboardOutcome: TypeViaClipboardOutcome | undefined;
     if (effectiveClipboard) {
       clipboardOutcome = await typeViaClipboard(effectiveText);
     } else {
@@ -2231,7 +2233,15 @@ export const keyboardTypeHandler = async ({
     // later — `hints`, `_perceptionForPost` — would then escape the sweep. Same
     // form as `terminal:send`'s catch, so both tools read identically.
     return failWith(err, "keyboard:type", {
-      ...(err instanceof TypeViaClipboardDeliveryError ? { clipboard: err.clipboard } : {}),
+      // Exclusive: either the paste itself threw (the error carries the facts)
+      // or it SUCCEEDED and a later step threw (the hoisted outcome does). The
+      // second is why this is hoisted at all — the text is already delivered,
+      // so a caller that retries on this failure double-types.
+      ...(err instanceof TypeViaClipboardDeliveryError
+        ? { clipboard: err.clipboard }
+        : clipboardOutcome
+          ? { clipboard: clipboardPasteHints(clipboardOutcome) }
+          : {}),
     });
   }
   } finally {

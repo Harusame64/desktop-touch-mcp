@@ -1126,6 +1126,11 @@ export const terminalSendHandler = async ({
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   const startedAt = Date.now();
+  // Declared OUTSIDE the try so the catch can still see it. Once the paste has
+  // happened the text is IN the terminal, and a later throw — a failed Enter,
+  // a focus check — must not hide that: a caller told only "terminal:send
+  // failed" retries, and the input lands twice.
+  let clipboardOutcome: TypeViaClipboardOutcome | undefined;
   try {
     // ADR-014 R3 OQ-W-16-bis (+ S-pid E6): a paneId binds the send target — classic DIRECTLY by hwnd
     // (WM_CHAR goes to this exact window, surviving the post-login title drift AND a same-title
@@ -1682,9 +1687,6 @@ export const terminalSendHandler = async ({
       }
     }
 
-    // Kept for the envelope: pasting borrows the user's clipboard, and whether
-    // it was given back is a side effect only this call can report.
-    let clipboardOutcome: TypeViaClipboardOutcome | undefined;
     if (preferClipboard) {
       let chosenKey: "ctrl+v" | "ctrl+shift+v" = pasteKey === "auto" ? "ctrl+v" : pasteKey;
       if (pasteKey === "auto") {
@@ -1753,7 +1755,16 @@ export const terminalSendHandler = async ({
     // `hints.clipboard`. Without this the fact dies at the catch.
     return failWith(err, "terminal:send", {
       windowTitle,
-      ...(err instanceof TypeViaClipboardDeliveryError ? { clipboard: err.clipboard } : {}),
+      // Two ways the clipboard facts get here, and they are exclusive: the
+      // paste itself threw (the error carries them), or the paste SUCCEEDED and
+      // something after it threw (the hoisted outcome carries them). The second
+      // is the one worth spelling out — the text is already in the terminal, so
+      // a caller that retries on this failure double-sends.
+      ...(err instanceof TypeViaClipboardDeliveryError
+        ? { clipboard: err.clipboard }
+        : clipboardOutcome
+          ? { clipboard: clipboardPasteHints(clipboardOutcome) }
+          : {}),
     });
   }
 };

@@ -116,6 +116,7 @@ vi.mock("../../src/engine/identity-tracker.js", async (importOriginal) => {
 const { keyboardTypeHandler } = await import("../../src/tools/keyboard.js");
 const { terminalSendHandler } = await import("../../src/tools/terminal.js");
 const win32 = await import("../../src/engine/win32.js");
+const nutjs = await import("../../src/engine/nutjs.js");
 
 function body(r: { content: Array<{ type: string; text?: string }> }) {
   return JSON.parse(r.content[0]!.text!) as Record<string, unknown>;
@@ -341,6 +342,9 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
       ["clipboard_replaced_after_write", false, "ClipboardWriteNotDelivered"],
       ["paste_deadline_exceeded", true, "ToolError"],
       ["send_input_failed", true, "ToolError"],
+      // A chord whose prefix reached the V key-down: the target may have
+      // pasted, so this is NOT a delivery failure to retry blindly.
+      ["send_input_partial", true, "ToolError"],
     ];
     for (const [reason, verifyOk, code] of cases) {
       nativeState.composite.mockResolvedValue(
@@ -458,6 +462,22 @@ describe("ADR-033 — the clipboard side effect reaches the terminal envelope", 
     expect(clipboard.restoreSkippedRace).toBe(true);
     // The context this handler already published is not displaced by it.
     expect((r.context as Record<string, unknown>).windowTitle).toBe("Notepad");
+  });
+
+  it("still reports the clipboard when a step AFTER the paste throws", async () => {
+    // The dangerous shape: the paste succeeded, so the text is already in the
+    // terminal, and then the Enter throws. Told only "terminal:send failed", a
+    // caller retries and the input lands twice. The clipboard block is what says
+    // the send got that far.
+    nativeState.composite.mockResolvedValue(nativeResult());
+    vi.mocked(nutjs.keyboard.pressKey).mockRejectedValueOnce(new Error("Enter exploded"));
+
+    const r = body(await terminalSendHandler({ ...terminalArgs, pressEnter: true }));
+
+    expect(r.ok).toBe(false);
+    const clipboard = (r.context as Record<string, unknown>).clipboard as Record<string, unknown>;
+    expect(clipboard.backend).toBe("native");
+    expect(clipboard.restored).toBe(true);
   });
 
   it("keeps the target hints it already published", async () => {
