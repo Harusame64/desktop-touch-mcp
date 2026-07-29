@@ -232,6 +232,58 @@ describe("ADR-033 — typeViaClipboard discloses what happened to the clipboard"
   });
 });
 
+// ── I-33: what happens to the clipboard when verification fails ─────────────
+
+describe("ADR-033 I-33 — a failed verification and the user's clipboard", () => {
+  // The TS path this replaces threw BEFORE its restore, so a verification
+  // failure left the user holding whatever half-state the failure produced. The
+  // composite always attempts the restore, and the 3-point race check decides
+  // whether it may run. Two branches, and they are opposites:
+  //
+  //   1. nobody else wrote (an in-session mismatch, or the set itself failed) —
+  //      the sequence number is unchanged, so the restore RUNS. That is the
+  //      behaviour change, and it is pinned for real against a live clipboard by
+  //      `real_clipboard_a_failed_verification_pastes_nothing_and_still_restores`
+  //      in `type_via_clipboard.rs`, which forces the case deterministically
+  //      with an embedded NUL;
+  //   2. somebody else DID write (`clipboard_replaced_after_write`) — the
+  //      restore is skipped on purpose. Their value must not be clobbered
+  //      (I-6), so "not restored" is the correct outcome here, not a miss.
+  //
+  // What this file owns is the TS boundary: neither branch may reach the caller
+  // as a claim about a clipboard that was not put back.
+
+  it("branch 1 — reports the failure and claims nothing about the clipboard", async () => {
+    nativeState.composite.mockResolvedValue(
+      nativeOk({
+        ok: false,
+        reason: "readback_mismatch",
+        pasted: false,
+        clipboardRestored: true,
+        verify: { ...nativeOk().verify, ok: false, reason: "readback_mismatch", inSessionMatch: false },
+      }),
+    );
+    // The restore ran inside the addon; the throw is the contract for a failed
+    // write and carries no clipboard claim either way. What must NOT happen is
+    // a resolved outcome saying the paste succeeded.
+    await expect(typeViaClipboard("hello")).rejects.toThrow("ClipboardWriteNotDelivered");
+  });
+
+  it("branch 2 — a skipped restore is never reported as restored", async () => {
+    // The same skip on a call that otherwise SUCCEEDED (the payload was
+    // verified, the chord landed, and someone wrote to the clipboard during the
+    // settle) is the case the caller can act on, so it must survive intact.
+    nativeState.composite.mockResolvedValue(
+      nativeOk({ clipboardRestored: false, restoreSkippedRace: true }),
+    );
+    const r = await typeViaClipboard("hello");
+    expect(r.clipboardRestored).toBe(false);
+    expect(r.restoreSkippedRace).toBe(true);
+    // Not "we failed to restore": we chose not to overwrite another process.
+    expect(r.restoreUnavailable).toBeUndefined();
+  });
+});
+
 // ── (c) the fallback ────────────────────────────────────────────────────────
 
 describe("ADR-033 — PowerShell fallback (addon absent)", () => {

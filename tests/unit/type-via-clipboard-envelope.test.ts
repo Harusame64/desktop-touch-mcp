@@ -103,6 +103,7 @@ vi.mock("../../src/engine/identity-tracker.js", async (importOriginal) => {
 
 const { keyboardTypeHandler } = await import("../../src/tools/keyboard.js");
 const { terminalSendHandler } = await import("../../src/tools/terminal.js");
+const win32 = await import("../../src/engine/win32.js");
 
 function body(r: { content: Array<{ type: string; text?: string }> }) {
   return JSON.parse(r.content[0]!.text!) as Record<string, unknown>;
@@ -246,5 +247,74 @@ describe("ADR-033 — the clipboard side effect reaches the terminal envelope", 
     expect(r.ok).toBe(true);
     expect(clipboardHints(r)).toBeUndefined();
     expect(nativeState.composite).not.toHaveBeenCalled();
+  });
+});
+
+// ── I-26: which paste chord `pasteKey:'auto'` picks ─────────────────────────
+
+describe("ADR-033 I-26 — pasteKey:'auto' picks the chord the target actually pastes on", () => {
+  // Ctrl+V is not paste everywhere. In mintty and the terminals that copy its
+  // conventions, Ctrl+V is a control character (literal-next), so sending it
+  // types garbage into the shell instead of pasting — and the send reports
+  // success, because the keystroke WAS delivered. Those terminals paste on
+  // Ctrl+Shift+V. This selection had no test at all, which is how a silently
+  // wrong chord for one shell family would have survived.
+  beforeEach(() => {
+    nativeState.composite.mockResolvedValue(nativeResult());
+  });
+
+  /** Drive a send against a target whose process is `processName`. */
+  async function comboFor(processName: string, over: Record<string, unknown> = {}) {
+    vi.mocked(win32.getProcessIdentityByPid).mockReturnValue({
+      pid: 4242,
+      processName,
+      processStartTimeMs: 0,
+    });
+    await terminalSendHandler({ ...terminalArgs, ...over });
+    return nativeState.composite.mock.calls.at(-1)![1];
+  }
+
+  it.each(["bash", "wsl", "mintty", "alacritty", "wezterm"])(
+    "%s pastes on ctrl+shift+v",
+    async (proc) => {
+      expect(await comboFor(proc)).toBe("ctrl+shift+v");
+    },
+  );
+
+  it.each(["pwsh", "powershell", "cmd", "WindowsTerminal", ""])(
+    "%s stays on ctrl+v",
+    async (proc) => {
+      expect(await comboFor(proc)).toBe("ctrl+v");
+    },
+  );
+
+  it("matches the whole process name, not a substring", async () => {
+    // `getProcessIdentityByPid` reports the base name without `.exe`, and the
+    // match is anchored. A loose match would send Ctrl+Shift+V to anything
+    // whose name merely CONTAINS one of these words — `bashful`, or a user's
+    // `wsl-helper` — where it is not paste at all.
+    expect(await comboFor("bashful")).toBe("ctrl+v");
+    expect(await comboFor("git-bash")).toBe("ctrl+v");
+    expect(await comboFor("wsl-helper")).toBe("ctrl+v");
+  });
+
+  it("is case-insensitive about the process name", async () => {
+    // Win32 image names are not case-normalised.
+    expect(await comboFor("Bash")).toBe("ctrl+shift+v");
+    expect(await comboFor("WezTerm")).toBe("ctrl+shift+v");
+  });
+
+  it("an explicit pasteKey wins over the auto-detection", async () => {
+    // The caller knows their terminal; `auto` is a default, not an override.
+    expect(await comboFor("bash", { pasteKey: "ctrl+v" })).toBe("ctrl+v");
+    expect(await comboFor("pwsh", { pasteKey: "ctrl+shift+v" })).toBe("ctrl+shift+v");
+  });
+
+  it("does not consult the process at all when pasteKey is explicit", async () => {
+    vi.mocked(win32.getProcessIdentityByPid).mockClear();
+    await comboFor("pwsh", { pasteKey: "ctrl+v" });
+    // `comboFor` sets the mock's return value, which counts as no call by
+    // itself; the assertion is that the handler never asked.
+    expect(win32.getProcessIdentityByPid).not.toHaveBeenCalled();
   });
 });
