@@ -486,6 +486,10 @@ export interface NativeClipboardWriteVerifyResult {
    *  of `ClipboardError::as_reason()`. */
   reason?: string
   expectedBytes: number
+  /** `false` = the in-session read-back could not be read at all, so
+   *  `inSessionBytes` / `inSessionMatch` carry no information. Distinguishes
+   *  "read back 0 bytes" from "did not read". */
+  inSessionReadable: boolean
   inSessionBytes: number
   inSessionMatch: boolean
   /** `false` = the post-close re-open lost a race for the clipboard lock, so

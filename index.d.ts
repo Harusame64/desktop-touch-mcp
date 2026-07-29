@@ -216,6 +216,7 @@ export interface NativeClipboardWriteVerifyResult {
   ok: boolean
   reason?: string
   expectedBytes: number
+  inSessionReadable: boolean
   inSessionBytes: number
   inSessionMatch: boolean
   postCloseChecked: boolean

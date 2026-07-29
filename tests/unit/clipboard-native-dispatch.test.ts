@@ -105,6 +105,7 @@ function fakeNativeWrite(utf16le: Buffer) {
     ok: match,
     reason: match ? undefined : "readback_mismatch",
     expectedBytes: expected.length,
+    inSessionReadable: true,
     inSessionBytes: readBack.length,
     inSessionMatch: match,
     postCloseChecked: true,
@@ -176,11 +177,13 @@ describe("ADR-033 — with the addon present, clipboard never spawns powershell.
       ok: false,
       reason: "clipboard_lock_contention",
       expectedBytes: 10,
+      inSessionReadable: false,
       inSessionBytes: 0,
       inSessionMatch: false,
       postCloseChecked: false,
       postCloseBytes: 0,
       postCloseMatch: false,
+      postCloseSkipReason: "write_failed",
       sequenceAfterWrite: 0,
     });
     const r = body(await clipboardWriteHandler({ text: "hello" }));
@@ -261,6 +264,105 @@ describe("ADR-033 — payload accuracy across the TS↔addon boundary", () => {
     // The payload is 12 chars = 24 bytes; a reader sees only "before" = 12.
     expect(ctx.expectedBytes).toBe(Buffer.from("before\u0000after", "utf16le").length);
     expect(ctx.actualBytes).toBe(Buffer.from("before", "utf16le").length);
+  });
+
+  it("a successful write reports what backed the verdict", async () => {
+    const r = body(await clipboardWriteHandler({ text: "hello" }));
+    expect(r.ok).toBe(true);
+    // Diagnostic, never the verdict (plan D-5) — but it has to reach the
+    // caller, or the two-leg design is invisible from outside.
+    expect(typeof r.sequenceAfterWrite).toBe("number");
+    expect(r.postCloseChecked).toBe(true);
+    // Both legs answered, so neither weak-evidence disclosure is present.
+    expect(r).not.toHaveProperty("postCloseSkipReason");
+    expect(r).not.toHaveProperty("inSessionReadable");
+  });
+
+  it("discloses a skipped post-close leg on an otherwise successful write", async () => {
+    // Contention on the verification re-open does not fail the write, but a
+    // caller that cares about clipboard-manager interception must be able to
+    // tell "checked and clean" from "never looked".
+    nativeState.write.mockReturnValue({
+      ok: true,
+      expectedBytes: 10,
+      inSessionReadable: true,
+      inSessionBytes: 10,
+      inSessionMatch: true,
+      postCloseChecked: false,
+      postCloseBytes: 0,
+      postCloseMatch: false,
+      postCloseSkipReason: "clipboard_lock_contention",
+      sequenceAfterWrite: 42,
+    });
+    const r = body(await clipboardWriteHandler({ text: "hello" }));
+    expect(r.ok).toBe(true);
+    expect(r.postCloseChecked).toBe(false);
+    expect(r.postCloseSkipReason).toBe("clipboard_lock_contention");
+    expect(r.sequenceAfterWrite).toBe(42);
+  });
+
+  it("discloses when only the post-close leg backed the write", async () => {
+    // The in-session read failed but the post-close read — the leg with the
+    // old PowerShell pair's semantics — agreed, so the write stands on weaker
+    // evidence and says so.
+    nativeState.write.mockReturnValue({
+      ok: true,
+      expectedBytes: 10,
+      inSessionReadable: false,
+      inSessionBytes: 0,
+      inSessionMatch: false,
+      postCloseChecked: true,
+      postCloseBytes: 10,
+      postCloseMatch: true,
+      sequenceAfterWrite: 7,
+    });
+    const r = body(await clipboardWriteHandler({ text: "hello" }));
+    expect(r.ok).toBe(true);
+    expect(r.inSessionReadable).toBe(false);
+    expect(r.postCloseChecked).toBe(true);
+  });
+
+  it("omits actualBytes when no read-back leg measured anything", async () => {
+    // The write itself failed, so no leg read the clipboard. Reporting 0 would
+    // say "the clipboard was empty", which is a different — and wrong —
+    // diagnosis from "nothing was measured".
+    nativeState.write.mockReturnValue({
+      ok: false,
+      reason: "clipboard_lock_contention",
+      expectedBytes: 30,
+      inSessionReadable: false,
+      inSessionBytes: 0,
+      inSessionMatch: false,
+      postCloseChecked: false,
+      postCloseBytes: 0,
+      postCloseMatch: false,
+      postCloseSkipReason: "write_failed",
+      sequenceAfterWrite: 0,
+    });
+    const r = body(await clipboardWriteHandler({ text: "hello" }));
+    expect(r.ok).toBe(false);
+    const ctx = r.context as Record<string, unknown>;
+    expect(ctx).not.toHaveProperty("actualBytes");
+    expect(ctx.expectedBytes).toBe(30);
+    expect(ctx.hint).toBe("clipboard_lock_contention");
+  });
+
+  it("reports the in-session count when only that leg measured anything", async () => {
+    nativeState.write.mockReturnValue({
+      ok: false,
+      reason: "readback_mismatch",
+      expectedBytes: 30,
+      inSessionReadable: true,
+      inSessionBytes: 8,
+      inSessionMatch: false,
+      postCloseChecked: false,
+      postCloseBytes: 0,
+      postCloseMatch: false,
+      postCloseSkipReason: "clipboard_lock_contention",
+      sequenceAfterWrite: 5,
+    });
+    const r = body(await clipboardWriteHandler({ text: "hello" }));
+    expect((r.context as Record<string, unknown>).actualBytes).toBe(8);
   });
 
   it("a non-text clipboard payload reads as the empty string", async () => {

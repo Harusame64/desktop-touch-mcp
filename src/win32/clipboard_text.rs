@@ -9,9 +9,10 @@
 //! PowerShell), and Microsoft Defender scored the MCP server process as
 //! `Trojan:Win32/Commando.A!ml` and killed it mid-session. Doing the clipboard
 //! transaction in-process removes the spawn, so there is no command line left
-//! for a heuristic to score. It is also ~60x faster on write and ~100x on read,
-//! and it lifts the ~12 150-character command-line ceiling that silently capped
-//! a tool whose schema advertises 100 000.
+//! for a heuristic to score. It is also far faster — measured on this branch,
+//! n=20: write+verify p50 4.15 ms against 349 ms (~84x), read p50 2.48 ms
+//! against 296 ms (~119x) — and it lifts the ~12 150-character command-line
+//! ceiling that silently capped a tool whose schema advertises 100 000.
 //!
 //! # The issue #180 contract, kept and strengthened (I-1)
 //!
@@ -34,6 +35,14 @@
 //! already proved the store, and contention on a verification read is not
 //! evidence that anything was lost. That case reports `post_close_checked=false`
 //! and leaves `ok=true` (plan D-2/D-5).
+//!
+//! The same reasoning runs in the other direction, and the verdict honours it:
+//! if leg 1 could not be read at all (`in_session_readable=false`) but leg 2 ran
+//! and matched, the write stands. Leg 2 is the leg with the old PowerShell
+//! pair's semantics, so its agreement is the same evidence of delivery that
+//! shipped for years — refusing it because a *different* verification read
+//! failed would report a delivered write as lost. The caller is told which leg
+//! answered, so this is disclosed rather than hidden.
 //!
 //! **The verdict is the byte comparison, never the sequence number** (plan
 //! D-5). `sequence_after_write` is diagnostic only. Measured on Windows 11
@@ -123,6 +132,11 @@ pub struct ClipboardWriteVerifyResult {
     /// UTF-16LE byte length of the payload we asked the OS to store
     /// (NUL terminator excluded).
     pub expected_bytes: u32,
+    /// Whether the in-session read-back could be read at all. `false` means
+    /// `GetClipboardData` failed or the handle could not be locked, so
+    /// `in_session_bytes` / `in_session_match` carry no information — without
+    /// this flag a caller cannot tell "read back 0 bytes" from "did not read".
+    pub in_session_readable: bool,
     /// Bytes read back while still holding the clipboard open.
     pub in_session_bytes: u32,
     pub in_session_match: bool,
@@ -197,6 +211,7 @@ fn map_write_outcome(
             ok: false,
             reason: Some(reason),
             expected_bytes,
+            in_session_readable: false,
             in_session_bytes: 0,
             in_session_match: false,
             post_close_checked: false,
@@ -219,8 +234,23 @@ fn map_write_outcome(
         };
 
     let reason = if !in_session_readable {
-        Some("clipboard_get_data_failed".to_string())
+        // The in-session leg could not be READ. That is a failed verification,
+        // not evidence of a failed store — and the post-close leg answers the
+        // same question the old `Set-Clipboard; Get-Clipboard -Raw` pair did.
+        // If it ran and matched, delivery is proven and the write stands
+        // (`in_session_readable=false` discloses which leg answered). Only when
+        // that leg is also silent — mismatched or never run — is there nothing
+        // left backing the write.
+        if post_close_checked && post_close_match {
+            None
+        } else {
+            Some("clipboard_get_data_failed".to_string())
+        }
     } else if !in_session_match {
+        // Readable but WRONG is a different fact: nothing could interleave
+        // while we held the lock, so the OS (or a filter driver) stored
+        // something other than what we handed it. A matching post-close read
+        // does not excuse that, and this branch is deliberately not relaxed.
         Some("readback_mismatch".to_string())
     } else if post_close_checked && !post_close_match {
         // Someone consumed WM_CLIPBOARDUPDATE and replaced our payload: a
@@ -235,6 +265,7 @@ fn map_write_outcome(
         ok: reason.is_none(),
         reason,
         expected_bytes,
+        in_session_readable,
         in_session_bytes,
         in_session_match,
         post_close_checked,
@@ -372,6 +403,12 @@ pub fn win32_clipboard_read_text() -> napi::Result<ClipboardReadResult> {
 ///
 /// Sync (runs on the V8 thread); never throws on a Win32 failure — the failure
 /// is reported through `ok=false` + `reason`.
+///
+/// Blocking budget: **~200 ms worst case**, not the read path's ~100 ms. There
+/// are two `open_clipboard_with_retry` calls here — one for the write
+/// transaction and one for the post-close verification read — and each absorbs
+/// up to 10x10 ms of contention independently (I-12). The happy path is a few
+/// milliseconds.
 #[napi]
 pub fn win32_clipboard_write_text_verified(
     utf16le: Buffer,
@@ -566,6 +603,7 @@ mod tests {
         );
         assert!(!r.ok);
         assert_eq!(r.reason.as_deref(), Some("clipboard_lock_contention"));
+        assert!(!r.in_session_readable);
         assert!(!r.in_session_match);
         assert!(!r.post_close_checked);
         assert_eq!(r.post_close_skip_reason.as_deref(), Some("write_failed"));
@@ -598,11 +636,62 @@ mod tests {
     }
 
     #[test]
-    fn outcome_in_session_unreadable_is_get_data_failed() {
+    fn outcome_in_session_unreadable_but_post_close_matching_is_ok() {
+        // The in-session read is an extra leg this module added; the post-close
+        // read is the one whose semantics shipped for years as
+        // `Set-Clipboard; Get-Clipboard -Raw`. Failing a write that the shipped
+        // check agrees was delivered would report a delivered write as lost.
         let e = utf16le("hello");
         let r = map_write_outcome(None, e.len() as u32, None, Ok(e.clone()), 9, &e);
+        assert!(r.ok);
+        assert!(r.reason.is_none());
+        // ...but the caller is told the in-session leg never answered, so the
+        // weaker evidence is disclosed rather than hidden.
+        assert!(!r.in_session_readable);
+        assert!(r.post_close_checked && r.post_close_match);
+    }
+
+    #[test]
+    fn outcome_in_session_unreadable_and_post_close_mismatched_is_get_data_failed() {
+        let e = utf16le("hello");
+        let r = map_write_outcome(None, e.len() as u32, None, Ok(utf16le("other")), 9, &e);
         assert!(!r.ok);
         assert_eq!(r.reason.as_deref(), Some("clipboard_get_data_failed"));
+    }
+
+    #[test]
+    fn outcome_in_session_unreadable_and_post_close_skipped_is_get_data_failed() {
+        // Nothing read either leg, so nothing backs the write.
+        let e = utf16le("hello");
+        let r = map_write_outcome(
+            None,
+            e.len() as u32,
+            None,
+            Err("clipboard_lock_contention".into()),
+            9,
+            &e,
+        );
+        assert!(!r.ok);
+        assert_eq!(r.reason.as_deref(), Some("clipboard_get_data_failed"));
+    }
+
+    #[test]
+    fn outcome_in_session_readable_mismatch_is_not_rescued_by_a_matching_post_close() {
+        // The contrapositive of the relaxation above: READABLE-but-wrong is a
+        // store failure (nothing could interleave under the lock), and a later
+        // matching read must not launder it into a success.
+        let e = utf16le("hello");
+        let r = map_write_outcome(
+            None,
+            e.len() as u32,
+            Some(utf16le("hell")),
+            Ok(e.clone()),
+            9,
+            &e,
+        );
+        assert!(!r.ok);
+        assert_eq!(r.reason.as_deref(), Some("readback_mismatch"));
+        assert!(r.in_session_readable);
     }
 
     #[test]

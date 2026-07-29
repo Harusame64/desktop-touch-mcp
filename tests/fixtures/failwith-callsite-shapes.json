@@ -202,21 +202,21 @@
     },
     {
       "file": "src/tools/clipboard.ts",
-      "line": 146,
+      "line": 173,
       "tool": "clipboard:read",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/clipboard.ts",
-      "line": 225,
+      "line": 252,
       "tool": "clipboard:write",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/clipboard.ts",
-      "line": 239,
+      "line": 277,
       "tool": "clipboard:write",
       "errKind": "identifier",
       "contextShape": "object-plain"

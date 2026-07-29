@@ -104,6 +104,18 @@ const nativeWrite = (text: string): ToolResult => {
   const payload = Buffer.from(text, "utf16le");
   const r = nativeWin32!.win32ClipboardWriteTextVerified!(payload);
   if (!r.ok) {
+    // Which leg's byte count is worth reporting. Only a leg that actually READ
+    // something may speak: the post-close read first (it is the one that can
+    // see an interceptor), then the in-session read. When neither ran — the
+    // write itself failed, or the clipboard never opened — `actualBytes` is
+    // OMITTED rather than reported as 0, because "0 bytes were on the
+    // clipboard" and "nothing was measured" are opposite diagnoses and a
+    // fabricated 0 reads as the first one.
+    const actualBytes = r.postCloseChecked
+      ? r.postCloseBytes
+      : r.inSessionReadable
+        ? r.inSessionBytes
+        : undefined;
     // Do NOT echo the actual clipboard contents (I-2): on a mismatch that text
     // belongs to another process and may be a password or an API key. Byte
     // counts are the whole diagnosis — "0 vs N" → cleared, "N vs M" → replaced.
@@ -113,13 +125,28 @@ const nativeWrite = (text: string): ToolResult => {
           ? "another process replaced the clipboard immediately after the write (clipboard manager / DLP agent)"
           : (r.reason ?? "the read-back did not match the requested bytes (UTF-16LE)"),
       expectedBytes: r.expectedBytes,
-      // The post-close read is the leg that can see an interceptor, so it is
-      // the one worth reporting whenever it ran.
-      actualBytes: r.postCloseChecked ? r.postCloseBytes : r.inSessionBytes,
+      ...(actualBytes === undefined ? {} : { actualBytes }),
       backend: "native",
     });
   }
-  return ok({ ok: true, written: text.length, backend: "native" satisfies ClipboardBackend });
+  return ok({
+    ok: true,
+    written: text.length,
+    backend: "native" satisfies ClipboardBackend,
+    // Verification diagnostics (plan D-5): the delivery verdict is `ok`, and
+    // these say what backs it. `postCloseChecked:false` means the second leg
+    // never ran — the write is still proven by the in-session read, but a
+    // caller that cares about clipboard-manager interception now knows it was
+    // not looked for, instead of having to assume it was.
+    sequenceAfterWrite: r.sequenceAfterWrite,
+    postCloseChecked: r.postCloseChecked,
+    ...(r.postCloseChecked || !r.postCloseSkipReason
+      ? {}
+      : { postCloseSkipReason: r.postCloseSkipReason }),
+    // Present only when it is false, i.e. only when the weaker evidence path
+    // was taken (post-close agreement alone carried the write).
+    ...(r.inSessionReadable ? {} : { inSessionReadable: false }),
+  });
 };
 
 export const clipboardReadHandler = async (): Promise<ToolResult> => {
@@ -234,7 +261,18 @@ export const clipboardWriteHandler = async ({
       );
     }
 
-    return ok({ ok: true, written: text.length, backend: "powershell" satisfies ClipboardBackend });
+    return ok({
+      ok: true,
+      written: text.length,
+      backend: "powershell" satisfies ClipboardBackend,
+      // This path's single `Get-Clipboard -Raw` runs after `Set-Clipboard`
+      // released the lock, so it IS the post-close leg — hence `true` rather
+      // than a shape that differs from the native backend for no reason.
+      // `sequenceAfterWrite` is deliberately absent: PowerShell never observes
+      // `GetClipboardSequenceNumber`, and emitting a placeholder would be a
+      // diagnostic that lies. `backend` says which shape to expect.
+      postCloseChecked: true,
+    });
   } catch (err) {
     return failWith(err, "clipboard:write", { backend });
   }
@@ -323,7 +361,7 @@ export function registerClipboardTools(server: McpServer): void {
   server.registerTool(
     "clipboard",
     {
-      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery by reading the clipboard back and comparing the bytes (UTF-16LE) for exact equality. Every response reports backend:'native'|'powershell' — which implementation served the call. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. On builds without the native addon (backend:'powershell') writes are additionally capped at about 12000 characters and return code:'ClipboardWriteTooLargeForFallback' above it. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
+      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery by reading the clipboard back and comparing the bytes (UTF-16LE) for exact equality. Every response reports backend:'native'|'powershell' — which implementation served the call. A successful write also reports postCloseChecked (whether the second verification read, the one that can detect a clipboard manager swapping the payload, actually ran) plus postCloseSkipReason when it did not, and on backend:'native' sequenceAfterWrite (diagnostic only — the delivery verdict is the byte comparison) and inSessionReadable:false when only the post-close read backed the verdict. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. On builds without the native addon (backend:'powershell') writes are additionally capped at about 12000 characters and return code:'ClipboardWriteTooLargeForFallback' above it. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
       inputSchema: clipboardRegistrationSchema,
     },
     clipboardRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>

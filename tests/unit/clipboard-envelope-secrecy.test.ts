@@ -161,6 +161,7 @@ describe("I-2 — the native backend's failure envelope carries no clipboard con
       ok: false,
       reason: "clipboard_replaced_after_write",
       expectedBytes: Buffer.from("delivery-target", "utf16le").length,
+      inSessionReadable: true,
       inSessionBytes: Buffer.from("delivery-target", "utf16le").length,
       inSessionMatch: true,
       postCloseChecked: true,
@@ -194,6 +195,7 @@ describe("I-2 — the native backend's failure envelope carries no clipboard con
       ok: false,
       reason: "clipboard_replaced_after_write",
       expectedBytes: Buffer.from("delivery-target", "utf16le").length,
+      inSessionReadable: true,
       inSessionBytes: Buffer.from("delivery-target", "utf16le").length,
       inSessionMatch: true,
       postCloseChecked: true,
@@ -206,5 +208,36 @@ describe("I-2 — the native backend's failure envelope carries no clipboard con
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("ClipboardWriteNotDelivered");
     expect(parsed.context?.actualBytes).toBe(0);
+  });
+
+  it("omits actualBytes rather than reporting a 0 no leg measured", async () => {
+    // The secrecy rule says report counts, not contents — but a count nobody
+    // measured is not a count. `actualBytes:0` reads as "the clipboard was
+    // empty", which would send a caller chasing a racing app that does not
+    // exist when the truth is that the write never got far enough to look.
+    nativeState.write.mockReturnValue({
+      ok: false,
+      reason: "clipboard_lock_contention",
+      expectedBytes: Buffer.from("delivery-target", "utf16le").length,
+      inSessionReadable: false,
+      inSessionBytes: 0,
+      inSessionMatch: false,
+      postCloseChecked: false,
+      postCloseBytes: 0,
+      postCloseMatch: false,
+      postCloseSkipReason: "write_failed",
+      sequenceAfterWrite: 0,
+    });
+
+    const res = await clipboardWriteHandler({ text: "delivery-target" });
+    const parsed = body(res);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.context).not.toHaveProperty("actualBytes");
+    // The half that still has to hold: no clipboard text anywhere, and the
+    // expectation count is still there to diagnose with.
+    expect(envelopeText(res)).not.toContain(RACING_SECRET);
+    expect(parsed.context?.expectedBytes).toBe(
+      Buffer.from("delivery-target", "utf16le").length,
+    );
   });
 });
