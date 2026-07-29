@@ -538,8 +538,10 @@ unsafe fn set_unicode_text_locked(units: &[u16]) -> Result<(), ClipboardError> {
 // These do the actual Win32 work and MAY BLOCK WITHOUT A BOUND — see the
 // module doc. They are deliberately not `#[napi]`: the exports below run them
 // on a libuv worker so a hung clipboard owner cannot freeze the V8 thread. The
-// `#[ignore]`d tests call these directly, which is the same code path minus the
-// thread hop.
+// `#[ignore]`d tests call these directly, which is the same Win32 code path
+// minus the thread hop AND minus `resolve()`'s conversion into napi types —
+// so those tests cover the clipboard behaviour, not the binding. The binding is
+// what `tests/e2e/clipboard-native-backend.test.ts` exercises.
 
 /// Send-safe payload of the read task.
 ///
@@ -895,8 +897,14 @@ mod tests {
     /// An unpaired surrogate cannot be built from a Rust `&str` and cannot
     /// survive UTF-8, so a `String` bridge would have replaced it with U+FFFD
     /// before the read-back comparison ran — and the comparison would then have
-    /// passed on mutated text. This proves losslessness against the real OS
-    /// clipboard rather than against our own model of it.
+    /// passed on mutated text.
+    ///
+    /// Scope, stated so this is not read as more than it is: what this proves
+    /// is that the OS clipboard and the Win32 code round-trip the surrogate.
+    /// It calls the blocking cores, so the napi `Buffer` boundary itself is NOT
+    /// on this path — that half of the claim belongs to
+    /// `tests/e2e/clipboard-native-backend.test.ts`, which drives the same
+    /// payload through the exports.
     #[test]
     #[ignore = "副作用: user clipboard 書き換え"]
     fn real_clipboard_preserves_an_unpaired_surrogate() {

@@ -414,6 +414,17 @@ describe("ADR-033 — payload accuracy across the TS↔addon boundary", () => {
         const ctx = r.context as Record<string, unknown>;
         expect(ctx.backend, label).toBe("native");
         expect(String(ctx.hint), label).toContain("not responding");
+        // The write hint says one more thing than the read hint, and must:
+        // giving up abandons the result, not the work, so a write can still
+        // land afterwards. A caller that treated this like
+        // ClipboardWriteNotDelivered ("treat the clipboard as un-written")
+        // would be acting on a clipboard about to change under it.
+        if (label === "write") {
+          expect(String(ctx.hint)).toContain("indeterminate");
+          expect(String(ctx.hint)).toContain("re-read");
+        } else {
+          expect(String(ctx.hint)).not.toContain("indeterminate");
+        }
         // No silent fallback to the flagged PowerShell path on the way out.
         expect(execFileMock, label).not.toHaveBeenCalled();
       }
@@ -509,6 +520,59 @@ describe("ADR-033 — PowerShell fallback (addon absent)", () => {
     const r = body(await clipboardWriteHandler({ text }));
     expect(r.ok).toBe(true);
     expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("discloses a hung clipboard owner on this backend too", async () => {
+    // The timeout VALUES were already shared between the backends; the
+    // disclosure was not, so an addon-less build hit the same hung owner and
+    // got a bare "Command failed" with nothing to act on. `execFile` kills the
+    // child on timeout, and that kill is distinguishable from every other
+    // failure shape (measured: killed:true + a signal, which a non-zero exit,
+    // a maxBuffer kill and a spawn failure all lack).
+    execFileMock.mockImplementation((_f: unknown, _a: unknown, _o: unknown, cb: unknown) => {
+      const err = Object.assign(new Error("Command failed: powershell.exe ..."), {
+        killed: true,
+        signal: "SIGTERM",
+        code: null,
+      });
+      (cb as (e: Error) => void)(err);
+      return {};
+    });
+
+    const read = body(await clipboardReadHandler());
+    expect(read.ok).toBe(false);
+    const readCtx = read.context as Record<string, unknown>;
+    expect(readCtx.backend).toBe("powershell");
+    expect(String(readCtx.hint)).toContain("not responding");
+    expect(String(readCtx.hint)).not.toContain("indeterminate");
+
+    // And the write variant, because killing the child does not unwind a
+    // Set-Clipboard that already ran.
+    const write = body(await clipboardWriteHandler({ text: "hello" }));
+    expect(write.ok).toBe(false);
+    const writeCtx = write.context as Record<string, unknown>;
+    expect(writeCtx.backend).toBe("powershell");
+    expect(String(writeCtx.hint)).toContain("indeterminate");
+  });
+
+  it("does not blame a hung clipboard owner for an ordinary spawn failure", async () => {
+    // The contrapositive: the predicate must not fire on the failure shapes
+    // that are not a timeout kill, or every fallback failure would ship advice
+    // about an application that is fine.
+    for (const extra of [
+      { code: 1, killed: false, signal: null }, // non-zero exit
+      { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, // maxBuffer kill
+      { code: "ENOENT" }, // spawn failure
+    ]) {
+      execFileMock.mockImplementation((_f: unknown, _a: unknown, _o: unknown, cb: unknown) => {
+        (cb as (e: Error) => void)(Object.assign(new Error("Command failed"), extra));
+        return {};
+      });
+      const r = body(await clipboardReadHandler());
+      expect(r.ok).toBe(false);
+      const ctx = (r.context ?? {}) as Record<string, unknown>;
+      expect(String(ctx.hint ?? ""), JSON.stringify(extra)).not.toContain("not responding");
+    }
   });
 
   it("labels the backend when the spawn itself throws", async () => {

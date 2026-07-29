@@ -131,10 +131,55 @@ async function withTimeout<T>(work: Promise<T>, ms: number, message: string): Pr
   }
 }
 
-/** Advice attached to a native timeout. The clipboard is one OS-wide lock, so
- *  the failure is almost never about this server. */
+/** Advice attached to a give-up on either backend. The clipboard is one OS-wide
+ *  lock, so the failure is almost never about this server. */
 const CLIPBOARD_UNRESPONSIVE_HINT =
   "the application that owns the clipboard is not responding; while it stays hung the clipboard is unusable system-wide, so retrying will not help until that application recovers or is closed";
+
+/**
+ * The write variant, which has to say one more thing.
+ *
+ * Giving up abandons the RESULT, not the work — on both backends. Two of the
+ * places a write can exceed its budget are past the point of no return:
+ * `EmptyClipboard` broadcasts `WM_DESTROYCLIPBOARD` synchronously and can block
+ * on a hung owner, after which the `SetClipboardData` behind it still runs once
+ * that owner recovers; and a hang in the post-close verification leg happens
+ * when the write has ALREADY landed. So after this failure the clipboard may be
+ * unchanged, may be empty, or may hold the requested text — arriving later.
+ *
+ * That is the opposite of `ClipboardWriteNotDelivered`, whose advice says to
+ * treat the clipboard as un-written. A caller that generalised from one to the
+ * other could act on a stale read of a clipboard that is about to change under
+ * it, so the difference is stated rather than left to be inferred.
+ */
+const CLIPBOARD_WRITE_UNRESPONSIVE_HINT =
+  `${CLIPBOARD_UNRESPONSIVE_HINT}. Unlike a delivery-verification failure, the abandoned write may still complete on its own once that application recovers, so the clipboard contents are indeterminate after this failure — re-read before relying on them`;
+
+/**
+ * Did `execFile` kill the child because it exceeded its `timeout`?
+ *
+ * Measured rather than assumed, because the fallback's disclosure hangs on it
+ * (Node 24, Windows): a timeout kill is the only one of these that sets
+ * `killed:true` with a `signal`.
+ *
+ *   timeout      → killed:true,  signal:"SIGTERM", code:null
+ *   non-zero exit→ killed:false, signal:null,      code:<exit status>
+ *   maxBuffer    → killed absent, code:"ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+ *   spawn failure→ killed absent, code:"ENOENT"
+ *
+ * `killSignal` is left at its default, so the signal is whatever Node chose to
+ * kill with; the predicate checks that one was sent rather than pinning the
+ * name.
+ */
+function isExecFileTimeoutKill(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { killed?: unknown; signal?: unknown };
+  return e.killed === true && typeof e.signal === "string" && e.signal.length > 0;
+}
+
+/** Whether a failure means "we stopped waiting", on either backend. */
+const isGiveUp = (err: unknown): boolean =>
+  err instanceof ClipboardTimeoutError || isExecFileTimeoutKill(err);
 
 const selectBackend = (): ClipboardBackend =>
   hasNativeClipboardText() ? "native" : "powershell";
@@ -250,7 +295,7 @@ export const clipboardReadHandler = async (): Promise<ToolResult> => {
   } catch (err) {
     return failWith(err, "clipboard:read", {
       backend,
-      ...(err instanceof ClipboardTimeoutError ? { hint: CLIPBOARD_UNRESPONSIVE_HINT } : {}),
+      ...(isGiveUp(err) ? { hint: CLIPBOARD_UNRESPONSIVE_HINT } : {}),
     });
   }
 };
@@ -357,7 +402,11 @@ export const clipboardWriteHandler = async ({
   } catch (err) {
     return failWith(err, "clipboard:write", {
       backend,
-      ...(err instanceof ClipboardTimeoutError ? { hint: CLIPBOARD_UNRESPONSIVE_HINT } : {}),
+      // The write variant: after giving up, the clipboard contents are
+      // indeterminate rather than merely unwritten. Same on both backends —
+      // killing the PowerShell child does not unwind a Set-Clipboard that
+      // already ran.
+      ...(isGiveUp(err) ? { hint: CLIPBOARD_WRITE_UNRESPONSIVE_HINT } : {}),
     });
   }
 };
@@ -445,7 +494,7 @@ export function registerClipboardTools(server: McpServer): void {
   server.registerTool(
     "clipboard",
     {
-      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery by reading the clipboard back and comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Reading text larger than about 8MB (roughly 4 million characters, far above anything this tool can write) is refused immediately rather than copied. Calls give up after 4s (read) / 5s (write) — the usual cause is that the application owning the clipboard has stopped responding, which blocks the clipboard for every application on the machine, so retrying does not help until it recovers or is closed. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. On builds without the native addon (backend:'powershell') writes are additionally capped at about 12000 characters and return code:'ClipboardWriteTooLargeForFallback' above it. Diagnostics: every response reports backend:'native'|'powershell' — the implementation that served the call. A successful write adds postCloseChecked: whether the read that catches a clipboard manager swapping the payload actually ran (native uses a separate second read; powershell's single read-back is that read), plus postCloseSkipReason when it did not run. On backend:'native' only, a successful write also reports sequenceAfterWrite (a Windows clipboard sequence number, for diagnosis only — the delivery verdict is always the byte comparison) and, when the post-close read alone confirmed the write, inSessionReadable:false. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
+      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery by reading the clipboard back and comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Reading text larger than about 8MB (roughly 4 million characters, far above anything this tool can write) is refused immediately rather than copied. Calls give up after 4s (read) / 5s (write) — the usual cause is that the application owning the clipboard has stopped responding, which blocks the clipboard for every application on the machine, so retrying does not help until it recovers or is closed. A write that gives up leaves the clipboard in an indeterminate state (it may still complete once that application recovers), unlike code:'ClipboardWriteNotDelivered' where the write is known not to have landed — re-read before relying on the contents. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. On builds without the native addon (backend:'powershell') writes are additionally capped at about 12000 characters and return code:'ClipboardWriteTooLargeForFallback' above it. Diagnostics: every response reports backend:'native'|'powershell' — the implementation that served the call. A successful write adds postCloseChecked: whether the read that catches a clipboard manager swapping the payload actually ran (native uses a separate second read; powershell's single read-back is that read), plus postCloseSkipReason when it did not run. On backend:'native' only, a successful write also reports sequenceAfterWrite (a Windows clipboard sequence number, for diagnosis only — the delivery verdict is always the byte comparison) and, when the post-close read alone confirmed the write, inSessionReadable:false. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
       inputSchema: clipboardRegistrationSchema,
     },
     clipboardRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>
