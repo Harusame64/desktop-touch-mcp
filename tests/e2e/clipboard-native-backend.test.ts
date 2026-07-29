@@ -28,6 +28,10 @@ import { parsePayload } from "./helpers/wait.js";
 
 const nativeAvailable = hasNativeClipboardText();
 
+/** `null` = the snapshot read failed, so there is nothing trustworthy to put
+ *  back. `""` is a REAL state — an empty clipboard — and must still be
+ *  restored, or an originally-empty clipboard keeps the last 100 000-character
+ *  test payload. */
 let originalText: string | null = null;
 
 beforeAll(async () => {
@@ -38,7 +42,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!nativeAvailable) return;
-  if (originalText) await clipboardWriteHandler({ text: originalText });
+  if (originalText !== null) await clipboardWriteHandler({ text: originalText });
 });
 
 describe.skipIf(!nativeAvailable)("ADR-033 — the native clipboard backend against the real OS clipboard", () => {

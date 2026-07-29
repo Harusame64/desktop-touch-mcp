@@ -383,7 +383,7 @@ const SUGGESTS: Record<string, string[]> = {
   // / 12214 ENAMETOOLONG). The native path handles the full documented 100000.
   ClipboardWriteTooLargeForFallback: [
     "Reinstall or rebuild the server so the compiled native addon is present — the native clipboard path accepts the full 100000 characters the schema allows.",
-    "Split the text into chunks below the limit and write them one at a time.",
+    "Split the text into chunks below the limit and paste each one into the target application before writing the next — each write replaces the clipboard, so writing them back to back leaves only the last chunk.",
     "For short text, keyboard(action='type', use_clipboard=false) types directly and does not touch the clipboard at all.",
     "Write the text to a file and have the target application open it, if the goal was to move a large payload rather than to populate the clipboard.",
   ],

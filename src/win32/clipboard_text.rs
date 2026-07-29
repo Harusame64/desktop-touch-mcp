@@ -76,7 +76,10 @@
 //!   `GlobalUnlock` only, never `GlobalFree`, and the pointer dies at
 //!   `CloseClipboard`.
 //! - `EmptyClipboard` must precede every `SetClipboardData` (the caller has to
-//!   own the clipboard to set data).
+//!   own the clipboard to set data) — but it runs LAST among the preparation
+//!   steps, immediately before the set. The payload is allocated and filled
+//!   first, so a failed allocation cannot leave the user with a clipboard we
+//!   emptied and never refilled.
 
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
@@ -390,17 +393,26 @@ unsafe fn read_unicode_text_locked() -> Result<Option<Vec<u8>>, &'static str> {
     }
 }
 
-/// `EmptyClipboard` + `SetClipboardData(CF_UNICODETEXT, ...)` on an
+/// Prepare the payload, then `EmptyClipboard` + `SetClipboardData` on an
 /// ALREADY-OPEN clipboard.
+///
+/// **Order matters.** The HGLOBAL is allocated, locked, filled and unlocked
+/// BEFORE `EmptyClipboard` runs, so an allocation failure leaves the user's
+/// clipboard exactly as it was. Emptying first would mean a failed
+/// `GlobalAlloc` had destroyed the user's clipboard and put nothing in its
+/// place — a destructive outcome for an operation that never got started.
+/// `EmptyClipboard` is required (the caller must own the clipboard to set
+/// data), so it stays; it just moves next to the `SetClipboardData` it enables,
+/// leaving only that one indivisible-in-practice pair between "clipboard
+/// emptied" and "clipboard replaced".
 ///
 /// # Safety
 /// The caller must hold the clipboard open. On success the HGLOBAL is owned by
-/// the OS; on every failure branch this function has already freed it (I-9).
+/// the OS; on every failure branch this function has already freed it (I-9) —
+/// including the `EmptyClipboard` branch, which now runs with a live handle in
+/// hand.
 unsafe fn set_unicode_text_locked(units: &[u16]) -> Result<(), ClipboardError> {
     unsafe {
-        EmptyClipboard().map_err(|e| ClipboardError::EmptyFailed {
-            win32_error: e.code().0 as u32,
-        })?;
         let byte_len = std::mem::size_of_val(units);
         let hglobal =
             GlobalAlloc(GMEM_MOVEABLE, byte_len).map_err(|_| ClipboardError::AllocFailed)?;
@@ -411,6 +423,14 @@ unsafe fn set_unicode_text_locked(units: &[u16]) -> Result<(), ClipboardError> {
         }
         std::ptr::copy_nonoverlapping(units.as_ptr(), ptr as *mut u16, units.len());
         let _ = GlobalUnlock(hglobal);
+        // Only now is the clipboard cleared. If this fails, ownership of the
+        // handle is still ours and nothing has been destroyed.
+        if let Err(e) = EmptyClipboard() {
+            global_free(hglobal);
+            return Err(ClipboardError::EmptyFailed {
+                win32_error: e.code().0 as u32,
+            });
+        }
         match SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hglobal.0))) {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -505,8 +525,10 @@ pub fn win32_clipboard_write_text_verified(
         let inner = with_hidden_owner(|owner: HWND| -> ClipboardWriteVerifyResult {
             // ── Transaction 1: empty + set + in-session read-back ───────────
             if let Err(e) = open_clipboard_with_retry(owner) {
-                // Nothing was written: `EmptyClipboard` was never reached, so
-                // the user's clipboard is untouched.
+                // Nothing was written and the user's clipboard is untouched.
+                // The same now holds for an allocation failure inside
+                // `set_unicode_text_locked`, which empties only once it has a
+                // filled handle ready to store.
                 return map_write_outcome(
                     Some(e.as_reason().to_string()),
                     expected_bytes,
