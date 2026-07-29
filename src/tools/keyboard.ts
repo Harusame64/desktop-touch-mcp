@@ -8,7 +8,12 @@ import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd } from "../engine/win32.js";
-import { nativeWin32 } from "../engine/native-engine.js";
+import { nativeWin32, hasNativeTypeViaClipboard } from "../engine/native-engine.js";
+// ADR-033: the fallback's command-line ceiling, the shared give-up budget and
+// the abort-on-timeout helper all belong to the clipboard tool, which reaches
+// the same two backends. Imported rather than duplicated so the two paths
+// cannot drift apart on a measured number.
+import { FALLBACK_MAX_CHARS, WRITE_TIMEOUT_MS as CLIPBOARD_WRITE_TIMEOUT_MS, withTimeout } from "./clipboard.js";
 // ADR-019 Stage 4 — SSIM `local_repaint` fallback when BG verify reaches
 // terminal `unverifiable + read_back_unsupported`. See sub-plan §2.4.2.
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
@@ -50,34 +55,168 @@ const execFileAsync = promisify(execFile);
 // and any future tool that reaches into the same libnut backend. See the
 // design rationale block at the top of nutjs.ts.
 
+// ─────────────────────────────────────────────────────────────────────────────
+// typeViaClipboard — put text on the clipboard, paste it, put the clipboard back
+//
+// ADR-033 PR-2. This used to spawn THREE `powershell.exe` processes per call
+// (save / write+verify / restore), and the middle one carried a base64 blob
+// decoded inline by PowerShell — the command-line shape Microsoft Defender
+// scored as `Trojan:Win32/Commando.A!ml` before killing the server mid-session.
+// It is also the hottest clipboard path here: every non-ASCII `keyboard:type`
+// is promoted to it automatically, and `terminal(action='send')` defaults to it.
+//
+// The native path does the whole transaction in-process (`win32TypeViaClipboard`
+// — see `src/win32/type_via_clipboard.rs`). The PowerShell path is RETAINED for
+// builds without the compiled addon, because there is no other channel that can
+// deliver non-ASCII text to a foreground window.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How long to wait between the paste chord and restoring the clipboard.
+ *
+ *  Mirrors `type_via_clipboard.rs::PASTE_SETTLE_MS` — the two backends must not
+ *  give the target application different amounts of time to READ the clipboard
+ *  before it is taken away again. `tests/unit/type-via-clipboard-settle.test.ts`
+ *  pins them equal, and pins both apart from `foreground_flash`'s 30ms, which
+ *  answers a different question (when is it safe to send the NEXT keystroke). */
+const PASTE_SETTLE_MS = 120;
+
+/** Which implementation served the call. Surfaced in the envelope so a
+ *  Defender-related regression is diagnosable from the response. */
+export type TypeViaClipboardBackend = "native" | "powershell";
+
 /**
- * Set the Windows clipboard via PowerShell, using Base64 to handle any Unicode text.
- * Then paste with Ctrl+V to bypass IME conversion.
+ * What `typeViaClipboard` has to tell its callers.
+ *
+ * It used to return `Promise<void>`, which left no way to say that the user's
+ * clipboard was NOT put back — and that happens for reasons the caller cannot
+ * infer: another process wrote to the clipboard first (`restoreSkippedRace`),
+ * the saved content is too large for the fallback's command line
+ * (`restoreSkippedTooLarge`), the save never succeeded (`restoreUnavailable`),
+ * or the clipboard held formats a text-only snapshot cannot carry
+ * (`skippedFormats`, e.g. an image). Silently keeping the user's clipboard is a
+ * side effect they did not ask for, so every way it can happen is disclosed.
+ *
+ * The optional flags are present only when true, so `hints.clipboard` stays
+ * empty of noise on the ordinary path.
  */
-export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v"): Promise<void> {
-  // Save current clipboard (best-effort — non-text content will be lost)
+export interface TypeViaClipboardOutcome {
+  backend: TypeViaClipboardBackend;
+  /** Whether the user's clipboard was put back. */
+  clipboardRestored: boolean;
+  /** Restore was skipped because someone else wrote to the clipboard after we
+   *  did. NOT a failure: overwriting their value would be worse. */
+  restoreSkippedRace?: boolean;
+  /** Fallback only: the saved content is past what a PowerShell command line
+   *  can carry, so it was not written back. The input still went through — see
+   *  the `powershellTypeViaClipboard` note on why the paste wins that tie. */
+  restoreSkippedTooLarge?: boolean;
+  /** The save itself failed, so there was never anything to put back. */
+  restoreUnavailable?: boolean;
+  /** Formats the snapshot could not carry, so they are gone even though the
+   *  restore ran (native only — the fallback is text-only throughout). */
+  skippedFormats?: Array<{ formatId: number; reason: string }>;
+}
+
+/** The native composite: one in-process transaction, no child process. */
+async function nativeTypeViaClipboard(
+  text: string,
+  pasteCombo: "ctrl+v" | "ctrl+shift+v",
+): Promise<TypeViaClipboardOutcome> {
+  // UTF-16LE bytes rather than a JS string: napi's String bridge transcodes
+  // through UTF-8, which cannot represent an unpaired surrogate, so it would
+  // replace one with U+FFFD *before* the addon's byte comparison ran — and the
+  // verification would then pass on mutated text.
+  const payload = Buffer.from(text, "utf16le");
+  const r = await withTimeout(
+    (signal) => nativeWin32!.win32TypeViaClipboard!(payload, pasteCombo, signal),
+    CLIPBOARD_WRITE_TIMEOUT_MS,
+    `native clipboard paste gave up after ${CLIPBOARD_WRITE_TIMEOUT_MS}ms waiting for the clipboard owner`,
+  );
+
+  if (!r.ok) {
+    if (r.verify.ok) {
+      // The payload IS on the clipboard; `SendInput` refused the chord. Calling
+      // that a delivery failure would send the caller after a clipboard problem
+      // that does not exist. Lower-case message on purpose: an Error whose whole
+      // message is one PascalCase token is this repo's compact-code producer
+      // shape and would need its own SUGGESTS entry (swept by
+      // oq8-failwith-suggest-routing.test.ts).
+      throw new Error(
+        `clipboard paste keystroke was not accepted by the OS (${r.reason ?? "unknown"})`,
+      );
+    }
+    // Same typed error the PowerShell path throws, and the same one
+    // `clipboard(action='write')` returns — one verification contract, one code.
+    // Do NOT put the read-back text in the message: on a mismatch it belongs to
+    // another process and may be a password or an API key (I-2).
+    throw new Error("ClipboardWriteNotDelivered");
+  }
+
+  return {
+    backend: "native",
+    clipboardRestored: r.clipboardRestored,
+    ...(r.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
+    ...(r.skippedFormats && r.skippedFormats.length > 0
+      ? { skippedFormats: r.skippedFormats }
+      : {}),
+  };
+}
+
+/**
+ * The addon-less path: three `powershell.exe` spawns, kept working.
+ *
+ * Three fixes over what shipped before ADR-033 PR-2:
+ *
+ * 1. the save used `Get-Clipboard` without `-Raw` and read the child's raw
+ *    stdout, so a multi-line clipboard came back as an array joined by the
+ *    console's line endings and a trailing newline was invented. It now goes
+ *    through the same base64 round trip `clipboard(action='read')` uses, which
+ *    is byte-exact and codepage-proof;
+ * 2. the restore was unconditional, so a clipboard manager (or the user) that
+ *    copied something during the 120ms settle had it silently overwritten with
+ *    the pre-call content. The restore now runs only if the clipboard still
+ *    holds what we pasted. That check is a SHA-256 comparison inside the same
+ *    invocation rather than a sequence number — PowerShell cannot see
+ *    `GetClipboardSequenceNumber`, so this is an approximation of the native
+ *    path's 3-point race check: it cannot notice a writer that put back
+ *    byte-identical text, which is exactly the case where overwriting is
+ *    harmless anyway;
+ * 3. an over-long payload used to reach `spawn` and fail with a raw
+ *    `ENAMETOOLONG` hundreds of milliseconds later. It is now rejected up front
+ *    with the same named failure `clipboard(action='write')` uses.
+ */
+async function powershellTypeViaClipboard(
+  text: string,
+  pasteCombo: "ctrl+v" | "ctrl+shift+v",
+): Promise<TypeViaClipboardOutcome> {
+  // (3) The payload has to fit in a command line. Fail before doing anything
+  // rather than after emptying the user's clipboard.
+  if (text.length > FALLBACK_MAX_CHARS) {
+    throw new Error("ClipboardWriteTooLargeForFallback");
+  }
+
+  // (1) Save. `null` = the save failed, so there is nothing to put back.
+  // `""` is a REAL state (an empty or non-text clipboard), not a failure.
   let savedClipboard: string | null = null;
   try {
     const { stdout } = await execFileAsync(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"],
-      { timeout: 3000 }
+      ["-NoProfile", "-NonInteractive", "-Command", CLIPBOARD_SAVE_SCRIPT],
+      { timeout: 3000 },
     );
-    savedClipboard = stdout;
+    const savedB64 = stdout.trim();
+    savedClipboard = savedB64 ? Buffer.from(savedB64, "base64").toString("utf16le") : "";
   } catch {
-    // Clipboard may be empty or locked — proceed without saving
+    // The clipboard may be locked by another application — proceed without
+    // saving rather than refusing to type. Disclosed as `restoreUnavailable`.
   }
 
   // Phase 5 E1 (epic #211): combine Set-Clipboard + Get-Clipboard -Raw inside
   // a single PowerShell invocation and compare base64-encoded UTF-16LE bytes
-  // for byte-equality. Mirrors the clipboard:write contract at
-  // src/tools/clipboard.ts:60-118 — the audit's E1 finding caught that
-  // typeViaClipboard (used by terminal:send FG / keyboard:type FG clipboard
-  // paths) was missing the read-back verification that clipboard:write
-  // landed in PR #180. Without verification, DLP / clipboard manager
-  // intercepts on Set-Clipboard would silently leave stale clipboard
-  // contents and the paste would inject wrong text into the target window
-  // (silent-fail violating Phase 5 north-star).
+  // for byte-equality. Without this verification a DLP agent or clipboard
+  // manager intercepting Set-Clipboard would leave stale contents on the
+  // clipboard and the paste below would inject the WRONG TEXT into the target
+  // window — a silent failure with no signal anywhere.
   const b64 = Buffer.from(text, "utf16le").toString("base64");
   const script =
     `$b=[System.Convert]::FromBase64String('${b64}');` +
@@ -88,17 +227,15 @@ export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctr
     `[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))` +
     `}`;
   const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    timeout: 5000,
+    timeout: CLIPBOARD_WRITE_TIMEOUT_MS,
   });
 
   // Byte-equal compare (UTF-16LE, the native Windows clipboard format).
-  // Buffer.equals avoids any normalization (NFC/NFD), BOM, or trailing-
-  // newline coercion that string comparison could introduce. Mirror the
-  // clipboard.ts:96-118 mismatch path: throw a typed Error so classify()
-  // routes it to code:'ClipboardWriteNotDelivered' (auto-classify via
-  // _errors.ts:397-398). Do NOT include actual clipboard contents in
-  // the message — a racing app may have placed sensitive data on the
-  // clipboard.
+  // Buffer.equals avoids any normalization (NFC/NFD), BOM, or trailing-newline
+  // coercion that a string comparison could introduce. Throwing a bare
+  // PascalCase token routes it to code:'ClipboardWriteNotDelivered' via
+  // `_errors.ts::classify`. Do NOT include the actual clipboard contents — a
+  // racing app may have placed sensitive data there (I-2).
   const expectedBytes = Buffer.from(text, "utf16le");
   const readBackB64 = stdout.trim();
   const actualBytes = readBackB64 ? Buffer.from(readBackB64, "base64") : Buffer.alloc(0);
@@ -110,24 +247,99 @@ export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctr
   await keyboard.pressKey(...combo);
   await keyboard.releaseKey(...combo);
 
-  // Brief delay to let the paste complete before restoring clipboard
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  // Let the target read the clipboard before it is taken away again.
+  await new Promise((resolve) => setTimeout(resolve, PASTE_SETTLE_MS));
 
-  // Restore previous clipboard (best-effort)
-  if (savedClipboard !== null) {
-    try {
-      const restoreB64 = Buffer.from(savedClipboard, "utf16le").toString("base64");
-      const restoreScript =
-        `$b=[System.Convert]::FromBase64String('${restoreB64}');` +
-        `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-        `Set-Clipboard -Value $t`;
-      await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", restoreScript], {
-        timeout: 3000,
-      });
-    } catch {
-      // Restore is best-effort — don't fail the overall operation
-    }
+  if (savedClipboard === null) {
+    return { backend: "powershell", clipboardRestored: false, restoreUnavailable: true };
   }
+  // The saved content has to travel back through a command line too. When it
+  // does not fit, the INPUT still stands and only the restore is dropped:
+  // `terminal(action='send')` defaults to this path, non-ASCII text is promoted
+  // to it automatically, and with an IME open it is the only channel that
+  // delivers the text at all — so failing the whole call to protect a courtesy
+  // (putting the clipboard back) would strand the caller with no way through.
+  // The user's clipboard content is normally re-obtainable from wherever it was
+  // copied; a refused keystroke is not. Disclosed, never silent.
+  if (savedClipboard.length > FALLBACK_MAX_CHARS) {
+    return { backend: "powershell", clipboardRestored: false, restoreSkippedTooLarge: true };
+  }
+
+  // (2) Restore only if the clipboard still holds what we pasted.
+  try {
+    const restoreB64 = Buffer.from(savedClipboard, "utf16le").toString("base64");
+    // The hash of what we put there, so the comparison costs 64 characters of
+    // command line instead of a second copy of the payload — both blobs
+    // together would not fit.
+    const pastedHash = createHash("sha256").update(expectedBytes).digest("hex");
+    const restoreScript =
+      `$c=Get-Clipboard -Raw;$h='';` +
+      `if($c -ne $null){$h=[BitConverter]::ToString(` +
+      `[Security.Cryptography.SHA256]::Create().ComputeHash(` +
+      `[Text.Encoding]::Unicode.GetBytes($c))).Replace('-','').ToLower()}` +
+      `if($h -ne '${pastedHash}'){Write-Output 'skipped_race'}else{` +
+      `Set-Clipboard -Value ([Text.Encoding]::Unicode.GetString(` +
+      `[Convert]::FromBase64String('${restoreB64}')));Write-Output 'restored'}`;
+    const { stdout: restoreOut } = await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", restoreScript],
+      { timeout: 3000 },
+    );
+    const verdict = restoreOut.trim();
+    if (verdict === "skipped_race") {
+      return { backend: "powershell", clipboardRestored: false, restoreSkippedRace: true };
+    }
+    // `Set-Clipboard -Value ''` is rejected by PowerShell, so an originally
+    // EMPTY clipboard ends the call still holding our payload. Pre-existing
+    // behaviour of this path, and reported honestly as "not restored" rather
+    // than assumed from the exit status.
+    return { backend: "powershell", clipboardRestored: verdict === "restored" };
+  } catch {
+    // Restore is best-effort: a failure here must not fail an input that has
+    // already been delivered.
+    return { backend: "powershell", clipboardRestored: false };
+  }
+}
+
+/** The save half of the fallback, identical to `clipboard(action='read')`'s
+ *  script: `-Raw` keeps line breaks intact and base64 keeps the bytes exact
+ *  across the console's codepage. */
+const CLIPBOARD_SAVE_SCRIPT =
+  "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" +
+  "$t=Get-Clipboard -Raw;" +
+  "if($t -eq $null){Write-Output ''}else{" +
+  "[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($t))" +
+  "}";
+
+/**
+ * Put `text` on the clipboard, paste it with `pasteCombo`, and put the user's
+ * clipboard back.
+ *
+ * Pasting rather than typing is what preserves the exact Unicode bytes: the
+ * keystroke channel cannot deliver text outside the active keyboard layout, and
+ * an open IME would compose ASCII keystrokes into something else.
+ *
+ * **Throws** `ClipboardWriteNotDelivered` when the read-back verification fails
+ * — in that case no paste chord is sent, so the target window is untouched —
+ * and `ClipboardWriteTooLargeForFallback` when an addon-less build is handed
+ * more text than a PowerShell command line can carry.
+ *
+ * **Returns** what happened to the user's clipboard (`TypeViaClipboardOutcome`).
+ * This used to be `Promise<void>`; callers must forward the result into their
+ * envelope, because a skipped restore is a side effect the caller cannot
+ * otherwise observe.
+ *
+ * What a successful return does NOT claim: that the target application received
+ * the text. The chord is delivered to whatever has focus, and a pending IME
+ * composition swallows it — see the tool description's IME caveat.
+ */
+export async function typeViaClipboard(
+  text: string,
+  pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v",
+): Promise<TypeViaClipboardOutcome> {
+  return hasNativeTypeViaClipboard()
+    ? nativeTypeViaClipboard(text, pasteCombo)
+    : powershellTypeViaClipboard(text, pasteCombo);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

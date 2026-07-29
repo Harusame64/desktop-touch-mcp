@@ -71,6 +71,17 @@ const { mockExecFile, mockExecFileWithCustom } = vi.hoisted(() => {
 vi.mock("node:child_process", () => ({
   execFile: mockExecFileWithCustom,
 }));
+// ADR-033 PR-2 pinned this contract to the PowerShell FALLBACK, which is what
+// these three cases describe: the `Set-Clipboard`/`Get-Clipboard -Raw` pair and
+// its execFile call count. With the addon present `typeViaClipboard` runs the
+// native composite instead and spawns nothing — that path has its own guard
+// tests in `type-via-clipboard-native-dispatch.test.ts`. Forcing the fallback
+// here keeps this file testing the thing it was written for; without it these
+// would silently exercise the real clipboard and inject a real Ctrl+V.
+vi.mock(import("../../src/engine/native-engine.js"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, hasNativeTypeViaClipboard: () => false };
+});
 // nutjs paste combo press/release — make the success-path test work without
 // actually hitting Windows input pipeline.
 vi.mock("../../src/engine/nutjs.js", () => ({
@@ -129,7 +140,12 @@ describe("Phase 5 E1 (epic #211): typeViaClipboard Get-Clipboard read-back verif
     mockExecFileResolvesWith("previous"); // save
     mockExecFileResolvesWith(utf16LeBase64(payload)); // verify (match)
     mockExecFileResolvesWith(""); // restore (best-effort)
-    await expect(typeViaClipboard(payload, "ctrl+v")).resolves.toBeUndefined();
+    // ADR-033 PR-2 turned the `Promise<void>` into a report of what happened to
+    // the user's clipboard, so the success assertion names the backend that
+    // served this call rather than the absence of a return value.
+    await expect(typeViaClipboard(payload, "ctrl+v")).resolves.toMatchObject({
+      backend: "powershell",
+    });
     // Paste combo dispatched on the success path.
     expect(mockPressKey).toHaveBeenCalled();
     expect(mockReleaseKey).toHaveBeenCalled();
