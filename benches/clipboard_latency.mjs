@@ -137,12 +137,19 @@ const PAYLOAD = "adr-033 latency payload — 日本語 / 😀 / line1\r\nline2";
 async function latency(iterations) {
   const saved = nativeRead();
   const rows = [];
-  rows.push(await measure("native write+verify", iterations, (i) => nativeWriteVerify(`${PAYLOAD} #${i}`)));
-  rows.push(await measure("powershell write+verify", iterations, (i) => powershellWriteVerify(`${PAYLOAD} #${i}`)));
-  rows.push(await measure("native read", iterations, () => nativeRead()));
-  rows.push(await measure("powershell read", iterations, () => powershellRead()));
-  printTable(rows);
-  if (saved) nativeWriteVerify(saved);
+  // The restore lives in `finally` because the failure this harness is most
+  // likely to hit is the PowerShell leg being blocked or the process being
+  // killed by Defender — exactly the run where leaving the user's clipboard
+  // full of benchmark payloads adds insult to injury.
+  try {
+    rows.push(await measure("native write+verify", iterations, (i) => nativeWriteVerify(`${PAYLOAD} #${i}`)));
+    rows.push(await measure("powershell write+verify", iterations, (i) => powershellWriteVerify(`${PAYLOAD} #${i}`)));
+    rows.push(await measure("native read", iterations, () => nativeRead()));
+    rows.push(await measure("powershell read", iterations, () => powershellRead()));
+  } finally {
+    printTable(rows);
+    if (saved) nativeWriteVerify(saved);
+  }
 }
 
 /** Payload-size sweep, native only: the PowerShell path cannot reach the upper
@@ -152,12 +159,15 @@ async function latency(iterations) {
 async function sizes(iterations) {
   const saved = nativeRead();
   const rows = [];
-  for (const chars of [11, 12_000, 100_000]) {
-    const text = "x".repeat(chars);
-    rows.push(await measure(`native write+verify — ${chars} chars`, iterations, () => nativeWriteVerify(text)));
+  try {
+    for (const chars of [11, 12_000, 100_000]) {
+      const text = "x".repeat(chars);
+      rows.push(await measure(`native write+verify — ${chars} chars`, iterations, () => nativeWriteVerify(text)));
+    }
+  } finally {
+    printTable(rows);
+    if (saved) nativeWriteVerify(saved);
   }
-  printTable(rows);
-  if (saved) nativeWriteVerify(saved);
 }
 
 const mode = process.argv[2] ?? "latency";

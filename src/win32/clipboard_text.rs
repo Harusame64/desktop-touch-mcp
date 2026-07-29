@@ -193,6 +193,54 @@ fn to_terminated_u16(utf16le: &[u8]) -> Vec<u16> {
     out
 }
 
+/// How `read_unicode_text_locked`'s three outcomes reach the read tool:
+/// `Ok((has_text, bytes))` or `Err(reason)`. Pure, so the mapping is pinned
+/// without a clipboard; the caller only wraps it in the napi object.
+fn classify_read(read: Result<Option<Vec<u8>>, &'static str>) -> Result<(bool, Vec<u8>), &'static str> {
+    match read {
+        Ok(Some(b)) => Ok((true, b)),
+        // Absence is the documented normal case — "" for an empty clipboard or
+        // a non-text payload (I-5).
+        Ok(None) => Ok((false, Vec::new())),
+        // Retrieval failure is NOT absence. Returning "" here would be
+        // indistinguishable from an image on the clipboard.
+        Err(reason) => Err(reason),
+    }
+}
+
+/// How the in-session leg's three outcomes reach `map_write_outcome`'s
+/// `Option`: `Some` = this leg produced bytes to compare, `None` = it could not
+/// read at all.
+fn in_session_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Option<Vec<u8>> {
+    match read {
+        Ok(Some(b)) => Some(b),
+        // The format is ABSENT immediately after a successful set: the store
+        // did not take. That is readable evidence, not a read failure, and
+        // comparing it as empty is what makes a non-empty payload surface as
+        // `readback_mismatch`. (An empty payload cannot land here — the set
+        // still stores the NUL terminator, so the format is present.)
+        Ok(None) => Some(Vec::new()),
+        Err(_) => None,
+    }
+}
+
+/// How the post-close leg's three outcomes reach `map_write_outcome`'s
+/// `Result`: `Ok` = the leg ran and produced bytes, `Err` = it did not run.
+fn post_close_leg(read: Result<Option<Vec<u8>>, &'static str>) -> Result<Vec<u8>, String> {
+    match read {
+        Ok(Some(b)) => Ok(b),
+        // The format is gone: the text vanished entirely, which IS a real
+        // mismatch against a non-empty payload. Compared as empty rather than
+        // treated as "not checked" — the `clipboard_replaced_after_write` case
+        // this leg exists to catch.
+        Ok(None) => Ok(Vec::new()),
+        // Failing to RETRIEVE an advertised format is not evidence the write
+        // was lost — same reasoning as losing the re-open race. The leg is
+        // reported as not run and the in-session read still backs the verdict.
+        Err(reason) => Err(reason.to_string()),
+    }
+}
+
 /// Map the executed step outcomes to the final verdict. Extracted so every
 /// branch is unit-testable without touching Win32 — same rationale as
 /// `console_paste::map_paste_outcome`.
@@ -278,35 +326,55 @@ fn map_write_outcome(
 
 // ── Win32 primitives ────────────────────────────────────────────────────────
 
-/// Read `CF_UNICODETEXT` from an ALREADY-OPEN clipboard. `None` when the format
-/// is unavailable or the handle cannot be locked.
+/// Read `CF_UNICODETEXT` from an ALREADY-OPEN clipboard.
+///
+/// Three outcomes, deliberately not two:
+///
+/// - `Ok(None)` — the format is not on the clipboard. An empty clipboard or a
+///   non-text payload (image, files). This is the tool contract's normal case,
+///   the one that maps to `""` (I-5).
+/// - `Ok(Some(bytes))` — read it.
+/// - `Err("clipboard_get_data_failed")` — the format WAS advertised but the
+///   data could not be obtained: `GetClipboardData` failed, the handle reported
+///   zero size, or `GlobalLock` returned null.
+///
+/// Collapsing the third case into the first is the bug this shape exists to
+/// prevent: "there is no text" and "there is text I could not read" are
+/// opposite facts, and reporting a retrieval failure as an empty clipboard
+/// makes the read tool lie, and makes the post-close verification leg diagnose
+/// a lock failure as a third party having wiped our payload.
 ///
 /// # Safety
 /// The caller must hold the clipboard open (`OpenClipboard`) for the whole
 /// call; the locked pointer is invalidated by `CloseClipboard`. The returned
 /// handle is OS-owned and is never freed here (I-9).
-unsafe fn read_unicode_text_locked() -> Option<Vec<u8>> {
+unsafe fn read_unicode_text_locked() -> Result<Option<Vec<u8>>, &'static str> {
     unsafe {
         if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
-            return None;
+            return Ok(None);
         }
-        let handle = GetClipboardData(CF_UNICODETEXT).ok()?;
+        // Past this point the OS said the format is there, so every failure is
+        // a retrieval failure rather than an absence.
+        let Ok(handle) = GetClipboardData(CF_UNICODETEXT) else {
+            return Err("clipboard_get_data_failed");
+        };
         let hglobal = HGLOBAL(handle.0);
         let size = GlobalSize(hglobal);
         if size == 0 {
-            // A delayed-rendering owner that produced nothing, or a NULL handle.
-            return None;
+            // A delayed-rendering owner that advertised the format and then
+            // produced nothing, or a NULL handle.
+            return Err("clipboard_get_data_failed");
         }
         let ptr = GlobalLock(hglobal);
         if ptr.is_null() {
-            return None;
+            return Err("clipboard_get_data_failed");
         }
         let raw = std::slice::from_raw_parts(ptr as *const u8, size);
         let bytes = text_bytes_from_raw(raw).to_vec();
         // GlobalUnlock returning FALSE with NO_ERROR just means the lock count
         // reached zero, which is the normal case here.
         let _ = GlobalUnlock(hglobal);
-        Some(bytes)
+        Ok(Some(bytes))
     }
 }
 
@@ -376,21 +444,14 @@ pub fn win32_clipboard_read_text() -> napi::Result<ClipboardReadResult> {
             unsafe {
                 let _ = CloseClipboard();
             }
-            match bytes {
-                Some(b) => ClipboardReadResult {
+            match classify_read(bytes) {
+                Ok((has_text, b)) => ClipboardReadResult {
                     ok: true,
                     reason: None,
-                    has_text: true,
+                    has_text,
                     bytes: Buffer::from(b),
                 },
-                // An empty clipboard or a non-text payload is NOT an error:
-                // the tool contract says "empty string if non-text".
-                None => ClipboardReadResult {
-                    ok: true,
-                    reason: None,
-                    has_text: false,
-                    bytes: Buffer::from(Vec::new()),
-                },
+                Err(reason) => failed(reason),
             }
         });
         Ok(inner.unwrap_or_else(|e| failed(e.as_reason())))
@@ -445,7 +506,8 @@ pub fn win32_clipboard_write_text_verified(
             }
             let set_result = unsafe { set_unicode_text_locked(&units) };
             let in_session = match &set_result {
-                Ok(()) => unsafe { read_unicode_text_locked() },
+                Ok(()) => in_session_leg(unsafe { read_unicode_text_locked() }),
+                // The set failed, so there is nothing of ours to read back.
                 Err(_) => None,
             };
             unsafe {
@@ -476,10 +538,7 @@ pub fn win32_clipboard_write_text_verified(
                     unsafe {
                         let _ = CloseClipboard();
                     }
-                    // `None` here means the text vanished entirely — a real
-                    // mismatch against a non-empty payload, so it is compared
-                    // as empty rather than treated as "not checked".
-                    Ok(b.unwrap_or_default())
+                    post_close_leg(b)
                 }
                 Err(e) => Err(e.as_reason().to_string()),
             };
@@ -589,6 +648,106 @@ mod tests {
         on_clipboard.extend_from_slice(&[0, 0]);
         assert_ne!(text_bytes_from_raw(&on_clipboard), expected.as_slice());
         assert_eq!(text_bytes_from_raw(&on_clipboard), utf16le("a").as_slice());
+    }
+
+    // ── The three-valued read, and how each leg consumes it ─────────────────
+
+    #[test]
+    fn read_tool_separates_absence_from_retrieval_failure() {
+        assert_eq!(classify_read(Ok(Some(utf16le("hi")))), Ok((true, utf16le("hi"))));
+        // No format on the clipboard: an image, or nothing. The contract's "".
+        assert_eq!(classify_read(Ok(None)), Ok((false, Vec::new())));
+        // Advertised but unobtainable. Returning `Ok((false, vec![]))` here
+        // would make the read tool report a lock failure as an empty
+        // clipboard — indistinguishable, from outside, from the case above.
+        assert_eq!(
+            classify_read(Err("clipboard_get_data_failed")),
+            Err("clipboard_get_data_failed"),
+        );
+    }
+
+    #[test]
+    fn in_session_leg_treats_a_missing_format_as_readable_and_empty() {
+        assert_eq!(in_session_leg(Ok(Some(utf16le("hi")))), Some(utf16le("hi")));
+        // The set reported success and the format is not there: the store did
+        // not take. Comparing as empty is what makes this a mismatch.
+        assert_eq!(in_session_leg(Ok(None)), Some(Vec::new()));
+        // Retrieval failure says nothing about the store — the leg abstains.
+        assert_eq!(in_session_leg(Err("clipboard_get_data_failed")), None);
+    }
+
+    #[test]
+    fn in_session_missing_format_fails_a_non_empty_write() {
+        // End to end for the branch above: `Ok(None)` must not pass as success.
+        let e = utf16le("hello");
+        let r = map_write_outcome(
+            None,
+            e.len() as u32,
+            in_session_leg(Ok(None)),
+            Ok(e.clone()),
+            9,
+            &e,
+        );
+        assert!(!r.ok);
+        assert_eq!(r.reason.as_deref(), Some("readback_mismatch"));
+        // Readable — the evidence is "the clipboard held nothing", not
+        // "we could not look".
+        assert!(r.in_session_readable);
+        assert_eq!(r.in_session_bytes, 0);
+    }
+
+    #[test]
+    fn post_close_leg_distinguishes_vanished_from_unobtainable() {
+        assert_eq!(post_close_leg(Ok(Some(utf16le("hi")))), Ok(utf16le("hi")));
+        // Format gone = our payload was wiped. That is the interception this
+        // leg exists to catch, so it is CHECKED and compared as empty.
+        assert_eq!(post_close_leg(Ok(None)), Ok(Vec::new()));
+        // Retrieval failure = we could not look. Not evidence of loss, so the
+        // leg is reported as not run rather than as a mismatch.
+        assert_eq!(
+            post_close_leg(Err("clipboard_get_data_failed")),
+            Err("clipboard_get_data_failed".to_string()),
+        );
+    }
+
+    #[test]
+    fn post_close_retrieval_failure_does_not_fail_a_verified_write() {
+        // The bug this closes: an unobtainable post-close handle used to be
+        // read as "the clipboard is empty now", diagnosing a lock failure as a
+        // third party having wiped our payload.
+        let e = utf16le("hello");
+        let r = map_write_outcome(
+            None,
+            e.len() as u32,
+            Some(e.clone()),
+            post_close_leg(Err("clipboard_get_data_failed")),
+            9,
+            &e,
+        );
+        assert!(r.ok);
+        assert!(!r.post_close_checked);
+        assert_eq!(
+            r.post_close_skip_reason.as_deref(),
+            Some("clipboard_get_data_failed"),
+        );
+    }
+
+    #[test]
+    fn post_close_vanished_payload_is_still_replaced_after_write() {
+        // The other side of the same fork: a genuinely emptied clipboard must
+        // keep failing, or the fix above would have bought a false negative.
+        let e = utf16le("hello");
+        let r = map_write_outcome(
+            None,
+            e.len() as u32,
+            Some(e.clone()),
+            post_close_leg(Ok(None)),
+            9,
+            &e,
+        );
+        assert!(!r.ok);
+        assert_eq!(r.reason.as_deref(), Some("clipboard_replaced_after_write"));
+        assert!(r.post_close_checked);
     }
 
     #[test]

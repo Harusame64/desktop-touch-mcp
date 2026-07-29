@@ -202,6 +202,28 @@ describe("ADR-033 — with the addon present, clipboard never spawns powershell.
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
+  it("a retrieval failure is a read failure, not an empty clipboard", async () => {
+    // The addon distinguishes "no text format on the clipboard" (an image, or
+    // nothing) from "the format was advertised and could not be obtained".
+    // Collapsing the second into the first would hand the caller the same ""
+    // an image produces, with ok:true — a lie it has no way to detect.
+    nativeState.read.mockReturnValue({
+      ok: false,
+      reason: "clipboard_get_data_failed",
+      hasText: false,
+      bytes: Buffer.alloc(0),
+    });
+    const failure = body(await clipboardReadHandler());
+    expect(failure.ok).toBe(false);
+    expect((failure.context as Record<string, unknown>)?.hint).toBe("clipboard_get_data_failed");
+
+    // ...whereas a genuinely non-text clipboard is still the documented "".
+    nativeState.read.mockReturnValue({ ok: true, hasText: false, bytes: Buffer.alloc(0) });
+    const absent = body(await clipboardReadHandler());
+    expect(absent.ok).toBe(true);
+    expect(absent.text).toBe("");
+  });
+
   it("a native read failure stays on generic classification (the oq8 compact-code trap)", async () => {
     // An Error whose whole message is one PascalCase token is this repo's
     // compact-code producer shape and would demand its own SUGGESTS entry.
