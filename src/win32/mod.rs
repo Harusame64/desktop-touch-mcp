@@ -59,6 +59,12 @@ pub(crate) mod clipboard_snapshot;
 // verification contract inside the addon. See `src/win32/clipboard_text.rs`.
 #[cfg(windows)]
 pub(crate) mod clipboard_text;
+// ADR-033 PR-2 — the composite that replaces `typeViaClipboard`'s three
+// `powershell.exe` spawns (save / write+verify / restore) with one in-process
+// transaction: save → set + verify ①② → SendInput paste chord → settle →
+// restore. See `src/win32/type_via_clipboard.rs`.
+#[cfg(windows)]
+pub(crate) mod type_via_clipboard;
 // issue #386 — native no-steal console-paste for the conhost exit-mode path
 // (reuses clipboard_snapshot). Replaces the powershell-spawning TS clipboard
 // handling in `bg-input.ts::pasteIntoConsoleNoFocus`. 詳細は

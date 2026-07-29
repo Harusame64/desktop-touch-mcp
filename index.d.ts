@@ -226,6 +226,25 @@ export interface NativeClipboardWriteVerifyResult {
   sequenceAfterWrite: number
 }
 
+// ADR-033 PR-2 — composite: set the clipboard, verify it twice, send the paste
+// chord, restore. Replaces `typeViaClipboard`'s three powershell.exe spawns.
+export interface NativeTypeViaClipboardSkippedFormat {
+  formatId: number
+  reason: string
+}
+
+export interface NativeTypeViaClipboardResult {
+  ok: boolean
+  reason?: string
+  verify: NativeClipboardWriteVerifyResult
+  pasted: boolean
+  clipboardRestored: boolean
+  restoreSkippedRace: boolean
+  restoreFailedReason?: string
+  skippedFormats: Array<NativeTypeViaClipboardSkippedFormat>
+  settleMs: number
+}
+
 export interface NativeProcessParentEntry {
   pid: number
   parentPid: number
@@ -439,6 +458,12 @@ export declare function win32ClipboardReadText(signal?: AbortSignal): Promise<Na
  *  Async for the same reason as the read: its post-close leg reads whatever is
  *  on the clipboard by then, which may be a foreign payload. */
 export declare function win32ClipboardWriteTextVerified(utf16le: Buffer, signal?: AbortSignal): Promise<NativeClipboardWriteVerifyResult>
+/** Put `utf16le` bytes on the clipboard, verify delivery, send `pasteCombo`
+ *  ("ctrl+v" | "ctrl+shift+v") and restore the user's clipboard — the whole
+ *  transaction in one call. Throws only on an unknown `pasteCombo`; every Win32
+ *  failure comes back in the resolved value. Async: it inherits
+ *  GetClipboardData's unbounded worst case and sleeps 120ms before the restore. */
+export declare function win32TypeViaClipboard(utf16le: Buffer, pasteCombo: string, signal?: AbortSignal): Promise<NativeTypeViaClipboardResult>
 export declare function win32GetFocus(): bigint | null
 export declare function win32VkToScanCode(vk: number): number
 

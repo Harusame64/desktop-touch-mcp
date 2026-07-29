@@ -194,7 +194,13 @@ fn validate_input(text: &str) -> Result<(), ForegroundFlashErrorReason> {
 /// 既存 `input.rs::win32_force_set_foreground_window` (PR #74 ADR-007 P3) と
 /// 同じ logic を bool 戻り値版で inline。理由: 同 PR 内で input.rs の
 /// 公開 napi 関数 signature を変更しないため (Tool surface 不変原則 §2 P7)。
-fn force_set_foreground_inner(target: HWND) -> bool {
+///
+/// Visibility note (ADR-033 PR-2): this and the two helpers below are
+/// `pub(crate)` solely so `type_via_clipboard`'s `#[cfg(test)]` harness can
+/// bring ITS OWN test window to the foreground with the same ladder production
+/// uses. No production code outside this module calls them, and their behaviour
+/// is unchanged.
+pub(crate) fn force_set_foreground_inner(target: HWND) -> bool {
     unsafe {
         let fg_before = GetForegroundWindow();
         if fg_before.0 == target.0 {
@@ -224,7 +230,7 @@ fn force_set_foreground_inner(target: HWND) -> bool {
 /// Microsoft docs 的には「user input 直後の foreground 取得は許可される」性質を利用する。
 /// `SendInput` の Alt down/up が calling thread の last-input-time を更新することで
 /// `LockSetForegroundWindow` の制約が一時的に解除される。
-fn alt_unlock_then_set_foreground(target: HWND) -> bool {
+pub(crate) fn alt_unlock_then_set_foreground(target: HWND) -> bool {
     unsafe {
         let mut inputs: [INPUT; 2] = std::mem::zeroed();
         inputs[0].r#type = INPUT_KEYBOARD;
@@ -248,7 +254,7 @@ fn alt_unlock_then_set_foreground(target: HWND) -> bool {
 ///
 /// `wt_hwnd` の thread が foreground かつ何らかの child element に focus を
 /// 持っている状態を「paste 受け取り可」とみなす (§3.5)。
-fn wait_focus_ready(wt_hwnd: HWND, timeout_ms: u32) -> bool {
+pub(crate) fn wait_focus_ready(wt_hwnd: HWND, timeout_ms: u32) -> bool {
     let start = Instant::now();
     while start.elapsed() < Duration::from_millis(timeout_ms as u64) {
         unsafe {
