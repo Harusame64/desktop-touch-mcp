@@ -20,6 +20,17 @@
  * Added BEFORE the native clipboard migration (ADR-033) so the invariant is
  * green on the PowerShell path first and the native path inherits a pin that
  * already passed, rather than one written to fit the new implementation.
+ *
+ * ADR-033 P1-3(b) then made the backend EXPLICIT here. Two reasons, and only
+ * the harness changed — every assertion below is the one that passed before the
+ * migration:
+ *   1. The handler now picks its backend from whether a compiled `.node` is
+ *      present, so without a pin this file would silently stop testing the
+ *      PowerShell path on a developer machine that has built the addon — and
+ *      would reach the REAL clipboard from a unit test while doing it.
+ *   2. I-2 is a claim about the tool, not about one implementation. The native
+ *      path reports the same byte counts from a different source (the addon's
+ *      post-close read), so it needs the same pin, not an inherited assumption.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -29,6 +40,26 @@ const execFileMock = vi.fn();
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, execFile: (...args: unknown[]) => execFileMock(...args) };
+});
+
+const nativeState: { available: boolean; write: ReturnType<typeof vi.fn> } = {
+  available: false,
+  write: vi.fn(),
+};
+
+// Partial mock: native-engine is the load point for the whole addon and
+// unrelated importers read other members of it at module init.
+vi.mock(import("../../src/engine/native-engine.js"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    hasNativeClipboardText: () => nativeState.available,
+    nativeWin32: {
+      ...(actual.nativeWin32 ?? {}),
+      win32ClipboardReadText: () => ({ ok: true, hasText: false, bytes: Buffer.alloc(0) }),
+      win32ClipboardWriteTextVerified: (...a: unknown[]) => nativeState.write(...a),
+    } as unknown as typeof actual.nativeWin32,
+  };
 });
 
 const { clipboardWriteHandler } = await import("../../src/tools/clipboard.js");
@@ -63,6 +94,8 @@ const RACING_SECRET = "sk-live-SECRET-9f3a2b7c-do-not-echo-this-into-any-envelop
 
 beforeEach(() => {
   execFileMock.mockReset();
+  nativeState.write.mockReset();
+  nativeState.available = false;
 });
 
 describe("I-2 — a clipboard failure envelope never carries clipboard contents", () => {
@@ -111,5 +144,67 @@ describe("I-2 — a clipboard failure envelope never carries clipboard contents"
     const parsed = body(await clipboardWriteHandler({ text: "delivery-target" }));
     expect(typeof parsed.context?.expectedBytes).toBe("number");
     expect(typeof parsed.context?.actualBytes).toBe("number");
+  });
+});
+
+// ADR-033 P1-3(b) — the same invariant on the native backend. The addon is the
+// one component that has actually SEEN the racing text (it did the post-close
+// read), so it is the component best placed to leak it; it returns byte counts
+// only, and this pins that the TS layer does not reach for anything more.
+describe("I-2 — the native backend's failure envelope carries no clipboard contents either", () => {
+  beforeEach(() => {
+    nativeState.available = true;
+  });
+
+  it("reports byte counts, not the racing application's text", async () => {
+    nativeState.write.mockReturnValue({
+      ok: false,
+      reason: "clipboard_replaced_after_write",
+      expectedBytes: Buffer.from("delivery-target", "utf16le").length,
+      inSessionBytes: Buffer.from("delivery-target", "utf16le").length,
+      inSessionMatch: true,
+      postCloseChecked: true,
+      postCloseBytes: Buffer.from(RACING_SECRET, "utf16le").length,
+      postCloseMatch: false,
+      sequenceAfterWrite: 5,
+    });
+
+    const res = await clipboardWriteHandler({ text: "delivery-target" });
+    const raw = envelopeText(res);
+    const parsed = body(res);
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("ClipboardWriteNotDelivered");
+    expect(raw).not.toContain(RACING_SECRET);
+    expect(raw).not.toContain(Buffer.from(RACING_SECRET, "utf16le").toString("base64"));
+
+    // The post-close read is the leg that saw the interception, so its count is
+    // the one reported.
+    expect(parsed.context?.expectedBytes).toBe(Buffer.from("delivery-target", "utf16le").length);
+    expect(parsed.context?.actualBytes).toBe(Buffer.from(RACING_SECRET, "utf16le").length);
+    expect(typeof parsed.context?.expectedBytes).toBe("number");
+    expect(typeof parsed.context?.actualBytes).toBe("number");
+    // No spawn happened, so the base64 blob never existed to leak in the first
+    // place — the structural half of the same guarantee.
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it("reports 0 bytes when the clipboard was cleared rather than replaced", async () => {
+    nativeState.write.mockReturnValue({
+      ok: false,
+      reason: "clipboard_replaced_after_write",
+      expectedBytes: Buffer.from("delivery-target", "utf16le").length,
+      inSessionBytes: Buffer.from("delivery-target", "utf16le").length,
+      inSessionMatch: true,
+      postCloseChecked: true,
+      postCloseBytes: 0,
+      postCloseMatch: false,
+      sequenceAfterWrite: 5,
+    });
+
+    const parsed = body(await clipboardWriteHandler({ text: "delivery-target" }));
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("ClipboardWriteNotDelivered");
+    expect(parsed.context?.actualBytes).toBe(0);
   });
 });
