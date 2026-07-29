@@ -610,6 +610,127 @@ mod tests {
         s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
     }
 
+    // ── Real-clipboard tests (`#[ignore]`, run by `npm run test:native-clipboard`)
+    //
+    // Everything above this line is pure. These are not: they REPLACE the
+    // machine's clipboard, which is why they are ignored by default and why the
+    // runner pins `--test-threads=1` — the clipboard is one global resource and
+    // a parallel sibling writing to it would fail these for the wrong reason.
+    //
+    // They exist because the pure tests can only prove the mapping logic. That
+    // `CF_UNICODETEXT` really does round-trip an unpaired surrogate, that the
+    // NUL terminator really does keep the format present for an empty payload,
+    // and that the napi `Buffer` bridge really is lossless are claims about the
+    // OS and the binding, and only an execution against the real clipboard
+    // settles them.
+
+    /// Read the clipboard so a test can put it back. `None` = the read failed,
+    /// so there is nothing trustworthy to restore; `Some(vec![])` is a real
+    /// state (empty, or a non-text payload) and IS restored — as empty text,
+    /// which is the best a text-only API can do for an image.
+    fn snapshot_for_restore() -> Option<Vec<u8>> {
+        let r = win32_clipboard_read_text().ok()?;
+        if !r.ok {
+            return None;
+        }
+        Some(r.bytes.to_vec())
+    }
+
+    fn restore(saved: Option<Vec<u8>>) {
+        if let Some(bytes) = saved {
+            let _ = win32_clipboard_write_text_verified(Buffer::from(bytes));
+        }
+    }
+
+    /// Full write→read round trip through both napi entry points with a payload
+    /// that mixes the cases most likely to be mangled by a transcode: CJK, a
+    /// surrogate pair, and CRLF.
+    #[test]
+    #[ignore = "副作用: user clipboard 書き換え"]
+    fn real_clipboard_round_trip_preserves_cjk_emoji_and_crlf() {
+        let saved = snapshot_for_restore();
+
+        let payload = "日本語 mixed かな漢字 😀 line1\r\nline2\ttab";
+        let bytes = utf16le(payload);
+        let w = win32_clipboard_write_text_verified(Buffer::from(bytes.clone()))
+            .expect("napi call must not throw");
+        assert!(w.ok, "write failed: {:?}", w.reason);
+        assert!(w.in_session_readable, "the in-session leg must have read");
+        assert!(w.in_session_match);
+        assert!(
+            w.post_close_checked,
+            "post-close leg skipped ({:?}) — rerun without other clipboard activity",
+            w.post_close_skip_reason
+        );
+        assert!(w.post_close_match);
+        assert_eq!(w.expected_bytes as usize, bytes.len());
+
+        let r = win32_clipboard_read_text().expect("napi call must not throw");
+        assert!(r.ok, "read failed: {:?}", r.reason);
+        assert!(r.has_text);
+        assert_eq!(&*r.bytes, bytes.as_slice(), "round trip changed the bytes");
+
+        restore(saved);
+    }
+
+    /// An empty payload is a legitimate write, and it is NOT the same as an
+    /// empty clipboard: the set still stores the NUL terminator, so the format
+    /// stays present and the read reports `has_text` with zero bytes. This is
+    /// what keeps the in-session leg's "format absent means the store did not
+    /// take" reasoning sound.
+    #[test]
+    #[ignore = "副作用: user clipboard 書き換え"]
+    fn real_clipboard_empty_payload_writes_and_reads_back_as_present_but_empty() {
+        let saved = snapshot_for_restore();
+
+        let w = win32_clipboard_write_text_verified(Buffer::from(Vec::new()))
+            .expect("napi call must not throw");
+        assert!(w.ok, "empty write failed: {:?}", w.reason);
+        assert_eq!(w.expected_bytes, 0);
+        assert!(w.in_session_readable);
+
+        let r = win32_clipboard_read_text().expect("napi call must not throw");
+        assert!(r.ok, "read failed: {:?}", r.reason);
+        assert!(
+            r.has_text,
+            "CF_UNICODETEXT should still be present — the set stored the terminator"
+        );
+        assert!(r.bytes.is_empty());
+
+        restore(saved);
+    }
+
+    /// The whole reason the napi signature takes `Buffer` and not `String`.
+    /// An unpaired surrogate cannot be built from a Rust `&str` and cannot
+    /// survive UTF-8, so a `String` bridge would have replaced it with U+FFFD
+    /// before the read-back comparison ran — and the comparison would then have
+    /// passed on mutated text. This proves losslessness against the real OS
+    /// clipboard rather than against our own model of it.
+    #[test]
+    #[ignore = "副作用: user clipboard 書き換え"]
+    fn real_clipboard_preserves_an_unpaired_surrogate() {
+        let saved = snapshot_for_restore();
+
+        // 'a', lone high surrogate U+D800, 'b' — deliberately not valid UTF-16.
+        let units: [u16; 3] = [0x0061, 0xD800, 0x0062];
+        let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+
+        let w = win32_clipboard_write_text_verified(Buffer::from(bytes.clone()))
+            .expect("napi call must not throw");
+        assert!(w.ok, "write failed: {:?}", w.reason);
+        assert!(w.in_session_match);
+
+        let r = win32_clipboard_read_text().expect("napi call must not throw");
+        assert!(r.ok, "read failed: {:?}", r.reason);
+        assert_eq!(
+            &*r.bytes,
+            bytes.as_slice(),
+            "the unpaired surrogate was altered in transit"
+        );
+
+        restore(saved);
+    }
+
     #[test]
     fn text_bytes_stops_at_nul_terminator() {
         let mut raw = utf16le("hi");
