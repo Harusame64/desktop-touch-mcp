@@ -113,8 +113,10 @@ use super::safety::napi_safe_call;
 /// Outcome of `win32_clipboard_read_text`.
 ///
 /// Never throws on a Win32 failure — failures come back as `ok=false` +
-/// `reason` (one of `ClipboardError::as_reason()` or
-/// `clipboard_get_data_failed`), the `ConsolePasteResult` idiom.
+/// `reason`, the `ConsolePasteResult` idiom. `reason` is one of
+/// `ClipboardError::as_reason()`, `clipboard_get_data_failed` (the format was
+/// advertised and could not be retrieved), `clipboard_text_too_large` (past
+/// `MAX_READ_BYTES`), or `clipboard_alloc_failed`.
 #[napi(object)]
 pub struct ClipboardReadResult {
     pub ok: bool,
@@ -675,21 +677,37 @@ mod tests {
     // OS and the binding, and only an execution against the real clipboard
     // settles them.
 
-    /// Read the clipboard so a test can put it back. `None` = the read failed,
-    /// so there is nothing trustworthy to restore; `Some(vec![])` is a real
-    /// state (empty, or a non-text payload) and IS restored — as empty text,
-    /// which is the best a text-only API can do for an image.
-    fn snapshot_for_restore() -> Option<Vec<u8>> {
-        let r = win32_clipboard_read_text().ok()?;
-        if !r.ok {
-            return None;
+    /// Snapshots the clipboard on construction and puts it back on drop.
+    ///
+    /// A `Drop` guard rather than a call at the end of each test, because a
+    /// failing assertion unwinds and would skip that call — leaving the
+    /// developer's clipboard holding test junk precisely on the runs where they
+    /// are already debugging something. This is the Rust spelling of the same
+    /// hygiene the bench gets from `finally` and the e2e suite from `afterAll`.
+    ///
+    /// `None` = the snapshot read failed, so there is nothing trustworthy to
+    /// restore. `Some(vec![])` is a REAL state — an empty clipboard, or a
+    /// non-text payload — and IS restored, as empty text, which is the best a
+    /// text-only API can do for an image.
+    struct ClipboardGuard(Option<Vec<u8>>);
+
+    impl ClipboardGuard {
+        fn snapshot() -> Self {
+            match win32_clipboard_read_text() {
+                Ok(r) if r.ok => Self(Some(r.bytes.to_vec())),
+                _ => Self(None),
+            }
         }
-        Some(r.bytes.to_vec())
     }
 
-    fn restore(saved: Option<Vec<u8>>) {
-        if let Some(bytes) = saved {
-            let _ = win32_clipboard_write_text_verified(Buffer::from(bytes));
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            if let Some(bytes) = self.0.take() {
+                // Best effort: this runs during unwinding on a failing test, so
+                // it must not panic and turn a readable assertion failure into
+                // an abort.
+                let _ = win32_clipboard_write_text_verified(Buffer::from(bytes));
+            }
         }
     }
 
@@ -699,7 +717,7 @@ mod tests {
     #[test]
     #[ignore = "副作用: user clipboard 書き換え"]
     fn real_clipboard_round_trip_preserves_cjk_emoji_and_crlf() {
-        let saved = snapshot_for_restore();
+        let _guard = ClipboardGuard::snapshot();
 
         let payload = "日本語 mixed かな漢字 😀 line1\r\nline2\ttab";
         let bytes = utf16le(payload);
@@ -720,8 +738,6 @@ mod tests {
         assert!(r.ok, "read failed: {:?}", r.reason);
         assert!(r.has_text);
         assert_eq!(&*r.bytes, bytes.as_slice(), "round trip changed the bytes");
-
-        restore(saved);
     }
 
     /// An empty payload is a legitimate write, and it is NOT the same as an
@@ -732,7 +748,7 @@ mod tests {
     #[test]
     #[ignore = "副作用: user clipboard 書き換え"]
     fn real_clipboard_empty_payload_writes_and_reads_back_as_present_but_empty() {
-        let saved = snapshot_for_restore();
+        let _guard = ClipboardGuard::snapshot();
 
         let w = win32_clipboard_write_text_verified(Buffer::from(Vec::new()))
             .expect("napi call must not throw");
@@ -747,8 +763,6 @@ mod tests {
             "CF_UNICODETEXT should still be present — the set stored the terminator"
         );
         assert!(r.bytes.is_empty());
-
-        restore(saved);
     }
 
     /// The whole reason the napi signature takes `Buffer` and not `String`.
@@ -760,7 +774,7 @@ mod tests {
     #[test]
     #[ignore = "副作用: user clipboard 書き換え"]
     fn real_clipboard_preserves_an_unpaired_surrogate() {
-        let saved = snapshot_for_restore();
+        let _guard = ClipboardGuard::snapshot();
 
         // 'a', lone high surrogate U+D800, 'b' — deliberately not valid UTF-16.
         let units: [u16; 3] = [0x0061, 0xD800, 0x0062];
@@ -778,8 +792,6 @@ mod tests {
             bytes.as_slice(),
             "the unpaired surrogate was altered in transit"
         );
-
-        restore(saved);
     }
 
     #[test]

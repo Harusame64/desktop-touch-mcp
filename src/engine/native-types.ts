@@ -459,10 +459,13 @@ export interface NativeConsolePasteResult {
 //    Trojan:Win32/Commando.A!ml. ───────────────────────────────────────────────
 
 /** Result of `win32ClipboardReadText`. Never throws on a Win32 failure — the
- *  failure is reported via `ok=false` + `reason` (one of
- *  `ClipboardError::as_reason()`). `hasText:false` with `ok:true` means an empty
+ *  failure is reported via `ok=false` + `reason`, one of
+ *  `ClipboardError::as_reason()`, `clipboard_get_data_failed` (the format was
+ *  advertised and could not be retrieved), `clipboard_text_too_large` (another
+ *  application put a payload past the read ceiling on the clipboard), or
+ *  `clipboard_alloc_failed`. `hasText:false` with `ok:true` means an empty
  *  clipboard or a non-text payload (image / files), which the tool contract
- *  maps to `""`. */
+ *  maps to `""` — that is ABSENCE, never a failed retrieval. */
 export interface NativeClipboardReadResult {
   ok: boolean
   reason?: string
