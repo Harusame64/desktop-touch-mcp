@@ -291,6 +291,28 @@ pub(crate) fn send_paste_combo(combo: PasteCombo) -> bool {
 /// `MAPVK_VK_TO_VSC` maps a key with no scan code on the current layout to 0,
 /// i.e. to exactly what would have been sent without this lookup — so filling
 /// the field can only add information, never lose any.
+/// A partial send is worse than no send: `SendInput` can insert a strict
+/// PREFIX of the batch (documented — it returns the number of events it
+/// actually inserted, and a lower-level hook can block the rest), and a prefix
+/// of `ctrl↓ shift↓ v↓ v↑ shift↑ ctrl↑` leaves Ctrl — and possibly Shift —
+/// physically held down for the user. Every subsequent keystroke anywhere on
+/// the desktop becomes a chord until they press and release the key themselves.
+///
+/// The compensation is a key-up for every key the batch would have pressed, in
+/// reverse order. There is no way to learn where the insertion stopped, so all
+/// of them are released rather than guessing: a key-up for a key that is not
+/// down is a harmless no-op, while a missed one is a broken keyboard.
+///
+/// `up` events in the input need no counterpart — they are what this is
+/// generating.
+fn compensating_keyups(seq: &[(VIRTUAL_KEY, bool)]) -> Vec<(VIRTUAL_KEY, bool)> {
+    seq.iter()
+        .filter(|(_, is_up)| !*is_up)
+        .rev()
+        .map(|(vk, _)| (*vk, true))
+        .collect()
+}
+
 pub(crate) fn send_key_seq(seq: &[(VIRTUAL_KEY, bool)]) -> bool {
     unsafe {
         let mut inputs: Vec<INPUT> = vec![std::mem::zeroed(); seq.len()];
@@ -303,9 +325,35 @@ pub(crate) fn send_key_seq(seq: &[(VIRTUAL_KEY, bool)]) -> bool {
             }
         }
         let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-        sent as usize == seq.len()
+        if sent as usize == seq.len() {
+            return true;
+        }
+
+        // Best effort, and deliberately not part of the verdict: this call
+        // failed either way, and the caller's decision does not change with
+        // whether the cleanup got through. `send_key_seq` is not used
+        // recursively here — the compensation is built and sent inline — so a
+        // second partial insert cannot loop.
+        let ups = compensating_keyups(seq);
+        if !ups.is_empty() {
+            let mut relief: Vec<INPUT> = vec![std::mem::zeroed(); ups.len()];
+            for (i, (vk, _)) in ups.iter().enumerate() {
+                relief[i].r#type = INPUT_KEYBOARD;
+                relief[i].Anonymous.ki.wVk = *vk;
+                relief[i].Anonymous.ki.wScan =
+                    MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC) as u16;
+                relief[i].Anonymous.ki.dwFlags = KEYEVENTF_KEYUP;
+            }
+            let _ = SendInput(&relief, std::mem::size_of::<INPUT>() as i32);
+        }
+        false
     }
 }
+
+// NOTE: `foreground_flash::send_keys` has the same latent partial-send hole. It
+// is a shipped channel and changing what it emits belongs in its own change,
+// not as a side effect of this one — recorded as a follow-up rather than fixed
+// here.
 
 // ── Result types (napi objects) ─────────────────────────────────────────────
 
@@ -735,6 +783,41 @@ mod tests {
         let ups: Vec<_> = sv.iter().filter(|(_, up)| *up).map(|(k, _)| *k).collect();
         assert_eq!(downs, vec![VK_CONTROL, VK_SHIFT, VK_V]);
         assert_eq!(ups, vec![VK_V, VK_SHIFT, VK_CONTROL]);
+    }
+
+    /// What gets released when `SendInput` only inserts part of the batch.
+    ///
+    /// The property that matters is "nothing the batch would have pressed is
+    /// left down", so this is derived from the down events rather than
+    /// hard-coded per combo — a chord that grew a fourth key would otherwise
+    /// leave it held with every existing assertion still green.
+    #[test]
+    fn compensating_keyups_release_every_down_in_reverse() {
+        for combo in [PasteCombo::CtrlV, PasteCombo::CtrlShiftV] {
+            let seq = combo.keys();
+            let ups = compensating_keyups(&seq);
+
+            let downs: Vec<VIRTUAL_KEY> = seq
+                .iter()
+                .filter(|(_, up)| !*up)
+                .map(|(k, _)| *k)
+                .collect();
+            let expected: Vec<(VIRTUAL_KEY, bool)> =
+                downs.iter().rev().map(|k| (*k, true)).collect();
+            assert_eq!(ups, expected, "{combo:?}");
+            // Every generated event is a key-up — sending a key DOWN here would
+            // make the cleanup the very thing it exists to prevent.
+            assert!(ups.iter().all(|(_, up)| *up), "{combo:?}");
+        }
+
+        // Spelled out for the chord that actually has a modifier to strand.
+        assert_eq!(
+            compensating_keyups(&PasteCombo::CtrlShiftV.keys()),
+            vec![(VK_V, true), (VK_SHIFT, true), (VK_CONTROL, true)]
+        );
+        // Nothing to release when the batch pressed nothing.
+        assert!(compensating_keyups(&[]).is_empty());
+        assert!(compensating_keyups(&[(VK_CONTROL, true)]).is_empty());
     }
 
     #[test]

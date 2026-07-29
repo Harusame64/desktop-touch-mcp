@@ -36,7 +36,12 @@ import {
 } from "../engine/identity-tracker.js";
 import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
-import { typeViaClipboard, clipboardPasteHints, type TypeViaClipboardOutcome } from "./keyboard.js";
+import {
+  typeViaClipboard,
+  clipboardPasteHints,
+  TypeViaClipboardDeliveryError,
+  type TypeViaClipboardOutcome,
+} from "./keyboard.js";
 import { setTerminalReadHook } from "./wait-until.js";
 import { withRichNarration } from "./_narration.js";
 import {
@@ -1743,7 +1748,13 @@ export const terminalSendHandler = async ({
       },
     });
   } catch (err) {
-    return failWith(err, "terminal:send", { windowTitle });
+    // A failed clipboard paste has already replaced the user's clipboard —
+    // carry what became of it, the same way the success path carries
+    // `hints.clipboard`. Without this the fact dies at the catch.
+    return failWith(err, "terminal:send", {
+      windowTitle,
+      ...(err instanceof TypeViaClipboardDeliveryError ? { clipboard: err.clipboard } : {}),
+    });
   }
 };
 

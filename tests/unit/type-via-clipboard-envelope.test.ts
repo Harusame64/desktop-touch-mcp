@@ -275,6 +275,78 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
     expect(c).not.toHaveProperty("postCloseUnverified");
   });
 
+  it("carries the clipboard facts into a FAILURE envelope too", async () => {
+    // The paste failed after the clipboard had already been replaced. Whether
+    // it was put back is a fact only this call knows, and it used to die at the
+    // catch: the caller was told the paste failed while their clipboard
+    // silently held our text. `context.clipboard` is the failure-side mirror of
+    // `hints.clipboard`.
+    nativeState.composite.mockResolvedValue(
+      nativeResult({
+        ok: false,
+        reason: "paste_deadline_exceeded",
+        pasted: false,
+        clipboardRestored: false,
+        restoreFailedReason: "clipboard_alloc_failed",
+      }),
+    );
+
+    const r = body(await keyboardTypeHandler(keyboardArgs));
+
+    expect(r.ok).toBe(false);
+    const clipboard = (r.context as Record<string, unknown>).clipboard as Record<string, unknown>;
+    expect(clipboard.backend).toBe("native");
+    expect(clipboard.restored).toBe(false);
+    expect(clipboard.restoreFailedReason).toBe("clipboard_alloc_failed");
+  });
+
+  it("does not change how a failed paste is classified", async () => {
+    // `_errors.ts::classify` routes on the message text, so attaching the
+    // clipboard payload had to leave every message byte-identical. A
+    // verification failure stays the compact code; the deadline and
+    // chord-refusal messages stay lower-case and therefore generic. Getting
+    // this wrong would silently re-route recovery advice.
+    const cases: Array<[reason: string, verifyOk: boolean, code: string]> = [
+      ["clipboard_replaced_after_write", false, "ClipboardWriteNotDelivered"],
+      ["paste_deadline_exceeded", true, "ToolError"],
+      ["send_input_failed", true, "ToolError"],
+    ];
+    for (const [reason, verifyOk, code] of cases) {
+      nativeState.composite.mockResolvedValue(
+        nativeResult({
+          ok: false,
+          reason,
+          pasted: false,
+          verify: { ...nativeResult().verify, ok: verifyOk, reason },
+        }),
+      );
+      const r = body(await keyboardTypeHandler(keyboardArgs));
+      expect(r.ok, reason).toBe(false);
+      expect(r.code, reason).toBe(code);
+      // ...and the payload rode along regardless of which branch threw.
+      expect((r.context as Record<string, unknown>).clipboard, reason).toBeDefined();
+    }
+  });
+
+  it("reports the fallback's un-restored clipboard on a failed write", async () => {
+    // The PowerShell path throws BEFORE its restore, so the user is left
+    // holding whatever the failed write put there. Saying `restored:false` is
+    // the honest answer, and it is the backend divergence made visible.
+    nativeState.available = false;
+    powerShellResponses(
+      Buffer.from("previous", "utf16le").toString("base64"),
+      Buffer.from("something else entirely", "utf16le").toString("base64"),
+    );
+
+    const r = body(await keyboardTypeHandler(keyboardArgs));
+
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("ClipboardWriteNotDelivered");
+    const clipboard = (r.context as Record<string, unknown>).clipboard as Record<string, unknown>;
+    expect(clipboard.backend).toBe("powershell");
+    expect(clipboard.restored).toBe(false);
+  });
+
   it("says nothing about the clipboard when the call did not use it", async () => {
     // The keystroke path borrows nothing, so a `clipboard` block there would be
     // describing a side effect that never happened.
@@ -333,6 +405,28 @@ describe("ADR-033 — the clipboard side effect reaches the terminal envelope", 
     );
     const c = clipboardHints(body(await terminalSendHandler(terminalArgs)))!;
     expect(c.postCloseUnverified).toBe(true);
+  });
+
+  it("carries the clipboard facts into a FAILURE envelope too", async () => {
+    nativeState.composite.mockResolvedValue(
+      nativeResult({
+        ok: false,
+        reason: "paste_deadline_exceeded",
+        pasted: false,
+        clipboardRestored: false,
+        restoreSkippedRace: true,
+      }),
+    );
+
+    const r = body(await terminalSendHandler(terminalArgs));
+
+    expect(r.ok).toBe(false);
+    const clipboard = (r.context as Record<string, unknown>).clipboard as Record<string, unknown>;
+    expect(clipboard.backend).toBe("native");
+    expect(clipboard.restored).toBe(false);
+    expect(clipboard.restoreSkippedRace).toBe(true);
+    // The context this handler already published is not displaced by it.
+    expect((r.context as Record<string, unknown>).windowTitle).toBe("Notepad");
   });
 
   it("keeps the target hints it already published", async () => {

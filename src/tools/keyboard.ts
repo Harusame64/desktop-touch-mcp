@@ -9,6 +9,7 @@ import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd } from "../engine/win32.js";
 import { nativeWin32, hasNativeTypeViaClipboard } from "../engine/native-engine.js";
+import type { NativeTypeViaClipboardResult } from "../engine/native-types.js";
 // ADR-033: the fallback's command-line ceiling, the shared give-up budget and
 // the abort-on-timeout helper all belong to the clipboard tool, which reaches
 // the same two backends. Imported rather than duplicated so the two paths
@@ -202,6 +203,37 @@ export interface TypeViaClipboardOutcome {
   skippedFormats?: Array<{ formatId: number; reason: string }>;
 }
 
+/**
+ * A `typeViaClipboard` failure that still has something to say about the user's
+ * clipboard.
+ *
+ * When the paste fails, the clipboard has usually already been replaced with
+ * the payload — and whether it was put back afterwards is a fact only this call
+ * knows. Thrown as a bare `Error`, all of it was lost at the catch site, so a
+ * caller was told "the paste failed" while their clipboard silently held our
+ * text (or nothing at all, after a failed restore). The failure paths that
+ * reach here — a missed paste deadline, a refused chord, a verification
+ * mismatch — are exactly the ones where the transaction ran far enough to touch
+ * the clipboard.
+ *
+ * **The message is the classification.** `_errors.ts::classify` routes on the
+ * message text, so every string thrown below is the one that shipped:
+ * `ClipboardWriteNotDelivered` stays a compact code, and the lower-case ones
+ * stay generic. This class only adds a payload alongside it — changing a word
+ * of any message would silently re-route the error.
+ */
+export class TypeViaClipboardDeliveryError extends Error {
+  constructor(
+    message: string,
+    /** Same shape as the success path's `hints.clipboard`, so a caller reads
+     *  the side effect the same way whether the call worked or not. */
+    readonly clipboard: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "TypeViaClipboardDeliveryError";
+  }
+}
+
 /** The native composite: one in-process transaction, no child process. */
 async function nativeTypeViaClipboard(
   text: string,
@@ -236,36 +268,52 @@ async function nativeTypeViaClipboard(
   );
 
   if (!r.ok) {
+    // Every one of these ran far enough to replace the user's clipboard, so
+    // they all carry what became of it — built from the SAME outcome a success
+    // would have returned, so `context.clipboard` on a failure and
+    // `hints.clipboard` on a success are the same shape, read the same way.
+    const clipboard = clipboardPasteHints(nativeOutcome(r));
+
     // Lower-case messages on purpose, here and below: an Error whose whole
     // message is one PascalCase token is this repo's compact-code producer
     // shape and would need its own SUGGESTS entry (swept by
     // oq8-failwith-suggest-routing.test.ts). Neither of these failures has a
-    // recovery distinct from the generic one.
+    // recovery distinct from the generic one. `classify` routes on the message
+    // text, so these strings are a contract — the error CLASS carries the new
+    // payload precisely so the messages did not have to change.
     if (r.reason === "paste_deadline_exceeded") {
       // The clipboard work outlasted the budget, so the addon refused to send
       // the chord. Stated as "nothing was typed" because that is the part a
       // caller acts on: this is the one failure here that is safe to retry
       // blind, and reporting it as a delivery failure would suggest the
       // opposite.
-      throw new Error(
+      throw new TypeViaClipboardDeliveryError(
         "clipboard paste ran past its deadline before the keystroke could be sent, so nothing was typed",
+        clipboard,
       );
     }
     if (r.verify.ok) {
       // The payload IS on the clipboard; `SendInput` refused the chord. Calling
       // that a delivery failure would send the caller after a clipboard problem
       // that does not exist.
-      throw new Error(
+      throw new TypeViaClipboardDeliveryError(
         `clipboard paste keystroke was not accepted by the OS (${r.reason ?? "unknown"})`,
+        clipboard,
       );
     }
     // Same typed error the PowerShell path throws, and the same one
     // `clipboard(action='write')` returns — one verification contract, one code.
     // Do NOT put the read-back text in the message: on a mismatch it belongs to
     // another process and may be a password or an API key (I-2).
-    throw new Error("ClipboardWriteNotDelivered");
+    throw new TypeViaClipboardDeliveryError("ClipboardWriteNotDelivered", clipboard);
   }
 
+  return nativeOutcome(r);
+}
+
+/** What the addon reported, in the shape the callers publish. Shared by the
+ *  success return and by every failure that has to disclose the same facts. */
+function nativeOutcome(r: NativeTypeViaClipboardResult): TypeViaClipboardOutcome {
   return {
     backend: "native",
     clipboardRestored: r.clipboardRestored,
@@ -361,7 +409,16 @@ async function powershellTypeViaClipboard(
   const readBackB64 = stdout.trim();
   const actualBytes = readBackB64 ? Buffer.from(readBackB64, "base64") : Buffer.alloc(0);
   if (!expectedBytes.equals(actualBytes)) {
-    throw new Error("ClipboardWriteNotDelivered");
+    // `restored: false`, and that is the honest answer rather than a
+    // placeholder: this throw happens BEFORE the restore below, so the user's
+    // clipboard is left holding whatever the failed write put there. The native
+    // path restores first and reports `restored: true` here — the backend
+    // divergence documented on `typeViaClipboard`, now visible in the response
+    // instead of only in a comment.
+    throw new TypeViaClipboardDeliveryError("ClipboardWriteNotDelivered", {
+      backend: "powershell",
+      restored: false,
+    });
   }
 
   const combo = parseKeys(pasteCombo);
@@ -2126,7 +2183,17 @@ export const keyboardTypeHandler = async ({
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
-    return failWith(err, "keyboard:type");
+    // A failed paste has already replaced the user's clipboard; whether it was
+    // put back is a fact only the call knows, and it would otherwise die here.
+    // `failWith`'s third argument is flat and auto-nests everything outside
+    // ROOT_HOISTED_KEYS, so this lands as `context.clipboard` — the failure-side
+    // mirror of `hints.clipboard` on success, same as `clipboard(action=…)`
+    // reports its backend on both.
+    return failWith(
+      err,
+      "keyboard:type",
+      err instanceof TypeViaClipboardDeliveryError ? { clipboard: err.clipboard } : {},
+    );
   }
   } finally {
     // Issue #245 系統②b: restore the prior IME state. Wrap in try/catch so a
