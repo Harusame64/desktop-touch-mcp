@@ -203,6 +203,28 @@ export interface NativeConsolePasteResult {
   restoreSkippedRace: boolean
 }
 
+// ADR-033 — native CF_UNICODETEXT clipboard read / write-with-read-back.
+export interface NativeClipboardReadResult {
+  ok: boolean
+  reason?: string
+  hasText: boolean
+  /** Clipboard text as UTF-16LE bytes, NUL terminator stripped. */
+  bytes: Buffer
+}
+
+export interface NativeClipboardWriteVerifyResult {
+  ok: boolean
+  reason?: string
+  expectedBytes: number
+  inSessionBytes: number
+  inSessionMatch: boolean
+  postCloseChecked: boolean
+  postCloseBytes: number
+  postCloseMatch: boolean
+  postCloseSkipReason?: string
+  sequenceAfterWrite: number
+}
+
 export interface NativeProcessParentEntry {
   pid: number
   parentPid: number
@@ -405,6 +427,13 @@ export declare function win32GetProcessCommandLine(pid: number): string[] | null
 export declare function win32GetScrollInfo(hwnd: bigint, axis: string): NativeScrollInfo | null
 export declare function win32PostMessage(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean
 export declare function win32ConsolePasteNoFocus(hwnd: bigint, text: string): NativeConsolePasteResult
+
+/** Read the clipboard's text as UTF-16LE bytes (NUL terminator stripped).
+ *  `hasText:false` = empty clipboard or non-text payload (image / files). */
+export declare function win32ClipboardReadText(): NativeClipboardReadResult
+/** Replace the clipboard with `utf16le` bytes and verify delivery with two
+ *  byte-equal read-backs (in-session + post-CloseClipboard) — issue #180. */
+export declare function win32ClipboardWriteTextVerified(utf16le: Buffer): NativeClipboardWriteVerifyResult
 export declare function win32GetFocus(): bigint | null
 export declare function win32VkToScanCode(vk: number): number
 

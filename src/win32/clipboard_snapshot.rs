@@ -41,7 +41,11 @@ unsafe extern "system" {
 }
 
 /// Free an HGLOBAL (caller-owned, e.g. on `SetClipboardData` failure).
-unsafe fn global_free(hglobal: HGLOBAL) {
+///
+/// `pub(crate)` for `clipboard_text.rs` (ADR-033), which owes the same
+/// ownership contract on its own failure branches. Visibility only — the
+/// behaviour is unchanged for the `foreground_flash` / console-paste callers.
+pub(crate) unsafe fn global_free(hglobal: HGLOBAL) {
     unsafe {
         let _ = GlobalFree(hglobal.0);
     }
@@ -259,7 +263,10 @@ pub fn get_clipboard_sequence_number() -> u32 {
 
 // ── OpenClipboard retry ─────────────────────────────────────────────────────
 
-fn open_clipboard_with_retry(owner: HWND) -> Result<(), ClipboardError> {
+/// `pub(crate)` for `clipboard_text.rs` (ADR-033), so the proven 10x10ms
+/// contention absorption (I-12) is shared rather than re-implemented.
+/// Visibility only — the retry behaviour is unchanged for existing callers.
+pub(crate) fn open_clipboard_with_retry(owner: HWND) -> Result<(), ClipboardError> {
     for _ in 0..CLIPBOARD_OPEN_RETRIES {
         unsafe {
             if OpenClipboard(Some(owner)).is_ok() {

@@ -45,6 +45,8 @@ import type {
   NativeForegroundFlashOptions,
   NativeForegroundFlashResult,
   NativeConsolePasteResult,
+  NativeClipboardReadResult,
+  NativeClipboardWriteVerifyResult,
   NativeProcessParentEntry,
   NativeProcessIdentity,
   NativeScrollInfo,
@@ -208,6 +210,12 @@ export interface NativeWin32 {
   // failure — reports it via `ok=false` + `reason`. Optional so an older `.node`
   // build (pre-#386) cleanly falls back (TS wrapper surfaces native_engine_unavailable).
   win32ConsolePasteNoFocus?(hwnd: bigint, text: string): NativeConsolePasteResult;
+
+  // ADR-033 — native CF_UNICODETEXT clipboard read / write-with-read-back.
+  // Optional so an older `.node` build cleanly falls back to the PowerShell
+  // path in `src/tools/clipboard.ts` (see `hasNativeClipboardText()`).
+  win32ClipboardReadText?(): NativeClipboardReadResult;
+  win32ClipboardWriteTextVerified?(utf16le: Buffer): NativeClipboardWriteVerifyResult;
 
   // Issue #245 系統②: IME open-status query / control via Imm32.dll +
   // WM_IME_CONTROL. Returns `false` when the target HWND has no associated
@@ -417,6 +425,28 @@ export function hasNativeCursorMove(): boolean {
     typeof nativeWin32?.win32MoveCursorAbsolute === "function" &&
     typeof nativeWin32?.win32MoveCursorPath === "function" &&
     typeof nativeWin32?.win32GetCursorPos === "function"
+  );
+}
+
+/**
+ * ADR-033 — can this build read/write clipboard text natively?
+ *
+ * Requires BOTH bindings, not either: `clipboard(action='write')` verifies
+ * delivery and `clipboard(action='read')` is what the caller then uses to
+ * confirm it, so a build carrying only one would answer the same tool family
+ * from two implementations that differ on the edge cases (embedded NUL, lone
+ * surrogates, non-text payloads, CF_TEXT synthesis). Falling the whole family
+ * back together keeps the pair self-consistent — the same all-or-nothing
+ * reasoning as `hasNativeCursorMove()` above.
+ *
+ * When false, `src/tools/clipboard.ts` uses its `powershell.exe` fallback,
+ * which still works but is the path Microsoft Defender scored as
+ * `Trojan:Win32/Commando.A!ml` and which caps writes at ~12 000 characters.
+ */
+export function hasNativeClipboardText(): boolean {
+  return (
+    typeof nativeWin32?.win32ClipboardReadText === "function" &&
+    typeof nativeWin32?.win32ClipboardWriteTextVerified === "function"
   );
 }
 

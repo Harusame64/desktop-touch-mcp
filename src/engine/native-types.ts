@@ -454,6 +454,52 @@ export interface NativeConsolePasteResult {
   restoreSkippedRace: boolean
 }
 
+// ── ADR-033 — native CF_UNICODETEXT clipboard. Replaces the powershell.exe
+//    spawn in src/tools/clipboard.ts that Defender scored as
+//    Trojan:Win32/Commando.A!ml. ───────────────────────────────────────────────
+
+/** Result of `win32ClipboardReadText`. Never throws on a Win32 failure — the
+ *  failure is reported via `ok=false` + `reason` (one of
+ *  `ClipboardError::as_reason()`). `hasText:false` with `ok:true` means an empty
+ *  clipboard or a non-text payload (image / files), which the tool contract
+ *  maps to `""`. */
+export interface NativeClipboardReadResult {
+  ok: boolean
+  reason?: string
+  hasText: boolean
+  /** Clipboard text as UTF-16LE bytes, NUL terminator stripped. Not named
+   *  `utf16le`: napi-rs' snake→camel conversion capitalises the letter after a
+   *  digit run, so that field would reach JS as the typo-looking `utf16Le`. */
+  bytes: Buffer
+}
+
+/** Result of `win32ClipboardWriteTextVerified`. `ok` is the issue #180 delivery
+ *  verdict: the write succeeded AND the read-backs that ran matched
+ *  byte-for-byte. The read-back TEXT is deliberately not returned — a racing app
+ *  may have put a secret on the clipboard and echoing it would leak it into the
+ *  failure envelope and downstream logs (I-2). */
+export interface NativeClipboardWriteVerifyResult {
+  ok: boolean
+  /** `readback_mismatch` (the OS stored something else),
+   *  `clipboard_replaced_after_write` (a clipboard manager / DLP agent swapped
+   *  the payload once we released the lock), `clipboard_get_data_failed`, or one
+   *  of `ClipboardError::as_reason()`. */
+  reason?: string
+  expectedBytes: number
+  inSessionBytes: number
+  inSessionMatch: boolean
+  /** `false` = the post-close re-open lost a race for the clipboard lock, so
+   *  only the in-session read-back backs the verdict. Not a failure. */
+  postCloseChecked: boolean
+  postCloseBytes: number
+  postCloseMatch: boolean
+  postCloseSkipReason?: string
+  /** Diagnostic only — the delivery verdict is the byte comparison, never this
+   *  (plan D-5). Taken after `CloseClipboard`, so the OS's CF_TEXT / CF_OEMTEXT
+   *  / CF_LOCALE synthesis bumps are already included. */
+  sequenceAfterWrite: number
+}
+
 /** One Toolhelp32 row. The TS wrapper builds a Map<number, number>. */
 export interface NativeProcessParentEntry {
   pid: number

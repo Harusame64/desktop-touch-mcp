@@ -52,6 +52,13 @@ pub(crate) mod foreground_flash;
 // `src/win32/clipboard_snapshot.rs`。
 #[cfg(windows)]
 pub(crate) mod clipboard_snapshot;
+// ADR-033 — native `CF_UNICODETEXT` read / write-with-read-back, replacing the
+// `powershell.exe -Command "<base64 + FromBase64String + Set-Clipboard>"` spawn
+// in `src/tools/clipboard.ts` that Microsoft Defender scored as
+// `Trojan:Win32/Commando.A!ml`. Keeps the issue #180 byte-equal read-back
+// verification contract inside the addon. See `src/win32/clipboard_text.rs`.
+#[cfg(windows)]
+pub(crate) mod clipboard_text;
 // issue #386 — native no-steal console-paste for the conhost exit-mode path
 // (reuses clipboard_snapshot). Replaces the powershell-spawning TS clipboard
 // handling in `bg-input.ts::pasteIntoConsoleNoFocus`. 詳細は
