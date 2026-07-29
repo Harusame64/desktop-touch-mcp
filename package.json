@@ -95,6 +95,7 @@
     "check:napi-safe": "node scripts/check-napi-safe.mjs",
     "check:native-types": "node scripts/check-native-types.mjs",
     "check:no-koffi": "node scripts/check-no-koffi.mjs",
+    "test:native-clipboard": "cargo test -p desktop-touch-engine --locked clipboard -- --ignored --test-threads=1",
     "check:rs-workspace": "cargo check --workspace --locked",
     "check:rs-test-compile": "cargo test --workspace --locked --no-run",
     "check:expansion-disjoint": "node scripts/check-expansion-disjoint.mjs",
@@ -102,6 +103,7 @@
     "build:rs:debug": "node scripts/build-rs.mjs --debug",
     "artifacts:rs": "napi artifacts",
     "bench:envelope-size": "node benches/l4_envelope_size.mjs",
+    "bench:clipboard-latency": "node benches/clipboard_latency.mjs",
     "bench:wgc-latency": "node benches/wgc_latency.mjs"
   },
   "devDependencies": {

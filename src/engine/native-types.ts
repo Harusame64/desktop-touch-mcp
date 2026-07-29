@@ -454,6 +454,66 @@ export interface NativeConsolePasteResult {
   restoreSkippedRace: boolean
 }
 
+// ── ADR-033 — native CF_UNICODETEXT clipboard. Replaces the powershell.exe
+//    spawn in src/tools/clipboard.ts that Defender scored as
+//    Trojan:Win32/Commando.A!ml. ───────────────────────────────────────────────
+
+/** Both clipboard entry points return Promises. `GetClipboardData` has no
+ *  bounded worst case — for a delayed-rendered format the OS waits, inside our
+ *  call, for the owning application to answer — so the work runs on a libuv
+ *  worker. A hung clipboard owner must not be able to freeze the V8 thread and
+ *  with it the whole server. `src/tools/clipboard.ts` puts a timeout on top;
+ *  see its module notes for what that timeout can and cannot recover. */
+
+/** Result of `win32ClipboardReadText`. Never throws on a Win32 failure — the
+ *  failure is reported via `ok=false` + `reason`, one of
+ *  `ClipboardError::as_reason()`, `clipboard_get_data_failed` (the format was
+ *  advertised and could not be retrieved), `clipboard_text_too_large` (another
+ *  application put a payload past the read ceiling on the clipboard), or
+ *  `clipboard_alloc_failed`. `hasText:false` with `ok:true` means an empty
+ *  clipboard or a non-text payload (image / files), which the tool contract
+ *  maps to `""` — that is ABSENCE, never a failed retrieval. */
+export interface NativeClipboardReadResult {
+  ok: boolean
+  reason?: string
+  hasText: boolean
+  /** Clipboard text as UTF-16LE bytes, NUL terminator stripped. Not named
+   *  `utf16le`: napi-rs' snake→camel conversion capitalises the letter after a
+   *  digit run, so that field would reach JS as the typo-looking `utf16Le`. */
+  bytes: Buffer
+}
+
+/** Result of `win32ClipboardWriteTextVerified`. `ok` is the issue #180 delivery
+ *  verdict: the write succeeded AND the read-backs that ran matched
+ *  byte-for-byte. The read-back TEXT is deliberately not returned — a racing app
+ *  may have put a secret on the clipboard and echoing it would leak it into the
+ *  failure envelope and downstream logs (I-2). */
+export interface NativeClipboardWriteVerifyResult {
+  ok: boolean
+  /** `readback_mismatch` (the OS stored something else),
+   *  `clipboard_replaced_after_write` (a clipboard manager / DLP agent swapped
+   *  the payload once we released the lock), `clipboard_get_data_failed`, or one
+   *  of `ClipboardError::as_reason()`. */
+  reason?: string
+  expectedBytes: number
+  /** `false` = the in-session read-back could not be read at all, so
+   *  `inSessionBytes` / `inSessionMatch` carry no information. Distinguishes
+   *  "read back 0 bytes" from "did not read". */
+  inSessionReadable: boolean
+  inSessionBytes: number
+  inSessionMatch: boolean
+  /** `false` = the post-close re-open lost a race for the clipboard lock, so
+   *  only the in-session read-back backs the verdict. Not a failure. */
+  postCloseChecked: boolean
+  postCloseBytes: number
+  postCloseMatch: boolean
+  postCloseSkipReason?: string
+  /** Diagnostic only — the delivery verdict is the byte comparison, never this
+   *  (plan D-5). Taken after `CloseClipboard`, so the OS's CF_TEXT / CF_OEMTEXT
+   *  / CF_LOCALE synthesis bumps are already included. */
+  sequenceAfterWrite: number
+}
+
 /** One Toolhelp32 row. The TS wrapper builds a Map<number, number>. */
 export interface NativeProcessParentEntry {
   pid: number
