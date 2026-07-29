@@ -214,8 +214,11 @@ export interface NativeWin32 {
   // ADR-033 — native CF_UNICODETEXT clipboard read / write-with-read-back.
   // Optional so an older `.node` build cleanly falls back to the PowerShell
   // path in `src/tools/clipboard.ts` (see `hasNativeClipboardText()`).
-  win32ClipboardReadText?(): NativeClipboardReadResult;
-  win32ClipboardWriteTextVerified?(utf16le: Buffer): NativeClipboardWriteVerifyResult;
+  // Both return Promises: `GetClipboardData` can block without a bound against
+  // a hung delayed-rendering clipboard owner, so the work runs on a libuv
+  // worker instead of freezing the V8 thread (and with it the whole server).
+  win32ClipboardReadText?(): Promise<NativeClipboardReadResult>;
+  win32ClipboardWriteTextVerified?(utf16le: Buffer): Promise<NativeClipboardWriteVerifyResult>;
 
   // Issue #245 系統②: IME open-status query / control via Imm32.dll +
   // WM_IME_CONTROL. Returns `false` when the target HWND has no associated

@@ -430,11 +430,15 @@ export declare function win32PostMessage(hwnd: bigint, msg: number, wParam: bigi
 export declare function win32ConsolePasteNoFocus(hwnd: bigint, text: string): NativeConsolePasteResult
 
 /** Read the clipboard's text as UTF-16LE bytes (NUL terminator stripped).
- *  `hasText:false` = empty clipboard or non-text payload (image / files). */
-export declare function win32ClipboardReadText(): NativeClipboardReadResult
+ *  `hasText:false` = empty clipboard or non-text payload (image / files).
+ *  Async: GetClipboardData can block without a bound on a hung delayed-rendering
+ *  owner, so it runs on a libuv worker rather than the V8 thread. */
+export declare function win32ClipboardReadText(): Promise<NativeClipboardReadResult>
 /** Replace the clipboard with `utf16le` bytes and verify delivery with two
- *  byte-equal read-backs (in-session + post-CloseClipboard) — issue #180. */
-export declare function win32ClipboardWriteTextVerified(utf16le: Buffer): NativeClipboardWriteVerifyResult
+ *  byte-equal read-backs (in-session + post-CloseClipboard) — issue #180.
+ *  Async for the same reason as the read: its post-close leg reads whatever is
+ *  on the clipboard by then, which may be a foreign payload. */
+export declare function win32ClipboardWriteTextVerified(utf16le: Buffer): Promise<NativeClipboardWriteVerifyResult>
 export declare function win32GetFocus(): bigint | null
 export declare function win32VkToScanCode(vk: number): number
 

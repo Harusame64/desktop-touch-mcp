@@ -458,6 +458,13 @@ export interface NativeConsolePasteResult {
 //    spawn in src/tools/clipboard.ts that Defender scored as
 //    Trojan:Win32/Commando.A!ml. ───────────────────────────────────────────────
 
+/** Both clipboard entry points return Promises. `GetClipboardData` has no
+ *  bounded worst case — for a delayed-rendered format the OS waits, inside our
+ *  call, for the owning application to answer — so the work runs on a libuv
+ *  worker. A hung clipboard owner must not be able to freeze the V8 thread and
+ *  with it the whole server. `src/tools/clipboard.ts` puts a timeout on top;
+ *  see its module notes for what that timeout can and cannot recover. */
+
 /** Result of `win32ClipboardReadText`. Never throws on a Win32 failure — the
  *  failure is reported via `ok=false` + `reason`, one of
  *  `ClipboardError::as_reason()`, `clipboard_get_data_failed` (the format was

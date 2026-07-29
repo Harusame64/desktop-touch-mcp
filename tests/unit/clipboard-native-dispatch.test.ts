@@ -387,6 +387,60 @@ describe("ADR-033 — payload accuracy across the TS↔addon boundary", () => {
     expect((r.context as Record<string, unknown>).actualBytes).toBe(8);
   });
 
+  it("gives up on a clipboard owner that never answers, on both read and write", async () => {
+    // `GetClipboardData` waits, inside the call, for a delayed-rendering owner
+    // to render the format. If that application is hung the call never returns.
+    // The addon runs on a worker so the event loop survives, but the tool call
+    // still has to end — otherwise one hung app anywhere on the desktop makes
+    // this tool hang forever, which is what the PowerShell path's execFile
+    // timeout used to prevent by accident.
+    vi.useFakeTimers();
+    try {
+      for (const [label, run] of [
+        ["read", () => clipboardReadHandler()],
+        ["write", () => clipboardWriteHandler({ text: "hello" })],
+      ] as const) {
+        // A promise that never settles: the hung owner.
+        nativeState.read.mockReturnValue(new Promise(() => {}));
+        nativeState.write.mockReturnValue(new Promise(() => {}));
+
+        const pending = run();
+        await vi.advanceTimersByTimeAsync(10_000);
+        const r = body(await pending);
+
+        expect(r.ok, label).toBe(false);
+        // Lower-case message ⇒ generic classification, no orphaned code.
+        expect(r.code, label).toBe("ToolError");
+        const ctx = r.context as Record<string, unknown>;
+        expect(ctx.backend, label).toBe("native");
+        expect(String(ctx.hint), label).toContain("not responding");
+        // No silent fallback to the flagged PowerShell path on the way out.
+        expect(execFileMock, label).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a slow-but-answering clipboard still succeeds", async () => {
+    // The complement of the pin above: the timeout must not fire on a call
+    // that is merely contended (the addon absorbs up to ~200ms of lock
+    // contention internally before it even returns).
+    vi.useFakeTimers();
+    try {
+      nativeState.write.mockReturnValue(
+        new Promise((resolve) => setTimeout(() => resolve(fakeNativeWrite(Buffer.from("hello", "utf16le"))), 3_000)),
+      );
+      const pending = clipboardWriteHandler({ text: "hello" });
+      await vi.advanceTimersByTimeAsync(3_500);
+      const r = body(await pending);
+      expect(r.ok).toBe(true);
+      expect(r.backend).toBe("native");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a non-text clipboard payload reads as the empty string", async () => {
     nativeState.read.mockReturnValue({ ok: true, hasText: false, bytes: Buffer.alloc(0) });
     const r = body(await clipboardReadHandler());

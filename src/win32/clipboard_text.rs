@@ -63,6 +63,32 @@
 //! afterwards bumps nothing. So a sequence-based verdict would have to know the
 //! magic number 5; a content comparison does not.
 //!
+//! # Why both exports are async
+//!
+//! `GetClipboardData` has **no bounded worst case**. For a delayed-rendered
+//! format the OS sends `WM_RENDERFORMAT` to the owning application and waits
+//! for it to answer, synchronously, inside our call. If that owner is hung, the
+//! call does not return. As sync `#[napi]` exports these ran on the V8 thread,
+//! so one hung clipboard owner anywhere on the desktop would have frozen the
+//! whole MCP server — a real availability regression against the PowerShell
+//! path this module replaced, which absorbed the same hang in a child process
+//! that `clipboard.ts` could time out and abandon.
+//!
+//! So `compute()` runs on a libuv worker and the exports return Promises, and
+//! `src/tools/clipboard.ts` applies the same timeouts to both backends. That
+//! also retires the ~200 ms contention block the write path used to impose on
+//! the event loop.
+//!
+//! **What this does NOT fix, and must not be read as fixing.** A timeout on the
+//! JS side abandons the *result*; the worker thread stays blocked inside the
+//! Win32 call until the owner answers, and there is no way to cancel or kill
+//! it — unlike the child process the old path could terminate. libuv's pool is
+//! 4 threads by default, so repeated calls against a hung owner can exhaust it
+//! and stall unrelated async native work. The hazard exists only while a hung
+//! clipboard owner exists, and in that state the clipboard is already unusable
+//! system-wide for every application; the timeout keeps the server answering
+//! instead of adding it to the casualties.
+//!
 //! # Encoding: why `Buffer` and not `String`
 //!
 //! napi's `String` bridge transcodes through UTF-8. A JS string is UTF-16 and
@@ -91,7 +117,8 @@
 //!   first, so a failed allocation cannot leave the user with a clipboard we
 //!   emptied and never refilled.
 
-use napi::bindgen_prelude::Buffer;
+use napi::bindgen_prelude::{AsyncTask, Buffer};
+use napi::{Env, Task};
 use napi_derive::napi;
 
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
@@ -499,68 +526,77 @@ unsafe fn set_unicode_text_locked(units: &[u16]) -> Result<(), ClipboardError> {
     }
 }
 
-// ── napi entry points ───────────────────────────────────────────────────────
+// ── Blocking cores ──────────────────────────────────────────────────────────
+//
+// These do the actual Win32 work and MAY BLOCK WITHOUT A BOUND — see the
+// module doc. They are deliberately not `#[napi]`: the exports below run them
+// on a libuv worker so a hung clipboard owner cannot freeze the V8 thread. The
+// `#[ignore]`d tests call these directly, which is the same code path minus the
+// thread hop.
 
-/// Read the clipboard's text content as UTF-16LE bytes.
+/// Send-safe payload of the read task.
 ///
-/// Sync (runs on the V8 thread). The only blocking is the shared
-/// `open_clipboard_with_retry` (≤100 ms, I-12) when another process holds the
-/// clipboard lock; the happy path is a few milliseconds.
-#[napi]
-pub fn win32_clipboard_read_text() -> napi::Result<ClipboardReadResult> {
-    napi_safe_call("win32_clipboard_read_text", || {
-        fn failed(reason: &str) -> ClipboardReadResult {
-            ClipboardReadResult {
-                ok: false,
-                reason: Some(reason.to_string()),
-                has_text: false,
-                bytes: Buffer::from(Vec::new()),
-            }
-        }
+/// A separate type from `ClipboardReadResult` because that one carries a napi
+/// `Buffer`, which cannot cross the threadpool boundary. The `Buffer` is built
+/// in `resolve()` on the JS thread from these bytes.
+// `pub` (not `pub(crate)`) only because it is `ClipboardReadTask::Output` and
+// Rust requires an associated type to be at least as visible as the type
+// carrying it. The module itself is `pub(crate)`, so nothing escapes the crate.
+pub struct ClipboardReadOutput {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub has_text: bool,
+    pub bytes: Vec<u8>,
+}
 
-        // A per-call hidden owner window rather than `OpenClipboard(NULL)`,
-        // which leaves the clipboard with a NULL owner and breaks delayed
-        // rendering / confuses clipboard managers (I-11).
-        let inner = with_hidden_owner(|owner: HWND| -> ClipboardReadResult {
-            if let Err(e) = open_clipboard_with_retry(owner) {
-                return failed(e.as_reason());
-            }
-            let bytes = unsafe { read_unicode_text_locked() };
-            unsafe {
-                let _ = CloseClipboard();
-            }
-            match classify_read(bytes) {
-                Ok((has_text, b)) => ClipboardReadResult {
-                    ok: true,
-                    reason: None,
-                    has_text,
-                    bytes: Buffer::from(b),
-                },
-                Err(reason) => failed(reason),
-            }
-        });
-        Ok(inner.unwrap_or_else(|e| failed(e.as_reason())))
-    })
+/// Read the clipboard's text content as UTF-16LE bytes. Blocking.
+pub(crate) fn read_text_blocking() -> ClipboardReadOutput {
+    fn failed(reason: &str) -> ClipboardReadOutput {
+        ClipboardReadOutput {
+            ok: false,
+            reason: Some(reason.to_string()),
+            has_text: false,
+            bytes: Vec::new(),
+        }
+    }
+
+    // A per-call hidden owner window rather than `OpenClipboard(NULL)`, which
+    // leaves the clipboard with a NULL owner and breaks delayed rendering /
+    // confuses clipboard managers (I-11).
+    let inner = with_hidden_owner(|owner: HWND| -> ClipboardReadOutput {
+        if let Err(e) = open_clipboard_with_retry(owner) {
+            return failed(e.as_reason());
+        }
+        let bytes = unsafe { read_unicode_text_locked() };
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        match classify_read(bytes) {
+            Ok((has_text, b)) => ClipboardReadOutput {
+                ok: true,
+                reason: None,
+                has_text,
+                bytes: b,
+            },
+            Err(reason) => failed(reason),
+        }
+    });
+    inner.unwrap_or_else(|e| failed(e.as_reason()))
 }
 
 /// Replace the clipboard with `utf16le` (UTF-16LE bytes) and verify delivery by
 /// reading it back twice — in-session and after `CloseClipboard` — with
-/// byte-for-byte comparison (issue #180 / I-1).
+/// byte-for-byte comparison (issue #180 / I-1). Blocking.
 ///
-/// Sync (runs on the V8 thread); never throws on a Win32 failure — the failure
-/// is reported through `ok=false` + `reason`.
-///
-/// Blocking budget: **~200 ms worst case**, not the read path's ~100 ms. There
-/// are two `open_clipboard_with_retry` calls here — one for the write
-/// transaction and one for the post-close verification read — and each absorbs
-/// up to 10x10 ms of contention independently (I-12). The happy path is a few
-/// milliseconds.
-#[napi]
-pub fn win32_clipboard_write_text_verified(
-    utf16le: Buffer,
-) -> napi::Result<ClipboardWriteVerifyResult> {
-    napi_safe_call("win32_clipboard_write_text_verified", || {
-        let units = to_terminated_u16(&utf16le);
+/// Contention budget: **~200 ms**, not the read path's ~100 ms. There are two
+/// `open_clipboard_with_retry` calls — one for the write transaction and one
+/// for the post-close verification read — and each absorbs up to 10x10 ms
+/// independently (I-12). That is the bounded part; the unbounded part is
+/// `GetClipboardData` against a hung delayed-rendering owner, which is why the
+/// export is async.
+pub(crate) fn write_text_verified_blocking(utf16le: &[u8]) -> ClipboardWriteVerifyResult {
+    {
+        let units = to_terminated_u16(utf16le);
         // What a reader must see: the payload minus the terminator we appended
         // — deliberately NOT truncated at an embedded NUL. `CF_UNICODETEXT` is
         // NUL-terminated, so a payload containing U+0000 is genuinely
@@ -640,7 +676,7 @@ pub fn win32_clipboard_write_text_verified(
             )
         });
 
-        Ok(inner.unwrap_or_else(|e| {
+        inner.unwrap_or_else(|e| {
             map_write_outcome(
                 Some(e.as_reason().to_string()),
                 expected_bytes,
@@ -649,8 +685,72 @@ pub fn win32_clipboard_write_text_verified(
                 0,
                 &expected,
             )
-        }))
-    })
+        })
+    }
+}
+
+// ── napi entry points (async — see the module doc) ──────────────────────────
+
+pub struct ClipboardReadTask;
+
+impl Task for ClipboardReadTask {
+    type Output = ClipboardReadOutput;
+    type JsValue = ClipboardReadResult;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        napi_safe_call("win32_clipboard_read_text", || Ok(read_text_blocking()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(ClipboardReadResult {
+            ok: output.ok,
+            reason: output.reason,
+            has_text: output.has_text,
+            bytes: Buffer::from(output.bytes),
+        })
+    }
+}
+
+pub struct ClipboardWriteTask(Vec<u8>);
+
+impl Task for ClipboardWriteTask {
+    type Output = ClipboardWriteVerifyResult;
+    type JsValue = ClipboardWriteVerifyResult;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        napi_safe_call("win32_clipboard_write_text_verified", || {
+            Ok(write_text_verified_blocking(&self.0))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Read the clipboard's text content as UTF-16LE bytes.
+///
+/// Returns a Promise — `compute()` runs on a libuv worker thread, because
+/// `GetClipboardData` can block without a bound (module doc). `hasText:false`
+/// with `ok:true` means an empty clipboard or a non-text payload.
+#[napi]
+pub fn win32_clipboard_read_text() -> AsyncTask<ClipboardReadTask> {
+    AsyncTask::new(ClipboardReadTask)
+}
+
+/// Replace the clipboard with `utf16le` and verify delivery with two byte-equal
+/// read-backs (issue #180 / I-1).
+///
+/// Returns a Promise, for the same reason as the read: the post-close
+/// verification leg reads whatever is on the clipboard by then, which after an
+/// interception may be a foreign delayed-rendered payload.
+///
+/// The bytes are copied out of the `Buffer` here, on the JS thread, so the task
+/// owns them — a `Buffer` cannot cross the threadpool boundary, and the copy is
+/// bounded by the tool's 100 000-character schema ceiling (200 KB).
+#[napi]
+pub fn win32_clipboard_write_text_verified(utf16le: Buffer) -> AsyncTask<ClipboardWriteTask> {
+    AsyncTask::new(ClipboardWriteTask(utf16le.to_vec()))
 }
 
 // ── Test support (never compiled into the addon) ────────────────────────────
@@ -661,8 +761,10 @@ pub fn win32_clipboard_write_text_verified(
 /// reaches the shipped addon.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{win32_clipboard_read_text, win32_clipboard_write_text_verified};
-    use napi::bindgen_prelude::Buffer;
+    // The blocking cores, not the napi exports: a test has no event loop to
+    // drive a Promise, and this is the same code path the exports run on their
+    // worker thread.
+    use super::{read_text_blocking, write_text_verified_blocking};
 
     /// Snapshots the clipboard on construction and puts it back on drop.
     ///
@@ -684,9 +786,11 @@ pub(crate) mod test_support {
 
     impl ClipboardGuard {
         pub(crate) fn snapshot() -> Self {
-            match win32_clipboard_read_text() {
-                Ok(r) if r.ok => Self(Some(r.bytes.to_vec())),
-                _ => Self(None),
+            let r = read_text_blocking();
+            if r.ok {
+                Self(Some(r.bytes))
+            } else {
+                Self(None)
             }
         }
     }
@@ -697,7 +801,7 @@ pub(crate) mod test_support {
                 // Best effort: this runs during unwinding on a failing test, so
                 // it must not panic and turn a readable assertion failure into
                 // an abort.
-                let _ = win32_clipboard_write_text_verified(Buffer::from(bytes));
+                let _ = write_text_verified_blocking(&bytes);
             }
         }
     }
@@ -738,8 +842,7 @@ mod tests {
 
         let payload = "日本語 mixed かな漢字 😀 line1\r\nline2\ttab";
         let bytes = utf16le(payload);
-        let w = win32_clipboard_write_text_verified(Buffer::from(bytes.clone()))
-            .expect("napi call must not throw");
+        let w = write_text_verified_blocking(&bytes);
         assert!(w.ok, "write failed: {:?}", w.reason);
         assert!(w.in_session_readable, "the in-session leg must have read");
         assert!(w.in_session_match);
@@ -751,7 +854,7 @@ mod tests {
         assert!(w.post_close_match);
         assert_eq!(w.expected_bytes as usize, bytes.len());
 
-        let r = win32_clipboard_read_text().expect("napi call must not throw");
+        let r = read_text_blocking();
         assert!(r.ok, "read failed: {:?}", r.reason);
         assert!(r.has_text);
         assert_eq!(&*r.bytes, bytes.as_slice(), "round trip changed the bytes");
@@ -767,13 +870,12 @@ mod tests {
     fn real_clipboard_empty_payload_writes_and_reads_back_as_present_but_empty() {
         let _guard = ClipboardGuard::snapshot();
 
-        let w = win32_clipboard_write_text_verified(Buffer::from(Vec::new()))
-            .expect("napi call must not throw");
+        let w = write_text_verified_blocking(&[]);
         assert!(w.ok, "empty write failed: {:?}", w.reason);
         assert_eq!(w.expected_bytes, 0);
         assert!(w.in_session_readable);
 
-        let r = win32_clipboard_read_text().expect("napi call must not throw");
+        let r = read_text_blocking();
         assert!(r.ok, "read failed: {:?}", r.reason);
         assert!(
             r.has_text,
@@ -797,12 +899,11 @@ mod tests {
         let units: [u16; 3] = [0x0061, 0xD800, 0x0062];
         let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
 
-        let w = win32_clipboard_write_text_verified(Buffer::from(bytes.clone()))
-            .expect("napi call must not throw");
+        let w = write_text_verified_blocking(&bytes);
         assert!(w.ok, "write failed: {:?}", w.reason);
         assert!(w.in_session_match);
 
-        let r = win32_clipboard_read_text().expect("napi call must not throw");
+        let r = read_text_blocking();
         assert!(r.ok, "read failed: {:?}", r.reason);
         assert_eq!(
             &*r.bytes,

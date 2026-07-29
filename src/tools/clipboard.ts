@@ -66,6 +66,76 @@ type ClipboardBackend = "native" | "powershell";
  */
 const FALLBACK_MAX_CHARS = 12_000;
 
+/**
+ * How long either backend may take before the call is abandoned. Shared by
+ * both, so the tool's responsiveness contract does not depend on which
+ * implementation served the request.
+ *
+ * These were the PowerShell path's `execFile` timeouts and are now the SSOT for
+ * both. The native path needs them for a different reason: `GetClipboardData`
+ * has no bounded worst case — for a delayed-rendered format the OS waits,
+ * inside the call, for the owning application to answer — so a hung clipboard
+ * owner would otherwise hang the tool call indefinitely. The old PowerShell
+ * path was accidentally protected here, because the hang happened in a child
+ * process that `execFile` could time out and abandon.
+ *
+ * IMPORTANT — what the timeout does NOT do on the native path: it abandons the
+ * RESULT, not the work. The libuv worker stays blocked inside the Win32 call
+ * until the clipboard owner answers, and cannot be cancelled or killed the way
+ * the child process could. libuv's pool is 4 threads by default, so repeated
+ * calls against a hung owner can exhaust it. That state is bounded by the hung
+ * owner's lifetime, and while it lasts the clipboard is unusable system-wide
+ * for every application; timing out keeps the server answering rather than
+ * making it another casualty.
+ */
+const READ_TIMEOUT_MS = 4_000;
+const WRITE_TIMEOUT_MS = 5_000;
+
+/** Distinguishes "we gave up waiting" from every other failure the handlers'
+ *  catch blocks see, so only the former gets the unresponsive-owner advice. */
+class ClipboardTimeoutError extends Error {}
+
+// The rejection messages below deliberately say "gave up after" rather than
+// "timed out". `_errors.ts::classify` has a generic timeout arm that captures
+// the latter and answers a hung-clipboard failure with UiaTimeout's advice —
+// "the app may be unresponsive, wait and retry" — which is the opposite of what
+// the hint says, since retrying cannot help while the owner is hung. Measured,
+// not assumed: "…timed out after 4000ms" classifies as UiaTimeout, "…gave up
+// after 4000ms…" as the generic ToolError the hint is attached to. Same
+// discipline as the other producers whose prose must stay clear of generic
+// keywords.
+
+/**
+ * Reject with `message` if `work` has not settled within `ms`.
+ *
+ * A late settlement is discarded rather than leaked: `Promise.race` subscribes
+ * to `work`, so a rejection arriving after the timeout is already handled and
+ * cannot surface as an unhandled rejection. The timer is cleared on every exit
+ * so a pending handle cannot hold the event loop open.
+ */
+async function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        // Lower-case message on purpose: an Error whose whole message is a
+        // PascalCase token is this repo's compact-code producer shape and would
+        // need its own SUGGESTS entry. A timeout has no recovery distinct from
+        // the generic one beyond the hint attached at the catch site.
+        timer = setTimeout(() => reject(new ClipboardTimeoutError(message)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Advice attached to a native timeout. The clipboard is one OS-wide lock, so
+ *  the failure is almost never about this server. */
+const CLIPBOARD_UNRESPONSIVE_HINT =
+  "the application that owns the clipboard is not responding; while it stays hung the clipboard is unusable system-wide, so retrying will not help until that application recovers or is closed";
+
 const selectBackend = (): ClipboardBackend =>
   hasNativeClipboardText() ? "native" : "powershell";
 
@@ -73,8 +143,12 @@ const selectBackend = (): ClipboardBackend =>
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
-const nativeRead = (): ToolResult => {
-  const r = nativeWin32!.win32ClipboardReadText!();
+const nativeRead = async (): Promise<ToolResult> => {
+  const r = await withTimeout(
+    nativeWin32!.win32ClipboardReadText!(),
+    READ_TIMEOUT_MS,
+    `native clipboard read gave up after ${READ_TIMEOUT_MS}ms waiting for the clipboard owner`,
+  );
   if (!r.ok) {
     // Lower-case message on purpose. An Error whose entire message is a single
     // PascalCase token is this repo's "compact code" producer shape:
@@ -96,13 +170,17 @@ const nativeRead = (): ToolResult => {
   return ok({ ok: true, text, backend: "native" satisfies ClipboardBackend });
 };
 
-const nativeWrite = (text: string): ToolResult => {
+const nativeWrite = async (text: string): Promise<ToolResult> => {
   // UTF-16LE bytes rather than a JS string: napi's String bridge transcodes
   // through UTF-8, which cannot represent an unpaired surrogate, so it would
   // replace one with U+FFFD *before* the byte comparison ran — and the
   // verification would then pass on mutated text.
   const payload = Buffer.from(text, "utf16le");
-  const r = nativeWin32!.win32ClipboardWriteTextVerified!(payload);
+  const r = await withTimeout(
+    nativeWin32!.win32ClipboardWriteTextVerified!(payload),
+    WRITE_TIMEOUT_MS,
+    `native clipboard write gave up after ${WRITE_TIMEOUT_MS}ms waiting for the clipboard owner`,
+  );
   if (!r.ok) {
     // Which leg's byte count is worth reporting. Only a leg that actually READ
     // something may speak: the post-close read first (it is the one that can
@@ -152,7 +230,7 @@ const nativeWrite = (text: string): ToolResult => {
 export const clipboardReadHandler = async (): Promise<ToolResult> => {
   const backend = selectBackend();
   try {
-    if (backend === "native") return nativeRead();
+    if (backend === "native") return await nativeRead();
     // Encode clipboard text as base64 UTF-16LE to avoid codepage and newline stripping issues.
     // PowerShell ConvertTo-Json of a string escapes special chars; base64 avoids that.
     const script =
@@ -164,13 +242,16 @@ export const clipboardReadHandler = async (): Promise<ToolResult> => {
     const { stdout } = await execFileAsync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { timeout: 4000 }
+      { timeout: READ_TIMEOUT_MS }
     );
     const b64 = stdout.trim();
     const text = b64 ? Buffer.from(b64, "base64").toString("utf16le") : "";
     return ok({ ok: true, text, backend: "powershell" satisfies ClipboardBackend });
   } catch (err) {
-    return failWith(err, "clipboard:read", { backend });
+    return failWith(err, "clipboard:read", {
+      backend,
+      ...(err instanceof ClipboardTimeoutError ? { hint: CLIPBOARD_UNRESPONSIVE_HINT } : {}),
+    });
   }
 };
 
@@ -181,7 +262,7 @@ export const clipboardWriteHandler = async ({
 }): Promise<ToolResult> => {
   const backend = selectBackend();
   try {
-    if (backend === "native") return nativeWrite(text);
+    if (backend === "native") return await nativeWrite(text);
 
     // Addon-less build only. Reject an over-long payload here rather than
     // letting `spawn` fail with `ENAMETOOLONG` several hundred milliseconds
@@ -232,7 +313,7 @@ export const clipboardWriteHandler = async ({
     const { stdout } = await execFileAsync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { timeout: 5000 }
+      { timeout: WRITE_TIMEOUT_MS }
     );
 
     // Byte-equal compare (UTF-16LE, the native Windows clipboard format).
@@ -274,7 +355,10 @@ export const clipboardWriteHandler = async ({
       postCloseChecked: true,
     });
   } catch (err) {
-    return failWith(err, "clipboard:write", { backend });
+    return failWith(err, "clipboard:write", {
+      backend,
+      ...(err instanceof ClipboardTimeoutError ? { hint: CLIPBOARD_UNRESPONSIVE_HINT } : {}),
+    });
   }
 };
 
@@ -361,7 +445,7 @@ export function registerClipboardTools(server: McpServer): void {
   server.registerTool(
     "clipboard",
     {
-      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery by reading the clipboard back and comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Reading text larger than about 8MB (roughly 4 million characters, far above anything this tool can write) fails fast instead of stalling the server. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. On builds without the native addon (backend:'powershell') writes are additionally capped at about 12000 characters and return code:'ClipboardWriteTooLargeForFallback' above it. Diagnostics: every response reports backend:'native'|'powershell' — the implementation that served the call. A successful write adds postCloseChecked: whether the read that catches a clipboard manager swapping the payload actually ran (native uses a separate second read; powershell's single read-back is that read), plus postCloseSkipReason when it did not run. On backend:'native' only, a successful write also reports sequenceAfterWrite (a Windows clipboard sequence number, for diagnosis only — the delivery verdict is always the byte comparison) and, when the post-close read alone confirmed the write, inSessionReadable:false. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
+      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery by reading the clipboard back and comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Reading text larger than about 8MB (roughly 4 million characters, far above anything this tool can write) is refused immediately rather than copied. Calls give up after 4s (read) / 5s (write) — the usual cause is that the application owning the clipboard has stopped responding, which blocks the clipboard for every application on the machine, so retrying does not help until it recovers or is closed. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. On builds without the native addon (backend:'powershell') writes are additionally capped at about 12000 characters and return code:'ClipboardWriteTooLargeForFallback' above it. Diagnostics: every response reports backend:'native'|'powershell' — the implementation that served the call. A successful write adds postCloseChecked: whether the read that catches a clipboard manager swapping the payload actually ran (native uses a separate second read; powershell's single read-back is that read), plus postCloseSkipReason when it did not run. On backend:'native' only, a successful write also reports sequenceAfterWrite (a Windows clipboard sequence number, for diagnosis only — the delivery verdict is always the byte comparison) and, when the post-close read alone confirmed the write, inSessionReadable:false. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
       inputSchema: clipboardRegistrationSchema,
     },
     clipboardRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>

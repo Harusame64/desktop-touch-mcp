@@ -32,13 +32,13 @@ const execFileAsync = promisify(execFile);
 // ── The two implementations ─────────────────────────────────────────────────
 
 /** Native: one addon call, no process spawn. */
-function nativeWriteVerify(text) {
-  const r = win32ClipboardWriteTextVerified(Buffer.from(text, "utf16le"));
+async function nativeWriteVerify(text) {
+  const r = await win32ClipboardWriteTextVerified(Buffer.from(text, "utf16le"));
   return { ok: r.ok, reason: r.reason };
 }
 
-function nativeRead() {
-  const r = win32ClipboardReadText();
+async function nativeRead() {
+  const r = await win32ClipboardReadText();
   return r.hasText ? Buffer.from(r.bytes).toString("utf16le") : "";
 }
 
@@ -49,8 +49,8 @@ function nativeRead() {
  * truthiness check on the text conflates the two and leaves the last benchmark
  * payload sitting on an originally-empty clipboard.
  */
-function snapshotClipboard() {
-  const r = win32ClipboardReadText();
+async function snapshotClipboard() {
+  const r = await win32ClipboardReadText();
   if (!r.ok) return { ok: false, text: "" };
   return { ok: true, text: r.hasText ? Buffer.from(r.bytes).toString("utf16le") : "" };
 }
@@ -148,7 +148,7 @@ function printTable(rows) {
 const PAYLOAD = "adr-033 latency payload — 日本語 / 😀 / line1\r\nline2";
 
 async function latency(iterations) {
-  const saved = snapshotClipboard();
+  const saved = await snapshotClipboard();
   const rows = [];
   // The restore lives in `finally` because the failure this harness is most
   // likely to hit is the PowerShell leg being blocked or the process being
@@ -161,7 +161,7 @@ async function latency(iterations) {
     rows.push(await measure("powershell read", iterations, () => powershellRead()));
   } finally {
     printTable(rows);
-    if (saved.ok) nativeWriteVerify(saved.text);
+    if (saved.ok) await nativeWriteVerify(saved.text);
   }
 }
 
@@ -170,7 +170,7 @@ async function latency(iterations) {
  *  pre-existing bug ADR-033 removes), so a comparison table would be empty on
  *  two of three rows. */
 async function sizes(iterations) {
-  const saved = snapshotClipboard();
+  const saved = await snapshotClipboard();
   const rows = [];
   try {
     for (const chars of [11, 12_000, 100_000]) {
@@ -179,7 +179,7 @@ async function sizes(iterations) {
     }
   } finally {
     printTable(rows);
-    if (saved.ok) nativeWriteVerify(saved.text);
+    if (saved.ok) await nativeWriteVerify(saved.text);
   }
 }
 
