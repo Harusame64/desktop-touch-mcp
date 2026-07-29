@@ -201,7 +201,7 @@ async function powershellTypeViaClipboard(
   try {
     const { stdout } = await execFileAsync(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", CLIPBOARD_SAVE_SCRIPT],
+      [...POWERSHELL_ARGS, CLIPBOARD_SAVE_SCRIPT],
       { timeout: 3000 },
     );
     const savedB64 = stdout.trim();
@@ -217,16 +217,8 @@ async function powershellTypeViaClipboard(
   // manager intercepting Set-Clipboard would leave stale contents on the
   // clipboard and the paste below would inject the WRONG TEXT into the target
   // window — a silent failure with no signal anywhere.
-  const b64 = Buffer.from(text, "utf16le").toString("base64");
-  const script =
-    `$b=[System.Convert]::FromBase64String('${b64}');` +
-    `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-    `Set-Clipboard -Value $t;` +
-    `$r=Get-Clipboard -Raw;` +
-    `if($r -eq $null){Write-Output ''}else{` +
-    `[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))` +
-    `}`;
-  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+  const script = buildFallbackWriteScript(Buffer.from(text, "utf16le").toString("base64"));
+  const { stdout } = await execFileAsync("powershell.exe", [...POWERSHELL_ARGS, script], {
     timeout: CLIPBOARD_WRITE_TIMEOUT_MS,
   });
 
@@ -267,22 +259,13 @@ async function powershellTypeViaClipboard(
 
   // (2) Restore only if the clipboard still holds what we pasted.
   try {
-    const restoreB64 = Buffer.from(savedClipboard, "utf16le").toString("base64");
-    // The hash of what we put there, so the comparison costs 64 characters of
-    // command line instead of a second copy of the payload — both blobs
-    // together would not fit.
-    const pastedHash = createHash("sha256").update(expectedBytes).digest("hex");
-    const restoreScript =
-      `$c=Get-Clipboard -Raw;$h='';` +
-      `if($c -ne $null){$h=[BitConverter]::ToString(` +
-      `[Security.Cryptography.SHA256]::Create().ComputeHash(` +
-      `[Text.Encoding]::Unicode.GetBytes($c))).Replace('-','').ToLower()}` +
-      `if($h -ne '${pastedHash}'){Write-Output 'skipped_race'}else{` +
-      `Set-Clipboard -Value ([Text.Encoding]::Unicode.GetString(` +
-      `[Convert]::FromBase64String('${restoreB64}')));Write-Output 'restored'}`;
+    const restoreScript = buildFallbackRestoreScript(
+      Buffer.from(savedClipboard, "utf16le").toString("base64"),
+      createHash("sha256").update(expectedBytes).digest("hex"),
+    );
     const { stdout: restoreOut } = await execFileAsync(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", restoreScript],
+      [...POWERSHELL_ARGS, restoreScript],
       { timeout: 3000 },
     );
     const verdict = restoreOut.trim();
@@ -310,6 +293,63 @@ const CLIPBOARD_SAVE_SCRIPT =
   "if($t -eq $null){Write-Output ''}else{" +
   "[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($t))" +
   "}";
+
+/** The fixed `powershell.exe` arguments every fallback invocation uses.
+ *
+ *  @internal Exported so the command-line budget test measures the real prefix
+ *  rather than a copy of it — adding a flag here shrinks the payload budget,
+ *  and that has to show up in the test that guards it.
+ */
+export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-Command"] as const;
+
+/**
+ * Write + verify, in one invocation: decode the payload, `Set-Clipboard`, then
+ * read it straight back so a DLP agent or clipboard manager that intercepted
+ * the write is caught before anything is pasted.
+ *
+ * @param payloadB64 base64 of the payload's UTF-16LE bytes.
+ * @internal Pure and exported for the command-line budget test — this string
+ *           becomes a Windows command line, which has a hard 32 767-character
+ *           ceiling that `FALLBACK_MAX_CHARS` exists to stay under.
+ */
+export function buildFallbackWriteScript(payloadB64: string): string {
+  return (
+    `$b=[System.Convert]::FromBase64String('${payloadB64}');` +
+    `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
+    `Set-Clipboard -Value $t;` +
+    `$r=Get-Clipboard -Raw;` +
+    `if($r -eq $null){Write-Output ''}else{` +
+    `[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))` +
+    `}`
+  );
+}
+
+/**
+ * Restore, guarded by a race check in the same invocation: compare what is on
+ * the clipboard now against the hash of what we pasted, and put the saved
+ * content back only if they still match.
+ *
+ * The comparison travels as a 64-character hash rather than a second copy of
+ * the payload because both blobs together would not fit in a command line.
+ *
+ * @param savedB64        base64 of the saved clipboard's UTF-16LE bytes.
+ * @param pastedSha256Hex lower-case hex SHA-256 of the pasted payload's
+ *                        UTF-16LE bytes.
+ * @internal Pure and exported for the command-line budget test. This is the
+ *           LONGER of the two scripts, so it is the one that decides how large
+ *           `FALLBACK_MAX_CHARS` may be.
+ */
+export function buildFallbackRestoreScript(savedB64: string, pastedSha256Hex: string): string {
+  return (
+    `$c=Get-Clipboard -Raw;$h='';` +
+    `if($c -ne $null){$h=[BitConverter]::ToString(` +
+    `[Security.Cryptography.SHA256]::Create().ComputeHash(` +
+    `[Text.Encoding]::Unicode.GetBytes($c))).Replace('-','').ToLower()}` +
+    `if($h -ne '${pastedSha256Hex}'){Write-Output 'skipped_race'}else{` +
+    `Set-Clipboard -Value ([Text.Encoding]::Unicode.GetString(` +
+    `[Convert]::FromBase64String('${savedB64}')));Write-Output 'restored'}`
+  );
+}
 
 /**
  * Put `text` on the clipboard, paste it with `pasteCombo`, and put the user's
