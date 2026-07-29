@@ -460,6 +460,47 @@ describe("ADR-033 — payload accuracy across the TS↔addon boundary", () => {
     }
   });
 
+  it("reports its own give-up, not the addon's AbortError, when abort makes the task reject", async () => {
+    // Abort is not inert: napi rejects the pending Promise with an AbortError.
+    // So `withTimeout` has two failures racing, and the ORDER of its two lines
+    // decides which one the caller sees — reject first, then abort. Swap them
+    // and the envelope becomes a hintless AbortError, losing every word of the
+    // hung-owner advice, while a mock that ignores the signal (as the other
+    // timeout tests here use) still passes. This mock reacts to abort the way
+    // the real addon does, so the ordering is pinned rather than commented.
+    vi.useFakeTimers();
+    try {
+      const rejectsOnAbort = (signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () =>
+            reject(Object.assign(new Error("AbortError"), { name: "AbortError" })),
+          );
+        });
+      nativeState.read.mockImplementation((signal: unknown) => rejectsOnAbort(signal as AbortSignal));
+      nativeState.write.mockImplementation((_payload: unknown, signal: unknown) =>
+        rejectsOnAbort(signal as AbortSignal),
+      );
+
+      for (const [label, run] of [
+        ["read", () => clipboardReadHandler()],
+        ["write", () => clipboardWriteHandler({ text: "hello" })],
+      ] as const) {
+        const pending = run();
+        await vi.advanceTimersByTimeAsync(10_000);
+        const r = body(await pending);
+
+        expect(r.ok, label).toBe(false);
+        const ctx = (r.context ?? {}) as Record<string, unknown>;
+        // The load-bearing assertion: the hint only exists on the give-up
+        // error, so its presence proves the AbortError did not win the race.
+        expect(String(ctx.hint ?? ""), label).toContain("not responding");
+        expect(ctx.backend, label).toBe("native");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves the signal un-aborted when the call answers in time", async () => {
     // The contrapositive: aborting unconditionally would cancel nothing on a
     // completed task but would make the pin above vacuous.
