@@ -44,7 +44,9 @@ vi.mock("../../src/engine/nutjs.js", () => ({
     pressKey: vi.fn(() => Promise.resolve()),
     releaseKey: vi.fn(() => Promise.resolve()),
   },
-  withKeyboardLock: vi.fn(async (_n: string, fn: () => Promise<unknown>) => fn()),
+  // Real signature is `withKeyboardLock(fn)` — one argument. Getting the arity
+  // wrong here silently turns every locked call into a throw.
+  withKeyboardLock: vi.fn((fn: () => Promise<unknown>) => fn()),
   rawKeyboard: {},
 }));
 

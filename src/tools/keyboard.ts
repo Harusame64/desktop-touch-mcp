@@ -200,6 +200,11 @@ async function nativeTypeViaClipboard(
   // replace one with U+FFFD *before* the addon's byte comparison ran — and the
   // verification would then pass on mutated text.
   const payload = Buffer.from(text, "utf16le");
+  // This `withTimeout` runs INSIDE the engine's keyboard input lock — see the
+  // nesting note in `typeViaClipboard` below. The budget starts when the addon
+  // is called, not when the caller asked, so time spent queued behind another
+  // keyboard operation does not eat into it and cannot expire before the work
+  // begins.
   const r = await withTimeout(
     (signal) =>
       nativeWin32!.win32TypeViaClipboard!(
@@ -523,8 +528,56 @@ export async function typeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v",
 ): Promise<TypeViaClipboardOutcome> {
+  // ── Why the native call takes the keyboard input lock ──────────────────────
+  //
+  // The chord this replaces went out through `keyboard.pressKey/releaseKey`,
+  // which are wrapped in the engine's input queue (`nutjs.ts`), so it was
+  // serialised against every other keyboard caller. The addon sends its chord
+  // from a libuv worker, outside that queue — so without this, a Ctrl+V could
+  // splice into the middle of a `keyboard(action='sequence')` that is holding
+  // Alt or Shift down inside `withKeyboardLock`. The result is a phantom
+  // shortcut (Ctrl+Alt+V where neither party asked for Alt) or a paste into
+  // whatever window the sequence had just navigated to. Exactly the class of
+  // bug the queue was introduced for (issue #255 / #257), reintroduced through
+  // a side door.
+  //
+  // The whole transaction is wrapped, not just the chord: the composite is
+  // indivisible inside the addon by design (the save / verify / paste / restore
+  // sequence has to hold together), so there is nothing finer to take the lock
+  // around. This is safe with `withKeyboardLock`'s deadlock contract because
+  // the native path calls no nut.js primitive at all — the contract only
+  // forbids the WRAPPED `keyboard.*` inside the lock.
+  //
+  // The cost: against a hung clipboard owner this holds the keyboard queue for
+  // up to the give-up budget (~5s) instead of the milliseconds the old chord
+  // took. Accepted, because in that state the clipboard is unusable
+  // system-wide, so every other input path that would have wanted the queue is
+  // already blocked on the same thing — and the alternative is keystrokes
+  // landing in the wrong window.
+  //
+  // **The give-up timeout lives INSIDE the lock, and the order is not
+  // interchangeable.** `nativeTypeViaClipboard` starts its `withTimeout` after
+  // this lock has been acquired, so all three clocks — the JS timeout, the
+  // abort, and the addon's own paste deadline (captured in the napi factory,
+  // i.e. also after the lock) — start from the same instant: the moment the
+  // addon is actually called. Putting `withTimeout` OUTSIDE the lock would let
+  // the JS timeout expire while the call is still QUEUED; the caller would be
+  // told it failed, and then the queue would hand the turn over and the chord
+  // would go out anyway — reopening, one layer up, exactly the hole the paste
+  // deadline was added to close.
+  //
+  // Queue wait is therefore unbounded, and a caller can wait queue-time + the
+  // give-up budget. That is the same semantics the old chord had: it queued on
+  // this lock through `keyboard.pressKey` too.
+  //
+  // Asymmetric on purpose: the fallback is NOT wrapped here. Its chord already
+  // goes through the wrapped `keyboard.pressKey`, which takes this same lock
+  // itself — wrapping the transaction as well would deadlock on the shared
+  // `_inputQueueTail` chain, which is the deadlock the `rawKeyboard` CONTRACT
+  // in `nutjs.ts` describes. So: native = the whole transaction, fallback = the
+  // chord only.
   return hasNativeTypeViaClipboard()
-    ? nativeTypeViaClipboard(text, pasteCombo)
+    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo))
     : powershellTypeViaClipboard(text, pasteCombo);
 }
 
