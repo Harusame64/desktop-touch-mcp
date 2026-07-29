@@ -44,6 +44,16 @@
 //! failed would report a delivered write as lost. The caller is told which leg
 //! answered, so this is disclosed rather than hidden.
 //!
+//! A read is refused above `MAX_READ_BYTES`, and a verification leg that hits
+//! that refusal is treated as a leg that could not read — in-session becomes
+//! `in_session_readable=false`, post-close becomes `post_close_checked=false`.
+//! One consequence is worth stating: if an interceptor replaces our payload
+//! with something oversized, the post-close leg reports "could not read" rather
+//! than "replaced", and a write whose in-session leg was clean stays `ok:true`.
+//! That is the same class of accepted false negative as an interceptor writing
+//! back identical text — the verification can only speak about what it managed
+//! to observe.
+//!
 //! **The verdict is the byte comparison, never the sequence number** (plan
 //! D-5). `sequence_after_write` is diagnostic only. Measured on Windows 11
 //! (ADR-033 P0-2): one `EmptyClipboard`+`SetClipboardData(CF_UNICODETEXT)`
@@ -156,6 +166,27 @@ pub struct ClipboardWriteVerifyResult {
     /// (plan D-5). Exposed because it is the anchor a save/paste/restore
     /// composite needs for 3-point race detection.
     pub sequence_after_write: u32,
+}
+
+// ── Read size ceiling ───────────────────────────────────────────────────────
+
+/// Largest `CF_UNICODETEXT` allocation this module will scan and copy: 8 MiB,
+/// i.e. 4 million UTF-16 code units.
+///
+/// The clipboard belongs to the whole desktop, so the payload size is chosen by
+/// whichever application wrote last — not by us. This read runs on the V8
+/// thread, so an unbounded payload would stall the entire server for as long as
+/// the NUL scan and the copy take.
+///
+/// 8 MiB is 40x the 200 KB that the tool's own 100 000-character write ceiling
+/// produces, so every payload this server can create round-trips with room to
+/// spare; the limit only bites on something another application put there.
+const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
+
+/// Whether a reported clipboard allocation is past `MAX_READ_BYTES`. Split out
+/// so the boundary is pinned without a clipboard.
+fn exceeds_read_limit(size: usize) -> bool {
+    size > MAX_READ_BYTES
 }
 
 // ── Pure helpers (unit-tested without Win32) ────────────────────────────────
@@ -380,12 +411,32 @@ unsafe fn read_unicode_text_locked() -> Result<Option<Vec<u8>>, &'static str> {
             // produced nothing, or a NULL handle.
             return Err("clipboard_get_data_failed");
         }
+        if exceeds_read_limit(size) {
+            // Refused on the SIZE ALONE, before any pointer is dereferenced:
+            // the check is O(1) and no scan or copy happens. Another
+            // application can put an arbitrarily large payload on the
+            // clipboard, and this call runs on the V8 thread — scanning and
+            // copying multiple gigabytes would stall the whole server, and the
+            // copy could take the process down with it (see below).
+            return Err("clipboard_text_too_large");
+        }
         let ptr = GlobalLock(hglobal);
         if ptr.is_null() {
             return Err("clipboard_get_data_failed");
         }
         let raw = std::slice::from_raw_parts(ptr as *const u8, size);
-        let bytes = text_bytes_from_raw(raw).to_vec();
+        let text = text_bytes_from_raw(raw);
+        // Allocated fallibly. `to_vec()` aborts the entire process on OOM,
+        // which would turn another application's oversized clipboard into a
+        // dead MCP server — the same reasoning as the capture buffer in
+        // `gdi.rs`. `extend_from_slice` after a successful reserve cannot
+        // reallocate, so it cannot abort either.
+        let mut bytes: Vec<u8> = Vec::new();
+        if bytes.try_reserve_exact(text.len()).is_err() {
+            let _ = GlobalUnlock(hglobal);
+            return Err("clipboard_alloc_failed");
+        }
+        bytes.extend_from_slice(text);
         // GlobalUnlock returning FALSE with NO_ERROR just means the lock count
         // reached zero, which is the normal case here.
         let _ = GlobalUnlock(hglobal);
@@ -803,6 +854,42 @@ mod tests {
         on_clipboard.extend_from_slice(&[0, 0]);
         assert_ne!(text_bytes_from_raw(&on_clipboard), expected.as_slice());
         assert_eq!(text_bytes_from_raw(&on_clipboard), utf16le("a").as_slice());
+    }
+
+    #[test]
+    fn read_limit_is_pinned_and_clears_the_write_contract_with_room_to_spare() {
+        // The value itself, so a change is a conscious one (same discipline as
+        // the other cross-file constants).
+        assert_eq!(MAX_READ_BYTES, 8 * 1024 * 1024);
+        // The relationship that actually matters: the tool's own write ceiling
+        // is 100 000 characters = 200 000 UTF-16LE bytes, and the write's
+        // read-back legs go through this same limit. If the ceiling ever fell
+        // below that, a legal maximum-size write would fail its own
+        // verification.
+        assert!(MAX_READ_BYTES > 100_000 * 2);
+
+        // Boundary: at the limit is allowed, one byte past it is not.
+        assert!(!exceeds_read_limit(0));
+        assert!(!exceeds_read_limit(100_000 * 2));
+        assert!(!exceeds_read_limit(MAX_READ_BYTES));
+        assert!(exceeds_read_limit(MAX_READ_BYTES + 1));
+    }
+
+    #[test]
+    fn an_oversized_read_reaches_the_legs_as_an_unreadable_one() {
+        // The refusal is a retrieval failure, so it flows through the same
+        // three-valued mapping as any other: the in-session leg abstains and
+        // the post-close leg reports itself as not run. Neither invents a
+        // mismatch out of a payload it declined to look at.
+        assert_eq!(in_session_leg(Err("clipboard_text_too_large")), None);
+        assert_eq!(
+            post_close_leg(Err("clipboard_text_too_large")),
+            Err("clipboard_text_too_large".to_string()),
+        );
+        assert_eq!(
+            classify_read(Err("clipboard_text_too_large")),
+            Err("clipboard_text_too_large"),
+        );
     }
 
     // ── The three-valued read, and how each leg consumes it ─────────────────
