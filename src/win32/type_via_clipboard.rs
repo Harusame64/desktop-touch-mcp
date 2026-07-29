@@ -435,25 +435,43 @@ fn build_skipped(snapshot: &ClipboardSnapshot) -> Vec<TypeViaClipboardSkippedFor
         .collect()
 }
 
-/// Whether a `set_unicode_text_locked` failure left the user's clipboard
-/// changed.
+/// Whether a `set_unicode_text_locked` failure may have left the user's
+/// clipboard changed.
+///
+/// **`untouched` is only claimed where "no clipboard-mutating API was reached"
+/// is structurally provable.** Everything else answers `true`, because this
+/// flag is the one that tells a caller their content is safe, and being wrong
+/// about that is silent and destructive: an empty clipboard reported as
+/// untouched is never restored and never investigated. Costing a needless
+/// restore is the cheap direction — its worst case is writing the same bytes
+/// back over content that is already there.
 ///
 /// `set_unicode_text_locked` is prepare-first (see its doc in
 /// `clipboard_text.rs`): the payload is allocated, locked, filled and unlocked
 /// BEFORE `EmptyClipboard` runs, and `EmptyClipboard` sits immediately next to
-/// the `SetClipboardData` it enables. So of its three failures, only the last
-/// one happens with the clipboard already emptied:
+/// the `SetClipboardData` it enables. That gives:
 ///
-/// - `AllocFailed` — the allocation never succeeded, nothing was emptied;
-/// - `EmptyFailed` — `EmptyClipboard` itself failed, so by definition it did
-///   not clear anything, and the handle is freed on the way out;
-/// - `SetDataFailed` — `EmptyClipboard` succeeded and the store did not. This
-///   is the destructive one: the user's clipboard is EMPTY right now.
+/// - `AllocFailed` — **false**. `GlobalAlloc` / `GlobalLock` are memory calls;
+///   no clipboard API has been reached at this point, so nothing on the
+///   clipboard can have changed. Provable from the ordering alone.
+/// - `EmptyFailed` — **true, conservatively**. It is tempting to reason that a
+///   failed `EmptyClipboard` cleared nothing, but Win32 does not document its
+///   failure modes and says nothing about whether a partial clear is possible.
+///   We cannot prove the clipboard is intact, so we do not claim it: the
+///   restore runs and `untouched` is withheld. If this is ever flipped to
+///   `false`, the change needs a documented Win32 guarantee behind it, not an
+///   inference from the name.
+/// - `SetDataFailed` — **true**. `EmptyClipboard` succeeded and the store did
+///   not: the user's clipboard is EMPTY right now. The destructive case the
+///   restore exists for.
 ///
 /// Extracted so the mapping is pinned against the contract it depends on rather
 /// than re-derived at the call site.
 fn set_failure_modified_clipboard(e: &ClipboardError) -> bool {
-    matches!(e, ClipboardError::SetDataFailed { .. })
+    matches!(
+        e,
+        ClipboardError::SetDataFailed { .. } | ClipboardError::EmptyFailed { .. }
+    )
 }
 
 /// Result for a failure that happened before the chord could be considered.
@@ -585,20 +603,19 @@ pub(crate) fn type_via_clipboard_blocking(
         let seq_after_set = get_clipboard_sequence_number();
 
         if let Err(e) = set_result {
-            // `set_unicode_text_locked` prepares the payload before it empties
-            // (its doc in `clipboard_text.rs` spells the ordering out), so only
-            // a `SetClipboardData` failure can leave the clipboard emptied. The
-            // restore is what puts the user's content back in that case — the
-            // pre-native TS path threw before restoring and left them with
-            // whatever state the failure produced (I-33).
+            // The restore is what puts the user's content back after a failed
+            // store — the pre-native TS path threw before restoring and left
+            // them with whatever state the failure produced (I-33).
             //
-            // For the other two failures the clipboard is untouched, and the
-            // restore is SKIPPED rather than run: writing the snapshot back
-            // over content that is still there changes nothing except the
-            // sequence number, and a bump would make the next writer's race
-            // check see a stranger where there was none. It would also
-            // contradict what this call is about to report — `modified: false`
-            // and "restored" cannot both be true of the same clipboard.
+            // It is skipped only for the failure where "nothing on the
+            // clipboard was touched" is provable rather than merely likely:
+            // `AllocFailed`, which happens before any clipboard API is reached
+            // (see `set_failure_modified_clipboard`). There, restoring would
+            // write the snapshot back over content that is still present —
+            // changing nothing except the sequence number, whose bump would
+            // make the next writer's race check see a stranger where there was
+            // none — and it would contradict the `untouched` this call is about
+            // to report.
             let modified = set_failure_modified_clipboard(&e);
             let mut r = early_fail(
                 e.as_reason(),
@@ -957,29 +974,42 @@ mod tests {
         assert_eq!(chord_decision(false, None, now), ChordDecision::SkipUnverified);
     }
 
-    /// Which `set_unicode_text_locked` failures leave the user's clipboard
-    /// changed. All three variants, so adding a fourth forces a decision here
+    /// Which failures may have left the user's clipboard changed. All five
+    /// `ClipboardError` variants, so adding a sixth forces a decision here
     /// rather than defaulting into "untouched" and telling the user their
     /// clipboard is fine when it is empty.
+    ///
+    /// The asymmetry is deliberate: `untouched` is claimed only where it is
+    /// provable. A wrong `true` here costs a redundant restore; a wrong `false`
+    /// leaves an empty clipboard reported as safe and never repaired.
     #[test]
-    fn only_a_failed_store_leaves_the_clipboard_modified() {
+    fn untouched_is_claimed_only_where_no_clipboard_api_was_reached() {
         // `EmptyClipboard` succeeded and `SetClipboardData` did not: the
-        // clipboard is EMPTY right now. The one destructive failure, and the
-        // one that must still be restored.
+        // clipboard is EMPTY right now. The destructive failure, and the one
+        // the restore exists for.
         assert!(set_failure_modified_clipboard(&ClipboardError::SetDataFailed {
             format_id: 13,
             win32_error: 5,
         }));
 
-        // Prepare-first: neither of these got as far as clearing anything.
-        assert!(!set_failure_modified_clipboard(&ClipboardError::AllocFailed));
-        assert!(!set_failure_modified_clipboard(&ClipboardError::EmptyFailed {
+        // CONSERVATIVE, and not an oversight. `EmptyClipboard` failing sounds
+        // like it cleared nothing, but Win32 does not document its failure
+        // modes and never rules out a partial clear — so this is unprovable,
+        // and unprovable means we restore and stay quiet about `untouched`.
+        // Flipping this to `false` requires a documented Win32 guarantee, not
+        // an inference from the API's name: the regression it would cause is a
+        // silent one (an emptied clipboard reported as untouched, never
+        // restored, never noticed).
+        assert!(set_failure_modified_clipboard(&ClipboardError::EmptyFailed {
             win32_error: 5
         }));
 
+        // Provable: `GlobalAlloc` / `GlobalLock` are memory calls, so no
+        // clipboard API has been reached yet.
+        assert!(!set_failure_modified_clipboard(&ClipboardError::AllocFailed));
+
         // Not reachable from `set_unicode_text_locked`, but the predicate is
-        // total and must not answer "modified" for a failure that never
-        // reached the write at all.
+        // total. Both fail before the clipboard is opened for writing at all.
         assert!(!set_failure_modified_clipboard(&ClipboardError::OpenContention));
         assert!(!set_failure_modified_clipboard(
             &ClipboardError::HiddenOwnerCreateFailed { win32_error: 5 }
