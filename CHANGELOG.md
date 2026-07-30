@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.14.3] - 2026-07-30 — large payloads stopped paying a hidden quadratic tax
 
 - **Large clipboard writes no longer stall for seconds.** Passing large text to
   the `clipboard` tool — or large arguments to any tool — paid a hidden cost in
