@@ -11,11 +11,13 @@
  * a command runs quietly.
  *
  * The memo below removes that amplifier without touching the hash scheme:
- * results are cached per exact (normalised text, marker) pair, so an idle
- * poll tick costs one native string compare instead of up to ~32k SHA-256
- * digests. A changed buffer misses the memo and pays the real scan, which is
- * exactly when the work is needed. Entries are a tiny FIFO — the working set
- * is one or two (buffer, marker) pairs per live poll loop.
+ * results are cached per exact (normalised text, marker) pair — keyed by the
+ * buffer's own SHA-256 fingerprint rather than the buffer itself, so entries
+ * stay O(1)-sized and an idle poll tick costs one linear hash of the buffer
+ * instead of up to ~32k windowed SHA-256 digests. A changed buffer misses the
+ * memo and pays the real scan, which is exactly when the work is needed.
+ * Entries are a tiny FIFO — the working set is one or two (buffer, marker)
+ * pairs per live poll loop.
  *
  * Callers keep their own `normalizeForMarker` (terminal additionally strips
  * per-line trailing whitespace against Windows Terminal padding churn;
@@ -29,18 +31,22 @@ const WINDOW = 256;
 const MAX_SCAN = 32_000;
 
 interface MemoEntry {
-  norm: string;
+  /** UTF-16 length of the normalised buffer — cheap pre-filter before digest compare. */
+  len: number;
+  /** Full SHA-256 (base64) of the normalised buffer. The entry stores this
+   *  FINGERPRINT instead of the buffer itself, so retention is O(1) per entry
+   *  regardless of how large a terminal scrollback gets — a resident server
+   *  never pins a multi-MB buffer in the memo. A memo probe therefore costs
+   *  one linear hash of the incoming buffer (~30µs per 33k chars, vs ~50ms
+   *  for the scan it replaces); full-width SHA-256 makes an accidental
+   *  collision (which would return a stale result) cryptographically
+   *  negligible. */
+  digest: string;
   marker: string;
   end: number | null;
 }
 
 const MEMO_MAX = 4;
-// Retention bound: entries hold the full normalised buffer (a well-scrolled
-// terminal can be hundreds of KB), and a module-level FIFO on a resident
-// server would otherwise keep the last 4 indefinitely. 2M chars (~4MB as
-// UTF-16) caps the worst case while never evicting the typical working set
-// (one or two ≤100k buffers per live poll loop).
-const MEMO_MAX_TOTAL_CHARS = 2_000_000;
 let memo: MemoEntry[] = [];
 
 /** Test hook: clear the memo so perf pins measure the real scan. */
@@ -60,18 +66,15 @@ export function _resetSinceMarkerMemoForTest(): void {
  * scanned longest-first).
  */
 export function scanSinceMarkerNormEnd(norm: string, marker: string): number | null {
+  const digest = createHash("sha256").update(norm).digest("base64");
   for (const m of memo) {
-    // Marker first: 16 chars, rejects cheaply. The `norm` compare is a native
-    // O(n) memcmp only on marker match — still ~1000x cheaper than the scan.
-    if (m.marker === marker && m.norm === norm) return m.end;
+    // Cheap fields first (marker 16 chars, len number); digest compare is a
+    // fixed 44-char string either way.
+    if (m.marker === marker && m.len === norm.length && m.digest === digest) return m.end;
   }
   const end = scan(norm, marker);
-  memo.push({ norm, marker, end });
+  memo.push({ len: norm.length, digest, marker, end });
   if (memo.length > MEMO_MAX) memo.shift();
-  let totalChars = memo.reduce((s, m) => s + m.norm.length, 0);
-  while (totalChars > MEMO_MAX_TOTAL_CHARS && memo.length > 1) {
-    totalChars -= memo.shift()!.norm.length;
-  }
   return end;
 }
 
