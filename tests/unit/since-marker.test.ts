@@ -96,9 +96,10 @@ describe("scanSinceMarkerNormEnd — memo", () => {
 
   it("repeated identical calls are memo-fast (regression pin for the 200ms-poll amplifier)", () => {
     // Worst case: a 33k buffer where the marker never matches — the real scan
-    // costs ~50ms (measured). 100 repeated calls through the memo cost ~0.1ms;
-    // without the memo they'd cost ~5,000ms. 500ms keeps a 10x slow-CI margin
-    // while failing by an order of magnitude if the memo regresses.
+    // costs ~50ms (measured). A memo probe pays one SHA-256 of the buffer, so
+    // 100 repeated calls cost ~2.4ms; without the memo they'd cost ~5,000ms.
+    // 500ms keeps a ~200x margin over the memoised cost while failing by an
+    // order of magnitude if the memo regresses.
     const buf = "q".repeat(33_000);
     const marker = "0123456789abcdef";
     scanSinceMarkerNormEnd(buf, marker); // first call pays the real scan
