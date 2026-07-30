@@ -9,26 +9,32 @@
   implementation spawned `powershell.exe` with an inline base64 decode — a pattern
   Windows Defender could flag as `Trojan:Win32/Commando.A!ml` and kill mid-operation,
   a false positive that aborted clipboard calls at random. The native path removes
-  that pattern entirely, is roughly 60× faster (a clipboard write's worst case drops
-  from seconds of antivirus-scan latency to milliseconds), and supports the documented
-  100,000-character limit, where the PowerShell path failed opaquely past roughly
-  12,000 characters. PowerShell remains only as a fallback on builds without the
-  native addon, and that fallback now reports a clear
-  `code:'ClipboardWriteTooLargeForFallback'` error past its real limit instead of
-  failing cryptically. Every response reports `backend:'native'|'powershell'` — the
-  implementation that served the call.
+  that pattern entirely and is dramatically faster: a clipboard write's typical
+  latency drops from ~350 ms to ~4 ms, and its worst case from seconds of
+  antivirus-scan latency to milliseconds. The `clipboard` tool also delivers its
+  documented 100,000-character write limit now — its PowerShell path failed opaquely
+  past roughly 12,000 characters. PowerShell remains only as a fallback on builds
+  without the native addon; on those builds, `clipboard` writes above the fallback's
+  real ~12,000-character limit report a clear
+  `code:'ClipboardWriteTooLargeForFallback'` error instead of failing cryptically.
+  Every response reports `backend:'native'|'powershell'` — the implementation that
+  served the call.
 - **Typing via clipboard now restores your clipboard faithfully — and says what it did.**
   Clipboard-based typing saves your clipboard, pastes the text, then puts your content
   back. Previously the save step mangled multi-line clipboard content (it came back
   with altered line structure), and the restore ran even when it could clobber
   something another application had just copied. The restore is now race-checked and
-  byte-faithful, and every result reports what happened under `hints.clipboard`:
-  whether your clipboard was restored (`clipboardRestored`), why not when it was
-  skipped (`restoreSkippedRace` when another application changed the clipboard
-  mid-call, `restoreSkippedTooLarge` on fallback builds when the saved content is
-  larger than the fallback can put back, `restoreUnavailable` when the save itself
-  failed), and which non-text clipboard formats could not be preserved
-  (`skippedFormats`).
+  byte-faithful, and the result reports what happened under `hints.clipboard` (on a
+  failed call, the same block appears under the error's `context.clipboard`): whether
+  your clipboard was put back (`restored`) and, when it was not, exactly why — the
+  call never replaced your clipboard in the first place (`untouched`), another
+  application wrote to the clipboard mid-call so restoring would have overwritten it
+  (`restoreSkippedRace`), the saved content is larger than the fallback can put back
+  (`restoreSkippedTooLarge`), the save itself failed so there was no snapshot to
+  restore (`restoreUnavailable`), or the restore ran and failed
+  (`restoreFailedReason` — the one case that can leave the clipboard empty).
+  Non-text clipboard formats that could not be preserved are listed in
+  `skippedFormats`.
 
 ## [1.14.1] - 2026-07-28 — screenshots work on every monitor, not just the primary one
 
