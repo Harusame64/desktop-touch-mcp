@@ -58,8 +58,10 @@ Update:
 - `src/version.ts`
 - `CHANGELOG.md` — add a new entry at the top for `X.Y.Z`. Match the existing
   patch-style format (`## [X.Y.Z] - YYYY-MM-DD — short title`, then a short
-  paragraph or bullet list of fixes). Stage it with the other version files in
-  Phase 3.
+  paragraph or bullet list of fixes). **If an `## [Unreleased]` section exists,
+  fold its bullets into the new `X.Y.Z` entry (give it a user-facing title) and
+  delete the `[Unreleased]` heading — never ship an orphan `[Unreleased]`
+  section.** Stage it with the other version files in Phase 3.
 
 They should all match the release version, for example `0.11.4`.
 
@@ -760,7 +762,7 @@ See "npm Trusted Publisher Setup" section below.
 - `npm version X.Y.Z --no-git-tag-version`
   → auto-updates: `package.json`, `package-lock.json`, `src/version.ts`, `bin/launcher.js` PACKAGE_VERSION, `RELEASE_MANIFEST.tagName`, and `RELEASE_MANIFEST.sha256` (reset to `"PENDING"`)
   → No manual edits to `bin/launcher.js` needed.
-- Add a new `CHANGELOG.md` entry for `X.Y.Z` (see "Version Checklist" above).
+- Add a new `CHANGELOG.md` entry for `X.Y.Z` (see "Version Checklist" above); fold any `## [Unreleased]` section into it.
 - `node --check bin/launcher.js`
 - `npm run build`
 

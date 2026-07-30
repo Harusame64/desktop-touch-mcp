@@ -1,5 +1,42 @@
 # Changelog
 
+## [Unreleased]
+
+- **Clipboard operations no longer launch PowerShell — and no longer trip antivirus.**
+  The `clipboard` tool and clipboard-based typing (`keyboard(action='type')` with
+  `use_clipboard`, including the automatic promotion for non-ASCII text, and the
+  terminal clipboard-paste path) now talk to the Windows clipboard natively. The old
+  implementation spawned `powershell.exe` with an inline base64 decode — a pattern
+  Windows Defender could flag as `Trojan:Win32/Commando.A!ml` and kill mid-operation,
+  a false positive that aborted clipboard calls at random. The native path removes
+  that pattern entirely and is dramatically faster: a `clipboard` write's typical
+  latency drops from ~350 ms to ~4 ms, and its worst case from seconds of
+  antivirus-scan latency to milliseconds. The `clipboard` tool also delivers its
+  documented 100,000-character write limit now — its PowerShell path failed opaquely
+  past roughly 12,000 characters. PowerShell remains only as a fallback on builds
+  without the native addon; on those builds, `clipboard` writes above the fallback's
+  real ~12,000-character limit report a clear
+  `code:'ClipboardWriteTooLargeForFallback'` error instead of failing cryptically.
+  Every response reports `backend:'native'|'powershell'` — the implementation that
+  served the call.
+- **Typing via clipboard now restores your clipboard faithfully — and says what it did.**
+  Clipboard-based typing saves your clipboard, pastes the text, then puts your content
+  back. Previously the save step mangled multi-line clipboard content (it came back
+  with altered line structure), and the restore ran even when it could clobber
+  something another application had just copied. The restore is now race-checked and
+  byte-faithful, and the result reports what happened under `hints.clipboard` (on a
+  failed call, the same block appears under the error's `context.clipboard`): whether
+  your clipboard was put back (`restored`) and, when it was not, exactly why — the
+  call never replaced your clipboard in the first place (`untouched`), another
+  application wrote to the clipboard mid-call so restoring would have overwritten it
+  (`restoreSkippedRace`), the saved content is larger than the fallback can put back
+  (`restoreSkippedTooLarge`), the save itself failed so there was no snapshot to
+  restore (`restoreUnavailable`), or the restore ran and failed
+  (`restoreFailedReason` — the one case that can leave the clipboard empty). If
+  none of these appear — a rare write or clipboard-timeout failure — assume the
+  clipboard still holds the pasted text. Non-text clipboard formats
+  that could not be preserved are listed in `skippedFormats`.
+
 ## [1.14.1] - 2026-07-28 — screenshots work on every monitor, not just the primary one
 
 - **`screenshot(displayId=…)` and `screenshot(region=…)` now capture any monitor.**
