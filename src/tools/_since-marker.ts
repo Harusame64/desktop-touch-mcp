@@ -35,6 +35,12 @@ interface MemoEntry {
 }
 
 const MEMO_MAX = 4;
+// Retention bound: entries hold the full normalised buffer (a well-scrolled
+// terminal can be hundreds of KB), and a module-level FIFO on a resident
+// server would otherwise keep the last 4 indefinitely. 2M chars (~4MB as
+// UTF-16) caps the worst case while never evicting the typical working set
+// (one or two ≤100k buffers per live poll loop).
+const MEMO_MAX_TOTAL_CHARS = 2_000_000;
 let memo: MemoEntry[] = [];
 
 /** Test hook: clear the memo so perf pins measure the real scan. */
@@ -62,6 +68,10 @@ export function scanSinceMarkerNormEnd(norm: string, marker: string): number | n
   const end = scan(norm, marker);
   memo.push({ norm, marker, end });
   if (memo.length > MEMO_MAX) memo.shift();
+  let totalChars = memo.reduce((s, m) => s + m.norm.length, 0);
+  while (totalChars > MEMO_MAX_TOTAL_CHARS && memo.length > 1) {
+    totalChars -= memo.shift()!.norm.length;
+  }
   return end;
 }
 

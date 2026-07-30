@@ -187,6 +187,13 @@ describe("truncateJson (sub-plan §2.6)", () => {
     for (const args of cases) {
       expect(truncateJson(args, 512)).toBe(reference(args, 512));
     }
+    // Zero-margin form: a TOP-LEVEL string arg leaves only the opening quote
+    // before the value, so the value's cut sits at JSON unit index maxBytes+1
+    // — the tightest the prefix-stability bound gets. Ending the kept region
+    // in an astral pair makes the truncation split a surrogate right at that
+    // boundary.
+    const zeroMargin = "A".repeat(511) + "𠮷".repeat(8);
+    expect(truncateJson(zeroMargin, 512)).toBe(reference(zeroMargin, 512));
   });
   it("stays fast on a 100k-char payload (regression pin for the O(n²) shave loop)", () => {
     // The old implementation re-scanned the whole remaining string per shaved

@@ -4,8 +4,9 @@
  * The scan was extracted from byte-identical loops in terminal.ts /
  * keyboard.ts and memoised per (norm, marker) because the terminal
  * until-loop re-runs it every ~200ms poll tick against a usually-unchanged
- * buffer (measured: 51.6ms per full 33k-char miss scan — ~50% of the tick
- * budget across the loop's two call sites — vs ~0.001ms per memo hit).
+ * buffer (measured: 51.6ms per full 33k-char miss scan — the until-loop runs
+ * exactly one of its exit/pattern relocations per tick, so ~26% of the tick
+ * budget — vs ~0.001ms per memo hit).
  *
  * Behavioral SSOT stays with the callers' suites (terminal-marker.test.ts
  * pins the normalise/tail semantics); this file pins the extracted scan
