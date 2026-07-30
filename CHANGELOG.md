@@ -9,7 +9,7 @@
   implementation spawned `powershell.exe` with an inline base64 decode — a pattern
   Windows Defender could flag as `Trojan:Win32/Commando.A!ml` and kill mid-operation,
   a false positive that aborted clipboard calls at random. The native path removes
-  that pattern entirely and is dramatically faster: a clipboard write's typical
+  that pattern entirely and is dramatically faster: a `clipboard` write's typical
   latency drops from ~350 ms to ~4 ms, and its worst case from seconds of
   antivirus-scan latency to milliseconds. The `clipboard` tool also delivers its
   documented 100,000-character write limit now — its PowerShell path failed opaquely
@@ -32,9 +32,10 @@
   (`restoreSkippedRace`), the saved content is larger than the fallback can put back
   (`restoreSkippedTooLarge`), the save itself failed so there was no snapshot to
   restore (`restoreUnavailable`), or the restore ran and failed
-  (`restoreFailedReason` — the one case that can leave the clipboard empty).
-  Non-text clipboard formats that could not be preserved are listed in
-  `skippedFormats`.
+  (`restoreFailedReason` — the one case that can leave the clipboard empty). If
+  none of these appear — a rare write failure on builds without the native addon —
+  assume the clipboard still holds the pasted text. Non-text clipboard formats
+  that could not be preserved are listed in `skippedFormats`.
 
 ## [1.14.1] - 2026-07-28 — screenshots work on every monitor, not just the primary one
 
