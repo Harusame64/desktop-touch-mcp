@@ -38,6 +38,7 @@ import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
+import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
@@ -778,26 +779,16 @@ function applyKeyboardSinceMarker(
   marker: string,
 ): { text: string; matched: boolean } {
   const norm = normalizeForMarker(text);
-  const WINDOW = 256;
   const tailFromNormEnd = (normEnd: number): string =>
     norm.slice(normEnd).replace(/^\n/, "");
 
-  if (norm.length >= WINDOW) {
-    const maxScan = Math.min(norm.length, WINDOW + 32_000);
-    for (let end = norm.length; end >= norm.length - maxScan && end >= WINDOW; end--) {
-      const slice = norm.slice(end - WINDOW, end);
-      if (createHash("sha256").update(slice).digest("hex").slice(0, 16) === marker) {
-        return { text: tailFromNormEnd(end), matched: true };
-      }
-    }
-    return { text, matched: false };
-  }
-
-  for (let end = norm.length; end >= 0; end--) {
-    if (createHash("sha256").update(norm.slice(0, end)).digest("hex").slice(0, 16) === marker) {
-      return { text: tailFromNormEnd(end), matched: true };
-    }
-  }
+  // Shared with terminal's marker relocation (`_since-marker.ts`): same
+  // window/prefix scan, memoised per (norm, marker). keyboard calls this once
+  // or twice per type() rather than per poll tick, but a large editor control
+  // still saturates the 32k scan cap, so the shared memo helps repeat verifies
+  // against an unchanged control too.
+  const end = scanSinceMarkerNormEnd(norm, marker);
+  if (end !== null) return { text: tailFromNormEnd(end), matched: true };
   return { text, matched: false };
 }
 

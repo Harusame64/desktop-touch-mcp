@@ -516,11 +516,18 @@ export class KeyLockerHost {
   }
 
   private onData(d: Buffer | string): void {
-    this.buf += typeof d === "string" ? d : d.toString("utf8");
-    let nl: number;
-    while ((nl = this.buf.indexOf("\n")) >= 0) {
-      const line = this.buf.slice(0, nl).replace(/\r$/, "");
-      this.buf = this.buf.slice(nl + 1);
+    // Search the NEW chunk only — same quadratic-avoidance shape as
+    // `bridge-host.ts` / `winevent-source.ts`: append until the chunk carries a
+    // newline, then one split with the partial tail pushed back.
+    const chunk = typeof d === "string" ? d : d.toString("utf8");
+    if (!chunk.includes("\n")) {
+      this.buf += chunk;
+      return;
+    }
+    const parts = (this.buf + chunk).split("\n");
+    this.buf = parts.pop()!;
+    for (const raw of parts) {
+      const line = raw.replace(/\r$/, "");
       if (line.length === 0) continue;
       let reply: LockerReply;
       try {

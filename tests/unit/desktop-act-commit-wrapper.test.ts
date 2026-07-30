@@ -161,6 +161,33 @@ describe("truncateJson (sub-plan §2.6)", () => {
       expect(truncateJson(args, budget)).toBe(reference(args, budget));
     }
   });
+  it("value pre-truncation cannot change the output (identical to full-stringify reference)", () => {
+    // truncateJson stringifies with a replacer that cuts string values to
+    // maxBytes UTF-16 units before serialising. The output must be identical
+    // to stringifying the FULL args: every unit contributes >= 1 JSON byte, so
+    // a truncated value still reaches past the byte budget whenever the
+    // original did, and all differences lie beyond the returned prefix.
+    const reference = (args: unknown, maxBytes: number): string => {
+      const json = JSON.stringify(args); // no replacer — full serialisation
+      if (Buffer.byteLength(json, "utf8") <= maxBytes) return json;
+      let cut = json.slice(0, maxBytes);
+      while (Buffer.byteLength(cut, "utf8") + 3 > maxBytes && cut.length > 0) {
+        cut = cut.slice(0, -1);
+      }
+      return cut + "…";
+    };
+    const cases: unknown[] = [
+      { action: "write", text: "陽".repeat(600) }, // long CJK value
+      { action: "write", text: "𠮷".repeat(600) }, // astral: cut may create a lone surrogate — beyond the prefix
+      { a: 'quote"and\nnewline'.repeat(100), b: 1 }, // escapes inflate bytes, never shrink
+      { outer: { nested: "x".repeat(2000), tail: "after" } }, // long value inside nesting
+      { first: "y".repeat(600), second: "z".repeat(600) }, // multiple long values
+      { text: "short", n: 42 }, // nothing truncated — byte-identical fast path
+    ];
+    for (const args of cases) {
+      expect(truncateJson(args, 512)).toBe(reference(args, 512));
+    }
+  });
   it("stays fast on a 100k-char payload (regression pin for the O(n²) shave loop)", () => {
     // The old implementation re-scanned the whole remaining string per shaved
     // char: ~4,000ms for 100k chars. The pre-cut version is O(maxBytes²) at

@@ -11,6 +11,11 @@
 // CSI: ESC [ ... finalByte (0x40-0x7E)
 const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // OSC: ESC ] ... BEL or ESC \
+// (Perf note, measured 2026-07-30: the lazy `[\s\S]*?` looks like an
+// O(starts × buffer) hazard on unterminated sequences, but V8 optimises the
+// lazy scan into a terminator search — 200 unterminated starts in a 100KB
+// buffer strip in ~1ms. Bounding the payload would only buy a semantic edge
+// case, so it stays unbounded.)
 const OSC_RE = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
 // DEC / two-byte sequences: ESC ( | ) | * | + | letter
 const TWO_BYTE_RE = /\x1b[()*+][0-9A-Za-z]/g;

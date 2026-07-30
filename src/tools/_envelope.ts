@@ -1085,7 +1085,18 @@ export function mapLeaseValidationToTypedReason(
 export function truncateJson(args: unknown, maxBytes: number = 512): string {
   let json: string;
   try {
-    json = JSON.stringify(args);
+    // Pre-truncate long STRING VALUES before stringifying: serialising a
+    // 100k-char clipboard `text` just to keep 512 bytes is pure waste on the
+    // hot path. This cannot change the returned prefix: every UTF-16 unit of
+    // a string value contributes >= 1 byte to its JSON encoding (escapes only
+    // inflate), so a value truncated to `maxBytes` units still reaches past
+    // the byte budget whenever the original did — the first `maxBytes` bytes
+    // of the JSON are identical, and everything a truncation could alter
+    // (including a new lone surrogate at the cut) lies beyond them. A value
+    // short enough to end inside the budget is never truncated at all.
+    json = JSON.stringify(args, (_key, value: unknown) =>
+      typeof value === "string" && value.length > maxBytes ? value.slice(0, maxBytes) : value,
+    );
   } catch {
     // Circular ref or BigInt: defensive empty-object fallback so the
     // wrapper still pushes a ToolCallStarted event with a recognisable

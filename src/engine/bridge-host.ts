@@ -298,11 +298,21 @@ export class BridgeHost {
   }
 
   private onData(d: Buffer | string): void {
-    this.buf += typeof d === "string" ? d : d.toString("utf8");
-    let nl: number;
-    while ((nl = this.buf.indexOf("\n")) >= 0) {
-      const line = this.buf.slice(0, nl).replace(/\r$/, "");
-      this.buf = this.buf.slice(nl + 1);
+    // Search the NEW chunk only: a large reply frame arriving across many pipe
+    // chunks previously re-ran `indexOf` over the whole accumulated buffer per
+    // chunk, and a chunk carrying many lines re-copied the remainder per line
+    // (both quadratic shapes). Appending until the chunk contains a newline,
+    // then one split with the partial tail pushed back, is a single O(buffer)
+    // pass per completed batch — same pattern as `winevent-source.ts`.
+    const chunk = typeof d === "string" ? d : d.toString("utf8");
+    if (!chunk.includes("\n")) {
+      this.buf += chunk;
+      return;
+    }
+    const parts = (this.buf + chunk).split("\n");
+    this.buf = parts.pop()!;
+    for (const raw of parts) {
+      const line = raw.replace(/\r$/, "");
       if (line.length === 0) continue;
       let reply: BridgeReply;
       try {
