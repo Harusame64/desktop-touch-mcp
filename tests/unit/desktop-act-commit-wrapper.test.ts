@@ -137,6 +137,77 @@ describe("truncateJson (sub-plan §2.6)", () => {
     // JSON.stringify on circular throws → fallback "{}" then byte budget OK
     expect(out).toBe("{}");
   });
+  it("matches the shave-from-full-string reference output (CJK / astral / mixed boundaries)", () => {
+    // Reference = the pre-optimization algorithm: shave one UTF-16 unit at a
+    // time from the FULL string. The optimized version starts from a
+    // maxBytes-unit prefix; both must converge on the same longest prefix.
+    const reference = (args: unknown, maxBytes: number): string => {
+      const json = JSON.stringify(args);
+      if (Buffer.byteLength(json, "utf8") <= maxBytes) return json;
+      let cut = json;
+      while (Buffer.byteLength(cut, "utf8") + 3 > maxBytes && cut.length > 0) {
+        cut = cut.slice(0, -1);
+      }
+      return cut + "…";
+    };
+    const cases: Array<[unknown, number]> = [
+      [{ text: "陽".repeat(400) }, 512], // 3-byte chars, cut mid-run
+      [{ text: "𠮷".repeat(300) }, 512], // astral pairs — cut can land mid-pair
+      [{ text: "a𠮷".repeat(300) }, 511], // odd budget, mixed 1/4-byte
+      [{ text: "x".repeat(509) }, 512], // ASCII just over budget
+      [{ text: "あ".repeat(2) }, 16], // tiny budget
+    ];
+    for (const [args, budget] of cases) {
+      expect(truncateJson(args, budget)).toBe(reference(args, budget));
+    }
+  });
+  it("value pre-truncation cannot change the output (identical to full-stringify reference)", () => {
+    // truncateJson stringifies with a replacer that cuts string values to
+    // maxBytes UTF-16 units before serialising. The output must be identical
+    // to stringifying the FULL args: every unit contributes >= 1 JSON byte, so
+    // a truncated value still reaches past the byte budget whenever the
+    // original did, and all differences lie beyond the returned prefix.
+    const reference = (args: unknown, maxBytes: number): string => {
+      const json = JSON.stringify(args); // no replacer — full serialisation
+      if (Buffer.byteLength(json, "utf8") <= maxBytes) return json;
+      let cut = json.slice(0, maxBytes);
+      while (Buffer.byteLength(cut, "utf8") + 3 > maxBytes && cut.length > 0) {
+        cut = cut.slice(0, -1);
+      }
+      return cut + "…";
+    };
+    const cases: unknown[] = [
+      { action: "write", text: "陽".repeat(600) }, // long CJK value
+      { action: "write", text: "𠮷".repeat(600) }, // astral: cut may create a lone surrogate — beyond the prefix
+      { a: 'quote"and\nnewline'.repeat(100), b: 1 }, // escapes inflate bytes, never shrink
+      { outer: { nested: "x".repeat(2000), tail: "after" } }, // long value inside nesting
+      { first: "y".repeat(600), second: "z".repeat(600) }, // multiple long values
+      { text: "short", n: 42 }, // nothing truncated — byte-identical fast path
+    ];
+    for (const args of cases) {
+      expect(truncateJson(args, 512)).toBe(reference(args, 512));
+    }
+    // Zero-margin form: a TOP-LEVEL string arg leaves only the opening quote
+    // before the value, so the value's cut sits at JSON unit index maxBytes+1
+    // — the tightest the prefix-stability bound gets. Ending the kept region
+    // in an astral pair makes the truncation split a surrogate right at that
+    // boundary.
+    const zeroMargin = "A".repeat(511) + "𠮷".repeat(8);
+    expect(truncateJson(zeroMargin, 512)).toBe(reference(zeroMargin, 512));
+  });
+  it("stays fast on a 100k-char payload (regression pin for the O(n²) shave loop)", () => {
+    // The old implementation re-scanned the whole remaining string per shaved
+    // char: ~4,000ms for 100k chars. The pre-cut version is O(maxBytes²) at
+    // worst. 200ms is a ~20x margin over slow-CI noise while still failing by
+    // an order of magnitude if the pre-cut regresses.
+    const args = { action: "write", text: "陽".repeat(50_000) + "x".repeat(50_000) };
+    const t0 = performance.now();
+    const out = truncateJson(args, 512);
+    const elapsed = performance.now() - t0;
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(512);
+    expect(out.endsWith("…")).toBe(true);
+    expect(elapsed).toBeLessThan(200);
+  });
 });
 
 describe("buildFailureEnvelope (sub-plan §2.4)", () => {

@@ -25,6 +25,7 @@ import {
 import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
 import { parsePaneId, wtPaneTitleOf, WT_PANE_ID_SCHEMA_MAX } from "../engine/key-locker/pane-id.js";
 import { detectFocusLoss } from "./_focus.js";
+import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToLines, detectOcrLanguage } from "../engine/ocr-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
@@ -355,7 +356,6 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
   // NOTE: both makeMarker and this function normalise text before hashing so
   // that Windows Terminal padding/CRLF churn does not cause spurious misses.
   const norm = normalizeForMarker(text);
-  const WINDOW = 256;
 
   /** Return the normalised tail starting just after normEnd.
    *  Stripping a leading newline avoids returning a blank first line when
@@ -364,34 +364,13 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
     return norm.slice(normEnd).replace(/^\n/, "");
   }
 
-  // ── Sliding-window path (norm ≥ 256 chars) ────────────────────────────────
-  // makeMarker hashed norm.slice(-256), so look for any 256-char window match.
-  // Note: maxScan caps the lookback at 32k bytes. If the terminal has scrolled
-  // more than ~32k chars since the marker was taken, this will miss silently
-  // (returning matched:false and falling through to full-text return).
-  if (norm.length >= WINDOW) {
-    const maxScan = Math.min(norm.length, WINDOW + 32_000);
-    for (let end = norm.length; end >= norm.length - maxScan && end >= WINDOW; end--) {
-      const slice = norm.slice(end - WINDOW, end);
-      if (createHash("sha256").update(slice).digest("hex").slice(0, 16) === marker) {
-        return { text: tailFromNormEnd(end), matched: true };
-      }
-    }
-    // Marker not found within the 32k scan range — fall through to return full text.
-    return { text, matched: false };
-  }
-
-  // ── Prefix-scan path (norm < 256 chars, so previous norm was also < 256) ──
-  // makeMarker hashed the entire previous normalised text. Find the prefix
-  // of the current norm whose hash matches, i.e. where the old snapshot ends.
-  // Scan from longest (current full text = unchanged) down to empty string.
-  // At most WINDOW=256 iterations, so O(N) total hashing work.
-  for (let end = norm.length; end >= 0; end--) {
-    if (createHash("sha256").update(norm.slice(0, end)).digest("hex").slice(0, 16) === marker) {
-      return { text: tailFromNormEnd(end), matched: true };
-    }
-  }
-
+  // Scan is shared with keyboard's marker relocation (`_since-marker.ts`):
+  // sliding-window path for norm ≥ 256 (maxScan caps lookback at 32k — a
+  // terminal that scrolled further misses silently and falls through to full
+  // text), prefix path below 256. Memoised per (norm, marker) so the
+  // until-loop's ~200ms poll ticks stop re-hashing an unchanged buffer.
+  const end = scanSinceMarkerNormEnd(norm, marker);
+  if (end !== null) return { text: tailFromNormEnd(end), matched: true };
   return { text, matched: false };
 }
 

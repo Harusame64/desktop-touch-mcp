@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased]
+
+- **Large clipboard writes no longer stall for seconds.** Passing large text to
+  the `clipboard` tool — or large arguments to any tool — paid a hidden cost in
+  the internal call-telemetry layer: the argument summary was trimmed to its
+  512-byte budget one character at a time, re-scanning the whole remaining text
+  after every cut. That quadratic work added about 4 seconds to a
+  100,000-character clipboard write and about 40 ms to every 10,000-character
+  keyboard or terminal call. The trim now starts from a budget-sized prefix, so
+  the overhead is effectively zero at every size: a 100,000-character clipboard
+  write dropped from ~5.4 s to ~60 ms end to end. The cost had been there since
+  the telemetry layer shipped — it only became visible once the native clipboard
+  path made 100,000-character writes possible.
+- **Waiting on a terminal command no longer spends a quarter of its time
+  re-hashing unchanged output.** While `terminal(action='run')` waits for
+  completion, it re-locates its output baseline every 200 ms by hashing
+  candidate positions in the terminal text. On a well-filled terminal that
+  re-location cost ~50 ms per poll — about a quarter of the wait went into
+  re-scanning output that had not changed. The scan result is now cached per
+  exact (output, baseline) pair: an idle poll tick costs microseconds, and a
+  full re-scan runs only when the output actually changed — which is exactly
+  when it is needed. The same cache serves keyboard delivery verification
+  against large editor windows.
+- **Very large internal replies parse in one pass.** A big reply crossing the
+  helper-process pipe in many chunks (for example a large UI-automation tree)
+  was re-scanned from the start on every chunk; reading the pipe buffer in a
+  single pass took a 4 MB reply from ~70 ms to ~3 ms.
+
 ## [1.14.2] - 2026-07-30 — clipboard goes native: faster, and no more antivirus false positives
 
 - **Clipboard operations no longer launch PowerShell — and no longer trip antivirus.**
