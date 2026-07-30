@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+- **Large clipboard writes no longer stall for seconds.** Passing large text to
+  the `clipboard` tool — or large arguments to any tool — paid a hidden cost in
+  the internal call-telemetry layer: the argument summary was trimmed to its
+  512-byte budget one character at a time, re-scanning the whole remaining text
+  after every cut. That quadratic work added about 4 seconds to a
+  100,000-character clipboard write and about 40 ms to every 10,000-character
+  keyboard or terminal call. The trim now starts from a budget-sized prefix, so
+  the overhead is effectively zero at every size: a 100,000-character clipboard
+  write dropped from ~5.4 s to ~60 ms end to end. The cost had been there since
+  the telemetry layer shipped — it only became visible once the native clipboard
+  path made 100,000-character writes possible.
+
 ## [1.14.2] - 2026-07-30 — clipboard goes native: faster, and no more antivirus false positives
 
 - **Clipboard operations no longer launch PowerShell — and no longer trip antivirus.**

@@ -1096,9 +1096,17 @@ export function truncateJson(args: unknown, maxBytes: number = 512): string {
   // UTF-8 safe truncation: shrink one char at a time until the byte
   // budget (minus 3 for the ellipsis) is satisfied. Avoids breaking
   // multi-byte sequences mid-codepoint.
+  //
+  // The shrink loop starts from a `maxBytes`-UTF-16-unit prefix, not from the
+  // full string: every UTF-16 unit encodes to >= 1 UTF-8 byte (BMP 1-3 bytes,
+  // astral pair 2 units -> 4 bytes, lone surrogate 1 unit -> 3 bytes), so the
+  // final cut can never be longer than `maxBytes` units and the prefix always
+  // contains it. Without the pre-cut the loop re-scans the whole remaining
+  // string per shaved char — O(n²) on the payload, which turned a 100k-char
+  // clipboard write into ~4s of wrapper overhead on every commit-wrapped call.
   const ellipsis = "…";
   const ellipsisBytes = Buffer.byteLength(ellipsis, "utf8");
-  let cut = json;
+  let cut = json.slice(0, maxBytes);
   while (Buffer.byteLength(cut, "utf8") + ellipsisBytes > maxBytes && cut.length > 0) {
     cut = cut.slice(0, -1);
   }
