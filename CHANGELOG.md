@@ -33,8 +33,8 @@
   (`restoreSkippedTooLarge`), the save itself failed so there was no snapshot to
   restore (`restoreUnavailable`), or the restore ran and failed
   (`restoreFailedReason` — the one case that can leave the clipboard empty). If
-  none of these appear — a rare write failure on builds without the native addon —
-  assume the clipboard still holds the pasted text. Non-text clipboard formats
+  none of these appear — a rare write or clipboard-timeout failure — assume the
+  clipboard still holds the pasted text. Non-text clipboard formats
   that could not be preserved are listed in `skippedFormats`.
 
 ## [1.14.1] - 2026-07-28 — screenshots work on every monitor, not just the primary one
