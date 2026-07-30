@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.14.2] - 2026-07-30 — clipboard goes native: faster, and no more antivirus false positives
 
 - **Clipboard operations no longer launch PowerShell — and no longer trip antivirus.**
   The `clipboard` tool and clipboard-based typing (`keyboard(action='type')` with
