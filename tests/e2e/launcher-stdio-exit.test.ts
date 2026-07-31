@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,14 +25,14 @@ async function loadLauncherManifest(): Promise<{ version: string; tagName: strin
   const version = source.match(/const PACKAGE_VERSION = "([^"]+)";/)?.[1];
   const tagName = source.match(/tagName: "(v[^"]+)"/)?.[1];
   const assetName = source.match(/const ASSET_NAME = "([^"]+)";/)?.[1];
-  const sha256 = source.match(/sha256: "([a-f0-9]{64})"/i)?.[1];
+  const sha256 = source.match(/sha256: "([a-f0-9]{64}|PENDING)"/)?.[1];
   if (!version || !tagName || !assetName || !sha256) {
     throw new Error("Failed to parse launcher release manifest");
   }
-  return { version, tagName, assetName, sha256: sha256.toLowerCase() };
+  return { version, tagName, assetName, sha256: sha256 === "PENDING" ? sha256 : sha256.toLowerCase() };
 }
 
-async function setupFakeRelease(): Promise<{
+async function setupFakeRelease(runtimeScriptOverride?: string): Promise<{
   cacheRoot: string;
   runtimePidFile: string;
   runtimeLogFile: string;
@@ -47,19 +47,29 @@ async function setupFakeRelease(): Promise<{
 
   const runtimePidFile = path.join(cacheRoot, "runtime.pid");
   const runtimeLogFile = path.join(cacheRoot, "runtime.log");
-  const runtimeScript = `
+  // The launcher's forced-shutdown deadline is max(spawn + 10s startup window,
+  // EOF + 1s grace), so stdin EOF can never force a stop before the window has
+  // passed. The default fixture therefore exits on stdin EOF like the real
+  // runtime does, which ends the run early and well inside the reap test's wait;
+  // the forced-SIGTERM path is pinned at unit level by the timer tests. The
+  // stderr banner just mimics the real runtime's startup output and no longer
+  // affects any timing decision.
+  const runtimeScript = runtimeScriptOverride ?? `
 import { appendFileSync, writeFileSync } from "node:fs";
 
 const pidFile = process.env.TEST_RUNTIME_PID_FILE;
 const logFile = process.env.TEST_RUNTIME_LOG_FILE;
 if (!pidFile || !logFile) throw new Error("missing test runtime env");
 
+process.stderr.write("runtime ready\\n");
 writeFileSync(pidFile, String(process.pid), "utf8");
 appendFileSync(logFile, "START\\n", "utf8");
 
 process.stdin.resume();
 process.stdin.on("end", () => {
   appendFileSync(logFile, "STDIN_END\\n", "utf8");
+  clearInterval(hold);
+  process.exit(0);
 });
 
 const hold = setInterval(() => {}, 1000);
@@ -71,6 +81,16 @@ process.on("SIGTERM", () => {
 });
 `;
   await writeFile(path.join(distDir, "index.js"), runtimeScript, "utf8");
+  // The runtime scripts use ESM import syntax; without an enclosing
+  // package.json a Node 20.x release that lacks .js module-syntax
+  // detection would load them as CommonJS and fail before writing the
+  // pid file. The real release ships a type:module package.json at its
+  // root, so the fixture mirrors it.
+  await writeFile(
+    path.join(releaseDir, "package.json"),
+    `${JSON.stringify({ type: "module" }, null, 2)}\n`,
+    "utf8"
+  );
 
   const metadata = {
     tagName: manifest.tagName,
@@ -140,18 +160,14 @@ afterEach(async () => {
   }
 });
 
-// Skip when the launcher manifest still has the pre-release "PENDING" placeholder.
-// Real sha256 is filled in by the release pipeline (`npm run update-sha`); the test
-// can only run against a finalized launcher.
-const LAUNCHER_HAS_RELEASE_SHA = (() => {
-  try {
-    return /sha256: "[a-f0-9]{64}"/i.test(readFileSync(launcherPath, "utf8"));
-  } catch {
-    return false;
-  }
-})();
-
-describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
+// The launcher accepts a PENDING sha256 manifest when
+// DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1 (sha verification is skipped), so this
+// suite runs both on a development tree (sha256: "PENDING") and on a
+// release-finalized launcher (real sha embedded by the release workflow).
+// Windows-only: bin/launcher.js exits 1 at its process.platform !== "win32"
+// guard before ever spawning the fake runtime, so on any other host both
+// tests would fail for a reason unrelated to what they pin.
+describe.skipIf(process.platform !== "win32")("launcher stdio shutdown", () => {
   it("reaps the spawned runtime when the caller closes stdin", async () => {
     const { cacheRoot, runtimePidFile, runtimeLogFile } = await setupFakeRelease();
     const stderrChunks: string[] = [];
@@ -160,6 +176,7 @@ describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
       env: {
         ...process.env,
         DESKTOP_TOUCH_MCP_HOME: cacheRoot,
+        DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED: "1",
         TEST_RUNTIME_PID_FILE: runtimePidFile,
         TEST_RUNTIME_LOG_FILE: runtimeLogFile,
       },
@@ -175,9 +192,11 @@ describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
 
     launcher.stdin?.end();
 
+    // The runtime exits on stdin EOF of its own accord, so the whole run ends
+    // well inside this wait — no forced SIGTERM is involved.
     const exit = await waitForExit(launcher, 5_000);
-    expect(exit.signal === null || exit.signal === "SIGTERM").toBe(true);
-    expect(exit.code === 0 || exit.code === 1).toBe(true);
+    expect(exit.signal).toBeNull();
+    expect(exit.code).toBe(0);
 
     await eventually(
       async () => (isProcessAlive(runtimePid) ? null : true),
@@ -187,8 +206,59 @@ describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
     const runtimeLog = await readFile(runtimeLogFile, "utf8");
     expect(runtimeLog).toContain("START");
     expect(runtimeLog).toContain("STDIN_END");
+    expect(runtimeLog).not.toContain("SIGTERM");
 
     const launcherStderr = stderrChunks.join("");
     expect(launcherStderr).not.toContain("Failed to start release runtime");
+  });
+
+  it("does not kill a slow-starting runtime when stdin is closed at spawn", async () => {
+    const slowHelpRuntime = `
+import { appendFileSync, writeFileSync } from "node:fs";
+
+const pidFile = process.env.TEST_RUNTIME_PID_FILE;
+const logFile = process.env.TEST_RUNTIME_LOG_FILE;
+if (!pidFile || !logFile) throw new Error("missing test runtime env");
+
+writeFileSync(pidFile, String(process.pid), "utf8");
+appendFileSync(logFile, "START\\n", "utf8");
+
+process.on("SIGTERM", () => {
+  appendFileSync(logFile, "SIGTERM\\n", "utf8");
+  process.exit(1);
+});
+
+setTimeout(() => {
+  process.stdout.write("USAGE\\n");
+  appendFileSync(logFile, "HELP_DONE\\n", "utf8");
+  process.exit(0);
+}, 2000);
+`;
+    const { cacheRoot, runtimePidFile, runtimeLogFile } = await setupFakeRelease(slowHelpRuntime);
+    const launcher = track(spawn(process.execPath, [launcherPath], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        DESKTOP_TOUCH_MCP_HOME: cacheRoot,
+        DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED: "1",
+        TEST_RUNTIME_PID_FILE: runtimePidFile,
+        TEST_RUNTIME_LOG_FILE: runtimeLogFile,
+      },
+      stdio: ["pipe", "ignore", "pipe"],
+      windowsHide: true,
+    }));
+
+    // Reproduce the closed-at-spawn shape: EOF at t≈0 while the runtime
+    // needs 2s to finish — longer than the pre-fix 1s grace, well inside
+    // the 10s startup window measured from spawn.
+    launcher.stdin?.end();
+
+    const exit = await waitForExit(launcher, 15_000);
+    expect(exit.signal).toBeNull();
+    expect(exit.code).toBe(0);
+
+    const runtimeLog = await readFile(runtimeLogFile, "utf8");
+    expect(runtimeLog).toContain("HELP_DONE");
+    expect(runtimeLog).not.toContain("SIGTERM");
   });
 });

@@ -90,6 +90,8 @@ export function wireLauncherStdio(child, options = {}) {
   const parentStdout = options.parentStdout ?? process.stdout;
   const parentStderr = options.parentStderr ?? process.stderr;
   const shutdownGraceMs = options.shutdownGraceMs ?? 1000;
+  const startupGraceMs = options.startupGraceMs ?? 10000;
+  const spawnedAtMs = Date.now();
 
   let shutdownRequested = false;
   let forcedShutdownTimer = null;
@@ -109,11 +111,23 @@ export function wireLauncherStdio(child, options = {}) {
     } catch {
       // ignore
     }
+    // Forced-shutdown deadline: max(spawn + startupGraceMs, now + shutdownGraceMs).
+    // The runtime needs ~1.3s (measured on v1.14.3) just to load its native
+    // addons before it can parse its CLI, and it emits stderr diagnostics
+    // DURING that load — so neither stdin-EOF timing nor "has it produced
+    // output yet" is a readiness signal. Every child therefore gets the
+    // full startup ceiling measured from spawn; once that has passed, EOF
+    // gives the normal grace, exactly as before this fix.
+    const delayMs = Math.max(
+      startupGraceMs - (Date.now() - spawnedAtMs),
+      shutdownGraceMs
+    );
     forcedShutdownTimer = setTimeout(() => {
+      forcedShutdownTimer = null;
       if (child.exitCode === null && !child.killed) {
         try { child.kill("SIGTERM"); } catch { /* ignore */ }
       }
-    }, shutdownGraceMs);
+    }, delayMs);
     if (forcedShutdownTimer.unref) forcedShutdownTimer.unref();
   }
 

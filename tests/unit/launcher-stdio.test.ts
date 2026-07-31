@@ -53,7 +53,7 @@ describe("wireLauncherStdio", () => {
     expect(child.stderr.pipe).toHaveBeenCalledWith(parentStderr);
   });
 
-  it("requests graceful child shutdown when parent stdin closes", async () => {
+  it("takes the normal grace when stdin closes after the startup ceiling has passed", async () => {
     vi.useFakeTimers();
     try {
       const parentStdin = new MockReadable();
@@ -66,14 +66,232 @@ describe("wireLauncherStdio", () => {
         parentStdout: parentStdout as never,
         parentStderr: parentStderr as never,
         shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      await vi.advanceTimersByTimeAsync(150);
+      parentStdin.emit("end");
+      expect(child.stdin.end).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(24);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the startup ceiling when EOF arrives after early output but inside the ceiling", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+      child.stdout.emit("data", Buffer.from("[native-engine] diagnostics"));
+      await vi.advanceTimersByTimeAsync(10);
+      parentStdin.emit("end");
+
+      // An output-based design would fire at EOF+25 (t=45). The deadline
+      // must instead be the ceiling measured from spawn (t=100).
+      await vi.advanceTimersByTimeAsync(25);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(54);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds off SIGTERM for a child that has produced no output (startup grace)", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
       });
 
       parentStdin.emit("end");
       expect(child.stdin.end).toHaveBeenCalledTimes(1);
-      expect(child.kill).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(25);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(75);
       expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the startup ceiling when the first byte arrives while it is pending", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdin.emit("end");
+      await vi.advanceTimersByTimeAsync(10);
+      child.stdout.emit("data", Buffer.from("x"));
+
+      // Early output must NOT shorten the pending ceiling: the runtime
+      // prints engine diagnostics long before it can parse its CLI.
+      await vi.advanceTimersByTimeAsync(15);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(64);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(11);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the pending forced shutdown when the child exits during the startup grace", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdin.emit("end");
+      child.emit("exit", 0, null);
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not leave a stray timer when output arrives after the forced shutdown fired", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdin.emit("end");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+
+      // Pins that NO listener or code path reacts to child output at all —
+      // under the deadline design this emit is inert by construction; if it
+      // ever creates a timer, an output-based path has been re-introduced.
+      child.stdout.emit("data", Buffer.from("late"));
+      expect(vi.getTimerCount()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not arm a timer when output arrives after an EPIPE termination", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdout.emit("error", { code: "EPIPE" });
+      expect(child.kill).toHaveBeenCalledTimes(1);
+
+      // Pins that NO listener or code path reacts to child output at all —
+      // under the deadline design this emit is inert by construction; if it
+      // ever creates a timer, an output-based path has been re-introduced.
+      child.stdout.emit("data", Buffer.from("late"));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays inert when stdin EOF follows an EPIPE termination", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdout.emit("error", { code: "EPIPE" });
+      expect(child.kill).toHaveBeenCalledTimes(1);
+
+      // A late EOF still arms a (10s-class) timer, but the already-killed
+      // guard must keep it inert: no second SIGTERM ever fires.
+      parentStdin.emit("end");
+      expect(child.stdin.end).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(child.kill).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

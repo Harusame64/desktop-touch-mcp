@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+- **The npm launcher no longer kills the runtime mid-startup when its own stdin
+  is already closed at launch.** In closed-stdin environments — CI harnesses,
+  one-shot checks like `npx … --help` with input redirected from an empty
+  source, or clients that close stdin immediately — the launcher treated the
+  end-of-input as a shutdown request and force-stopped the runtime after
+  1 second. The runtime needs longer than that just to load its native
+  components, so it was terminated before it could even parse its command
+  line and the command exited with no output. The launcher now always
+  allows the runtime a 10-second startup window measured from launch:
+  end-of-input never forces a stop before that window has passed, and
+  after it has passed the previous 1-second limit applies as before.
+  Interactive use and normal MCP clients (which hold stdin open and shut
+  down promptly when their input ends) are unaffected.
+
 ## [1.14.3] - 2026-07-30 — large payloads stopped paying a hidden quadratic tax
 
 - **Large clipboard writes no longer stall for seconds.** Passing large text to
