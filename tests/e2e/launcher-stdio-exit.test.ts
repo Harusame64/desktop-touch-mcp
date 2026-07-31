@@ -152,7 +152,10 @@ afterEach(async () => {
 // DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1 (sha verification is skipped), so this
 // suite runs both on a development tree (sha256: "PENDING") and on a
 // release-finalized launcher (real sha embedded by the release workflow).
-describe("launcher stdio shutdown", () => {
+// Windows-only: bin/launcher.js exits 1 at its process.platform !== "win32"
+// guard before ever spawning the fake runtime, so on any other host both
+// tests would fail for a reason unrelated to what they pin.
+describe.skipIf(process.platform !== "win32")("launcher stdio shutdown", () => {
   it("reaps the spawned runtime when the caller closes stdin", async () => {
     const { cacheRoot, runtimePidFile, runtimeLogFile } = await setupFakeRelease();
     const stderrChunks: string[] = [];
