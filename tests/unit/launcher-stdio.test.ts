@@ -53,7 +53,7 @@ describe("wireLauncherStdio", () => {
     expect(child.stderr.pipe).toHaveBeenCalledWith(parentStderr);
   });
 
-  it("requests graceful child shutdown when parent stdin closes", async () => {
+  it("requests graceful child shutdown when parent stdin closes after the child produced output", async () => {
     vi.useFakeTimers();
     try {
       const parentStdin = new MockReadable();
@@ -68,12 +68,98 @@ describe("wireLauncherStdio", () => {
         shutdownGraceMs: 25,
       });
 
+      child.stderr.emit("data", Buffer.from("ready"));
       parentStdin.emit("end");
       expect(child.stdin.end).toHaveBeenCalledTimes(1);
       expect(child.kill).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(25);
       expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds off SIGTERM for a child that has produced no output (startup grace)", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdin.emit("end");
+      expect(child.stdin.end).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(75);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops to the normal grace when the child writes its first byte", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdin.emit("end");
+      await vi.advanceTimersByTimeAsync(10);
+      child.stdout.emit("data", Buffer.from("x"));
+
+      await vi.advanceTimersByTimeAsync(24);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the pending forced shutdown when the child exits during the startup grace", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdin.emit("end");
+      child.emit("exit", 0, null);
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(child.kill).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

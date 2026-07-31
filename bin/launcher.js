@@ -90,15 +90,28 @@ export function wireLauncherStdio(child, options = {}) {
   const parentStdout = options.parentStdout ?? process.stdout;
   const parentStderr = options.parentStderr ?? process.stderr;
   const shutdownGraceMs = options.shutdownGraceMs ?? 1000;
+  const startupGraceMs = options.startupGraceMs ?? 10000;
 
   let shutdownRequested = false;
   let forcedShutdownTimer = null;
+  let childProducedOutput = false;
 
   function clearForcedShutdownTimer() {
     if (forcedShutdownTimer !== null) {
       clearTimeout(forcedShutdownTimer);
       forcedShutdownTimer = null;
     }
+  }
+
+  function armForcedShutdownTimer(delayMs) {
+    clearForcedShutdownTimer();
+    forcedShutdownTimer = setTimeout(() => {
+      forcedShutdownTimer = null;
+      if (child.exitCode === null && !child.killed) {
+        try { child.kill("SIGTERM"); } catch { /* ignore */ }
+      }
+    }, delayMs);
+    if (forcedShutdownTimer.unref) forcedShutdownTimer.unref();
   }
 
   function requestChildShutdown() {
@@ -109,12 +122,13 @@ export function wireLauncherStdio(child, options = {}) {
     } catch {
       // ignore
     }
-    forcedShutdownTimer = setTimeout(() => {
-      if (child.exitCode === null && !child.killed) {
-        try { child.kill("SIGTERM"); } catch { /* ignore */ }
-      }
-    }, shutdownGraceMs);
-    if (forcedShutdownTimer.unref) forcedShutdownTimer.unref();
+    // A child that has not written a byte yet may still be loading its
+    // native addons (~1.3s measured on v1.14.3); when the parent's stdin
+    // is already closed at spawn, this request fires at t=0 and the
+    // normal grace would SIGTERM the runtime mid-startup. Arm the
+    // startup ceiling instead — the child's first output byte drops it
+    // back to the normal grace below.
+    armForcedShutdownTimer(childProducedOutput ? shutdownGraceMs : startupGraceMs);
   }
 
   function terminateChild() {
@@ -127,6 +141,17 @@ export function wireLauncherStdio(child, options = {}) {
   parentStdin.pipe(child.stdin);
   child.stdout?.pipe(parentStdout);
   child.stderr?.pipe(parentStderr);
+
+  const onFirstChildOutput = () => {
+    childProducedOutput = true;
+    child.stdout?.removeListener("data", onFirstChildOutput);
+    child.stderr?.removeListener("data", onFirstChildOutput);
+    if (shutdownRequested && forcedShutdownTimer !== null) {
+      armForcedShutdownTimer(shutdownGraceMs);
+    }
+  };
+  child.stdout?.on("data", onFirstChildOutput);
+  child.stderr?.on("data", onFirstChildOutput);
 
   parentStdin.on("end", requestChildShutdown);
   parentStdin.on("close", requestChildShutdown);

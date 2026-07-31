@@ -32,7 +32,7 @@ async function loadLauncherManifest(): Promise<{ version: string; tagName: strin
   return { version, tagName, assetName, sha256: sha256.toLowerCase() };
 }
 
-async function setupFakeRelease(): Promise<{
+async function setupFakeRelease(runtimeScriptOverride?: string): Promise<{
   cacheRoot: string;
   runtimePidFile: string;
   runtimeLogFile: string;
@@ -47,7 +47,10 @@ async function setupFakeRelease(): Promise<{
 
   const runtimePidFile = path.join(cacheRoot, "runtime.pid");
   const runtimeLogFile = path.join(cacheRoot, "runtime.log");
-  const runtimeScript = `
+  // The default fixture writes a startup banner on stderr like the real runtime
+  // does: under the launcher's startup-grace contract a child that never emits
+  // any output gets the 10s ceiling, which would outlast this test's 5s wait.
+  const runtimeScript = runtimeScriptOverride ?? `
 import { appendFileSync, writeFileSync } from "node:fs";
 
 const pidFile = process.env.TEST_RUNTIME_PID_FILE;
@@ -56,6 +59,7 @@ if (!pidFile || !logFile) throw new Error("missing test runtime env");
 
 writeFileSync(pidFile, String(process.pid), "utf8");
 appendFileSync(logFile, "START\\n", "utf8");
+process.stderr.write("runtime ready\\n");
 
 process.stdin.resume();
 process.stdin.on("end", () => {
@@ -190,5 +194,54 @@ describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
 
     const launcherStderr = stderrChunks.join("");
     expect(launcherStderr).not.toContain("Failed to start release runtime");
+  });
+
+  it("does not kill a slow-starting runtime when stdin is closed at spawn", async () => {
+    const slowHelpRuntime = `
+import { appendFileSync, writeFileSync } from "node:fs";
+
+const pidFile = process.env.TEST_RUNTIME_PID_FILE;
+const logFile = process.env.TEST_RUNTIME_LOG_FILE;
+if (!pidFile || !logFile) throw new Error("missing test runtime env");
+
+writeFileSync(pidFile, String(process.pid), "utf8");
+appendFileSync(logFile, "START\\n", "utf8");
+
+process.on("SIGTERM", () => {
+  appendFileSync(logFile, "SIGTERM\\n", "utf8");
+  process.exit(1);
+});
+
+setTimeout(() => {
+  process.stdout.write("USAGE\\n");
+  appendFileSync(logFile, "HELP_DONE\\n", "utf8");
+  process.exit(0);
+}, 2000);
+`;
+    const { cacheRoot, runtimePidFile, runtimeLogFile } = await setupFakeRelease(slowHelpRuntime);
+    const launcher = track(spawn(process.execPath, [launcherPath], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        DESKTOP_TOUCH_MCP_HOME: cacheRoot,
+        TEST_RUNTIME_PID_FILE: runtimePidFile,
+        TEST_RUNTIME_LOG_FILE: runtimeLogFile,
+      },
+      stdio: ["pipe", "ignore", "pipe"],
+      windowsHide: true,
+    }));
+
+    // Reproduce the closed-at-spawn shape: EOF reaches the launcher before
+    // the runtime has produced its first byte (the runtime here stays
+    // silent for 2s — longer than the normal 1s shutdown grace).
+    launcher.stdin?.end();
+
+    const exit = await waitForExit(launcher, 15_000);
+    expect(exit.signal).toBeNull();
+    expect(exit.code).toBe(0);
+
+    const runtimeLog = await readFile(runtimeLogFile, "utf8");
+    expect(runtimeLog).toContain("HELP_DONE");
+    expect(runtimeLog).not.toContain("SIGTERM");
   });
 });
