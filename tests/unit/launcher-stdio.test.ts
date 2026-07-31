@@ -189,6 +189,7 @@ describe("wireLauncherStdio", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(child.kill).toHaveBeenCalledTimes(1);
 
+      // Pins that no code path re-arms on late output, ever — under the once-only design this emit is deliberately inert; if it ever creates a timer, a downgrade path has been re-introduced.
       child.stdout.emit("data", Buffer.from("late"));
       expect(vi.getTimerCount()).toBe(0);
 
@@ -218,8 +219,39 @@ describe("wireLauncherStdio", () => {
       parentStdout.emit("error", { code: "EPIPE" });
       expect(child.kill).toHaveBeenCalledTimes(1);
 
+      // Pins that no code path re-arms on late output, ever — under the once-only design this emit is deliberately inert; if it ever creates a timer, a downgrade path has been re-introduced.
       child.stdout.emit("data", Buffer.from("late"));
       expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays inert when stdin EOF follows an EPIPE termination", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdout.emit("error", { code: "EPIPE" });
+      expect(child.kill).toHaveBeenCalledTimes(1);
+
+      // A late EOF still arms a (10s-class) timer, but the already-killed
+      // guard must keep it inert: no second SIGTERM ever fires.
+      parentStdin.emit("end");
+      expect(child.stdin.end).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(child.kill).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

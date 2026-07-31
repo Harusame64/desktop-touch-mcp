@@ -12,8 +12,9 @@
   line and the command exited with no output. When end-of-input arrives
   before the runtime has produced any output, the launcher now allows up to
   10 seconds for the runtime to finish on its own; the 1-second limit still
-  applies when the runtime was already running at end-of-input. Interactive
-  use and normal MCP clients (which hold stdin open) are unaffected.
+  applies when the runtime had already produced output by the time its
+  input ended. Interactive use and normal MCP clients (which hold stdin
+  open) are unaffected.
 
 ## [1.14.3] - 2026-07-30 — large payloads stopped paying a hidden quadratic tax
 

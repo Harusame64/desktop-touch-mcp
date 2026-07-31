@@ -48,11 +48,12 @@ async function setupFakeRelease(runtimeScriptOverride?: string): Promise<{
   const runtimePidFile = path.join(cacheRoot, "runtime.pid");
   const runtimeLogFile = path.join(cacheRoot, "runtime.log");
   // The default fixture writes a startup banner on stderr like the real runtime
-  // does: under the launcher's startup-grace contract a child that never emits
-  // any output gets the 10s ceiling, which would outlast this test's 5s wait.
-  // The banner must stay BEFORE the pid-file write: the reap test closes stdin
-  // as soon as the pid file appears, so writing it first could let EOF be
-  // classified as "still silent" and pick the 10s ceiling instead.
+  // does. Under the launcher's once-only grace choice, a child still silent when
+  // stdin EOF arrives gets the 10s startup ceiling; one that had already produced
+  // output gets the normal 1s grace.
+  // The banner is written before the pid file as a belt; the actual pin is in the
+  // reap test, which waits until the banner is observable on the launcher's
+  // stderr before closing stdin.
   const runtimeScript = runtimeScriptOverride ?? `
 import { appendFileSync, writeFileSync } from "node:fs";
 
@@ -173,6 +174,17 @@ describe("launcher stdio shutdown", () => {
 
     const runtimePid = await readRuntimePid(runtimePidFile);
     expect(isProcessAlive(runtimePid)).toBe(true);
+
+    // Wait until the runtime's banner has come back out through the
+    // launcher's stderr pipe: once the bytes are observable here, the
+    // launcher has processed the child's first "data" event (its
+    // classification flag is set synchronously before the forward), so
+    // ending stdin now deterministically takes the 1s post-output grace,
+    // not the 10s silent-startup ceiling.
+    await eventually(
+      async () => (stderrChunks.join("").includes("runtime ready") ? true : null),
+      { timeoutMs: 5_000, intervalMs: 50, label: "runtime banner observed" }
+    );
 
     launcher.stdin?.end();
 
