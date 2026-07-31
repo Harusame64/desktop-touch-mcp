@@ -81,6 +81,16 @@ process.on("SIGTERM", () => {
 });
 `;
   await writeFile(path.join(distDir, "index.js"), runtimeScript, "utf8");
+  // The runtime scripts use ESM import syntax; without an enclosing
+  // package.json a Node 20.x release that lacks .js module-syntax
+  // detection would load them as CommonJS and fail before writing the
+  // pid file. The real release ships a type:module package.json at its
+  // root, so the fixture mirrors it.
+  await writeFile(
+    path.join(releaseDir, "package.json"),
+    `${JSON.stringify({ type: "module" }, null, 2)}\n`,
+    "utf8"
+  );
 
   const metadata = {
     tagName: manifest.tagName,
