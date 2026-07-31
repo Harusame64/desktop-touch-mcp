@@ -238,9 +238,9 @@ setTimeout(() => {
       windowsHide: true,
     }));
 
-    // Reproduce the closed-at-spawn shape: EOF reaches the launcher before
-    // the runtime has produced its first byte (the runtime here stays
-    // silent for 2s — longer than the normal 1s shutdown grace).
+    // Reproduce the closed-at-spawn shape: EOF at t≈0 while the runtime
+    // needs 2s to finish — longer than the pre-fix 1s grace, well inside
+    // the 10s startup window measured from spawn.
     launcher.stdin?.end();
 
     const exit = await waitForExit(launcher, 15_000);
