@@ -184,10 +184,17 @@ describe.skipIf(process.platform !== "win32")("launcher stdio shutdown", () => {
     // classification flag is set synchronously before the forward), so
     // ending stdin now deterministically takes the 1s post-output grace,
     // not the 10s silent-startup ceiling.
+    // On timeout, surface what the launcher actually said — the stderr
+    // buffer usually holds the real cause (bad manifest, spawn failure),
+    // which the assertions below would otherwise never get to report.
     await eventually(
       async () => (stderrChunks.join("").includes("runtime ready") ? true : null),
       { timeoutMs: 5_000, intervalMs: 50, label: "runtime banner observed" }
-    );
+    ).catch((error) => {
+      throw new Error(
+        `${(error as Error).message}; launcher stderr so far: ${stderrChunks.join("").slice(0, 500)}`
+      );
+    });
 
     launcher.stdin?.end();
 

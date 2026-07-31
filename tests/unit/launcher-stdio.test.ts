@@ -189,7 +189,9 @@ describe("wireLauncherStdio", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(child.kill).toHaveBeenCalledTimes(1);
 
-      // Pins that no code path re-arms on late output, ever — under the once-only design this emit is deliberately inert; if it ever creates a timer, a downgrade path has been re-introduced.
+      // Pins that no code path re-arms on late output, ever — under the
+      // once-only design this emit is deliberately inert; if it ever
+      // creates a timer, a downgrade path has been re-introduced.
       child.stdout.emit("data", Buffer.from("late"));
       expect(vi.getTimerCount()).toBe(0);
 
@@ -219,7 +221,9 @@ describe("wireLauncherStdio", () => {
       parentStdout.emit("error", { code: "EPIPE" });
       expect(child.kill).toHaveBeenCalledTimes(1);
 
-      // Pins that no code path re-arms on late output, ever — under the once-only design this emit is deliberately inert; if it ever creates a timer, a downgrade path has been re-introduced.
+      // Pins that no code path re-arms on late output, ever — under the
+      // once-only design this emit is deliberately inert; if it ever
+      // creates a timer, a downgrade path has been re-introduced.
       child.stdout.emit("data", Buffer.from("late"));
       expect(vi.getTimerCount()).toBe(0);
     } finally {
