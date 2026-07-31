@@ -109,7 +109,7 @@ describe("wireLauncherStdio", () => {
     }
   });
 
-  it("drops to the normal grace when the child writes its first byte", async () => {
+  it("keeps the startup ceiling when the first byte arrives while it is pending", async () => {
     vi.useFakeTimers();
     try {
       const parentStdin = new MockReadable();
@@ -129,10 +129,14 @@ describe("wireLauncherStdio", () => {
       await vi.advanceTimersByTimeAsync(10);
       child.stdout.emit("data", Buffer.from("x"));
 
-      await vi.advanceTimersByTimeAsync(24);
+      // Early output must NOT shorten the pending ceiling: the runtime
+      // prints engine diagnostics long before it can parse its CLI.
+      await vi.advanceTimersByTimeAsync(15);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(64);
       expect(child.kill).not.toHaveBeenCalled();
 
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(11);
       expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     } finally {
       vi.useRealTimers();

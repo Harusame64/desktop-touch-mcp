@@ -482,8 +482,8 @@ npm cache clean --force
 #    smoking such a version, hold stdin open, e.g.:
 #      bash:  (sleep 8; echo) | npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
 #      pwsh:  & { Start-Sleep -Seconds 8; '' } | npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
-#    Releases after 1.14.3 wait up to 10s for the runtime's first output before
-#    enforcing the 1s shutdown grace, so a plain closed-stdin --help works.
+#    Releases after 1.14.3 allow the runtime up to 10s to finish when stdin was
+#    already closed before its first output, so a plain closed-stdin --help works.
 npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
 # Expected (measured on v1.13.0): the launcher prints
 #   [desktop-touch-mcp] Downloading desktop-touch-mcp-windows.zip from vX.Y.Z

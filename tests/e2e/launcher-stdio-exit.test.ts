@@ -50,6 +50,9 @@ async function setupFakeRelease(runtimeScriptOverride?: string): Promise<{
   // The default fixture writes a startup banner on stderr like the real runtime
   // does: under the launcher's startup-grace contract a child that never emits
   // any output gets the 10s ceiling, which would outlast this test's 5s wait.
+  // The banner must stay BEFORE the pid-file write: the reap test closes stdin
+  // as soon as the pid file appears, so writing it first could let EOF be
+  // classified as "still silent" and pick the 10s ceiling instead.
   const runtimeScript = runtimeScriptOverride ?? `
 import { appendFileSync, writeFileSync } from "node:fs";
 
@@ -57,9 +60,9 @@ const pidFile = process.env.TEST_RUNTIME_PID_FILE;
 const logFile = process.env.TEST_RUNTIME_LOG_FILE;
 if (!pidFile || !logFile) throw new Error("missing test runtime env");
 
+process.stderr.write("runtime ready\\n");
 writeFileSync(pidFile, String(process.pid), "utf8");
 appendFileSync(logFile, "START\\n", "utf8");
-process.stderr.write("runtime ready\\n");
 
 process.stdin.resume();
 process.stdin.on("end", () => {
