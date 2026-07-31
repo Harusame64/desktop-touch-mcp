@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,11 +25,11 @@ async function loadLauncherManifest(): Promise<{ version: string; tagName: strin
   const version = source.match(/const PACKAGE_VERSION = "([^"]+)";/)?.[1];
   const tagName = source.match(/tagName: "(v[^"]+)"/)?.[1];
   const assetName = source.match(/const ASSET_NAME = "([^"]+)";/)?.[1];
-  const sha256 = source.match(/sha256: "([a-f0-9]{64})"/i)?.[1];
+  const sha256 = source.match(/sha256: "([a-f0-9]{64}|PENDING)"/)?.[1];
   if (!version || !tagName || !assetName || !sha256) {
     throw new Error("Failed to parse launcher release manifest");
   }
-  return { version, tagName, assetName, sha256: sha256.toLowerCase() };
+  return { version, tagName, assetName, sha256: sha256 === "PENDING" ? sha256 : sha256.toLowerCase() };
 }
 
 async function setupFakeRelease(runtimeScriptOverride?: string): Promise<{
@@ -144,18 +144,11 @@ afterEach(async () => {
   }
 });
 
-// Skip when the launcher manifest still has the pre-release "PENDING" placeholder.
-// Real sha256 is filled in by the release pipeline (`npm run update-sha`); the test
-// can only run against a finalized launcher.
-const LAUNCHER_HAS_RELEASE_SHA = (() => {
-  try {
-    return /sha256: "[a-f0-9]{64}"/i.test(readFileSync(launcherPath, "utf8"));
-  } catch {
-    return false;
-  }
-})();
-
-describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
+// The launcher accepts a PENDING sha256 manifest when
+// DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1 (sha verification is skipped), so this
+// suite runs both on a development tree (sha256: "PENDING") and on a
+// release-finalized launcher (real sha embedded by the release workflow).
+describe("launcher stdio shutdown", () => {
   it("reaps the spawned runtime when the caller closes stdin", async () => {
     const { cacheRoot, runtimePidFile, runtimeLogFile } = await setupFakeRelease();
     const stderrChunks: string[] = [];
@@ -164,6 +157,7 @@ describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
       env: {
         ...process.env,
         DESKTOP_TOUCH_MCP_HOME: cacheRoot,
+        DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED: "1",
         TEST_RUNTIME_PID_FILE: runtimePidFile,
         TEST_RUNTIME_LOG_FILE: runtimeLogFile,
       },
@@ -224,6 +218,7 @@ setTimeout(() => {
       env: {
         ...process.env,
         DESKTOP_TOUCH_MCP_HOME: cacheRoot,
+        DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED: "1",
         TEST_RUNTIME_PID_FILE: runtimePidFile,
         TEST_RUNTIME_LOG_FILE: runtimeLogFile,
       },

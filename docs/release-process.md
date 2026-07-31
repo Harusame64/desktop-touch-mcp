@@ -470,16 +470,18 @@ npm cache clean --force
 #    That is a false negative (wrong cwd), NOT a release bug — re-run from a temp dir.
 #    (`npx @...@<older-version>` works from the project root because the local version
 #    no longer satisfies the spec, which is why a 1.7.2 cross-check can mislead.)
-#    (`--help` exits on its own — no stdin redirect needed. `src/server-windows.ts`
-#    handles it before the stdio transport starts, so unlike a normal launch the
-#    process does not sit waiting for input.)
+#    (`--help` exits on its own — `src/server-windows.ts` handles it before the
+#    stdio transport starts, so unlike a normal launch the process does not sit
+#    waiting for input. Whether stdin is OPEN at launch is a separate question —
+#    see the caveat below.)
 #    ⚠️ Closed-stdin caveat: launchers up to and including 1.14.3 treat stdin EOF
 #    as a shutdown request and SIGTERM the runtime after 1s — racing the ~1.3s
 #    native-addon load. In a closed-stdin environment (CI harness, `< NUL`,
 #    agent shells with stdin on the null device) those versions die mid-startup
 #    with exit 1 and no stdout: that is this race, NOT a release bug. When
 #    smoking such a version, hold stdin open, e.g.:
-#      (sleep 8; echo) | npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
+#      bash:  (sleep 8; echo) | npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
+#      pwsh:  & { Start-Sleep -Seconds 8; '' } | npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
 #    Releases after 1.14.3 wait up to 10s for the runtime's first output before
 #    enforcing the 1s shutdown grace, so a plain closed-stdin --help works.
 npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help

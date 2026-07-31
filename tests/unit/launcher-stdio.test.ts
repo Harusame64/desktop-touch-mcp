@@ -165,6 +165,62 @@ describe("wireLauncherStdio", () => {
     }
   });
 
+  it("does not leave a stray timer when output arrives after the forced shutdown fired", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdin.emit("end");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+
+      child.stdout.emit("data", Buffer.from("late"));
+      expect(vi.getTimerCount()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not arm a timer when output arrives after an EPIPE termination", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      parentStdout.emit("error", { code: "EPIPE" });
+      expect(child.kill).toHaveBeenCalledTimes(1);
+
+      child.stdout.emit("data", Buffer.from("late"));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("terminates the child immediately when parent stdout breaks", () => {
     const parentStdin = new MockReadable();
     const parentStdout = new MockWritable();
