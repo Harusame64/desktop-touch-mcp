@@ -47,13 +47,13 @@ async function setupFakeRelease(runtimeScriptOverride?: string): Promise<{
 
   const runtimePidFile = path.join(cacheRoot, "runtime.pid");
   const runtimeLogFile = path.join(cacheRoot, "runtime.log");
-  // The default fixture writes a startup banner on stderr like the real runtime
-  // does. Under the launcher's once-only grace choice, a child still silent when
-  // stdin EOF arrives gets the 10s startup ceiling; one that had already produced
-  // output gets the normal 1s grace.
-  // The banner is written before the pid file as a belt; the actual pin is in the
-  // reap test, which waits until the banner is observable on the launcher's
-  // stderr before closing stdin.
+  // The launcher's forced-shutdown deadline is max(spawn + 10s startup window,
+  // EOF + 1s grace), so stdin EOF can never force a stop before the window has
+  // passed. The default fixture therefore exits on stdin EOF like the real
+  // runtime does, which ends the run early and well inside the reap test's wait;
+  // the forced-SIGTERM path is pinned at unit level by the timer tests. The
+  // stderr banner just mimics the real runtime's startup output and no longer
+  // affects any timing decision.
   const runtimeScript = runtimeScriptOverride ?? `
 import { appendFileSync, writeFileSync } from "node:fs";
 
@@ -68,6 +68,8 @@ appendFileSync(logFile, "START\\n", "utf8");
 process.stdin.resume();
 process.stdin.on("end", () => {
   appendFileSync(logFile, "STDIN_END\\n", "utf8");
+  clearInterval(hold);
+  process.exit(0);
 });
 
 const hold = setInterval(() => {}, 1000);
@@ -178,29 +180,13 @@ describe.skipIf(process.platform !== "win32")("launcher stdio shutdown", () => {
     const runtimePid = await readRuntimePid(runtimePidFile);
     expect(isProcessAlive(runtimePid)).toBe(true);
 
-    // Wait until the runtime's banner has come back out through the
-    // launcher's stderr pipe: once the bytes are observable here, the
-    // launcher has processed the child's first "data" event (its
-    // classification flag is set synchronously before the forward), so
-    // ending stdin now deterministically takes the 1s post-output grace,
-    // not the 10s silent-startup ceiling.
-    // On timeout, surface what the launcher actually said — the stderr
-    // buffer usually holds the real cause (bad manifest, spawn failure),
-    // which the assertions below would otherwise never get to report.
-    await eventually(
-      async () => (stderrChunks.join("").includes("runtime ready") ? true : null),
-      { timeoutMs: 5_000, intervalMs: 50, label: "runtime banner observed" }
-    ).catch((error) => {
-      throw new Error(
-        `${(error as Error).message}; launcher stderr so far: ${stderrChunks.join("").slice(0, 500)}`
-      );
-    });
-
     launcher.stdin?.end();
 
+    // The runtime exits on stdin EOF of its own accord, so the whole run ends
+    // well inside this wait — no forced SIGTERM is involved.
     const exit = await waitForExit(launcher, 5_000);
-    expect(exit.signal === null || exit.signal === "SIGTERM").toBe(true);
-    expect(exit.code === 0 || exit.code === 1).toBe(true);
+    expect(exit.signal).toBeNull();
+    expect(exit.code).toBe(0);
 
     await eventually(
       async () => (isProcessAlive(runtimePid) ? null : true),
@@ -210,6 +196,7 @@ describe.skipIf(process.platform !== "win32")("launcher stdio shutdown", () => {
     const runtimeLog = await readFile(runtimeLogFile, "utf8");
     expect(runtimeLog).toContain("START");
     expect(runtimeLog).toContain("STDIN_END");
+    expect(runtimeLog).not.toContain("SIGTERM");
 
     const launcherStderr = stderrChunks.join("");
     expect(launcherStderr).not.toContain("Failed to start release runtime");

@@ -91,10 +91,10 @@ export function wireLauncherStdio(child, options = {}) {
   const parentStderr = options.parentStderr ?? process.stderr;
   const shutdownGraceMs = options.shutdownGraceMs ?? 1000;
   const startupGraceMs = options.startupGraceMs ?? 10000;
+  const spawnedAtMs = Date.now();
 
   let shutdownRequested = false;
   let forcedShutdownTimer = null;
-  let childProducedOutput = false;
 
   function clearForcedShutdownTimer() {
     if (forcedShutdownTimer !== null) {
@@ -111,20 +111,23 @@ export function wireLauncherStdio(child, options = {}) {
     } catch {
       // ignore
     }
-    // If the child has not written a byte yet, it may still be loading its
-    // native addons (~1.3s measured on v1.14.3); when the parent's stdin is
-    // already closed at spawn this request fires at t=0 and the normal grace
-    // would SIGTERM the runtime mid-startup, so it gets the startup ceiling
-    // instead. The choice is made once, here: early output is deliberately
-    // NOT taken as a readiness signal that shortens a pending ceiling — the
-    // runtime emits engine diagnostics on stderr long before it can parse
-    // its CLI, so "first byte seen" does not mean "started".
+    // Forced-shutdown deadline: max(spawn + startupGraceMs, now + shutdownGraceMs).
+    // The runtime needs ~1.3s (measured on v1.14.3) just to load its native
+    // addons before it can parse its CLI, and it emits stderr diagnostics
+    // DURING that load — so neither stdin-EOF timing nor "has it produced
+    // output yet" is a readiness signal. Every child therefore gets the
+    // full startup ceiling measured from spawn; once that has passed, EOF
+    // gives the normal grace, exactly as before this fix.
+    const delayMs = Math.max(
+      startupGraceMs - (Date.now() - spawnedAtMs),
+      shutdownGraceMs
+    );
     forcedShutdownTimer = setTimeout(() => {
       forcedShutdownTimer = null;
       if (child.exitCode === null && !child.killed) {
         try { child.kill("SIGTERM"); } catch { /* ignore */ }
       }
-    }, childProducedOutput ? shutdownGraceMs : startupGraceMs);
+    }, delayMs);
     if (forcedShutdownTimer.unref) forcedShutdownTimer.unref();
   }
 
@@ -138,14 +141,6 @@ export function wireLauncherStdio(child, options = {}) {
   parentStdin.pipe(child.stdin);
   child.stdout?.pipe(parentStdout);
   child.stderr?.pipe(parentStderr);
-
-  const onFirstChildOutput = () => {
-    childProducedOutput = true;
-    child.stdout?.removeListener("data", onFirstChildOutput);
-    child.stderr?.removeListener("data", onFirstChildOutput);
-  };
-  child.stdout?.on("data", onFirstChildOutput);
-  child.stderr?.on("data", onFirstChildOutput);
 
   parentStdin.on("end", requestChildShutdown);
   parentStdin.on("close", requestChildShutdown);

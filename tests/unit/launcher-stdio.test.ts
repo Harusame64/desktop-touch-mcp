@@ -53,7 +53,7 @@ describe("wireLauncherStdio", () => {
     expect(child.stderr.pipe).toHaveBeenCalledWith(parentStderr);
   });
 
-  it("requests graceful child shutdown when parent stdin closes after the child produced output", async () => {
+  it("takes the normal grace when stdin closes after the startup ceiling has passed", async () => {
     vi.useFakeTimers();
     try {
       const parentStdin = new MockReadable();
@@ -66,14 +66,50 @@ describe("wireLauncherStdio", () => {
         parentStdout: parentStdout as never,
         parentStderr: parentStderr as never,
         shutdownGraceMs: 25,
+        startupGraceMs: 100,
       });
 
-      child.stderr.emit("data", Buffer.from("ready"));
+      await vi.advanceTimersByTimeAsync(150);
       parentStdin.emit("end");
       expect(child.stdin.end).toHaveBeenCalledTimes(1);
-      expect(child.kill).not.toHaveBeenCalled();
 
+      await vi.advanceTimersByTimeAsync(24);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the startup ceiling when EOF arrives after early output but inside the ceiling", async () => {
+    vi.useFakeTimers();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
+
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+        startupGraceMs: 100,
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+      child.stdout.emit("data", Buffer.from("[native-engine] diagnostics"));
+      await vi.advanceTimersByTimeAsync(10);
+      parentStdin.emit("end");
+
+      // An output-based design would fire at EOF+25 (t=45). The deadline
+      // must instead be the ceiling measured from spawn (t=100).
       await vi.advanceTimersByTimeAsync(25);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(54);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
       expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     } finally {
       vi.useRealTimers();
@@ -189,9 +225,9 @@ describe("wireLauncherStdio", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(child.kill).toHaveBeenCalledTimes(1);
 
-      // Pins that no code path re-arms on late output, ever — under the
-      // once-only design this emit is deliberately inert; if it ever
-      // creates a timer, a downgrade path has been re-introduced.
+      // Pins that NO listener or code path reacts to child output at all —
+      // under the deadline design this emit is inert by construction; if it
+      // ever creates a timer, an output-based path has been re-introduced.
       child.stdout.emit("data", Buffer.from("late"));
       expect(vi.getTimerCount()).toBe(0);
 
@@ -221,9 +257,9 @@ describe("wireLauncherStdio", () => {
       parentStdout.emit("error", { code: "EPIPE" });
       expect(child.kill).toHaveBeenCalledTimes(1);
 
-      // Pins that no code path re-arms on late output, ever — under the
-      // once-only design this emit is deliberately inert; if it ever
-      // creates a timer, a downgrade path has been re-introduced.
+      // Pins that NO listener or code path reacts to child output at all —
+      // under the deadline design this emit is inert by construction; if it
+      // ever creates a timer, an output-based path has been re-introduced.
       child.stdout.emit("data", Buffer.from("late"));
       expect(vi.getTimerCount()).toBe(0);
     } finally {

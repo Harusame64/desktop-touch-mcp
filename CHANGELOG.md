@@ -9,12 +9,12 @@
   end-of-input as a shutdown request and force-stopped the runtime after
   1 second. The runtime needs longer than that just to load its native
   components, so it was terminated before it could even parse its command
-  line and the command exited with no output. When end-of-input arrives
-  before the runtime has produced any output, the launcher now allows up to
-  10 seconds for the runtime to finish on its own; the 1-second limit still
-  applies when the runtime had already produced output by the time its
-  input ended. Interactive use and normal MCP clients (which hold stdin
-  open) are unaffected.
+  line and the command exited with no output. The launcher now always
+  allows the runtime a 10-second startup window measured from launch:
+  end-of-input never forces a stop before that window has passed, and
+  after it has passed the previous 1-second limit applies as before.
+  Interactive use and normal MCP clients (which hold stdin open and shut
+  down promptly when their input ends) are unaffected.
 
 ## [1.14.3] - 2026-07-30 — large payloads stopped paying a hidden quadratic tax
 
