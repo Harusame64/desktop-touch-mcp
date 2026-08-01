@@ -38,6 +38,8 @@ site/
     v1.4-milestone.md
     v1.8-milestone.html
     v1.8-milestone.md
+    v1.10-milestone.html
+    v1.10-milestone.md
   assets/
     figures/
     eval/
@@ -83,6 +85,10 @@ site/
   - v1.8 milestone draft (covers the v1.5–v1.8 arc)
 - `articles/v1.8-milestone.html`
   - published v1.8 milestone page
+- `articles/v1.10-milestone.md`
+  - v1.10 milestone draft (covers the v1.9–v1.10 arc)
+- `articles/v1.10-milestone.html`
+  - published v1.10 milestone page
 - `assets/figures/`
   - visual drafts and diagrams
 - `assets/eval/`

@@ -1,6 +1,6 @@
 # desktop-touch-mcp
 
-An experimental Windows computer-use MCP server for giving LLM agents a safer contract with the outside world.
+A Windows computer-use MCP server for giving LLM agents a safer contract with the outside world.
 
 ---
 
@@ -12,7 +12,7 @@ An experimental Windows computer-use MCP server for giving LLM agents a safer co
 
 ### Subheadline
 
-`desktop-touch-mcp` is an experimental Windows computer-use MCP server for giving LLM agents eyes, hands, and a better safety contract with dynamic interfaces.
+`desktop-touch-mcp` is a Windows computer-use MCP server that gives LLM agents eyes, hands, and a better safety contract with dynamic interfaces.
 
 ### Short lead
 
@@ -23,7 +23,7 @@ This project is exploring how LLM agents can interact with changing interfaces i
 
 For the public site, it is better to say this plainly:
 
-> **For now, treat this as Windows 11 only. Multi-OS support is not implemented yet.**
+> **Windows 10 and 11 only. macOS and Linux are not supported.**
 
 ### CTA ideas
 
@@ -58,8 +58,8 @@ The deeper question behind it is:
 
 For the public-facing site, the simplest honest message is:
 
-- Windows 11 only for now
-- not yet a multi-OS tool
+- Windows 10 and 11
+- Windows-only by design — it drives the desktop through Win32, UI Automation, and Chrome DevTools Protocol
 - examples and setup flow are written for Windows-first local usage
 
 ---
@@ -81,16 +81,13 @@ If you want ready-to-paste client config examples, add a dedicated setup page:
 
 ---
 
-## Experimental Note
+## Project Status
 
-This project is experimental by design.
+Stable enough for daily work, and still moving.
 
-- Some parts are already practical and useful today
-- Some parts are still design hypotheses being tested in code
-- Evaluation and benchmarking are still in progress
-
-This page is not trying to present a finished product.  
-It is trying to document an active line of engineering and research.
+- **In daily use** — 32 tools, a native Rust engine, and regular releases; used every day to drive real Windows applications
+- **Evolving release to release** — discover-then-act targeting, browser semantic targeting, Key Locker, and multi-monitor capture keep gaining capability
+- **Evaluation still open** — systematic benchmarking of the ideas behind the design is still being built out, and the evaluation plan is public rather than implied
 
 ---
 
@@ -288,12 +285,11 @@ Suggested links:
 
 This project currently mixes:
 
-- features that already work in practice
-- features that are experimental but promising
+- features that are stable and used daily
+- newer surfaces that are still gaining capability release to release
 - ideas that still need clearer evaluation
 
-So this is not a polished product page.  
-It is a page about a system that is still being built and tested in public.
+The work happens in public: releases, changelog, and design notes are all in the repository.
 
 ---
 

@@ -7,7 +7,7 @@ If you already know what MCP is, you should be able to copy one snippet, paste i
 
 For the public site, the simplest honest scope note is:
 
-> **Assume Windows 11 only for now. Multi-OS support is not implemented yet.**
+> **Windows 10 and 11 only. macOS and Linux are not supported.**
 
 ---
 

@@ -19,7 +19,7 @@
     <header class="site-header">
       <div class="site-shell">
         <a class="brand" href="./index.html">
-          <span class="brand-kicker">Experimental Interface Work</span>
+          <span class="brand-kicker">Windows Computer-Use MCP</span>
           <span class="brand-title">desktop-touch-mcp</span>
         </a>
         <nav class="nav-links" aria-label="Main">
@@ -38,10 +38,10 @@
       <div class="site-shell">
         <section class="hero-card hero-grid">
           <div class="hero-copy">
-            <span class="eyebrow">Experimental by design</span>
+            <span class="eyebrow">Windows 10 / 11 · 32 tools · MIT</span>
             <h1>A safer way for LLM agents to touch the outside world</h1>
-            <p class="lead"><code>desktop-touch-mcp</code> is an experimental Windows computer-use MCP server for giving LLM agents eyes, hands, and a better safety contract with dynamic interfaces.</p>
-            <p>For now, treat this project as <strong>Windows 11 only</strong>. It already lets LLMs interact with Windows applications through screenshots, keyboard, mouse, Windows UI Automation, and Chrome DevTools Protocol.</p>
+            <p class="lead"><code>desktop-touch-mcp</code> is a Windows computer-use MCP server that gives LLM agents eyes, hands, and a better safety contract with dynamic interfaces.</p>
+            <p>It runs on <strong>Windows 10 and 11</strong>, and lets LLMs interact with Windows applications through screenshots, keyboard, mouse, Windows UI Automation, and Chrome DevTools Protocol.</p>
             <p>But the deeper goal is not just “look at a screenshot and click some coordinates.” This project is exploring how LLM agents can interact with changing interfaces in a way that is more semantic, more bounded, and less fragile.</p>
             <div class="hero-actions">
               <a class="button primary" href="./articles/client-setup.html">Client setup</a>
@@ -58,8 +58,8 @@
         <div class="section-stack">
           <section class="section-card">
             <span class="label warm">Current scope</span>
-            <h2>Windows 11 only, not multi-OS yet.</h2>
-            <p>This public site currently documents the <strong>Windows 11</strong> path. Multi-OS support is not implemented yet, so the examples, screenshots, and client setup flow should all be read as Windows-first and Windows-only for now.</p>
+            <h2>Windows 10 and 11. Not multi-OS.</h2>
+            <p>This is a <strong>Windows-only</strong> project: it drives the desktop through Win32, Windows UI Automation, and Chrome DevTools Protocol, so the examples, screenshots, and client setup flow are all Windows-first. macOS and Linux are not supported.</p>
           </section>
 
           <section class="section-card">
@@ -88,12 +88,12 @@
           </section>
 
           <section class="section-card">
-            <span class="label warm">Experimental note</span>
-            <h2>This is a public workbench, not a finished product brochure.</h2>
+            <span class="label warm">Project status</span>
+            <h2>Stable enough for daily work, and still moving.</h2>
             <div class="three-up">
-              <div class="mini-card"><h3>Already practical</h3><p>Some pieces are useful today and already shape real desktop control workflows.</p></div>
-              <div class="mini-card"><h3>Still under test</h3><p>Some pieces are active design hypotheses being tested in code and dogfooding.</p></div>
-              <div class="mini-card"><h3>Evaluation in progress</h3><p>Benchmarking and systematic evidence are still being built out alongside the implementation.</p></div>
+              <div class="mini-card"><h3>In daily use</h3><p>32 tools, a native Rust engine, and regular releases. The project is used every day to drive real Windows applications — Notepad, Excel, Chrome, Windows Terminal, and whatever else is on the machine.</p></div>
+              <div class="mini-card"><h3>Evolving release to release</h3><p>The newer surfaces — discover-then-act targeting, browser semantic targeting, Key Locker, multi-monitor capture — keep gaining capability. Each release notes what changed for you.</p></div>
+              <div class="mini-card"><h3>Evaluation still open</h3><p>Systematic benchmarking of the ideas behind the design is still being built out. The evaluation plan is public rather than implied.</p></div>
             </div>
           </section>
 
@@ -260,8 +260,8 @@ act</pre></div>
 
     <footer class="footer">
       <div class="site-shell">
-        <span>desktop-touch-mcp site draft</span>
-        <span>&copy; <span data-year></span> experimental interface work</span>
+        <span>desktop-touch-mcp</span>
+        <span>&copy; <span data-year></span> desktop-touch-mcp &middot; MIT licensed</span>
       </div>
     </footer>
   </body>
