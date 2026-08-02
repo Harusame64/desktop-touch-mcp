@@ -38,7 +38,7 @@
             <span class="eyebrow">Copy, paste, try</span>
             <h1>Connect <code>desktop-touch-mcp</code> to the client you already use</h1>
             <p class="lead">This page keeps the setup practical. Pick your client, copy one snippet, and you should be able to get moving without reverse-engineering transport names or config shapes.</p>
-            <p><strong>Current scope:</strong> all examples on this page assume a local <strong>Windows 11</strong> machine. This project is not yet a multi-OS setup story.</p>
+            <p><strong>Current scope:</strong> all examples on this page assume a local <strong>Windows 10 or 11</strong> machine. macOS and Linux are not supported.</p>
           </div>
         </section>
 
@@ -47,7 +47,6 @@
             <section class="article-card">
               <span class="label">Start here</span>
               <h2>Choose the transport first.</h2>
-              <p>Before transport, one important scope note: the runtime and client setup on this page are documented as <strong>Windows 11 only for now</strong>.</p>
               <p><strong>Stdio</strong> is the simplest path when your client can launch local MCP servers itself.</p>
               <pre>npx -y @harusame64/desktop-touch-mcp</pre>
               <p><strong>HTTP</strong> is the right path when your client wants a server URL.</p>
@@ -255,8 +254,8 @@ url = "http://127.0.0.1:23847/mcp"</pre>
 
     <footer class="footer">
       <div class="site-shell">
-        <span>Client setup draft</span>
-        <span>&copy; <span data-year></span> experimental interface work</span>
+        <span>Client setup</span>
+        <span>&copy; <span data-year></span> desktop-touch-mcp &middot; MIT licensed</span>
       </div>
     </footer>
   </body>

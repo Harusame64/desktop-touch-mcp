@@ -3,7 +3,7 @@
 作成: 2026-04-25
 
 この文書は、`desktop-touch-mcp` の GitHub Pages を
-**「実験的プロジェクトの入口」** と **「RPG のやさしい詳解」** に分けて設計するためのメモである。
+**「プロジェクトの入口」** と **「RPG のやさしい詳解」** に分けて設計するためのメモである。
 
 狙いは次の三つ。
 
@@ -37,14 +37,14 @@ SNS / note / README / GitHub repo
 役割:
 
 - プロジェクトの正体を伝える
-- experimental であることを明記する
+- 現在地 (安定して日常運用できる / まだ進化中 / 評価は未完) を誇張なく明記する
 - `Beyond Coordinate Roulette` の世界観を短く紹介する
 - 深掘り先へのハブになる
 
 読後感:
 
-- 「座標クリックの便利ツールではなく、LLM が外界を安全に扱うための実験なんだな」
-- 「まだ完成品ではないが、目指している方向は面白い」
+- 「座標クリックの便利ツールではなく、LLM が外界を安全に扱うための設計なんだな」
+- 「今日から使えて、しかも目指している方向が面白い」
 
 ### B. RPG article page
 
@@ -66,7 +66,7 @@ SNS / note / README / GitHub repo
 ### Top page に置くもの
 
 - 一言サマリ
-- experimental note
+- project status note
 - Beyond Coordinate Roulette の話
 - なぜこのプロジェクトを作っているのか
 - 主要な技術テーマ
@@ -140,15 +140,14 @@ Pages では README の再掲をしない。
 このページで持ち帰ってほしい一文はこれ。
 
 ```text
-desktop-touch-mcp is an experimental project for giving LLM agents
-a safer contract with the outside world.
+desktop-touch-mcp gives LLM agents a safer contract with the outside world.
 ```
 
 日本語では:
 
 ```text
 desktop-touch-mcp は、LLM に座標を渡すためのツール集ではなく、
-外界とより安全に付き合うための実験的プロジェクトです。
+外界とより安全に付き合うための仕組みです。
 ```
 
 ---
@@ -173,22 +172,22 @@ from coordinate guessing toward meaning-first interaction.
 
 ---
 
-## 8. 実験的であることの見せ方
+## 8. 現在地の見せ方
 
-Top page では experimental を逃げではなく、方針として見せる。
+Top page では「安定して使える」と「まだ進化中」を両方、誇張も自己卑下もなく見せる。
 
 入れるべき要素:
 
-- これは production-ready をうたうページではない
-- 実運用に効く部品と、まだ研究中の部品が混在している
-- 評価はこれから継続的に埋める
+- 日常運用に耐える段階にあること (安定した tool surface / 定期リリース)
+- 新しい面はリリースごとに能力が増えていること
+- 評価 (ベンチマーク) はまだ未完で、計画を公開していること
 
 文言案:
 
 ```text
-This project is experimental by design.
-Some parts are stable and practical today.
-Other parts are still being tested as ideas about how LLM agents should touch the world.
+Stable enough for daily work, and still moving.
+The tool surface is stable and shipping regularly; the newer surfaces keep gaining capability;
+systematic evaluation is still being built out, and the plan for it is public.
 ```
 
 ---
