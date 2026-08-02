@@ -16,7 +16,7 @@ A Windows computer-use MCP server for giving LLM agents a safer contract with th
 
 ### Short lead
 
-`desktop-touch-mcp` lets LLMs interact with Windows applications through screenshots, keyboard, mouse, Windows UI Automation, and Chrome DevTools Protocol.
+It runs on **Windows 10 and 11**, and lets LLMs interact with Windows applications through screenshots, keyboard, mouse, Windows UI Automation, and Chrome DevTools Protocol.
 
 But the real goal is not just “look at a screenshot and click some coordinates.”  
 This project is exploring how LLM agents can interact with changing interfaces in a way that is more semantic, more bounded, and less fragile.
@@ -85,7 +85,7 @@ If you want ready-to-paste client config examples, add a dedicated setup page:
 
 Stable enough for daily work, and still moving.
 
-- **In daily use** — 32 tools, a native Rust engine, and regular releases; used every day to drive real Windows applications
+- **In daily use** — 32 tools, a native Rust engine, and regular releases; used every day to drive real Windows applications — Notepad, Excel, Chrome, Windows Terminal, and whatever else is on the machine
 - **Evolving release to release** — discover-then-act targeting, browser semantic targeting, Key Locker, and multi-monitor capture keep gaining capability
 - **Evaluation still open** — systematic benchmarking of the ideas behind the design is still being built out, and the evaluation plan is public rather than implied
 

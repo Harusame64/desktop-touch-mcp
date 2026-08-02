@@ -15,7 +15,7 @@ For the public site, the simplest honest scope note is:
 
 This project supports both local `stdio` launch and local `HTTP` connection.
 
-All examples on this page assume a local Windows 11 machine.
+All examples on this page assume a local Windows 10 or 11 machine.
 
 ### Stdio
 
