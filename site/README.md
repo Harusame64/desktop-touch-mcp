@@ -41,8 +41,12 @@ site/
     v1.10-milestone.html
     v1.10-milestone.md
   assets/
+    styles.css
+    site.js
     figures/
     eval/
+  robots.txt
+  sitemap.xml
 ```
 
 ## File roles
@@ -89,10 +93,16 @@ site/
   - v1.10 milestone draft (covers the v1.9–v1.10 arc)
 - `articles/v1.10-milestone.html`
   - published v1.10 milestone page
+- `assets/styles.css`
+  - the single stylesheet every published page loads
+- `assets/site.js`
+  - shared page script (responsive navigation)
 - `assets/figures/`
   - visual drafts and diagrams
 - `assets/eval/`
   - evaluation JSON / CSV / summarized data
+- `robots.txt` / `sitemap.xml`
+  - crawler directives and the published page index
 
 ## Publishing
 
