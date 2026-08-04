@@ -637,7 +637,7 @@ Verify at: `https://registry.modelcontextprotocol.io/servers/io.github.Harusame6
 
 ## Operational Notes
 
-### The release zip does not inherit `overrides` (checked 2026-07-26)
+### The release zip does not inherit `overrides` (checked 2026-08-04)
 
 The zip's dependency tree is **not** the tree we test. Two facts about the
 "Install production dependencies" step in `release.yml`:
@@ -651,17 +651,31 @@ So a security fix applied through `overrides` protects local development and CI
 but has **no guaranteed effect on what users download**. Whether the zip is safe
 depends on what the ranges happen to resolve to that day.
 
-Measured on the v1.13.1 zip, for the `ip-address` advisory
-(GHSA-v2v4-37r5-5v8g) that `overrides` pins to 10.1.1:
+Measured on the v1.14.3 zip (2026-08-04), for the three `ip-address` advisories
+the `overrides` entry guards against — GHSA-v2v4-37r5-5v8g (`<= 10.1.0`),
+GHSA-22jq-vg5j-6vgg (`10.1.1`–`10.2.0`) and GHSA-4xrf-jv44-h6hh
+(`10.1.1`–`10.2.1`):
 
 | | `express-rate-limit` | `ip-address` |
 |---|---|---|
-| lockfile (what we test) | 8.3.2, which pins `ip-address` to exactly 10.1.0 | 10.1.1 — via `overrides` |
-| shipped zip | 8.6.0, declaring `^10.2.0` | 10.3.1 |
+| lockfile (what we test) | 8.6.1, declaring `^10.2.0` | 10.4.0 — floor forced by `overrides` |
+| shipped zip | 8.6.1, declaring `^10.2.0` | 10.3.1 |
 
-No exposure today: the shipped 10.3.1 is newer than the patched 10.1.1. But that
-is luck — the range resolved forward past the advisory on its own, not because
-the override reached the zip.
+(The earlier v1.13.1 measurement read 8.3.2 / 10.1.1 in the lockfile against
+8.6.0 / 10.3.1 in the zip. PR #568 closed that split by moving the lockfile to
+8.6.1, so both columns now agree on the dependent.)
+
+No exposure today: the shipped 10.3.1 is newer than every patched version
+(10.1.1, 10.2.1, 10.2.2). But that is luck — the range resolved forward past the
+advisories on its own, not because the override reached the zip. Had
+`express-rate-limit` still resolved to `<= 8.5.0`, which pins `ip-address` to
+exactly 10.1.0, the zip would have shipped GHSA-v2v4-37r5-5v8g.
+
+**Do not remove the `overrides` entry because `express-rate-limit` now declares
+a compatible range.** `^10.2.0` still admits 10.2.0 and 10.2.1, both inside the
+affected range of GHSA-4xrf-jv44-h6hh; `"ip-address": "^10.2.2"` is the floor
+that keeps those two out. `package.json` is JSON and cannot carry the comment,
+so this is where that rationale lives.
 
 **When you fix a runtime-dependency advisory with `overrides`, verify the fix in
 the built zip, not just in `npm ls`.** Check **every** installed copy, not the
