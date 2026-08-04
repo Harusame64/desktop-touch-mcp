@@ -678,8 +678,9 @@ advisory's range.
 **Do not remove the `overrides` entry because `express-rate-limit` now declares
 a compatible range.** `^10.2.0` still admits 10.2.0 and 10.2.1, both inside the
 affected range of GHSA-4xrf-jv44-h6hh; `"ip-address": "^10.2.2"` is the floor
-that keeps those two out. `package.json` is JSON and cannot carry the comment,
-so this is where that rationale lives.
+that keeps those two out **of the tree we test and CI** — like every override,
+it does not reach the zip, so it is not artifact protection. `package.json` is
+JSON and cannot carry the comment, so this is where that rationale lives.
 
 **When you fix a runtime-dependency advisory with `overrides`, verify the fix in
 the built zip, not just in `npm ls`.** Check **every** installed copy, not the
