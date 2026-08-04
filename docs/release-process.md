@@ -651,25 +651,29 @@ So a security fix applied through `overrides` protects local development and CI
 but has **no guaranteed effect on what users download**. Whether the zip is safe
 depends on what the ranges happen to resolve to that day.
 
-Measured on the v1.14.3 zip (2026-08-04), for the three `ip-address` advisories
-the `overrides` entry guards against — GHSA-v2v4-37r5-5v8g (`<= 10.1.0`),
-GHSA-22jq-vg5j-6vgg (`10.1.1`–`10.2.0`) and GHSA-4xrf-jv44-h6hh
-(`10.1.1`–`10.2.1`):
+For the three `ip-address` advisories the `overrides` entry guards against —
+GHSA-v2v4-37r5-5v8g (`<= 10.1.0`), GHSA-22jq-vg5j-6vgg (`10.1.1`–`10.2.0`) and
+GHSA-4xrf-jv44-h6hh (`10.1.1`–`10.2.1`):
 
 | | `express-rate-limit` | `ip-address` |
 |---|---|---|
-| lockfile (what we test) | 8.6.1, declaring `^10.2.0` | 10.4.0 — floor forced by `overrides` |
-| shipped zip | 8.6.1, declaring `^10.2.0` | 10.3.1 |
+| lockfile, as of PR #568 (what we test) | 8.6.1, declaring `^10.2.0` | 10.4.0 — above the `^10.2.2` floor set by `overrides` |
+| **v1.14.3** zip, as built 2026-07-30 | 8.6.1, declaring `^10.2.0` | 10.3.1 |
 
-(The earlier v1.13.1 measurement read 8.3.2 / 10.1.1 in the lockfile against
-8.6.0 / 10.3.1 in the zip. PR #568 closed that split by moving the lockfile to
-8.6.1, so both columns now agree on the dependent.)
+The zip row is a snapshot of one build, not a standing fact: `ip-address@10.4.0`
+published 2026-07-31, so the next zip resolves forward to 10.4.0 on its own.
+**Re-measure it per release rather than reading this row.** (The earlier v1.13.1
+measurement read 8.3.2 / 10.1.1 in the lockfile against 8.6.0 / 10.3.1 in the
+zip. PR #568 closed that split by moving the lockfile to 8.6.1, so both columns
+now agree on the dependent.)
 
-No exposure today: the shipped 10.3.1 is newer than every patched version
-(10.1.1, 10.2.1, 10.2.2). But that is luck — the range resolved forward past the
-advisories on its own, not because the override reached the zip. Had
-`express-rate-limit` still resolved to `<= 8.5.0`, which pins `ip-address` to
-exactly 10.1.0, the zip would have shipped GHSA-v2v4-37r5-5v8g.
+No exposure in that build: the shipped 10.3.1 is newer than every patched
+version (10.1.1, 10.2.1, 10.2.2). But that is luck — the range resolved forward
+past the advisories on its own, not because the override reached the zip. Had
+`express-rate-limit` still resolved low, the zip would have shipped
+GHSA-v2v4-37r5-5v8g: 8.2.2 through 8.5.0 pin `ip-address` to exactly 10.1.0, and
+8.2.1 — still inside the SDK's `^8.2.1` — pins 10.0.1, both inside that
+advisory's range.
 
 **Do not remove the `overrides` entry because `express-rate-limit` now declares
 a compatible range.** `^10.2.0` still admits 10.2.0 and 10.2.1, both inside the
