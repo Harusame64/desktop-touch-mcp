@@ -1,5 +1,7 @@
 # desktop-touch-mcp
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.Harusame64%2Fdesktop-touch-mcp.svg)](https://mcptoplist.com/server/io.github.Harusame64%2Fdesktop-touch-mcp)
+
 [![desktop-touch-mcp MCP server](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp/badges/card.svg)](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
 
 [日本語](README.ja.md)
