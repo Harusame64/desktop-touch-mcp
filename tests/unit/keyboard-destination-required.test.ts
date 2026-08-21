@@ -193,6 +193,15 @@ const SEQUENCE_NO_DESTINATION = {
   settleMs: 0,
 };
 
+/** ADR-038 R3: the "accepted, but unguarded" warning for a titleless foreground window. */
+const TITLELESS_WARNING_FRAGMENT =
+  "Target window has no title and is addressed by hwnd while in the foreground";
+
+/** Warnings on a SUCCESS envelope (absent key ⇒ no warnings at all). */
+function warningsOf(r: Record<string, any>): string[] {
+  return r.hints?.warnings ?? [];
+}
+
 const EXPECTED_SUGGEST = [
   "Pass `windowTitle` or `hwnd` so the input has an explicit destination window.",
   "Call `desktop_discover` (or `desktop_state`) to list windows and pick a target.",
@@ -304,17 +313,23 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     expect(mockRunActionGuard).toHaveBeenCalledTimes(1);
     expect(mockType).toHaveBeenCalledTimes(1);
     expect(mockType).toHaveBeenCalledWith("abcdefgh");
+    // A normally-targeted write is guarded, so it must NOT carry the
+    // titleless-foreground caveat — otherwise the warning means nothing.
+    expect(warningsOf(r).some((w) => w.includes(TITLELESS_WARNING_FRAGMENT))).toBe(false);
     expect(diagnosticEvents()).toEqual([]);
   });
 
-  it("C: hwnd alone is a destination, even when the window has no title", async () => {
-    // A titleless window addressed by handle resolves to `title: ""`. The check
-    // reads the hwnd the caller passed, not the title that came back, so this
-    // must proceed — an empty title is not a missing destination.
-    mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 0x100n, warnings: [] });
+  it("C: an hwnd that resolves to a TITLED window is an ordinary destination", async () => {
+    // The resolver adopts that title into `effectiveWindowTitle`, so focus and
+    // the guard both have something to work with — nothing about this call is
+    // weaker than a `windowTitle` one, and it must not carry the caveat.
+    // (Before R3 this fixture overrode the resolution to `title: ""`, which made
+    // it a silent duplicate of C2c and left its rationale describing the
+    // superseded "the param alone is enough" rule.)
     const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, hwnd: "256" }));
     expect(r.ok).toBe(true);
     expect(mockType).toHaveBeenCalledTimes(1);
+    expect(warningsOf(r).some((w) => w.includes(TITLELESS_WARNING_FRAGMENT))).toBe(false);
     expect(diagnosticEvents()).toEqual([]);
   });
 
@@ -402,7 +417,7 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
   // focused nor guarded and the keys still land on the foreground — which is
   // only the caller's intent when that window ALREADY is the foreground.
 
-  it("C2a: windowTitle:'@active' resolving to a titleless FOREGROUND window passes", async () => {
+  it("C2a: windowTitle:'@active' resolving to a titleless FOREGROUND window passes, with a warning", async () => {
     mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 123n, warnings: [] });
     mockGetForegroundHwnd.mockReturnValue(123n);
     const r = body(
@@ -410,6 +425,12 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     );
     expect(r.ok).toBe(true);
     expect(mockType).toHaveBeenCalledTimes(1);
+    // Never a silent pass: this one gets through without focus and without an
+    // identity guard, so the caller is told what it did not get.
+    expect(warningsOf(r)).toEqual(
+      expect.arrayContaining([expect.stringContaining(TITLELESS_WARNING_FRAGMENT)]),
+    );
+    // Not a miss — the Phase 0 counter must stay clean.
     expect(diagnosticEvents()).toEqual([]);
   });
 
@@ -433,7 +454,7 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     ]);
   });
 
-  it("C2c: an explicit hwnd resolving to a titleless FOREGROUND window passes", async () => {
+  it("C2c: an explicit hwnd resolving to a titleless FOREGROUND window passes, with a warning", async () => {
     // Delivery lands exactly where the caller pointed, so the refusal in C2b is
     // about reachability — not about hwnd as a way of naming a target.
     mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 123n, warnings: [] });
@@ -441,6 +462,9 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, hwnd: "123" }));
     expect(r.ok).toBe(true);
     expect(mockType).toHaveBeenCalledTimes(1);
+    expect(warningsOf(r)).toEqual(
+      expect.arrayContaining([expect.stringContaining(TITLELESS_WARNING_FRAGMENT)]),
+    );
     expect(diagnosticEvents()).toEqual([]);
   });
 

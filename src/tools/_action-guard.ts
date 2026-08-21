@@ -215,8 +215,30 @@ export interface ResolvedDestination {
 }
 
 /**
+ * The verdict of {@link keyboardDestinationMiss}. `miss` is the refusal reason,
+ * or `null` when the write does have a destination — in which case `note` may
+ * still flag that the destination was accepted on weaker grounds than usual.
+ */
+export type DestinationVerdict =
+  | { miss: DestinationMissReason }
+  | { miss: null; note?: "titleless_foreground" };
+
+/**
+ * Warning pushed onto `hints.warnings` when a titleless window is accepted
+ * because it is the foreground one. The delivery is honest — the keys go where
+ * the caller pointed — but it is NOT guarded: focus is skipped and the auto-guard
+ * descriptor is null, so no identity check runs, and the window could in
+ * principle stop being foreground between the check and `SendInput`. The
+ * contract for this ADR is "never a silent pass", and that applies to a pass
+ * this thin just as much as to the env downgrade (Opus review R3).
+ */
+export const TITLELESS_FOREGROUND_WARNING =
+  "Target window has no title and is addressed by hwnd while in the foreground — " +
+  "delivered unguarded (no identity guard; keyboard focus/guard cannot yet target " +
+  "titleless windows, see ADR-036)";
+
+/**
  * The destination predicate, as one function so no caller re-derives it.
- * Returns `null` when the write HAS a destination, otherwise why it does not.
  *
  * **A handle is not automatically a destination.** Everything downstream of the
  * check is driven by the resolved TITLE — focus runs under
@@ -227,21 +249,24 @@ export interface ResolvedDestination {
  * alone would have re-opened this ADR's own hole one argument later (Codex
  * review R1). The one case where a titleless resolution is honest is when that
  * window is ALREADY the foreground — then delivery lands exactly where the
- * caller pointed, which is the legitimate `@active` case. Making focus and the
- * guard hwnd-aware, so titled-ness stops mattering, is ADR-036.
+ * caller pointed, which is the legitimate `@active` case. That pass is reported
+ * back as `note: "titleless_foreground"` so the caller can warn about what it
+ * did not get (no focus, no identity guard). Making focus and the guard
+ * hwnd-aware, so titled-ness stops mattering, is ADR-036.
  */
 export function keyboardDestinationMiss(p: {
   effectiveWindowTitle: string | undefined;
   resolved: ResolvedDestination | undefined;
-}): DestinationMissReason | null {
+}): DestinationVerdict {
   const { effectiveWindowTitle, resolved } = p;
-  if (typeof effectiveWindowTitle === "string" && effectiveWindowTitle !== "") return null;
-  if (resolved === undefined) return "no_destination";
+  if (typeof effectiveWindowTitle === "string" && effectiveWindowTitle !== "") return { miss: null };
+  if (resolved === undefined) return { miss: "no_destination" };
   // `resolved.title !== ""` is redundant with the check above in practice (the
   // handlers adopt the resolved title into `effectiveWindowTitle`); kept so the
   // predicate reads correctly on its own.
-  if (resolved.title !== "" || resolved.isForeground()) return null;
-  return "titleless_hwnd_not_foreground";
+  if (resolved.title !== "") return { miss: null };
+  if (resolved.isForeground()) return { miss: null, note: "titleless_foreground" };
+  return { miss: "titleless_hwnd_not_foreground" };
 }
 
 /** Warning text pushed onto `hints.warnings` when the stop is downgraded. */
@@ -311,8 +336,15 @@ export function assertKeyboardDestination(p: {
 }): DestinationCheck {
   const { toolName, effectiveWindowTitle, hwnd, resolved, lensId, warnings } = p;
 
-  const reason = keyboardDestinationMiss({ effectiveWindowTitle, resolved });
-  if (reason === null) return { ok: true };
+  const verdict = keyboardDestinationMiss({ effectiveWindowTitle, resolved });
+  if (verdict.miss === null) {
+    // Accepted, but say so when the acceptance was thin. No diagnostic event:
+    // this is not a destination MISS, and counting it would blur what the
+    // Phase 0 sample measures.
+    if (verdict.note === "titleless_foreground") warnings.push(TITLELESS_FOREGROUND_WARNING);
+    return { ok: true };
+  }
+  const reason = verdict.miss;
 
   const emit = (decision: "block" | "warn" | "unguarded"): void => {
     noteDestinationMissing(toolName, {

@@ -1469,7 +1469,7 @@ export const keyboardTypeHandler = async ({
         // (an hwnd resolving to a titleless foreground window). Counting those
         // would inflate the sample with calls the ADR does not consider
         // destination-less at all (Opus review R2). Same predicate, one place.
-        const miss = keyboardDestinationMiss({ effectiveWindowTitle, resolved: resolvedDestination });
+        const { miss } = keyboardDestinationMiss({ effectiveWindowTitle, resolved: resolvedDestination });
         if (miss !== null) {
           noteDestinationMissing("keyboard:type", {
             hasLens: lensId !== undefined,
