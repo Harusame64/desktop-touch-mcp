@@ -211,7 +211,7 @@ export function matchPlainTopLevelWindowsByTitle(
 function findCommonDialogByTitle(
   wins: ReturnType<typeof enumWindowsInZOrder>,
   query: string,
-): DialogCandidate | null {
+): { chosen: DialogCandidate | null; candidates: DialogCandidate[] } {
   const q = query.toLowerCase();
   const classed: DialogCandidate[] = [];
   const owned: DialogCandidate[] = [];
@@ -224,7 +224,11 @@ function findCommonDialogByTitle(
       owned.push({ hwnd: w.hwnd, title: w.title });
     }
   }
-  return classed[0] ?? owned[0] ?? null;
+  // `candidates` is the priority order the tie-break walks, so index 0 is the
+  // chosen one and the rest are what it passed over — the shape the ADR-035
+  // Phase 1 `resolve` event records. The chosen value is unchanged.
+  const candidates = [...classed, ...owned];
+  return { chosen: candidates[0] ?? null, candidates };
 }
 
 /**
@@ -362,16 +366,42 @@ export async function resolveWindowTarget(params: {
       // ADR-018 Phase 5: delegated to the shared `findPlainTopLevelWindowByTitle`
       // helper (Phase 1b §2.2 / Phase 4 §2.2 carry-over). `excludeMinimized: false`
       // preserves the legacy Case 3 tolerance for minimized matches.
-      const plainMatch = findPlainTopLevelWindowByTitle(params.windowTitle, {
+      // ADR-035 Phase 1 (Codex Round 1 P2): the plain-window lookup here is an
+      // INTERMEDIATE PROBE, not the outcome — when it misses, Case 4 below may
+      // still resolve a dialog. Logging the probe would put a `matchCount: 0`,
+      // `chosen: null` record in front of a dispatch that did have a target,
+      // which is precisely the join this phase exists to make trustworthy. So
+      // the probe is silenced and each of the three real outcomes logs once.
+      const plainMatches = findPlainTopLevelWindowsByTitle(params.windowTitle, {
         excludeMinimized: false,
         excludeDialogsAndOwned: true,
+        logAs: "off",
       });
-      if (plainMatch) return null;
+      if (plainMatches.length > 0) {
+        logResolve({
+          resolver: "pickPlainTopLevelWindowByTitle",
+          query: params.windowTitle,
+          matches: plainMatches,
+        });
+        return null;
+      }
 
       // Case 4: no plain match — try common dialog fallback.
       const wins = enumWindowsInZOrder();
-      const dialog = findCommonDialogByTitle(wins, params.windowTitle);
+      const { chosen: dialog, candidates } = findCommonDialogByTitle(wins, params.windowTitle);
+      const runnersUp = candidates.slice(1);
       if (dialog) {
+        // `matchCount` counts the DIALOG candidates (they did match by title,
+        // just not as plain top-level windows); `fallback:"owner-chain"` is
+        // what says the window came from the dialog rescue rather than the
+        // primary rule, so the two events are not confused for one another.
+        logResolve({
+          resolver: "resolveWindowTargetDialog",
+          query: params.windowTitle,
+          matches: [dialog, ...runnersUp],
+          chosen: dialog,
+          fallback: "owner-chain",
+        });
         warnings.push("dialog_resolved_via_owner_chain");
         return {
           title: dialog.title,
@@ -380,6 +410,12 @@ export async function resolveWindowTarget(params: {
           className: safeGetClassName(dialog.hwnd),
         };
       }
+      // Neither route matched — a true miss, and the H2 case worth counting.
+      logResolve({
+        resolver: "pickPlainTopLevelWindowByTitle",
+        query: params.windowTitle,
+        matches: [],
+      });
     } catch { /* enumWindowsInZOrder unavailable → fall through */ }
   }
 

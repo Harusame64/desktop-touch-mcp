@@ -1609,6 +1609,12 @@ export const keyboardTypeHandler = async ({
       if (replaceAll) {
         ffWarnings.push("ReplaceAllNotSupportedOnClipboardFlash");
       }
+      // ADR-035 Phase 1 — the foreground-flash channel is the route under
+      // investigation: it steals the foreground to paste and puts it back, so
+      // it is exactly where a mis-resolved destination becomes a write into the
+      // operator's own window (Codex Round 1 P2). `fgHwnd` here is the window
+      // that held focus BEFORE the steal.
+      logDispatchSink({ sink: "foreground_flash", tool: "keyboard:type", targetHwnd: channel.hwnd });
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,
@@ -2911,10 +2917,6 @@ export const keyboardSequenceHandler = async ({
       // this context — BlockedKeyCombo and libnut throws lost it and the LLM
       // could not tell which steps had already fired.)
       let failedIndex = -1;
-      // ADR-035 Phase 1 — one event per sequence call, not per step: the whole
-      // sequence is a single foreground-routed dispatch (rawKeyboard is
-      // SendInput), so per-step events would only repeat the same destination.
-      logDispatchSink({ sink: "rawkeyboard", tool: "keyboard:sequence", targetHwnd });
       try {
         await withKeyboardLock(async () => {
           for (let i = 0; i < steps.length; i++) {
@@ -2936,6 +2938,16 @@ export const keyboardSequenceHandler = async ({
             // tool path also passes through here.
             assertKeyComboSafe(step.keys);
             const downKeys = parseKeys(step.keys);
+            // ADR-035 Phase 1 — one event per sequence call, emitted here and
+            // not before the loop, so a sequence refused by `assertKeyComboSafe`
+            // or `parseKeys` never records a dispatch that did not happen
+            // (Codex Round 1 P2). `targetHwnd` is null because `rawKeyboard` is
+            // SendInput: it is routed by focus, not addressed to a handle. The
+            // window this sequence MEANT to reach is on the `focusWindowForKeyboard`
+            // resolve event sharing this call's `callId`.
+            if (i === 0) {
+              logDispatchSink({ sink: "rawkeyboard", tool: "keyboard:sequence", targetHwnd: null });
+            }
             await rawKeyboard.pressKeyDown(...downKeys);
             const hold = step.holdMs ?? 0;
             if (hold > 0) {

@@ -254,7 +254,15 @@ export type DiagnosticEvent =
        * process-name fallback rather than a title match — the direct
        * observation of the zero-match H2 sub-path (ADR-035 §2.1).
        */
-      fallback?: "process-name";
+      /**
+       * Set when the chosen window did NOT come from the primary title match.
+       * `process-name`: `findTerminalWindow` fell back to matching the image
+       * name after zero title matches (ADR-035 §2.1). `owner-chain`:
+       * `resolveWindowTarget` found no plain top-level window and resolved a
+       * common dialog through the owner chain instead. Both are the shape H2
+       * is about — a window was chosen that the title rule did not select.
+       */
+      fallback?: ResolveFallback;
     }
   | {
       // ADR-035 Phase 1 — one native input dispatch, recorded immediately
@@ -303,7 +311,23 @@ export type ResolveResolver =
   /** §2 #9 — `keyboard.ts` foreground_flash target. */
   | "keyboardForegroundFlash"
   /** §2 #13 — the press-side twin of #8. */
-  | "keyboardBackgroundPress";
+  | "keyboardBackgroundPress"
+  /**
+   * `_resolve-window.ts` Case 4 — the common-dialog fallback taken when no
+   * plain top-level window matched. Recorded separately so the dialog that WAS
+   * chosen is on record; logging only the plain-window probe would leave a
+   * `matchCount: 0` event joined to a dispatch that did have a target
+   * (Codex Round 1 P2).
+   */
+  | "resolveWindowTargetDialog";
+
+/**
+ * Which rescue supplied the chosen window when the primary title rule did not.
+ * `process-name`: `findTerminalWindow` matched the image name after zero title
+ * matches (ADR-035 §2.1). `owner-chain`: `resolveWindowTarget` found no plain
+ * top-level window and resolved a common dialog through the owner chain.
+ */
+export type ResolveFallback = "process-name" | "owner-chain";
 
 /** One window in a `resolve` event. Titles hashed; identity fields optional. */
 export interface ResolveWindowRecord {
@@ -329,6 +353,13 @@ export type DispatchSink =
   | "wm_char"
   | "console_paste"
   | "clipboard_paste"
+  /**
+   * The native foreground-flash inject: steal the foreground, paste, restore.
+   * Kept distinct from `clipboard_paste` because it is the one channel that
+   * deliberately moves the foreground, so a dispatch on it is expected to
+   * disagree with the `fgHwnd` recorded a moment earlier.
+   */
+  | "foreground_flash"
   | "rawkeyboard"
   | "uia"
   | "cdp"

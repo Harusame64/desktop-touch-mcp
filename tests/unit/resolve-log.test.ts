@@ -42,6 +42,8 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     getWindowTitleW: () => mockGetWindowTitleW(),
     getWindowIdentity: () => mockGetWindowIdentity(),
     enumWindowsInZOrder: () => mockEnumWindowsInZOrder(),
+    // `resolveWindowTarget` reads the class of whatever it resolves.
+    getWindowClassName: () => "Notepad",
   };
 });
 
@@ -59,6 +61,7 @@ const {
   pickPlainTopLevelWindowByTitle,
   findPlainTopLevelWindowByTitle,
   findPlainTopLevelWindowsByTitle,
+  resolveWindowTarget,
 } = await import("../../src/tools/_resolve-window.js");
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -439,5 +442,86 @@ describe("ADR-035 §2 #1 — pickPlainTopLevelWindowByTitle instrumentation", ()
     mockEnumWindowsInZOrder.mockImplementation(() => { throw new Error("no native addon"); });
     expect(findPlainTopLevelWindowByTitle("notepad")).toBeNull();
     expect(mockLogDiagnostic).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. resolveWindowTarget Case 3 / Case 4 — the outcome, not the probe
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-035 Phase 1 — resolveWindowTarget logs the window it actually chose", () => {
+  /**
+   * The plain-window lookup inside `resolveWindowTarget` is an intermediate
+   * probe: when it misses, the common-dialog fallback below it may still return
+   * a window. Logging the probe would put `matchCount: 0, chosen: null` in front
+   * of a dispatch that DID have a target — the exact join this phase exists to
+   * make trustworthy (Codex Round 1 P2).
+   */
+  it("Case 3 (a plain window matches) logs one event with the match, then passes through", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([win(0x1n, "Untitled - Notepad", 0)]);
+    const r = await resolveWindowTarget({ windowTitle: "notepad" });
+    expect(r).toBeNull();                       // pass-through, unchanged
+    expect(mockLogDiagnostic).toHaveBeenCalledTimes(1);
+    expect(events()[0]).toMatchObject({
+      resolver: "pickPlainTopLevelWindowByTitle",
+      matchCount: 1,
+      chosen: { hwnd: "1" },
+    });
+    expect(events()[0]!.fallback).toBeUndefined();
+  });
+
+  it("Case 4 (only a dialog matches) records the DIALOG, not a zero-match miss", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      win(0x10n, "Save As", 0, { className: "#32770" }),
+    ]);
+    const r = await resolveWindowTarget({ windowTitle: "save as" });
+    expect(r).not.toBeNull();
+    expect(r!.hwnd).toBe(0x10n);
+    // ONE event, and it names the window that was returned.
+    expect(mockLogDiagnostic).toHaveBeenCalledTimes(1);
+    expect(events()[0]).toMatchObject({
+      resolver: "resolveWindowTargetDialog",
+      fallback: "owner-chain",
+      matchCount: 1,
+      chosen: { hwnd: "16" },
+    });
+  });
+
+  it("Case 4 records the dialogs it passed over", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      win(0x10n, "Save As", 0, { className: "#32770" }),
+      win(0x11n, "Save As copy", 1, { className: "#32770" }),
+    ]);
+    await resolveWindowTarget({ windowTitle: "save as" });
+    expect(events()[0]).toMatchObject({ matchCount: 2, chosen: { hwnd: "16" } });
+    expect(events()[0]!.others.map((o: any) => o.hwnd)).toEqual(["17"]);
+  });
+
+  it("neither route matches → one zero-match event (the H2 case worth counting)", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([win(0x1n, "Calculator", 0)]);
+    const r = await resolveWindowTarget({ windowTitle: "notepad" });
+    expect(r).toBeNull();
+    expect(mockLogDiagnostic).toHaveBeenCalledTimes(1);
+    expect(events()[0]).toMatchObject({
+      resolver: "pickPlainTopLevelWindowByTitle",
+      matchCount: 0,
+      chosen: null,
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Never a new crash source
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-035 Phase 1 — observation never throws into its call site", () => {
+  it("logResolve swallows a failure while building the record", () => {
+    const exploding: any = { hwnd: 0x1n, get title(): string { throw new Error("boom"); } };
+    expect(() => logResolve({ resolver: "actionTarget", query: "x", matches: [exploding] })).not.toThrow();
+  });
+
+  it("logDispatchSink swallows a failing foreground read", () => {
+    mockGetForegroundHwnd.mockImplementationOnce(() => { throw new Error("boom"); });
+    expect(() => logDispatchSink({ sink: "sendinput", tool: "scroll", targetHwnd: null })).not.toThrow();
   });
 });

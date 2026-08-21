@@ -1243,6 +1243,10 @@ export const terminalSendHandler = async ({
       // ただし caller が pressEnter 明示し、かつ将来 native side で改行許容に
       // 変わる可能性に備えて防御的に guard も書いておく。
       const flashPressEnter = pressEnter && !/[\r\n]$/.test(input);
+      // ADR-035 Phase 1 — see the keyboard twin: the foreground-flash channel
+      // steals focus to paste, which is the route a mis-resolved terminal
+      // destination turns into a command run in the wrong shell.
+      logDispatchSink({ sink: "foreground_flash", tool: "terminal:send", targetHwnd: channel.hwnd });
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,

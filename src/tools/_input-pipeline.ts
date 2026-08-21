@@ -1270,6 +1270,15 @@ export async function postWheelToHwnd(
       const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
       const chunkSigned = sign * chunkMagnitude;
       const wParam = makeWheelWParam(0, chunkSigned);
+      // ADR-035 Phase 1 — recorded HERE, at the real message boundary, not at
+      // the tier-3 branch above: every early return before this point (missing
+      // native binding, a zero-magnitude call, a pre-dispatch failure) would
+      // otherwise write a dispatch event for a message that was never posted
+      // (Codex Round 1 P2). Once per call, not per chunk; the handle is the
+      // LEAF the walker resolved, which is what actually receives the message.
+      if (!postedAny) {
+        logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd: effectiveHwnd, tier: "3" });
+      }
       const posted = postMessage(effectiveHwnd, message, wParam, lParam);
       if (!posted) {
         // Receiver rejected this chunk. If at least one earlier chunk
@@ -1516,7 +1525,6 @@ export async function dispatchScrollWheel(
     // caller (`mouse.ts:scrollHandler`) reads `dest.kind === 'hwnd'` AND
     // dispatcher null → emits `target_unreachable` per ADR §2.6.2 path-(b)
     // and does NOT fall through to Tier 4 SendInput.
-    logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd: dest.hwnd, tier: "3" });
     return await postWheelToHwnd(dest.hwnd, params);
   }
   if (dest.kind === "cdp") {

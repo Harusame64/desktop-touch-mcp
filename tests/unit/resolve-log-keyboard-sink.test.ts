@@ -97,7 +97,7 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   return { ...actual, resolveWindowTarget: vi.fn(async () => null) };
 });
 
-const { keyboardTypeHandler } = await import("../../src/tools/keyboard.js");
+const { keyboardTypeHandler, keyboardSequenceHandler } = await import("../../src/tools/keyboard.js");
 
 function events(kind: string): Array<Record<string, any>> {
   return mockLogDiagnostic.mock.calls
@@ -164,6 +164,44 @@ describe("ADR-035 Phase 1 — keyboard dispatch sinks (real handler, real branch
     // Two windows carry "Notepad" — exactly the silent multi-match H1 shape.
     expect(resolves[0]).toMatchObject({ matchCount: 2, chosen: { hwnd: String(TARGET_HWND) } });
     expect(resolves[0]!.others.map((o: any) => o.hwnd)).toEqual([String(OTHER_HWND)]);
+  });
+
+  // ── Sequence: the event must describe a dispatch that really happened ─────
+  //
+  // `rawKeyboard` is SendInput — routed by focus, not addressed to a handle —
+  // and the first step can still be refused by `assertKeyComboSafe` after the
+  // destination has been resolved. Both were wrong in the first cut of this
+  // instrumentation (Codex Round 1 P2).
+  it("sequence records sink:'rawkeyboard' with NO handle, because SendInput follows focus", async () => {
+    await keyboardSequenceHandler({
+      steps: [{ keys: "ctrl+a" }, { keys: "ctrl+c" }],
+      windowTitle: "Notepad",
+      trackFocus: false,
+      settleMs: 0,
+    } as never);
+    const sinks = events("dispatch_sink");
+    // One event for the whole sequence, not one per step.
+    expect(sinks).toHaveLength(1);
+    expect(sinks[0]).toMatchObject({
+      sink: "rawkeyboard",
+      tool: "keyboard:sequence",
+      targetHwnd: null,
+      fgHwnd: String(TARGET_HWND),
+    });
+    // The window it MEANT to reach is recoverable from the resolve event that
+    // shares this call's correlation id.
+    const focus = events("resolve").find((e) => e.resolver === "focusWindowForKeyboard");
+    expect(focus?.chosen?.hwnd).toBe(String(TARGET_HWND));
+  });
+
+  it("a sequence refused at its first step records NO dispatch", async () => {
+    await keyboardSequenceHandler({
+      steps: [{ keys: "win+r" }],           // blocked — never reaches rawKeyboard
+      windowTitle: "Notepad",
+      trackFocus: false,
+      settleMs: 0,
+    } as never);
+    expect(events("dispatch_sink")).toHaveLength(0);
   });
 
   it("focusWindowForKeyboard logs its active-first tie-break as §2 #3", async () => {

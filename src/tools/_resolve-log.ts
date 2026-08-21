@@ -33,6 +33,11 @@
  * Win32 syscall, and before building a record when the diagnostic log is
  * disabled. Nothing in this module runs on the hot path of a disabled log.
  *
+ * Never throws. Both entry points swallow everything, for the reason
+ * `logDiagnostic` gives for doing the same: these calls sit immediately before
+ * native dispatches and inside resolvers that previously could not fail there,
+ * and observation must not become a new crash source.
+ *
  * Correlation (plan §2, Round 17 K-3): `logDiagnostic` stamps only ts / pid /
  * uptime, so concurrent tool calls interleave and a resolve event cannot be
  * matched to its dispatch. `runWithCallId` (installed over every registered
@@ -43,7 +48,7 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logDiagnostic, isDiagnosticLogEnabled } from "../engine/diagnostic-log.js";
-import type { ResolveResolver, ResolveWindowRecord, DispatchSink } from "../engine/diagnostic-log.js";
+import type { ResolveResolver, ResolveWindowRecord, ResolveFallback, DispatchSink } from "../engine/diagnostic-log.js";
 import { getWindowTitleW, getForegroundHwnd, getWindowIdentity } from "../engine/win32.js";
 import { isAutoGuardEnabled } from "./_action-guard.js";
 
@@ -198,30 +203,38 @@ export function logResolve(args: {
   matches: ResolveWindowInput[];
   /** Defaults to `matches[0]`. */
   chosen?: ResolveWindowInput | null;
-  /** Set when the match came from the process-name fallback, not the title. */
-  fallback?: "process-name";
+  /**
+   * Set when the chosen window did NOT come from the primary title match —
+   * see the field's documentation on `DiagnosticEvent`.
+   */
+  fallback?: ResolveFallback;
   identity?: IdentityMode;
 }): void {
   if (!isDiagnosticLogEnabled()) return;
-  const identity = args.identity ?? "skip";
-  const chosen = args.chosen !== undefined ? args.chosen : (args.matches[0] ?? null);
-  const q = hashTitle(args.query);
-  logDiagnostic({
-    kind: "resolve",
-    resolver: args.resolver,
-    callId: currentCallId(),
-    autoGuard: isAutoGuardEnabled(),
-    queryHash: q.hash,
-    queryLen: q.len,
-    ...(rawTitlesEnabled() && { queryRaw: args.query }),
-    matchCount: args.matches.length,
-    chosen: chosen === null ? null : toRecord(chosen, identity),
-    others: args.matches
-      .filter((w) => chosen === null || w.hwnd !== chosen.hwnd)
-      .slice(0, OTHERS_LIMIT)
-      .map((w) => toRecord(w, identity)),
-    ...(args.fallback !== undefined && { fallback: args.fallback }),
-  });
+  try {
+    const identity = args.identity ?? "skip";
+    const chosen = args.chosen !== undefined ? args.chosen : (args.matches[0] ?? null);
+    const q = hashTitle(args.query);
+    logDiagnostic({
+      kind: "resolve",
+      resolver: args.resolver,
+      callId: currentCallId(),
+      autoGuard: isAutoGuardEnabled(),
+      queryHash: q.hash,
+      queryLen: q.len,
+      ...(rawTitlesEnabled() && { queryRaw: args.query }),
+      matchCount: args.matches.length,
+      chosen: chosen === null ? null : toRecord(chosen, identity),
+      others: args.matches
+        .filter((w) => chosen === null || w.hwnd !== chosen.hwnd)
+        .slice(0, OTHERS_LIMIT)
+        .map((w) => toRecord(w, identity)),
+      ...(args.fallback !== undefined && { fallback: args.fallback }),
+    });
+  } catch {
+    // See the module docstring: observation must never become a new crash
+    // source. Every call site sits on a path that could not fail here before.
+  }
 }
 
 // ─── Dispatch sink events ────────────────────────────────────────────────────
@@ -245,27 +258,31 @@ export function logDispatchSink(args: {
   tier?: "1" | "2" | "3" | "4";
 }): void {
   if (!isDiagnosticLogEnabled()) return;
-  const fgHwnd = getForegroundHwnd();
-  let fgTitle = "";
-  if (fgHwnd !== null) {
-    try {
-      fgTitle = getWindowTitleW(fgHwnd);
-    } catch {
-      // window died between the two calls — leave the title empty.
+  try {
+    const fgHwnd = getForegroundHwnd();
+    let fgTitle = "";
+    if (fgHwnd !== null) {
+      try {
+        fgTitle = getWindowTitleW(fgHwnd);
+      } catch {
+        // window died between the two calls — leave the title empty.
+      }
     }
+    const t = hashTitle(fgTitle);
+    logDiagnostic({
+      kind: "dispatch_sink",
+      sink: args.sink,
+      tool: args.tool,
+      callId: currentCallId(),
+      autoGuard: isAutoGuardEnabled(),
+      targetHwnd: args.targetHwnd === null ? null : String(args.targetHwnd),
+      fgHwnd: fgHwnd === null ? null : String(fgHwnd),
+      fgTitleHash: t.hash,
+      fgTitleLen: t.len,
+      ...(rawTitlesEnabled() && { fgTitleRaw: fgTitle }),
+      ...(args.tier !== undefined && { tier: args.tier }),
+    });
+  } catch {
+    // Same contract as `logResolve` above — never throw into a dispatch path.
   }
-  const t = hashTitle(fgTitle);
-  logDiagnostic({
-    kind: "dispatch_sink",
-    sink: args.sink,
-    tool: args.tool,
-    callId: currentCallId(),
-    autoGuard: isAutoGuardEnabled(),
-    targetHwnd: args.targetHwnd === null ? null : String(args.targetHwnd),
-    fgHwnd: fgHwnd === null ? null : String(fgHwnd),
-    fgTitleHash: t.hash,
-    fgTitleLen: t.len,
-    ...(rawTitlesEnabled() && { fgTitleRaw: fgTitle }),
-    ...(args.tier !== undefined && { tier: args.tier }),
-  });
 }
