@@ -40,7 +40,7 @@ import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
 import {
   makeCommitWrapper,
@@ -1392,13 +1392,15 @@ export const keyboardTypeHandler = async ({
   try {
     // Phase G: fixId approval prologue
     let effectiveText = text;
+    // ADR-038: validate the fix and adopt its args here, but do NOT burn it yet
+    // — `consumeFix` moved below the destination check so a refused call does
+    // not spend the one-shot approval it never got to use.
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
       const vr = validateAndPrepareFix(fixId, "keyboard");
       if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
       if (typeof vr.fix.args.text === "string") effectiveText = vr.fix.args.text;
-      consumeFix(fixId);
     }
 
     // Resolve hwnd / @active → effective window title (only when not using a fixId)
@@ -1420,11 +1422,15 @@ export const keyboardTypeHandler = async ({
         toolName: "keyboard:type",
         effectiveWindowTitle,
         hwnd,
+        resolvedHwnd: resolvedWin?.hwnd,
         lensId,
         warnings,
       });
       if (!destCheck.ok) return destCheck.errorResult;
     }
+
+    // The call is going ahead — now the one-shot fix is genuinely spent.
+    if (fixId) consumeFix(fixId);
 
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ────────────────
     // method:'foreground_flash' は `background` 契約とは分離した妥協 BG path
@@ -1432,6 +1438,9 @@ export const keyboardTypeHandler = async ({
     // window 用、single-line + < 5KiB 制約、typing leak risk hints あり。
     if (inputMethod === "foreground_flash") {
       if (!effectiveWindowTitle) {
+        // ADR-038 Phase 0: this shape is destination-less too, and it is
+        // refused — count it so the sample is not blind to the flash path.
+        noteDestinationMissing("keyboard:type", { hasLens: lensId !== undefined, decision: "block" });
         return failWith(
           new Error("ForegroundFlashRequiresTarget"),
           "keyboard:type"
@@ -2327,6 +2336,7 @@ export const keyboardPressHandler = async ({
       toolName: "keyboard:press",
       effectiveWindowTitle,
       hwnd,
+      resolvedHwnd: resolvedWin?.hwnd,
       lensId,
       warnings,
     });
@@ -2674,12 +2684,13 @@ export const keyboardSequenceHandler = async ({
     // GUARD-pre-loop rejection retry (e.g. unsafe.keyboardTarget) — the
     // mid-loop MenuFocusLostMidSequence path returns context.remaining
     // directly (FocusLostDuringType convention).
+    // ADR-038: validate the fix and adopt its args here, but burn it only once
+    // the destination check has let the call through (see keyboard:type).
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
       const vr = validateAndPrepareFix(fixId, "keyboard");
       if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard:sequence");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
-      consumeFix(fixId);
     }
 
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
@@ -2695,10 +2706,14 @@ export const keyboardSequenceHandler = async ({
       toolName: "keyboard:sequence",
       effectiveWindowTitle,
       hwnd,
+      resolvedHwnd: resolvedWin?.hwnd,
       lensId,
       warnings,
     });
     if (!destCheck.ok) return destCheck.errorResult;
+
+    // The call is going ahead — now the one-shot fix is genuinely spent.
+    if (fixId) consumeFix(fixId);
 
     if (effectiveWindowTitle) {
       // Codex PR #270 P2: when the caller passed an explicit hwnd,

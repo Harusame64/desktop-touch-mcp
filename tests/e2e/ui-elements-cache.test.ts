@@ -132,6 +132,9 @@ describe("F1-dialog: stale automationId after dialog closes → ElementNotFound"
       // No dialog appeared (e.g. file already saved) — close any dialog best-effort
       await keyboardPressHandler({
         keys: "escape",
+        // ADR-038: no dialog appeared, so aim the harmless escape at Notepad
+        // rather than at whatever happens to be foreground.
+        windowTitle: np.title,
         trackFocus: false,
         settleMs: 100,
       });

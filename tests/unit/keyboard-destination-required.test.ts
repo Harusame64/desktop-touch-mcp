@@ -61,10 +61,31 @@ const mockRunActionGuard = vi.fn(async () => ({
   block: false,
   summary: { kind: "auto", status: "ok", canContinue: true, next: "" },
 }));
+// The one-shot SuggestedFix surface, so the fixId fixture can observe whether a
+// refused call burned the approval.
+const mockValidateAndPrepareFix = vi.fn(() => ({ ok: false, errorCode: "FixNotFoundOrExpired" }));
+const mockConsumeFix = vi.fn();
+// Spelled out rather than spread from a shared object: the `vi.mock` factory is
+// hoisted above the `const` initializers, so it may only reference them from
+// inside a function body, never evaluate them. `actionGuardOverrides()` below is
+// a hoisted function declaration for the same reason — M2 calls it at test time.
 vi.mock("../../src/tools/_action-guard.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_action-guard.js")>();
-  return { ...actual, runActionGuard: (...a: unknown[]) => mockRunActionGuard(...(a as [])) };
+  return {
+    ...actual,
+    runActionGuard: (...a: unknown[]) => mockRunActionGuard(...(a as [])),
+    validateAndPrepareFix: (...a: unknown[]) => mockValidateAndPrepareFix(...(a as [])),
+    consumeFix: (...a: unknown[]) => mockConsumeFix(...(a as [])),
+  };
 });
+
+function actionGuardOverrides() {
+  return {
+    runActionGuard: (...a: unknown[]) => mockRunActionGuard(...(a as [])),
+    validateAndPrepareFix: (...a: unknown[]) => mockValidateAndPrepareFix(...(a as [])),
+    consumeFix: (...a: unknown[]) => mockConsumeFix(...(a as [])),
+  };
+}
 
 vi.mock("../../src/engine/perception/registry.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/perception/registry.js")>();
@@ -121,7 +142,7 @@ const mockResolveWindowTarget = vi.fn(
     if (opts.hwnd === undefined && opts.windowTitle === undefined) return null;
     return { title: opts.windowTitle ?? "Notepad", hwnd: 0x100n, warnings: [] };
   },
-);
+) as unknown as ReturnType<typeof vi.fn>;
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return { ...actual, resolveWindowTarget: (...a: unknown[]) => mockResolveWindowTarget(...(a as [])) };
@@ -316,8 +337,48 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     expect(r.ok).toBe(false);
     expect(r.code).toBe("ForegroundFlashRequiresTarget");
     expect(anySinkCalled()).toBe(false);
-    // That path refuses on its own, so ADR-038 never counts it.
+    // The public code is untouched, but the shape is still destination-less, so
+    // the Phase 0 sample records it rather than going blind on the flash path.
+    expect(diagnosticEvents()).toEqual([
+      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, decision: "block" },
+    ]);
+  });
+
+  it("C2: windowTitle:'@active' resolves to a real window with no title — still a destination", async () => {
+    // `@active` (and any titleless window) comes back from the resolver as a
+    // concrete HWND with `title: ""`. Reading only the raw `hwnd` PARAM would
+    // refuse it, which would break a documented way of naming a target.
+    mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 123n, warnings: [] });
+    const r = body(
+      await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, windowTitle: "@active" }),
+    );
+    expect(r.ok).toBe(true);
+    expect(mockType).toHaveBeenCalledTimes(1);
     expect(diagnosticEvents()).toEqual([]);
+  });
+
+  it("G: a refused call does not burn the one-shot fixId it was given", async () => {
+    // `consumeFix` used to run in the prologue, before the destination check.
+    // A call refused here would have spent an approval it never got to use, and
+    // the retry the error asks for would fail with FixAlreadyConsumed.
+    mockValidateAndPrepareFix.mockReturnValueOnce({
+      ok: true,
+      fix: { args: {} },
+    } as never);
+    const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, fixId: "fix-1" }));
+    expectRefused(r, "keyboard:type");
+    expect(mockValidateAndPrepareFix).toHaveBeenCalledWith("fix-1", "keyboard");
+    expect(mockConsumeFix).not.toHaveBeenCalled();
+  });
+
+  it("G2: a call that proceeds DOES burn the fixId (the control for G)", async () => {
+    mockValidateAndPrepareFix.mockReturnValueOnce({
+      ok: true,
+      fix: { args: { windowTitle: "Notepad" } },
+    } as never);
+    const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, fixId: "fix-2" }));
+    expect(r.ok).toBe(true);
+    expect(mockConsumeFix).toHaveBeenCalledWith("fix-2");
   });
 });
 
@@ -332,20 +393,26 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
 // A-case was passing for a reason other than the one it claims.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("ADR-038 M2 — with the check neutered, both fixtures reach the sink", () => {
-  it("A1 and A2 both send keys once assertKeyboardDestination always says ok", async () => {
+describe("ADR-038 M2 — with the check neutered, the fixtures reach the sink", () => {
+  /** Re-import the handlers with `assertKeyboardDestination` forced to `{ok:true}`. */
+  async function withCheckNeutered<T>(
+    fn: (h: typeof import("../../src/tools/keyboard.js")) => Promise<T>,
+  ): Promise<T> {
     vi.resetModules();
     vi.doMock("../../src/tools/_action-guard.js", async (importOriginal) => {
       const actual = await importOriginal<typeof import("../../src/tools/_action-guard.js")>();
-      return {
-        ...actual,
-        runActionGuard: (...a: unknown[]) => mockRunActionGuard(...(a as [])),
-        assertKeyboardDestination: () => ({ ok: true }),
-      };
+      return { ...actual, ...actionGuardOverrides(), assertKeyboardDestination: () => ({ ok: true }) };
     });
     try {
-      const { keyboardTypeHandler: mutated } = await import("../../src/tools/keyboard.js");
+      return await fn(await import("../../src/tools/keyboard.js"));
+    } finally {
+      vi.doUnmock("../../src/tools/_action-guard.js");
+      vi.resetModules();
+    }
+  }
 
+  it("A1 and A2 both send keys once assertKeyboardDestination always says ok", async () => {
+    await withCheckNeutered(async ({ keyboardTypeHandler: mutated }) => {
       mockType.mockClear();
       const a1 = body(await mutated(TYPE_NO_DESTINATION));
       expect(a1.ok).toBe(true);
@@ -355,9 +422,24 @@ describe("ADR-038 M2 — with the check neutered, both fixtures reach the sink",
       const a2 = body(await mutated(TYPE_NO_DESTINATION_WITH_LENS));
       expect(a2.ok).toBe(true);
       expect(mockType).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.doUnmock("../../src/tools/_action-guard.js");
-      vi.resetModules();
-    }
+    });
+  });
+
+  it("A3 (press) reaches the key sink once the check is neutered", async () => {
+    await withCheckNeutered(async ({ keyboardPressHandler: mutated }) => {
+      mockPressKey.mockClear();
+      const r = body(await mutated(PRESS_NO_DESTINATION));
+      expect(r.ok).toBe(true);
+      expect(mockPressKey).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("A4 (sequence) reaches the key sink once the check is neutered", async () => {
+    await withCheckNeutered(async ({ keyboardSequenceHandler: mutated }) => {
+      mockRawDown.mockClear();
+      const r = body(await mutated(SEQUENCE_NO_DESTINATION));
+      expect(r.ok).toBe(true);
+      expect(mockRawDown).toHaveBeenCalledTimes(1);
+    });
   });
 });

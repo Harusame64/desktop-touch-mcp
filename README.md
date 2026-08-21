@@ -695,10 +695,12 @@ When auto guard is enabled (default), `post.perception.status` will be one of:
 |---|---|
 | `ok` | Guard passed — target verified |
 | `unguarded` | `windowTitle` not provided; action ran without guard |
-| `target_not_found` | No window matched the given title |
 | `ambiguous_target` | Multiple windows matched; use a more specific title |
+| `target_not_found` | No window matched the given title |
 | `identity_changed` | Window was replaced (process restart / HWND change) |
+| `blocked_by_modal` | A modal dialog is in the way — dismiss it, then retry |
 | `unsafe_coordinates` | Click coordinates are outside the target window rect |
+| `browser_not_ready` | The browser tab is still loading — wait, then retry |
 | `needs_escalation` | Use `browser_click` or specify `windowTitle` |
 | `destination_required` | A `keyboard` write named no target. Refused before the guard runs, so it arrives as `code:"DestinationRequired"` with this status under `context.guard` rather than in `post.perception` — pass `windowTitle` or `hwnd` |
 

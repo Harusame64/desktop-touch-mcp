@@ -257,6 +257,7 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     // ADR's own documented escape hatch. The assertions below are unchanged —
     // what is pinned is still "no windowTitle ⇒ no chunking, no per-chunk
     // foreground check", which ADR-038 does not alter.
+    const prev = process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
     process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = "0";
     try {
       const { windowTitle: _w, ...rest } = baseArgs;
@@ -266,7 +267,8 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
       expect(mockTypeFn).toHaveBeenCalledWith("abcdefgh");
       expect(checkForegroundOnce).not.toHaveBeenCalled();
     } finally {
-      delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+      if (prev === undefined) delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+      else process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = prev;
     }
   });
 

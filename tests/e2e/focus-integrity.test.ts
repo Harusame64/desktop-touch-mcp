@@ -31,6 +31,23 @@ import { restoreAndFocusWindow } from "../../src/engine/win32.js";
 
 let np: NpInstance;
 
+/**
+ * ADR-038: a destination-less keyboard write is refused by default. Two cases
+ * below pin exactly that shape — "without windowTitle, focus-loss detection is
+ * impossible" — so they run under the ADR's documented downgrade instead. Their
+ * assertions are unchanged; the env is saved and restored around each call.
+ */
+async function withDestinationCheckDowngraded<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+  process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = "0";
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+    else process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = prev;
+  }
+}
+
 beforeAll(async () => {
   np = await launchNotepad();
   try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
@@ -116,13 +133,13 @@ describe("A1-unarmed: keyboard_type without windowTitle cannot detect focus loss
   it("trackFocus:true but no windowTitle → focusLost is absent (detection disabled)", async () => {
     // When windowTitle is omitted, detectFocusLoss short-circuits (no-op).
     // This means the LLM has NO signal if input goes to the wrong window.
-    const result = await keyboardTypeHandler({
+    const result = await withDestinationCheckDowngraded(() => keyboardTypeHandler({
       text: "z",
       use_clipboard: true,
       trackFocus: true,
-      // windowTitle intentionally omitted
+      // windowTitle intentionally omitted (ADR-038 downgrade above)
       settleMs: 100,
-    });
+    }));
     const p = parsePayload(result);
 
     expect(p.ok).toBe(true);
@@ -158,6 +175,9 @@ describe("A1-unarmed: keyboard_type without windowTitle cannot detect focus loss
       text: "test",
       use_clipboard: true,
       trackFocus: false,
+      // ADR-038: r1 and r2 must differ ONLY in trackFocus, which is what this
+      // case is about — r2 previously omitted the destination incidentally.
+      windowTitle: np.title,
       settleMs: 0,
     });
 
@@ -193,14 +213,17 @@ describe("A1-press: keyboard_press follows the same focusLost contract", () => {
   });
 
   it("keyboard_press without windowTitle → focusLost never set", async () => {
-    const result = await keyboardPressHandler({
+    const result = await withDestinationCheckDowngraded(() => keyboardPressHandler({
       keys: "escape",
-      // windowTitle omitted
+      // windowTitle omitted (ADR-038 downgrade above)
       trackFocus: true,
       settleMs: 100,
-    });
+    }));
     const p = parsePayload(result);
 
+    // Positive assertion first: `focusLost` is absent on an ERROR payload too,
+    // so without this the case would pass on any failure (ADR-038 review R1).
+    expect(p.ok).toBe(true);
     // No detection possible without windowTitle
     expect(p.focusLost).toBeUndefined();
   });

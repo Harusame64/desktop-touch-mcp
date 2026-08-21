@@ -201,7 +201,7 @@ export const DESTINATION_DOWNGRADE_WARNING =
   "input will land on the current foreground window; pass windowTitle or hwnd to target explicitly";
 
 export type DestinationCheck =
-  | { ok: true; downgraded?: true }
+  | { ok: true }
   | { ok: false; errorResult: ToolResult };
 
 /**
@@ -219,29 +219,56 @@ export type DestinationCheck =
  * `runActionGuard` at all. One call, before the split, is what closes both arms.
  *
  * Contract (ADR-038 §2):
- *   - a destination is `windowTitle` (non-empty, post-resolution) OR `hwnd`.
- *     `hwnd` counts on its own even when the resolved title is `""` — titleless
- *     windows addressed by handle are a legitimate destination.
+ *   - a destination is a non-empty resolved `windowTitle`, the `hwnd` the caller
+ *     passed, OR an hwnd the resolver arrived at from what the caller passed.
+ *     A handle counts on its own even when the title that came back is `""`:
+ *     titleless windows, and `windowTitle:"@active"`, both resolve to a concrete
+ *     window with no usable title, and neither is a missing destination.
  *   - `DESKTOP_TOUCH_AUTO_GUARD=0` is a complete kill of the guard layer, this
  *     check included.
  *   - `DESKTOP_TOUCH_REQUIRE_DESTINATION=0` downgrades the stop to a warning —
  *     never to a silent pass.
  */
+/**
+ * ADR-038 Phase 0 counter, for the one destination-less shape that does NOT go
+ * through {@link assertKeyboardDestination}: `method:"foreground_flash"` refuses
+ * on its own with `ForegroundFlashRequiresTarget`, and that public code is not
+ * changed by this ADR — but the shape still belongs in the sample.
+ */
+export function noteDestinationMissing(
+  toolName: "keyboard:type" | "keyboard:press" | "keyboard:sequence",
+  opts: { hasLens: boolean; decision: "block" | "warn" | "unguarded" }
+): void {
+  logDiagnostic({
+    kind: "destination_missing",
+    tool: toolName,
+    hasLens: opts.hasLens,
+    decision: opts.decision,
+  });
+}
+
 export function assertKeyboardDestination(p: {
   toolName: "keyboard:type" | "keyboard:press" | "keyboard:sequence";
   /** Title after the fixId / resolveWindowTarget prologue has run. */
   effectiveWindowTitle: string | undefined;
   /** The public `hwnd` param exactly as the caller passed it. */
   hwnd: string | undefined;
+  /**
+   * The handle `resolveWindowTarget` settled on, when it resolved anything.
+   * Carries the `@active` / titleless cases that produce a real window whose
+   * title is `""` — reading only the raw `hwnd` param would refuse those.
+   */
+  resolvedHwnd: bigint | undefined;
   lensId: string | undefined;
   /** Downgrade warning is pushed here; the caller surfaces it as `hints.warnings`. */
   warnings: string[];
 }): DestinationCheck {
-  const { toolName, effectiveWindowTitle, hwnd, lensId, warnings } = p;
+  const { toolName, effectiveWindowTitle, hwnd, resolvedHwnd, lensId, warnings } = p;
 
   const hasDestination =
     (typeof effectiveWindowTitle === "string" && effectiveWindowTitle !== "") ||
-    hwnd !== undefined;
+    hwnd !== undefined ||
+    resolvedHwnd !== undefined;
   if (hasDestination) return { ok: true };
 
   const emit = (decision: "block" | "warn" | "unguarded"): void => {
@@ -264,7 +291,7 @@ export function assertKeyboardDestination(p: {
   if (process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION === "0") {
     emit("warn");
     warnings.push(DESTINATION_DOWNGRADE_WARNING);
-    return { ok: true, downgraded: true };
+    return { ok: true };
   }
 
   emit("block");

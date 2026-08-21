@@ -204,6 +204,11 @@ describe("Scenario 2: identity invalidation blocks keyboard_type", () => {
       use_clipboard: true,
       replaceAll: false,
       forceKeystrokes: false,
+      // ADR-038: this case pins the LENS identity guard, so it needs a real
+      // destination — otherwise it stops at DestinationRequired before the
+      // guard ever runs. The "lensId + no destination" contract is pinned by
+      // the unit fixture instead; duplicating it here would only hide this one.
+      hwnd: String(np2.hwnd),
       trackFocus: false,
       settleMs: 0,
       lensId,

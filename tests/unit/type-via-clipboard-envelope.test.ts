@@ -201,8 +201,15 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
   // default, so the block opts into the ADR's own documented downgrade. Every
   // assertion below is unchanged; the only difference in the envelope is one
   // extra entry in `hints.warnings`, which nothing here reads.
-  beforeAll(() => { process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = "0"; });
-  afterAll(() => { delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION; });
+  let prevRequireDestination: string | undefined;
+  beforeAll(() => {
+    prevRequireDestination = process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+    process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = "0";
+  });
+  afterAll(() => {
+    if (prevRequireDestination === undefined) delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+    else process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = prevRequireDestination;
+  });
 
   it("reports the backend and a completed restore", async () => {
     nativeState.composite.mockResolvedValue(nativeResult());

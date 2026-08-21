@@ -32,7 +32,9 @@ async function dismissStaleModals() {
       try {
         restoreAndFocusWindow(w.hwnd);
         await sleep(200);
-        await keyboardPressHandler({ keys: "escape", trackFocus: false, settleMs: 200 });
+        // ADR-038: address the modal we just focused, so the dismissal has an
+        // explicit destination instead of relying on whatever is foreground.
+        await keyboardPressHandler({ keys: "escape", hwnd: String(w.hwnd), trackFocus: false, settleMs: 200 });
       } catch { /* best-effort */ }
     }
   }
@@ -205,7 +207,7 @@ describe("C3: hasModal real dialog detection", () => {
 
     if (dialogTitles.length === 0) {
       // Dismiss any opened dialog and skip
-      await keyboardPressHandler({ keys: "escape", trackFocus: false, settleMs: 200 });
+      await keyboardPressHandler({ keys: "escape", windowTitle: np3.title, trackFocus: false, settleMs: 200 });
       // envOnly (issue #182): C3 needs a Save-As dialog with a locale-
       // specific title ("名前を付けて保存" / "Save As"). Some Notepad
       // builds auto-save instead of opening a dialog when ctrl+s is hit
@@ -222,8 +224,9 @@ describe("C3: hasModal real dialog detection", () => {
     expect(p.hasModal).toBe(true);
     expect(p.pageState).toBe("dialog");
 
-    // Close the dialog
-    await keyboardPressHandler({ keys: "escape", trackFocus: false, settleMs: 300 });
+    // Close the dialog — address it explicitly (ADR-038) rather than the
+    // current foreground, which is also what the dismissal actually means.
+    await keyboardPressHandler({ keys: "escape", windowTitle: dialogTitles[0]!, trackFocus: false, settleMs: 300 });
   }, 15_000);
 
   it("hasModal returns to false after dialog closes", async () => {
