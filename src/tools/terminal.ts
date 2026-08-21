@@ -13,6 +13,7 @@ import {
   getWindowClassName,
   type WindowZInfo,
 } from "../engine/win32.js";
+import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -159,16 +160,41 @@ function findTerminalWindow(partialTitle: string): WindowZInfo | null {
   const wins = enumWindowsInZOrder();
   const q = partialTitle.toLowerCase();
   // First try exact partial match on title.
-  const candidate = wins.find((w) => w.title.toLowerCase().includes(q));
-  if (candidate) return candidate;
+  const titleMatches = wins.filter((w) => w.title.toLowerCase().includes(q));
+  const candidate = titleMatches[0];
+  if (candidate) {
+    // ADR-035 §2 #4. This resolver applies NO filter at all (minimized,
+    // cloaked and dialog windows all match) and never warns on a tie, so the
+    // match list is the only record of what it passed over.
+    logResolve({
+      resolver: "findTerminalWindow",
+      query: partialTitle,
+      matches: titleMatches,
+      identity: "lookup",
+    });
+    return candidate;
+  }
   // Fallback: process-name match (LLM might pass 'pwsh' even if title is "Windows PowerShell - …")
   for (const w of wins) {
     const pid = getWindowProcessId(w.hwnd);
     const ident = getProcessIdentityByPid(pid);
     if (ident.processName.toLowerCase().includes(q.replace(/\.exe$/i, ""))) {
+      // ADR-035 §2.1 — the zero-match rescue. `fallback:"process-name"` is the
+      // direct observation of the H2 sub-path that redirected experiment 4 to
+      // the operator's own session window: the title matched nothing, so the
+      // frontmost window whose IMAGE NAME contains the query wins, terminal
+      // class or not. `matchCount` stays 0 because no title matched.
+      logResolve({
+        resolver: "findTerminalWindow",
+        query: partialTitle,
+        matches: [],
+        chosen: { ...w, pid: ident.pid, processName: ident.processName },
+        fallback: "process-name",
+      });
       return w;
     }
   }
+  logResolve({ resolver: "findTerminalWindow", query: partialTitle, matches: [] });
   return null;
 }
 
@@ -1179,6 +1205,7 @@ export const terminalSendHandler = async ({
         // Resolver picked wm_char (= ConsoleWindowClass)。foreground_flash semantics
         // を「foreground を奪わずに paste したい」と解釈し、wm_char で済ませる。
         // 簡易 BG path、Phase 3 MVP scope (UIA verify は省略)。
+        logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
         const r = postCharsToHwnd(win.hwnd, input);
         if (!r.full) {
           return failWith(
@@ -1315,6 +1342,7 @@ export const terminalSendHandler = async ({
           // single strip the delivered trailing-Enter count is (N-1)+1 = N for
           // N>=1 and 0+1 = 1 for N=0 — matching the WM_CHAR path's max(N,1).
           const pasteText = input.replace(/(?:\r\n|\r|\n)$/, "");
+          logDispatchSink({ sink: "console_paste", tool: "terminal:send", targetHwnd: win.hwnd });
           const paste = await pasteIntoConsoleNoFocus(win.hwnd, pasteText);
           if (paste.ok) {
             const cpWarnings: string[] = [];
@@ -1434,7 +1462,10 @@ export const terminalSendHandler = async ({
       const baselineMarker =
         baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
-      // Send in chunks to avoid saturating the terminal input queue
+      // Send in chunks to avoid saturating the terminal input queue.
+      // ADR-035 Phase 1: one event for the whole chunked send — every chunk
+      // goes to the same handle, so per-chunk events would only repeat it.
+      logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
       let totalSent = 0;
       for (let i = 0; i < input.length; i += chunkSize) {
         const chunk = input.slice(i, i + chunkSize);
@@ -1674,8 +1705,10 @@ export const terminalSendHandler = async ({
           chosenKey = "ctrl+shift+v";
         }
       }
+      logDispatchSink({ sink: "clipboard_paste", tool: "terminal:send", targetHwnd: null });
       clipboardOutcome = await typeViaClipboard(input, chosenKey);
     } else {
+      logDispatchSink({ sink: "sendinput", tool: "terminal:send", targetHwnd: null });
       await keyboard.type(input);
     }
 
@@ -2335,6 +2368,7 @@ export const terminalRunHandler = async ({
       try { return getWindowClassName(hwnd); } catch { return ""; }
     })();
     if (targetClass === "ConsoleWindowClass") {
+      logDispatchSink({ sink: "console_paste", tool: "terminal:run", targetHwnd: hwnd });
       const paste = await pasteIntoConsoleNoFocus(hwnd, sendInput);
       sendPayload = paste.ok ? { ok: true } : { ok: false, code: paste.reason };
       // issue #386: surface native-clipboard hints — ONLY on success. They are

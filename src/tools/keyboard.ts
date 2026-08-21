@@ -41,6 +41,7 @@ import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss } from "./_action-guard.js";
+import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { ResolvedDestination } from "./_action-guard.js";
 
 /**
@@ -1109,6 +1110,18 @@ async function focusWindowForKeyboard(
   try {
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
+    // ADR-035 §2 #3 — observation only. This resolver's tie-break is
+    // "the active window if it matches, else the frontmost match", which is
+    // NOT the SSOT's pure Z-order rule; recording the full match list plus the
+    // window actually chosen is what makes that divergence measurable.
+    const titleMatches = windows.filter(matches);
+    logResolve({
+      resolver: "focusWindowForKeyboard",
+      query: windowTitle,
+      matches: titleMatches,
+      chosen: active && matches(active) ? active : (titleMatches[0] ?? null),
+      identity: "lookup",
+    });
     if (active && matches(active)) {
       // Target is already in the foreground — nothing to do.
       foregroundVerified = true;
@@ -1489,9 +1502,16 @@ export const keyboardTypeHandler = async ({
         );
       }
       const wins = enumWindowsInZOrder();
-      const target = wins.find((w) =>
+      const ffMatches = wins.filter((w) =>
         w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())
       );
+      const target = ffMatches[0];
+      logResolve({
+        resolver: "keyboardForegroundFlash",
+        query: effectiveWindowTitle!,
+        matches: ffMatches,
+        identity: "lookup",
+      });
       if (!target) {
         return failWith(
           new Error("WindowNotFound"),
@@ -1537,6 +1557,7 @@ export const keyboardTypeHandler = async ({
         // post-send verification (= simplified BG path、Phase 3 MVP scope)。
         // Opus Round 1 P2-6 反映: replaceAll 失敗 → warning 集約。
         const ffWarnings = [...warnings];
+        logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd });
         if (replaceAll) {
           const okSelectAll = postKeyComboToHwnd(target.hwnd, "ctrl+a");
           if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
@@ -1650,7 +1671,14 @@ export const keyboardTypeHandler = async ({
 
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
-      const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const bgMatches = wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const target = bgMatches[0];
+      logResolve({
+        resolver: "keyboardBackgroundType",
+        query: effectiveWindowTitle!,
+        matches: bgMatches,
+        identity: "lookup",
+      });
       if (target) {
         const check = canInjectViaPostMessage(target.hwnd);
         if (check.supported) {
@@ -1771,6 +1799,7 @@ export const keyboardTypeHandler = async ({
               ? await captureFrame(target.hwnd, stage4WindowRect)
               : null;
 
+          logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd });
           const result = postCharsToHwnd(target.hwnd, effectiveText);
           if (!result.full) {
             // Partial fail: do NOT fall through to foreground (would cause double input).
@@ -2190,6 +2219,15 @@ export const keyboardTypeHandler = async ({
       }
     }
 
+    // ADR-035 Phase 1 — foreground path: there is no destination handle, the
+    // keys go wherever focus is, and that is precisely the H2 question. One
+    // event per dispatch, emitted once the channel is known (clipboard paste
+    // vs. chunked keystrokes) and before either starts.
+    logDispatchSink({
+      sink: effectiveClipboard ? "clipboard_paste" : "sendinput",
+      tool: "keyboard:type",
+      targetHwnd: null,
+    });
     if (effectiveClipboard) {
       clipboardOutcome = await typeViaClipboard(effectiveText);
     } else {
@@ -2390,7 +2428,14 @@ export const keyboardPressHandler = async ({
     const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
-      const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const bgPressMatches = wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const target = bgPressMatches[0];
+      logResolve({
+        resolver: "keyboardBackgroundPress",
+        query: effectiveWindowTitle!,
+        matches: bgPressMatches,
+        identity: "lookup",
+      });
       if (target && canInjectViaPostMessage(target.hwnd).supported) {
         // Phase A safety: evaluate lensId / auto-guard before WM_CHAR send so
         // BG path doesn't silently bypass guards (PR #64 Codex P1). See type
@@ -2436,6 +2481,7 @@ export const keyboardPressHandler = async ({
         const baselineMarker =
           baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
 
+        logDispatchSink({ sink: "wm_char", tool: "keyboard:press", targetHwnd: target.hwnd });
         const ok2 = isEnter
           ? postEnterToHwnd(target.hwnd)
           : postKeyComboToHwnd(target.hwnd, keys);
@@ -2642,6 +2688,7 @@ export const keyboardPressHandler = async ({
     }
 
     const keyList = parseKeys(keys);
+    logDispatchSink({ sink: "sendinput", tool: "keyboard:press", targetHwnd: null });
     await keyboard.pressKey(...keyList);
     await keyboard.releaseKey(...keyList);
 
@@ -2864,6 +2911,10 @@ export const keyboardSequenceHandler = async ({
       // this context — BlockedKeyCombo and libnut throws lost it and the LLM
       // could not tell which steps had already fired.)
       let failedIndex = -1;
+      // ADR-035 Phase 1 — one event per sequence call, not per step: the whole
+      // sequence is a single foreground-routed dispatch (rawKeyboard is
+      // SendInput), so per-step events would only repeat the same destination.
+      logDispatchSink({ sink: "rawkeyboard", tool: "keyboard:sequence", targetHwnd });
       try {
         await withKeyboardLock(async () => {
           for (let i = 0; i < steps.length; i++) {

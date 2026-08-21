@@ -675,6 +675,17 @@ Reports native-engine health and feature activation — whether the Rust UIA / i
 engine loaded, which fallbacks are active, and version / capability flags. Use it to
 confirm the native path is live (vs the PowerShell fallback) when latency looks off.
 
+#### Diagnostic log — resolution and dispatch trail
+`%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (JSONL, on by default) carries a `resolve`
+record for every title→window lookup — match count, chosen window, runners-up, and a
+`fallback:"process-name"` flag when `terminal` fell back to matching by image name — and a
+`dispatch_sink` record immediately before every keyboard / terminal / scroll write, naming the
+channel, the addressed handle and the foreground window at that instant. Records from one tool call
+share a `callId`, so a resolution and the write it produced stay joined when calls overlap. Window
+titles are hashed (`sha256` truncated to 8 hex + UTF-16 length); `DESKTOP_TOUCH_RESOLVE_LOG_RAW=1`
+adds the raw text alongside the hash. Nothing is written when the log is disabled — no hashing, no
+Win32 read.
+
 ---
 
 ### 🌐 Browser CDP (Chrome / Edge)

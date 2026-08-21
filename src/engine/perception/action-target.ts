@@ -26,6 +26,7 @@ import { enumWindowsInZOrder } from "../win32.js";
 import { refreshWin32Fluents, buildWindowIdentity } from "./sensors-win32.js";
 import { findContainingWindow } from "../window-cache.js";
 import { getOrCreateSlot, updateSlot } from "./hot-target-cache.js";
+import { logResolve } from "../../tools/_resolve-log.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -299,13 +300,27 @@ async function resolveWindowTarget(
     normalizeTitle(w.title).includes(normalized)
   );
 
+  // ADR-035 §2 #2 — logged alongside the existing warning, in the same format
+  // every other resolver uses, so the one site that already tells the caller
+  // about a tie is comparable with the ones that stay silent. Emitted before
+  // the zero-match early return so a miss is recorded too (that is the H2 case).
+  const logMatches = candidates.map((w) => ({ hwnd: BigInt(w.hwnd), title: w.title, zOrder: w.zOrder, isActive: w.isActive }));
+
   if (candidates.length === 0) {
+    logResolve({ resolver: "actionTarget", query: titleIncludes, matches: [] });
     return { lens: null, localStore: null, identity: null, candidates: 0, warnings };
   }
 
   // Tie-break: foreground > lowest zOrder
   const foreground = candidates.find((w) => w.isActive);
   const best = foreground ?? [...candidates].sort((a, b) => a.zOrder - b.zOrder)[0]!;
+
+  logResolve({
+    resolver: "actionTarget",
+    query: titleIncludes,
+    matches: logMatches,
+    chosen: { hwnd: BigInt(best.hwnd), title: best.title, zOrder: best.zOrder, isActive: best.isActive },
+  });
 
   if (candidates.length > 1) {
     warnings.push(

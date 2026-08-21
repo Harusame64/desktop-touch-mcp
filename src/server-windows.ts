@@ -66,6 +66,7 @@ import {
   normalizeThrown,
   wrapHandlerArgWithTiming,
 } from "./engine/diagnostic-log.js";
+import { wrapHandlerArgWithCallId } from "./tools/_resolve-log.js";
 import { startCpuWatchdog } from "./engine/diagnostic-watchdog.js";
 import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
@@ -207,7 +208,9 @@ function createMcpServer(): McpServer {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (s as any).tool = function (...toolArgs: any[]) {
     return _originalTool(
-      ...wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+      ...wrapHandlerArgWithCallId(
+        wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+      ),
     );
   };
 
@@ -216,7 +219,9 @@ function createMcpServer(): McpServer {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (s as any).registerTool = function (...toolArgs: any[]) {
     return _originalRegisterTool(
-      ...wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+      ...wrapHandlerArgWithCallId(
+        wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+      ),
     );
   };
 

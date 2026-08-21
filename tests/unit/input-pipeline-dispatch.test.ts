@@ -85,11 +85,20 @@ vi.mock("../../src/engine/native-engine.js", () => ({
 // `_resolve-window.ts` Case 3 (non-dialog class + no owner). Phase 5:
 // `findPlainTopLevelWindowByTitle` is the shared helper that replaced the
 // inline predicate — see `docs/adr-018-phase-5-subplan.md` §2.1#2.
+//
+// ADR-035 Phase 1: the dispatcher now calls the ARRAY-returning
+// `findPlainTopLevelWindowsByTitle` — it needs the match count a second time,
+// for the "N windows match" advisory. The singular helper is still exported
+// (and still what other call sites use), so both are stubbed here. Every
+// behavioural assertion below is unchanged; only the stub the dispatcher
+// reaches for moved.
 const resolveWindowTargetMock = vi.fn();
 const findPlainTopLevelWindowByTitleMock = vi.fn();
+const findPlainTopLevelWindowsByTitleMock = vi.fn();
 vi.mock("../../src/tools/_resolve-window.js", () => ({
   resolveWindowTarget: resolveWindowTargetMock,
   findPlainTopLevelWindowByTitle: findPlainTopLevelWindowByTitleMock,
+  findPlainTopLevelWindowsByTitle: findPlainTopLevelWindowsByTitleMock,
   DIALOG_CLASSNAMES: new Set(["#32770"]),
 }));
 
@@ -104,9 +113,16 @@ const getWindowRectByHwndMock = vi.fn<
   [bigint],
   { x: number; y: number; width: number; height: number } | null
 >();
+// `getForegroundHwnd` / `getWindowTitleW` / `getWindowIdentity` are reached by
+// the ADR-035 Phase 1 dispatch-sink observer, which runs on every tier dispatch.
+// Stubbed to fixed values — the observer is write-only, so nothing below
+// depends on what they return.
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: enumWindowsInZOrderMock,
   getWindowRectByHwnd: getWindowRectByHwndMock,
+  getForegroundHwnd: () => null,
+  getWindowTitleW: () => "",
+  getWindowIdentity: () => ({ pid: 0, processName: "", processStartTimeMs: 0 }),
 }));
 
 // Phase 3 Tier 2 CDP — mock the cdp-bridge surface used by the dispatcher.
@@ -139,6 +155,8 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     resolveWindowTargetMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReset();
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([]);
     enumWindowsInZOrderMock.mockReset();
     enumWindowsInZOrderMock.mockReturnValue([]);
     listTabsLightMock.mockReset();
@@ -169,24 +187,25 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     // HWND via the shared findPlainTopLevelWindowByTitle helper (Phase 5
     // §2.1#2 extraction) — otherwise G1 acceptance can never pass.
     resolveWindowTargetMock.mockResolvedValue(null);
-    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([{
       hwnd: 0x111n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false,
-    });
+    }]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x111n });
     // Phase 5 contract: helper called with both flags TRUE (strict dispatcher
     // predicate per sub-plan §2.1#2 table).
-    expect(findPlainTopLevelWindowByTitleMock).toHaveBeenCalledWith("Notepad", {
+    expect(findPlainTopLevelWindowsByTitleMock).toHaveBeenCalledWith("Notepad", {
       excludeMinimized: true,
       excludeDialogsAndOwned: true,
+      logAs: "inputPipelineCase3",
     });
   });
 
   it("Case 3 recovery matches case-insensitively on a title substring (helper-internal contract)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([{
       hwnd: 0x333n, title: "メモ帳", className: "Notepad", ownerHwnd: null, isMinimized: false,
-    });
+    }]);
     const dest = await resolveInputDestination({ windowTitle: "メモ帳" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x333n });
   });
@@ -196,29 +215,29 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     // per-flag predicate behavior is pinned by find-plain-top-level-window.test.ts.
     // Here we only verify the dispatcher passes the correct flag combination.
     resolveWindowTargetMock.mockResolvedValue(null);
-    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([{
       hwnd: 0x503n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false,
-    });
+    }]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x503n });
-    expect(findPlainTopLevelWindowByTitleMock).toHaveBeenCalledWith("Notepad",
+    expect(findPlainTopLevelWindowsByTitleMock).toHaveBeenCalledWith("Notepad",
       expect.objectContaining({ excludeDialogsAndOwned: true }));
   });
 
   it("Case 3 recovery EXCLUDES minimized windows — flag excludeMinimized: true (Codex PR #288 Round 4 P1)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([{
       hwnd: 0x702n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false,
-    });
+    }]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x702n });
-    expect(findPlainTopLevelWindowByTitleMock).toHaveBeenCalledWith("Notepad",
+    expect(findPlainTopLevelWindowsByTitleMock).toHaveBeenCalledWith("Notepad",
       expect.objectContaining({ excludeMinimized: true }));
   });
 
   it("returns {kind:'unresolved'} when helper returns null (no recoverable top-level)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
   });
@@ -227,14 +246,54 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     resolveWindowTargetMock.mockResolvedValue(null);
     const dest = await resolveInputDestination({});
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
-    expect(findPlainTopLevelWindowByTitleMock).not.toHaveBeenCalled();
+    expect(findPlainTopLevelWindowsByTitleMock).not.toHaveBeenCalled();
+  });
+
+  // ── ADR-035 §6.3 — the Case 3 multi-match advisory ────────────────────────
+  //
+  // Phase 1 is observation + warning only: the destination is still the
+  // frontmost match. What these pin is that the caller is TOLD when the title
+  // was ambiguous, in the same wording `action-target.ts` already uses, and
+  // that a single match stays silent (an advisory on every scroll would be
+  // noise, and the LLM would learn to ignore it).
+  it("Case 3 with 2+ matches appends a non-blocking 'N windows match' advisory", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([
+      { hwnd: 0x901n, title: "notes - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 0x902n, title: "todo - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    const warnings: string[] = [];
+    const dest = await resolveInputDestination({ windowTitle: "Notepad" }, warnings);
+    // Destination is UNCHANGED — frontmost wins, exactly as before.
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0x901n });
+    expect(warnings).toEqual(['2 windows match "Notepad"; using the frontmost']);
+  });
+
+  it("Case 3 with a single match warns about nothing", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([
+      { hwnd: 0x903n, title: "notes - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    const warnings: string[] = [];
+    await resolveInputDestination({ windowTitle: "Notepad" }, warnings);
+    expect(warnings).toEqual([]);
+  });
+
+  it("works without a collector — the advisory is additive, never required", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([
+      { hwnd: 0x904n, title: "a - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 0x905n, title: "b - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0x904n });
   });
 
   it("does not attempt helper lookup for windowTitle '@active' (resolveWindowTarget owns @active)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
     const dest = await resolveInputDestination({ windowTitle: "@active" });
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
-    expect(findPlainTopLevelWindowByTitleMock).not.toHaveBeenCalled();
+    expect(findPlainTopLevelWindowsByTitleMock).not.toHaveBeenCalled();
   });
 });
 
@@ -432,6 +491,8 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     resolveWindowTargetMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReset();
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([]);
     enumWindowsInZOrderMock.mockReset();
     enumWindowsInZOrderMock.mockReturnValue([]);
     listTabsLightMock.mockReset();
@@ -456,9 +517,9 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
 
   it("Case 3 recovery for Chromium HWND also promotes to {kind:'cdp'} (plain windowTitle on Chrome)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([{
       hwnd: 0xBBBn, title: "Google Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false,
-    });
+    }]);
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-Y", title: "X", url: "https://x.com/" },
     ]);

@@ -29,7 +29,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { terminalReadHandler, terminalSendHandler } from "../../src/tools/terminal.js";
-import { launchPowerShell, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, type TerminalHost, assertTagAlive } from "./helpers/powershell-launcher.js";
 import { sleep, parsePayload } from "./helpers/wait.js";
 
 interface HostScenario {
@@ -100,6 +100,7 @@ describe.each(SCENARIOS)("[$label] terminal hidden-input detection (#183)", ({ h
     // We want this initial command to use the BG path is fine — but we must
     // wait for the prompt to render. Simplest: send via default settings and
     // then wait for the `Password:` line.
+    assertTagAlive(ps);
     const armRes = parsePayload(await terminalSendHandler({
       windowTitle: ps.title,
       input: `$pw = Read-Host -Prompt 'Password' -AsSecureString`,
@@ -143,6 +144,7 @@ describe.each(SCENARIOS)("[$label] terminal hidden-input detection (#183)", ({ h
     // Step 2: BG send the password. Force method:'background' so verification
     // would normally run; #183 must short-circuit it via hidden_input_prompt.
     const password = "hunter2-shh";
+    assertTagAlive(ps);
     const sendRes = parsePayload(await terminalSendHandler({
       windowTitle: ps.title,
       input: password,
@@ -201,6 +203,7 @@ describe.each(SCENARIOS)("[$label] terminal hidden-input detection (#183)", ({ h
     // either be absent (current Strict-path delivered behaviour) or carry
     // status:"delivered" — but it must NEVER be reason:"hidden_input_prompt".
     const tag = `nh-${host}-${Date.now().toString(36)}`;
+    assertTagAlive(ps);
     const sendRes = parsePayload(await terminalSendHandler({
       windowTitle: ps.title,
       input: `echo ${tag}`,

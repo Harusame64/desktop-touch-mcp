@@ -49,6 +49,7 @@ import {
   assertTier4Reachable,
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
+import { logDispatchSink } from "./_resolve-log.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { moveCursorTo } from "../engine/cursor.js";
 
@@ -1251,7 +1252,9 @@ export const scrollHandler = async ({
     // (single SSOT per ADR §2.3 D3); cursor-pixel routing is confined to
     // Tier 4 (legacy nutjs path below) so the ADR-018 §1.2 root-cause
     // (cursor coordinates as the destination) cannot re-enter the dispatcher.
-    const dest = await resolveInputDestination({ hwnd, windowTitle });
+    // ADR-035 Phase 1: `scrollWarnings` doubles as the advisory collector for
+    // the Case 3 multi-match warning — same array the response already surfaces.
+    const dest = await resolveInputDestination({ hwnd, windowTitle }, scrollWarnings);
 
     // Observation HWND for snapshot verification. ADR §2.2 invariant:
     // observation must use the SAME destination the dispatcher acted on. When
@@ -1442,6 +1445,11 @@ export const scrollHandler = async ({
         );
       }
       assertTier4Reachable(dest);
+      // ADR-035 Phase 1 — Tier 4 has no destination handle by construction
+      // (the guard above admits only `kind:'unresolved'`), so the foreground
+      // window recorded here IS where the wheel lands. That is the whole H2
+      // question for scroll.
+      logDispatchSink({ sink: "sendinput", tool: "scroll", targetHwnd: null, tier: "4" });
       const SCROLL_MULTIPLIER = 3;
       switch (direction) {
         case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;

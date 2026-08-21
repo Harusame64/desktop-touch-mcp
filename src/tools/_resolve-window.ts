@@ -20,6 +20,8 @@ import {
   enumWindowsInZOrder, getWindowOwner, getWindowClassName, isWindowEnabled, getLastActivePopup,
 } from "../engine/win32.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { logResolve } from "./_resolve-log.js";
+import type { ResolveResolver } from "../engine/diagnostic-log.js";
 
 /**
  * (R3 tool-exclusion) Cases 1/2 resolve an HWND directly (explicit `hwnd`, `@active`), bypassing
@@ -91,21 +93,65 @@ function safeGetClassName(hwnd: bigint): string | null {
  */
 export function findPlainTopLevelWindowByTitle(
   title: string,
-  opts: {
-    excludeMinimized?: boolean;
-    excludeDialogsAndOwned?: boolean;
-  } = {},
+  opts: PlainTopLevelMatchOptions = {},
 ): ReturnType<typeof enumWindowsInZOrder>[number] | null {
+  return findPlainTopLevelWindowsByTitle(title, opts)[0] ?? null;
+}
+
+/**
+ * Options shared by the plain-top-level matcher and its two entry points.
+ *
+ * `logAs` is ADR-035 Phase 1 observation only and never affects which window is
+ * returned. It exists because the invariant is **one resolution = one `resolve`
+ * event**: a caller that wraps this helper (`_input-pipeline.ts` Case 3) names
+ * itself so the event is attributed to the wrapper rather than to the SSOT, and
+ * a caller that has already logged the same resolution passes `"off"`.
+ */
+export interface PlainTopLevelMatchOptions {
+  excludeMinimized?: boolean;
+  excludeDialogsAndOwned?: boolean;
+  logAs?: ResolveResolver | "off";
+}
+
+/**
+ * Every plain top-level window matching `title`, in Z-order, and the ADR-035
+ * Phase 1 `resolve` event that records how many there were.
+ *
+ * The array-returning shape is what makes the observation possible at all:
+ * `matchCount` and the runners-up are exactly the information the historic
+ * `.find()` threw away, and `_input-pipeline.ts` Case 3 needs the count a
+ * second time to decide whether to warn.
+ *
+ * @returns All matches (possibly empty). `[0]` is the window the legacy
+ *   `.find()` would have returned.
+ */
+export function findPlainTopLevelWindowsByTitle(
+  title: string,
+  opts: PlainTopLevelMatchOptions = {},
+): ReturnType<typeof enumWindowsInZOrder> {
   // Checked before enumerating: an empty title must cost nothing (pinned by
   // find-plain-top-level-window.test.ts).
-  if (!title) return null;
+  if (!title) return [];
   try {
-    return pickPlainTopLevelWindowByTitle(enumWindowsInZOrder(), title, opts);
+    const matches = matchPlainTopLevelWindowsByTitle(enumWindowsInZOrder(), title, opts);
+    logPlainTopLevelResolve(title, matches, opts);
+    return matches;
   } catch {
-    // `enumWindowsInZOrder` unavailable → null (callers fall through to their
-    // own fallback / unresolved path).
-    return null;
+    // `enumWindowsInZOrder` unavailable → no matches (callers fall through to
+    // their own fallback / unresolved path).
+    return [];
   }
+}
+
+/** Shared emitter for the two plain-top-level entry points (honours `logAs`). */
+function logPlainTopLevelResolve(
+  title: string,
+  matches: ReturnType<typeof enumWindowsInZOrder>,
+  opts: PlainTopLevelMatchOptions,
+): void {
+  const resolver = opts.logAs ?? "pickPlainTopLevelWindowByTitle";
+  if (resolver === "off") return;
+  logResolve({ resolver, query: title, matches });
 }
 
 /**
@@ -122,24 +168,38 @@ export function findPlainTopLevelWindowByTitle(
 export function pickPlainTopLevelWindowByTitle(
   windows: ReturnType<typeof enumWindowsInZOrder>,
   title: string,
-  opts: {
-    excludeMinimized?: boolean;
-    excludeDialogsAndOwned?: boolean;
-  } = {},
+  opts: PlainTopLevelMatchOptions = {},
 ): ReturnType<typeof enumWindowsInZOrder>[number] | null {
   if (!title) return null;
+  const matches = matchPlainTopLevelWindowsByTitle(windows, title, opts);
+  logPlainTopLevelResolve(title, matches, opts);
+  return matches[0] ?? null;
+}
+
+/**
+ * The pure matcher underneath {@link pickPlainTopLevelWindowByTitle} — all
+ * matches instead of the first one, and no logging.
+ *
+ * Kept separate so the ADR-035 Phase 1 instrumentation can count matches
+ * without any call site paying for a second pass, and so a caller that logs the
+ * resolution itself is not forced through the emitter.
+ */
+export function matchPlainTopLevelWindowsByTitle(
+  windows: ReturnType<typeof enumWindowsInZOrder>,
+  title: string,
+  opts: PlainTopLevelMatchOptions = {},
+): ReturnType<typeof enumWindowsInZOrder> {
+  if (!title) return [];
   const { excludeMinimized = false, excludeDialogsAndOwned = false } = opts;
   const q = title.toLowerCase();
-  return (
-    windows.find((w) => {
-      if (excludeMinimized && w.isMinimized) return false;
-      if (excludeDialogsAndOwned) {
-        if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
-        if (w.ownerHwnd != null) return false;
-      }
-      return w.title.toLowerCase().includes(q);
-    }) ?? null
-  );
+  return windows.filter((w) => {
+    if (excludeMinimized && w.isMinimized) return false;
+    if (excludeDialogsAndOwned) {
+      if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
+      if (w.ownerHwnd != null) return false;
+    }
+    return w.title.toLowerCase().includes(q);
+  });
 }
 
 /**

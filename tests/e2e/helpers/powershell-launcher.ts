@@ -147,6 +147,56 @@ function findByTag(
   return null;
 }
 
+/**
+ * The minimum a window needs for {@link assertTagAlive}: its tag, the handle it
+ * had at spawn, and (optionally) which console host it runs under. Structural
+ * rather than `PsInstance` so the notepad launcher's instances — same tag /
+ * title / hwnd contract, different launcher — can be checked by the same helper.
+ */
+export interface TaggedWindow {
+  tag: string;
+  hwnd: bigint;
+  host?: TerminalHost;
+}
+
+/**
+ * ADR-035 §7-3 — assert that the launched window still carries its tag, right
+ * before a call that uses `ps.title` / `ps.tag` as the destination.
+ *
+ * The drift these suites are chasing happens BETWEEN spawn and dispatch: the
+ * shell renames its own window (a prompt that embeds the cwd, an ssh login
+ * banner, WT rewriting the tab title), the tag disappears from the title, and
+ * the title-based resolver then matches nothing — or matches something else
+ * entirely. Checking once at spawn time cannot see that; checking immediately
+ * before each input call can.
+ *
+ * Re-reads the title from the ORIGINAL `hwnd`, so a same-tag sibling window
+ * cannot stand in for the real one.
+ *
+ * **When this fires, it is a finding, not a flake** (plan §2 checklist, Round 13
+ * Opus F-1): the failure message carries the expected tag, the title the window
+ * actually has now, and the hwnd, and that record IS the Phase 1 observation.
+ * Do not skip or quarantine the test to get back to green — quarantining needs
+ * explicit user approval plus an owner and a release condition in the comment.
+ */
+export function assertTagAlive(ps: TaggedWindow): void {
+  let currentTitle: string | null = null;
+  for (const w of enumWindowsInZOrder()) {
+    if (w.hwnd === ps.hwnd) { currentTitle = w.title; break; }
+  }
+  if (currentTitle !== null && currentTitle.includes(ps.tag)) return;
+  throw new Error(
+    "TitleTagDrift (ADR-035 §7-3): the launched window no longer carries its tag, " +
+    "so any windowTitle-based call from here targets an unknown window. " +
+    JSON.stringify({
+      expectedTag: ps.tag,
+      currentTitle: currentTitle ?? "<window not found in enumeration>",
+      hwnd: String(ps.hwnd),
+      ...(ps.host !== undefined && { host: ps.host }),
+    }),
+  );
+}
+
 export async function launchPowerShell(opts?: {
   banner?: string;
   exe?: string;

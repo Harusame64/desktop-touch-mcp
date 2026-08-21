@@ -13,6 +13,7 @@ import {
   scrollElementIntoView,
 } from "../engine/uia-bridge.js";
 import { readScrollInfo, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import { logResolve } from "./_resolve-log.js";
 import {
   dHashFromRaw,
   hammingDistance,
@@ -356,9 +357,12 @@ async function tryImage(params: {
   const { windowTitle, retryCount, hint } = params;
 
   // Resolve HWND
-  const win = enumWindowsInZOrder().find(w =>
+  const matches = enumWindowsInZOrder().filter(w =>
     w.title.toLowerCase().includes(windowTitle.toLowerCase())
   );
+  const win = matches[0];
+  // ADR-035 §2 #7 — a write: the resolved window is focused and then scrolled.
+  logResolve({ resolver: "smartScrollImage", query: windowTitle, matches, identity: "lookup" });
   if (!win) {
     return failWith(`Window not found: "${windowTitle}"`, "scroll(action='smart')", { windowTitle });
   }
