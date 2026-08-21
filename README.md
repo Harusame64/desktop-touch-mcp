@@ -665,7 +665,7 @@ Action tools (`mouse_click`, `mouse_drag`, `keyboard(action='type'/'press')`, `c
 - Confirms click coordinates are inside the target window rect
 - Returns `post.perception.status` on every response — including failures — so the LLM can recover without a screenshot
 
-**Keyboard writes must name a destination.** `keyboard(action='type'/'press'/'sequence')` requires either `windowTitle` or `hwnd`. Without one there is no target to guard, and the keys would land on whatever window is foreground at that instant — including one you just clicked into yourself. Such a call is refused with `code:"DestinationRequired"` before any key is sent. `hwnd` on its own is enough, even for a window with no title.
+**Keyboard writes must name a destination.** `keyboard(action='type'/'press'/'sequence')` requires either `windowTitle` or `hwnd`. Without one there is no target to guard, and the keys would land on whatever window is foreground at that instant — including one you just clicked into yourself. Such a call is refused with `code:"DestinationRequired"` before any key is sent, and a `windowTitle` that is empty or only spaces counts as no target at all. A window that has **no title** can be addressed by `hwnd`, but only while it is already the foreground window — keyboard focus and guarding cannot target a titleless window yet, so bring it forward with `focus_window` first if it is not in front. Such a call also comes back with a warning saying the input was delivered unguarded.
 
 | Variable | Default | Meaning |
 |---|---|---|

@@ -146,8 +146,16 @@ type Resolved = { title: string; hwnd: bigint; warnings: string[] } | null;
 const mockResolveWindowTarget = vi.fn<
   (opts: { hwnd?: string; windowTitle?: string }) => Promise<Resolved>
 >(async (opts) => {
-  if (opts.hwnd === undefined && opts.windowTitle === undefined) return null;
-  return { title: opts.windowTitle ?? "Notepad", hwnd: 0x100n, warnings: [] };
+  // Faithful to production (`_resolve-window.ts` cases 1-4): an explicit `hwnd`
+  // and the `@active` shorthand resolve to a window, while a PLAIN windowTitle
+  // returns null and the handler keeps the caller's own string. The previous
+  // catch-all — echoing any windowTitle back as a resolved title — put plain
+  // titles down the resolved-window branch they never take in production, which
+  // A5 exposed: `"   "` came back as a titleless foreground window instead of
+  // "the caller named nothing".
+  if (opts.hwnd !== undefined) return { title: "Notepad", hwnd: 0x100n, warnings: [] };
+  if (opts.windowTitle === "@active") return { title: "", hwnd: 0x100n, warnings: [] };
+  return null;
 });
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
@@ -298,6 +306,29 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     expect(diagnosticEvents()[0]).toMatchObject({ tool: "keyboard:sequence", decision: "block" });
   });
 
+  it("A5: a whitespace-only windowTitle names no window", async () => {
+    // `focusWindowForKeyboard` matches by case-insensitive substring, so `"   "`
+    // used to pass the presence check and then land on the first window whose
+    // title happens to contain a space — an arbitrary target reached through a
+    // value that merely looks like one.
+    const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, windowTitle: "   " }));
+    expectRefused(r, "keyboard:type");
+    expect(r.error).toContain("whitespace-only");
+    expect(diagnosticEvents()).toEqual([
+      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, hadHwndParam: false, reason: "no_destination", decision: "block" },
+    ]);
+  });
+
+  it("A5b: a resolved title that is only whitespace is treated like no title", async () => {
+    // Same reasoning one layer down: an hwnd whose window reports `"   "` is no
+    // more usable than one reporting `""`, so it takes the titleless path —
+    // refused here because the window is not the foreground one.
+    mockResolveWindowTarget.mockResolvedValueOnce({ title: "   ", hwnd: 123n, warnings: [] });
+    mockGetForegroundHwnd.mockReturnValue(0x999n);
+    const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, hwnd: "123" }));
+    expectRefused(r, "keyboard:type", "titleless_hwnd_not_foreground");
+  });
+
   it("A3-lens / A4-lens: press and sequence close the lens arm too", async () => {
     const p = body(await keyboardPressHandler({ ...PRESS_NO_DESTINATION, lensId: "L1" }));
     expectRefused(p, "keyboard:press");
@@ -316,6 +347,21 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     // A normally-targeted write is guarded, so it must NOT carry the
     // titleless-foreground caveat — otherwise the warning means nothing.
     expect(warningsOf(r).some((w) => w.includes(TITLELESS_WARNING_FRAGMENT))).toBe(false);
+    expect(diagnosticEvents()).toEqual([]);
+  });
+
+  it("B2: only PRESENCE is trimmed — the title itself reaches the resolver intact", async () => {
+    // Padding around a real substring is a legitimate target, and trimming it on
+    // the way through would silently change which window the caller matches.
+    const r = body(
+      await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, windowTitle: " Notepad " }),
+    );
+    expect(r.ok).toBe(true);
+    expect(mockType).toHaveBeenCalledTimes(1);
+    expect(mockResolveWindowTarget).toHaveBeenCalledWith({
+      hwnd: undefined,
+      windowTitle: " Notepad ",
+    });
     expect(diagnosticEvents()).toEqual([]);
   });
 

@@ -238,6 +238,24 @@ export const TITLELESS_FOREGROUND_WARNING =
   "titleless windows, see ADR-036)";
 
 /**
+ * Does this title actually name a window?
+ *
+ * Presence is decided on the TRIMMED title, because `focusWindowForKeyboard`
+ * matches by case-insensitive SUBSTRING: `windowTitle: " "` is a non-empty
+ * string, so it used to pass the check, and then matched the first window whose
+ * title happens to contain a space — an arbitrary target, which is the accident
+ * this ADR exists to prevent, reached through a value that merely looks like a
+ * target (Codex review R4).
+ *
+ * Only PRESENCE is trimmed. The title itself continues downstream untouched, so
+ * `" Notepad "` still matches exactly what it matched before — deciding whether
+ * a caller named something is a separate question from what they named.
+ */
+function namesAWindow(title: string | undefined): boolean {
+  return typeof title === "string" && title.trim() !== "";
+}
+
+/**
  * The destination predicate, as one function so no caller re-derives it.
  *
  * **A handle is not automatically a destination.** Everything downstream of the
@@ -259,12 +277,14 @@ export function keyboardDestinationMiss(p: {
   resolved: ResolvedDestination | undefined;
 }): DestinationVerdict {
   const { effectiveWindowTitle, resolved } = p;
-  if (typeof effectiveWindowTitle === "string" && effectiveWindowTitle !== "") return { miss: null };
+  if (namesAWindow(effectiveWindowTitle)) return { miss: null };
   if (resolved === undefined) return { miss: "no_destination" };
-  // `resolved.title !== ""` is redundant with the check above in practice (the
-  // handlers adopt the resolved title into `effectiveWindowTitle`); kept so the
-  // predicate reads correctly on its own.
-  if (resolved.title !== "") return { miss: null };
+  // `namesAWindow(resolved.title)` is redundant with the check above in practice
+  // (the handlers adopt the resolved title into `effectiveWindowTitle`); kept so
+  // the predicate reads correctly on its own. A whitespace-only resolved title
+  // is treated exactly like `""` — it is equally unusable downstream, so it
+  // falls into the titleless-foreground rule rather than passing.
+  if (namesAWindow(resolved.title)) return { miss: null };
   if (resolved.isForeground()) return { miss: null, note: "titleless_foreground" };
   return { miss: "titleless_hwnd_not_foreground" };
 }
@@ -282,7 +302,8 @@ export function destinationDowngradeWarning(reason: DestinationMissReason): stri
 
 function destinationBlockMessage(toolName: string, reason: DestinationMissReason): string {
   return reason === "no_destination"
-    ? `${toolName} requires a destination window: pass windowTitle or hwnd`
+    ? `${toolName} requires a destination window: pass windowTitle or hwnd ` +
+      "(an empty or whitespace-only windowTitle does not name one)"
     : `${toolName}: the window addressed by hwnd has no title and is not in the foreground — ` +
       "keyboard delivery cannot yet target titleless windows (ADR-036); bring it to the " +
       "foreground first (focus_window) or target a titled window";

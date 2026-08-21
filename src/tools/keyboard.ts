@@ -899,14 +899,19 @@ const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).desc
 
 const windowTitleFocusParam = z.string().optional().describe(
   "Partial title of the window that should receive the keystrokes. " +
-  "When provided, the server focuses this window before typing and uses it as the expected " +
-  "target for focusLost detection. Use '@active' for the current foreground window."
+  "Required unless you pass hwnd: a call with neither stops with DestinationRequired before " +
+  "any key is sent, and an empty or whitespace-only value counts as neither. " +
+  "The server focuses this window before typing and uses it as the expected " +
+  "target for focusLost detection. Use '@active' to target the current foreground window on purpose."
 );
 
 const hwndFocusParam = z.string().optional().describe(
   "Direct window handle ID (takes precedence over windowTitle). " +
+  "Either this or windowTitle is required. " +
   "Obtain from desktop_discover response (windows[].hwnd). " +
-  "String type to avoid 64-bit precision issues."
+  "String type to avoid 64-bit precision issues. " +
+  "A window that has no title can be addressed this way, but only while it is already the " +
+  "foreground window — keyboard focus and guarding cannot target a titleless window yet."
 );
 
 /** Non-ASCII punctuation that can be hijacked as Chrome/Edge keyboard accelerators */
@@ -3223,13 +3228,13 @@ export function registerKeyboardTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
-        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
-        prefer: "Use windowTitle to auto-focus before injection. Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
+        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. windowTitle or hwnd is REQUIRED (blank/whitespace counts as neither) — the server focuses and auto-guards that window (identity, foreground, modal) first, and a call with neither stops with DestinationRequired before any key is sent. Use windowTitle:'@active' to aim at the foreground window on purpose; an hwnd naming a titleless window works only while that window is already foreground. DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgrades the stop to a warning.",
+        prefer: "Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
         caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard reports the backend and whether the clipboard was restored. Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
         examples: [
-          "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
-          "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
-          "keyboard({action:'press', keys:'ctrl+c'}) → copy",
+          "keyboard({action:'type', text:'hello', windowTitle:'Untitled - Notepad'}) → text injected (guarded)",
+          "keyboard({action:'type', text:'hello', windowTitle:'@active'}) → typed into the foreground window",
+          "keyboard({action:'press', keys:'ctrl+c', windowTitle:'Untitled - Notepad'}) → copy",
           "keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog",
           "keyboard({action:'sequence', steps:[{keys:'alt+i', gapMs:100},{keys:'m'}], windowTitle:'Microsoft Visual Basic'}) → Insert > Module (atomic)",
         ],

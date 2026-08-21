@@ -47,6 +47,16 @@ const MAX_CHARS_OVERRIDES: Record<string, number> = {
   // 3 PostMessage, 5: SSOT unification) will append more action notes, so the
   // override sits at 3000 with a comfortable buffer above the current ~2741.
   scroll: 3000,
+  // `keyboard` is the type / press / sequence dispatcher, and its description is
+  // the only place an MCP client learns the destination rule: windowTitle or
+  // hwnd is required, blank counts as neither, '@active' is the explicit way to
+  // aim at the foreground window, and a titleless window's hwnd works only while
+  // that window is in front. Advertising anything looser costs every agent a
+  // guaranteed DestinationRequired round-trip, which is what this text exists to
+  // prevent. It sat at 2487 of 2500 before that rule landed — 99.5% of the cap —
+  // so stating it at all needed room. Trimmed as far as it goes without dropping
+  // guidance (~2824); the override sits at 3000 with a small buffer.
+  keyboard: 3000,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
