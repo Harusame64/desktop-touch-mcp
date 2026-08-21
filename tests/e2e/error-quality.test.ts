@@ -169,14 +169,30 @@ describe("G3: keyboard_press blocked key → BlockedKeyCombo + workspace_launch 
     // ctrl+s is safe — should not return BlockedKeyCombo.
     // The key press itself may have no visible effect without a focused window,
     // but it must NOT be blocked at the safety level.
-    const result = await keyboardPressHandler({
-      keys: "ctrl+s",
-      trackFocus: false,
-      settleMs: 0,
-    });
-    const p = parsePayload(result);
+    //
+    // ADR-038: the point of this case is that the key SURVIVES the safety
+    // filter, which only shows if the call gets past it — and a destination-less
+    // write now stops earlier, at DestinationRequired. There is no window in
+    // scope in this describe, so it runs under the documented downgrade, and
+    // the added assertion below keeps the downgrade load-bearing: without it,
+    // `code !== "BlockedKeyCombo"` would be satisfied by the earlier refusal.
+    const prev = process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+    process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = "0";
+    let p: Record<string, unknown>;
+    try {
+      const result = await keyboardPressHandler({
+        keys: "ctrl+s",
+        trackFocus: false,
+        settleMs: 0,
+      });
+      p = parsePayload(result);
+    } finally {
+      if (prev === undefined) delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+      else process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = prev;
+    }
 
     // ok may be true or false (focus issues), but code must not be BlockedKeyCombo
     expect(p.code).not.toBe("BlockedKeyCombo");
+    expect(p.code).not.toBe("DestinationRequired");
   });
 });

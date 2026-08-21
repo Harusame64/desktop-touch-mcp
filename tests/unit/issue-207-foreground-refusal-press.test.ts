@@ -39,6 +39,12 @@ vi.mock("../../src/tools/_action-guard.js", () => ({
   isAutoGuardEnabled: vi.fn(() => false),
   validateAndPrepareFix: vi.fn(() => null),
   consumeFix: vi.fn(),
+  // ADR-038: this file replaces the whole `_action-guard` module (no
+  // `importOriginal`), so every export the handler reaches must be stubbed or
+  // the call throws before the foreground ladder it pins is exercised. The
+  // fixtures below all pass `windowTitle`, so the real helper would answer
+  // `{ok:true}` here too.
+  assertKeyboardDestination: vi.fn(() => ({ ok: true })),
 }));
 
 vi.mock("../../src/engine/perception/registry.js", () => ({

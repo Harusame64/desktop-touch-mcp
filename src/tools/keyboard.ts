@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd, getForegroundHwnd } from "../engine/win32.js";
 import { nativeWin32, hasNativeTypeViaClipboard } from "../engine/native-engine.js";
 import type { NativeTypeViaClipboardResult } from "../engine/native-types.js";
 // ADR-033: the fallback's command-line ceiling, the shared give-up budget and
@@ -40,7 +40,27 @@ import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss } from "./_action-guard.js";
+import type { ResolvedDestination } from "./_action-guard.js";
+
+/**
+ * ADR-038: package what the resolver settled on for the destination predicate.
+ * `isForeground` is a closure so the syscall runs only for a titleless window.
+ * `getForegroundHwnd` is used rather than `enumWindowsInZOrder().find(isActive)`
+ * because that enumeration SKIPS untitled windows (`win32.ts:161`) — the exact
+ * windows this predicate is about — so the enumeration form would report `false`
+ * for every one of them.
+ */
+function toResolvedDestination(
+  resolved: { hwnd: bigint; title: string } | null,
+): ResolvedDestination | undefined {
+  if (!resolved) return undefined;
+  return {
+    hwnd: resolved.hwnd,
+    title: resolved.title,
+    isForeground: () => getForegroundHwnd() === resolved.hwnd,
+  };
+}
 import { resolveWindowTarget } from "./_resolve-window.js";
 import {
   makeCommitWrapper,
@@ -879,14 +899,19 @@ const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).desc
 
 const windowTitleFocusParam = z.string().optional().describe(
   "Partial title of the window that should receive the keystrokes. " +
-  "When provided, the server focuses this window before typing and uses it as the expected " +
-  "target for focusLost detection. Use '@active' for the current foreground window."
+  "Required unless you pass hwnd: a call with neither stops with DestinationRequired before " +
+  "any key is sent, and an empty or whitespace-only value counts as neither. " +
+  "The server focuses this window before typing and uses it as the expected " +
+  "target for focusLost detection. Use '@active' to target the current foreground window on purpose."
 );
 
 const hwndFocusParam = z.string().optional().describe(
   "Direct window handle ID (takes precedence over windowTitle). " +
+  "Either this or windowTitle is required. " +
   "Obtain from desktop_discover response (windows[].hwnd). " +
-  "String type to avoid 64-bit precision issues."
+  "String type to avoid 64-bit precision issues. " +
+  "A window that has no title can be addressed this way, but only while it is already the " +
+  "foreground window — keyboard focus and guarding cannot target a titleless window yet."
 );
 
 /** Non-ASCII punctuation that can be hijacked as Chrome/Edge keyboard accelerators */
@@ -1392,22 +1417,50 @@ export const keyboardTypeHandler = async ({
   try {
     // Phase G: fixId approval prologue
     let effectiveText = text;
+    // ADR-038: validate the fix and adopt its args here, but do NOT burn it yet
+    // — `consumeFix` moved below the destination check so a refused call does
+    // not spend the one-shot approval it never got to use.
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
       const vr = validateAndPrepareFix(fixId, "keyboard");
       if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
       if (typeof vr.fix.args.text === "string") effectiveText = vr.fix.args.text;
-      consumeFix(fixId);
     }
 
     // Resolve hwnd / @active → effective window title (only when not using a fixId)
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
+    const resolvedDestination = toResolvedDestination(resolvedWin);
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
+
+    // ADR-038: the one-shot fix is spent only once the call is actually going
+    // ahead — never on a path that refuses, or the retry the error asks for
+    // would come back FixAlreadyConsumed.
+    const spendFix = (): void => { if (fixId) consumeFix(fixId); };
+
+    // ── ADR-038: destination required ─────────────────────────────────────
+    // Runs once, BEFORE the method split and before either guard branch, so a
+    // destination-less write cannot slip through the lensId arm (which never
+    // reaches runActionGuard). `foreground_flash` is exempt: it already
+    // refuses with its own `ForegroundFlashRequiresTarget` a few lines below
+    // and that public code must not change.
+    if (inputMethod !== "foreground_flash") {
+      const destCheck = assertKeyboardDestination({
+        toolName: "keyboard:type",
+        effectiveWindowTitle,
+        hwnd,
+        resolved: resolvedDestination,
+        lensId,
+        warnings,
+      });
+      if (!destCheck.ok) return destCheck.errorResult;
+      // Non-flash path: the call is going ahead from here.
+      spendFix();
+    }
 
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ────────────────
     // method:'foreground_flash' は `background` 契約とは分離した妥協 BG path
@@ -1415,6 +1468,21 @@ export const keyboardTypeHandler = async ({
     // window 用、single-line + < 5KiB 制約、typing leak risk hints あり。
     if (inputMethod === "foreground_flash") {
       if (!effectiveWindowTitle) {
+        // ADR-038 Phase 0: count this refusal, but ONLY when it really is
+        // destination-less. `foreground_flash` needs a TITLE specifically, so
+        // it also refuses calls that DO have a destination by this ADR's rule
+        // (an hwnd resolving to a titleless foreground window). Counting those
+        // would inflate the sample with calls the ADR does not consider
+        // destination-less at all (Opus review R2). Same predicate, one place.
+        const { miss } = keyboardDestinationMiss({ effectiveWindowTitle, resolved: resolvedDestination });
+        if (miss !== null) {
+          noteDestinationMissing("keyboard:type", {
+            hasLens: lensId !== undefined,
+            hadHwndParam: hwnd !== undefined,
+            reason: miss,
+            decision: "block",
+          });
+        }
         return failWith(
           new Error("ForegroundFlashRequiresTarget"),
           "keyboard:type"
@@ -1431,6 +1499,8 @@ export const keyboardTypeHandler = async ({
           { windowTitle: effectiveWindowTitle }
         );
       }
+      // Past both flash refusals — the call is going ahead (ADR-038 P3).
+      spendFix();
       // Lens / auto-guard: foregroundVerified=false because flash will steal
       // foreground, but it returns to original within ~80ms; downstream guards
       // (modal/identity/dirty/focusedElement) still run.
@@ -2305,6 +2375,17 @@ export const keyboardPressHandler = async ({
     const homingNotes: string[] = [];
     let foregroundVerified = false;
 
+    // ── ADR-038: destination required (before the method / guard split) ────
+    const destCheck = assertKeyboardDestination({
+      toolName: "keyboard:press",
+      effectiveWindowTitle,
+      hwnd,
+      resolved: toResolvedDestination(resolvedWin),
+      lensId,
+      warnings,
+    });
+    if (!destCheck.ok) return destCheck.errorResult;
+
     // ── Background input path ──────────────────────────────────────────────
     const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
@@ -2647,12 +2728,13 @@ export const keyboardSequenceHandler = async ({
     // GUARD-pre-loop rejection retry (e.g. unsafe.keyboardTarget) — the
     // mid-loop MenuFocusLostMidSequence path returns context.remaining
     // directly (FocusLostDuringType convention).
+    // ADR-038: validate the fix and adopt its args here, but burn it only once
+    // the destination check has let the call through (see keyboard:type).
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
       const vr = validateAndPrepareFix(fixId, "keyboard");
       if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard:sequence");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
-      consumeFix(fixId);
     }
 
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
@@ -2662,6 +2744,20 @@ export const keyboardSequenceHandler = async ({
     const homingNotes: string[] = [];
     let foregroundVerified = false;
     let targetHwnd: bigint | null = null;
+
+    // ── ADR-038: destination required (before focus and the guard split) ───
+    const destCheck = assertKeyboardDestination({
+      toolName: "keyboard:sequence",
+      effectiveWindowTitle,
+      hwnd,
+      resolved: toResolvedDestination(resolvedWin),
+      lensId,
+      warnings,
+    });
+    if (!destCheck.ok) return destCheck.errorResult;
+
+    // The call is going ahead — now the one-shot fix is genuinely spent.
+    if (fixId) consumeFix(fixId);
 
     if (effectiveWindowTitle) {
       // Codex PR #270 P2: when the caller passed an explicit hwnd,
@@ -3132,13 +3228,13 @@ export function registerKeyboardTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
-        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
-        prefer: "Use windowTitle to auto-focus before injection. Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
+        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. windowTitle or hwnd is REQUIRED (blank/whitespace counts as neither) — the server focuses and auto-guards that window (identity, foreground, modal) first, and a call with neither stops with DestinationRequired before any key is sent. Use windowTitle:'@active' to aim at the foreground window on purpose; an hwnd naming a titleless window works only while that window is already foreground. DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgrades the stop to a warning.",
+        prefer: "Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
         caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard reports the backend and whether the clipboard was restored. Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
         examples: [
-          "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
-          "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
-          "keyboard({action:'press', keys:'ctrl+c'}) → copy",
+          "keyboard({action:'type', text:'hello', windowTitle:'Untitled - Notepad'}) → text injected (guarded)",
+          "keyboard({action:'type', text:'hello', windowTitle:'@active'}) → typed into the foreground window",
+          "keyboard({action:'press', keys:'ctrl+c', windowTitle:'Untitled - Notepad'}) → copy",
           "keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog",
           "keyboard({action:'sequence', steps:[{keys:'alt+i', gapMs:100},{keys:'m'}], windowTitle:'Microsoft Visual Basic'}) → Insert > Module (atomic)",
         ],

@@ -32,6 +32,9 @@ let np: NpInstance;
 
 // Wrap keyboard_press with withPostState exactly as the MCP server does,
 // so history entries are recorded for our test actions.
+// ADR-038: the presses below exist only to produce history entries; they now
+// name the launcher's Notepad explicitly rather than firing at whatever window
+// is foreground, which is what the recorded action should have meant anyway.
 const trackedKeyboardPress = withPostState("keyboard_press", keyboardPressHandler);
 
 beforeAll(async () => {
@@ -57,11 +60,11 @@ describe("H2: get_history ring buffer", () => {
 
   it("entries appear in chronological order (ascending tsMs)", async () => {
     // Run 3 sequential actions — each records a history entry.
-    await trackedKeyboardPress({ keys: "escape", trackFocus: false, settleMs: 0 });
+    await trackedKeyboardPress({ keys: "escape", hwnd: String(np.hwnd), trackFocus: false, settleMs: 0 });
     await sleep(50);
-    await trackedKeyboardPress({ keys: "escape", trackFocus: false, settleMs: 0 });
+    await trackedKeyboardPress({ keys: "escape", hwnd: String(np.hwnd), trackFocus: false, settleMs: 0 });
     await sleep(50);
-    await trackedKeyboardPress({ keys: "escape", trackFocus: false, settleMs: 0 });
+    await trackedKeyboardPress({ keys: "escape", hwnd: String(np.hwnd), trackFocus: false, settleMs: 0 });
 
     const result = await getHistoryHandler({ n: 20 });
     const p = parsePayload(result);
@@ -75,7 +78,7 @@ describe("H2: get_history ring buffer", () => {
   });
 
   it("each history entry has required fields: tool, ok, post, tsMs", async () => {
-    await trackedKeyboardPress({ keys: "escape", trackFocus: false, settleMs: 0 });
+    await trackedKeyboardPress({ keys: "escape", hwnd: String(np.hwnd), trackFocus: false, settleMs: 0 });
 
     const result = await getHistoryHandler({ n: 5 });
     const p = parsePayload(result);
@@ -98,7 +101,7 @@ describe("H2: get_history ring buffer", () => {
   it("most-recent entry is keyboard_press with ok:true", async () => {
     // Run one more tracked action to ensure it's at the tail
     const before = Date.now();
-    await trackedKeyboardPress({ keys: "escape", trackFocus: false, settleMs: 0 });
+    await trackedKeyboardPress({ keys: "escape", hwnd: String(np.hwnd), trackFocus: false, settleMs: 0 });
     const after = Date.now();
 
     const result = await getHistoryHandler({ n: 1 });
@@ -116,7 +119,7 @@ describe("H2: get_history ring buffer", () => {
   it("ring buffer caps at 20 — overflow does not crash", async () => {
     // Push 25 entries to exceed HISTORY_MAX=20
     for (let i = 0; i < 25; i++) {
-      await trackedKeyboardPress({ keys: "escape", trackFocus: false, settleMs: 0 });
+      await trackedKeyboardPress({ keys: "escape", hwnd: String(np.hwnd), trackFocus: false, settleMs: 0 });
     }
 
     const result = await getHistoryHandler({ n: 20 });
@@ -129,7 +132,7 @@ describe("H2: get_history ring buffer", () => {
 
   it("n=0 is clamped — returns at least 1 entry", async () => {
     // getHistorySnapshot clamps n to max(1, min(n, HISTORY_MAX))
-    await trackedKeyboardPress({ keys: "escape", trackFocus: false, settleMs: 0 });
+    await trackedKeyboardPress({ keys: "escape", hwnd: String(np.hwnd), trackFocus: false, settleMs: 0 });
 
     const result = await getHistoryHandler({ n: 0 });
     const p = parsePayload(result);

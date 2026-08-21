@@ -14,7 +14,7 @@
  * assertions cover the production plumbing rather than a stub of it.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 
 const execFileMock = vi.fn();
 
@@ -195,6 +195,22 @@ function powerShellResponses(...stdouts: string[]) {
 }
 
 describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", () => {
+  // ADR-038: `keyboardArgs` deliberately carries no `windowTitle` / `hwnd` —
+  // this block is about what the clipboard reports, not about targeting, and a
+  // window mock would only add noise. Since ADR-038 that shape is refused by
+  // default, so the block opts into the ADR's own documented downgrade. Every
+  // assertion below is unchanged; the only difference in the envelope is one
+  // extra entry in `hints.warnings`, which nothing here reads.
+  let prevRequireDestination: string | undefined;
+  beforeAll(() => {
+    prevRequireDestination = process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+    process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = "0";
+  });
+  afterAll(() => {
+    if (prevRequireDestination === undefined) delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+    else process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = prevRequireDestination;
+  });
+
   it("reports the backend and a completed restore", async () => {
     nativeState.composite.mockResolvedValue(nativeResult());
     const r = body(await keyboardTypeHandler(keyboardArgs));

@@ -179,7 +179,8 @@ type ActionGuardSummary = {
     | "blocked_by_modal"
     | "unsafe_coordinates"
     | "browser_not_ready"
-    | "needs_escalation";
+    | "needs_escalation"
+    | "destination_required";
   canContinue: boolean;
   target?: string;
   next: string;
@@ -1083,7 +1084,8 @@ type ActionGuardSummary = {
     | "blocked_by_modal"
     | "unsafe_coordinates"
     | "browser_not_ready"
-    | "needs_escalation";
+    | "needs_escalation"
+    | "destination_required";
   canContinue: boolean;
   target?: string;
   next: string;

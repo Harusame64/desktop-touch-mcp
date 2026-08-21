@@ -665,6 +665,13 @@ Action tools (`mouse_click`, `mouse_drag`, `keyboard(action='type'/'press')`, `c
 - Confirms click coordinates are inside the target window rect
 - Returns `post.perception.status` on every response — including failures — so the LLM can recover without a screenshot
 
+**Keyboard writes must name a destination.** `keyboard(action='type'/'press'/'sequence')` requires either `windowTitle` or `hwnd`. Without one there is no target to guard, and the keys would land on whatever window is foreground at that instant — including one you just clicked into yourself. Such a call is refused with `code:"DestinationRequired"` before any key is sent, and a `windowTitle` that is empty or only spaces counts as no target at all. A window that has **no title** can be addressed by `hwnd`, but only while it is already the foreground window — keyboard focus and guarding cannot target a titleless window yet, so bring it forward with `focus_window` first if it is not in front. Such a call also comes back with a warning saying the input was delivered unguarded.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DESKTOP_TOUCH_REQUIRE_DESTINATION` | *(unset = required)* | Set to `0` to type into the current foreground window on purpose. The refusal becomes a warning on the response instead of an error — never a silent pass. |
+| `DESKTOP_TOUCH_AUTO_GUARD` | *(unset = on)* | Set to `0` to turn the whole guard layer off, the destination check included. |
+
 **Disabling auto guard** — set `DESKTOP_TOUCH_AUTO_GUARD=0` to restore v0.11.12 behavior (no auto guard):
 
 ```json
@@ -688,11 +695,14 @@ When auto guard is enabled (default), `post.perception.status` will be one of:
 |---|---|
 | `ok` | Guard passed — target verified |
 | `unguarded` | `windowTitle` not provided; action ran without guard |
-| `target_not_found` | No window matched the given title |
 | `ambiguous_target` | Multiple windows matched; use a more specific title |
+| `target_not_found` | No window matched the given title |
 | `identity_changed` | Window was replaced (process restart / HWND change) |
+| `blocked_by_modal` | A modal dialog is in the way — dismiss it, then retry |
 | `unsafe_coordinates` | Click coordinates are outside the target window rect |
+| `browser_not_ready` | The browser tab is still loading — wait, then retry |
 | `needs_escalation` | Use `browser_click` or specify `windowTitle` |
+| `destination_required` | A `keyboard` write named no target. Refused before the guard runs, so it arrives as `code:"DestinationRequired"` with this status under `context.guard` rather than in `post.perception` — pass `windowTitle` or `hwnd` |
 
 When `unsafe_coordinates` or `identity_changed` is returned, the response may include a `suggestedFix.fixId`. Pass that `fixId` to the relevant tool call to approve the recovery:
 

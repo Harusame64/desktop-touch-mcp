@@ -59,7 +59,10 @@ export type AutoGuardStatus =
   | "blocked_by_modal"
   | "unsafe_coordinates"
   | "browser_not_ready"
-  | "needs_escalation";
+  | "needs_escalation"
+  // ADR-038: a keyboard write arrived with neither `windowTitle` nor `hwnd`,
+  // so there is no destination to guard — refused before any key is sent.
+  | "destination_required";
 
 export interface AutoGuardEnvelope {
   kind: "auto";

@@ -146,10 +146,13 @@ const SUGGESTS: Record<string, string[]> = {
   // `summary.next` (`AutoGuardEnvelope.next`) which encodes a tailored
   // recovery for the specific block reason. Block-reason space is the
   // `AutoGuardStatus` enum at `src/engine/perception/action-target.ts:53`
-  // (9 values: ok / unguarded / ambiguous_target / target_not_found /
+  // (10 values: ok / unguarded / ambiguous_target / target_not_found /
   // identity_changed / blocked_by_modal / unsafe_coordinates /
-  // browser_not_ready / needs_escalation; only the latter 7 surface as
-  // blocks since `ok` / `unguarded` allow the action through).
+  // browser_not_ready / needs_escalation / destination_required; only the
+  // latter 8 surface as blocks since `ok` / `unguarded` allow the action
+  // through). `destination_required` (ADR-038) is the one block status that
+  // does NOT reach the caller as `AutoGuardBlocked` — it is refused before
+  // the guard runs and carries its own `DestinationRequired` code below.
   AutoGuardBlocked: [
     "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
     "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle / name / automationId until a single target resolves.",
@@ -158,6 +161,17 @@ const SUGGESTS: Record<string, string[]> = {
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
     "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
     "If app state shifted under the lens (identity_changed) or coords look stale (unsafe_coordinates), refresh via desktop_state or screenshot before retrying.",
+  ],
+  // ADR-038: a keyboard write (`type` / `press` / `sequence`) arrived with
+  // neither `windowTitle` nor `hwnd`. Emitted EXPLICITLY via `failCode` by
+  // `assertKeyboardDestination` (`_action-guard.ts`) — routing relies on the
+  // declared-code arm at the top of `classify`, NOT on a substring arm, so the
+  // guard-envelope wording can change without breaking classification (same
+  // shape as the key_locker producers below).
+  DestinationRequired: [
+    "Pass `windowTitle` or `hwnd` so the input has an explicit destination window.",
+    "Call `desktop_discover` (or `desktop_state`) to list windows and pick a target.",
+    "To deliberately type into the current foreground window, set DESKTOP_TOUCH_REQUIRE_DESTINATION=0 (downgrades this stop to a warning — never a silent pass).",
   ],
   LensNotFound: [
     "Drop the lensId — Auto Perception tracks state when you pass windowTitle / tabId directly",
