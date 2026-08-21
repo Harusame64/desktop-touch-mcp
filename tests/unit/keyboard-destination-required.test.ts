@@ -57,6 +57,7 @@ vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
 // Only `runActionGuard` is stubbed, so the destination-carrying fixtures do not
 // drag the perception subsystem in. `isAutoGuardEnabled` is left real and driven
 // by the env var, so the kill-switch case (E) exercises the production wiring.
+const mockGetForegroundHwnd = vi.fn<() => bigint | null>(() => 0x100n);
 const mockRunActionGuard = vi.fn(async () => ({
   block: false,
   summary: { kind: "auto", status: "ok", canContinue: true, next: "" },
@@ -131,18 +132,23 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     ]),
     getWindowClassName: vi.fn(() => "Notepad"),
     restoreAndFocusWindow: vi.fn(),
+    // ADR-038 R2: the titleless-window rule asks whether the RESOLVED handle is
+    // the foreground one. `getForegroundHwnd` is what production consults —
+    // `enumWindowsInZOrder` cannot answer it, because it drops untitled windows.
+    getForegroundHwnd: (...a: unknown[]) => mockGetForegroundHwnd(...(a as [])),
   };
 });
 
 // `resolveWindowTarget` mirrors production semantics: null when the caller named
 // no target at all, and a resolved record otherwise. Fixture C overrides it to
 // return the empty title a handle-addressed titleless window really produces.
-const mockResolveWindowTarget = vi.fn(
-  async (opts: { hwnd?: string; windowTitle?: string }) => {
-    if (opts.hwnd === undefined && opts.windowTitle === undefined) return null;
-    return { title: opts.windowTitle ?? "Notepad", hwnd: 0x100n, warnings: [] };
-  },
-) as unknown as ReturnType<typeof vi.fn>;
+type Resolved = { title: string; hwnd: bigint; warnings: string[] } | null;
+const mockResolveWindowTarget = vi.fn<
+  (opts: { hwnd?: string; windowTitle?: string }) => Promise<Resolved>
+>(async (opts) => {
+  if (opts.hwnd === undefined && opts.windowTitle === undefined) return null;
+  return { title: opts.windowTitle ?? "Notepad", hwnd: 0x100n, warnings: [] };
+});
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return { ...actual, resolveWindowTarget: (...a: unknown[]) => mockResolveWindowTarget(...(a as [])) };
@@ -210,11 +216,18 @@ function diagnosticEvents() {
     .filter((e) => e.kind === "destination_missing");
 }
 
-function expectRefused(r: Record<string, any>, tool: string) {
+function expectRefused(
+  r: Record<string, any>,
+  tool: string,
+  reason: "no_destination" | "titleless_hwnd_not_foreground" = "no_destination",
+) {
   expect(r.ok).toBe(false);
   expect(r.code).toBe("DestinationRequired");
   expect(r.suggest).toEqual(EXPECTED_SUGGEST);
   expect(r.context.tool).toBe(tool);
+  // The two refusals share a code but not a cause, so the caller can tell
+  // "you named nothing" from "what you named cannot be reached yet".
+  expect(r.context.reason).toBe(reason);
   expect(r.context.guard.status).toBe("destination_required");
   expect(r.context.guard.canContinue).toBe(false);
   expect(r.context.guard.next).toContain("windowTitle or hwnd");
@@ -229,6 +242,8 @@ const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: the window the resolver hands back IS the foreground one.
+  mockGetForegroundHwnd.mockReturnValue(0x100n);
   for (const k of ENV_KEYS) {
     savedEnv[k] = process.env[k];
     delete process.env[k];
@@ -247,7 +262,7 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     const r = body(await keyboardTypeHandler(TYPE_NO_DESTINATION));
     expectRefused(r, "keyboard:type");
     expect(diagnosticEvents()).toEqual([
-      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, decision: "block" },
+      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, hadHwndParam: false, reason: "no_destination", decision: "block" },
     ]);
   });
 
@@ -255,7 +270,7 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     const r = body(await keyboardTypeHandler(TYPE_NO_DESTINATION_WITH_LENS));
     expectRefused(r, "keyboard:type");
     expect(diagnosticEvents()).toEqual([
-      { kind: "destination_missing", tool: "keyboard:type", hasLens: true, decision: "block" },
+      { kind: "destination_missing", tool: "keyboard:type", hasLens: true, hadHwndParam: false, reason: "no_destination", decision: "block" },
     ]);
     // The lens arm must never have been consulted — the refusal is upstream of
     // the branch, not inside one of its two sides.
@@ -312,7 +327,7 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
       expect.arrayContaining([expect.stringContaining("DestinationRequired downgraded to a warning")]),
     );
     expect(diagnosticEvents()).toEqual([
-      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, decision: "warn" },
+      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, hadHwndParam: false, reason: "no_destination", decision: "warn" },
     ]);
   });
 
@@ -326,7 +341,7 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     // Still counted — the Phase 0 sample has to include the calls this build
     // lets through, or it only measures the refusals.
     expect(diagnosticEvents()).toEqual([
-      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, decision: "unguarded" },
+      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, hadHwndParam: false, reason: "no_destination", decision: "unguarded" },
     ]);
   });
 
@@ -340,18 +355,90 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     // The public code is untouched, but the shape is still destination-less, so
     // the Phase 0 sample records it rather than going blind on the flash path.
     expect(diagnosticEvents()).toEqual([
-      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, decision: "block" },
+      { kind: "destination_missing", tool: "keyboard:type", hasLens: false, hadHwndParam: false, reason: "no_destination", decision: "block" },
     ]);
   });
 
-  it("C2: windowTitle:'@active' resolves to a real window with no title — still a destination", async () => {
-    // `@active` (and any titleless window) comes back from the resolver as a
-    // concrete HWND with `title: ""`. Reading only the raw `hwnd` PARAM would
-    // refuse it, which would break a documented way of naming a target.
+  it("F2: flash refusing a call that DOES have a destination is not counted", async () => {
+    // `foreground_flash` needs a TITLE specifically, which is a narrower demand
+    // than this ADR's. Counting its refusal of an hwnd-addressed foreground
+    // window would put calls the ADR considers targeted into the
+    // destination-less sample and skew the Phase 0 read (Opus review R2).
     mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 123n, warnings: [] });
+    mockGetForegroundHwnd.mockReturnValue(123n);
+    const r = body(
+      await keyboardTypeHandler({
+        ...TYPE_NO_DESTINATION,
+        method: "foreground_flash" as any,
+        hwnd: "123",
+      }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("ForegroundFlashRequiresTarget");
+    expect(anySinkCalled()).toBe(false);
+    expect(diagnosticEvents()).toEqual([]);
+  });
+
+  it("F3: a refused flash call does not burn its fixId either", async () => {
+    mockValidateAndPrepareFix.mockReturnValueOnce({
+      ok: true,
+      fix: { args: {} },
+    } as never);
+    const r = body(
+      await keyboardTypeHandler({
+        ...TYPE_NO_DESTINATION,
+        method: "foreground_flash" as any,
+        fixId: "fix-3",
+      }),
+    );
+    expect(r.code).toBe("ForegroundFlashRequiresTarget");
+    expect(mockConsumeFix).not.toHaveBeenCalled();
+  });
+
+  // ── The titleless-window rule (Codex review R1). ──────────────────────────
+  // Everything downstream of this check is driven by the resolved TITLE: focus
+  // runs under `if (effectiveWindowTitle)` and the guard descriptor is null
+  // without one. So a handle that resolves to a titleless window is neither
+  // focused nor guarded and the keys still land on the foreground — which is
+  // only the caller's intent when that window ALREADY is the foreground.
+
+  it("C2a: windowTitle:'@active' resolving to a titleless FOREGROUND window passes", async () => {
+    mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 123n, warnings: [] });
+    mockGetForegroundHwnd.mockReturnValue(123n);
     const r = body(
       await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, windowTitle: "@active" }),
     );
+    expect(r.ok).toBe(true);
+    expect(mockType).toHaveBeenCalledTimes(1);
+    expect(diagnosticEvents()).toEqual([]);
+  });
+
+  it("C2b: an explicit hwnd resolving to a titleless NON-foreground window is refused", async () => {
+    // The delivery would land on whatever IS foreground — the exact accident
+    // this ADR exists to stop, reached through an argument that looks targeted.
+    mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 123n, warnings: [] });
+    mockGetForegroundHwnd.mockReturnValue(0x999n);
+    const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, hwnd: "123" }));
+    expectRefused(r, "keyboard:type", "titleless_hwnd_not_foreground");
+    expect(r.error).toContain("not in the foreground");
+    expect(diagnosticEvents()).toEqual([
+      {
+        kind: "destination_missing",
+        tool: "keyboard:type",
+        hasLens: false,
+        hadHwndParam: true,
+        reason: "titleless_hwnd_not_foreground",
+        decision: "block",
+      },
+    ]);
+  });
+
+  it("C2c: an explicit hwnd resolving to a titleless FOREGROUND window passes", async () => {
+    // Delivery lands exactly where the caller pointed, so the refusal in C2b is
+    // about reachability — not about hwnd as a way of naming a target.
+    mockResolveWindowTarget.mockResolvedValueOnce({ title: "", hwnd: 123n, warnings: [] });
+    mockGetForegroundHwnd.mockReturnValue(123n);
+    const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, hwnd: "123" }));
     expect(r.ok).toBe(true);
     expect(mockType).toHaveBeenCalledTimes(1);
     expect(diagnosticEvents()).toEqual([]);

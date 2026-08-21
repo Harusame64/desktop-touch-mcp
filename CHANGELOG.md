@@ -14,7 +14,9 @@
   foreground window, set `DESKTOP_TOUCH_REQUIRE_DESTINATION=0`: the stop becomes
   a warning on the response instead — never a silent pass. Setting
   `DESKTOP_TOUCH_AUTO_GUARD=0` still turns the whole guard layer off, this check
-  included.
+  included. Targeting a titleless window by `hwnd` is also refused unless that
+  window is already in the foreground (keyboard delivery cannot yet focus or
+  guard titleless windows).
 - **The npm launcher no longer kills the runtime mid-startup when its own stdin
   is already closed at launch.** In closed-stdin environments — CI harnesses,
   one-shot checks like `npx … --help` with input redirected from an empty

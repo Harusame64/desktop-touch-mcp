@@ -195,17 +195,81 @@ function nextStepFor(
 // ADR-038 — DestinationRequired
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Why a keyboard write has no usable destination. Surfaced as `context.reason`
+ * and on the Phase 0 diagnostic event, because the two cases need different
+ * recovery: one caller named nothing, the other named a window that keyboard
+ * delivery cannot reach yet.
+ */
+export type DestinationMissReason = "no_destination" | "titleless_hwnd_not_foreground";
+
+/**
+ * What `resolveWindowTarget` settled on, when it resolved anything.
+ * `isForeground` is LAZY — consulted only for a titleless resolution, so the
+ * common path costs no extra syscall.
+ */
+export interface ResolvedDestination {
+  hwnd: bigint;
+  title: string;
+  isForeground: () => boolean;
+}
+
+/**
+ * The destination predicate, as one function so no caller re-derives it.
+ * Returns `null` when the write HAS a destination, otherwise why it does not.
+ *
+ * **A handle is not automatically a destination.** Everything downstream of the
+ * check is driven by the resolved TITLE — focus runs under
+ * `if (effectiveWindowTitle)`, and the guard descriptor is
+ * `effectiveWindowTitle ? {kind:"window",...} : null`. An `hwnd` that resolves
+ * to a titleless window is therefore neither focused nor guarded, and the keys
+ * still land on the foreground; accepting it on the strength of the parameter
+ * alone would have re-opened this ADR's own hole one argument later (Codex
+ * review R1). The one case where a titleless resolution is honest is when that
+ * window is ALREADY the foreground — then delivery lands exactly where the
+ * caller pointed, which is the legitimate `@active` case. Making focus and the
+ * guard hwnd-aware, so titled-ness stops mattering, is ADR-036.
+ */
+export function keyboardDestinationMiss(p: {
+  effectiveWindowTitle: string | undefined;
+  resolved: ResolvedDestination | undefined;
+}): DestinationMissReason | null {
+  const { effectiveWindowTitle, resolved } = p;
+  if (typeof effectiveWindowTitle === "string" && effectiveWindowTitle !== "") return null;
+  if (resolved === undefined) return "no_destination";
+  // `resolved.title !== ""` is redundant with the check above in practice (the
+  // handlers adopt the resolved title into `effectiveWindowTitle`); kept so the
+  // predicate reads correctly on its own.
+  if (resolved.title !== "" || resolved.isForeground()) return null;
+  return "titleless_hwnd_not_foreground";
+}
+
 /** Warning text pushed onto `hints.warnings` when the stop is downgraded. */
-export const DESTINATION_DOWNGRADE_WARNING =
-  "DestinationRequired downgraded to a warning by DESKTOP_TOUCH_REQUIRE_DESTINATION=0 — " +
-  "input will land on the current foreground window; pass windowTitle or hwnd to target explicitly";
+export function destinationDowngradeWarning(reason: DestinationMissReason): string {
+  const head = "DestinationRequired downgraded to a warning by DESKTOP_TOUCH_REQUIRE_DESTINATION=0 — ";
+  return reason === "no_destination"
+    ? head +
+      "input will land on the current foreground window; pass windowTitle or hwnd to target explicitly"
+    : head +
+      "the window addressed by hwnd has no title and is not in the foreground, so input will land " +
+      "on the current foreground window instead; bring it to the foreground first or target a titled window";
+}
+
+function destinationBlockMessage(toolName: string, reason: DestinationMissReason): string {
+  return reason === "no_destination"
+    ? `${toolName} requires a destination window: pass windowTitle or hwnd`
+    : `${toolName}: the window addressed by hwnd has no title and is not in the foreground — ` +
+      "keyboard delivery cannot yet target titleless windows (ADR-036); bring it to the " +
+      "foreground first (focus_window) or target a titled window";
+}
 
 export type DestinationCheck =
   | { ok: true }
   | { ok: false; errorResult: ToolResult };
 
 /**
- * ADR-038 — refuse a keyboard write that names no destination window.
+ * ADR-038 — refuse a keyboard write that has no destination the input can
+ * actually be steered to.
  *
  * Without `windowTitle` / `hwnd` the descriptor handed to `runActionGuard` is
  * `null`, which that function answers with `unguarded` + pass-through: no guard,
@@ -213,69 +277,48 @@ export type DestinationCheck =
  * that instant. On 2026-08-18 that put an LLM's keystrokes into the user's own
  * input box.
  *
- * This check must be called BEFORE the `if (lensId) … else if (isAutoGuardEnabled())`
+ * This check must be called BEFORE the `if (lensId) ... else if (isAutoGuardEnabled())`
  * split in each handler, not from inside `evaluateKeyboardGuards`: those arms are
  * EXCLUSIVE, so a call carrying a lensId but no destination never reaches
  * `runActionGuard` at all. One call, before the split, is what closes both arms.
  *
+ * The destination rule itself lives in {@link keyboardDestinationMiss} — read
+ * that first; the flash branch in `keyboard.ts` shares it.
+ *
  * Contract (ADR-038 §2):
- *   - a destination is a non-empty resolved `windowTitle`, the `hwnd` the caller
- *     passed, OR an hwnd the resolver arrived at from what the caller passed.
- *     A handle counts on its own even when the title that came back is `""`:
- *     titleless windows, and `windowTitle:"@active"`, both resolve to a concrete
- *     window with no usable title, and neither is a missing destination.
+ *   - a destination is a non-empty resolved `windowTitle`, or a resolved window
+ *     that is titleless but currently in the foreground.
  *   - `DESKTOP_TOUCH_AUTO_GUARD=0` is a complete kill of the guard layer, this
  *     check included.
  *   - `DESKTOP_TOUCH_REQUIRE_DESTINATION=0` downgrades the stop to a warning —
  *     never to a silent pass.
  */
-/**
- * ADR-038 Phase 0 counter, for the one destination-less shape that does NOT go
- * through {@link assertKeyboardDestination}: `method:"foreground_flash"` refuses
- * on its own with `ForegroundFlashRequiresTarget`, and that public code is not
- * changed by this ADR — but the shape still belongs in the sample.
- */
-export function noteDestinationMissing(
-  toolName: "keyboard:type" | "keyboard:press" | "keyboard:sequence",
-  opts: { hasLens: boolean; decision: "block" | "warn" | "unguarded" }
-): void {
-  logDiagnostic({
-    kind: "destination_missing",
-    tool: toolName,
-    hasLens: opts.hasLens,
-    decision: opts.decision,
-  });
-}
-
 export function assertKeyboardDestination(p: {
   toolName: "keyboard:type" | "keyboard:press" | "keyboard:sequence";
   /** Title after the fixId / resolveWindowTarget prologue has run. */
   effectiveWindowTitle: string | undefined;
-  /** The public `hwnd` param exactly as the caller passed it. */
-  hwnd: string | undefined;
   /**
-   * The handle `resolveWindowTarget` settled on, when it resolved anything.
-   * Carries the `@active` / titleless cases that produce a real window whose
-   * title is `""` — reading only the raw `hwnd` param would refuse those.
+   * The public `hwnd` param exactly as the caller passed it. Recorded on the
+   * diagnostic event ONLY — deliberately not part of the pass/fail decision,
+   * see {@link keyboardDestinationMiss}.
    */
-  resolvedHwnd: bigint | undefined;
+  hwnd: string | undefined;
+  /** What the resolver settled on, when it resolved anything. */
+  resolved: ResolvedDestination | undefined;
   lensId: string | undefined;
   /** Downgrade warning is pushed here; the caller surfaces it as `hints.warnings`. */
   warnings: string[];
 }): DestinationCheck {
-  const { toolName, effectiveWindowTitle, hwnd, resolvedHwnd, lensId, warnings } = p;
+  const { toolName, effectiveWindowTitle, hwnd, resolved, lensId, warnings } = p;
 
-  const hasDestination =
-    (typeof effectiveWindowTitle === "string" && effectiveWindowTitle !== "") ||
-    hwnd !== undefined ||
-    resolvedHwnd !== undefined;
-  if (hasDestination) return { ok: true };
+  const reason = keyboardDestinationMiss({ effectiveWindowTitle, resolved });
+  if (reason === null) return { ok: true };
 
   const emit = (decision: "block" | "warn" | "unguarded"): void => {
-    logDiagnostic({
-      kind: "destination_missing",
-      tool: toolName,
+    noteDestinationMissing(toolName, {
       hasLens: lensId !== undefined,
+      hadHwndParam: hwnd !== undefined,
+      reason,
       decision,
     });
   };
@@ -290,7 +333,7 @@ export function assertKeyboardDestination(p: {
 
   if (process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION === "0") {
     emit("warn");
-    warnings.push(DESTINATION_DOWNGRADE_WARNING);
+    warnings.push(destinationDowngradeWarning(reason));
     return { ok: true };
   }
 
@@ -299,11 +342,12 @@ export function assertKeyboardDestination(p: {
     ok: false,
     errorResult: failCode(
       "DestinationRequired",
-      `${toolName} requires a destination window: pass windowTitle or hwnd`,
+      destinationBlockMessage(toolName, reason),
       {
         suggest: getSuggestsForCode("DestinationRequired"),
         context: {
           tool: toolName,
+          reason,
           guard: {
             kind: "auto",
             status: "destination_required",
@@ -314,6 +358,25 @@ export function assertKeyboardDestination(p: {
       }
     ),
   };
+}
+
+export function noteDestinationMissing(
+  toolName: "keyboard:type" | "keyboard:press" | "keyboard:sequence",
+  opts: {
+    hasLens: boolean;
+    hadHwndParam: boolean;
+    reason: DestinationMissReason;
+    decision: "block" | "warn" | "unguarded";
+  }
+): void {
+  logDiagnostic({
+    kind: "destination_missing",
+    tool: toolName,
+    hasLens: opts.hasLens,
+    hadHwndParam: opts.hadHwndParam,
+    reason: opts.reason,
+    decision: opts.decision,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

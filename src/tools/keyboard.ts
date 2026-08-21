@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd, getForegroundHwnd } from "../engine/win32.js";
 import { nativeWin32, hasNativeTypeViaClipboard } from "../engine/native-engine.js";
 import type { NativeTypeViaClipboardResult } from "../engine/native-types.js";
 // ADR-033: the fallback's command-line ceiling, the shared give-up budget and
@@ -40,7 +40,27 @@ import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss } from "./_action-guard.js";
+import type { ResolvedDestination } from "./_action-guard.js";
+
+/**
+ * ADR-038: package what the resolver settled on for the destination predicate.
+ * `isForeground` is a closure so the syscall runs only for a titleless window.
+ * `getForegroundHwnd` is used rather than `enumWindowsInZOrder().find(isActive)`
+ * because that enumeration SKIPS untitled windows (`win32.ts:161`) — the exact
+ * windows this predicate is about — so the enumeration form would report `false`
+ * for every one of them.
+ */
+function toResolvedDestination(
+  resolved: { hwnd: bigint; title: string } | null,
+): ResolvedDestination | undefined {
+  if (!resolved) return undefined;
+  return {
+    hwnd: resolved.hwnd,
+    title: resolved.title,
+    isForeground: () => getForegroundHwnd() === resolved.hwnd,
+  };
+}
 import { resolveWindowTarget } from "./_resolve-window.js";
 import {
   makeCommitWrapper,
@@ -1407,9 +1427,15 @@ export const keyboardTypeHandler = async ({
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
+    const resolvedDestination = toResolvedDestination(resolvedWin);
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
+
+    // ADR-038: the one-shot fix is spent only once the call is actually going
+    // ahead — never on a path that refuses, or the retry the error asks for
+    // would come back FixAlreadyConsumed.
+    const spendFix = (): void => { if (fixId) consumeFix(fixId); };
 
     // ── ADR-038: destination required ─────────────────────────────────────
     // Runs once, BEFORE the method split and before either guard branch, so a
@@ -1422,15 +1448,14 @@ export const keyboardTypeHandler = async ({
         toolName: "keyboard:type",
         effectiveWindowTitle,
         hwnd,
-        resolvedHwnd: resolvedWin?.hwnd,
+        resolved: resolvedDestination,
         lensId,
         warnings,
       });
       if (!destCheck.ok) return destCheck.errorResult;
+      // Non-flash path: the call is going ahead from here.
+      spendFix();
     }
-
-    // The call is going ahead — now the one-shot fix is genuinely spent.
-    if (fixId) consumeFix(fixId);
 
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ────────────────
     // method:'foreground_flash' は `background` 契約とは分離した妥協 BG path
@@ -1438,9 +1463,21 @@ export const keyboardTypeHandler = async ({
     // window 用、single-line + < 5KiB 制約、typing leak risk hints あり。
     if (inputMethod === "foreground_flash") {
       if (!effectiveWindowTitle) {
-        // ADR-038 Phase 0: this shape is destination-less too, and it is
-        // refused — count it so the sample is not blind to the flash path.
-        noteDestinationMissing("keyboard:type", { hasLens: lensId !== undefined, decision: "block" });
+        // ADR-038 Phase 0: count this refusal, but ONLY when it really is
+        // destination-less. `foreground_flash` needs a TITLE specifically, so
+        // it also refuses calls that DO have a destination by this ADR's rule
+        // (an hwnd resolving to a titleless foreground window). Counting those
+        // would inflate the sample with calls the ADR does not consider
+        // destination-less at all (Opus review R2). Same predicate, one place.
+        const miss = keyboardDestinationMiss({ effectiveWindowTitle, resolved: resolvedDestination });
+        if (miss !== null) {
+          noteDestinationMissing("keyboard:type", {
+            hasLens: lensId !== undefined,
+            hadHwndParam: hwnd !== undefined,
+            reason: miss,
+            decision: "block",
+          });
+        }
         return failWith(
           new Error("ForegroundFlashRequiresTarget"),
           "keyboard:type"
@@ -1457,6 +1494,8 @@ export const keyboardTypeHandler = async ({
           { windowTitle: effectiveWindowTitle }
         );
       }
+      // Past both flash refusals — the call is going ahead (ADR-038 P3).
+      spendFix();
       // Lens / auto-guard: foregroundVerified=false because flash will steal
       // foreground, but it returns to original within ~80ms; downstream guards
       // (modal/identity/dirty/focusedElement) still run.
@@ -2336,7 +2375,7 @@ export const keyboardPressHandler = async ({
       toolName: "keyboard:press",
       effectiveWindowTitle,
       hwnd,
-      resolvedHwnd: resolvedWin?.hwnd,
+      resolved: toResolvedDestination(resolvedWin),
       lensId,
       warnings,
     });
@@ -2706,7 +2745,7 @@ export const keyboardSequenceHandler = async ({
       toolName: "keyboard:sequence",
       effectiveWindowTitle,
       hwnd,
-      resolvedHwnd: resolvedWin?.hwnd,
+      resolved: toResolvedDestination(resolvedWin),
       lensId,
       warnings,
     });

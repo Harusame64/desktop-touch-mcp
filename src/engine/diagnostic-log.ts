@@ -201,6 +201,18 @@ export type DiagnosticEvent =
       tool: string;
       /** True when a lensId was passed — the exclusive branch ADR-038 closes. */
       hasLens: boolean;
+      /**
+       * True when the caller DID pass an `hwnd`. Recorded but not decisive: a
+       * handle that resolves to a titleless, non-foreground window is still not
+       * a reachable destination (see `keyboardDestinationMiss`), and telling the
+       * two apart in the sample is the point of `reason`.
+       */
+      hadHwndParam: boolean;
+      // "no_destination":                 neither windowTitle nor a resolvable hwnd.
+      // "titleless_hwnd_not_foreground":  a window resolved, but it has no title
+      //   and is not in the foreground, so neither focus nor the guard can steer
+      //   the keys to it.
+      reason: "no_destination" | "titleless_hwnd_not_foreground";
       // "block":      refused with DestinationRequired (the default).
       // "warn":       DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgraded it.
       // "unguarded":  DESKTOP_TOUCH_AUTO_GUARD=0 killed the whole guard layer.
