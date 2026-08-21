@@ -252,12 +252,22 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
   });
 
   it("no windowTitle → leash disabled, single-shot send", async () => {
-    const { windowTitle: _w, ...rest } = baseArgs;
-    void _w;
-    await keyboardTypeHandler({ ...rest, abortOnFocusLoss: true });
-    expect(mockTypeFn).toHaveBeenCalledTimes(1);
-    expect(mockTypeFn).toHaveBeenCalledWith("abcdefgh");
-    expect(checkForegroundOnce).not.toHaveBeenCalled();
+    // ADR-038: a destination-less `type` is refused by default since this ADR,
+    // so the pre-ADR-038 shape this leash case needs is reached through the
+    // ADR's own documented escape hatch. The assertions below are unchanged —
+    // what is pinned is still "no windowTitle ⇒ no chunking, no per-chunk
+    // foreground check", which ADR-038 does not alter.
+    process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = "0";
+    try {
+      const { windowTitle: _w, ...rest } = baseArgs;
+      void _w;
+      await keyboardTypeHandler({ ...rest, abortOnFocusLoss: true });
+      expect(mockTypeFn).toHaveBeenCalledTimes(1);
+      expect(mockTypeFn).toHaveBeenCalledWith("abcdefgh");
+      expect(checkForegroundOnce).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION;
+    }
   });
 
   it("focus theft on first check → returns failWith, typed=0, remaining=full text, no keystrokes", async () => {

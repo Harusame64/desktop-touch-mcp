@@ -10,7 +10,8 @@
  * an ephemeral lens from primitives to avoid LRU churn on the global registry.
  */
 
-import { failWith } from "./_errors.js";
+import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
+import { logDiagnostic } from "../engine/diagnostic-log.js";
 import { getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
 import { resolveActionTarget, deriveTargetKey } from "../engine/perception/action-target.js";
@@ -185,7 +186,107 @@ function nextStepFor(
       return "Browser tab is not ready. Wait and retry.";
     case "needs_escalation":
       return "Use browser_click or specify windowTitle for this action.";
+    case "destination_required":
+      return "Pass windowTitle or hwnd — keyboard input needs an explicit destination window (set DESKTOP_TOUCH_REQUIRE_DESTINATION=0 to downgrade this stop to a warning)";
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-038 — DestinationRequired
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Warning text pushed onto `hints.warnings` when the stop is downgraded. */
+export const DESTINATION_DOWNGRADE_WARNING =
+  "DestinationRequired downgraded to a warning by DESKTOP_TOUCH_REQUIRE_DESTINATION=0 — " +
+  "input will land on the current foreground window; pass windowTitle or hwnd to target explicitly";
+
+export type DestinationCheck =
+  | { ok: true; downgraded?: true }
+  | { ok: false; errorResult: ToolResult };
+
+/**
+ * ADR-038 — refuse a keyboard write that names no destination window.
+ *
+ * Without `windowTitle` / `hwnd` the descriptor handed to `runActionGuard` is
+ * `null`, which that function answers with `unguarded` + pass-through: no guard,
+ * no focus, and `SendInput` lands on whatever window happens to be foreground at
+ * that instant. On 2026-08-18 that put an LLM's keystrokes into the user's own
+ * input box.
+ *
+ * This check must be called BEFORE the `if (lensId) … else if (isAutoGuardEnabled())`
+ * split in each handler, not from inside `evaluateKeyboardGuards`: those arms are
+ * EXCLUSIVE, so a call carrying a lensId but no destination never reaches
+ * `runActionGuard` at all. One call, before the split, is what closes both arms.
+ *
+ * Contract (ADR-038 §2):
+ *   - a destination is `windowTitle` (non-empty, post-resolution) OR `hwnd`.
+ *     `hwnd` counts on its own even when the resolved title is `""` — titleless
+ *     windows addressed by handle are a legitimate destination.
+ *   - `DESKTOP_TOUCH_AUTO_GUARD=0` is a complete kill of the guard layer, this
+ *     check included.
+ *   - `DESKTOP_TOUCH_REQUIRE_DESTINATION=0` downgrades the stop to a warning —
+ *     never to a silent pass.
+ */
+export function assertKeyboardDestination(p: {
+  toolName: "keyboard:type" | "keyboard:press" | "keyboard:sequence";
+  /** Title after the fixId / resolveWindowTarget prologue has run. */
+  effectiveWindowTitle: string | undefined;
+  /** The public `hwnd` param exactly as the caller passed it. */
+  hwnd: string | undefined;
+  lensId: string | undefined;
+  /** Downgrade warning is pushed here; the caller surfaces it as `hints.warnings`. */
+  warnings: string[];
+}): DestinationCheck {
+  const { toolName, effectiveWindowTitle, hwnd, lensId, warnings } = p;
+
+  const hasDestination =
+    (typeof effectiveWindowTitle === "string" && effectiveWindowTitle !== "") ||
+    hwnd !== undefined;
+  if (hasDestination) return { ok: true };
+
+  const emit = (decision: "block" | "warn" | "unguarded"): void => {
+    logDiagnostic({
+      kind: "destination_missing",
+      tool: toolName,
+      hasLens: lensId !== undefined,
+      decision,
+    });
+  };
+
+  // Phase 0 counter fires for every destination-less call — including the ones
+  // that are then allowed through — so the dogfood sample measures legitimate
+  // destination-less usage, not just the refusals.
+  if (!isAutoGuardEnabled()) {
+    emit("unguarded");
+    return { ok: true };
+  }
+
+  if (process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION === "0") {
+    emit("warn");
+    warnings.push(DESTINATION_DOWNGRADE_WARNING);
+    return { ok: true, downgraded: true };
+  }
+
+  emit("block");
+  return {
+    ok: false,
+    errorResult: failCode(
+      "DestinationRequired",
+      `${toolName} requires a destination window: pass windowTitle or hwnd`,
+      {
+        suggest: getSuggestsForCode("DestinationRequired"),
+        context: {
+          tool: toolName,
+          guard: {
+            kind: "auto",
+            status: "destination_required",
+            canContinue: false,
+            next: nextStepFor("destination_required"),
+          },
+        },
+      }
+    ),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

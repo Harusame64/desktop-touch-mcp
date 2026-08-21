@@ -40,7 +40,7 @@ import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
 import {
   makeCommitWrapper,
@@ -1409,6 +1409,23 @@ export const keyboardTypeHandler = async ({
     const homingNotes: string[] = [];
     let foregroundVerified = false;
 
+    // ── ADR-038: destination required ─────────────────────────────────────
+    // Runs once, BEFORE the method split and before either guard branch, so a
+    // destination-less write cannot slip through the lensId arm (which never
+    // reaches runActionGuard). `foreground_flash` is exempt: it already
+    // refuses with its own `ForegroundFlashRequiresTarget` a few lines below
+    // and that public code must not change.
+    if (inputMethod !== "foreground_flash") {
+      const destCheck = assertKeyboardDestination({
+        toolName: "keyboard:type",
+        effectiveWindowTitle,
+        hwnd,
+        lensId,
+        warnings,
+      });
+      if (!destCheck.ok) return destCheck.errorResult;
+    }
+
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ────────────────
     // method:'foreground_flash' は `background` 契約とは分離した妥協 BG path
     // (Clipboard + foreground flash + paste + restore)。WT 等 WM_CHAR 不対応
@@ -2305,6 +2322,16 @@ export const keyboardPressHandler = async ({
     const homingNotes: string[] = [];
     let foregroundVerified = false;
 
+    // ── ADR-038: destination required (before the method / guard split) ────
+    const destCheck = assertKeyboardDestination({
+      toolName: "keyboard:press",
+      effectiveWindowTitle,
+      hwnd,
+      lensId,
+      warnings,
+    });
+    if (!destCheck.ok) return destCheck.errorResult;
+
     // ── Background input path ──────────────────────────────────────────────
     const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
@@ -2662,6 +2689,16 @@ export const keyboardSequenceHandler = async ({
     const homingNotes: string[] = [];
     let foregroundVerified = false;
     let targetHwnd: bigint | null = null;
+
+    // ── ADR-038: destination required (before focus and the guard split) ───
+    const destCheck = assertKeyboardDestination({
+      toolName: "keyboard:sequence",
+      effectiveWindowTitle,
+      hwnd,
+      lensId,
+      warnings,
+    });
+    if (!destCheck.ok) return destCheck.errorResult;
 
     if (effectiveWindowTitle) {
       // Codex PR #270 P2: when the caller passed an explicit hwnd,

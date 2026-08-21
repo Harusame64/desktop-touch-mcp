@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **`keyboard` write actions (`type` / `press` / `sequence`) now require a
+  destination.** Calls without `windowTitle` or `hwnd` used to land on whatever
+  window happened to be foreground at that instant — including a window you had
+  just clicked into yourself. They now stop with a typed
+  `code:"DestinationRequired"` error and recovery suggestions **before any key is
+  sent**, so a missing target costs one retry instead of stray characters in
+  your own editor. Passing `hwnd` on its own is enough, even for a window with
+  no title. Nothing changes for calls that already name a target, and
+  `mouse_*` / `terminal` are unaffected. To deliberately type into the current
+  foreground window, set `DESKTOP_TOUCH_REQUIRE_DESTINATION=0`: the stop becomes
+  a warning on the response instead — never a silent pass. Setting
+  `DESKTOP_TOUCH_AUTO_GUARD=0` still turns the whole guard layer off, this check
+  included.
 - **The npm launcher no longer kills the runtime mid-startup when its own stdin
   is already closed at launch.** In closed-stdin environments — CI harnesses,
   one-shot checks like `npx … --help` with input redirected from an empty

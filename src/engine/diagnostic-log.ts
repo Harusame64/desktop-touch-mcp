@@ -185,6 +185,26 @@ export type DiagnosticEvent =
       mode?: string;
       /** Typed reason / underlying message. */
       reason?: string;
+    }
+  | {
+      // ADR-038 Phase 0 — counter for destination-less keyboard writes.
+      // Written at the ONE observation point that sits before the
+      // lensId / auto-guard branch split (`assertKeyboardDestination` in
+      // `_action-guard.ts`), so the count covers the lens path too — the
+      // branch that used to skip `runActionGuard` entirely.
+      //
+      // Emitted for EVERY destination-less call, including the ones this
+      // build lets through (`decision:"unguarded"` / `"warn"`), so dogfood
+      // can weigh legitimate destination-less usage against the refusals.
+      kind: "destination_missing";
+      /** `keyboard:type` / `keyboard:press` / `keyboard:sequence`. */
+      tool: string;
+      /** True when a lensId was passed — the exclusive branch ADR-038 closes. */
+      hasLens: boolean;
+      // "block":      refused with DestinationRequired (the default).
+      // "warn":       DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgraded it.
+      // "unguarded":  DESKTOP_TOUCH_AUTO_GUARD=0 killed the whole guard layer.
+      decision: "block" | "warn" | "unguarded";
     };
 
 /**
