@@ -76,7 +76,7 @@
   "samples": [
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 893,
+      "line": 912,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"

@@ -839,12 +839,31 @@ export async function runActionGuard(
   // (browser_click by-axis) suppress this — a fixId hint they cannot honor would
   // be a dead promise (Opus PR3 Round 1 P2).
   // A fix is a one-call re-approval of the SAME action. Offering one for a
-  // target whose rectangle could not be read invites the caller to re-approve a
-  // click into a window that is not there. Recovery does not depend on the
-  // caller doing anything in particular: the entry is evicted when it stops
-  // answering, and the next click re-reads the window list.
-  const targetMissing = gr.failedGuard?.statusOverride === "identity_changed";
-  if (result.block && !suppressSuggestedFix && !targetMissing) {
+  // target that is GONE invites the caller to re-approve a click into a window
+  // that is not there. Recovery does not depend on the caller doing anything in
+  // particular: the entry is evicted when it stops answering, and the next
+  // click re-reads the window list.
+  //
+  // "Gone" is keyed on MEANING, not on one branch's flag, because two branches
+  // say it (Codex, final round):
+  //   - the narrow race: the window was enumerated but its rect read null —
+  //     `safe.clickCoordinates` sets `statusOverride: "identity_changed"`.
+  //   - the common close path: the window is not in the enumeration at all —
+  //     the sensor pushes `target.identity = null` and `target.identityStable`
+  //     fails FIRST, so the null-rect branch (and its override) is never
+  //     reached.
+  // An identity failure WITHOUT a live replacement identity is the gone case.
+  // With one (`resolved.changed` includes "identity" — the window was replaced
+  // by a new instance that resolved), the fix is the designed recovery: it
+  // re-approves against the NEW identity, and stays offered. Today
+  // `tryBuildSuggestedFix` mints an identity fix only in that replacement case,
+  // so this predicate changes no observable behaviour — it makes the contract
+  // hold by construction instead of by coincidence across three files.
+  const targetGone =
+    gr.failedGuard?.statusOverride === "identity_changed" ||
+    (gr.failedGuard?.kind === "target.identityStable" &&
+      !resolved.changed?.includes("identity"));
+  if (result.block && !suppressSuggestedFix && !targetGone) {
     const fix = tryBuildSuggestedFix(
       gr,
       descriptor,

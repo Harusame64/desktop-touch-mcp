@@ -315,6 +315,59 @@ describe("runActionGuard", () => {
     expect(events.some((e) => e.semantic === "action_blocked" && e.result === "blocked")).toBe(true);
   });
 
+  it("offers no fix on the common close path (window absent from the enumeration)", async () => {
+    // The sensor pushes target.identity = null and target.identityStable fails
+    // FIRST, so the null-rect branch — and its statusOverride — is never
+    // reached. The fix suppression must still hold: a fix here would be a
+    // one-call re-approval of a click into a window that is not there.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+      // No `changed` — the coordinate path never fills it, and a gone window
+      // has no live replacement identity to record.
+    });
+    mockEvaluateGuards.mockReturnValue(makeFailGuardResult("target.identityStable"));
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "Gone App" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("identity_changed");
+    expect(result.suggestedFix).toBeUndefined();
+    expect(result.summary.next).not.toMatch(/fixId/);
+  });
+
+  it("still offers the designed identity fix when a live replacement identity resolved", async () => {
+    // The negative control: identity_changed with `changed: ["identity"]`
+    // means the window was REPLACED by a new instance that resolved — the fix
+    // re-approves against the new identity, which is the designed recovery
+    // (Phase C/G), and must not be swallowed by the gone-target suppression.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(),
+      identity: { hwnd: "12345", pid: 42, processName: "notepad.exe", processStartTimeMs: 5, titleResolved: "Untitled - Notepad" },
+      candidates: 1, warnings: [],
+      changed: ["identity"],
+    });
+    mockEvaluateGuards.mockReturnValue(makeFailGuardResult("target.identityStable"));
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "window", titleIncludes: "notepad" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("identity_changed");
+    expect(result.suggestedFix).toBeDefined();
+    expect(result.summary.next).toMatch(/fixId/);
+  });
+
   it("maps browser_not_ready guard failure to correct status", async () => {
     const lens = makeFakeLens();
     mockResolveActionTarget.mockResolvedValue({
