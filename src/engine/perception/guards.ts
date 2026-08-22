@@ -285,6 +285,8 @@ function evalClickCoordinates(
       confidence: 0,
       reason: "Target window rect could not be read — the window may have closed",
       suggestedAction: "Take a new screenshot to confirm the window is still open",
+      // Not "the click is outside the rect" — there is no rect. See the field.
+      statusOverride: "identity_changed",
     };
   }
 

@@ -8,7 +8,7 @@
  */
 
 import type { WindowZInfo } from "./win32.js";
-import { getWindowRectByHwnd } from "./win32.js";
+import { getWindowRectByHwnd, enumWindowsInZOrder } from "./win32.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -181,6 +181,35 @@ export function findContainingWindow(x: number, y: number): CachedWindow | null 
     }
   }
   return best;
+}
+
+/**
+ * `findContainingWindow`, re-enumerating once when nothing fresh answers.
+ *
+ * The staleness bound above is only half of the story. Expiring an entry has to
+ * mean **"re-verify"**, not **"unclickable"** — otherwise a window that is alive
+ * and has not moved becomes unclickable simply because no tool happened to
+ * enumerate windows for a minute, and the caller is told the target was not
+ * found. Worse, the recovery the guard suggests does not repopulate this cache
+ * (only screenshot / window / workspace / browser / mouse tools write to it), so
+ * a retry lands in exactly the same place: a refusal loop on a perfectly good
+ * window.
+ *
+ * So a miss re-enumerates once and asks again. The enumeration is the same call
+ * every window-listing tool already makes, and it is paid only when the cache
+ * cannot answer — which, before the staleness bound existed, was the case where
+ * it answered with a rectangle that might belong to a window that had closed.
+ */
+export function findContainingWindowFresh(x: number, y: number): CachedWindow | null {
+  const hit = findContainingWindow(x, y);
+  if (hit) return hit;
+  try {
+    updateWindowCache(enumWindowsInZOrder());
+  } catch {
+    // Enumeration unavailable (no native addon) — fall through with what we have.
+    return null;
+  }
+  return findContainingWindow(x, y);
 }
 
 /**

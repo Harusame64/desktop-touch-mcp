@@ -30,6 +30,11 @@ vi.mock("../../src/engine/perception/sensors-win32.js", () => ({
 
 vi.mock("../../src/engine/window-cache.js", () => ({
   findContainingWindow: mockFindContainingWindow,
+  // The coordinate path uses the refreshing variant (a miss re-enumerates once
+  // before giving up). Delegating keeps these cases about what they were always
+  // about — hit vs miss — while the refresh behaviour itself is pinned against
+  // the real cache in `window-cache-staleness.test.ts`.
+  findContainingWindowFresh: mockFindContainingWindow,
   getCachedWindowByTitle: mockGetCachedWindowByTitle,
   computeWindowDelta: vi.fn(() => null),
 }));

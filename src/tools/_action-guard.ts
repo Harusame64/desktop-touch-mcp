@@ -607,6 +607,11 @@ function mapGuardResult(
   } else if (failedKind === "safe.clickCoordinates") {
     status = "unsafe_coordinates";
   }
+  // A guard may know its failure means something the kind alone does not convey
+  // — an unreadable rect is a missing window, not a misplaced click.
+  if (gr.failedGuard?.statusOverride) {
+    status = gr.failedGuard.statusOverride;
+  }
   // modal guard is not in GUARD_KINDS, so guard won't fire for it in Phase A
 
   const shouldBlock = gr.policy === "block";
@@ -789,7 +794,12 @@ export async function runActionGuard(
   // ADR-023 Phase 1: callers with an idempotent, fixId-less re-invocation path
   // (browser_click by-axis) suppress this — a fixId hint they cannot honor would
   // be a dead promise (Opus PR3 Round 1 P2).
-  if (result.block && !suppressSuggestedFix) {
+  // A fix is a one-call re-approval of the SAME action. Offering one for a
+  // target whose rectangle could not be read invites the caller to re-approve a
+  // click into a window that is not there; the recovery is a fresh screenshot,
+  // which the status already asks for.
+  const targetMissing = gr.failedGuard?.statusOverride === "identity_changed";
+  if (result.block && !suppressSuggestedFix && !targetMissing) {
     const fix = tryBuildSuggestedFix(
       gr,
       descriptor,

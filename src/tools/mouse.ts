@@ -12,6 +12,7 @@ import {
 import {
   updateWindowCache,
   findContainingWindow,
+  findContainingWindowFresh,
   getCachedWindowByTitle,
   computeWindowDelta,
   getSnapshot,
@@ -877,7 +878,9 @@ export const mouseDragHandler = async ({
 
       // Phase I-a: tab-strip drag detection (checked before cross-window to give better error)
       if (!allowTabDrag) {
-        const startWinForTab = findContainingWindow(tsx, tsy);
+        // Refreshing lookup: a miss here SKIPS the tab-strip check entirely, so
+        // an expired entry must not be allowed to silently disarm it.
+        const startWinForTab = findContainingWindowFresh(tsx, tsy);
         if (startWinForTab) {
           const identity = getWindowIdentity(startWinForTab.hwnd);
           const tabRisk = detectTabDragRisk(
@@ -897,8 +900,10 @@ export const mouseDragHandler = async ({
       // Phase I-b: cross-window / desktop drag check
       // start point is safety-critical; endpoint is also guarded (v3 §5.2)
       if (!allowCrossWindowDrag) {
-        const startWin = findContainingWindow(tsx, tsy);
-        const endWin   = findContainingWindow(tex, tey);
+        // Refreshing lookups: two misses make `startHwnd === endHwnd === null`,
+        // which compares equal and lets a cross-window drag through unchecked.
+        const startWin = findContainingWindowFresh(tsx, tsy);
+        const endWin   = findContainingWindowFresh(tex, tey);
         const startHwnd = startWin ? String(startWin.hwnd) : null;
         const endHwnd   = endWin   ? String(endWin.hwnd)   : null;
         if (startHwnd !== endHwnd) {

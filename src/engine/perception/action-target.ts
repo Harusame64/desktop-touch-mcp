@@ -24,7 +24,7 @@ import {
 import { FluentStore } from "./fluent-store.js";
 import { enumWindowsInZOrder } from "../win32.js";
 import { refreshWin32Fluents, buildWindowIdentity } from "./sensors-win32.js";
-import { findContainingWindow } from "../window-cache.js";
+import { findContainingWindowFresh } from "../window-cache.js";
 import { getOrCreateSlot, updateSlot } from "./hot-target-cache.js";
 import { logResolve } from "../../tools/_resolve-log.js";
 
@@ -349,8 +349,11 @@ async function resolveCoordinateTarget(
   const { x, y, windowTitle } = descriptor;
   const warnings: string[] = [];
 
-  // Try window-cache first (sub-ms)
-  const cached = findContainingWindow(x, y);
+  // Window-cache first (sub-ms); a miss re-enumerates once rather than
+  // reporting "target not found" for a window that is simply not in the cache
+  // right now. Without that, expiring an entry would make a live, unmoved
+  // window unclickable until some unrelated tool happened to list windows.
+  const cached = findContainingWindowFresh(x, y);
   if (!cached) {
     return { lens: null, localStore: null, identity: null, candidates: 0, warnings };
   }

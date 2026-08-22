@@ -5,6 +5,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import { mouse } from "../engine/nutjs.js";
+import { updateWindowCache } from "../engine/window-cache.js";
 import {
   enumWindowsInZOrder,
   enumMonitors,
@@ -547,6 +548,11 @@ export const desktopStateHandler = async (args: {
 } = {}): Promise<ToolResult> => {
   try {
     const wins = enumWindowsInZOrder();
+    // The guard's own recovery advice for `target_not_found` names this tool
+    // ("call desktop_discover to verify the window title, then retry"), so it
+    // has to leave the window cache in a state where the retry can succeed.
+    // Enumerating without writing the cache made that advice a refusal loop.
+    updateWindowCache(wins);
     const fg = wins.find((w) => w.isActive) ?? null;
     const cursor = await mouse.getPosition().catch(() => ({ x: 0, y: 0 }));
 
