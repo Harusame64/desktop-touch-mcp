@@ -158,6 +158,15 @@ function isFresh(w: CachedWindow, now: number): boolean {
   return now - w.timestamp <= CACHE_TTL_MS;
 }
 
+/** Right and bottom edges are exclusive — the convention both lookups share. */
+function containsPoint(
+  r: { x: number; y: number; width: number; height: number },
+  x: number,
+  y: number,
+): boolean {
+  return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+}
+
 /**
  * Find the cached window that contains the given screen coordinate.
  * Searches in Z-order (lowest zOrder = frontmost) so overlapping windows
@@ -172,12 +181,9 @@ export function findContainingWindow(x: number, y: number): CachedWindow | null 
   let bestZ = Infinity;
   for (const w of cache.values()) {
     if (!isFresh(w, now)) continue;
-    const r = w.region;
-    if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
-      if (w.zOrder < bestZ) {
-        best = w;
-        bestZ = w.zOrder;
-      }
+    if (containsPoint(w.region, x, y) && w.zOrder < bestZ) {
+      best = w;
+      bestZ = w.zOrder;
     }
   }
   return best;
@@ -219,30 +225,45 @@ export function findContainingWindow(x: number, y: number): CachedWindow | null 
  */
 const REFRESH_ON_MISS_THROTTLE_MS = 250;
 let _lastMissRefreshAtMs = 0;
+/**
+ * The enumeration behind the last miss, kept so a throttled miss can still be
+ * ANSWERED.
+ *
+ * The throttle limits how often the desktop is enumerated. It must not limit
+ * how often the question can be answered — that distinction was invisible while
+ * a miss wrote its enumeration into the cache, because the second caller was
+ * then rescued by a cache hit. It stopped being invisible the moment the write
+ * was removed, and returning null instead is a hard failure: one
+ * `mouse_drag` without a window title asks twice, milliseconds apart, so the
+ * endpoint saw null, resolved to no window and refused — identically on every
+ * retry, because the first ask re-armed the throttle each time.
+ */
+let _lastMissSnapshot: WindowZInfo[] = [];
 
 export function findContainingWindowFresh(x: number, y: number): CachedWindow | null {
   const hit = findContainingWindow(x, y);
   if (hit) return hit;
   const now = Date.now();
-  if (now - _lastMissRefreshAtMs <= REFRESH_ON_MISS_THROTTLE_MS) return null;
-  _lastMissRefreshAtMs = now;
-  let live: WindowZInfo[];
-  try {
-    live = enumWindowsInZOrder();
-  } catch {
-    // Enumeration unavailable (no native addon) — fall through with what we have.
-    return null;
+  if (now - _lastMissRefreshAtMs > REFRESH_ON_MISS_THROTTLE_MS) {
+    _lastMissRefreshAtMs = now;
+    try {
+      _lastMissSnapshot = enumWindowsInZOrder();
+    } catch {
+      // Enumeration unavailable (no native addon). The clock is armed anyway so
+      // a broken binding is not asked again on every call.
+      _lastMissSnapshot = [];
+      return null;
+    }
   }
   // Frontmost (lowest zOrder) live window containing the point. Minimized
   // windows are skipped for the same reason `updateWindowCache` refuses to
   // store them: their region is zeroed and would swallow the origin.
   let best: CachedWindow | null = null;
   let bestZ = Infinity;
-  for (const w of live) {
+  for (const w of _lastMissSnapshot) {
     if (w.isMinimized) continue;
-    const r = w.region;
-    if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height && w.zOrder < bestZ) {
-      best = { hwnd: w.hwnd, title: w.title, region: { ...r }, zOrder: w.zOrder, timestamp: now };
+    if (containsPoint(w.region, x, y) && w.zOrder < bestZ) {
+      best = { hwnd: w.hwnd, title: w.title, region: { ...w.region }, zOrder: w.zOrder, timestamp: now };
       bestZ = w.zOrder;
     }
   }
@@ -252,6 +273,7 @@ export function findContainingWindowFresh(x: number, y: number): CachedWindow | 
 /** @internal Test-only — forget the last refresh-on-miss so the throttle reopens. */
 export function _resetRefreshThrottleForTest(): void {
   _lastMissRefreshAtMs = 0;
+  _lastMissSnapshot = [];
 }
 
 /**

@@ -229,6 +229,33 @@ describe("findContainingWindowFresh — the throttle", () => {
     expect(mockEnum).toHaveBeenCalledTimes(1);
   });
 
+  it("still ANSWERS a second miss inside the throttle window", () => {
+    // The throttle limits how often the desktop is read, not how often the
+    // question can be answered. Returning null instead is a hard failure: one
+    // `mouse_drag` without a window title asks twice milliseconds apart, so the
+    // endpoint would resolve to no window and refuse — identically on every
+    // retry, because the first ask re-arms the throttle each time.
+    mockEnum.mockReturnValue([APP]);
+
+    expect(findContainingWindowFresh(200, 200)?.hwnd).toBe(0xa1n);
+    expect(findContainingWindowFresh(250, 250)?.hwnd).toBe(0xa1n);
+    expect(findContainingWindowFresh(300, 300)?.hwnd).toBe(0xa1n);
+
+    // …from one read of the desktop.
+    expect(mockEnum).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a throttled miss about a point the first ask did not cover", () => {
+    // The second ask is a different point — the drag endpoint. It is answered
+    // from the same snapshot, not from whatever the first ask happened to want.
+    const other = win(0xb2n, "Other", { x: 700, y: 700, width: 200, height: 200 }, 3);
+    mockEnum.mockReturnValue([APP, other]);
+
+    expect(findContainingWindowFresh(200, 200)?.hwnd).toBe(0xa1n);
+    expect(findContainingWindowFresh(750, 750)?.hwnd).toBe(0xb2n);
+    expect(mockEnum).toHaveBeenCalledTimes(1);
+  });
+
   it("re-enumerates again once the throttle window has passed", () => {
     // A window the caller has just opened must still be findable — the throttle
     // is a rate limit, not a negative cache.
