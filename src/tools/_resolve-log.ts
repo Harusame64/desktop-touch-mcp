@@ -476,6 +476,8 @@ function classifyAncestry(anc: AncestryInfo, pid: number): AncestryVerdict {
 let _ancestry: AncestryInfo | null = null;
 let _ancestryAtMs = 0;
 let _ancestryAttempts = 0;
+/** Set once the startup scan has run — the only reader of `AncestryInfo.parentMap`. */
+let _startupScanDone = false;
 let _ownConsoleWindow: { available: boolean; hwnd: bigint | null } | null = null;
 let _ownConsoleWindowAtMs = 0;
 let _parentMap: Map<number, number> | null = null;
@@ -593,7 +595,10 @@ function ancestry(): AncestryInfo {
     ancestors,
     unavailable: parentMap.size === 0,
     truncatedAtRecycledPid,
-    parentMap,
+    // Only worth holding until the startup scan has read it. A rebuild after
+    // that would otherwise hang a fresh full process table on the cache that
+    // nothing ever reads or frees (Opus Round 6 P3).
+    parentMap: _startupScanDone ? null : parentMap,
   };
   _ancestryAtMs = Date.now();
   return _ancestry;
@@ -647,6 +652,7 @@ export function _resetTopologyCachesForTest(): void {
   _ancestry = null;
   _ancestryAtMs = 0;
   _ancestryAttempts = 0;
+  _startupScanDone = false;
   _ownConsoleWindow = null;
   _ownConsoleWindowAtMs = 0;
   _parentMap = null;
@@ -709,6 +715,7 @@ export function logTopologySnapshot(): void {
     });
     // The scan above is this map's only reader. See `AncestryInfo.parentMap`.
     anc.parentMap = null;
+    _startupScanDone = true;
   } catch {
     // Same contract as the loggers above: measurement never crashes startup.
   }

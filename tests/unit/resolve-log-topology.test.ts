@@ -212,6 +212,28 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     expect(events("topology_snapshot")[0].ownConsoleHostChildPid).toBeNull();
   });
 
+  it("does not re-retain the process table when the chain is rebuilt later", () => {
+    // The scan runs once. A rebuild after it would otherwise hang a fresh full
+    // process table on the cache that nothing ever reads or frees.
+    parentMap = new Map();
+    _resetTopologyCachesForTest();
+    logTopologySnapshot();                       // scan has now run
+    seedSessionTopology();
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 31_000);       // past the ancestry retry window
+    mockLogDiagnostic.mockClear();
+    resolveOnto(OTHER_TERM_HWND);                // forces a rebuild
+
+    // The rebuild took effect…
+    expect(events("topology_relation")[0].ancestryUnavailable).toBe(false);
+    // …and the new snapshot is not being held: a second startup record finds
+    // nothing to scan.
+    mockLogDiagnostic.mockClear();
+    logTopologySnapshot();
+    expect(events("topology_snapshot")[0].ownConsoleHostChildPid).toBeNull();
+  });
+
   it("leaves the scan marker off when every child read fine", () => {
     parentMap.set(6300, SELF);
     processNames.set(6300, "notepad.exe");
