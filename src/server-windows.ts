@@ -66,7 +66,7 @@ import {
   normalizeThrown,
   wrapHandlerArgWithTiming,
 } from "./engine/diagnostic-log.js";
-import { wrapHandlerArgWithCallId } from "./tools/_resolve-log.js";
+import { wrapHandlerArgWithCallId, logTopologySnapshot } from "./tools/_resolve-log.js";
 import { startCpuWatchdog } from "./engine/diagnostic-watchdog.js";
 import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
@@ -561,6 +561,14 @@ const httpUrl = useHttp ? `http://127.0.0.1:${httpPort}/mcp` : undefined;
 
 // ─── Log auto-guard startup status ───────────────────────────────────────────
 logAutoGuardStartup();
+
+// ─── ADR-035 Phase C-0: one-shot process-topology snapshot ───────────────────
+// Measurement only (diagnostic log, no behaviour): what `GetConsoleWindow()`
+// returns here, whether this process owns its own console host, and the launch
+// chain above it. Placed after the `--help` exit above so a one-shot CLI use
+// does not pay for a process snapshot, and before the transport connects so it
+// precedes every tool call in the log.
+logTopologySnapshot();
 
 // ─── ADR-011 Phase B B-3/B-4 follow-up: load memory stores from disk ─────────
 // env `DESKTOP_TOUCH_MEMORY_PERSIST=1` 時のみ disk から復元、disabled / file

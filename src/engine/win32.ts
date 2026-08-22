@@ -643,6 +643,27 @@ export function getForegroundHwnd(): bigint | null {
 }
 
 /**
+ * ADR-035 Phase C-0 — the HWND of the console THIS process is attached to, or
+ * `null` when it has none (`GetConsoleWindow()` returned NULL) or the binding
+ * is missing from an older `.node`.
+ *
+ * Measurement only. The value goes into the startup topology snapshot so
+ * ADR-035 OQ-P4 can be settled on data instead of on the circumstantial
+ * "the server owns a conhost child" argument the plan currently rests on.
+ * Nothing branches on it today, and a `null` return is a legitimate reading
+ * (a windowless service host has no console), not an error.
+ */
+export function getOwnConsoleWindow(): bigint | null {
+  try {
+    const fn = requireNativeWin32().win32GetConsoleWindow;
+    if (typeof fn !== "function") return null;
+    return fn();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Return the registered class name of a window.
  * Returns an empty string if the window no longer exists or the call fails.
  */

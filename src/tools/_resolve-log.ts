@@ -1,6 +1,8 @@
 /**
- * _resolve-log.ts — ADR-035 Phase 1 observation: how a `windowTitle` was
- * resolved, and where the resulting input was actually dispatched.
+ * _resolve-log.ts — ADR-035 observation: how a `windowTitle` was resolved,
+ * where the resulting input was actually dispatched (Phase 1), and how the
+ * chosen window relates to this server's own process tree (Phase C-0, at the
+ * bottom of the file).
  *
  * ADR-035 §7 needs to tell two failure hypotheses apart from production data
  * alone:
@@ -17,8 +19,11 @@
  * event at each native dispatch sink so a resolution can be joined to the write
  * it produced.
  *
- * **Zero behaviour change**: every export here is write-only observation. No
- * call site changes what it returns because of anything in this file.
+ * **Nothing here changes where input goes.** Every export is write-only
+ * observation: no call site picks a different window, refuses, or retries
+ * because of anything in this file. The one caller-visible effect is the
+ * Phase C-0 advisory at the bottom — a non-blocking `warnings` string on the
+ * response, appended by handlers that call `drainTopologyWarnings()`.
  *
  * PII (plan §2 checklist, Round 10 Codex): a window title routinely carries a
  * file name, a mail subject, or a browser page title, and `diagnostic.log` is
@@ -49,7 +54,18 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logDiagnostic, isDiagnosticLogEnabled } from "../engine/diagnostic-log.js";
 import type { ResolveResolver, ResolveWindowRecord, ResolveFallback, DispatchSink } from "../engine/diagnostic-log.js";
-import { getWindowTitleW, getForegroundHwnd, getWindowIdentity } from "../engine/win32.js";
+import {
+  getWindowTitleW,
+  getForegroundHwnd,
+  getWindowIdentity,
+  getOwnConsoleWindow,
+  buildProcessParentMap,
+  getProcessIdentityByPid,
+} from "../engine/win32.js";
+import {
+  isTerminalClassProcessName,
+  isConsoleHostProcessName,
+} from "../utils/terminal-process.js";
 // The leaf module, NOT `_action-guard.js`: importing the guard here would close
 // a cycle back through `action-target.ts` (Opus Round 3 P2).
 import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
@@ -78,7 +94,17 @@ function rawTitlesEnabled(): boolean {
 
 // ─── Per-call correlation id ─────────────────────────────────────────────────
 
-interface CallContext { callId: string }
+interface CallContext {
+  callId: string;
+  /**
+   * ADR-035 Phase C-0 advisories raised during this tool call. Collected here
+   * rather than returned from `logResolve` because the resolvers that raise
+   * them (`findTerminalWindow`, `focusWindowForKeyboard`) sit several frames
+   * below the handler that owns the response's `warnings` array; the handler
+   * calls `drainTopologyWarnings()` on its way out.
+   */
+  topologyWarnings: string[];
+}
 
 const _callAls = new AsyncLocalStorage<CallContext>();
 let _callSeq = 0;
@@ -94,7 +120,7 @@ let _callSeq = 0;
 export function runWithCallId<T>(fn: () => T): T {
   if (_callAls.getStore() !== undefined) return fn();
   _callSeq = (_callSeq + 1) % 1000000;
-  return _callAls.run({ callId: `c${process.pid}-${_callSeq}` }, fn);
+  return _callAls.run({ callId: `c${process.pid}-${_callSeq}`, topologyWarnings: [] }, fn);
 }
 
 /** The active correlation id, or `null` outside any wrapped handler. */
@@ -225,6 +251,7 @@ export function logResolve(args: {
     const matches = typeof args.matches === "function" ? args.matches() : args.matches;
     const chosen = args.chosen !== undefined ? args.chosen : (matches[0] ?? null);
     const q = hashTitle(args.query);
+    const chosenRecord = chosen === null ? null : toRecord(chosen, identity);
     logDiagnostic({
       kind: "resolve",
       resolver: args.resolver,
@@ -234,7 +261,7 @@ export function logResolve(args: {
       queryLen: q.len,
       ...(rawTitlesEnabled() && { queryRaw: args.query }),
       matchCount: matches.length,
-      chosen: chosen === null ? null : toRecord(chosen, identity),
+      chosen: chosenRecord,
       others: matches
         .filter((w) => chosen === null || w.hwnd !== chosen.hwnd)
         .slice(0, OTHERS_LIMIT)
@@ -242,6 +269,12 @@ export function logResolve(args: {
       ...(args.fallback !== undefined && { fallback: args.fallback }),
       ...(args.pinnedByHwnd === true && { pinnedByHwnd: true }),
     });
+    // ADR-035 Phase C-0 — second event, only for terminal-class write
+    // destinations. Written after the resolve record so the two always appear
+    // in that order for a given `callId`.
+    if (chosen !== null && chosenRecord !== null) {
+      noteTopologyForResolve(args.resolver, chosen, chosenRecord);
+    }
   } catch {
     // See the module docstring: observation must never become a new crash
     // source. Every call site sits on a path that could not fail here before.
@@ -310,4 +343,261 @@ export function logDispatchSink(args: {
   } catch {
     // Same contract as `logResolve` above — never throw into a dispatch path.
   }
+}
+
+// ─── ADR-035 Phase C-0: topology measurement ─────────────────────────────────
+//
+// Phase C wants to refuse a write that lands in the operator's OWN session
+// window. Three candidate predicates for "this window belongs to me" have died
+// in a row (ancestor-PID chain, conhost parent PID, console identity — plan
+// §3b), each on a topology assumption that measurement contradicted. So C-0
+// ships no predicate at all: it records what the topology actually is, at
+// startup and at every terminal-class write destination, and OQ-P4 gets decided
+// on that data.
+//
+// Nothing here changes behaviour. The one caller-visible effect is a
+// non-blocking advisory string, and it is deliberately NOT described as a
+// safety feature anywhere user-facing: the stage-1 predicate is known to be
+// wrong in both directions (Windows Terminal hosts unrelated windows in one
+// process, so it over-fires; conhost is a sibling rather than an ancestor, so
+// under a classic console it never fires at all).
+
+/** Cap on how far up the process tree the launch chain is walked. */
+const ANCESTRY_LIMIT = 10;
+
+/** How long a process parent map may be reused for the console-host lookup. */
+const PARENT_MAP_TTL_MS = 5000;
+
+interface AncestryInfo {
+  chain: { pid: number; processName: string }[];
+  pids: Set<number>;
+  /** `buildProcessParentMap` returned empty — it does that on failure, too. */
+  unavailable: boolean;
+}
+
+let _ancestry: AncestryInfo | null = null;
+let _ownConsoleWindow: bigint | null = null;
+let _ownConsoleWindowRead = false;
+let _parentMap: Map<number, number> | null = null;
+let _parentMapAtMs = 0;
+
+/**
+ * This process's launch chain, computed once. The chain is a launch-time fact
+ * — an ancestor exiting later does not move a window from "mine" to "not mine"
+ * — so it is cached for the life of the process rather than re-snapshotted.
+ */
+function ancestry(): AncestryInfo {
+  if (_ancestry !== null) return _ancestry;
+  const parentMap = buildProcessParentMap();
+  const chain: { pid: number; processName: string }[] = [];
+  const pids = new Set<number>();
+  let pid = process.pid;
+  for (let i = 0; i < ANCESTRY_LIMIT; i++) {
+    if (pids.has(pid)) break; // a cycle in the snapshot; stop rather than spin
+    pids.add(pid);
+    chain.push({ pid, processName: getProcessIdentityByPid(pid).processName });
+    const parent = parentMap.get(pid);
+    // pid 0 is the idle process — the documented top of the tree, not a parent.
+    if (parent === undefined || parent === 0) break;
+    pid = parent;
+  }
+  _ancestry = { chain, pids, unavailable: parentMap.size === 0 };
+  return _ancestry;
+}
+
+/** `GetConsoleWindow()` for this process, read once (it cannot change). */
+function ownConsoleWindow(): bigint | null {
+  if (!_ownConsoleWindowRead) {
+    _ownConsoleWindow = getOwnConsoleWindow();
+    _ownConsoleWindowRead = true;
+  }
+  return _ownConsoleWindow;
+}
+
+/**
+ * A process parent map no older than {@link PARENT_MAP_TTL_MS}. Unlike the
+ * ancestry above this one has to be reasonably fresh — it answers "is the
+ * console host's parent still alive", and the whole point of the question is
+ * that the parent may have exited (`launch_console classic` reparents through a
+ * `cmd.exe` that dies immediately, plan §3b Round 6 P1-A).
+ */
+function freshParentMap(): Map<number, number> {
+  const now = Date.now();
+  if (_parentMap === null || now - _parentMapAtMs > PARENT_MAP_TTL_MS) {
+    _parentMap = buildProcessParentMap();
+    _parentMapAtMs = now;
+  }
+  return _parentMap;
+}
+
+/** @internal Test-only — drop the process-topology caches. */
+export function _resetTopologyCachesForTest(): void {
+  _ancestry = null;
+  _ownConsoleWindow = null;
+  _ownConsoleWindowRead = false;
+  _parentMap = null;
+  _parentMapAtMs = 0;
+}
+
+/**
+ * Write the one-shot startup topology snapshot. Called from `server-windows.ts`
+ * after the CLI `--help` exit and before the transport connects, so it lands in
+ * the log before any tool call can.
+ *
+ * Costs one process snapshot plus up to {@link ANCESTRY_LIMIT} identity reads,
+ * once, and returns immediately when the diagnostic log is off.
+ */
+export function logTopologySnapshot(): void {
+  try {
+    if (!isDiagnosticLogEnabled()) return;
+    const anc = ancestry();
+    const consoleWindow = ownConsoleWindow();
+    // The Round 7 circumstantial evidence, measured directly: a process that
+    // INHERITED its parent's console does not spawn its own host, so a conhost
+    // child is the sign that this server holds a console of its own and the
+    // session's console window is somebody else's window.
+    let hostPid: number | null = null;
+    let hostName: string | undefined;
+    for (const [pid, parentPid] of freshParentMap()) {
+      if (parentPid !== process.pid) continue;
+      const name = getProcessIdentityByPid(pid).processName;
+      if (isConsoleHostProcessName(name)) {
+        hostPid = pid;
+        hostName = name;
+        break;
+      }
+    }
+    logDiagnostic({
+      kind: "topology_snapshot",
+      consoleWindow: consoleWindow === null ? null : String(consoleWindow),
+      ownConsoleHostChildPid: hostPid,
+      ...(hostName !== undefined && { ownConsoleHostChildName: hostName }),
+      ancestry: anc.chain,
+      launchPath: anc.chain.map((p) => p.processName || "pid:" + String(p.pid)).join(" < "),
+      processSnapshotUnavailable: anc.unavailable,
+    });
+  } catch {
+    // Same contract as the loggers above: measurement never crashes startup.
+  }
+}
+
+/**
+ * Queue the stage-1 advisory on the current call. Returns whether it was
+ * queued — outside a wrapped handler there is no call to attach it to, and the
+ * `warned` field on the log record then says so rather than claiming a warning
+ * the caller never saw.
+ */
+function pushTopologyWarning(processName: string, pid: number): boolean {
+  const store = _callAls.getStore();
+  if (store === undefined) return false;
+  const who = processName === "" ? "pid " + String(pid) : processName;
+  store.topologyWarnings.push(
+    "Destination window is owned by " + who + " (pid " + String(pid) +
+      "), which is this server process or one of its ancestors — it may be the " +
+      "session you are driving. Observation only (ADR-035 Phase C-0); nothing was blocked.",
+  );
+  return true;
+}
+
+/**
+ * Record how the window a write resolver chose relates to this server process.
+ *
+ * Emitted for every terminal-class destination, hit or miss. Gating it on the
+ * stage-1 predicate would collect nothing at all under a classic console, where
+ * `conhost.exe` is a SIBLING of the shell rather than an ancestor (ADR-035 §6.2
+ * measurement) — and that is precisely the configuration Phase C has no data
+ * for (Round 14 Codex).
+ */
+function logTopologyRelation(
+  resolver: ResolveResolver,
+  hwnd: bigint,
+  pid: number,
+  processName: string,
+): void {
+  const anc = ancestry();
+  const ownerInAncestry = anc.pids.has(pid);
+  const ownerIsConsoleHost = isConsoleHostProcessName(processName);
+
+  let consoleHostParentPid: number | null | undefined;
+  let consoleHostParentAlive: boolean | undefined;
+  let consoleHostParentInAncestry: boolean | undefined;
+  if (ownerIsConsoleHost) {
+    const map = freshParentMap();
+    const parent = map.get(pid);
+    consoleHostParentPid = parent ?? null;
+    if (parent !== undefined) {
+      // Liveness from the same snapshot the parent came out of: a process that
+      // has exited is no longer enumerated, so absence IS the death signal —
+      // and a dead parent is exactly what `launch_console classic` leaves
+      // behind (the `cmd.exe` it reparents through exits immediately).
+      consoleHostParentAlive = map.has(parent);
+      consoleHostParentInAncestry = anc.pids.has(parent);
+    }
+  }
+
+  const own = ownConsoleWindow();
+
+  logDiagnostic({
+    kind: "topology_relation",
+    resolver,
+    callId: currentCallId(),
+    autoGuard: isAutoGuardEnabled(),
+    targetHwnd: String(hwnd),
+    ownerPid: pid,
+    ownerProcessName: processName,
+    ownerInAncestry,
+    ownerIsConsoleHost,
+    ...(consoleHostParentPid !== undefined && { consoleHostParentPid }),
+    ...(consoleHostParentAlive !== undefined && { consoleHostParentAlive }),
+    ...(consoleHostParentInAncestry !== undefined && { consoleHostParentInAncestry }),
+    isOwnConsoleWindow: own !== null && own === hwnd,
+    // The stage-1 instrument. `ownerInAncestry` IS the predicate — this field
+    // only says whether the advisory reached a caller.
+    warned: ownerInAncestry ? pushTopologyWarning(processName, pid) : false,
+  });
+}
+
+/**
+ * The C-0 hook on a resolve event: when a resolution that already knows who
+ * owns the chosen window landed on a terminal-class one, record how that window
+ * relates to this process.
+ *
+ * **Identity is never looked up here.** Phase 1 made process identity a
+ * per-site opt-in precisely because `getWindowIdentity` is an `OpenProcess` +
+ * `QueryFullProcessImageName` round-trip, and only the write paths pay it
+ * (plan §2, "実装で確定した事実" 3). Reusing that opt-in as the gate keeps C-0
+ * at zero added syscalls and picks exactly the right set for free: the terminal
+ * and keyboard resolvers, `desktop_act`'s two executors, and
+ * `findTerminalWindow`'s process-name rescue — the H2 path — all pass identity;
+ * the shared `pickPlainTopLevelWindowByTitle` SSOT does not, so its pass-through
+ * cannot double-count against its own callers (plan §2 residual F1).
+ *
+ * The two write resolvers left uncovered are the ones Phase 1 left at
+ * `identity: "skip"` — `inputPipelineCase3` (scroll) and `actionTarget`
+ * (click). Neither is in Phase C's refusal scope, which is terminal
+ * `send` / `run` (plan §3b), so OQ-P4 does not need them; widening C-0 to reach
+ * them would put an `OpenProcess` on every click.
+ */
+function noteTopologyForResolve(
+  resolver: ResolveResolver,
+  chosen: ResolveWindowInput,
+  record: ResolveWindowRecord,
+): void {
+  const pid = record.pid;
+  const processName = record.processName;
+  if (pid === undefined || processName === undefined) return;
+  if (!isTerminalClassProcessName(processName)) return;
+  logTopologyRelation(resolver, chosen.hwnd, pid, processName);
+}
+
+/**
+ * Take the advisories raised during this tool call, emptying the queue.
+ *
+ * Handlers with a `warnings` array append the result on their way out. Returns
+ * an empty array outside a wrapped handler, so a call site never has to check.
+ */
+export function drainTopologyWarnings(): string[] {
+  const store = _callAls.getStore();
+  if (store === undefined || store.topologyWarnings.length === 0) return [];
+  return store.topologyWarnings.splice(0, store.topologyWarnings.length);
 }

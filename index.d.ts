@@ -521,6 +521,14 @@ export declare function win32GetActiveConsoleSessionId(): number
  *  empty array when the underlying API fails (best-effort diagnostic). */
 export declare function wtsEnumerateSessions(): Array<NativeWtsSessionInfo>
 
+// ─── ADR-035 Phase C-0: console window (measurement only) ───────────────────
+
+/** HWND of the console attached to THIS process, or `null` when the process
+ *  has no console. ADR-035 Phase C-0 writes it to the startup topology
+ *  snapshot so Phase C can tell "the window the caller named" apart from
+ *  "the console this server is running in". */
+export declare function win32GetConsoleWindow(): bigint | null
+
 // ─── Desktop Duplication subscription (ADR-007 P5c-2, ADR-019 Stage 5) ──────
 //
 // Per-output DXGI Desktop Duplication subscription. Background thread polls

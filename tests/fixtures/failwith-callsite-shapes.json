@@ -300,56 +300,56 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1300,
+      "line": 1303,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1469,
+      "line": 1472,
       "tool": "keyboard",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2118,
+      "line": 2127,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2189,
+      "line": 2198,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2650,
+      "line": 2662,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2717,
+      "line": 2729,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2806,
+      "line": 2818,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3022,
+      "line": 3034,
       "tool": "keyboard:sequence",
       "errKind": "expression",
       "contextShape": "object-plain"
@@ -524,28 +524,28 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1005,
+      "line": 1009,
       "tool": "terminal:read",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1100,
+      "line": 1104,
       "tool": "terminal:read",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1194,
+      "line": 1198,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1490,
+      "line": 1494,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"

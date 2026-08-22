@@ -13,7 +13,12 @@ import {
   getWindowClassName,
   type WindowZInfo,
 } from "../engine/win32.js";
-import { logResolve, logDispatchSink } from "./_resolve-log.js";
+import { logResolve, logDispatchSink, drainTopologyWarnings } from "./_resolve-log.js";
+// ADR-035 Phase C-0: the terminal-image-name pattern moved to a leaf module so
+// the topology logger in `_resolve-log.ts` can share it without importing this
+// file (which imports `_resolve-log.ts` — the cycle `auto-guard-env.ts` was
+// split out to avoid during Phase 1). Re-exported unchanged at the bottom.
+import { TERMINAL_PROCESS_RE } from "../utils/terminal-process.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -154,7 +159,6 @@ export const terminalSendSchema = {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TERMINAL_PROCESS_RE = /^(WindowsTerminal|conhost|pwsh|powershell|cmd|bash|wsl|alacritty|wezterm|mintty)(\.exe)?$/i;
 
 function findTerminalWindow(partialTitle: string): WindowZInfo | null {
   const wins = enumWindowsInZOrder();
@@ -1753,6 +1757,9 @@ export const terminalSendHandler = async ({
     const ident = observeTarget(windowTitle, win.hwnd, win.title);
 
     markDispatched(); // delivered via foreground keyboard/clipboard type
+    // ADR-035 Phase C-0: the stage-1 topology advisory, if `findTerminalWindow`
+    // (or any resolver this call went through) raised one. Non-blocking.
+    warnings.push(...drainTopologyWarnings());
     return ok({
       ok: true,
       sent: input,
@@ -2818,6 +2825,8 @@ export const terminalRunHandler = async ({
     }
   }
 
+  // ADR-035 Phase C-0 — same advisory as the send path above.
+  warnings.push(...drainTopologyWarnings());
   const response: TerminalRunResponse = {
     ok: readError === undefined,
     output,

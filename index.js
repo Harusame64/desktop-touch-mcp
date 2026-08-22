@@ -139,6 +139,8 @@ export const win32SetImeOpenStatus            = nativeBinding.win32SetImeOpenSta
 export const win32GetProcessSessionId         = nativeBinding.win32GetProcessSessionId;
 export const win32GetActiveConsoleSessionId   = nativeBinding.win32GetActiveConsoleSessionId;
 export const wtsEnumerateSessions             = nativeBinding.wtsEnumerateSessions;
+// ADR-035 Phase C-0 — measurement only (see src/win32/console_window.rs).
+export const win32GetConsoleWindow             = nativeBinding.win32GetConsoleWindow;
 
 // ─── Desktop Duplication subscription (ADR-007 P5c-2, ADR-019 Stage 5) ──────
 export const DirtyRectSubscription = nativeBinding.DirtyRectSubscription;

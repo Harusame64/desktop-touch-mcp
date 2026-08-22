@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **The diagnostic log now records how a terminal window relates to the server
+  process itself.** When a write lands in a terminal, it is worth knowing
+  whether that terminal is the one this server is running inside — the failure
+  mode where a command is typed into your own session instead of the window you
+  named. The log now answers that from data rather than from guesswork: at
+  startup a `topology_snapshot` record notes the console window this process is
+  attached to (if any), whether it owns a console host of its own, and the chain
+  of processes it was launched from; then every `keyboard` or `terminal` write
+  that resolves to a terminal window appends a `topology_relation` record saying
+  who owns that window, whether that owner is the server process or one of its
+  ancestors, and — for a classic console — whether the console host's parent is
+  still alive. Records are written for every terminal destination, not only the
+  suspicious ones, so a normal day of work produces a usable baseline.
+
+  When a destination does turn out to be owned by this server's own process
+  tree, the response gains a non-blocking warning saying so. **Nothing is
+  refused and nothing is retargeted** — the check is deliberately imprecise
+  (Windows Terminal hosts several unrelated windows in one process, so it can
+  point at a window that is perfectly fine to write to), and it exists to
+  measure how often the situation arises, not to guard against it. Turn the
+  whole log off with `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1`.
+
 - **The diagnostic log now records how a `windowTitle` was resolved, and where
   the input actually went.** When a `windowTitle` matches more than one window,
   or matches none and a fallback picks a window by process name instead, the

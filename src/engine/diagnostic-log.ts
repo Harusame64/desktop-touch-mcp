@@ -294,6 +294,82 @@ export type DiagnosticEvent =
       fgTitleRaw?: string;
       /** ADR-018 dispatcher tier, for the scroll sinks that have one. */
       tier?: "1" | "2" | "3" | "4";
+    }
+  | {
+      // ADR-035 Phase C-0 — written ONCE at server start.
+      //
+      // Phase C has to answer "is the window the caller named the console this
+      // server itself is talking through?", and every candidate predicate so
+      // far died on an unverified assumption about process topology (plan §3b:
+      // ancestor-PID chain, conhost parent PID, console identity — three in a
+      // row). This record is the measurement that replaces the assumption:
+      // what `GetConsoleWindow()` actually returns here, whether this process
+      // owns its own console host as a CHILD (the Round 7 circumstantial
+      // evidence that it does NOT share the session console), and the launch
+      // chain above it.
+      //
+      // Measurement only — nothing branches on it, and it is deliberately not
+      // described as a safety feature anywhere user-facing.
+      kind: "topology_snapshot";
+      /** `GetConsoleWindow()` as a decimal handle string; null when unattached. */
+      consoleWindow: string | null;
+      /** pid of a `conhost` / `OpenConsole` CHILD of this process, or null. */
+      ownConsoleHostChildPid: number | null;
+      /** Image name of that child, when one was found. */
+      ownConsoleHostChildName?: string;
+      /** This process first, then its ancestors, capped at 10 links. */
+      ancestry: { pid: number; processName: string }[];
+      /** `ancestry` image names joined by " < " — the launch path, best-effort. */
+      launchPath: string;
+      /**
+       * True when `buildProcessParentMap` came back empty, which it also does
+       * on failure (`win32.ts` swallows). The ancestry above is then just this
+       * process, and a reader must NOT take "no ancestors" at face value.
+       */
+      processSnapshotUnavailable: boolean;
+    }
+  | {
+      // ADR-035 Phase C-0 — how one write destination relates to this server.
+      //
+      // Written UNCONDITIONALLY for every terminal-class window a write-side
+      // resolver picked, not only for the ones that look like a self-hit. The
+      // stage-1 predicate (owner pid in our ancestor chain) is structurally
+      // incapable of firing under a conhost session host — conhost is a SIBLING
+      // of the shell, never an ancestor (ADR-035 §6.2 measurement) — so gating
+      // the record on it would leave Phase C with zero data from exactly the
+      // configuration it most needs (Round 14 Codex).
+      kind: "topology_relation";
+      resolver: ResolveResolver;
+      callId: string | null;
+      autoGuard: boolean;
+      /** The window the resolver chose, as a decimal handle string. */
+      targetHwnd: string;
+      ownerPid: number | null;
+      ownerProcessName: string | null;
+      /**
+       * The stage-1 predicate: the window's owning pid is this process or one
+       * of its ancestors. `true` is the self-hit suspicion — including its
+       * known false positives (Windows Terminal hosts several unrelated windows
+       * in ONE process, measured: hwnd 133658 and 3801680 both on pid 16372),
+       * which is why this is an instrument and not a refusal.
+       */
+      ownerInAncestry: boolean;
+      /** Owner is `conhost` / `OpenConsole` — a console HOST, not a shell. */
+      ownerIsConsoleHost: boolean;
+      /** Console host only: its parent pid, and what that parent turned out to be. */
+      consoleHostParentPid?: number | null;
+      /** Console host only: the parent pid still appears in a live process snapshot. */
+      consoleHostParentAlive?: boolean;
+      /** Console host only: the parent pid is this process or one of its ancestors. */
+      consoleHostParentInAncestry?: boolean;
+      /** The chosen window IS this process's own console window. */
+      isOwnConsoleWindow: boolean;
+      /**
+       * A non-blocking advisory was queued for the caller. False when the
+       * predicate fired but the call site had nowhere to put it — the log and
+       * the response can therefore disagree, and this field says which.
+       */
+      warned: boolean;
     };
 
 /**

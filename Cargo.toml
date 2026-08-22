@@ -173,6 +173,11 @@ windows = { version = "0.62", features = [
     # WTSEnumerateSessionsW / WTSFreeMemory / WTS_CONNECTSTATE_CLASS /
     # WTS_SESSION_INFOW (windows-rs groups them under RemoteDesktop).
     "Win32_System_RemoteDesktop",
+    # ── ADR-035 Phase C-0: GetConsoleWindow ──────────────────────────────
+    # Reads the console window this server process is attached to, so the
+    # topology snapshot can say whether a named terminal window IS our own
+    # console (measurement input for OQ-P4).
+    "Win32_System_Console",
     # ── ADR-027: Windows.Graphics.Capture (WGC) capture layer ────────────
     # GPU 合成窓 / 遮蔽窓の実ピクセル捕捉。PrintWindow が黒を返す DWM 合成窓を
     # DWM composition surface から直接撮る。WinRT 側 (GraphicsCaptureItem /

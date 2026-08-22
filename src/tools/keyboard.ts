@@ -41,7 +41,7 @@ import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss } from "./_action-guard.js";
-import { logResolve, logDispatchSink } from "./_resolve-log.js";
+import { logResolve, logDispatchSink, drainTopologyWarnings } from "./_resolve-log.js";
 import type { ResolvedDestination } from "./_action-guard.js";
 
 /**
@@ -1152,6 +1152,9 @@ async function focusWindowForKeyboard(
       ...(explicitHwnd !== undefined && { pinnedByHwnd: true }),
       identity: "lookup",
     });
+    // ADR-035 Phase C-0: the stage-1 topology advisory, if the resolve above
+    // raised one. Rides the same `warnings` array every caller already merges.
+    warnings.push(...drainTopologyWarnings());
     if (active && matches(active)) {
       // Target is already in the foreground — nothing to do.
       foregroundVerified = true;
@@ -1542,6 +1545,9 @@ export const keyboardTypeHandler = async ({
         matches: ffMatches,
         identity: "lookup",
       });
+      // ADR-035 Phase C-0: surface the stage-1 topology advisory if the resolve
+      // above raised one. Non-blocking observation — see `_resolve-log.ts`.
+      warnings.push(...drainTopologyWarnings());
       if (!target) {
         return failWith(
           new Error("WindowNotFound"),
@@ -1715,6 +1721,9 @@ export const keyboardTypeHandler = async ({
         matches: bgMatches,
         identity: "lookup",
       });
+      // ADR-035 Phase C-0: surface the stage-1 topology advisory if the resolve
+      // above raised one. Non-blocking observation — see `_resolve-log.ts`.
+      warnings.push(...drainTopologyWarnings());
       if (target) {
         const check = canInjectViaPostMessage(target.hwnd);
         if (check.supported) {
@@ -2475,6 +2484,9 @@ export const keyboardPressHandler = async ({
         matches: bgPressMatches,
         identity: "lookup",
       });
+      // ADR-035 Phase C-0: surface the stage-1 topology advisory if the resolve
+      // above raised one. Non-blocking observation — see `_resolve-log.ts`.
+      warnings.push(...drainTopologyWarnings());
       if (target && canInjectViaPostMessage(target.hwnd).supported) {
         // Phase A safety: evaluate lensId / auto-guard before WM_CHAR send so
         // BG path doesn't silently bypass guards (PR #64 Codex P1). See type

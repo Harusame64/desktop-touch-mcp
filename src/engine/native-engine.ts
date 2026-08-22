@@ -260,6 +260,13 @@ export interface NativeWin32 {
   win32GetProcessSessionId?(pid: number): number | null;
   win32GetActiveConsoleSessionId?(): number;
   wtsEnumerateSessions?(): NativeWtsSessionInfo[];
+
+  // ADR-035 Phase C-0: `GetConsoleWindow()` for THIS process. Measurement only
+  // — the startup topology snapshot records it so Phase C can tell a window the
+  // caller named apart from the console this server itself runs in. Optional
+  // like every binding above: an older `.node` simply logs `consoleWindow:null`
+  // and the snapshot stays readable.
+  win32GetConsoleWindow?(): bigint | null;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────
