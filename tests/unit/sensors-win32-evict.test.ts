@@ -5,11 +5,16 @@
  * candidate.
  *
  * `refreshWin32Fluents` runs immediately before the auto-guard evaluates a
- * click (`action-target.ts:buildWindowLensResult`), so it is the one place that
- * both knows the handle and has just asked Windows about it. Without the
- * eviction the guard refuses the click but the cache entry survives, and the
- * next click aimed anywhere inside that rectangle resolves to it again — the
- * loop the user sees as "clicks keep getting rejected until I reconnect".
+ * click (`action-target.ts:buildWindowLensResult`), so it is a place that both
+ * knows the handle and has just asked Windows about it. It is not the ONLY
+ * caller — the lens registry refreshes through it too, including from a
+ * background plan — which means an entry can also be evicted outside a click.
+ * That is intended: the rule is a property of the handle, not of the caller.
+ *
+ * Without the eviction the guard refuses the click but the cache entry
+ * survives, and the next click aimed anywhere inside that rectangle resolves to
+ * it again — the loop the user sees as "clicks keep getting rejected until I
+ * reconnect".
  *
  * The rule is deliberately a single question — *does this handle still yield a
  * rect?* — asked from the two places that reach it differently: the window was

@@ -103,6 +103,33 @@ describe("safe.clickCoordinates — unreadable rect", () => {
     expect(res.reason).toMatch(/rect could not be read/i);
   });
 
+  it("is not shadowed by the confidence gate — the sensor's own confidence is discarded", () => {
+    // The sensor attaches 0.40 to a null rect, which looks like it would fail
+    // the 0.90 threshold on its own. It does not: `readValue` reports the
+    // SOURCE's base confidence (win32 = 0.98) and drops the per-observation
+    // value entirely. Pinned here because if that ever changes, the branch
+    // above becomes unreachable and this fix quietly stops existing.
+    const store = makeStore();
+    populateStore(store, hwnd, { "target.rect": null });
+    const res = evaluateGuard("safe.clickCoordinates", makeLens(), store, {
+      clickX: 500,
+      clickY: 500,
+    });
+    expect(res.reason).toMatch(/rect could not be read/i);
+    expect(res.reason).not.toMatch(/confidence too low/i);
+  });
+
+  it("asks the caller to be told the target was replaced, not that the click missed", () => {
+    // The status this maps to is what decides the advice the caller sees.
+    const store = makeStore();
+    populateStore(store, hwnd, { "target.rect": null });
+    const res = evaluateGuard("safe.clickCoordinates", makeLens(), store, {
+      clickX: 500,
+      clickY: 500,
+    });
+    expect(res.statusOverride).toBe("identity_changed");
+  });
+
   it("refuses even with no coordinates to check", () => {
     // "Nothing to check" is not the same as "checked and safe" — an unreadable
     // rectangle means the window could not be verified at all.

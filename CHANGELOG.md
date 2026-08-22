@@ -17,11 +17,17 @@
   at that moment, and the click is refused with `Target window rect could not be
   read — the window may have closed` rather than being waved through unchecked.
 
+  An expired entry means "check again", not "unreachable": when a click lands
+  somewhere the cache cannot currently account for, the window list is re-read
+  once and the click proceeds normally if the window is there. So a window that
+  is open and simply has not been looked at for a while stays clickable, and a
+  click that is refused has actually been checked rather than merely missing
+  from a cache.
+
   **What you may notice:** a click that used to land somewhere unintended now
-  fails with a clear reason, and a click aimed at an app that has closed fails
-  instead of hitting whatever replaced it. Take a fresh screenshot and the
-  window comes straight back — any tool that lists windows repopulates the
-  cache. Clicks into windows that are actually open are unaffected.
+  fails, and says the target window was replaced rather than that your
+  coordinates were off. Take a fresh screenshot and carry on. Clicks into
+  windows that are open are unaffected.
 
 - **The diagnostic log now records how a terminal window relates to the server
   process itself.** When a write lands in a terminal, it is worth knowing

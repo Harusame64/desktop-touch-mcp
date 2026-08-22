@@ -30,12 +30,21 @@ import {
   findContainingWindow,
   getCachedWindowByTitle,
   evictWindowFromCache,
+  findContainingWindowFresh,
   WINDOW_CACHE_TTL_EXPORTED_MS,
 } from "../../src/engine/window-cache.js";
 import type { WindowZInfo } from "../../src/engine/win32.js";
 
+const mockEnum = vi.fn<() => WindowZInfo[]>(() => []);
+vi.mock("../../src/engine/win32.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
+  return { ...actual, enumWindowsInZOrder: () => mockEnum() };
+});
+
 afterEach(() => {
   vi.useRealTimers();
+  mockEnum.mockReset();
+  mockEnum.mockReturnValue([]);
 });
 
 function win(hwnd: bigint, title: string, region: { x: number; y: number; width: number; height: number }, zOrder = 0): WindowZInfo {
@@ -122,5 +131,48 @@ describe("evictWindowFromCache", () => {
 
     expect(findContainingWindow(200, 200)).toBeNull();
     expect(findContainingWindow(650, 150)?.hwnd).toBe(0xb2n);
+  });
+});
+
+describe("findContainingWindowFresh — expiry means re-verify, not unclickable", () => {
+  it("re-enumerates on a miss and finds a window that is still open", () => {
+    // The regression the staleness bound created on its own: a live, unmoved
+    // window becomes unreachable simply because nothing enumerated for a
+    // minute. `mouse_click({x,y})` with no windowTitle has no other path back
+    // into the cache, so without this the caller is told the target was not
+    // found — for a window sitting right there.
+    updateWindowCache([APP]);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + WINDOW_CACHE_TTL_EXPORTED_MS + 1_000);
+
+    expect(findContainingWindow(200, 200)).toBeNull();
+
+    mockEnum.mockReturnValue([APP]);
+    expect(findContainingWindowFresh(200, 200)?.hwnd).toBe(0xa1n);
+    expect(mockEnum).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-enumerate when the cache can already answer", () => {
+    updateWindowCache([APP]);
+    mockEnum.mockClear();
+
+    expect(findContainingWindowFresh(200, 200)?.hwnd).toBe(0xa1n);
+    expect(mockEnum).not.toHaveBeenCalled();
+  });
+
+  it("reports nothing when the window really is gone", () => {
+    // The point of re-verifying is that the answer is now trustworthy: the
+    // window was asked about and is not there.
+    updateWindowCache([APP]);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + WINDOW_CACHE_TTL_EXPORTED_MS + 1_000);
+
+    mockEnum.mockReturnValue([]);
+    expect(findContainingWindowFresh(200, 200)).toBeNull();
+  });
+
+  it("survives an enumeration that throws", () => {
+    mockEnum.mockImplementation(() => { throw new Error("no native addon"); });
+    expect(findContainingWindowFresh(200, 200)).toBeNull();
   });
 });

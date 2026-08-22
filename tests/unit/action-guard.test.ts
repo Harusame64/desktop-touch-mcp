@@ -57,7 +57,8 @@ function makeOkGuardResult() {
 }
 
 function makeFailGuardResult(failedKind: string) {
-  const failedGuard = { kind: failedKind as import("../../src/engine/perception/types.js").GuardKind, ok: false, confidence: 0, reason: "test" };
+  const failedGuard: import("../../src/engine/perception/types.js").GuardResult =
+    { kind: failedKind as import("../../src/engine/perception/types.js").GuardKind, ok: false, confidence: 0, reason: "test" };
   return { ok: false, policy: "block" as const, attention: "guard_failed" as const, results: [failedGuard], failedGuard };
 }
 
@@ -189,6 +190,55 @@ describe("runActionGuard", () => {
       clickCoordinates: { x: 999, y: 999 },
     });
     expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("unsafe_coordinates");
+  });
+
+  it("reports an unreadable rect as a missing window, not a misplaced click", async () => {
+    // `safe.clickCoordinates` normally maps to `unsafe_coordinates`, whose
+    // advice is "the click is outside the window rect — take a new screenshot".
+    // That is the exact sentence the user complained about, and it is wrong
+    // here: the click is not misplaced, the target is gone. The status the
+    // guard asks for instead carries advice that actually recovers, because a
+    // screenshot is one of the few things that repopulates the window cache.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+    });
+    const failed = makeFailGuardResult("safe.clickCoordinates");
+    failed.failedGuard.statusOverride = "identity_changed";
+    mockEvaluateGuards.mockReturnValue(failed);
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200 },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("identity_changed");
+    expect(result.summary.next).not.toMatch(/outside the target window rect/i);
+    // And no one-call re-approval of a click into a window that is not there.
+    expect(result.suggestedFix).toBeUndefined();
+    expect(result.summary.next).not.toMatch(/fixId/);
+  });
+
+  it("still reports a genuinely misplaced click as unsafe_coordinates", async () => {
+    // The negative control: the override must not swallow the case it is
+    // distinguishing itself from.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+    });
+    mockEvaluateGuards.mockReturnValue(makeFailGuardResult("safe.clickCoordinates"));
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 999, y: 999 },
+      clickCoordinates: { x: 999, y: 999 },
+    });
+
     expect(result.summary.status).toBe("unsafe_coordinates");
   });
 
