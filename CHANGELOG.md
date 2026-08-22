@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **A window that closes no longer keeps catching your clicks.** When an app
+  you had been working with went away, its last known rectangle stayed in the
+  window cache and kept answering "the click at this point belongs to me" — with
+  no expiry and nothing to remove it. Depending on where the point landed you
+  would see clicks refused with "coordinates are outside the target window", or
+  worse, a click quietly delivered to whatever now occupies that part of the
+  screen. Restarting the server was the only thing that reliably cleared it,
+  which is why reconnecting appeared to be the fix.
+
+  Two things change. A cached window now stops being a click target once its
+  entry ages past the cache lifetime, instead of never. And when a window that
+  was already resolved stops reporting a position at all, its entry is dropped
+  at that moment, and the click is refused with `Target window rect could not be
+  read — the window may have closed` rather than being waved through unchecked.
+
+  **What you may notice:** a click that used to land somewhere unintended now
+  fails with a clear reason, and a click aimed at an app that has closed fails
+  instead of hitting whatever replaced it. Take a fresh screenshot and the
+  window comes straight back — any tool that lists windows repopulates the
+  cache. Clicks into windows that are actually open are unaffected.
+
 - **The diagnostic log now records how a terminal window relates to the server
   process itself.** When a write lands in a terminal, it is worth knowing
   whether that terminal is the one this server is running inside — the failure

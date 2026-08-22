@@ -121,15 +121,57 @@ export function updateWindowCache(windows: WindowZInfo[]): void {
 }
 
 /**
+ * Drop one window from the cache.
+ *
+ * Called when a resolved HWND turns out to have no readable rect. This is NOT
+ * an assertion that the window died — `getWindowRectByHwnd` returns null both
+ * for "no such window" and for "the handle could not be read" and does not
+ * distinguish them. It is a cache contract: **an entry that cannot be verified
+ * stops being an aiming candidate.**
+ *
+ * The failure modes are asymmetric, which is why the unverifiable case is
+ * evicted rather than kept. Evicting a window that was alive but momentarily
+ * unreadable costs one explicit `target_not_found`, and the next enumerating
+ * tool puts it back. Keeping an entry that cannot be verified costs a **silent
+ * click on a stale rectangle** — a window that closed leaves its rectangle
+ * behind, and the next click aimed anywhere inside it lands on whatever is
+ * there now, with no warning at all.
+ *
+ * Returns whether an entry was actually removed.
+ */
+export function evictWindowFromCache(hwnd: bigint): boolean {
+  return cache.delete(String(hwnd));
+}
+
+/**
+ * Is this entry still young enough to aim with?
+ *
+ * The aiming lookups below used to ignore timestamps entirely — `CACHE_TTL_MS`
+ * was applied only by `computeWindowDelta` and by `applyHoming`'s own checks —
+ * so a rectangle left behind by a closed window kept catching clicks
+ * **indefinitely**, until some tool happened to enumerate windows and prune it.
+ * That is the mechanism behind "clicks start getting rejected and only
+ * reconnecting fixes it": nothing in the click path expires a stale rectangle,
+ * and reconnecting restarts the process, which is what actually clears it.
+ */
+function isFresh(w: CachedWindow, now: number): boolean {
+  return now - w.timestamp <= CACHE_TTL_MS;
+}
+
+/**
  * Find the cached window that contains the given screen coordinate.
  * Searches in Z-order (lowest zOrder = frontmost) so overlapping windows
  * resolve to the topmost one — matching what the LLM saw in the screenshot.
  * Returns null if no cached window contains the point.
+ *
+ * Entries older than `CACHE_TTL_MS` are not candidates (see {@link isFresh}).
  */
 export function findContainingWindow(x: number, y: number): CachedWindow | null {
+  const now = Date.now();
   let best: CachedWindow | null = null;
   let bestZ = Infinity;
   for (const w of cache.values()) {
+    if (!isFresh(w, now)) continue;
     const r = w.region;
     if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
       if (w.zOrder < bestZ) {
@@ -144,12 +186,16 @@ export function findContainingWindow(x: number, y: number): CachedWindow | null 
 /**
  * Look up a cached window by partial title match (case-insensitive).
  * Returns the frontmost match (lowest zOrder).
+ *
+ * Entries older than `CACHE_TTL_MS` are not candidates (see {@link isFresh}).
  */
 export function getCachedWindowByTitle(title: string): CachedWindow | null {
+  const now = Date.now();
   const query = title.toLowerCase();
   let best: CachedWindow | null = null;
   let bestZ = Infinity;
   for (const w of cache.values()) {
+    if (!isFresh(w, now)) continue;
     if (w.title.toLowerCase().includes(query) && w.zOrder < bestZ) {
       best = w;
       bestZ = w.zOrder;

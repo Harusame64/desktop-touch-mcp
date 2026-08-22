@@ -85,6 +85,44 @@ function makeLens(overrides: Partial<PerceptionLens> = {}): PerceptionLens {
   };
 }
 
+describe("safe.clickCoordinates — unreadable rect", () => {
+  it("refuses instead of passing silently when the rect could not be read", () => {
+    // `getWindowRectByHwnd` returning null puts a null value on the fluent, and
+    // the point-in-rect check is written `if (rect)` — so before the fix a
+    // window whose rectangle could not be read fell straight through to
+    // `ok: true`. The confidence branch does not catch it either: `readValue`
+    // reports the SOURCE's base confidence (win32 = 0.98), not the 0.40 the
+    // sensor attaches to a null rect, so it clears the 0.90 threshold.
+    const store = makeStore();
+    populateStore(store, hwnd, { "target.rect": null });
+    const res = evaluateGuard("safe.clickCoordinates", makeLens(), store, {
+      clickX: 500,
+      clickY: 500,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/rect could not be read/i);
+  });
+
+  it("refuses even with no coordinates to check", () => {
+    // "Nothing to check" is not the same as "checked and safe" — an unreadable
+    // rectangle means the window could not be verified at all.
+    const store = makeStore();
+    populateStore(store, hwnd, { "target.rect": null });
+    const res = evaluateGuard("safe.clickCoordinates", makeLens(), store, {});
+    expect(res.ok).toBe(false);
+  });
+
+  it("still passes for a readable rect containing the point", () => {
+    const store = makeStore();
+    populateStore(store, hwnd);
+    const res = evaluateGuard("safe.clickCoordinates", makeLens(), store, {
+      clickX: 500,
+      clickY: 500,
+    });
+    expect(res.ok).toBe(true);
+  });
+});
+
 describe("target.identityStable", () => {
   it("passes when pid and processStartTimeMs match", () => {
     const store = makeStore();
