@@ -354,7 +354,22 @@ export type DiagnosticEvent =
       // One record per (tool call, destination window): a call that resolves
       // the same window twice — `run` resolving it and then its inner send
       // resolving it again — describes one relation, not two.
+      //
+      // So this is NOT a per-write counter, and must not be used as one: a
+      // macro that writes N times into one window still produces a single
+      // record. The per-write quantity lives in the `dispatch_sink` records,
+      // which carry the same `callId` and `targetHwnd` and are emitted once per
+      // native dispatch — join on that pair to weight a relation by how many
+      // writes actually went to it (Opus Round 3 P2). Counting resolutions
+      // instead would have made the weight depend on how many times a handler
+      // happened to re-resolve, which is a property of the plumbing.
       kind: "topology_relation";
+      /**
+       * The resolver that FIRST reached this window in this call. When a call
+       * resolves the same window through more than one resolver, later ones are
+       * folded into this record (see the note above), so this names the first,
+       * not necessarily the one whose result drove the dispatch.
+       */
       resolver: ResolveResolver;
       callId: string | null;
       autoGuard: boolean;

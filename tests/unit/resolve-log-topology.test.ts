@@ -19,7 +19,7 @@
  * moved out of `terminal.ts`.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockLogDiagnostic = vi.fn();
 let logEnabled = true;
@@ -140,6 +140,12 @@ function resolveOnto(hwnd: bigint, resolver = "findTerminalWindow" as const): vo
     intent: "write",
   });
 }
+
+afterEach(() => {
+  // Restored here, not inline: a throw mid-test would otherwise leak a mocked
+  // clock into every test that follows.
+  vi.useRealTimers();
+});
 
 beforeEach(() => {
   mockLogDiagnostic.mockClear();
@@ -368,29 +374,79 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     expect(mockBuildProcessParentMap).not.toHaveBeenCalled();
     expect(events("topology_relation")[0].ancestryUnavailable).toBe(true);
 
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
     resolveOnto(OTHER_TERM_HWND);
     expect(events("topology_relation")[0].ancestryUnavailable).toBe(false);
-    vi.useRealTimers();
   });
 
-  it("does not treat a failed process snapshot as a fresh one", () => {
-    // Stamping an empty snapshot as fresh would mark a full cache window of
-    // console-host records unavailable on one transient failure.
-    const CONHOST_PID = 8400;
-    const CONSOLE_HWND = 0xaaa0n;
+  it("does not report an age for a snapshot it could not read", () => {
+    // `_parentMapAtMs` is deliberately not advanced on a failed read, so an
+    // unconditional age would describe a snapshot no longer in use — or, before
+    // any read succeeded, report the process data as decades old.
+    const CONHOST_PID = 8700;
+    const CONSOLE_HWND = 0xddd0n;
     processNames.set(CONHOST_PID, "conhost.exe");
     windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    parentMap = new Map();
+    _resetTopologyCachesForTest();
+
+    resolveOnto(CONSOLE_HWND);
+
+    const rel = events("topology_relation")[0];
+    expect(rel.parentMapUnavailable).toBe(true);
+    expect(rel).not.toHaveProperty("parentMapAgeMs");
+  });
+
+  it("takes one process snapshot for the startup record, so its two claims agree", () => {
+    // The conhost-child scan and `processSnapshotUnavailable` used to come from
+    // two independent snapshots, which let the record assert "this process owns
+    // no console host child" out of a failed read while reporting the other one
+    // as successful.
+    parentMap = new Map();
+    _resetTopologyCachesForTest();
+    mockBuildProcessParentMap.mockClear();
+
+    logTopologySnapshot();
+
+    expect(mockBuildProcessParentMap).toHaveBeenCalledTimes(1);
+    expect(events("topology_snapshot")[0]).toMatchObject({
+      processSnapshotUnavailable: true,
+      ownConsoleHostChildPid: null,
+    });
+  });
+
+  it("retries a failed process snapshot on the cache interval, not on every record", () => {
+    // Two halves of the same property. A failure must not be stamped as a fresh
+    // read (that would mark a whole cache window unavailable on one transient
+    // failure), and it must not be retried per record either (that would
+    // hammer a process API that is currently failing).
+    const CONHOST_PID = 8400;
+    const CONSOLE_HWND = 0xaaa0n;
+    const seedConsoleHost = (): void => {
+      processNames.set(CONHOST_PID, "conhost.exe");
+      windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    };
+    seedConsoleHost();
     parentMap = new Map();
     _resetTopologyCachesForTest();
     resolveOnto(CONSOLE_HWND);
     expect(events("topology_relation")[0].parentMapUnavailable).toBe(true);
 
+    // Snapshot readable again — but within the interval, nothing is re-read.
     seedSessionTopology();
-    processNames.set(CONHOST_PID, "conhost.exe");
-    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    seedConsoleHost();
     parentMap.set(CONHOST_PID, CLI_PID);
+    mockLogDiagnostic.mockClear();
+    mockBuildProcessParentMap.mockClear();
+    resolveOnto(CONSOLE_HWND);
+    expect(mockBuildProcessParentMap).not.toHaveBeenCalled();
+    expect(events("topology_relation")[0].parentMapUnavailable).toBe(true);
+
+    // Past the interval, it is.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 6_000);
     mockLogDiagnostic.mockClear();
     resolveOnto(CONSOLE_HWND);
     const rel = events("topology_relation")[0];

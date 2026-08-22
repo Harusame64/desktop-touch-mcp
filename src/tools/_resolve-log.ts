@@ -400,8 +400,10 @@ export function logDispatchSink(args: {
 // not free, though. The ancestor chain costs one process snapshot plus up to
 // ANCESTRY_LIMIT identity reads, ONCE per process; the console-host branch
 // costs one more process snapshot per PARENT_MAP_TTL_MS while terminal writes
-// are flowing; and a pid that hits the chain costs one identity read to rule
-// out pid reuse. All of it is skipped when the log is off.
+// are flowing; a pid that hits the chain costs one identity read to rule out
+// pid reuse; and a console-host destination costs two more, to tell its living
+// parent from a reused pid. Four identity reads is the worst case per record.
+// All of it is skipped when the log is off.
 
 /** Cap on how far up the process tree the launch chain is walked. */
 const ANCESTRY_LIMIT = 10;
@@ -458,7 +460,10 @@ let _ancestry: AncestryInfo | null = null;
 let _ancestryAtMs = 0;
 let _ownConsoleWindow: { available: boolean; hwnd: bigint | null } | null = null;
 let _parentMap: Map<number, number> | null = null;
+/** When the cached map was last read SUCCESSFULLY. */
 let _parentMapAtMs = 0;
+/** When a read was last ATTEMPTED, successfully or not. */
+let _parentMapTriedAtMs = 0;
 
 /**
  * How long to wait before re-attempting an ancestry read that came back empty.
@@ -483,7 +488,12 @@ function ancestry(): AncestryInfo {
       Date.now() - _ancestryAtMs > ANCESTRY_RETRY_MS;
     if (!stale) return _ancestry;
   }
-  const parentMap = buildProcessParentMap();
+  // The SAME snapshot the console-host branch and the startup record use.
+  // They used to take two independent ones, which let the startup record assert
+  // "this process owns no console host child" out of a failed read while
+  // reporting `processSnapshotUnavailable:false` from a successful one
+  // (Opus Round 3 P2 — revising its own Round 2 "leave the two snapshots").
+  const parentMap = freshParentMap();
   const chain: AncestryInfo["chain"] = [];
   const ancestors = new Map<number, { startTimeMs: number; depth: number }>();
   let pid = process.pid;
@@ -521,14 +531,21 @@ function ownConsoleWindow(): { available: boolean; hwnd: bigint | null } {
  */
 function freshParentMap(): Map<number, number> {
   const now = Date.now();
-  if (_parentMap === null || now - _parentMapAtMs > PARENT_MAP_TTL_MS) {
-    _parentMap = buildProcessParentMap();
-    // Only a snapshot that actually read something counts as fresh. Stamping an
-    // empty one would mark up to a full TTL of records `parentMapUnavailable`
-    // on the strength of a single transient failure (Opus Round 2 P2).
-    if (_parentMap.size > 0) _parentMapAtMs = now;
-  }
-  return _parentMap;
+  const cached = _parentMap;
+  // Age the cache from the last SUCCESS when it holds one, and from the last
+  // ATTEMPT when it does not: `_parentMapAtMs` is deliberately not advanced by a
+  // failed read, so measuring a failed cache against it would make every record
+  // re-snapshot a process API that is currently failing (Opus Round 3 P2).
+  const since = cached !== null && cached.size > 0 ? _parentMapAtMs : _parentMapTriedAtMs;
+  if (cached !== null && now - since <= PARENT_MAP_TTL_MS) return cached;
+  _parentMapTriedAtMs = now;
+  const fresh = buildProcessParentMap();
+  _parentMap = fresh;
+  // Only a snapshot that actually read something counts as fresh. Stamping an
+  // empty one would mark up to a full TTL of records `parentMapUnavailable` on
+  // the strength of a single transient failure (Opus Round 2 P2).
+  if (fresh.size > 0) _parentMapAtMs = now;
+  return fresh;
 }
 
 /** @internal Test-only — drop the process-topology caches. */
@@ -538,6 +555,7 @@ export function _resetTopologyCachesForTest(): void {
   _ownConsoleWindow = null;
   _parentMap = null;
   _parentMapAtMs = 0;
+  _parentMapTriedAtMs = 0;
 }
 
 /**
@@ -708,7 +726,11 @@ function logTopologyRelation(
     ancestryUnavailable: anc.unavailable,
     ownerIsConsoleHost,
     ...(parentMapUnavailable === true && { parentMapUnavailable: true }),
-    ...(parentMapAgeMs !== undefined && { parentMapAgeMs }),
+    // Only when a snapshot was actually read. `_parentMapAtMs` is deliberately
+    // not advanced on a failed read, so emitting the age unconditionally would
+    // describe a snapshot no longer in use — or, before any read succeeded,
+    // report the process data as decades old (Opus Round 3 P1).
+    ...(parentMapUnavailable === false && parentMapAgeMs !== undefined && { parentMapAgeMs }),
     ...(consoleHostParentPid !== undefined && { consoleHostParentPid }),
     ...(consoleHostParentState !== undefined && { consoleHostParentState }),
     ...(consoleHostParentInAncestry !== undefined && { consoleHostParentInAncestry }),
