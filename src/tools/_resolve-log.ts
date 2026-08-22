@@ -481,12 +481,16 @@ const ANCESTRY_RETRY_MS = 30_000;
 function ancestry(): AncestryInfo {
   if (_ancestry !== null) {
     // A chain that was read successfully is a launch-time fact and never
-    // re-read. One that failed — an empty process snapshot, or an unreadable
-    // creation time for this very process — is retried, slowly.
-    const stale =
-      (_ancestry.unavailable || _ancestry.ancestors.get(process.pid)?.startTimeMs === 0) &&
-      Date.now() - _ancestryAtMs > ANCESTRY_RETRY_MS;
-    if (!stale) return _ancestry;
+    // re-read. One that failed is retried, slowly — and "failed" includes a
+    // chain that came out of a good snapshot but has an unreadable creation
+    // time on ANY link, not just on this process. That link's pid can never be
+    // verified, so every destination it owns would be classified `unverified`
+    // for the life of the server, silencing the advisory and skewing the
+    // measurement (Codex Round 3 P2).
+    const incomplete =
+      _ancestry.unavailable ||
+      _ancestry.chain.some((p) => p.startTimeMs === 0);
+    if (!incomplete || Date.now() - _ancestryAtMs <= ANCESTRY_RETRY_MS) return _ancestry;
   }
   // The SAME snapshot the console-host branch and the startup record use.
   // They used to take two independent ones, which let the startup record assert

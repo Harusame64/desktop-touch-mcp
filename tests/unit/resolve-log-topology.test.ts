@@ -381,6 +381,30 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     expect(events("topology_relation")[0].ancestryUnavailable).toBe(false);
   });
 
+  it("re-attempts a chain with an unreadable link, not just an unreadable self", () => {
+    // The snapshot succeeded, so the chain looks fine — but one ancestor's
+    // creation time could not be read, and that link can never be verified.
+    // Caching it for the server lifetime would classify every destination that
+    // ancestor owns as `unverified` forever.
+    processStartTimes.set(WT_PID, 0);
+    _resetTopologyCachesForTest();
+    runWithCallId(() => resolveOnto(SESSION_WT_HWND));
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerInAncestry: false,
+      ancestryPidHit: "unverified",
+    });
+
+    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 31_000);
+    mockLogDiagnostic.mockClear();
+    runWithCallId(() => resolveOnto(SESSION_WT_HWND));
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerInAncestry: true,
+      advisoryQueued: true,
+    });
+  });
+
   it("does not report an age for a snapshot it could not read", () => {
     // `_parentMapAtMs` is deliberately not advanced on a failed read, so an
     // unconditional age would describe a snapshot no longer in use — or, before
