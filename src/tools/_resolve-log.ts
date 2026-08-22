@@ -244,6 +244,19 @@ export function logResolve(args: {
   /** Set when the resolver matched on an explicit handle, not on the title. */
   pinnedByHwnd?: boolean;
   identity?: IdentityMode;
+  /**
+   * ADR-035 Phase C-0. Set to `"write"` at the call sites where this resolution
+   * is about to drive a native write, and only there — it is what turns on the
+   * `topology_relation` record.
+   *
+   * Opt-IN rather than opt-out on purpose. `findTerminalWindow` is shared by
+   * `terminal(action:'read')`, by `run`'s polling loop, and by the two send
+   * paths; defaulting to "write" would put dozens of records per `run` into the
+   * log for one window and let poll noise dominate the distribution Phase C is
+   * supposed to read (Opus Round 1 P1). A new resolver stays silent until
+   * somebody decides it is a write.
+   */
+  intent?: "write";
 }): void {
   try {
     if (!isDiagnosticLogEnabled()) return;
@@ -269,11 +282,11 @@ export function logResolve(args: {
       ...(args.fallback !== undefined && { fallback: args.fallback }),
       ...(args.pinnedByHwnd === true && { pinnedByHwnd: true }),
     });
-    // ADR-035 Phase C-0 — second event, only for terminal-class write
-    // destinations. Written after the resolve record so the two always appear
-    // in that order for a given `callId`.
-    if (chosen !== null && chosenRecord !== null) {
-      noteTopologyForResolve(args.resolver, chosen, chosenRecord);
+    // ADR-035 Phase C-0 — second event, only for terminal-class destinations a
+    // write is about to go to. Written after the resolve record so the two
+    // always appear in that order for a given `callId`.
+    if (args.intent === "write" && chosen !== null && chosenRecord !== null) {
+      noteTopologyForResolve(args.resolver, chosen.hwnd, chosenRecord);
     }
   } catch {
     // See the module docstring: observation must never become a new crash
@@ -361,6 +374,14 @@ export function logDispatchSink(args: {
 // wrong in both directions (Windows Terminal hosts unrelated windows in one
 // process, so it over-fires; conhost is a sibling rather than an ancestor, so
 // under a classic console it never fires at all).
+//
+// Cost, precisely (Opus Round 1 P2): a relation record adds NO per-window
+// identity lookup — it reuses the one the resolve event already paid for. It is
+// not free, though. The ancestor chain costs one process snapshot plus up to
+// ANCESTRY_LIMIT identity reads, ONCE per process; the console-host branch
+// costs one more process snapshot per PARENT_MAP_TTL_MS while terminal writes
+// are flowing; and a pid that hits the chain costs one identity read to rule
+// out pid reuse. All of it is skipped when the log is off.
 
 /** Cap on how far up the process tree the launch chain is walked. */
 const ANCESTRY_LIMIT = 10;
@@ -369,10 +390,48 @@ const ANCESTRY_LIMIT = 10;
 const PARENT_MAP_TTL_MS = 5000;
 
 interface AncestryInfo {
-  chain: { pid: number; processName: string }[];
-  pids: Set<number>;
+  chain: { pid: number; processName: string; startTimeMs: number }[];
+  /**
+   * pid → { creation time, depth }, for the chain above. A pid ALONE is not an
+   * identity: an ancestor can exit while this server keeps running, and Windows
+   * will hand its pid to something else — a terminal, eventually. Matching on
+   * the pid only would then classify an unrelated window as "ours" for the rest
+   * of the process lifetime and put false `ownerInAncestry` records into the
+   * very data OQ-P4 is going to be decided on (Codex Round 1 P2).
+   *
+   * `depth` is 0 for this process, 1 for its parent, and so on — the "which
+   * ancestor" the plan's C-0 log shape asks for (Opus Round 1 P1). Self and
+   * grandparent are very different readings: a Windows Terminal several links
+   * up hosts unrelated windows too, a hit on THIS process does not.
+   */
+  ancestors: Map<number, { startTimeMs: number; depth: number }>;
   /** `buildProcessParentMap` returned empty — it does that on failure, too. */
   unavailable: boolean;
+}
+
+/** How an owning pid compares against the cached ancestor chain. */
+type AncestryVerdict =
+  /** Not in the chain at all. */
+  | "no"
+  /** In the chain, and the process creation time still matches. */
+  | "yes"
+  /**
+   * In the chain by pid, but the creation times could not be compared —
+   * `getProcessIdentityByPid` reports 0 when the read fails. Deliberately NOT
+   * folded into "no": for a measurement slice, "we could not tell" is a
+   * distinct reading from "it is not an ancestor", and Phase C needs to know
+   * how often it happens before it builds a predicate on top.
+   */
+  | "unverified"
+  /** In the chain by pid, but the creation time says it is a different process. */
+  | "recycled";
+
+function classifyAncestry(anc: AncestryInfo, pid: number): AncestryVerdict {
+  const known = anc.ancestors.get(pid);
+  if (known === undefined) return "no";
+  const now = getProcessIdentityByPid(pid).processStartTimeMs;
+  if (known.startTimeMs === 0 || now === 0) return "unverified";
+  return known.startTimeMs === now ? "yes" : "recycled";
 }
 
 let _ancestry: AncestryInfo | null = null;
@@ -389,19 +448,24 @@ let _parentMapAtMs = 0;
 function ancestry(): AncestryInfo {
   if (_ancestry !== null) return _ancestry;
   const parentMap = buildProcessParentMap();
-  const chain: { pid: number; processName: string }[] = [];
-  const pids = new Set<number>();
+  const chain: AncestryInfo["chain"] = [];
+  const ancestors = new Map<number, { startTimeMs: number; depth: number }>();
   let pid = process.pid;
-  for (let i = 0; i < ANCESTRY_LIMIT; i++) {
-    if (pids.has(pid)) break; // a cycle in the snapshot; stop rather than spin
-    pids.add(pid);
-    chain.push({ pid, processName: getProcessIdentityByPid(pid).processName });
+  for (let depth = 0; depth < ANCESTRY_LIMIT; depth++) {
+    if (ancestors.has(pid)) break; // a cycle in the snapshot; stop rather than spin
+    const ident = getProcessIdentityByPid(pid);
+    ancestors.set(pid, { startTimeMs: ident.processStartTimeMs, depth });
+    chain.push({
+      pid,
+      processName: ident.processName,
+      startTimeMs: ident.processStartTimeMs,
+    });
     const parent = parentMap.get(pid);
     // pid 0 is the idle process — the documented top of the tree, not a parent.
     if (parent === undefined || parent === 0) break;
     pid = parent;
   }
-  _ancestry = { chain, pids, unavailable: parentMap.size === 0 };
+  _ancestry = { chain, ancestors, unavailable: parentMap.size === 0 };
   return _ancestry;
 }
 
@@ -482,20 +546,23 @@ export function logTopologySnapshot(): void {
 }
 
 /**
- * Queue the stage-1 advisory on the current call. Returns whether it was
- * queued — outside a wrapped handler there is no call to attach it to, and the
- * `warned` field on the log record then says so rather than claiming a warning
- * the caller never saw.
+ * Queue the stage-1 advisory on the current call. Returns whether there was a
+ * call to queue it on — outside a wrapped handler there is not, and the
+ * `advisoryQueued` field on the log record then says so rather than implying a
+ * string somebody could have read.
+ *
+ * Idempotent: the same advisory raised twice in one call (a `run` that sends
+ * repeatedly into the same window) is stored once.
  */
 function pushTopologyWarning(processName: string, pid: number): boolean {
   const store = _callAls.getStore();
   if (store === undefined) return false;
   const who = processName === "" ? "pid " + String(pid) : processName;
-  store.topologyWarnings.push(
+  const text =
     "Destination window is owned by " + who + " (pid " + String(pid) +
-      "), which is this server process or one of its ancestors — it may be the " +
-      "session you are driving. Observation only (ADR-035 Phase C-0); nothing was blocked.",
-  );
+    "), which is this server process or one of its ancestors — it may be the " +
+    "session you are driving. Observation only; nothing was blocked.";
+  if (!store.topologyWarnings.includes(text)) store.topologyWarnings.push(text);
   return true;
 }
 
@@ -515,23 +582,33 @@ function logTopologyRelation(
   processName: string,
 ): void {
   const anc = ancestry();
-  const ownerInAncestry = anc.pids.has(pid);
+  const ownerVerdict = classifyAncestry(anc, pid);
+  const ownerInAncestry = ownerVerdict === "yes";
   const ownerIsConsoleHost = isConsoleHostProcessName(processName);
 
   let consoleHostParentPid: number | null | undefined;
   let consoleHostParentAlive: boolean | undefined;
   let consoleHostParentInAncestry: boolean | undefined;
+  let parentMapUnavailable: boolean | undefined;
+  let parentMapAgeMs: number | undefined;
   if (ownerIsConsoleHost) {
     const map = freshParentMap();
-    const parent = map.get(pid);
-    consoleHostParentPid = parent ?? null;
+    parentMapUnavailable = map.size === 0;
+    parentMapAgeMs = Date.now() - _parentMapAtMs;
+    // A parent read out of an EMPTY snapshot is not "no parent" — it is "we
+    // could not look". `buildProcessParentMap` reports both the same way, so
+    // the flag above is what keeps a failed read out of the Phase C tally.
+    const parent = parentMapUnavailable ? undefined : map.get(pid);
+    consoleHostParentPid = parentMapUnavailable ? undefined : (parent ?? null);
     if (parent !== undefined) {
       // Liveness from the same snapshot the parent came out of: a process that
       // has exited is no longer enumerated, so absence IS the death signal —
       // and a dead parent is exactly what `launch_console classic` leaves
-      // behind (the `cmd.exe` it reparents through exits immediately).
+      // behind (the `cmd.exe` it reparents through exits immediately). Read
+      // `parentMapAgeMs` alongside it: the snapshot can be up to the cache TTL
+      // old, so "alive" means "alive as of that many ms ago".
       consoleHostParentAlive = map.has(parent);
-      consoleHostParentInAncestry = anc.pids.has(parent);
+      consoleHostParentInAncestry = classifyAncestry(anc, parent) === "yes";
     }
   }
 
@@ -546,58 +623,88 @@ function logTopologyRelation(
     ownerPid: pid,
     ownerProcessName: processName,
     ownerInAncestry,
+    // Which ancestor — 0 is this very process, 1 its parent. Absent when the
+    // pid is not a verified ancestor.
+    ...(ownerInAncestry && { ancestryDepth: anc.ancestors.get(pid)!.depth }),
+    // Only when the pid hit the chain but the answer is not a plain "yes".
+    ...(ownerVerdict === "unverified" || ownerVerdict === "recycled"
+      ? { ancestryPidHit: ownerVerdict }
+      : {}),
+    // The ancestor chain itself came out of a snapshot that may have failed —
+    // in which case it is just this process and EVERY `ownerInAncestry:false`
+    // here is a read failure, not a negative result. Carried per record because
+    // the startup snapshot that also reports it may be many hours away in the
+    // log (Opus Round 1 P1).
+    ancestryUnavailable: anc.unavailable,
     ownerIsConsoleHost,
+    ...(parentMapUnavailable === true && { parentMapUnavailable: true }),
+    ...(parentMapAgeMs !== undefined && { parentMapAgeMs }),
     ...(consoleHostParentPid !== undefined && { consoleHostParentPid }),
     ...(consoleHostParentAlive !== undefined && { consoleHostParentAlive }),
     ...(consoleHostParentInAncestry !== undefined && { consoleHostParentInAncestry }),
     isOwnConsoleWindow: own !== null && own === hwnd,
     // The stage-1 instrument. `ownerInAncestry` IS the predicate — this field
-    // only says whether the advisory reached a caller.
-    warned: ownerInAncestry ? pushTopologyWarning(processName, pid) : false,
+    // only says whether there was a tool call to hang the advisory on.
+    advisoryQueued: ownerInAncestry ? pushTopologyWarning(processName, pid) : false,
   });
 }
 
 /**
- * The C-0 hook on a resolve event: when a resolution that already knows who
- * owns the chosen window landed on a terminal-class one, record how that window
+ * The C-0 hook on a resolve event tagged `intent: "write"`: when it landed on a
+ * terminal-class window whose owner is already known, record how that window
  * relates to this process.
  *
  * **Identity is never looked up here.** Phase 1 made process identity a
  * per-site opt-in precisely because `getWindowIdentity` is an `OpenProcess` +
  * `QueryFullProcessImageName` round-trip, and only the write paths pay it
- * (plan §2, "実装で確定した事実" 3). Reusing that opt-in as the gate keeps C-0
- * at zero added syscalls and picks exactly the right set for free: the terminal
- * and keyboard resolvers, `desktop_act`'s two executors, and
- * `findTerminalWindow`'s process-name rescue — the H2 path — all pass identity;
- * the shared `pickPlainTopLevelWindowByTitle` SSOT does not, so its pass-through
- * cannot double-count against its own callers (plan §2 residual F1).
+ * (plan §2, "実装で確定した事実" 3). Reusing that opt-in as the second gate
+ * means the relation record costs no extra per-window lookup — including on the
+ * `findTerminalWindow` process-name rescue, the H2 path, which hands the
+ * identity in on `chosen`.
  *
- * The two write resolvers left uncovered are the ones Phase 1 left at
- * `identity: "skip"` — `inputPipelineCase3` (scroll) and `actionTarget`
- * (click). Neither is in Phase C's refusal scope, which is terminal
- * `send` / `run` (plan §3b), so OQ-P4 does not need them; widening C-0 to reach
- * them would put an `OpenProcess` on every click.
+ * The write sites that stay silent are the ones Phase 1 left at
+ * `identity: "skip"` — `inputPipelineCase3` (the scroll destination) and
+ * `actionTarget` (click) — plus `smartScrollImage`, which pays for identity but
+ * is not tagged. None of the three is in Phase C's refusal scope, which is
+ * terminal `send` / `run` (plan §3b), so OQ-P4 does not need them; instrumenting
+ * click would put an `OpenProcess` on every one.
  */
 function noteTopologyForResolve(
   resolver: ResolveResolver,
-  chosen: ResolveWindowInput,
+  hwnd: bigint,
   record: ResolveWindowRecord,
 ): void {
   const pid = record.pid;
   const processName = record.processName;
   if (pid === undefined || processName === undefined) return;
   if (!isTerminalClassProcessName(processName)) return;
-  logTopologyRelation(resolver, chosen.hwnd, pid, processName);
+  logTopologyRelation(resolver, hwnd, pid, processName);
 }
 
 /**
- * Take the advisories raised during this tool call, emptying the queue.
+ * Append the advisories raised during this tool call to `warnings`, skipping
+ * any that are already in it. No-op outside a wrapped handler, so a call site
+ * never has to check.
  *
- * Handlers with a `warnings` array append the result on their way out. Returns
- * an empty array outside a wrapped handler, so a call site never has to check.
+ * **Non-destructive on purpose.** An earlier draft spliced the queue empty, and
+ * that broke the two shapes this tool surface actually has: a handler with
+ * several successful return branches surfaced the advisory on one of them and
+ * silently dropped it on the others, and `terminal(action:'run')` — which calls
+ * the send handler internally and keeps only `ok` / `code` from its result —
+ * consumed the advisory in the inner call so the outer response never carried
+ * it (Codex Round 1 P2, both). Leaving the queue in place lets every branch and
+ * every nesting level ask, and the de-duplication here keeps a doubled ask from
+ * doubling the string.
  */
-export function drainTopologyWarnings(): string[] {
-  const store = _callAls.getStore();
-  if (store === undefined || store.topologyWarnings.length === 0) return [];
-  return store.topologyWarnings.splice(0, store.topologyWarnings.length);
+export function appendTopologyWarnings(warnings: string[]): void {
+  try {
+    const store = _callAls.getStore();
+    if (store === undefined) return;
+    for (const w of store.topologyWarnings) {
+      if (!warnings.includes(w)) warnings.push(w);
+    }
+  } catch {
+    // Same contract as every other export here: this sits on response paths
+    // that could not fail at this point before C-0 existed.
+  }
 }

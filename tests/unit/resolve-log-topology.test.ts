@@ -36,6 +36,8 @@ vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
 let parentMap = new Map<number, number>();
 /** pid → image name. */
 let processNames = new Map<number, string>();
+/** pid → process creation time. A pid alone is not an identity. */
+let processStartTimes = new Map<number, number>();
 /** hwnd → owning pid. */
 let windowOwners = new Map<bigint, number>();
 let consoleWindow: bigint | null = null;
@@ -52,11 +54,15 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     getProcessIdentityByPid: (pid: number) => ({
       pid,
       processName: processNames.get(pid) ?? "",
-      processStartTimeMs: 0,
+      processStartTimeMs: processStartTimes.get(pid) ?? 1000 + pid,
     }),
     getWindowIdentity: (hwnd: bigint) => {
       const pid = windowOwners.get(hwnd) ?? 0;
-      return { pid, processName: processNames.get(pid) ?? "", processStartTimeMs: 0 };
+      return {
+        pid,
+        processName: processNames.get(pid) ?? "",
+        processStartTimeMs: processStartTimes.get(pid) ?? 1000 + pid,
+      };
     },
     buildProcessParentMap: () => mockBuildProcessParentMap(),
     getOwnConsoleWindow: () => mockGetOwnConsoleWindow(),
@@ -66,7 +72,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
 const {
   logResolve,
   logTopologySnapshot,
-  drainTopologyWarnings,
+  appendTopologyWarnings,
   runWithCallId,
   _resetTopologyCachesForTest,
 } = await import("../../src/tools/_resolve-log.js");
@@ -108,6 +114,7 @@ function seedSessionTopology(): void {
     [OTHER_TERM_HWND, 9001],
     [NOTEPAD_HWND, 7777],
   ]);
+  processStartTimes = new Map();
   consoleWindow = null;
 }
 
@@ -117,13 +124,14 @@ function events(kind: string): Record<string, unknown>[] {
     .filter((e) => e.kind === kind);
 }
 
-/** Drive one write-side resolve onto `hwnd`, as `findTerminalWindow` would. */
+/** Drive one write-tagged resolve onto `hwnd`, as the send path would. */
 function resolveOnto(hwnd: bigint, resolver = "findTerminalWindow" as const): void {
   logResolve({
     resolver,
     query: "PowerShell",
     matches: [{ hwnd, title: "PowerShell" }],
     identity: "lookup",
+    intent: "write",
   });
 }
 
@@ -156,9 +164,9 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     });
     // Self first, then up the chain, image names included.
     expect(snap[0].ancestry).toEqual([
-      { pid: SELF, processName: "node.exe" },
-      { pid: CLI_PID, processName: "node.exe" },
-      { pid: WT_PID, processName: "WindowsTerminal.exe" },
+      { pid: SELF, processName: "node.exe", startTimeMs: 1000 + SELF },
+      { pid: CLI_PID, processName: "node.exe", startTimeMs: 1000 + CLI_PID },
+      { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: 1000 + WT_PID },
     ]);
     expect(snap[0].launchPath).toBe("node.exe < node.exe < WindowsTerminal.exe");
   });
@@ -171,7 +179,9 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
 
     const snap = events("topology_snapshot")[0];
     expect(snap.processSnapshotUnavailable).toBe(true);
-    expect(snap.ancestry).toEqual([{ pid: SELF, processName: "node.exe" }]);
+    expect(snap.ancestry).toEqual([
+      { pid: SELF, processName: "node.exe", startTimeMs: 1000 + SELF },
+    ]);
   });
 
   it("reports a null console window when the process has none", () => {
@@ -213,7 +223,8 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       ownerInAncestry: false,
       ownerIsConsoleHost: false,
       isOwnConsoleWindow: false,
-      warned: false,
+      advisoryQueued: false,
+      ancestryUnavailable: false,
     });
   });
 
@@ -225,9 +236,9 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
 
   it("does not write one for the shared read/write SSOT resolver", () => {
     // `pickPlainTopLevelWindowByTitle` is reached by read paths too and never
-    // asks for identity, so the identity gate silently excludes it — which is
-    // also what keeps its Case 3 pass-through from double-counting against the
-    // caller that logs the same resolution (plan §2 residual F1).
+    // asks for identity, so both gates exclude it — which is also what keeps
+    // its Case 3 pass-through from double-counting against the caller that logs
+    // the same resolution (plan §2 residual F1).
     logResolve({
       resolver: "pickPlainTopLevelWindowByTitle",
       query: "PowerShell",
@@ -235,6 +246,24 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     });
     expect(events("resolve")).toHaveLength(1);
     expect(events("topology_relation")).toHaveLength(0);
+  });
+
+  it("stays silent on a read, even one that pays for identity", () => {
+    // `findTerminalWindow` is shared by `terminal(action:'read')` and by `run`'s
+    // polling loop, which calls it once per poll. Recording those would bury the
+    // write records the analysis is actually after.
+    logResolve({
+      resolver: "findTerminalWindow",
+      query: "PowerShell",
+      matches: [{ hwnd: SESSION_WT_HWND, title: "PowerShell" }],
+      identity: "lookup",
+    });
+    expect(events("resolve")).toHaveLength(1);
+    expect(events("topology_relation")).toHaveLength(0);
+    // and no advisory was queued for a read either
+    const collected: string[] = [];
+    appendTopologyWarnings(collected);
+    expect(collected).toEqual([]);
   });
 
   it("adds no syscall of its own: a resolve that did not pay for identity gets no record", () => {
@@ -247,6 +276,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       resolver: "inputPipelineCase3",
       query: "PowerShell",
       matches: [{ hwnd: SESSION_WT_HWND, title: "PowerShell" }],
+      intent: "write",
     });
     expect(events("resolve")).toHaveLength(1);
     expect(events("topology_relation")).toHaveLength(0);
@@ -266,12 +296,42 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
         processName: "WindowsTerminal.exe",
       },
       fallback: "process-name",
+      intent: "write",
     });
     expect(events("topology_relation")[0]).toMatchObject({
       resolver: "findTerminalWindow",
       ownerPid: WT_PID,
       ownerInAncestry: true,
     });
+  });
+
+  it("flags a relation computed from a process table it could not read", () => {
+    // With an empty snapshot the chain is just this process, so EVERY
+    // `ownerInAncestry:false` is a read failure rather than a negative result.
+    // Without the flag the whole run looks like clean negative data.
+    parentMap = new Map();
+    _resetTopologyCachesForTest();
+    resolveOnto(SESSION_WT_HWND);
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerInAncestry: false,
+      ancestryUnavailable: true,
+    });
+  });
+
+  it("omits the console-host parent fields rather than reporting a null parent it never read", () => {
+    const CONHOST_PID = 8300;
+    const CONSOLE_HWND = 0x99990n;
+    processNames.set(CONHOST_PID, "conhost.exe");
+    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    parentMap = new Map();          // snapshot unreadable
+    _resetTopologyCachesForTest();
+
+    resolveOnto(CONSOLE_HWND);
+
+    const rel = events("topology_relation")[0];
+    expect(rel).toMatchObject({ ownerIsConsoleHost: true, parentMapUnavailable: true });
+    expect(rel).not.toHaveProperty("consoleHostParentPid");
+    expect(rel).not.toHaveProperty("consoleHostParentAlive");
   });
 
   it("marks the destination that IS this process's own console window", () => {
@@ -289,26 +349,82 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
       resolveOnto(SESSION_WT_HWND);
 
       const rel = events("topology_relation")[0];
-      expect(rel).toMatchObject({ ownerInAncestry: true, warned: true });
+      expect(rel).toMatchObject({
+        ownerInAncestry: true,
+        advisoryQueued: true,
+        // WindowsTerminal sits two links above this process in the fixture —
+        // a very different reading from a hit on the process itself.
+        ancestryDepth: 2,
+      });
 
-      const advisories = drainTopologyWarnings();
+      const advisories: string[] = [];
+      appendTopologyWarnings(advisories);
       expect(advisories).toHaveLength(1);
       expect(advisories[0]).toContain("WindowsTerminal.exe");
       expect(advisories[0]).toContain("nothing was blocked");
-      // Drained once, gone — a second handler must not re-report it.
-      expect(drainTopologyWarnings()).toEqual([]);
+
+      // Asking again does NOT consume it: a handler with several successful
+      // return branches, and `run` calling `send` internally, both need to be
+      // able to ask (Codex Round 1 P2). Asking twice into the SAME array must
+      // not double the string.
+      const second: string[] = [];
+      appendTopologyWarnings(second);
+      expect(second).toEqual(advisories);
+      appendTopologyWarnings(advisories);
+      expect(advisories).toHaveLength(1);
     });
   });
 
-  it("records warned:false when there is no call to attach the advisory to", () => {
+  it("records advisoryQueued:false when there is no call to attach the advisory to", () => {
     // Outside a wrapped handler the predicate still fires, but nobody will ever
     // see the string — the log must not claim otherwise.
     resolveOnto(SESSION_WT_HWND);
     expect(events("topology_relation")[0]).toMatchObject({
       ownerInAncestry: true,
-      warned: false,
+      advisoryQueued: false,
     });
-    expect(drainTopologyWarnings()).toEqual([]);
+    const collected: string[] = [];
+    appendTopologyWarnings(collected);
+    expect(collected).toEqual([]);
+  });
+
+  it("does not call a recycled pid an ancestor", () => {
+    // An ancestor exited, Windows handed its pid to an unrelated terminal. A
+    // pid-only rule would call that terminal "ours" for the rest of the server
+    // lifetime and put false records into the data OQ-P4 is decided on.
+    runWithCallId(() => {
+      processStartTimes.set(WT_PID, 1000 + WT_PID);
+      _resetTopologyCachesForTest();              // cache the chain at this time
+      resolveOnto(SESSION_WT_HWND);
+      expect(events("topology_relation")[0].ownerInAncestry).toBe(true);
+
+      mockLogDiagnostic.mockClear();
+      processStartTimes.set(WT_PID, 9_999_999);   // same pid, different process
+      resolveOnto(SESSION_WT_HWND);
+
+      expect(events("topology_relation")[0]).toMatchObject({
+        ownerInAncestry: false,
+        ancestryPidHit: "recycled",
+      });
+    });
+  });
+
+  it("counts a pid hit it could not verify separately from a miss", () => {
+    // `getProcessIdentityByPid` reports 0 when the read fails. Folding that into
+    // a plain false would hide how often the check is blind.
+    processStartTimes.set(WT_PID, 0);
+    _resetTopologyCachesForTest();
+    resolveOnto(SESSION_WT_HWND);
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerInAncestry: false,
+      ancestryPidHit: "unverified",
+      advisoryQueued: false,
+    });
+  });
+
+  it("leaves the marker off entirely when the pid never hit the chain", () => {
+    resolveOnto(OTHER_TERM_HWND);
+    expect(events("topology_relation")[0]).not.toHaveProperty("ancestryPidHit");
   });
 
   it("cannot fire under a classic console, which is why the relation record is unconditional", () => {
@@ -328,7 +444,7 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
 
     expect(events("topology_relation")[0]).toMatchObject({
       ownerInAncestry: false,
-      warned: false,
+      advisoryQueued: false,
       ownerIsConsoleHost: true,
       consoleHostParentPid: SHELL_PID,
       consoleHostParentAlive: true,
@@ -363,7 +479,9 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
       resolveOnto(SESSION_WT_HWND);
       expect(mockLogDiagnostic).not.toHaveBeenCalled();
       expect(mockBuildProcessParentMap).not.toHaveBeenCalled();
-      expect(drainTopologyWarnings()).toEqual([]);
+      const collected: string[] = [];
+      appendTopologyWarnings(collected);
+      expect(collected).toEqual([]);
     });
   });
 });

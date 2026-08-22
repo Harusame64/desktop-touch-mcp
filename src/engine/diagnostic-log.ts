@@ -317,8 +317,15 @@ export type DiagnosticEvent =
       ownConsoleHostChildPid: number | null;
       /** Image name of that child, when one was found. */
       ownConsoleHostChildName?: string;
-      /** This process first, then its ancestors, capped at 10 links. */
-      ancestry: { pid: number; processName: string }[];
+      /**
+       * This process first, then its ancestors, capped at 10 links.
+       * `startTimeMs` is what makes an entry an IDENTITY rather than a pid: an
+       * ancestor can exit and have its pid handed to something else, and a
+       * later `topology_relation` compares creation times before calling a
+       * window's owner an ancestor (Codex Round 1 P2). `0` means the read
+       * failed.
+       */
+      ancestry: { pid: number; processName: string; startTimeMs: number }[];
       /** `ancestry` image names joined by " < " — the launch path, best-effort. */
       launchPath: string;
       /**
@@ -344,18 +351,55 @@ export type DiagnosticEvent =
       autoGuard: boolean;
       /** The window the resolver chose, as a decimal handle string. */
       targetHwnd: string;
-      ownerPid: number | null;
-      ownerProcessName: string | null;
+      /** Always present: the record is only written when the owner is known. */
+      ownerPid: number;
+      ownerProcessName: string;
       /**
        * The stage-1 predicate: the window's owning pid is this process or one
-       * of its ancestors. `true` is the self-hit suspicion — including its
-       * known false positives (Windows Terminal hosts several unrelated windows
-       * in ONE process, measured: hwnd 133658 and 3801680 both on pid 16372),
-       * which is why this is an instrument and not a refusal.
+       * of its ancestors AND the two agree on process creation time. `true` is
+       * the self-hit suspicion — including its known false positives (Windows
+       * Terminal hosts several unrelated windows in ONE process, measured: hwnd
+       * 133658 and 3801680 both on pid 16372), which is why this is an
+       * instrument and not a refusal.
        */
       ownerInAncestry: boolean;
+      /**
+       * Present only when the owning pid DID hit the cached ancestor chain but
+       * `ownerInAncestry` is still false. `"recycled"`: the creation times
+       * disagree, so Windows has handed an exited ancestor's pid to this
+       * process. `"unverified"`: a creation time could not be read on one side.
+       * Both are counted separately rather than folded into a plain `false` —
+       * how often a pid-only rule would have been WRONG is itself an input to
+       * OQ-P4.
+       */
+      ancestryPidHit?: "recycled" | "unverified";
+      /**
+       * Which ancestor: 0 is this very process, 1 its parent. Present only when
+       * `ownerInAncestry` is true. A hit on THIS process and a hit on a Windows
+       * Terminal five links up are different findings — the terminal hosts
+       * unrelated windows, this process does not (Opus Round 1 P1).
+       */
+      ancestryDepth?: number;
+      /**
+       * The ancestor chain came out of a process snapshot that failed, so it is
+       * just this process and EVERY `ownerInAncestry: false` in this record is a
+       * read failure rather than a negative result. Carried per record because
+       * the startup snapshot that reports the same thing may be hours earlier in
+       * the log (Opus Round 1 P1).
+       */
+      ancestryUnavailable: boolean;
       /** Owner is `conhost` / `OpenConsole` — a console HOST, not a shell. */
       ownerIsConsoleHost: boolean;
+      /**
+       * Console host only: the process snapshot the parent lookup needed came
+       * back empty, so `consoleHostParent*` are absent rather than negative.
+       */
+      parentMapUnavailable?: boolean;
+      /**
+       * Console host only: how old the snapshot behind `consoleHostParent*` was,
+       * in ms. It is cached briefly, so "alive" means "alive this long ago".
+       */
+      parentMapAgeMs?: number;
       /** Console host only: its parent pid, and what that parent turned out to be. */
       consoleHostParentPid?: number | null;
       /** Console host only: the parent pid still appears in a live process snapshot. */
@@ -365,11 +409,15 @@ export type DiagnosticEvent =
       /** The chosen window IS this process's own console window. */
       isOwnConsoleWindow: boolean;
       /**
-       * A non-blocking advisory was queued for the caller. False when the
-       * predicate fired but the call site had nowhere to put it — the log and
-       * the response can therefore disagree, and this field says which.
+       * The non-blocking advisory was queued on this tool call. False when the
+       * predicate fired outside a wrapped handler, where there is no call to
+       * hang it on and nobody will ever read the string.
+       *
+       * Queued is not the same as printed: a tool surfaces the advisory where
+       * it assembles `warnings`, and a tool that assembles none will not show
+       * it. It is deliberately NOT named `warned` for that reason.
        */
-      warned: boolean;
+      advisoryQueued: boolean;
     };
 
 /**
