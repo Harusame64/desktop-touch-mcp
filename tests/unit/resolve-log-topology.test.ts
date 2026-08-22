@@ -43,7 +43,12 @@ let windowOwners = new Map<bigint, number>();
 let consoleWindow: bigint | null = null;
 
 const mockBuildProcessParentMap = vi.fn(() => new Map(parentMap));
-const mockGetOwnConsoleWindow = vi.fn(() => consoleWindow);
+/** `false` models an older `.node` with no binding / a failed call. */
+let consoleWindowReadable = true;
+const mockReadOwnConsoleWindow = vi.fn(() => ({
+  available: consoleWindowReadable,
+  hwnd: consoleWindowReadable ? consoleWindow : null,
+}));
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
@@ -65,7 +70,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
       };
     },
     buildProcessParentMap: () => mockBuildProcessParentMap(),
-    getOwnConsoleWindow: () => mockGetOwnConsoleWindow(),
+    readOwnConsoleWindow: () => mockReadOwnConsoleWindow(),
   };
 });
 
@@ -116,6 +121,7 @@ function seedSessionTopology(): void {
   ]);
   processStartTimes = new Map();
   consoleWindow = null;
+  consoleWindowReadable = true;
 }
 
 function events(kind: string): Record<string, unknown>[] {
@@ -138,7 +144,7 @@ function resolveOnto(hwnd: bigint, resolver = "findTerminalWindow" as const): vo
 beforeEach(() => {
   mockLogDiagnostic.mockClear();
   mockBuildProcessParentMap.mockClear();
-  mockGetOwnConsoleWindow.mockClear();
+  mockReadOwnConsoleWindow.mockClear();
   logEnabled = true;
   _resetTopologyCachesForTest();
   seedSessionTopology();
@@ -202,7 +208,7 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     logTopologySnapshot();
     expect(mockLogDiagnostic).not.toHaveBeenCalled();
     expect(mockBuildProcessParentMap).not.toHaveBeenCalled();
-    expect(mockGetOwnConsoleWindow).not.toHaveBeenCalled();
+    expect(mockReadOwnConsoleWindow).not.toHaveBeenCalled();
   });
 });
 
@@ -305,6 +311,93 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     });
   });
 
+  it("records one relation per destination, however many times a call resolves it", () => {
+    // `terminal(action:'run')` resolves the window and then calls the send
+    // handler, which resolves it again — one relation, not two. Filtering by
+    // resolver name cannot separate them: both are `findTerminalWindow` under
+    // one callId, so every run would otherwise count double against every send.
+    runWithCallId(() => {
+      resolveOnto(OTHER_TERM_HWND);
+      resolveOnto(OTHER_TERM_HWND);
+      expect(events("resolve")).toHaveLength(2);
+      expect(events("topology_relation")).toHaveLength(1);
+
+      // A DIFFERENT destination in the same call is still its own record.
+      resolveOnto(SESSION_WT_HWND);
+      expect(events("topology_relation")).toHaveLength(2);
+    });
+  });
+
+  it("flags a console handle it could not read, rather than reporting a bare false", () => {
+    // An older `.node` without the binding returns the same "not our console"
+    // as a genuine read — and this is the decisive reading for the design
+    // question the whole slice exists to answer.
+    consoleWindowReadable = false;
+    _resetTopologyCachesForTest();
+    resolveOnto(OTHER_TERM_HWND);
+    expect(events("topology_relation")[0]).toMatchObject({
+      isOwnConsoleWindow: false,
+      consoleWindowUnavailable: true,
+    });
+
+    mockLogDiagnostic.mockClear();
+    logTopologySnapshot();
+    expect(events("topology_snapshot")[0]).toMatchObject({
+      consoleWindow: null,
+      consoleWindowUnavailable: true,
+    });
+  });
+
+  it("leaves the console flag off when the handle was read and is simply not ours", () => {
+    resolveOnto(OTHER_TERM_HWND);
+    expect(events("topology_relation")[0]).not.toHaveProperty("consoleWindowUnavailable");
+  });
+
+  it("re-attempts an ancestry read that failed, instead of caching the failure for the process lifetime", () => {
+    parentMap = new Map();
+    _resetTopologyCachesForTest();
+    resolveOnto(OTHER_TERM_HWND);
+    expect(events("topology_relation")[0].ancestryUnavailable).toBe(true);
+
+    // The retry is time-gated, so a server that runs for days is not stuck with
+    // one unlucky snapshot — but it does not re-snapshot on every record either.
+    seedSessionTopology();
+    mockLogDiagnostic.mockClear();
+    mockBuildProcessParentMap.mockClear();
+    resolveOnto(OTHER_TERM_HWND);
+    expect(mockBuildProcessParentMap).not.toHaveBeenCalled();
+    expect(events("topology_relation")[0].ancestryUnavailable).toBe(true);
+
+    vi.setSystemTime(Date.now() + 31_000);
+    mockLogDiagnostic.mockClear();
+    resolveOnto(OTHER_TERM_HWND);
+    expect(events("topology_relation")[0].ancestryUnavailable).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("does not treat a failed process snapshot as a fresh one", () => {
+    // Stamping an empty snapshot as fresh would mark a full cache window of
+    // console-host records unavailable on one transient failure.
+    const CONHOST_PID = 8400;
+    const CONSOLE_HWND = 0xaaa0n;
+    processNames.set(CONHOST_PID, "conhost.exe");
+    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    parentMap = new Map();
+    _resetTopologyCachesForTest();
+    resolveOnto(CONSOLE_HWND);
+    expect(events("topology_relation")[0].parentMapUnavailable).toBe(true);
+
+    seedSessionTopology();
+    processNames.set(CONHOST_PID, "conhost.exe");
+    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    parentMap.set(CONHOST_PID, CLI_PID);
+    mockLogDiagnostic.mockClear();
+    resolveOnto(CONSOLE_HWND);
+    const rel = events("topology_relation")[0];
+    expect(rel).not.toHaveProperty("parentMapUnavailable");
+    expect(rel.consoleHostParentPid).toBe(CLI_PID);
+  });
+
   it("flags a relation computed from a process table it could not read", () => {
     // With an empty snapshot the chain is just this process, so EVERY
     // `ownerInAncestry:false` is a read failure rather than a negative result.
@@ -392,20 +485,20 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // An ancestor exited, Windows handed its pid to an unrelated terminal. A
     // pid-only rule would call that terminal "ours" for the rest of the server
     // lifetime and put false records into the data OQ-P4 is decided on.
-    runWithCallId(() => {
-      processStartTimes.set(WT_PID, 1000 + WT_PID);
-      _resetTopologyCachesForTest();              // cache the chain at this time
-      resolveOnto(SESSION_WT_HWND);
-      expect(events("topology_relation")[0].ownerInAncestry).toBe(true);
+    // Two separate tool calls — one record per (call, destination), so the same
+    // window resolved twice inside ONE call would collapse to one record.
+    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    _resetTopologyCachesForTest();                // cache the chain at this time
+    runWithCallId(() => resolveOnto(SESSION_WT_HWND));
+    expect(events("topology_relation")[0].ownerInAncestry).toBe(true);
 
-      mockLogDiagnostic.mockClear();
-      processStartTimes.set(WT_PID, 9_999_999);   // same pid, different process
-      resolveOnto(SESSION_WT_HWND);
+    mockLogDiagnostic.mockClear();
+    processStartTimes.set(WT_PID, 9_999_999);     // same pid, different process
+    runWithCallId(() => resolveOnto(SESSION_WT_HWND));
 
-      expect(events("topology_relation")[0]).toMatchObject({
-        ownerInAncestry: false,
-        ancestryPidHit: "recycled",
-      });
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerInAncestry: false,
+      ancestryPidHit: "recycled",
     });
   });
 

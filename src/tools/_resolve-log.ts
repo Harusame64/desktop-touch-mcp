@@ -58,7 +58,7 @@ import {
   getWindowTitleW,
   getForegroundHwnd,
   getWindowIdentity,
-  getOwnConsoleWindow,
+  readOwnConsoleWindow,
   buildProcessParentMap,
   getProcessIdentityByPid,
 } from "../engine/win32.js";
@@ -104,6 +104,19 @@ interface CallContext {
    * calls `drainTopologyWarnings()` on its way out.
    */
   topologyWarnings: string[];
+  /**
+   * Window handles already carrying a `topology_relation` record on this call.
+   *
+   * One tool call can resolve the same destination twice —
+   * `terminal(action:'run')` resolves it, then calls the send handler, which
+   * resolves it again — and both resolutions describe the SAME relation to the
+   * same window. Recording it twice would make every `run` contribute two rows
+   * to the distribution Phase C reads while every `send` contributes one, and
+   * the plan's usual de-duplication advice (filter by resolver name) cannot
+   * separate them: both are `findTerminalWindow` under one `callId`
+   * (Opus Round 2 P1).
+   */
+  topologyRecorded: Set<string>;
 }
 
 const _callAls = new AsyncLocalStorage<CallContext>();
@@ -120,7 +133,14 @@ let _callSeq = 0;
 export function runWithCallId<T>(fn: () => T): T {
   if (_callAls.getStore() !== undefined) return fn();
   _callSeq = (_callSeq + 1) % 1000000;
-  return _callAls.run({ callId: `c${process.pid}-${_callSeq}`, topologyWarnings: [] }, fn);
+  return _callAls.run(
+    {
+      callId: `c${process.pid}-${_callSeq}`,
+      topologyWarnings: [],
+      topologyRecorded: new Set<string>(),
+    },
+    fn,
+  );
 }
 
 /** The active correlation id, or `null` outside any wrapped handler. */
@@ -435,10 +455,18 @@ function classifyAncestry(anc: AncestryInfo, pid: number): AncestryVerdict {
 }
 
 let _ancestry: AncestryInfo | null = null;
-let _ownConsoleWindow: bigint | null = null;
-let _ownConsoleWindowRead = false;
+let _ancestryAtMs = 0;
+let _ownConsoleWindow: { available: boolean; hwnd: bigint | null } | null = null;
 let _parentMap: Map<number, number> | null = null;
 let _parentMapAtMs = 0;
+
+/**
+ * How long to wait before re-attempting an ancestry read that came back empty.
+ * A successful chain is cached for the process lifetime; a FAILED one must not
+ * be, or one unlucky snapshot at startup stamps `ancestryUnavailable` on every
+ * record for a server that then runs for days (Opus Round 2 P2).
+ */
+const ANCESTRY_RETRY_MS = 30_000;
 
 /**
  * This process's launch chain, computed once. The chain is a launch-time fact
@@ -446,7 +474,15 @@ let _parentMapAtMs = 0;
  * — so it is cached for the life of the process rather than re-snapshotted.
  */
 function ancestry(): AncestryInfo {
-  if (_ancestry !== null) return _ancestry;
+  if (_ancestry !== null) {
+    // A chain that was read successfully is a launch-time fact and never
+    // re-read. One that failed — an empty process snapshot, or an unreadable
+    // creation time for this very process — is retried, slowly.
+    const stale =
+      (_ancestry.unavailable || _ancestry.ancestors.get(process.pid)?.startTimeMs === 0) &&
+      Date.now() - _ancestryAtMs > ANCESTRY_RETRY_MS;
+    if (!stale) return _ancestry;
+  }
   const parentMap = buildProcessParentMap();
   const chain: AncestryInfo["chain"] = [];
   const ancestors = new Map<number, { startTimeMs: number; depth: number }>();
@@ -466,15 +502,13 @@ function ancestry(): AncestryInfo {
     pid = parent;
   }
   _ancestry = { chain, ancestors, unavailable: parentMap.size === 0 };
+  _ancestryAtMs = Date.now();
   return _ancestry;
 }
 
 /** `GetConsoleWindow()` for this process, read once (it cannot change). */
-function ownConsoleWindow(): bigint | null {
-  if (!_ownConsoleWindowRead) {
-    _ownConsoleWindow = getOwnConsoleWindow();
-    _ownConsoleWindowRead = true;
-  }
+function ownConsoleWindow(): { available: boolean; hwnd: bigint | null } {
+  if (_ownConsoleWindow === null) _ownConsoleWindow = readOwnConsoleWindow();
   return _ownConsoleWindow;
 }
 
@@ -489,7 +523,10 @@ function freshParentMap(): Map<number, number> {
   const now = Date.now();
   if (_parentMap === null || now - _parentMapAtMs > PARENT_MAP_TTL_MS) {
     _parentMap = buildProcessParentMap();
-    _parentMapAtMs = now;
+    // Only a snapshot that actually read something counts as fresh. Stamping an
+    // empty one would mark up to a full TTL of records `parentMapUnavailable`
+    // on the strength of a single transient failure (Opus Round 2 P2).
+    if (_parentMap.size > 0) _parentMapAtMs = now;
   }
   return _parentMap;
 }
@@ -497,8 +534,8 @@ function freshParentMap(): Map<number, number> {
 /** @internal Test-only — drop the process-topology caches. */
 export function _resetTopologyCachesForTest(): void {
   _ancestry = null;
+  _ancestryAtMs = 0;
   _ownConsoleWindow = null;
-  _ownConsoleWindowRead = false;
   _parentMap = null;
   _parentMapAtMs = 0;
 }
@@ -515,7 +552,7 @@ export function logTopologySnapshot(): void {
   try {
     if (!isDiagnosticLogEnabled()) return;
     const anc = ancestry();
-    const consoleWindow = ownConsoleWindow();
+    const own = ownConsoleWindow();
     // The Round 7 circumstantial evidence, measured directly: a process that
     // INHERITED its parent's console does not spawn its own host, so a conhost
     // child is the sign that this server holds a console of its own and the
@@ -533,7 +570,8 @@ export function logTopologySnapshot(): void {
     }
     logDiagnostic({
       kind: "topology_snapshot",
-      consoleWindow: consoleWindow === null ? null : String(consoleWindow),
+      consoleWindow: own.hwnd === null ? null : String(own.hwnd),
+      ...(own.available === false && { consoleWindowUnavailable: true }),
       ownConsoleHostChildPid: hostPid,
       ...(hostName !== undefined && { ownConsoleHostChildName: hostName }),
       ancestry: anc.chain,
@@ -642,7 +680,11 @@ function logTopologyRelation(
     ...(consoleHostParentPid !== undefined && { consoleHostParentPid }),
     ...(consoleHostParentAlive !== undefined && { consoleHostParentAlive }),
     ...(consoleHostParentInAncestry !== undefined && { consoleHostParentInAncestry }),
-    isOwnConsoleWindow: own !== null && own === hwnd,
+    isOwnConsoleWindow: own.hwnd !== null && own.hwnd === hwnd,
+    // `isOwnConsoleWindow:false` is only a negative RESULT when the console
+    // handle could be read at all — an older `.node` without the binding, or a
+    // failed call, produces the same false (Opus Round 2 P1).
+    ...(own.available === false && { consoleWindowUnavailable: true }),
     // The stage-1 instrument. `ownerInAncestry` IS the predicate — this field
     // only says whether there was a tool call to hang the advisory on.
     advisoryQueued: ownerInAncestry ? pushTopologyWarning(processName, pid) : false,
@@ -678,6 +720,14 @@ function noteTopologyForResolve(
   const processName = record.processName;
   if (pid === undefined || processName === undefined) return;
   if (!isTerminalClassProcessName(processName)) return;
+  // One record per (call, destination) — see `topologyRecorded`. Outside a
+  // wrapped handler there is no call to scope it to, so nothing is suppressed.
+  const store = _callAls.getStore();
+  if (store !== undefined) {
+    const key = String(hwnd);
+    if (store.topologyRecorded.has(key)) return;
+    store.topologyRecorded.add(key);
+  }
   logTopologyRelation(resolver, hwnd, pid, processName);
 }
 

@@ -476,7 +476,7 @@ function getSharedRealDeps(): ExecutorDeps {
         query: windowTitle,
         matches,
         identity: "lookup",
-            intent: "write",
+        intent: "write",
       });
       if (!win) {
         throw new Error(`Window not found for keyboardTypeBg: "${windowTitle}"`);

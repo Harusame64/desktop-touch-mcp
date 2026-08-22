@@ -673,8 +673,23 @@ export function resolvePaneTitle(paneId: string): string | null {
 export function findTerminalWindowByPaneId(paneId: string): WindowZInfo | null {
   const parsed = parsePaneId(paneId);
   if (parsed === null) return null;
-  if (parsed.kind === "classic") return findTerminalWindowByHwnd(parsed.hwnd);
-  return resolveWtPaneWindow(paneId)?.win ?? null;
+  const win =
+    parsed.kind === "classic"
+      ? findTerminalWindowByHwnd(parsed.hwnd)
+      : (resolveWtPaneWindow(paneId)?.win ?? null);
+  // ADR-035 Phase C-0. The only caller is the send handler, so this is
+  // unconditionally a write. `matches` is the resolved window or nothing — both
+  // pane forms resolve to exactly one window or decline, so there is no
+  // runner-up list to record and `matchCount` is 0 or 1 by construction.
+  logResolve({
+    resolver: "findTerminalWindowByPaneId",
+    query: paneId,
+    matches: win === null ? [] : [win],
+    identity: "lookup",
+    intent: "write",
+    ...(parsed.kind === "classic" && { pinnedByHwnd: true }),
+  });
+  return win;
 }
 
 /**

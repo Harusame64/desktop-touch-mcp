@@ -313,6 +313,12 @@ export type DiagnosticEvent =
       kind: "topology_snapshot";
       /** `GetConsoleWindow()` as a decimal handle string; null when unattached. */
       consoleWindow: string | null;
+      /**
+       * The console handle could not be read at all — the binding is missing
+       * from an older `.node`, or the call failed. `consoleWindow: null` then
+       * says nothing about whether this process has a console.
+       */
+      consoleWindowUnavailable?: boolean;
       /** pid of a `conhost` / `OpenConsole` CHILD of this process, or null. */
       ownConsoleHostChildPid: number | null;
       /** Image name of that child, when one was found. */
@@ -345,6 +351,9 @@ export type DiagnosticEvent =
       // of the shell, never an ancestor (ADR-035 §6.2 measurement) — so gating
       // the record on it would leave Phase C with zero data from exactly the
       // configuration it most needs (Round 14 Codex).
+      // One record per (tool call, destination window): a call that resolves
+      // the same window twice — `run` resolving it and then its inner send
+      // resolving it again — describes one relation, not two.
       kind: "topology_relation";
       resolver: ResolveResolver;
       callId: string | null;
@@ -409,6 +418,11 @@ export type DiagnosticEvent =
       /** The chosen window IS this process's own console window. */
       isOwnConsoleWindow: boolean;
       /**
+       * The console handle could not be read, so `isOwnConsoleWindow: false` is
+       * an absence of evidence rather than evidence of absence.
+       */
+      consoleWindowUnavailable?: boolean;
+      /**
        * The non-blocking advisory was queued on this tool call. False when the
        * predicate fired outside a wrapped handler, where there is no call to
        * hang it on and nobody will ever read the string.
@@ -460,7 +474,19 @@ export type ResolveResolver =
    * `matchCount: 0` event joined to a dispatch that did have a target
    * (Codex Round 1 P2).
    */
-  | "resolveWindowTargetDialog";
+  | "resolveWindowTargetDialog"
+  /**
+   * ADR-035 Phase C-0 — `terminal.ts:findTerminalWindowByPaneId`, the send
+   * path that takes a `paneId` instead of a title. Instrumented for C-0 rather
+   * than in Phase 1 because Phase C's refusal scope explicitly includes the
+   * CLASSIC pane form: a classic paneId is an unvalidated decimal hwnd, so
+   * `paneId:"<n>"` is the documented equivalence bypass around a refusal that
+   * only looks at `windowTitle` / `hwnd` (plan §3b). Without it C-0 would hand
+   * Phase C zero observations for the one path the plan names as the bypass
+   * (Opus Round 2 P2). `pinnedByHwnd` is set for the classic form, which
+   * matches on the handle, and not for `wt:`, which matches a nonce tab title.
+   */
+  | "findTerminalWindowByPaneId";
 
 /**
  * Which rescue supplied the chosen window when the primary title rule did not.
