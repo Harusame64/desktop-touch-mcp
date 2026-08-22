@@ -8,10 +8,12 @@
   tool response has never said so — the keystrokes simply arrive somewhere else.
   Each resolution now appends a `resolve` record to the diagnostic log with the
   number of matching windows, the window that was chosen, the runners-up, and a
-  flag when the process-name fallback fired; each keyboard / terminal / scroll
-  dispatch appends a matching `dispatch_sink` record naming the channel used,
-  the window it was addressed to, and the window that was in the foreground at
-  that instant. Records from one tool call share a correlation id, so a
+  flag when the process-name fallback fired; each input dispatch — `keyboard`,
+  `terminal`, `scroll` and `desktop_act`'s background writes — appends a
+  matching `dispatch_sink` record naming the channel used, the window it was
+  addressed to, and the window that was in the foreground at that instant. The
+  record is written immediately before the write leaves the process, so a call
+  that is refused or fails first is not on record as having sent anything. Records from one tool call share a correlation id, so a
   resolution can be matched to the write it produced even when calls overlap.
   Behaviour is unchanged — nothing is refused or retargeted because of this —
   with one addition: `scroll` with a `windowTitle` that matches several windows

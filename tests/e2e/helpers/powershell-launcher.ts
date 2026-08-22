@@ -179,7 +179,18 @@ export interface TaggedWindow {
  * Do not skip or quarantine the test to get back to green — quarantining needs
  * explicit user approval plus an owner and a release condition in the comment.
  */
-export function assertTagAlive(ps: TaggedWindow): void {
+export function assertTagAlive(ps: TaggedWindow | null | undefined): void {
+  // A launcher handle can be `undefined` when `beforeAll` failed or the harness
+  // was unavailable, and these tests are not typechecked by the build. Without
+  // this the first thing the caller sees is
+  // `Cannot read properties of undefined`, which hides the real failure behind
+  // a drift-check stack (Opus Round 2 P3).
+  if (!ps) {
+    throw new Error(
+      "TitleTagDrift precondition (ADR-035 §7-3): no launcher handle — the window " +
+      "was never launched (check the beforeAll / harness-availability guard).",
+    );
+  }
   let currentTitle: string | null = null;
   for (const w of enumWindowsInZOrder()) {
     if (w.hwnd === ps.hwnd) { currentTitle = w.title; break; }

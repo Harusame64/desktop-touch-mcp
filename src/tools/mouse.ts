@@ -1274,6 +1274,13 @@ export const scrollHandler = async ({
       const win = findPlainTopLevelWindowByTitle(windowTitle, {
         excludeMinimized: true,
         excludeDialogsAndOwned: false,
+        // ADR-035 Phase 1: NOT a destination resolution — this ladder only
+        // picks a window to OBSERVE, and it runs on the same tool call as the
+        // Case 3 destination lookup with the opposite dialog/owner flag. Left
+        // logging, one `callId` would carry two resolutions with different
+        // match counts and an analyst joining resolve to dispatch could
+        // attribute the read-side one to the write (Opus Round 2 P2).
+        logAs: "off",
       });
       if (win) observedHwnd = win.hwnd;
     }
@@ -1311,6 +1318,7 @@ export const scrollHandler = async ({
           {
             hint: "CDP wheel dispatch or scroll observation returned no delta — Tier 4 SendInput suppressed for resolved CDP destinations",
             direction,
+            ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
             verifyDelivery: {
               status: "not_delivered" as const,
               channel: "cdp" as const,
@@ -1436,6 +1444,7 @@ export const scrollHandler = async ({
           {
             hint: "Tier 1 UIA + Tier 3 PostMessage both exhausted on the resolved destination (no ScrollPattern AND no observable scrollbar diff after WM_MOUSEWHEEL) — Tier 4 SendInput suppressed per ADR-018 §2.6.2 path-(b)",
             direction,
+            ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
             verifyDelivery: {
               status: "not_delivered" as const,
               channel: "postmessage" as const,
@@ -1492,6 +1501,7 @@ export const scrollHandler = async ({
         {
           hint: "Stage 2b TMOL gate observed motion='no_change' on the chain-trust path (PostMessage queued but pixels did not change) — emitting target_unreachable per ADR-018 §2.6.2 path-(b) Stage 2b row",
           direction,
+          ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
           verifyDelivery: {
             status: "not_delivered" as const,
             channel: "postmessage" as const,
@@ -1582,6 +1592,7 @@ export const scrollHandler = async ({
           postVerticalPercent: post.vertical,
           postHorizontalPercent: post.horizontal,
           direction,
+          ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
           verifyDelivery: {
             status: "not_delivered" as const,
             channel: effectiveChannel,

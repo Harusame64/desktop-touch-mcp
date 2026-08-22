@@ -21,6 +21,8 @@ export default defineConfig({
         test: {
           name: "unit",
           include: ["tests/unit/**/*.test.ts"],
+          // Never append to the developer's real diagnostic log from a unit run.
+          setupFiles: ["./tests/unit/setup-diagnostic-log.ts"],
           // fileParallelism defaults to true — 57 files run in parallel
           testTimeout: 10_000,
           hookTimeout: 10_000,

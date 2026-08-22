@@ -304,7 +304,12 @@ async function resolveWindowTarget(
   // every other resolver uses, so the one site that already tells the caller
   // about a tie is comparable with the ones that stay silent. Emitted before
   // the zero-match early return so a miss is recorded too (that is the H2 case).
-  const logMatches = candidates.map((w) => ({ hwnd: BigInt(w.hwnd), title: w.title, zOrder: w.zOrder, isActive: w.isActive }));
+  //
+  // Built lazily: `WindowSnapshot.hwnd` is a string here, so the conversion
+  // back to a handle is real work that a disabled log must not pay for
+  // (Opus Round 2 P3).
+  const logMatches = (): Array<{ hwnd: bigint; title: string; zOrder: number; isActive: boolean }> =>
+    candidates.map((w) => ({ hwnd: BigInt(w.hwnd), title: w.title, zOrder: w.zOrder, isActive: w.isActive }));
 
   if (candidates.length === 0) {
     logResolve({ resolver: "actionTarget", query: titleIncludes, matches: [] });

@@ -34,6 +34,32 @@ vi.mock("../../src/engine/nutjs.js", () => ({
   withKeyboardLock: (fn: () => Promise<unknown>) => fn(),
 }));
 
+// ─── Native layer ────────────────────────────────────────────────────────────
+//
+// MUST be mocked. `typeViaClipboard` prefers the native path when the addon is
+// present, and the addon writes the REAL clipboard and sends a REAL Ctrl+V to
+// the REAL foreground window. Without this stub the foreground-clipboard test
+// below pastes its fixture text into whatever the developer is looking at. The
+// PowerShell fallback is no better — it shells out and clobbers the clipboard —
+// so `hasNativeTypeViaClipboard` is pinned TRUE and the addon call is replaced,
+// which keeps the branch under test while nothing leaves the process.
+const mockNativeTypeViaClipboard = vi.fn(async () => ({
+  backend: "native" as const,
+  clipboardRestored: true,
+}));
+vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/native-engine.js")>();
+  return {
+    ...actual,
+    hasNativeTypeViaClipboard: () => true,
+    nativeWin32: {
+      ...(actual.nativeWin32 ?? {}),
+      win32TypeViaClipboard: (...a: unknown[]) => mockNativeTypeViaClipboard(...(a as [])),
+      win32GetImeOpenStatus: () => false,
+    },
+  };
+});
+
 const mockPostChars = vi.fn(() => ({ full: true, sent: 8 }));
 vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/bg-input.js")>();
@@ -46,10 +72,18 @@ vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
 });
 
 // ─── Diagnostic log ──────────────────────────────────────────────────────────
+// `isDiagnosticLogEnabled` is forced true because the unit setup disables the
+// log process-wide (`tests/unit/setup-diagnostic-log.ts`) so no test appends to
+// the developer's real file. A test that wants to OBSERVE events re-enables it
+// here and captures them through the mock instead.
 const mockLogDiagnostic = vi.fn();
 vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/diagnostic-log.js")>();
-  return { ...actual, logDiagnostic: (...a: unknown[]) => mockLogDiagnostic(...(a as [])) };
+  return {
+    ...actual,
+    logDiagnostic: (...a: unknown[]) => mockLogDiagnostic(...(a as [])),
+    isDiagnosticLogEnabled: () => true,
+  };
 });
 
 // ─── Guard layer: pass-through, so the perception subsystem stays out ────────
@@ -69,9 +103,14 @@ vi.mock("../../src/engine/perception/registry.js", async (importOriginal) => {
   return { ...actual, evaluatePreToolGuards: vi.fn(async () => ({ ok: true, policy: "allow" })), buildEnvelopeFor: vi.fn(() => undefined) };
 });
 
+const mockCheckForegroundOnce = vi.fn<() => Promise<unknown>>(async () => null);
 vi.mock("../../src/tools/_focus.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_focus.js")>();
-  return { ...actual, detectFocusLoss: vi.fn(async () => null), checkForegroundOnce: vi.fn(async () => null) };
+  return {
+    ...actual,
+    detectFocusLoss: vi.fn(async () => null),
+    checkForegroundOnce: () => mockCheckForegroundOnce(),
+  };
 });
 
 const TARGET_HWND = 0x100n;
@@ -119,6 +158,8 @@ beforeEach(() => {
   mockLogDiagnostic.mockClear();
   mockType.mockClear();
   mockPostChars.mockClear();
+  mockCheckForegroundOnce.mockReset();
+  mockCheckForegroundOnce.mockResolvedValue(null);
 });
 
 describe("ADR-035 Phase 1 — keyboard dispatch sinks (real handler, real branches)", () => {
@@ -136,6 +177,9 @@ describe("ADR-035 Phase 1 — keyboard dispatch sinks (real handler, real branch
 
   it("foreground clipboard paste records sink:'clipboard_paste' with NO handle", async () => {
     await keyboardTypeHandler({ ...BASE, method: "foreground", use_clipboard: true } as never);
+    // Proves the stub is load-bearing: the branch really ran, and it ran
+    // through the fake addon rather than the real one.
+    expect(mockNativeTypeViaClipboard).toHaveBeenCalledTimes(1);
     const sinks = events("dispatch_sink");
     expect(sinks).toHaveLength(1);
     expect(sinks[0]).toMatchObject({
@@ -164,6 +208,16 @@ describe("ADR-035 Phase 1 — keyboard dispatch sinks (real handler, real branch
     // Two windows carry "Notepad" — exactly the silent multi-match H1 shape.
     expect(resolves[0]).toMatchObject({ matchCount: 2, chosen: { hwnd: String(TARGET_HWND) } });
     expect(resolves[0]!.others.map((o: any) => o.hwnd)).toEqual([String(OTHER_HWND)]);
+  });
+
+  it("a focus-leash abort at the FIRST chunk records no dispatch at all", async () => {
+    // The leash checks the foreground before each chunk. A loss at i=0 returns
+    // `FocusLostDuringType` with `typed: 0` — nothing was sent, so nothing may
+    // be on record (Opus Round 2 P1).
+    mockCheckForegroundOnce.mockResolvedValue({ stolenBy: "Some Other Window" });
+    await keyboardTypeHandler({ ...BASE, method: "foreground", abortOnFocusLoss: true } as never);
+    expect(mockType).not.toHaveBeenCalled();
+    expect(events("dispatch_sink")).toHaveLength(0);
   });
 
   // ── Sequence: the event must describe a dispatch that really happened ─────

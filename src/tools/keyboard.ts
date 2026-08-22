@@ -416,6 +416,7 @@ function nativeOutcome(r: NativeTypeViaClipboardResult): TypeViaClipboardOutcome
 async function powershellTypeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v",
+  tool: string,
 ): Promise<TypeViaClipboardOutcome> {
   // (3) The payload has to fit in a command line. Fail before doing anything
   // rather than after emptying the user's clipboard.
@@ -472,6 +473,11 @@ async function powershellTypeViaClipboard(
     });
   }
 
+  // ADR-035 Phase 1 — the paste boundary, and not one line earlier: every
+  // return above this point (payload too large, clipboard write not delivered)
+  // leaves without a keystroke, so logging at the call site would record a
+  // paste that never happened (Opus Round 2 P1).
+  logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
   const combo = parseKeys(pasteCombo);
   await keyboard.pressKey(...combo);
   await keyboard.releaseKey(...combo);
@@ -647,6 +653,13 @@ export function buildFallbackRestoreScript(savedB64: string, pastedSha256Hex: st
 export async function typeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v",
+  /**
+   * Which public tool is pasting — recorded on the ADR-035 Phase 1 dispatch
+   * event. Passed in because both `keyboard(action='type')` and
+   * `terminal(action='send')` reach this same paste, and the log has to say
+   * which one it was.
+   */
+  tool = "keyboard:type",
 ): Promise<TypeViaClipboardOutcome> {
   // ── Why the native call takes the keyboard input lock ──────────────────────
   //
@@ -697,8 +710,15 @@ export async function typeViaClipboard(
   // in `nutjs.ts` describes. So: native = the whole transaction, fallback = the
   // chord only.
   return hasNativeTypeViaClipboard()
-    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo))
-    : powershellTypeViaClipboard(text, pasteCombo);
+    ? withKeyboardLock(() => {
+        // The addon owns save / verify / paste / restore as one indivisible
+        // transaction, so this is the finest boundary there is on this path —
+        // and unlike the fallback below, everything that can fail before the
+        // keystroke fails INSIDE the call being recorded.
+        logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
+        return nativeTypeViaClipboard(text, pasteCombo);
+      })
+    : powershellTypeViaClipboard(text, pasteCombo, tool);
 }
 
 /**
@@ -1120,6 +1140,10 @@ async function focusWindowForKeyboard(
       query: windowTitle,
       matches: titleMatches,
       chosen: active && matches(active) ? active : (titleMatches[0] ?? null),
+      // With an explicit hwnd the predicate compares HANDLES, so `matchCount`
+      // counts handle hits, not title hits; the flag keeps the two apart in
+      // the log (Opus Round 2 P2).
+      ...(explicitHwnd !== undefined && { pinnedByHwnd: true }),
       identity: "lookup",
     });
     if (active && matches(active)) {
@@ -2225,15 +2249,12 @@ export const keyboardTypeHandler = async ({
       }
     }
 
-    // ADR-035 Phase 1 — foreground path: there is no destination handle, the
-    // keys go wherever focus is, and that is precisely the H2 question. One
-    // event per dispatch, emitted once the channel is known (clipboard paste
-    // vs. chunked keystrokes) and before either starts.
-    logDispatchSink({
-      sink: effectiveClipboard ? "clipboard_paste" : "sendinput",
-      tool: "keyboard:type",
-      targetHwnd: null,
-    });
+    // ADR-035 Phase 1 — the foreground path has no destination handle: the keys
+    // go wherever focus is, which is the H2 question. The event is emitted at
+    // each branch's own dispatch boundary rather than here, because both
+    // branches can still bail out without sending anything — the clipboard one
+    // inside `typeViaClipboard`, the keystroke one on a focus-leash abort at
+    // the very first chunk (Opus Round 2 P1).
     if (effectiveClipboard) {
       clipboardOutcome = await typeViaClipboard(effectiveText);
     } else {
@@ -2293,6 +2314,11 @@ export const keyboardTypeHandler = async ({
               );
             }
             const chunk = codePoints.slice(i, i + chunkSize).join("");
+            // First chunk only, and only once the focus check above has let it
+            // through: an abort at i=0 sends nothing at all.
+            if (i === 0) {
+              logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null });
+            }
             await keyboard.type(chunk);
             typed += chunk.length; // UTF-16 code units delivered
           }
@@ -2303,6 +2329,7 @@ export const keyboardTypeHandler = async ({
           throw err;
         }
       } else {
+        logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null });
         await keyboard.type(effectiveText);
       }
     }

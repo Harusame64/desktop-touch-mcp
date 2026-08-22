@@ -679,8 +679,10 @@ confirm the native path is live (vs the PowerShell fallback) when latency looks 
 `%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (JSONL, on by default) carries a `resolve`
 record for every title→window lookup — match count, chosen window, runners-up, and a
 `fallback:"process-name"` flag when `terminal` fell back to matching by image name — and a
-`dispatch_sink` record immediately before every keyboard / terminal / scroll write, naming the
-channel, the addressed handle and the foreground window at that instant. Records from one tool call
+`dispatch_sink` record immediately before every `keyboard` / `terminal` / `scroll` / `desktop_act`
+write, naming the channel, the addressed handle and the foreground window at that instant. "Immediately
+before" is load-bearing: each event sits at the native call boundary, past every guard, validation and
+early return, so the log never claims a dispatch that did not happen. Records from one tool call
 share a `callId`, so a resolution and the write it produced stay joined when calls overlap. Window
 titles are hashed (`sha256` truncated to 8 hex + UTF-16 length); `DESKTOP_TOUCH_RESOLVE_LOG_RAW=1`
 adds the raw text alongside the hash. Nothing is written when the log is disabled — no hashing, no

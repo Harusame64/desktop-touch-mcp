@@ -1467,12 +1467,17 @@ export const terminalSendHandler = async ({
         baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
       // Send in chunks to avoid saturating the terminal input queue.
-      // ADR-035 Phase 1: one event for the whole chunked send — every chunk
-      // goes to the same handle, so per-chunk events would only repeat it.
-      logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
       let totalSent = 0;
       for (let i = 0; i < input.length; i += chunkSize) {
         const chunk = input.slice(i, i + chunkSize);
+        // ADR-035 Phase 1: one event for the whole chunked send — every chunk
+        // goes to the same handle, so per-chunk events would only repeat it.
+        // Inside the loop, though, not before it: `input` has no minimum length,
+        // so an empty send would otherwise record a WM_CHAR that never went out
+        // (Opus Round 2 P1).
+        if (i === 0) {
+          logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
+        }
         const result = postCharsToHwnd(win.hwnd, chunk);
         totalSent += result.sent;
         if (!result.full) {
@@ -1709,8 +1714,10 @@ export const terminalSendHandler = async ({
           chosenKey = "ctrl+shift+v";
         }
       }
-      logDispatchSink({ sink: "clipboard_paste", tool: "terminal:send", targetHwnd: null });
-      clipboardOutcome = await typeViaClipboard(input, chosenKey);
+      // ADR-035 Phase 1: the event is emitted inside `typeViaClipboard`, at the
+      // paste boundary — the clipboard write can fail first, and a paste that
+      // never happened must not be on record (Opus Round 2 P1).
+      clipboardOutcome = await typeViaClipboard(input, chosenKey, "terminal:send");
     } else {
       logDispatchSink({ sink: "sendinput", tool: "terminal:send", targetHwnd: null });
       await keyboard.type(input);

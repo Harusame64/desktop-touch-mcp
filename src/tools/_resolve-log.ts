@@ -200,7 +200,12 @@ function toRecord(w: ResolveWindowInput, identity: IdentityMode): ResolveWindowR
 export function logResolve(args: {
   resolver: ResolveResolver;
   query: string;
-  matches: ResolveWindowInput[];
+  /**
+   * Pass a thunk when assembling the list costs something a disabled log must
+   * not pay for — `action-target.ts` has to convert its handles back from
+   * strings, for one. It is invoked only after the enabled check.
+   */
+  matches: ResolveWindowInput[] | (() => ResolveWindowInput[]);
   /** Defaults to `matches[0]`. */
   chosen?: ResolveWindowInput | null;
   /**
@@ -208,12 +213,15 @@ export function logResolve(args: {
    * see the field's documentation on `DiagnosticEvent`.
    */
   fallback?: ResolveFallback;
+  /** Set when the resolver matched on an explicit handle, not on the title. */
+  pinnedByHwnd?: boolean;
   identity?: IdentityMode;
 }): void {
   if (!isDiagnosticLogEnabled()) return;
   try {
     const identity = args.identity ?? "skip";
-    const chosen = args.chosen !== undefined ? args.chosen : (args.matches[0] ?? null);
+    const matches = typeof args.matches === "function" ? args.matches() : args.matches;
+    const chosen = args.chosen !== undefined ? args.chosen : (matches[0] ?? null);
     const q = hashTitle(args.query);
     logDiagnostic({
       kind: "resolve",
@@ -223,13 +231,14 @@ export function logResolve(args: {
       queryHash: q.hash,
       queryLen: q.len,
       ...(rawTitlesEnabled() && { queryRaw: args.query }),
-      matchCount: args.matches.length,
+      matchCount: matches.length,
       chosen: chosen === null ? null : toRecord(chosen, identity),
-      others: args.matches
+      others: matches
         .filter((w) => chosen === null || w.hwnd !== chosen.hwnd)
         .slice(0, OTHERS_LIMIT)
         .map((w) => toRecord(w, identity)),
       ...(args.fallback !== undefined && { fallback: args.fallback }),
+      ...(args.pinnedByHwnd === true && { pinnedByHwnd: true }),
     });
   } catch {
     // See the module docstring: observation must never become a new crash

@@ -525,3 +525,42 @@ describe("ADR-035 Phase 1 — observation never throws into its call site", () =
     expect(() => logDispatchSink({ sink: "sendinput", tool: "scroll", targetHwnd: null })).not.toThrow();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. Round 2 — the event must not claim more than the code knows
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-035 Phase 1 — pinnedByHwnd (Opus Round 2 P2)", () => {
+  it("is absent by default, so an ordinary title resolution reads as one", () => {
+    logResolve({ resolver: "focusWindowForKeyboard", query: "Notepad", matches: [win(0x1n, "Notepad", 0)] });
+    expect(events()[0]!.pinnedByHwnd).toBeUndefined();
+  });
+
+  it("marks a resolution that matched on the HANDLE, so it cannot deflate the H1 rate", () => {
+    logResolve({
+      resolver: "focusWindowForKeyboard",
+      query: "Notepad",
+      matches: [win(0x1n, "Notepad", 0)],
+      pinnedByHwnd: true,
+    });
+    // Same `matchCount: 1` shape as a clean title hit — the flag is the only
+    // thing that tells the two apart.
+    expect(events()[0]).toMatchObject({ matchCount: 1, pinnedByHwnd: true });
+  });
+});
+
+describe("ADR-035 Phase 1 — a lazy match list is not built for a disabled log", () => {
+  it("does not invoke the thunk when the log is off", () => {
+    logEnabled = false;
+    const thunk = vi.fn(() => [win(0x1n, "Notepad", 0)]);
+    logResolve({ resolver: "actionTarget", query: "x", matches: thunk });
+    expect(thunk).not.toHaveBeenCalled();
+  });
+
+  it("invokes it exactly once when the log is on, and records the same shape", () => {
+    const thunk = vi.fn(() => [win(0x1n, "Notepad", 0), win(0x2n, "Notepad 2", 1)]);
+    logResolve({ resolver: "actionTarget", query: "x", matches: thunk });
+    expect(thunk).toHaveBeenCalledTimes(1);
+    expect(events()[0]).toMatchObject({ matchCount: 2, chosen: { hwnd: "1" } });
+  });
+});

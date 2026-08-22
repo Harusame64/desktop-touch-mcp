@@ -16,6 +16,7 @@
  */
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
+import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
@@ -414,9 +415,32 @@ function getSharedRealDeps(): ExecutorDeps {
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       terminalBgExecute(windowTitle, text, {
-        findWindow: (title) => wins.find((w) => w.title.toLowerCase().includes(title.toLowerCase())),
+        // ADR-035 Phase 1 — the same unfiltered, silently-first-match shape the
+        // v1 resolvers have, reached through `desktop_act` instead. Instrumented
+        // so the observation window covers BOTH public dispatchers; leaving it
+        // out would put a hole in the H2 evidence exactly where a v2 caller
+        // writes (Opus Round 2 P2).
+        findWindow: (title) => {
+          const matches = wins.filter((w) => w.title.toLowerCase().includes(title.toLowerCase()));
+          logResolve({
+            resolver: "desktopActTerminalSend",
+            query: title,
+            matches,
+            identity: "lookup",
+          });
+          return matches[0];
+        },
         canBgSend:  (hwnd) => canInjectViaPostMessage(hwnd),
-        bgSend:     (hwnd, t) => postCharsToHwnd(hwnd, t),
+        bgSend:     (hwnd, t) => {
+          // `TerminalBgDeps` types the handle as `unknown` (it is a test seam);
+          // the concrete value here is the `bigint` from the enumeration above.
+          logDispatchSink({
+            sink: "wm_char",
+            tool: "desktop_act:terminal_send",
+            targetHwnd: typeof hwnd === "bigint" ? hwnd : null,
+          });
+          return postCharsToHwnd(hwnd, t);
+        },
       });
     },
 
@@ -439,7 +463,15 @@ function getSharedRealDeps(): ExecutorDeps {
       const { enumWindowsInZOrder } = await import("../engine/win32.js");
       const { canInjectAtTarget, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
-      const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      // ADR-035 Phase 1 — the `terminalSend` twin above; see its comment.
+      const matches = wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      const win = matches[0];
+      logResolve({
+        resolver: "desktopActKeyboardType",
+        query: windowTitle,
+        matches,
+        identity: "lookup",
+      });
       if (!win) {
         throw new Error(`Window not found for keyboardTypeBg: "${windowTitle}"`);
       }
@@ -450,6 +482,7 @@ function getSharedRealDeps(): ExecutorDeps {
           `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).`,
         );
       }
+      logDispatchSink({ sink: "wm_char", tool: "desktop_act:keyboard_type", targetHwnd: win.hwnd });
       const r = postCharsToHwnd(win.hwnd, text);
       if (!r.full) {
         throw new Error(

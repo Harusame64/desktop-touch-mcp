@@ -727,13 +727,15 @@ the wrong place — how each `windowTitle` was resolved and where each write wen
 - a **`resolve`** record per title lookup: how many windows matched, which one was picked, the ones
   that lost, and a flag when the terminal process-name fallback fired because nothing matched by
   title;
-- a **`dispatch_sink`** record per keyboard / terminal / scroll dispatch: which channel was used,
-  which window it was addressed to, and which window was in the foreground at that moment;
+- a **`dispatch_sink`** record per input dispatch — `keyboard`, `terminal`, `scroll` and
+  `desktop_act`'s background writes: which channel was used, which window it was addressed to, and
+  which window was in the foreground at that moment;
 - a correlation id shared by all records from one tool call, so a resolution can be matched to the
   write it produced even when calls overlap.
 
-If a `keyboard` or `terminal` call ever seems to type into the wrong window, this is the file that
-says which window it picked and why.
+If an input call ever seems to type into the wrong window, this is the file that says which window
+it picked and why. A record is written immediately before the write leaves the process, so a
+dispatch that is refused or fails first is not on record as having happened.
 
 | Variable | Default | Meaning |
 |---|---|---|

@@ -246,6 +246,15 @@ export type DiagnosticEvent =
       queryRaw?: string;
       /** Total matches, INCLUDING the chosen one. `>= 2` is the H1 signal. */
       matchCount: number;
+      /**
+       * True when the caller supplied an explicit `hwnd` and the resolver
+       * matched on the HANDLE, not on the title. `queryHash` still carries the
+       * `windowTitle` that came along for focus / warning purposes, so without
+       * this flag an hwnd-pinned call is indistinguishable in the log from a
+       * clean single title match — which would deflate the measured H1 rate
+       * (Opus Round 2 P2).
+       */
+      pinnedByHwnd?: boolean;
       chosen: ResolveWindowRecord | null;
       /** Runners-up, capped at 5. */
       others: ResolveWindowRecord[];
@@ -312,6 +321,14 @@ export type ResolveResolver =
   | "keyboardForegroundFlash"
   /** §2 #13 — the press-side twin of #8. */
   | "keyboardBackgroundPress"
+  /**
+   * `desktop_act`'s v2 background executors — `terminalSend` and
+   * `keyboardTypeBg`. Same unfiltered, silently-first-match shape as §2 #4 /
+   * #8, reached through the other public dispatcher rather than through
+   * `keyboard` / `terminal` (Opus Round 2 P2).
+   */
+  | "desktopActTerminalSend"
+  | "desktopActKeyboardType"
   /**
    * `_resolve-window.ts` Case 4 — the common-dialog fallback taken when no
    * plain top-level window matched. Recorded separately so the dialog that WAS
