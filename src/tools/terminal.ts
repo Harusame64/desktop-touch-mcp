@@ -13,6 +13,7 @@ import {
   getWindowClassName,
   type WindowZInfo,
 } from "../engine/win32.js";
+import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -159,16 +160,41 @@ function findTerminalWindow(partialTitle: string): WindowZInfo | null {
   const wins = enumWindowsInZOrder();
   const q = partialTitle.toLowerCase();
   // First try exact partial match on title.
-  const candidate = wins.find((w) => w.title.toLowerCase().includes(q));
-  if (candidate) return candidate;
+  const titleMatches = wins.filter((w) => w.title.toLowerCase().includes(q));
+  const candidate = titleMatches[0];
+  if (candidate) {
+    // ADR-035 §2 #4. This resolver applies NO filter at all (minimized,
+    // cloaked and dialog windows all match) and never warns on a tie, so the
+    // match list is the only record of what it passed over.
+    logResolve({
+      resolver: "findTerminalWindow",
+      query: partialTitle,
+      matches: titleMatches,
+      identity: "lookup",
+    });
+    return candidate;
+  }
   // Fallback: process-name match (LLM might pass 'pwsh' even if title is "Windows PowerShell - …")
   for (const w of wins) {
     const pid = getWindowProcessId(w.hwnd);
     const ident = getProcessIdentityByPid(pid);
     if (ident.processName.toLowerCase().includes(q.replace(/\.exe$/i, ""))) {
+      // ADR-035 §2.1 — the zero-match rescue. `fallback:"process-name"` is the
+      // direct observation of the H2 sub-path that redirected experiment 4 to
+      // the operator's own session window: the title matched nothing, so the
+      // frontmost window whose IMAGE NAME contains the query wins, terminal
+      // class or not. `matchCount` stays 0 because no title matched.
+      logResolve({
+        resolver: "findTerminalWindow",
+        query: partialTitle,
+        matches: [],
+        chosen: { ...w, pid: ident.pid, processName: ident.processName },
+        fallback: "process-name",
+      });
       return w;
     }
   }
+  logResolve({ resolver: "findTerminalWindow", query: partialTitle, matches: [] });
   return null;
 }
 
@@ -1179,6 +1205,7 @@ export const terminalSendHandler = async ({
         // Resolver picked wm_char (= ConsoleWindowClass)。foreground_flash semantics
         // を「foreground を奪わずに paste したい」と解釈し、wm_char で済ませる。
         // 簡易 BG path、Phase 3 MVP scope (UIA verify は省略)。
+        logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd, payloadChars: input.length });
         const r = postCharsToHwnd(win.hwnd, input);
         if (!r.full) {
           return failWith(
@@ -1216,6 +1243,10 @@ export const terminalSendHandler = async ({
       // ただし caller が pressEnter 明示し、かつ将来 native side で改行許容に
       // 変わる可能性に備えて防御的に guard も書いておく。
       const flashPressEnter = pressEnter && !/[\r\n]$/.test(input);
+      // ADR-035 Phase 1 — see the keyboard twin: the foreground-flash channel
+      // steals focus to paste, which is the route a mis-resolved terminal
+      // destination turns into a command run in the wrong shell.
+      logDispatchSink({ sink: "foreground_flash", tool: "terminal:send", targetHwnd: channel.hwnd });
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,
@@ -1315,7 +1346,7 @@ export const terminalSendHandler = async ({
           // single strip the delivered trailing-Enter count is (N-1)+1 = N for
           // N>=1 and 0+1 = 1 for N=0 — matching the WM_CHAR path's max(N,1).
           const pasteText = input.replace(/(?:\r\n|\r|\n)$/, "");
-          const paste = await pasteIntoConsoleNoFocus(win.hwnd, pasteText);
+          const paste = await pasteIntoConsoleNoFocus(win.hwnd, pasteText, "terminal:send");
           if (paste.ok) {
             const cpWarnings: string[] = [];
             if (paste.skippedFormats && paste.skippedFormats.length > 0) {
@@ -1434,10 +1465,18 @@ export const terminalSendHandler = async ({
       const baselineMarker =
         baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
-      // Send in chunks to avoid saturating the terminal input queue
+      // Send in chunks to avoid saturating the terminal input queue.
       let totalSent = 0;
       for (let i = 0; i < input.length; i += chunkSize) {
         const chunk = input.slice(i, i + chunkSize);
+        // ADR-035 Phase 1: one event for the whole chunked send — every chunk
+        // goes to the same handle, so per-chunk events would only repeat it.
+        // Inside the loop, though, not before it: `input` has no minimum length,
+        // so an empty send would otherwise record a WM_CHAR that never went out
+        // (Opus Round 2 P1).
+        if (i === 0) {
+          logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
+        }
         const result = postCharsToHwnd(win.hwnd, chunk);
         totalSent += result.sent;
         if (!result.full) {
@@ -1674,8 +1713,12 @@ export const terminalSendHandler = async ({
           chosenKey = "ctrl+shift+v";
         }
       }
-      clipboardOutcome = await typeViaClipboard(input, chosenKey);
+      // ADR-035 Phase 1: the event is emitted inside `typeViaClipboard`, at the
+      // paste boundary — the clipboard write can fail first, and a paste that
+      // never happened must not be on record (Opus Round 2 P1).
+      clipboardOutcome = await typeViaClipboard(input, chosenKey, "terminal:send");
     } else {
+      logDispatchSink({ sink: "sendinput", tool: "terminal:send", targetHwnd: null, payloadChars: input.length });
       await keyboard.type(input);
     }
 
@@ -2335,7 +2378,7 @@ export const terminalRunHandler = async ({
       try { return getWindowClassName(hwnd); } catch { return ""; }
     })();
     if (targetClass === "ConsoleWindowClass") {
-      const paste = await pasteIntoConsoleNoFocus(hwnd, sendInput);
+      const paste = await pasteIntoConsoleNoFocus(hwnd, sendInput, "terminal:run");
       sendPayload = paste.ok ? { ok: true } : { ok: false, code: paste.reason };
       // issue #386: surface native-clipboard hints — ONLY on success. They are
       // success-context ("the paste worked, but a format was not preserved" /

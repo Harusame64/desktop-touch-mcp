@@ -25,6 +25,7 @@ import {
   WM_CHAR, WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_CONTROL, VK_SHIFT, VK_MENU,
 } from "./win32.js";
 import { nativeWin32 } from "./native-engine.js";
+import { logDispatchSink } from "../tools/_resolve-log.js";
 import type {
   NativeForegroundFlashOptions,
   NativeForegroundFlashResult,
@@ -314,6 +315,12 @@ export interface ConsolePasteOutcome {
 export async function pasteIntoConsoleNoFocus(
   hwnd: unknown,
   text: string,
+  /**
+   * Which public tool is pasting — recorded on the ADR-035 Phase 1 dispatch
+   * event. Optional so existing callers and tests are unaffected; when omitted
+   * nothing is recorded.
+   */
+  tool?: string,
 ): Promise<ConsolePasteOutcome> {
   if (!nativeWin32 || typeof nativeWin32.win32ConsolePasteNoFocus !== "function") {
     return { ok: false, reason: "native_engine_unavailable" };
@@ -323,6 +330,14 @@ export async function pasteIntoConsoleNoFocus(
   const target = resolveTarget(hwnd);
   const targetBig =
     typeof target === "bigint" ? target : BigInt(target as number | string);
+  // ADR-035 Phase 1 — recorded HERE and not at the call site: the capability
+  // check above returns `native_engine_unavailable` on a mixed-version addon
+  // without touching the OS, and the caller then falls through to WM_CHAR. An
+  // event at the call site would claim the console-paste channel was used AND
+  // leave a second event for the write that actually happened (Codex Round 2).
+  if (tool !== undefined) {
+    logDispatchSink({ sink: "console_paste", tool, targetHwnd: targetBig });
+  }
   const r = nativeWin32.win32ConsolePasteNoFocus(targetBig, text);
   const outcome: ConsolePasteOutcome = { ok: r.ok };
   if (r.reason) outcome.reason = r.reason as ConsolePasteReason;

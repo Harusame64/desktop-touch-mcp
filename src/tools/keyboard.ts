@@ -41,6 +41,7 @@ import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss } from "./_action-guard.js";
+import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { ResolvedDestination } from "./_action-guard.js";
 
 /**
@@ -271,6 +272,7 @@ export class TypeViaClipboardDeliveryError extends Error {
 async function nativeTypeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v",
+  tool: string,
 ): Promise<TypeViaClipboardOutcome> {
   // UTF-16LE bytes rather than a JS string: napi's String bridge transcodes
   // through UTF-8, which cannot represent an unpaired surrogate, so it would
@@ -299,6 +301,18 @@ async function nativeTypeViaClipboard(
     // clipboard may still be holding the payload.
     `native clipboard paste gave up after ${CLIPBOARD_WRITE_TIMEOUT_MS}ms waiting for the clipboard owner; the paste and the clipboard contents are indeterminate after this — the keystroke may still arrive and the clipboard may not have been restored`,
   );
+
+  // ADR-035 Phase 1 — recorded from the addon's OWN report of whether the
+  // chord went out, not before the call. The composite can end in
+  // `paste_deadline_exceeded`, a verification failure, or `send_input_failed`,
+  // and the handler then tells the caller nothing was typed; an event on entry
+  // would contradict that in the log (Codex Round 2). `pasted` is also true for
+  // `send_input_partial`, which is correct: a prefix reaching the V key-down
+  // may well have pasted, and the whole point of tracking it is not to claim
+  // otherwise.
+  if (r.pasted) {
+    logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
+  }
 
   if (!r.ok) {
     // Every one of these ran far enough to replace the user's clipboard, so
@@ -415,6 +429,7 @@ function nativeOutcome(r: NativeTypeViaClipboardResult): TypeViaClipboardOutcome
 async function powershellTypeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v",
+  tool: string,
 ): Promise<TypeViaClipboardOutcome> {
   // (3) The payload has to fit in a command line. Fail before doing anything
   // rather than after emptying the user's clipboard.
@@ -471,6 +486,11 @@ async function powershellTypeViaClipboard(
     });
   }
 
+  // ADR-035 Phase 1 — the paste boundary, and not one line earlier: every
+  // return above this point (payload too large, clipboard write not delivered)
+  // leaves without a keystroke, so logging at the call site would record a
+  // paste that never happened (Opus Round 2 P1).
+  logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
   const combo = parseKeys(pasteCombo);
   await keyboard.pressKey(...combo);
   await keyboard.releaseKey(...combo);
@@ -646,6 +666,13 @@ export function buildFallbackRestoreScript(savedB64: string, pastedSha256Hex: st
 export async function typeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v",
+  /**
+   * Which public tool is pasting — recorded on the ADR-035 Phase 1 dispatch
+   * event. Passed in because both `keyboard(action='type')` and
+   * `terminal(action='send')` reach this same paste, and the log has to say
+   * which one it was.
+   */
+  tool = "keyboard:type",
 ): Promise<TypeViaClipboardOutcome> {
   // ── Why the native call takes the keyboard input lock ──────────────────────
   //
@@ -696,8 +723,8 @@ export async function typeViaClipboard(
   // in `nutjs.ts` describes. So: native = the whole transaction, fallback = the
   // chord only.
   return hasNativeTypeViaClipboard()
-    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo))
-    : powershellTypeViaClipboard(text, pasteCombo);
+    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo, tool))
+    : powershellTypeViaClipboard(text, pasteCombo, tool);
 }
 
 /**
@@ -1109,6 +1136,22 @@ async function focusWindowForKeyboard(
   try {
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
+    // ADR-035 §2 #3 — observation only. This resolver's tie-break is
+    // "the active window if it matches, else the frontmost match", which is
+    // NOT the SSOT's pure Z-order rule; recording the full match list plus the
+    // window actually chosen is what makes that divergence measurable.
+    const titleMatches = windows.filter(matches);
+    logResolve({
+      resolver: "focusWindowForKeyboard",
+      query: windowTitle,
+      matches: titleMatches,
+      chosen: active && matches(active) ? active : (titleMatches[0] ?? null),
+      // With an explicit hwnd the predicate compares HANDLES, so `matchCount`
+      // counts handle hits, not title hits; the flag keeps the two apart in
+      // the log (Opus Round 2 P2).
+      ...(explicitHwnd !== undefined && { pinnedByHwnd: true }),
+      identity: "lookup",
+    });
     if (active && matches(active)) {
       // Target is already in the foreground — nothing to do.
       foregroundVerified = true;
@@ -1489,9 +1532,16 @@ export const keyboardTypeHandler = async ({
         );
       }
       const wins = enumWindowsInZOrder();
-      const target = wins.find((w) =>
+      const ffMatches = wins.filter((w) =>
         w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())
       );
+      const target = ffMatches[0];
+      logResolve({
+        resolver: "keyboardForegroundFlash",
+        query: effectiveWindowTitle!,
+        matches: ffMatches,
+        identity: "lookup",
+      });
       if (!target) {
         return failWith(
           new Error("WindowNotFound"),
@@ -1537,6 +1587,7 @@ export const keyboardTypeHandler = async ({
         // post-send verification (= simplified BG path、Phase 3 MVP scope)。
         // Opus Round 1 P2-6 反映: replaceAll 失敗 → warning 集約。
         const ffWarnings = [...warnings];
+        logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
         if (replaceAll) {
           const okSelectAll = postKeyComboToHwnd(target.hwnd, "ctrl+a");
           if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
@@ -1588,6 +1639,12 @@ export const keyboardTypeHandler = async ({
       if (replaceAll) {
         ffWarnings.push("ReplaceAllNotSupportedOnClipboardFlash");
       }
+      // ADR-035 Phase 1 — the foreground-flash channel is the route under
+      // investigation: it steals the foreground to paste and puts it back, so
+      // it is exactly where a mis-resolved destination becomes a write into the
+      // operator's own window (Codex Round 1 P2). `fgHwnd` here is the window
+      // that held focus BEFORE the steal.
+      logDispatchSink({ sink: "foreground_flash", tool: "keyboard:type", targetHwnd: channel.hwnd });
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,
@@ -1650,7 +1707,14 @@ export const keyboardTypeHandler = async ({
 
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
-      const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const bgMatches = wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const target = bgMatches[0];
+      logResolve({
+        resolver: "keyboardBackgroundType",
+        query: effectiveWindowTitle!,
+        matches: bgMatches,
+        identity: "lookup",
+      });
       if (target) {
         const check = canInjectViaPostMessage(target.hwnd);
         if (check.supported) {
@@ -1771,6 +1835,7 @@ export const keyboardTypeHandler = async ({
               ? await captureFrame(target.hwnd, stage4WindowRect)
               : null;
 
+          logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
           const result = postCharsToHwnd(target.hwnd, effectiveText);
           if (!result.full) {
             // Partial fail: do NOT fall through to foreground (would cause double input).
@@ -2190,6 +2255,12 @@ export const keyboardTypeHandler = async ({
       }
     }
 
+    // ADR-035 Phase 1 — the foreground path has no destination handle: the keys
+    // go wherever focus is, which is the H2 question. The event is emitted at
+    // each branch's own dispatch boundary rather than here, because both
+    // branches can still bail out without sending anything — the clipboard one
+    // inside `typeViaClipboard`, the keystroke one on a focus-leash abort at
+    // the very first chunk (Opus Round 2 P1).
     if (effectiveClipboard) {
       clipboardOutcome = await typeViaClipboard(effectiveText);
     } else {
@@ -2249,6 +2320,11 @@ export const keyboardTypeHandler = async ({
               );
             }
             const chunk = codePoints.slice(i, i + chunkSize).join("");
+            // First chunk only, and only once the focus check above has let it
+            // through: an abort at i=0 sends nothing at all.
+            if (i === 0) {
+              logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null });
+            }
             await keyboard.type(chunk);
             typed += chunk.length; // UTF-16 code units delivered
           }
@@ -2259,6 +2335,7 @@ export const keyboardTypeHandler = async ({
           throw err;
         }
       } else {
+        logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null, payloadChars: effectiveText.length });
         await keyboard.type(effectiveText);
       }
     }
@@ -2390,7 +2467,14 @@ export const keyboardPressHandler = async ({
     const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
-      const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const bgPressMatches = wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      const target = bgPressMatches[0];
+      logResolve({
+        resolver: "keyboardBackgroundPress",
+        query: effectiveWindowTitle!,
+        matches: bgPressMatches,
+        identity: "lookup",
+      });
       if (target && canInjectViaPostMessage(target.hwnd).supported) {
         // Phase A safety: evaluate lensId / auto-guard before WM_CHAR send so
         // BG path doesn't silently bypass guards (PR #64 Codex P1). See type
@@ -2436,6 +2520,7 @@ export const keyboardPressHandler = async ({
         const baselineMarker =
           baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
 
+        logDispatchSink({ sink: "wm_char", tool: "keyboard:press", targetHwnd: target.hwnd });
         const ok2 = isEnter
           ? postEnterToHwnd(target.hwnd)
           : postKeyComboToHwnd(target.hwnd, keys);
@@ -2642,6 +2727,7 @@ export const keyboardPressHandler = async ({
     }
 
     const keyList = parseKeys(keys);
+    logDispatchSink({ sink: "sendinput", tool: "keyboard:press", targetHwnd: null });
     await keyboard.pressKey(...keyList);
     await keyboard.releaseKey(...keyList);
 
@@ -2885,6 +2971,16 @@ export const keyboardSequenceHandler = async ({
             // tool path also passes through here.
             assertKeyComboSafe(step.keys);
             const downKeys = parseKeys(step.keys);
+            // ADR-035 Phase 1 — one event per sequence call, emitted here and
+            // not before the loop, so a sequence refused by `assertKeyComboSafe`
+            // or `parseKeys` never records a dispatch that did not happen
+            // (Codex Round 1 P2). `targetHwnd` is null because `rawKeyboard` is
+            // SendInput: it is routed by focus, not addressed to a handle. The
+            // window this sequence MEANT to reach is on the `focusWindowForKeyboard`
+            // resolve event sharing this call's `callId`.
+            if (i === 0) {
+              logDispatchSink({ sink: "rawkeyboard", tool: "keyboard:sequence", targetHwnd: null });
+            }
             await rawKeyboard.pressKeyDown(...downKeys);
             const hold = step.holdMs ?? 0;
             if (hold > 0) {

@@ -27,9 +27,10 @@
 
 import {
   resolveWindowTarget,
-  findPlainTopLevelWindowByTitle,
+  findPlainTopLevelWindowsByTitle,
   type ResolvedWindow,
 } from "./_resolve-window.js";
+import { logDispatchSink } from "./_resolve-log.js";
 import { getWindowRectByHwnd } from "../engine/win32.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
@@ -640,10 +641,21 @@ export interface VisualMotionObservation {
  * observation HWND from `dest.hwnd` whenever `dest.kind === 'hwnd'` so
  * observation and action share the same destination (ADR §2.2 invariant).
  */
-export async function resolveInputDestination(params: {
-  hwnd?: string;
-  windowTitle?: string;
-}): Promise<InputDestination> {
+export async function resolveInputDestination(
+  params: {
+    hwnd?: string;
+    windowTitle?: string;
+  },
+  /**
+   * ADR-035 Phase 1 — optional collector for non-blocking advisories. When the
+   * Case 3 recovery below matches more than one window it appends the same
+   * "N windows match" wording `action-target.ts` already uses, so an ambiguous
+   * scroll destination stops being silent. Purely additive: the destination
+   * returned is byte-identical with or without a collector, and callers that
+   * pass nothing behave exactly as before.
+   */
+  warnings?: string[],
+): Promise<InputDestination> {
   const resolved: ResolvedWindow | null = await resolveWindowTarget({
     hwnd: params.hwnd,
     windowTitle: params.windowTitle,
@@ -676,10 +688,20 @@ export async function resolveInputDestination(params: {
   // `@active` is excluded here: `resolveWindowTarget` owns that shorthand and
   // a null return there means foreground resolution genuinely failed.
   if (params.windowTitle && params.windowTitle !== "@active") {
-    const match = findPlainTopLevelWindowByTitle(params.windowTitle, {
+    const matches = findPlainTopLevelWindowsByTitle(params.windowTitle, {
       excludeMinimized: true,
       excludeDialogsAndOwned: true,
+      logAs: "inputPipelineCase3",
     });
+    const match = matches[0];
+    if (matches.length > 1) {
+      // ADR-035 §6.3 — advisory only in Phase 1. `resolveInputDestination`
+      // keeps the historic frontmost tie-break; strict refusal is ADR-037's
+      // decision to make once the Phase 1 log says how often this fires.
+      warnings?.push(
+        `${matches.length} windows match "${params.windowTitle}"; using the frontmost`,
+      );
+    }
     if (match) {
       // Case 3 recovery also gets the CDP Tier 2 promotion — otherwise a
       // plain-windowTitle scroll on Chrome (where resolveWindowTarget returns
@@ -1248,6 +1270,15 @@ export async function postWheelToHwnd(
       const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
       const chunkSigned = sign * chunkMagnitude;
       const wParam = makeWheelWParam(0, chunkSigned);
+      // ADR-035 Phase 1 — recorded HERE, at the real message boundary, not at
+      // the tier-3 branch above: every early return before this point (missing
+      // native binding, a zero-magnitude call, a pre-dispatch failure) would
+      // otherwise write a dispatch event for a message that was never posted
+      // (Codex Round 1 P2). Once per call, not per chunk; the handle is the
+      // LEAF the walker resolved, which is what actually receives the message.
+      if (!postedAny) {
+        logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd: effectiveHwnd, tier: "3" });
+      }
       const posted = postMessage(effectiveHwnd, message, wParam, lParam);
       if (!posted) {
         // Receiver rejected this chunk. If at least one earlier chunk
@@ -1474,6 +1505,16 @@ export async function dispatchScrollWheel(
           wheelDeltaY: wheelDelta.y,
           wheelDeltaX: wheelDelta.x,
         })) ?? { ok: false, scrolled: false };
+        // ADR-035 Phase 1 — recorded from the RESULT, not before the call: the
+        // native side returns `ok:false` without ever reaching
+        // `SetScrollPercent` when the target has no usable ScrollPattern, and
+        // the caller then falls through to Tier 3. Logging on entry would put
+        // both a UIA and a PostMessage dispatch in the log for one write
+        // (Codex Round 2). `ok:true, scrolled:false` DID call it — a boundary
+        // no-op is still a dispatch.
+        if (result.ok === true) {
+          logDispatchSink({ sink: "uia", tool: "scroll", targetHwnd: dest.hwnd, tier: "1" });
+        }
         if (result.ok === true && result.scrolled === true) {
           return {
             scrolled: true,
@@ -1514,6 +1555,11 @@ export async function dispatchScrollWheel(
       // future phase. The tab is the destination, not the point.
       const cx = params.x ?? Math.floor(pre.clientWidth / 2);
       const cy = params.y ?? Math.floor(pre.clientHeight / 2);
+      // Recorded AFTER the await for the same reason as Tier 1: the helper
+      // resolves the tab and opens a session first, and either can fail — the
+      // surrounding catch turns that into a plain `null` outcome, so an event
+      // on entry would report a wheel that was never sent (Codex Round 2). The
+      // await resolving means the protocol command went out.
       await dispatchWheelInTab(
         wheelDelta.x,
         wheelDelta.y,
@@ -1522,6 +1568,7 @@ export async function dispatchScrollWheel(
         dest.tabId,
         port,
       );
+      logDispatchSink({ sink: "cdp", tool: "scroll", targetHwnd: null, tier: "2" });
       // Settle: CDP wheel handling is synchronous on the renderer side but
       // scrollTop reflects the layout-flushed value. A tiny yield is enough
       // to land on the post-frame state without burning latency.

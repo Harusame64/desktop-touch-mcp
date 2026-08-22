@@ -25,7 +25,7 @@ import { keyboardTypeHandler } from "../../src/tools/keyboard.js";
 import { keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { terminalSendHandler } from "../../src/tools/terminal.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
-import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, assertTagAlive } from "./helpers/powershell-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
 import { restoreAndFocusWindow } from "../../src/engine/win32.js";
 
@@ -65,6 +65,7 @@ describe("A1-armed: keyboard_type with windowTitle arms focusLost detection", ()
     try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     await sleep(200);
 
+    assertTagAlive(np);
     const result = await keyboardTypeHandler({
       text: "a",
       use_clipboard: true,
@@ -149,6 +150,7 @@ describe("A1-unarmed: keyboard_type without windowTitle cannot detect focus loss
   });
 
   it("trackFocus:false always skips detection regardless of windowTitle", async () => {
+    assertTagAlive(np);
     const result = await keyboardTypeHandler({
       text: "q",
       use_clipboard: true,
@@ -164,6 +166,7 @@ describe("A1-unarmed: keyboard_type without windowTitle cannot detect focus loss
   });
 
   it("keyboard_type result always has ok + typed fields regardless of trackFocus", async () => {
+    assertTagAlive(np);
     const r1 = await keyboardTypeHandler({
       text: "test",
       use_clipboard: true,
@@ -171,6 +174,7 @@ describe("A1-unarmed: keyboard_type without windowTitle cannot detect focus loss
       windowTitle: np.title,
       settleMs: 0,
     });
+    assertTagAlive(np);
     const r2 = await keyboardTypeHandler({
       text: "test",
       use_clipboard: true,
@@ -196,6 +200,7 @@ describe("A1-unarmed: keyboard_type without windowTitle cannot detect focus loss
 
 describe("A1-press: keyboard_press follows the same focusLost contract", () => {
   it("keyboard_press with windowTitle + trackFocus returns structured response", async () => {
+    assertTagAlive(np);
     const result = await keyboardPressHandler({
       keys: "escape",
       windowTitle: np.title,
@@ -263,6 +268,7 @@ describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
     }
 
     // Send a command to PowerShell with restoreFocus:true
+    assertTagAlive(ps);
     const result = await terminalSendHandler({
       windowTitle: ps.tag,
       input: "echo a2-test",
@@ -296,6 +302,7 @@ describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
       return;
     }
 
+    assertTagAlive(ps);
     const result = await terminalSendHandler({
       windowTitle: ps.tag,
       input: "echo a2-no-restore",
@@ -316,6 +323,7 @@ describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
 
   it("terminal_send response always has focusRestored boolean field", async () => {
     // Structural contract: focusRestored is always present in ok:true responses
+    assertTagAlive(ps);
     const result = await terminalSendHandler({
       windowTitle: ps.tag,
       input: "echo structural-test",

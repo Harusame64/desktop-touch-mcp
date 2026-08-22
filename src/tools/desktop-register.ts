@@ -213,6 +213,11 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
         ? pickPlainTopLevelWindowByTitle(windows, originId, {
             excludeMinimized: false,
             excludeDialogsAndOwned: false,
+            // ADR-035 Phase 1: the viewport gate asks "is the entity's origin
+            // window still on screen", not "where does this write go". Logging
+            // it would mix a read-side judgement into the write-path match-count
+            // statistics the phase exists to measure (Opus Round 2 P2).
+            logAs: "off",
           })
         : null;
       if (match) {

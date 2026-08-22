@@ -11,6 +11,11 @@
  *      and method:'background' staying on WM_CHAR.
  *
  * Mock surface mirrors issue-207-foreground-refusal-terminal.test.ts.
+ *
+ * The `"terminal:send"` third argument in the paste assertions is ADR-035
+ * Phase 1: the dispatch event moved inside `pasteIntoConsoleNoFocus`, past its
+ * capability check, so the helper has to be told which tool is pasting. What is
+ * asserted about the payload is unchanged.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -169,7 +174,7 @@ describe("terminalSendHandler — conhost console-paste routing", () => {
   it("(d) ONE trailing newline stripped before console-paste (native adds the Enter)", async () => {
     await terminalSendHandler({ ...baseArgs, input: "ls -la\n" });
     expect(mockPaste).toHaveBeenCalledTimes(1);
-    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "ls -la");
+    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "ls -la", "terminal:send");
   });
 
   it("(d2) only ONE trailing newline stripped — N>=2 preserved (REPL blank-line terminator)", async () => {
@@ -179,12 +184,12 @@ describe("terminalSendHandler — conhost console-paste routing", () => {
     // pasted text + 1 native Enter = N. Stripping all (the previous bug) would
     // collapse this to a single Enter and leave the REPL mid-block.
     await terminalSendHandler({ ...baseArgs, input: "def f():\n  return 1\n\n" });
-    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "def f():\n  return 1\n");
+    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "def f():\n  return 1\n", "terminal:send");
   });
 
   it("(d3) trailing CRLF treated as one line break (stripped whole, not half)", async () => {
     await terminalSendHandler({ ...baseArgs, input: "whoami\r\n" });
-    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "whoami");
+    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "whoami", "terminal:send");
   });
 
   it("(e) secret prompt baseline → carve-out skips console-paste, uses WM_CHAR (no clipboard)", async () => {

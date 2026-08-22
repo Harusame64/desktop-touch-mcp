@@ -717,6 +717,34 @@ The fix is one-shot and expires in 15 seconds. The server revalidates the target
 
 ---
 
+## Diagnostic log
+
+The server keeps an append-only log of events that never reach a tool response, at
+`%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (one JSON object per line). It records
+crashes and slow calls, and — since the diagnostic log became the place to look when input lands in
+the wrong place — how each `windowTitle` was resolved and where each write went:
+
+- a **`resolve`** record per title lookup: how many windows matched, which one was picked, the ones
+  that lost, and a flag when the terminal process-name fallback fired because nothing matched by
+  title;
+- a **`dispatch_sink`** record per input dispatch — `keyboard`, `terminal`, `scroll` and
+  `desktop_act`'s background writes: which channel was used, which window it was addressed to, and
+  which window was in the foreground at that moment;
+- a correlation id shared by all records from one tool call, so a resolution can be matched to the
+  write it produced even when calls overlap.
+
+If an input call ever seems to type into the wrong window, this is the file that says which window
+it picked and why. A record is written immediately before the write leaves the process, so a
+dispatch that is refused or fails first is not on record as having happened.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DESKTOP_TOUCH_RESOLVE_LOG_RAW` | *(unset = off)* | Window titles and the titles you search for are recorded as a short hash plus their length, because a title can contain a file name, a mail subject, or a browser page title. Set to `1` to also record the text in clear (the hash stays, so a log with both is still readable end to end). |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE` | *(unset = on)* | Set to `1` to stop writing the log entirely. |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` | *(per-user log dir)* | Write the log somewhere else. |
+
+---
+
 ## Advanced response options
 
 ### browser_eval Structured Mode

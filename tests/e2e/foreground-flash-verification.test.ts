@@ -32,7 +32,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync } from "node:child_process";
 import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { terminalSendHandler } from "../../src/tools/terminal.js";
-import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, assertTagAlive } from "./helpers/powershell-launcher.js";
 import { parsePayload } from "./helpers/wait.js";
 
 const WT_AVAILABLE: boolean = (() => {
@@ -56,6 +56,7 @@ describe("foreground_flash — input validation (native validate_input、§3.3.1
     // 「改行除去 vs 分割 inject」を差別化可能。
     const ps = await launchPowerShell({ host: "wt", banner: "ready-ff-validate-lf" });
     try {
+      assertTagAlive(ps);
       const r = parsePayload(await keyboardTypeHandler({
         text: "hello\nworld",
         method: "foreground_flash",
@@ -78,6 +79,7 @@ describe("foreground_flash — input validation (native validate_input、§3.3.1
     try {
       // 2700 ASCII chars = 5400 bytes UTF-16, >= 5120 → reject
       const big = "a".repeat(2700);
+      assertTagAlive(ps);
       const r = parsePayload(await keyboardTypeHandler({
         text: big,
         method: "foreground_flash",
@@ -109,6 +111,7 @@ describe.skipIf(!WT_AVAILABLE)("foreground_flash — WT clipboard_flash channel 
 
   it("keyboard:type single-line short text → ok:true with clipboard_flash hints", async () => {
     const tag = `ff-${Date.now().toString(36)}`;
+    assertTagAlive(ps);
     const r = parsePayload(await keyboardTypeHandler({
       text: tag,
       method: "foreground_flash",
@@ -154,6 +157,7 @@ describe("foreground_flash — conhost wm_char route (terminal class)", () => {
 
   it("keyboard:type method:'foreground_flash' on conhost → wm_char path", async () => {
     const tag = `ff-conhost-${Date.now().toString(36)}`;
+    assertTagAlive(ps);
     const r = parsePayload(await keyboardTypeHandler({
       text: tag,
       method: "foreground_flash",
@@ -187,6 +191,7 @@ describe.skipIf(!WT_AVAILABLE)("foreground_flash — terminal:send WT clipboard_
   afterAll(() => { ps?.kill(); });
 
   it("terminal:send with pressEnter:true → Ctrl+V + Enter via flash", async () => {
+    assertTagAlive(ps);
     const r = parsePayload(await terminalSendHandler({
       windowTitle: ps.title,
       input: "echo ff_test",
@@ -241,6 +246,7 @@ describe.skipIf(!WT_AVAILABLE)("foreground_flash — background contract regress
   afterAll(() => { ps?.kill(); });
 
   it("method:'background' on WT remains unsupported (BackgroundInputNotDelivered)", async () => {
+    assertTagAlive(ps);
     const r = parsePayload(await keyboardTypeHandler({
       text: "regression-guard",
       method: "background",

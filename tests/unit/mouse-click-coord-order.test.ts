@@ -16,6 +16,16 @@ const { mockRunActionGuard, mockEvaluatePreToolGuards, mockBuildEnvelopeFor, moc
   mockMoveTo: vi.fn(),
 }));
 
+// The cursor is a REAL device: `mouse.ts::moveTo` delegates to
+// `engine/cursor.ts::moveCursorTo`, which calls the Win32 mover directly — it
+// does NOT go through the mocked `engine/nutjs.js`. Unmocked, this test walks
+// the developer's pointer across the screen and parks it wherever the fixture
+// coordinates land (for the top-left fixtures, on the desktop's first icon).
+// Nothing here asserts on cursor motion, so stub it out.
+vi.mock("../../src/engine/cursor.js", () => ({
+  moveCursorTo: vi.fn(async () => undefined),
+}));
+
 vi.mock("../../src/tools/_action-guard.js", () => ({
   runActionGuard: mockRunActionGuard,
   isAutoGuardEnabled: () => true,

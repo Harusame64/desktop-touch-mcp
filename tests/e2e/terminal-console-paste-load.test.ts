@@ -16,6 +16,7 @@
  * fall-through) is pinned by the mocked unit test (terminal-send-console-paste.test.ts
  * case b) — forcing a native paste failure in a live e2e is not deterministic.
  */
+import { assertTagAlive } from "./helpers/powershell-launcher.js";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -39,6 +40,10 @@ async function minimize(hwnd: bigint): Promise<void> {
   );
 }
 async function sendAuto(title: string, input: string) {
+  // ADR-035 §7-3 — every send in this file addresses `sh` by title, and the
+  // loops below send dozens of times, so the check belongs here rather than at
+  // each call site.
+  if (sh) assertTagAlive(sh);
   return parse(await terminalSendHandler({
     windowTitle: title, input, method: "auto", chunkSize: 100,
     pressEnter: true, focusFirst: false, restoreFocus: false,

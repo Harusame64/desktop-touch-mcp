@@ -20,6 +20,8 @@ import {
   enumWindowsInZOrder, getWindowOwner, getWindowClassName, isWindowEnabled, getLastActivePopup,
 } from "../engine/win32.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { logResolve } from "./_resolve-log.js";
+import type { ResolveResolver } from "../engine/diagnostic-log.js";
 
 /**
  * (R3 tool-exclusion) Cases 1/2 resolve an HWND directly (explicit `hwnd`, `@active`), bypassing
@@ -91,21 +93,65 @@ function safeGetClassName(hwnd: bigint): string | null {
  */
 export function findPlainTopLevelWindowByTitle(
   title: string,
-  opts: {
-    excludeMinimized?: boolean;
-    excludeDialogsAndOwned?: boolean;
-  } = {},
+  opts: PlainTopLevelMatchOptions = {},
 ): ReturnType<typeof enumWindowsInZOrder>[number] | null {
+  return findPlainTopLevelWindowsByTitle(title, opts)[0] ?? null;
+}
+
+/**
+ * Options shared by the plain-top-level matcher and its two entry points.
+ *
+ * `logAs` is ADR-035 Phase 1 observation only and never affects which window is
+ * returned. It exists because the invariant is **one resolution = one `resolve`
+ * event**: a caller that wraps this helper (`_input-pipeline.ts` Case 3) names
+ * itself so the event is attributed to the wrapper rather than to the SSOT, and
+ * a caller that has already logged the same resolution passes `"off"`.
+ */
+export interface PlainTopLevelMatchOptions {
+  excludeMinimized?: boolean;
+  excludeDialogsAndOwned?: boolean;
+  logAs?: ResolveResolver | "off";
+}
+
+/**
+ * Every plain top-level window matching `title`, in Z-order, and the ADR-035
+ * Phase 1 `resolve` event that records how many there were.
+ *
+ * The array-returning shape is what makes the observation possible at all:
+ * `matchCount` and the runners-up are exactly the information the historic
+ * `.find()` threw away, and `_input-pipeline.ts` Case 3 needs the count a
+ * second time to decide whether to warn.
+ *
+ * @returns All matches (possibly empty). `[0]` is the window the legacy
+ *   `.find()` would have returned.
+ */
+export function findPlainTopLevelWindowsByTitle(
+  title: string,
+  opts: PlainTopLevelMatchOptions = {},
+): ReturnType<typeof enumWindowsInZOrder> {
   // Checked before enumerating: an empty title must cost nothing (pinned by
   // find-plain-top-level-window.test.ts).
-  if (!title) return null;
+  if (!title) return [];
   try {
-    return pickPlainTopLevelWindowByTitle(enumWindowsInZOrder(), title, opts);
+    const matches = matchPlainTopLevelWindowsByTitle(enumWindowsInZOrder(), title, opts);
+    logPlainTopLevelResolve(title, matches, opts);
+    return matches;
   } catch {
-    // `enumWindowsInZOrder` unavailable → null (callers fall through to their
-    // own fallback / unresolved path).
-    return null;
+    // `enumWindowsInZOrder` unavailable → no matches (callers fall through to
+    // their own fallback / unresolved path).
+    return [];
   }
+}
+
+/** Shared emitter for the two plain-top-level entry points (honours `logAs`). */
+function logPlainTopLevelResolve(
+  title: string,
+  matches: ReturnType<typeof enumWindowsInZOrder>,
+  opts: PlainTopLevelMatchOptions,
+): void {
+  const resolver = opts.logAs ?? "pickPlainTopLevelWindowByTitle";
+  if (resolver === "off") return;
+  logResolve({ resolver, query: title, matches });
 }
 
 /**
@@ -122,24 +168,38 @@ export function findPlainTopLevelWindowByTitle(
 export function pickPlainTopLevelWindowByTitle(
   windows: ReturnType<typeof enumWindowsInZOrder>,
   title: string,
-  opts: {
-    excludeMinimized?: boolean;
-    excludeDialogsAndOwned?: boolean;
-  } = {},
+  opts: PlainTopLevelMatchOptions = {},
 ): ReturnType<typeof enumWindowsInZOrder>[number] | null {
   if (!title) return null;
+  const matches = matchPlainTopLevelWindowsByTitle(windows, title, opts);
+  logPlainTopLevelResolve(title, matches, opts);
+  return matches[0] ?? null;
+}
+
+/**
+ * The pure matcher underneath {@link pickPlainTopLevelWindowByTitle} — all
+ * matches instead of the first one, and no logging.
+ *
+ * Kept separate so the ADR-035 Phase 1 instrumentation can count matches
+ * without any call site paying for a second pass, and so a caller that logs the
+ * resolution itself is not forced through the emitter.
+ */
+export function matchPlainTopLevelWindowsByTitle(
+  windows: ReturnType<typeof enumWindowsInZOrder>,
+  title: string,
+  opts: PlainTopLevelMatchOptions = {},
+): ReturnType<typeof enumWindowsInZOrder> {
+  if (!title) return [];
   const { excludeMinimized = false, excludeDialogsAndOwned = false } = opts;
   const q = title.toLowerCase();
-  return (
-    windows.find((w) => {
-      if (excludeMinimized && w.isMinimized) return false;
-      if (excludeDialogsAndOwned) {
-        if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
-        if (w.ownerHwnd != null) return false;
-      }
-      return w.title.toLowerCase().includes(q);
-    }) ?? null
-  );
+  return windows.filter((w) => {
+    if (excludeMinimized && w.isMinimized) return false;
+    if (excludeDialogsAndOwned) {
+      if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
+      if (w.ownerHwnd != null) return false;
+    }
+    return w.title.toLowerCase().includes(q);
+  });
 }
 
 /**
@@ -151,7 +211,7 @@ export function pickPlainTopLevelWindowByTitle(
 function findCommonDialogByTitle(
   wins: ReturnType<typeof enumWindowsInZOrder>,
   query: string,
-): DialogCandidate | null {
+): { chosen: DialogCandidate | null; candidates: DialogCandidate[] } {
   const q = query.toLowerCase();
   const classed: DialogCandidate[] = [];
   const owned: DialogCandidate[] = [];
@@ -164,7 +224,11 @@ function findCommonDialogByTitle(
       owned.push({ hwnd: w.hwnd, title: w.title });
     }
   }
-  return classed[0] ?? owned[0] ?? null;
+  // `candidates` is the priority order the tie-break walks, so index 0 is the
+  // chosen one and the rest are what it passed over — the shape the ADR-035
+  // Phase 1 `resolve` event records. The chosen value is unchanged.
+  const candidates = [...classed, ...owned];
+  return { chosen: candidates[0] ?? null, candidates };
 }
 
 /**
@@ -302,16 +366,42 @@ export async function resolveWindowTarget(params: {
       // ADR-018 Phase 5: delegated to the shared `findPlainTopLevelWindowByTitle`
       // helper (Phase 1b §2.2 / Phase 4 §2.2 carry-over). `excludeMinimized: false`
       // preserves the legacy Case 3 tolerance for minimized matches.
-      const plainMatch = findPlainTopLevelWindowByTitle(params.windowTitle, {
+      // ADR-035 Phase 1 (Codex Round 1 P2): the plain-window lookup here is an
+      // INTERMEDIATE PROBE, not the outcome — when it misses, Case 4 below may
+      // still resolve a dialog. Logging the probe would put a `matchCount: 0`,
+      // `chosen: null` record in front of a dispatch that did have a target,
+      // which is precisely the join this phase exists to make trustworthy. So
+      // the probe is silenced and each of the three real outcomes logs once.
+      const plainMatches = findPlainTopLevelWindowsByTitle(params.windowTitle, {
         excludeMinimized: false,
         excludeDialogsAndOwned: true,
+        logAs: "off",
       });
-      if (plainMatch) return null;
+      if (plainMatches.length > 0) {
+        logResolve({
+          resolver: "pickPlainTopLevelWindowByTitle",
+          query: params.windowTitle,
+          matches: plainMatches,
+        });
+        return null;
+      }
 
       // Case 4: no plain match — try common dialog fallback.
       const wins = enumWindowsInZOrder();
-      const dialog = findCommonDialogByTitle(wins, params.windowTitle);
+      const { chosen: dialog, candidates } = findCommonDialogByTitle(wins, params.windowTitle);
+      const runnersUp = candidates.slice(1);
       if (dialog) {
+        // `matchCount` counts the DIALOG candidates (they did match by title,
+        // just not as plain top-level windows); `fallback:"owner-chain"` is
+        // what says the window came from the dialog rescue rather than the
+        // primary rule, so the two events are not confused for one another.
+        logResolve({
+          resolver: "resolveWindowTargetDialog",
+          query: params.windowTitle,
+          matches: [dialog, ...runnersUp],
+          chosen: dialog,
+          fallback: "owner-chain",
+        });
         warnings.push("dialog_resolved_via_owner_chain");
         return {
           title: dialog.title,
@@ -320,6 +410,12 @@ export async function resolveWindowTarget(params: {
           className: safeGetClassName(dialog.hwnd),
         };
       }
+      // Neither route matched — a true miss, and the H2 case worth counting.
+      logResolve({
+        resolver: "pickPlainTopLevelWindowByTitle",
+        query: params.windowTitle,
+        matches: [],
+      });
     } catch { /* enumWindowsInZOrder unavailable → fall through */ }
   }
 

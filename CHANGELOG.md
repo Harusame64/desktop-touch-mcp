@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **The diagnostic log now records how a `windowTitle` was resolved, and where
+  the input actually went.** When a `windowTitle` matches more than one window,
+  or matches none and a fallback picks a window by process name instead, the
+  tool response has never said so — the keystrokes simply arrive somewhere else.
+  Each resolution now appends a `resolve` record to the diagnostic log with the
+  number of matching windows, the window that was chosen, the runners-up, and a
+  flag when the process-name fallback fired; each input dispatch — `keyboard`,
+  `terminal`, `scroll` and `desktop_act`'s background writes — appends a
+  matching `dispatch_sink` record naming the channel used, the window it was
+  addressed to, and the window that was in the foreground at that instant. The
+  record is written immediately before the write leaves the process, so a call
+  that is refused or fails first is not on record as having sent anything. Records from one tool call share a correlation id, so a
+  resolution can be matched to the write it produced even when calls overlap.
+  Behaviour is unchanged — nothing is refused or retargeted because of this —
+  with one addition: `scroll` with a `windowTitle` that matches several windows
+  now returns a `N windows match "…"; using the frontmost` warning on the
+  response, the same wording other tools already use.
+
+  **Window titles are hashed by default.** A title can carry a file name, a mail
+  subject, or a browser page title, and the diagnostic log is on by default, so
+  titles and queries are recorded as a short hash plus their length. Set
+  `DESKTOP_TOUCH_RESOLVE_LOG_RAW=1` to record the text in clear alongside the
+  hash — useful when reading your own log, and best left off otherwise. The log
+  lives at `%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log`; set
+  `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1` to turn the whole log off.
+
 - **`keyboard` write actions (`type` / `press` / `sequence`) now require a
   destination.** Calls without `windowTitle` or `hwnd` used to land on whatever
   window happened to be foreground at that instant — including a window you had

@@ -57,6 +57,13 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "DESKTOP_TOUCH_RESOLVE_LOG_RAW",
+          "description": "Set to '1' to record window titles and title queries in clear in the diagnostic event log. Off by default: titles are recorded as a short hash plus their length, because a title can contain a file name, a mail subject, or a browser page title.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ]
     }

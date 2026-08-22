@@ -18,7 +18,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync } from "node:child_process";
 import { terminalReadHandler, terminalSendHandler, terminalRunHandler } from "../../src/tools/terminal.js";
-import { launchPowerShell, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, type TerminalHost, assertTagAlive } from "./helpers/powershell-launcher.js";
 import { sleep, parsePayload } from "./helpers/wait.js";
 
 // Codex P2 (#175): module-level WT availability check.
@@ -173,6 +173,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
   describe(`terminal_send [${label}]`, () => {
     it("delivers a unique line that terminal_read observes", async ({ skip }) => {
       const sentTag = `sent-${host}-${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const sendRes = parsePayload(await terminalSendHandler({
         windowTitle: ps.title,
         input: `echo ${sentTag}`,
@@ -231,6 +232,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
 
     it("D2: immediate terminal_read after slow command may be empty — not an error", async ({ skip }) => {
       const tag = `d2-${host}-${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const sendRes = parsePayload(await terminalSendHandler({
         windowTitle: ps.title,
         input: `Start-Sleep -Milliseconds 800; echo ${tag}`,
@@ -289,6 +291,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
       if (host !== "conhost") skip("console-paste routing is conhost-only");
       const a = `mlA${Date.now().toString(36)}`;
       const b = `mlB${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const sendRes = parsePayload(await terminalSendHandler({
         windowTitle: ps.title,
         // Two distinct echo lines on one logical send. The native paste
@@ -336,6 +339,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
       const marker1 = r1.marker;
 
       const tag = `d1-${host}-${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const sendRes = parsePayload(await terminalSendHandler({
         windowTitle: ps.title,
         input: `echo ${tag}`,
@@ -421,6 +425,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
     if (host === "wt") {
       it("method:'background' on Windows Terminal returns BackgroundInputNotDelivered", async () => {
         const tag = `bg-wt-${Date.now().toString(36)}`;
+        assertTagAlive(ps);
         const sendRes = parsePayload(await terminalSendHandler({
           windowTitle: ps.title,
           input: `echo ${tag}`,
@@ -441,6 +446,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
     if (host === "conhost") {
       it("method:'background' on conhost succeeds and the line shows up", async () => {
         const tag = `bg-conhost-${Date.now().toString(36)}`;
+        assertTagAlive(ps);
         const sendRes = parsePayload(await terminalSendHandler({
           windowTitle: ps.title,
           input: `echo ${tag}`,
@@ -473,6 +479,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
   describe(`terminal_run [${label}] — issue #383 echo anchoring`, () => {
     it("until:pattern waits for the real output, not the echoed sentinel", async ({ skip }) => {
       const tag = `run383-${host}-${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const res = parsePayload(await terminalRunHandler({
         windowTitle: ps.title,
         input: `Start-Sleep -Seconds 4; Write-Output "${tag}"`,
@@ -513,6 +520,7 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
   describe(`terminal_run [${label}] — issue #384 quietMs settle fallback`, () => {
     it("a never-matching pattern settles to reason:'quiet' instead of hard-timeout", async ({ skip }) => {
       const tag = `run384-${host}-${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const res = parsePayload(await terminalRunHandler({
         windowTitle: ps.title,
         input: `Start-Sleep -Seconds 1; Write-Output '${tag}'`,

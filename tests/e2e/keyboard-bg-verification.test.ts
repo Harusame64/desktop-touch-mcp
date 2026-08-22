@@ -36,7 +36,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { execSync } from "node:child_process";
-import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, assertTagAlive } from "./helpers/powershell-launcher.js";
 
 // Codex P2 (#175): module-level WT availability check.
 // See tests/e2e/terminal.test.ts WT_AVAILABLE for the rationale (Vitest 4
@@ -83,6 +83,7 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
     // terminal.ts:439-470 mirrors this split symmetrically.
     it("returns BackgroundInputNotDelivered (matrix §4.3 wt_xaml_pipeline → Strict fail)", async () => {
       const tag = `bg-type-wt-${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const r = parsePayload(await keyboardTypeHandler({
         text: tag,
         method: "background",
@@ -110,6 +111,7 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
 
     it("succeeds with hints.verifyDelivery: delivered/wm_char on conhost", async () => {
       const tag = `bg-type-conhost-${Date.now().toString(36)}`;
+      assertTagAlive(ps);
       const r = parsePayload(await keyboardTypeHandler({
         text: tag,
         method: "background",
@@ -146,6 +148,7 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
 
     it("succeeds and never returns ok:true without a verifyDelivery hint", async () => {
       const tag = `bg-type-np-${Date.now().toString(36)}`;
+      assertTagAlive(np);
       const r = parsePayload(await keyboardTypeHandler({
         text: tag,
         method: "background",
@@ -191,6 +194,7 @@ describe("keyboard({action:'press', method:'background'}) — issue #177 verific
 
     // 4. Non-arrow combo — pin the unverifiable hint shape (matrix §4.2).
     it("non-arrow combo (ctrl+a) returns hints.verifyDelivery:unverifiable with channel/fallback", async () => {
+      assertTagAlive(ps);
       const r = parsePayload(await keyboardPressHandler({
         keys: "ctrl+a",
         method: "background",
@@ -211,6 +215,7 @@ describe("keyboard({action:'press', method:'background'}) — issue #177 verific
 
     // 5. enter on terminal-class — read-back-verifiable per allow-list.
     it("enter on conhost succeeds with verifyDelivery:delivered (read-back catches new line)", async () => {
+      assertTagAlive(ps);
       const r = parsePayload(await keyboardPressHandler({
         keys: "enter",
         method: "background",

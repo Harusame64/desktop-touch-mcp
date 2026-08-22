@@ -55,6 +55,16 @@ function isDisabled(): boolean {
   return _disabled;
 }
 
+/**
+ * True when diagnostic events are being written. Exposed so observation-only
+ * producers (ADR-035 Phase 1's `_resolve-log.ts`) can skip hashing and Win32
+ * reads entirely on a disabled log rather than building a record `logDiagnostic`
+ * would immediately drop.
+ */
+export function isDiagnosticLogEnabled(): boolean {
+  return !isDisabled();
+}
+
 export function getDiagnosticLogPath(): string {
   if (_resolvedPath !== null) return _resolvedPath;
   const override = process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH;
@@ -217,7 +227,160 @@ export type DiagnosticEvent =
       // "warn":       DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgraded it.
       // "unguarded":  DESKTOP_TOUCH_AUTO_GUARD=0 killed the whole guard layer.
       decision: "block" | "warn" | "unguarded";
+    }
+  | {
+      // ADR-035 Phase 1 — one title-to-window resolution (`src/tools/_resolve-log.ts`).
+      // Written by every resolver in the ADR-035 §2 known set so the discarded
+      // half of a resolution (how many windows matched, which ones lost) is
+      // recoverable after the fact. Titles are hashed by default — see the PII
+      // note in `_resolve-log.ts`.
+      kind: "resolve";
+      resolver: ResolveResolver;
+      /** Per-tool-call correlation id; null outside a wrapped handler. */
+      callId: string | null;
+      /** `DESKTOP_TOUCH_AUTO_GUARD` state at resolution time (plan §2, parent §7-4). */
+      autoGuard: boolean;
+      queryHash: string;
+      queryLen: number;
+      /** Only when `DESKTOP_TOUCH_RESOLVE_LOG_RAW=1`. */
+      queryRaw?: string;
+      /** Total matches, INCLUDING the chosen one. `>= 2` is the H1 signal. */
+      matchCount: number;
+      /**
+       * True when the caller supplied an explicit `hwnd` and the resolver
+       * matched on the HANDLE, not on the title. `queryHash` still carries the
+       * `windowTitle` that came along for focus / warning purposes, so without
+       * this flag an hwnd-pinned call is indistinguishable in the log from a
+       * clean single title match — which would deflate the measured H1 rate
+       * (Opus Round 2 P2).
+       */
+      pinnedByHwnd?: boolean;
+      chosen: ResolveWindowRecord | null;
+      /** Runners-up, capped at 5. */
+      others: ResolveWindowRecord[];
+      /**
+       * Present only when the match came from `findTerminalWindow`'s
+       * process-name fallback rather than a title match — the direct
+       * observation of the zero-match H2 sub-path (ADR-035 §2.1).
+       */
+      /**
+       * Set when the chosen window did NOT come from the primary title match.
+       * `process-name`: `findTerminalWindow` fell back to matching the image
+       * name after zero title matches (ADR-035 §2.1). `owner-chain`:
+       * `resolveWindowTarget` found no plain top-level window and resolved a
+       * common dialog through the owner chain instead. Both are the shape H2
+       * is about — a window was chosen that the title rule did not select.
+       */
+      fallback?: ResolveFallback;
+    }
+  | {
+      // ADR-035 Phase 1 — one native input dispatch, recorded immediately
+      // before the call leaves the process. Joined to its `resolve` event by
+      // `callId`; without both halves the zero-match H2 case has no evidence
+      // (plan §2, Round 13 Codex).
+      kind: "dispatch_sink";
+      sink: DispatchSink;
+      /** `keyboard:type` / `terminal:send` / `scroll` / … */
+      tool: string;
+      callId: string | null;
+      autoGuard: boolean;
+      /** Where the write was addressed; null for sinks with no handle. */
+      targetHwnd: string | null;
+      /** Foreground window at dispatch time — the H2 discriminator. */
+      fgHwnd: string | null;
+      fgTitleHash: string;
+      fgTitleLen: number;
+      /** Only when `DESKTOP_TOUCH_RESOLVE_LOG_RAW=1`. */
+      fgTitleRaw?: string;
+      /** ADR-018 dispatcher tier, for the scroll sinks that have one. */
+      tier?: "1" | "2" | "3" | "4";
     };
+
+/**
+ * ADR-035 §2 known-set resolvers, plus `_input-pipeline.ts` Case 3. Closed on
+ * purpose: a new resolver has to be added here (and to the ADR-035 §2 table)
+ * before it can log, so the event stream cannot silently grow a site the ADR
+ * has not accounted for.
+ */
+export type ResolveResolver =
+  /** §2 #1 — the shared `pickPlainTopLevelWindowByTitle` SSOT. */
+  | "pickPlainTopLevelWindowByTitle"
+  /** `_input-pipeline.ts` Case 3 HWND recovery (a #1 caller, logged separately). */
+  | "inputPipelineCase3"
+  /** §2 #2 — `engine/perception/action-target.ts`. */
+  | "actionTarget"
+  /** §2 #3 — `keyboard.ts:focusWindowForKeyboard`. */
+  | "focusWindowForKeyboard"
+  /** §2 #4 — `terminal.ts:findTerminalWindow` (title match + process-name fallback). */
+  | "findTerminalWindow"
+  /** §2 #7 — `smart-scroll.ts:tryImage`. */
+  | "smartScrollImage"
+  /** §2 #8 — `keyboard.ts` background WM_CHAR destination re-resolution (type). */
+  | "keyboardBackgroundType"
+  /** §2 #9 — `keyboard.ts` foreground_flash target. */
+  | "keyboardForegroundFlash"
+  /** §2 #13 — the press-side twin of #8. */
+  | "keyboardBackgroundPress"
+  /**
+   * `desktop_act`'s v2 background executors — `terminalSend` and
+   * `keyboardTypeBg`. Same unfiltered, silently-first-match shape as §2 #4 /
+   * #8, reached through the other public dispatcher rather than through
+   * `keyboard` / `terminal` (Opus Round 2 P2).
+   */
+  | "desktopActTerminalSend"
+  | "desktopActKeyboardType"
+  /**
+   * `_resolve-window.ts` Case 4 — the common-dialog fallback taken when no
+   * plain top-level window matched. Recorded separately so the dialog that WAS
+   * chosen is on record; logging only the plain-window probe would leave a
+   * `matchCount: 0` event joined to a dispatch that did have a target
+   * (Codex Round 1 P2).
+   */
+  | "resolveWindowTargetDialog";
+
+/**
+ * Which rescue supplied the chosen window when the primary title rule did not.
+ * `process-name`: `findTerminalWindow` matched the image name after zero title
+ * matches (ADR-035 §2.1). `owner-chain`: `resolveWindowTarget` found no plain
+ * top-level window and resolved a common dialog through the owner chain.
+ */
+export type ResolveFallback = "process-name" | "owner-chain";
+
+/** One window in a `resolve` event. Titles hashed; identity fields optional. */
+export interface ResolveWindowRecord {
+  hwnd: string;
+  titleHash: string;
+  titleLen: number;
+  titleRaw?: string;
+  pid?: number;
+  processName?: string;
+  zOrder?: number;
+  isActive?: boolean;
+  isMinimized?: boolean;
+  isCloaked?: boolean;
+}
+
+/**
+ * The native channel an input dispatch left through. The three scroll values
+ * name ADR-018 dispatcher tiers 1-3; `sendinput` covers both tier 4 and the
+ * keyboard foreground path.
+ */
+export type DispatchSink =
+  | "sendinput"
+  | "wm_char"
+  | "console_paste"
+  | "clipboard_paste"
+  /**
+   * The native foreground-flash inject: steal the foreground, paste, restore.
+   * Kept distinct from `clipboard_paste` because it is the one channel that
+   * deliberately moves the foreground, so a dispatch on it is expected to
+   * disagree with the `fgHwnd` recorded a moment earlier.
+   */
+  | "foreground_flash"
+  | "rawkeyboard"
+  | "uia"
+  | "cdp"
+  | "postmessage";
 
 /**
  * Append one diagnostic event as a JSONL line. Best-effort: never throws.

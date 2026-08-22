@@ -22,7 +22,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync } from "node:child_process";
 import { terminalRunHandler } from "../../src/tools/terminal.js";
-import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, assertTagAlive } from "./helpers/powershell-launcher.js";
 import { isSshWslAvailable, launchSshWslBash, type SshBashInstance } from "./helpers/ssh-wsl-launcher.js";
 import { parsePayload } from "./helpers/wait.js";
 
@@ -45,6 +45,7 @@ describe("[powershell] terminal exit mode (#386)", () => {
   afterAll(() => ps?.kill());
 
   it("single-line: reason:'exited' + exitCode 0, no echo self-match", async ({ skip }) => {
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
@@ -62,6 +63,7 @@ describe("[powershell] terminal exit mode (#386)", () => {
   }, 35_000);
 
   it("multiline: completes via the sentinel even though pattern mode can't anchor", async ({ skip }) => {
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
@@ -84,6 +86,7 @@ describe("[powershell] terminal exit mode (#386)", () => {
   }, 40_000);
 
   it("native non-zero exit code is reported", async ({ skip }) => {
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
@@ -98,6 +101,7 @@ describe("[powershell] terminal exit mode (#386)", () => {
   }, 35_000);
 
   it("cmdlet failure ($?=False, no native exe) maps to exitCode 1", async ({ skip }) => {
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
@@ -114,6 +118,7 @@ describe("[powershell] terminal exit mode (#386)", () => {
   }, 35_000);
 
   it("shell:'cmd' is a loud pre-flight reject (ExitModeShellUnsupported)", async () => {
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
@@ -131,6 +136,7 @@ describe("[powershell] terminal exit mode (#386)", () => {
     // MEASURED: a conhost-hosted PowerShell window reports processName
     // 'powershell', so auto resolves HIGH (not ambiguous). The Q2 advisory
     // warning fires so callers know nested SSH/WSL is undetectable.
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
@@ -148,6 +154,7 @@ describe("[powershell] terminal exit mode (#386)", () => {
   }, 35_000);
 
   it("input ending in an open construct is rejected (ExitModeUnsafeInput)", async () => {
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
@@ -180,6 +187,7 @@ describe("[bash@wsl-ssh] terminal exit mode (#386 core)", () => {
 
   it("single-line: reason:'exited' + exitCode 0", async ({ skip }) => {
     if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
+    assertTagAlive(sh!);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: sh!.title,
@@ -201,6 +209,7 @@ describe("[bash@wsl-ssh] terminal exit mode (#386 core)", () => {
     // pattern:'FINISHED_386' immediately (multiline echo cannot be anchored —
     // that is exactly #386). Exit mode keys off the driver nonce instead, so it
     // must wait through the 2s sleep and report the real completion.
+    assertTagAlive(sh!);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: sh!.title,
@@ -224,6 +233,7 @@ describe("[bash@wsl-ssh] terminal exit mode (#386 core)", () => {
 
   it("non-zero exit code (subshell, keeps the session alive)", async ({ skip }) => {
     if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
+    assertTagAlive(sh!);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: sh!.title,
@@ -246,6 +256,7 @@ describe("[bash@wsl-ssh] terminal exit mode (#386 core)", () => {
   it("#384: a no-trailing-newline pattern that can't bind settles to 'quiet', not timeout", async ({ skip }) => {
     if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
     const tag = `nl384_${Date.now().toString(36)}`;
+    assertTagAlive(sh!);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: sh!.title,
@@ -301,6 +312,7 @@ describe.skipIf(!WT_AVAILABLE)("[wt] terminal exit mode — shell:'auto' loud-fa
   afterAll(() => ps?.kill());
 
   it("auto on a WindowsTerminal-process window → ExitModeShellAmbiguous", async () => {
+    assertTagAlive(ps);
     const res = parsePayload(
       await terminalRunHandler({
         windowTitle: ps.title,
