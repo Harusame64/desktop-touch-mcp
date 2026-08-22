@@ -46,6 +46,9 @@ afterEach(() => {
   vi.useRealTimers();
   mockEnum.mockReset();
   mockEnum.mockReturnValue([]);
+  // The cache is module state. Left seeded, it makes the next test's "miss"
+  // a hit and the assertion passes or fails for the wrong reason.
+  updateWindowCache([]);
   // The refresh-on-miss throttle is module state; without this a test that
   // refreshed would silently disarm the next one's refresh.
   _resetRefreshThrottleForTest();
@@ -178,6 +181,37 @@ describe("findContainingWindowFresh — expiry means re-verify, not unclickable"
   it("survives an enumeration that throws", () => {
     mockEnum.mockImplementation(() => { throw new Error("no native addon"); });
     expect(findContainingWindowFresh(200, 200)).toBeNull();
+  });
+
+  it("does not overwrite the stored regions the movement correction measures against", () => {
+    // Several screenshot modes seed only this cache and no snapshot, which makes
+    // the region stored here the reference `applyHoming` compares a window's
+    // current position against. Writing the enumeration back would replace that
+    // reference with the current position — the same window compared against
+    // itself, a zero delta, and coordinates read off a screenshot silently left
+    // uncorrected after the window moved.
+    updateWindowCache([APP]);                       // screenshot-era position
+    const MOVED = win(0xa1n, "MyApp — Editor", { x: 700, y: 700, width: 400, height: 300 });
+    mockEnum.mockReturnValue([MOVED]);
+
+    // A miss somewhere else entirely — the window moved, so the old region no
+    // longer contains the point.
+    expect(findContainingWindowFresh(800, 800)?.hwnd).toBe(0xa1n);
+
+    // The answer came from live data; the stored reference is untouched.
+    expect(findContainingWindow(200, 200)?.region).toEqual({
+      x: 100, y: 100, width: 400, height: 300,
+    });
+  });
+
+  it("skips a minimized window when answering from live data", () => {
+    // Their region is zeroed, which would otherwise swallow the origin.
+    const minimized = {
+      ...win(0xc3n, "Minimized", { x: 0, y: 0, width: 0, height: 0 }),
+      isMinimized: true,
+    } as unknown as WindowZInfo;
+    mockEnum.mockReturnValue([minimized]);
+    expect(findContainingWindowFresh(0, 0)).toBeNull();
   });
 });
 

@@ -205,6 +205,17 @@ export function findContainingWindow(x: number, y: number): CachedWindow | null 
  * every such click would enumerate twice (here, and again in the sensor refresh
  * that follows). The window a caller just opened is still found — the throttle
  * is short enough to be invisible at the rate an agent issues clicks.
+ *
+ * **Answers from the enumeration without writing it back.** Refreshing the
+ * cache here would look like the obvious thing and would quietly break the
+ * other job this map does: several screenshot modes seed only this cache and no
+ * snapshot, which makes the region stored here the reference `applyHoming`
+ * measures a window's movement against. Overwriting every region with its
+ * current one makes that comparison a window against itself — a zero delta —
+ * so coordinates read off a screenshot stop being corrected after the window
+ * moves. One map is serving two purposes with opposite freshness requirements;
+ * until they are separated, the aiming question is answered from live data and
+ * the stored regions are left alone.
  */
 const REFRESH_ON_MISS_THROTTLE_MS = 250;
 let _lastMissRefreshAtMs = 0;
@@ -215,13 +226,27 @@ export function findContainingWindowFresh(x: number, y: number): CachedWindow | 
   const now = Date.now();
   if (now - _lastMissRefreshAtMs <= REFRESH_ON_MISS_THROTTLE_MS) return null;
   _lastMissRefreshAtMs = now;
+  let live: WindowZInfo[];
   try {
-    updateWindowCache(enumWindowsInZOrder());
+    live = enumWindowsInZOrder();
   } catch {
     // Enumeration unavailable (no native addon) — fall through with what we have.
     return null;
   }
-  return findContainingWindow(x, y);
+  // Frontmost (lowest zOrder) live window containing the point. Minimized
+  // windows are skipped for the same reason `updateWindowCache` refuses to
+  // store them: their region is zeroed and would swallow the origin.
+  let best: CachedWindow | null = null;
+  let bestZ = Infinity;
+  for (const w of live) {
+    if (w.isMinimized) continue;
+    const r = w.region;
+    if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height && w.zOrder < bestZ) {
+      best = { hwnd: w.hwnd, title: w.title, region: { ...r }, zOrder: w.zOrder, timestamp: now };
+      bestZ = w.zOrder;
+    }
+  }
+  return best;
 }
 
 /** @internal Test-only — forget the last refresh-on-miss so the throttle reopens. */
