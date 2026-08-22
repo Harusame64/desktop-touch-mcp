@@ -424,7 +424,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     const rel = events("topology_relation")[0];
     expect(rel).toMatchObject({ ownerIsConsoleHost: true, parentMapUnavailable: true });
     expect(rel).not.toHaveProperty("consoleHostParentPid");
-    expect(rel).not.toHaveProperty("consoleHostParentAlive");
+    expect(rel).not.toHaveProperty("consoleHostParentState");
   });
 
   it("marks the destination that IS this process's own console window", () => {
@@ -540,7 +540,7 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
       advisoryQueued: false,
       ownerIsConsoleHost: true,
       consoleHostParentPid: SHELL_PID,
-      consoleHostParentAlive: true,
+      consoleHostParentState: "alive",
       consoleHostParentInAncestry: false,
     });
   });
@@ -562,8 +562,47 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     expect(events("topology_relation")[0]).toMatchObject({
       ownerIsConsoleHost: true,
       consoleHostParentPid: DEAD_CMD_PID,
-      consoleHostParentAlive: false,
+      consoleHostParentState: "gone",
     });
+  });
+
+  it("does not call a recycled parent pid alive", () => {
+    // The `cmd.exe` a classic console is reparented through exits at once, and
+    // a pid freed that early is a prime candidate for reuse. A "parent" that
+    // started AFTER its own child is the signature.
+    const CONHOST_PID = 8500;
+    const REUSED_PID = 8499;
+    const CONSOLE_HWND = 0xbbb0n;
+    parentMap.set(CONHOST_PID, REUSED_PID);
+    parentMap.set(REUSED_PID, 1);                  // present in the table…
+    processNames.set(CONHOST_PID, "conhost.exe");
+    processStartTimes.set(CONHOST_PID, 5_000);
+    processStartTimes.set(REUSED_PID, 9_000);      // …but younger than its child
+    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    _resetTopologyCachesForTest();
+
+    resolveOnto(CONSOLE_HWND);
+
+    expect(events("topology_relation")[0]).toMatchObject({
+      consoleHostParentPid: REUSED_PID,
+      consoleHostParentState: "recycled",
+    });
+  });
+
+  it("reports an unverifiable parent lifetime as such", () => {
+    const CONHOST_PID = 8600;
+    const PARENT_PID = 8599;
+    const CONSOLE_HWND = 0xccc0n;
+    parentMap.set(CONHOST_PID, PARENT_PID);
+    parentMap.set(PARENT_PID, 1);
+    processNames.set(CONHOST_PID, "conhost.exe");
+    processStartTimes.set(PARENT_PID, 0);          // creation time unreadable
+    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    _resetTopologyCachesForTest();
+
+    resolveOnto(CONSOLE_HWND);
+
+    expect(events("topology_relation")[0].consoleHostParentState).toBe("unverified");
   });
 
   it("writes nothing at all when the diagnostic log is off", () => {

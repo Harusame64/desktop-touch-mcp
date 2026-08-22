@@ -604,6 +604,44 @@ function pushTopologyWarning(processName: string, pid: number): boolean {
   return true;
 }
 
+/** What became of the process that spawned a console host. */
+type ConsoleHostParentState =
+  /** Still in the process table, and it predates the host — so it is the parent. */
+  | "alive"
+  /** Not in the process table: it has exited. */
+  | "gone"
+  /**
+   * In the process table, but it started AFTER the console host it supposedly
+   * spawned — impossible, so Windows has handed the dead parent's pid to
+   * something else. Reporting this as "alive" would corrupt exactly the
+   * parent-lifetime data Phase C is collecting (Codex Round 2 P2).
+   */
+  | "recycled"
+  /** In the process table, but a creation time could not be read on one side. */
+  | "unverified";
+
+/**
+ * Decide what happened to a console host's parent. Presence in the snapshot is
+ * necessary but NOT sufficient: `launch_console classic` reparents through a
+ * `cmd.exe` that exits immediately, and a pid freed that early is a prime
+ * candidate for reuse. A parent that started after its own child is the
+ * signature of that reuse.
+ *
+ * Read `parentMapAgeMs` alongside the result — the snapshot can be up to the
+ * cache TTL old, so "alive" means "alive as of that many ms ago".
+ */
+function classifyConsoleHostParent(
+  map: Map<number, number>,
+  hostPid: number,
+  parentPid: number,
+): ConsoleHostParentState {
+  if (!map.has(parentPid)) return "gone";
+  const hostStart = getProcessIdentityByPid(hostPid).processStartTimeMs;
+  const parentStart = getProcessIdentityByPid(parentPid).processStartTimeMs;
+  if (hostStart === 0 || parentStart === 0) return "unverified";
+  return parentStart <= hostStart ? "alive" : "recycled";
+}
+
 /**
  * Record how the window a write resolver chose relates to this server process.
  *
@@ -625,7 +663,7 @@ function logTopologyRelation(
   const ownerIsConsoleHost = isConsoleHostProcessName(processName);
 
   let consoleHostParentPid: number | null | undefined;
-  let consoleHostParentAlive: boolean | undefined;
+  let consoleHostParentState: ConsoleHostParentState | undefined;
   let consoleHostParentInAncestry: boolean | undefined;
   let parentMapUnavailable: boolean | undefined;
   let parentMapAgeMs: number | undefined;
@@ -639,13 +677,7 @@ function logTopologyRelation(
     const parent = parentMapUnavailable ? undefined : map.get(pid);
     consoleHostParentPid = parentMapUnavailable ? undefined : (parent ?? null);
     if (parent !== undefined) {
-      // Liveness from the same snapshot the parent came out of: a process that
-      // has exited is no longer enumerated, so absence IS the death signal —
-      // and a dead parent is exactly what `launch_console classic` leaves
-      // behind (the `cmd.exe` it reparents through exits immediately). Read
-      // `parentMapAgeMs` alongside it: the snapshot can be up to the cache TTL
-      // old, so "alive" means "alive as of that many ms ago".
-      consoleHostParentAlive = map.has(parent);
+      consoleHostParentState = classifyConsoleHostParent(map, pid, parent);
       consoleHostParentInAncestry = classifyAncestry(anc, parent) === "yes";
     }
   }
@@ -678,7 +710,7 @@ function logTopologyRelation(
     ...(parentMapUnavailable === true && { parentMapUnavailable: true }),
     ...(parentMapAgeMs !== undefined && { parentMapAgeMs }),
     ...(consoleHostParentPid !== undefined && { consoleHostParentPid }),
-    ...(consoleHostParentAlive !== undefined && { consoleHostParentAlive }),
+    ...(consoleHostParentState !== undefined && { consoleHostParentState }),
     ...(consoleHostParentInAncestry !== undefined && { consoleHostParentInAncestry }),
     isOwnConsoleWindow: own.hwnd !== null && own.hwnd === hwnd,
     // `isOwnConsoleWindow:false` is only a negative RESULT when the console

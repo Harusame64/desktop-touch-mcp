@@ -411,8 +411,18 @@ export type DiagnosticEvent =
       parentMapAgeMs?: number;
       /** Console host only: its parent pid, and what that parent turned out to be. */
       consoleHostParentPid?: number | null;
-      /** Console host only: the parent pid still appears in a live process snapshot. */
-      consoleHostParentAlive?: boolean;
+      /**
+       * Console host only: what became of the process that spawned it.
+       * `"alive"` — still running, and it predates the host. `"gone"` — it has
+       * exited, which is what `launch_console classic` leaves behind.
+       * `"recycled"` — a process with that pid is running but started AFTER the
+       * host, so the pid has been handed on; counting it as alive would corrupt
+       * the parent-lifetime data this record exists to collect (Codex Round 2
+       * P2). `"unverified"` — a creation time could not be read.
+       *
+       * Read `parentMapAgeMs` alongside it: the answer is as of that long ago.
+       */
+      consoleHostParentState?: "alive" | "gone" | "recycled" | "unverified";
       /** Console host only: the parent pid is this process or one of its ancestors. */
       consoleHostParentInAncestry?: boolean;
       /** The chosen window IS this process's own console window. */
