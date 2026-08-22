@@ -1,4 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// Several facades below are built WITHOUT an `executorFn`, so a touch that
+// reaches the executor uses the production dep bundle — whose mouse route moves
+// the real pointer (`engine/cursor.ts`, which does NOT go through
+// `engine/nutjs.js`) and clicks the real screen. The candidate rect here is
+// `{x:10,y:20,w:80,h:30}`, whose centre is (50,35): the top-left of the primary
+// monitor, i.e. the desktop's first icon. Measured with a cursor probe during a
+// full unit run before this stub was added.
+vi.mock("../../src/engine/cursor.js", () => ({
+  moveCursorTo: vi.fn(async () => undefined),
+}));
+vi.mock("../../src/engine/nutjs.js", () => ({
+  mouse: {
+    click: vi.fn(async () => undefined),
+    doubleClick: vi.fn(async () => undefined),
+    pressButton: vi.fn(async () => undefined),
+    releaseButton: vi.fn(async () => undefined),
+    scrollDown: vi.fn(async () => undefined),
+    scrollUp: vi.fn(async () => undefined),
+    scrollLeft: vi.fn(async () => undefined),
+    scrollRight: vi.fn(async () => undefined),
+    setPosition: vi.fn(async () => undefined),
+    getPosition: vi.fn(async () => ({ x: 0, y: 0 })),
+  },
+  keyboard: { type: vi.fn(), pressKey: vi.fn(), releaseKey: vi.fn() },
+  rawKeyboard: { pressKeyDown: vi.fn(), pressKeyUp: vi.fn() },
+  withKeyboardLock: (fn: () => Promise<unknown>) => fn(),
+  Button: { LEFT: 0, RIGHT: 1, MIDDLE: 2 },
+}));
 import { DesktopFacade, type CandidateProvider, type CandidateIngress } from "../../src/tools/desktop.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 import {
