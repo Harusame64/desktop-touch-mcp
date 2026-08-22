@@ -242,6 +242,34 @@ describe("runActionGuard", () => {
     expect(result.summary.status).toBe("unsafe_coordinates");
   });
 
+  it("refuses when the point is inside a window other than the one named", async () => {
+    // The regression re-verifying created: once an expired entry stops catching
+    // the point, the point resolves to whatever occupies that area NOW. Building
+    // the lens for that window would check THAT window and report success — a
+    // click aimed at one window delivered to another, with the only warning
+    // going to stderr. Refusing restores the fail-closed behaviour the stale
+    // entry used to provide by accident.
+    mockResolveActionTarget.mockResolvedValue({
+      lens: null, localStore: null, identity: null, candidates: 1,
+      warnings: ['windowTitle "MyApp" does not match containing window "Other App"'],
+      titleMismatch: { requested: "MyApp", resolved: "Other App" },
+    });
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "MyApp" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("unsafe_coordinates");
+    // The caller is told which window is actually there — the old warning never
+    // left stderr.
+    expect(result.summary.next).toContain("Other App");
+    expect(result.summary.next).toContain("MyApp");
+  });
+
   it("maps browser_not_ready guard failure to correct status", async () => {
     const lens = makeFakeLens();
     mockResolveActionTarget.mockResolvedValue({

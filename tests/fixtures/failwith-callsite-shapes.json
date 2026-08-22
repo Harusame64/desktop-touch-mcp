@@ -76,7 +76,7 @@
   "samples": [
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 848,
+      "line": 871,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
@@ -223,21 +223,21 @@
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 875,
+      "line": 882,
       "tool": "desktop_state",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 890,
+      "line": 897,
       "tool": "get_history",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 915,
+      "line": 922,
       "tool": "get_document_state",
       "errKind": "identifier",
       "contextShape": "none"

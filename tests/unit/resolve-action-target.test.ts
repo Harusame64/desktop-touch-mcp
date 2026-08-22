@@ -187,6 +187,9 @@ describe("resolveActionTarget — coordinate kind", () => {
     );
     const hasMismatchWarning = result.warnings.some(w => w.includes("does not match"));
     expect(hasMismatchWarning).toBe(false);
+    // The negative control: a matching title still resolves normally.
+    expect(result.titleMismatch).toBeUndefined();
+    expect(result.lens).not.toBeNull();
   });
 
   it("uses containing window hwnd (not getCachedWindowByTitle) for coordinate kind", async () => {

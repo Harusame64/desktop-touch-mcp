@@ -31,6 +31,7 @@ import {
   getCachedWindowByTitle,
   evictWindowFromCache,
   findContainingWindowFresh,
+  _resetRefreshThrottleForTest,
   WINDOW_CACHE_TTL_EXPORTED_MS,
 } from "../../src/engine/window-cache.js";
 import type { WindowZInfo } from "../../src/engine/win32.js";
@@ -45,6 +46,9 @@ afterEach(() => {
   vi.useRealTimers();
   mockEnum.mockReset();
   mockEnum.mockReturnValue([]);
+  // The refresh-on-miss throttle is module state; without this a test that
+  // refreshed would silently disarm the next one's refresh.
+  _resetRefreshThrottleForTest();
 });
 
 function win(hwnd: bigint, title: string, region: { x: number; y: number; width: number; height: number }, zOrder = 0): WindowZInfo {
@@ -174,5 +178,35 @@ describe("findContainingWindowFresh — expiry means re-verify, not unclickable"
   it("survives an enumeration that throws", () => {
     mockEnum.mockImplementation(() => { throw new Error("no native addon"); });
     expect(findContainingWindowFresh(200, 200)).toBeNull();
+  });
+});
+
+describe("findContainingWindowFresh — the throttle", () => {
+  it("does not re-enumerate again immediately for a point that is inside nothing", () => {
+    // A click on the desktop background misses forever. Without a throttle each
+    // one would enumerate here AND again in the sensor refresh that follows.
+    mockEnum.mockReturnValue([]);
+
+    expect(findContainingWindowFresh(5000, 5000)).toBeNull();
+    expect(mockEnum).toHaveBeenCalledTimes(1);
+
+    expect(findContainingWindowFresh(5000, 5000)).toBeNull();
+    expect(findContainingWindowFresh(5000, 5000)).toBeNull();
+    expect(mockEnum).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-enumerates again once the throttle window has passed", () => {
+    // A window the caller has just opened must still be findable — the throttle
+    // is a rate limit, not a negative cache.
+    mockEnum.mockReturnValue([]);
+    expect(findContainingWindowFresh(200, 200)).toBeNull();
+    expect(mockEnum).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 500);
+    mockEnum.mockReturnValue([APP]);
+
+    expect(findContainingWindowFresh(200, 200)?.hwnd).toBe(0xa1n);
+    expect(mockEnum).toHaveBeenCalledTimes(2);
   });
 });

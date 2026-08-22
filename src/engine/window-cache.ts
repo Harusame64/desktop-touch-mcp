@@ -199,10 +199,22 @@ export function findContainingWindow(x: number, y: number): CachedWindow | null 
  * every window-listing tool already makes, and it is paid only when the cache
  * cannot answer — which, before the staleness bound existed, was the case where
  * it answered with a rectangle that might belong to a window that had closed.
+ *
+ * Briefly throttled, because some misses are permanent: a point over the
+ * desktop background is inside no window and always will be, so without this
+ * every such click would enumerate twice (here, and again in the sensor refresh
+ * that follows). The window a caller just opened is still found — the throttle
+ * is short enough to be invisible at the rate an agent issues clicks.
  */
+const REFRESH_ON_MISS_THROTTLE_MS = 250;
+let _lastMissRefreshAtMs = 0;
+
 export function findContainingWindowFresh(x: number, y: number): CachedWindow | null {
   const hit = findContainingWindow(x, y);
   if (hit) return hit;
+  const now = Date.now();
+  if (now - _lastMissRefreshAtMs <= REFRESH_ON_MISS_THROTTLE_MS) return null;
+  _lastMissRefreshAtMs = now;
   try {
     updateWindowCache(enumWindowsInZOrder());
   } catch {
@@ -210,6 +222,11 @@ export function findContainingWindowFresh(x: number, y: number): CachedWindow | 
     return null;
   }
   return findContainingWindow(x, y);
+}
+
+/** @internal Test-only — forget the last refresh-on-miss so the throttle reopens. */
+export function _resetRefreshThrottleForTest(): void {
+  _lastMissRefreshAtMs = 0;
 }
 
 /**

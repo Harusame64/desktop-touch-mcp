@@ -83,6 +83,19 @@ export interface ResolveActionTargetResult {
   changed?: Array<"title" | "rect" | "foreground" | "identity" | "navigation" | "modal">;
   /** True when this is the first time this descriptor resolved to a live target (slot useCount was 0). */
   isNewTarget?: boolean;
+  /**
+   * The caller named a window, and the point they clicked turned out to be
+   * inside a DIFFERENT one.
+   *
+   * This used to be a warning only, and the warning only reached stderr — so
+   * the lens was built for the window that happens to occupy that spot now, the
+   * guard checked THAT window, and a click naming one window was delivered to
+   * another with a successful response. Harmless while a stale rectangle was
+   * still catching the point and failing the guard; not harmless once expired
+   * entries are re-verified against the live desktop, which is exactly what
+   * makes the point resolve to the new occupant instead.
+   */
+  titleMismatch?: { requested: string; resolved: string };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,6 +381,14 @@ async function resolveCoordinateTarget(
       warnings.push(
         `windowTitle "${windowTitle}" does not match containing window "${cached.title}"`
       );
+      return {
+        lens: null,
+        localStore: null,
+        identity: null,
+        candidates: 1,
+        warnings,
+        titleMismatch: { requested: windowTitle, resolved: cached.title },
+      };
     }
   }
 

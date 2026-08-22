@@ -683,6 +683,28 @@ export async function runActionGuard(
     process.stderr.write(`[auto-guard] ${toolName}: ${resolved.warnings.join("; ")}\n`);
   }
 
+  // The point is inside a window, just not the one the caller named. Refuse:
+  // building the lens for the window that happens to be there instead would
+  // deliver a click aimed at one window to another and report success. The
+  // advice for `unsafe_coordinates` is the accurate one here — the coordinates
+  // are not inside the target the caller asked for.
+  if (resolved.titleMismatch) {
+    const status: AutoGuardEnvelope["status"] = "unsafe_coordinates";
+    return {
+      summary: {
+        kind: "auto",
+        status,
+        canContinue: false,
+        target: `window:${resolved.titleMismatch.requested}`,
+        next:
+          `Point (${clickCoordinates?.x ?? "?"},${clickCoordinates?.y ?? "?"}) is inside ` +
+          `"${resolved.titleMismatch.resolved}", not "${resolved.titleMismatch.requested}". ` +
+          `Take a new screenshot to get fresh coordinates.`,
+      },
+      block: true,
+    };
+  }
+
   // No candidates → target not found
   if (resolved.candidates === 0 || !resolved.lens || !resolved.localStore) {
     const status: AutoGuardEnvelope["status"] = "target_not_found";
@@ -796,8 +818,9 @@ export async function runActionGuard(
   // be a dead promise (Opus PR3 Round 1 P2).
   // A fix is a one-call re-approval of the SAME action. Offering one for a
   // target whose rectangle could not be read invites the caller to re-approve a
-  // click into a window that is not there; the recovery is a fresh screenshot,
-  // which the status already asks for.
+  // click into a window that is not there. Recovery does not depend on the
+  // caller doing anything in particular: the entry is evicted when it stops
+  // answering, and the next click re-reads the window list.
   const targetMissing = gr.failedGuard?.statusOverride === "identity_changed";
   if (result.block && !suppressSuggestedFix && !targetMissing) {
     const fix = tryBuildSuggestedFix(
