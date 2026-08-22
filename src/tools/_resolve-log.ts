@@ -429,6 +429,12 @@ interface AncestryInfo {
   ancestors: Map<number, { startTimeMs: number; depth: number }>;
   /** `buildProcessParentMap` returned empty — it does that on failure, too. */
   unavailable: boolean;
+  /**
+   * The snapshot the chain was walked over. Held so the startup record's
+   * conhost-child scan describes the SAME read as `processSnapshotUnavailable`
+   * rather than a second, independent one (Opus Round 3 P2).
+   */
+  parentMap: Map<number, number>;
 }
 
 /** How an owning pid compares against the cached ancestor chain. */
@@ -458,6 +464,7 @@ function classifyAncestry(anc: AncestryInfo, pid: number): AncestryVerdict {
 
 let _ancestry: AncestryInfo | null = null;
 let _ancestryAtMs = 0;
+let _ancestryAttempts = 0;
 let _ownConsoleWindow: { available: boolean; hwnd: bigint | null } | null = null;
 let _parentMap: Map<number, number> | null = null;
 /** When the cached map was last read SUCCESSFULLY. */
@@ -474,12 +481,19 @@ let _parentMapTriedAtMs = 0;
 const ANCESTRY_RETRY_MS = 30_000;
 
 /**
+ * How many times an incomplete chain is rebuilt before it is accepted as the
+ * best reading available. Bounds the permanently-unreadable case.
+ */
+const ANCESTRY_MAX_ATTEMPTS = 3;
+
+/**
  * This process's launch chain, computed once. The chain is a launch-time fact
  * — an ancestor exiting later does not move a window from "mine" to "not mine"
  * — so it is cached for the life of the process rather than re-snapshotted.
  */
 function ancestry(): AncestryInfo {
-  if (_ancestry !== null) {
+  const cached = _ancestry;
+  if (cached !== null) {
     // A chain that was read successfully is a launch-time fact and never
     // re-read. One that failed is retried, slowly — and "failed" includes a
     // chain that came out of a good snapshot but has an unreadable creation
@@ -487,11 +501,25 @@ function ancestry(): AncestryInfo {
     // verified, so every destination it owns would be classified `unverified`
     // for the life of the server, silencing the advisory and skewing the
     // measurement (Codex Round 3 P2).
-    const incomplete =
-      _ancestry.unavailable ||
-      _ancestry.chain.some((p) => p.startTimeMs === 0);
-    if (!incomplete || Date.now() - _ancestryAtMs <= ANCESTRY_RETRY_MS) return _ancestry;
+    //
+    // The checks are ordered cheapest-first so a complete chain — the normal
+    // case, on every single record — costs one array scan and nothing else.
+    const hasUnreadableLink = cached.chain.some((p) => p.startTimeMs === 0);
+    if (!cached.unavailable && !hasUnreadableLink) return cached;
+    // It also has to CONVERGE. A link can be permanently unreadable — an
+    // ancestor that has since exited, or an elevated one `OpenProcess` will
+    // never open — and rebuilding the chain every retry window forever, for a
+    // read that cannot succeed, is not measurement (Opus Round 4 P2). So the
+    // rebuild gives up after a few attempts, and an unreadable creation time
+    // only counts as retriable while that pid is still in the process table.
+    if (_ancestryAttempts >= ANCESTRY_MAX_ATTEMPTS) return cached;
+    if (Date.now() - _ancestryAtMs <= ANCESTRY_RETRY_MS) return cached;
+    if (!cached.unavailable) {
+      const map = freshParentMap();
+      if (!cached.chain.some((p) => p.startTimeMs === 0 && map.has(p.pid))) return cached;
+    }
   }
+  _ancestryAttempts += 1;
   // The SAME snapshot the console-host branch and the startup record use.
   // They used to take two independent ones, which let the startup record assert
   // "this process owns no console host child" out of a failed read while
@@ -515,14 +543,20 @@ function ancestry(): AncestryInfo {
     if (parent === undefined || parent === 0) break;
     pid = parent;
   }
-  _ancestry = { chain, ancestors, unavailable: parentMap.size === 0 };
+  _ancestry = { chain, ancestors, unavailable: parentMap.size === 0, parentMap };
   _ancestryAtMs = Date.now();
   return _ancestry;
 }
 
 /** `GetConsoleWindow()` for this process, read once (it cannot change). */
 function ownConsoleWindow(): { available: boolean; hwnd: bigint | null } {
-  if (_ownConsoleWindow === null) _ownConsoleWindow = readOwnConsoleWindow();
+  // Only a SUCCESSFUL read is cached. `available:false` is usually permanent (an
+  // older `.node` has no binding) but can also be a native-load race at startup,
+  // and this is the one reading the whole slice exists to collect — cheap enough
+  // to ask again rather than write it off for the life of the process.
+  if (_ownConsoleWindow === null || !_ownConsoleWindow.available) {
+    _ownConsoleWindow = readOwnConsoleWindow();
+  }
   return _ownConsoleWindow;
 }
 
@@ -556,6 +590,7 @@ function freshParentMap(): Map<number, number> {
 export function _resetTopologyCachesForTest(): void {
   _ancestry = null;
   _ancestryAtMs = 0;
+  _ancestryAttempts = 0;
   _ownConsoleWindow = null;
   _parentMap = null;
   _parentMapAtMs = 0;
@@ -567,8 +602,9 @@ export function _resetTopologyCachesForTest(): void {
  * after the CLI `--help` exit and before the transport connects, so it lands in
  * the log before any tool call can.
  *
- * Costs one process snapshot plus up to {@link ANCESTRY_LIMIT} identity reads,
- * once, and returns immediately when the diagnostic log is off.
+ * Costs one process snapshot, up to {@link ANCESTRY_LIMIT} identity reads for
+ * the chain, and one more per child of this process for the console-host scan —
+ * once. Returns immediately when the diagnostic log is off.
  */
 export function logTopologySnapshot(): void {
   try {
@@ -581,9 +617,19 @@ export function logTopologySnapshot(): void {
     // session's console window is somebody else's window.
     let hostPid: number | null = null;
     let hostName: string | undefined;
-    for (const [pid, parentPid] of freshParentMap()) {
+    // A child whose image name could not be read is not evidence of "no console
+    // host child" — and this is the decisive datum the slice exists to collect,
+    // so a partial scan says so rather than reporting a clean negative
+    // (Opus Round 4 P2). The map can also be a few seconds stale, so a child
+    // that has since exited reads as unreadable too.
+    let unreadableChildren = 0;
+    for (const [pid, parentPid] of anc.parentMap) {
       if (parentPid !== process.pid) continue;
       const name = getProcessIdentityByPid(pid).processName;
+      if (name === "") {
+        unreadableChildren += 1;
+        continue;
+      }
       if (isConsoleHostProcessName(name)) {
         hostPid = pid;
         hostName = name;
@@ -596,6 +642,9 @@ export function logTopologySnapshot(): void {
       ...(own.available === false && { consoleWindowUnavailable: true }),
       ownConsoleHostChildPid: hostPid,
       ...(hostName !== undefined && { ownConsoleHostChildName: hostName }),
+      ...(hostPid === null && unreadableChildren > 0 && {
+        ownConsoleHostChildScanIncomplete: unreadableChildren,
+      }),
       ancestry: anc.chain,
       launchPath: anc.chain.map((p) => p.processName || "pid:" + String(p.pid)).join(" < "),
       processSnapshotUnavailable: anc.unavailable,
@@ -686,7 +735,7 @@ function logTopologyRelation(
 
   let consoleHostParentPid: number | null | undefined;
   let consoleHostParentState: ConsoleHostParentState | undefined;
-  let consoleHostParentInAncestry: boolean | undefined;
+  let consoleHostParentVerdict: AncestryVerdict | undefined;
   let parentMapUnavailable: boolean | undefined;
   let parentMapAgeMs: number | undefined;
   if (ownerIsConsoleHost) {
@@ -700,7 +749,7 @@ function logTopologyRelation(
     consoleHostParentPid = parentMapUnavailable ? undefined : (parent ?? null);
     if (parent !== undefined) {
       consoleHostParentState = classifyConsoleHostParent(map, pid, parent);
-      consoleHostParentInAncestry = classifyAncestry(anc, parent) === "yes";
+      consoleHostParentVerdict = classifyAncestry(anc, parent);
     }
   }
 
@@ -737,7 +786,16 @@ function logTopologyRelation(
     ...(parentMapUnavailable === false && parentMapAgeMs !== undefined && { parentMapAgeMs }),
     ...(consoleHostParentPid !== undefined && { consoleHostParentPid }),
     ...(consoleHostParentState !== undefined && { consoleHostParentState }),
-    ...(consoleHostParentInAncestry !== undefined && { consoleHostParentInAncestry }),
+    ...(consoleHostParentVerdict !== undefined && {
+      consoleHostParentInAncestry: consoleHostParentVerdict === "yes",
+    }),
+    // Same reason the owner side carries `ancestryPidHit`: without it a read
+    // failure and a detected pid reuse are indistinguishable from an actual
+    // negative — and this is the conhost configuration Phase C has the least
+    // data for (Opus Round 4 P1).
+    ...(consoleHostParentVerdict === "unverified" || consoleHostParentVerdict === "recycled"
+      ? { consoleHostParentPidHit: consoleHostParentVerdict }
+      : {}),
     isOwnConsoleWindow: own.hwnd !== null && own.hwnd === hwnd,
     // `isOwnConsoleWindow:false` is only a negative RESULT when the console
     // handle could be read at all — an older `.node` without the binding, or a

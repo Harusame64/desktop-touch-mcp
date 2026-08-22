@@ -324,6 +324,13 @@ export type DiagnosticEvent =
       /** Image name of that child, when one was found. */
       ownConsoleHostChildName?: string;
       /**
+       * How many children of this process had an unreadable image name. Present
+       * only when no console host was found, in which case
+       * `ownConsoleHostChildPid: null` is not a clean negative — one of these
+       * may have been the console host (Opus Round 4 P2).
+       */
+      ownConsoleHostChildScanIncomplete?: number;
+      /**
        * This process first, then its ancestors, capped at 10 links.
        * `startTimeMs` is what makes an entry an IDENTITY rather than a pid: an
        * ancestor can exit and have its pid handed to something else, and a
@@ -358,11 +365,22 @@ export type DiagnosticEvent =
       // So this is NOT a per-write counter, and must not be used as one: a
       // macro that writes N times into one window still produces a single
       // record. The per-write quantity lives in the `dispatch_sink` records,
-      // which carry the same `callId` and `targetHwnd` and are emitted once per
-      // native dispatch — join on that pair to weight a relation by how many
-      // writes actually went to it (Opus Round 3 P2). Counting resolutions
-      // instead would have made the weight depend on how many times a handler
-      // happened to re-resolve, which is a property of the plumbing.
+      // which are emitted once per native dispatch and share this `callId` —
+      // join on the call and the window to weight a relation by how many writes
+      // actually went to it. Counting resolutions instead would have made the
+      // weight depend on how many times a handler happened to re-resolve, which
+      // is a property of the plumbing.
+      //
+      // Matching the window needs care: a `dispatch_sink` carries `targetHwnd`
+      // only for the sinks that address a handle. The foreground-routed ones —
+      // SendInput and the clipboard paste, which are the DEFAULT path for
+      // Windows Terminal, and so the path the stage-1 advisory is usually about
+      // — pass `targetHwnd: null` and identify the window through `fgHwnd`
+      // instead. So match on `targetHwnd ?? fgHwnd` (Opus Round 4 P2 measured
+      // the sink call sites; an earlier note here said `targetHwnd` alone and
+      // would have silently dropped every WT write). When the two disagree on a
+      // handle-addressed sink, that disagreement is itself the H2 finding and
+      // not a join problem.
       kind: "topology_relation";
       /**
        * The resolver that FIRST reached this window in this call. When a call
@@ -440,6 +458,14 @@ export type DiagnosticEvent =
       consoleHostParentState?: "alive" | "gone" | "recycled" | "unverified";
       /** Console host only: the parent pid is this process or one of its ancestors. */
       consoleHostParentInAncestry?: boolean;
+      /**
+       * The parent-side twin of `ancestryPidHit`: present when the parent pid
+       * hit the cached chain but `consoleHostParentInAncestry` is still false,
+       * because the creation times disagree (`"recycled"`) or could not be
+       * compared (`"unverified"`). Without it those two are indistinguishable
+       * from an actual negative.
+       */
+      consoleHostParentPidHit?: "recycled" | "unverified";
       /** The chosen window IS this process's own console window. */
       isOwnConsoleWindow: boolean;
       /**

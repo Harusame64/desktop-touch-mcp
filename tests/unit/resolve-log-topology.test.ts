@@ -183,6 +183,28 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     expect(snap[0].launchPath).toBe("node.exe < node.exe < WindowsTerminal.exe");
   });
 
+  it("does not report a clean absence of a console host child when a child was unreadable", () => {
+    // The child that could not be read may have BEEN the console host, and this
+    // is the decisive datum the slice exists to collect.
+    parentMap.set(6200, SELF);                     // a child of this process…
+    processNames.set(6200, "");                    // …whose image name won't read
+    logTopologySnapshot();
+
+    expect(events("topology_snapshot")[0]).toMatchObject({
+      ownConsoleHostChildPid: null,
+      ownConsoleHostChildScanIncomplete: 1,
+    });
+  });
+
+  it("leaves the scan marker off when every child read fine", () => {
+    parentMap.set(6300, SELF);
+    processNames.set(6300, "notepad.exe");
+    logTopologySnapshot();
+    expect(events("topology_snapshot")[0]).not.toHaveProperty(
+      "ownConsoleHostChildScanIncomplete",
+    );
+  });
+
   it("says so when the process snapshot was unavailable, instead of reporting no ancestors", () => {
     // `buildProcessParentMap` swallows failures and returns an empty map, so
     // "no parents" and "could not read parents" look identical to a caller.
@@ -379,6 +401,52 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     mockLogDiagnostic.mockClear();
     resolveOnto(OTHER_TERM_HWND);
     expect(events("topology_relation")[0].ancestryUnavailable).toBe(false);
+  });
+
+  it("gives up rebuilding a chain whose unreadable link is permanent", () => {
+    // An elevated ancestor `OpenProcess` will never open. Rebuilding the chain
+    // every retry window forever, for a read that cannot succeed, is not
+    // measurement — each rebuild costs a snapshot plus a walk. Observable as:
+    // past the attempt cap, even a link that becomes readable is not picked up.
+    processStartTimes.set(WT_PID, 0);
+    _resetTopologyCachesForTest();
+    resolveOnto(SESSION_WT_HWND);
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    for (let i = 0; i < 6; i++) {
+      vi.setSystemTime(Date.now() + 31_000);
+      resolveOnto(SESSION_WT_HWND);
+    }
+    processStartTimes.set(WT_PID, 1000 + WT_PID);   // readable again, too late
+    vi.setSystemTime(Date.now() + 31_000);
+    mockLogDiagnostic.mockClear();
+    resolveOnto(SESSION_WT_HWND);
+
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerInAncestry: false,
+      ancestryPidHit: "unverified",
+    });
+  });
+
+  it("stops counting a link unreadable once the process has left the table", () => {
+    // A creation time that cannot be read because the ancestor EXITED is not a
+    // transient failure — there is nothing to come back for, so no rebuild.
+    processStartTimes.set(WT_PID, 0);
+    parentMap.delete(WT_PID);
+    _resetTopologyCachesForTest();
+    resolveOnto(SESSION_WT_HWND);
+
+    // Even if it somehow becomes readable, the chain is not rebuilt for it.
+    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 31_000);
+    mockLogDiagnostic.mockClear();
+    resolveOnto(SESSION_WT_HWND);
+
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerInAncestry: false,
+      ancestryPidHit: "unverified",
+    });
   });
 
   it("re-attempts a chain with an unreadable link, not just an unreadable self", () => {
@@ -667,6 +735,46 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
       consoleHostParentPid: REUSED_PID,
       consoleHostParentState: "recycled",
     });
+  });
+
+  it("says why a console host's parent is not an ancestor, when the answer is not a plain no", () => {
+    // The owner side carries `ancestryPidHit` so a read failure is never read as
+    // an established negative. The parent side needs the same, and this is the
+    // conhost configuration with the least data.
+    const CONHOST_PID = 8800;
+    const CONSOLE_HWND = 0xeee0n;
+    parentMap.set(CONHOST_PID, WT_PID);            // parent IS in the chain…
+    processNames.set(CONHOST_PID, "conhost.exe");
+    processStartTimes.set(CONHOST_PID, 5_000);
+    processStartTimes.set(WT_PID, 0);              // …but unverifiable
+    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    _resetTopologyCachesForTest();
+
+    resolveOnto(CONSOLE_HWND);
+
+    expect(events("topology_relation")[0]).toMatchObject({
+      consoleHostParentInAncestry: false,
+      consoleHostParentPidHit: "unverified",
+    });
+  });
+
+  it("leaves the parent marker off when the parent simply is not in the chain", () => {
+    const CONHOST_PID = 8900;
+    const OUTSIDER = 9500;
+    const CONSOLE_HWND = 0xfff0n;
+    parentMap.set(CONHOST_PID, OUTSIDER);
+    parentMap.set(OUTSIDER, 1);
+    processNames.set(CONHOST_PID, "conhost.exe");
+    processStartTimes.set(CONHOST_PID, 9_000);
+    processStartTimes.set(OUTSIDER, 5_000);
+    windowOwners.set(CONSOLE_HWND, CONHOST_PID);
+    _resetTopologyCachesForTest();
+
+    resolveOnto(CONSOLE_HWND);
+
+    const rel = events("topology_relation")[0];
+    expect(rel.consoleHostParentInAncestry).toBe(false);
+    expect(rel).not.toHaveProperty("consoleHostParentPidHit");
   });
 
   it("reports an unverifiable parent lifetime as such", () => {
