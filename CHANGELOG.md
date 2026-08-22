@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.15.0] - 2026-08-22 — A closed window stops catching clicks; keyboard writes need a destination
 
 - **A window that closes stops catching your clicks.** When an app you had been
   working with went away, its last known rectangle stayed in the window cache
