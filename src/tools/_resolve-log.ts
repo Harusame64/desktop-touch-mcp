@@ -50,7 +50,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { logDiagnostic, isDiagnosticLogEnabled } from "../engine/diagnostic-log.js";
 import type { ResolveResolver, ResolveWindowRecord, ResolveFallback, DispatchSink } from "../engine/diagnostic-log.js";
 import { getWindowTitleW, getForegroundHwnd, getWindowIdentity } from "../engine/win32.js";
-import { isAutoGuardEnabled } from "./_action-guard.js";
+// The leaf module, NOT `_action-guard.js`: importing the guard here would close
+// a cycle back through `action-target.ts` (Opus Round 3 P2).
+import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 
 /** Cap on how many runners-up are recorded per resolve event (plan §2 checklist). */
 const OTHERS_LIMIT = 5;
@@ -217,8 +219,8 @@ export function logResolve(args: {
   pinnedByHwnd?: boolean;
   identity?: IdentityMode;
 }): void {
-  if (!isDiagnosticLogEnabled()) return;
   try {
+    if (!isDiagnosticLogEnabled()) return;
     const identity = args.identity ?? "skip";
     const matches = typeof args.matches === "function" ? args.matches() : args.matches;
     const chosen = args.chosen !== undefined ? args.chosen : (matches[0] ?? null);
@@ -265,9 +267,23 @@ export function logDispatchSink(args: {
   tool: string;
   targetHwnd: bigint | null;
   tier?: "1" | "2" | "3" | "4";
+  /**
+   * Length of the character payload, for the sinks that send one character at a
+   * time. `0` means the native call posts nothing at all, so no event is
+   * written — `postCharsToHwnd` loops over the string and `keyboard.type("")`
+   * emits no keystroke, and neither `text` nor `input` has a schema minimum, so
+   * an empty write is reachable from a tool call (Opus Round 3 P1).
+   *
+   * Deliberately NOT passed by the sinks where an empty payload still performs
+   * OS work: a clipboard paste still sends Ctrl+V, a foreground flash still
+   * steals and restores the foreground, and `press` / `sequence` / `scroll`
+   * have no character payload at all.
+   */
+  payloadChars?: number;
 }): void {
-  if (!isDiagnosticLogEnabled()) return;
   try {
+    if (!isDiagnosticLogEnabled()) return;
+    if (args.payloadChars === 0) return;
     const fgHwnd = getForegroundHwnd();
     let fgTitle = "";
     if (fgHwnd !== null) {

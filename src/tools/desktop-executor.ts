@@ -8,7 +8,10 @@
  *   4. mouse    → mouse click at entity rect center (visual-only fallback)
  *
  * All deps are injectable so tests can mock every route without OS bindings.
- * Real deps are imported lazily (dynamic import) to keep module load light.
+ * Real deps are imported lazily (dynamic import) to keep module load light —
+ * with one static exception: `_resolve-log.js` (ADR-035 Phase 1 observation),
+ * which has to be reachable from the closures below and pulls in no native
+ * binding of its own.
  *
  * G2: terminal route now uses background WM_CHAR path via bg-input.ts.
  *     On unsupported windows (Chromium, UWP) it throws explicitly so the caller
@@ -438,6 +441,7 @@ function getSharedRealDeps(): ExecutorDeps {
             sink: "wm_char",
             tool: "desktop_act:terminal_send",
             targetHwnd: typeof hwnd === "bigint" ? hwnd : null,
+            payloadChars: t.length,
           });
           return postCharsToHwnd(hwnd, t);
         },
@@ -482,7 +486,7 @@ function getSharedRealDeps(): ExecutorDeps {
           `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).`,
         );
       }
-      logDispatchSink({ sink: "wm_char", tool: "desktop_act:keyboard_type", targetHwnd: win.hwnd });
+      logDispatchSink({ sink: "wm_char", tool: "desktop_act:keyboard_type", targetHwnd: win.hwnd, payloadChars: text.length });
       const r = postCharsToHwnd(win.hwnd, text);
       if (!r.full) {
         throw new Error(

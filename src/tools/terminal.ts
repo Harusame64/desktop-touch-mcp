@@ -1205,7 +1205,7 @@ export const terminalSendHandler = async ({
         // Resolver picked wm_char (= ConsoleWindowClass)。foreground_flash semantics
         // を「foreground を奪わずに paste したい」と解釈し、wm_char で済ませる。
         // 簡易 BG path、Phase 3 MVP scope (UIA verify は省略)。
-        logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
+        logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd, payloadChars: input.length });
         const r = postCharsToHwnd(win.hwnd, input);
         if (!r.full) {
           return failWith(
@@ -1719,7 +1719,7 @@ export const terminalSendHandler = async ({
       // never happened must not be on record (Opus Round 2 P1).
       clipboardOutcome = await typeViaClipboard(input, chosenKey, "terminal:send");
     } else {
-      logDispatchSink({ sink: "sendinput", tool: "terminal:send", targetHwnd: null });
+      logDispatchSink({ sink: "sendinput", tool: "terminal:send", targetHwnd: null, payloadChars: input.length });
       await keyboard.type(input);
     }
 

@@ -11,6 +11,7 @@
  */
 
 import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
+import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 import { logDiagnostic } from "../engine/diagnostic-log.js";
 import { getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
@@ -149,9 +150,10 @@ function revalidateFingerprint(fix: SuggestedFix): boolean {
 // Env flag
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function isAutoGuardEnabled(): boolean {
-  return process.env.DESKTOP_TOUCH_AUTO_GUARD !== "0";
-}
+// The predicate itself lives in a leaf module so `_resolve-log.ts` can read it
+// without importing this file (which would close a cycle through
+// `action-target.ts`). Re-exported here so every existing caller is unchanged.
+export { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 
 // Log once at startup (called from index.ts bootstrap)
 export function logAutoGuardStartup(): void {

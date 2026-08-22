@@ -193,6 +193,19 @@ describe("ADR-035 Phase 1 — keyboard dispatch sinks (real handler, real branch
     });
   });
 
+  // The "a failed clipboard write records no paste" case belongs to the
+  // fallback backend, where the verification throws BEFORE the chord — it is
+  // pinned in `resolve-log-clipboard-boundary.test.ts`, which stubs PowerShell.
+  // On the native backend used here the event correctly precedes an indivisible
+  // transaction, so there is nothing to assert about ordering.
+
+  it("an empty text records no keystroke dispatch — nothing is sent", async () => {
+    // `text` has no schema minimum, and `keyboard.type("")` emits nothing
+    // (Opus Round 3 P1).
+    await keyboardTypeHandler({ ...BASE, text: "", method: "foreground", abortOnFocusLoss: false } as never);
+    expect(events("dispatch_sink")).toHaveLength(0);
+  });
+
   it("foreground keystrokes record sink:'sendinput', so the non-clipboard branch is not blind", async () => {
     await keyboardTypeHandler({ ...BASE, method: "foreground" } as never);
     expect(mockType).toHaveBeenCalled();

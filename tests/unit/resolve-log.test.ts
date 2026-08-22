@@ -18,15 +18,18 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFile } from "node:fs/promises";
 
 const mockLogDiagnostic = vi.fn();
 let logEnabled = true;
+/** Swapped out by the "broken log module" test below. */
+let logEnabledImpl: () => boolean = () => logEnabled;
 vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/diagnostic-log.js")>();
   return {
     ...actual,
     logDiagnostic: (...a: unknown[]) => mockLogDiagnostic(...(a as [])),
-    isDiagnosticLogEnabled: () => logEnabled,
+    isDiagnosticLogEnabled: () => logEnabledImpl(),
   };
 });
 
@@ -63,6 +66,8 @@ const {
   findPlainTopLevelWindowsByTitle,
   resolveWindowTarget,
 } = await import("../../src/tools/_resolve-window.js");
+
+const { productionCheckViewport } = await import("../../src/tools/desktop-register.js");
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -562,5 +567,97 @@ describe("ADR-035 Phase 1 — a lazy match list is not built for a disabled log"
     logResolve({ resolver: "actionTarget", query: "x", matches: thunk });
     expect(thunk).toHaveBeenCalledTimes(1);
     expect(events()[0]).toMatchObject({ matchCount: 2, chosen: { hwnd: "1" } });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. Round 3 — the sites that must NOT log, and the ones that must
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-035 Phase 1 — a zero-character payload is not a dispatch", () => {
+  it("skips the event entirely, before any Win32 read", () => {
+    logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: 0x1n, payloadChars: 0 });
+    expect(mockLogDiagnostic).not.toHaveBeenCalled();
+    expect(mockGetForegroundHwnd).not.toHaveBeenCalled();
+  });
+
+  it("still records a one-character payload", () => {
+    logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: 0x1n, payloadChars: 1 });
+    expect(mockLogDiagnostic).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the sinks that have no character payload at all", () => {
+    // `press` / `sequence` / `scroll` / clipboard / flash never pass the field:
+    // an empty clipboard paste still sends Ctrl+V, and a flash still steals the
+    // foreground, so those are real dispatches.
+    logDispatchSink({ sink: "sendinput", tool: "keyboard:press", targetHwnd: null });
+    logDispatchSink({ sink: "clipboard_paste", tool: "keyboard:type", targetHwnd: null });
+    expect(mockLogDiagnostic).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("ADR-035 Phase 1 — observation never throws, even on a broken log module", () => {
+  it("survives `isDiagnosticLogEnabled` itself throwing", () => {
+    // A test file that replaces `diagnostic-log.js` wholesale can leave the
+    // export missing; the guard is inside the try for that reason
+    // (Opus Round 3 P2).
+    const boom = () => { throw new Error("no such export"); };
+    const saved = logEnabledImpl;
+    logEnabledImpl = boom;
+    try {
+      expect(() => logResolve({ resolver: "actionTarget", query: "x", matches: [] })).not.toThrow();
+      expect(() => logDispatchSink({ sink: "sendinput", tool: "scroll", targetHwnd: null })).not.toThrow();
+    } finally {
+      logEnabledImpl = saved;
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. Round 3 — the read-side sites must stay silent, pinned where they are
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-035 Phase 1 — read-side resolutions do not enter the write-path statistics", () => {
+  /**
+   * These two consume the same SSOT helper as the destination lookups but are
+   * asking a different question, and one of them (`mouse.ts`'s observation
+   * ladder) runs on the SAME tool call as the Case 3 destination lookup with the
+   * opposite dialog/owner flag. Left logging, a single `callId` would carry two
+   * resolutions with different match counts and the read could be mistaken for
+   * the write (Opus Round 2 P2). Deleting `logAs: "off"` at either site must
+   * fail here (Opus Round 3 P2).
+   */
+  it("the ADR-029 viewport gate writes no resolve event", () => {
+    const windows = [
+      win(0x1n, "Untitled - Notepad", 0),
+      win(0x2n, "notes - Notepad", 1),
+    ];
+    productionCheckViewport(
+      {
+        entityId: "e1", role: "button", label: "OK", confidence: 0.9,
+        sources: ["visual_gpu"], affordances: [], generation: "g", evidenceDigest: "d",
+        rect: { x: 10, y: 10, width: 20, height: 20 },
+        origin: { kind: "window", id: "Notepad" },
+      } as never,
+      { enumerate: (() => windows) as never },
+    );
+    expect(mockLogDiagnostic).not.toHaveBeenCalled();
+  });
+
+  it("the scroll observation ladder keeps its silencing flag", async () => {
+    // Pinned at the SOURCE rather than by driving `scrollHandler`: reaching that
+    // ladder means reaching the scroll dispatcher, whose Tier 4 is real
+    // SendInput, and a unit test must not put input on the developer's desktop.
+    // `mouse.ts` uses this helper exactly once and it is read-side, so the
+    // invariant is simply "every use here is silenced".
+    const src = await readFile(
+      new URL("../../src/tools/mouse.ts", import.meta.url),
+      "utf8",
+    );
+    const calls = src.split("findPlainTopLevelWindowByTitle(").slice(1);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.slice(0, call.indexOf("});"))).toContain('logAs: "off"');
+    }
   });
 });

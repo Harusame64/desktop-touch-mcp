@@ -1581,7 +1581,7 @@ export const keyboardTypeHandler = async ({
         // post-send verification (= simplified BG path、Phase 3 MVP scope)。
         // Opus Round 1 P2-6 反映: replaceAll 失敗 → warning 集約。
         const ffWarnings = [...warnings];
-        logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd });
+        logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
         if (replaceAll) {
           const okSelectAll = postKeyComboToHwnd(target.hwnd, "ctrl+a");
           if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
@@ -1829,7 +1829,7 @@ export const keyboardTypeHandler = async ({
               ? await captureFrame(target.hwnd, stage4WindowRect)
               : null;
 
-          logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd });
+          logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
           const result = postCharsToHwnd(target.hwnd, effectiveText);
           if (!result.full) {
             // Partial fail: do NOT fall through to foreground (would cause double input).
@@ -2329,7 +2329,7 @@ export const keyboardTypeHandler = async ({
           throw err;
         }
       } else {
-        logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null });
+        logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null, payloadChars: effectiveText.length });
         await keyboard.type(effectiveText);
       }
     }
