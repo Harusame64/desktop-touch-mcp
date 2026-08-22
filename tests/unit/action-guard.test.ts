@@ -28,6 +28,7 @@ vi.mock("../../src/engine/perception/guards.js", () => ({
 
 // Import after mocking
 import { runActionGuard, isAutoGuardEnabled } from "../../src/tools/_action-guard.js";
+import { listEventsForTarget } from "../../src/engine/perception/target-timeline.js";
 import type { PerceptionLens, LensSpec } from "../../src/engine/perception/types.js";
 import { FluentStore } from "../../src/engine/perception/fluent-store.js";
 
@@ -268,6 +269,50 @@ describe("runActionGuard", () => {
     // left stderr.
     expect(result.summary.next).toContain("Other App");
     expect(result.summary.next).toContain("MyApp");
+  });
+
+  it("refuses target_not_found when the named window is not open at all", async () => {
+    // The other mismatch form: the hint matches no open window. The named
+    // window being gone is the reported symptom itself, so the status says
+    // "not found" rather than "coordinates wrong" — and still names the
+    // window that actually occupies the point.
+    mockResolveActionTarget.mockResolvedValue({
+      lens: null, localStore: null, identity: null, candidates: 1,
+      warnings: ['windowTitle "MyApp" does not match containing window "Other App"'],
+      titleMismatch: { requested: "MyApp", resolved: "Other App", kind: "not_found" },
+    });
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "MyApp" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("target_not_found");
+    expect(result.summary.next).toContain("MyApp");
+    expect(result.summary.next).toContain("Other App");
+  });
+
+  it("records the mismatch refusal on the target timeline", async () => {
+    // Round 2 P3: this early return used to run before deriveTargetKey, making
+    // it the one block that left no trace on the timeline.
+    mockResolveActionTarget.mockResolvedValue({
+      lens: null, localStore: null, identity: null, candidates: 1,
+      warnings: [],
+      titleMismatch: { requested: "Timeline Mismatch App", resolved: "Other App", kind: "different_window" },
+    });
+
+    await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "Timeline Mismatch App" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    const events = listEventsForTarget("window:timeline mismatch app");
+    expect(events.some((e) => e.semantic === "action_blocked" && e.result === "blocked")).toBe(true);
   });
 
   it("maps browser_not_ready guard failure to correct status", async () => {

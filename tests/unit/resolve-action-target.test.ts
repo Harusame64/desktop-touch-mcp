@@ -10,17 +10,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { mockEnumWindows, mockBuildWindowIdentity, mockRefreshWin32Fluents,
         mockFindContainingWindow, mockGetCachedWindowByTitle,
-        mockListTabsLight } = vi.hoisted(() => ({
+        mockGetWindowProcessId, mockListTabsLight } = vi.hoisted(() => ({
   mockEnumWindows: vi.fn(),
   mockBuildWindowIdentity: vi.fn(),
   mockRefreshWin32Fluents: vi.fn(),
   mockFindContainingWindow: vi.fn(),
   mockGetCachedWindowByTitle: vi.fn(),
+  mockGetWindowProcessId: vi.fn(),
   mockListTabsLight: vi.fn(),
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: mockEnumWindows,
+  // Used by the coordinate path's title-hint verdict (same-process allowance
+  // for owned dialogs / popups).
+  getWindowProcessId: mockGetWindowProcessId,
 }));
 
 vi.mock("../../src/engine/perception/sensors-win32.js", () => ({
@@ -76,6 +80,8 @@ beforeEach(() => {
   mockRefreshWin32Fluents.mockReset();
   mockFindContainingWindow.mockReset();
   mockGetCachedWindowByTitle.mockReset();
+  mockGetWindowProcessId.mockReset();
+  mockGetWindowProcessId.mockReturnValue(0);
   mockListTabsLight.mockReset();
   compiledLensIds.length = 0;
 
@@ -197,6 +203,102 @@ describe("resolveActionTarget — coordinate kind", () => {
     const result = await resolveActionTarget({ kind: "coordinate", x: 50, y: 50 }, { actionKind: "mouseClick" });
     expect(result.lens?.binding.hwnd).toBe("3000");
     expect(mockGetCachedWindowByTitle).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Coordinate kind — title-hint verdict (Round 2 P1-1 scope-down) ──────────
+//
+// The mismatch refusal must be based on window identity, not title text.
+// The negative controls pin the three workflows the string predicate
+// false-refused: a bare browser name against a suffixed title, an owned
+// dialog clicked under the parent application's title, and a window whose
+// cached title is stale while its live title matches the hint.
+
+describe("resolveActionTarget — coordinate title hint", () => {
+  it("accepts a bare browser name against a suffixed containing title, without enumerating", async () => {
+    // normalizeTitle strips " - Google Chrome" from the window title but not
+    // from the bare hint, so normalized containment is structurally false —
+    // the raw form must be consulted first. This is the tool's own documented
+    // windowTitle example ("Google Chrome").
+    mockFindContainingWindow.mockReturnValue({ hwnd: BigInt("4000"), title: "Claude - Google Chrome", zOrder: 1 });
+    const result = await resolveActionTarget(
+      { kind: "coordinate", x: 100, y: 100, windowTitle: "Google Chrome" },
+      { actionKind: "mouseClick" }
+    );
+    expect(result.titleMismatch).toBeUndefined();
+    expect(result.lens).not.toBeNull();
+    expect(mockEnumWindows).not.toHaveBeenCalled();
+  });
+
+  it("accepts when the containing window matches under its live title (cache held the previous title)", async () => {
+    // Terminals retitle on every command; hwnd / "@active" hints are the live
+    // title by construction, while the cache may still hold the old one for
+    // the very same window.
+    mockFindContainingWindow.mockReturnValue({ hwnd: BigInt("5000"), title: "PowerShell", zOrder: 1 });
+    mockEnumWindows.mockReturnValue([makeWindow("5000", "npm run build - Windows Terminal")]);
+    const result = await resolveActionTarget(
+      { kind: "coordinate", x: 100, y: 100, windowTitle: "npm run build" },
+      { actionKind: "mouseClick" }
+    );
+    expect(result.titleMismatch).toBeUndefined();
+    expect(result.lens).not.toBeNull();
+    expect(result.lens?.binding.hwnd).toBe("5000");
+  });
+
+  it("delivers with a warning when the hint names another window of the same process (owned dialog)", async () => {
+    mockFindContainingWindow.mockReturnValue({ hwnd: BigInt("2000"), title: "名前を付けて保存", zOrder: 1 });
+    mockEnumWindows.mockReturnValue([
+      makeWindow("1000", "無題 - メモ帳"),
+      makeWindow("2000", "名前を付けて保存"),
+    ]);
+    mockGetWindowProcessId.mockReturnValue(77); // both windows: same process
+    const result = await resolveActionTarget(
+      { kind: "coordinate", x: 100, y: 100, windowTitle: "メモ帳" },
+      { actionKind: "mouseClick" }
+    );
+    expect(result.titleMismatch).toBeUndefined();
+    expect(result.lens).not.toBeNull();
+    expect(result.lens?.binding.hwnd).toBe("2000"); // the dialog, not the parent
+    expect(result.warnings.some((w) => w.includes("same process"))).toBe(true);
+  });
+
+  it("refuses when the hint names a live window of a different process", async () => {
+    mockFindContainingWindow.mockReturnValue({ hwnd: BigInt("2000"), title: "Other App", zOrder: 1 });
+    mockEnumWindows.mockReturnValue([
+      makeWindow("1000", "MyApp — main"),
+      makeWindow("2000", "Other App"),
+    ]);
+    mockGetWindowProcessId.mockImplementation((h: unknown) => (String(h) === "2000" ? 88 : 77));
+    const result = await resolveActionTarget(
+      { kind: "coordinate", x: 100, y: 100, windowTitle: "MyApp" },
+      { actionKind: "mouseClick" }
+    );
+    expect(result.lens).toBeNull();
+    expect(result.titleMismatch).toEqual({ requested: "MyApp", resolved: "Other App", kind: "different_window" });
+  });
+
+  it("refuses as not_found when the hint matches no open window", async () => {
+    // The reported symptom itself: a click naming a window that is gone must
+    // not be delivered to whatever now occupies the point.
+    mockFindContainingWindow.mockReturnValue({ hwnd: BigInt("2000"), title: "Calculator", zOrder: 1 });
+    mockEnumWindows.mockReturnValue([makeWindow("2000", "Calculator")]);
+    const result = await resolveActionTarget(
+      { kind: "coordinate", x: 100, y: 100, windowTitle: "Ghost App" },
+      { actionKind: "mouseClick" }
+    );
+    expect(result.lens).toBeNull();
+    expect(result.titleMismatch).toEqual({ requested: "Ghost App", resolved: "Calculator", kind: "not_found" });
+  });
+
+  it("refuses fail-closed when the desktop cannot be enumerated to verify the mismatch", async () => {
+    mockFindContainingWindow.mockReturnValue({ hwnd: BigInt("2000"), title: "Calculator", zOrder: 1 });
+    mockEnumWindows.mockImplementation(() => { throw new Error("native addon unavailable"); });
+    const result = await resolveActionTarget(
+      { kind: "coordinate", x: 100, y: 100, windowTitle: "Notepad" },
+      { actionKind: "mouseClick" }
+    );
+    expect(result.lens).toBeNull();
+    expect(result.titleMismatch).toEqual({ requested: "Notepad", resolved: "Calculator", kind: "different_window" });
   });
 });
 

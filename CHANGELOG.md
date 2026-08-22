@@ -24,15 +24,22 @@
   click that is refused has actually been checked rather than merely missing
   from a cache.
 
-  A click that names a window is now refused if the point turns out to be inside
-  a different one, and the response says which window is actually there. It used
-  to be delivered to that other window and reported as a success, with the
-  mismatch mentioned only in the server's own log.
+  A click that names a window is now refused when the point turns out to be
+  inside a different application's window, and the response says which window is
+  actually there. It used to be delivered to that other window and reported as a
+  success, with the mismatch mentioned only in the server's own log. The same
+  applies when the named window is not open at all — the click is refused and
+  the response names the window that occupies the point, instead of quietly
+  clicking it. Dialogs and popups that belong to the named application still
+  accept clicks under the application's title, and a browser window still
+  matches its browser's name ("Google Chrome", "Microsoft Edge") even when the
+  page title comes first.
 
   **What you may notice:** a click that used to land somewhere unintended now
   fails, and tells you either that the target window was replaced or which
   window your coordinates actually fall in. Take a fresh screenshot and carry
-  on. A window that is open and has not moved behaves exactly as before.
+  on. A window that is open and has not moved, addressed by a title it still
+  carries or by its handle, behaves exactly as before.
 
   **Not covered by this change:** the separate cache of screenshot-time window
   positions, used to correct coordinates when a window moves between the

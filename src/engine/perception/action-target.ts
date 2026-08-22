@@ -22,7 +22,11 @@ import {
   resolveBrowserTabBindingFromTabs,
 } from "./lens.js";
 import { FluentStore } from "./fluent-store.js";
-import { enumWindowsInZOrder } from "../win32.js";
+import { enumWindowsInZOrder, type WindowZInfo } from "../win32.js";
+// Namespace import for the OPTIONAL pid probe in `classifyTitleHint` — accessed
+// with `?.` so an environment (or test double) that provides only the
+// enumerator degrades to the fail-closed branch instead of failing at the call.
+import * as win32 from "../win32.js";
 import { refreshWin32Fluents, buildWindowIdentity } from "./sensors-win32.js";
 import { findContainingWindowFresh } from "../window-cache.js";
 import { getOrCreateSlot, updateSlot } from "./hot-target-cache.js";
@@ -94,8 +98,22 @@ export interface ResolveActionTargetResult {
    * still catching the point and failing the guard; not harmless once expired
    * entries are re-verified against the live desktop, which is exactly what
    * makes the point resolve to the new occupant instead.
+   *
+   * `kind` says how the mismatch was established, because the two forms need
+   * different recovery:
+   *   - `"different_window"` — the hint names a live window of ANOTHER process
+   *     (or the mismatch could not be verified because enumeration failed);
+   *     the coordinates are wrong for the window the caller asked for.
+   *   - `"not_found"` — the hint matches no open window at all: the named
+   *     window is gone (or the name is stale), which is the reported symptom
+   *     itself — a click naming a closed window must not be delivered to
+   *     whatever now occupies the point.
+   * A mismatch is NOT reported when the hint resolves to the containing window
+   * itself (by hwnd, under its live title) or to a window of the same process
+   * (an owned dialog / popup clicked under the parent application's title) —
+   * those were the Round 2 false refusals.
    */
-  titleMismatch?: { requested: string; resolved: string };
+  titleMismatch?: { requested: string; resolved: string; kind?: "different_window" | "not_found" };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -374,10 +392,30 @@ async function resolveCoordinateTarget(
   const hwnd = String(cached.hwnd);
   const normalizedCached = normalizeTitle(cached.title);
 
-  // Validate against caller-supplied windowTitle if provided
+  // Validate against caller-supplied windowTitle if provided.
+  //
+  // NOT a string comparison against the cached title. The first cut of this
+  // refusal compared `normalizeTitle(hint)` against `normalizeTitle(cached
+  // title)` and refused on non-containment, which false-refused three common
+  // workflows (Round 2 review): a bare browser name like "Google Chrome" (the
+  // tool's own documented example — normalizeTitle strips the suffix from the
+  // window title but not from the bare hint, so containment was structurally
+  // false); an owned dialog ("Save As") clicked under the parent application's
+  // title; and hwnd / "@active" callers, whose hint is the LIVE title while the
+  // cache may still hold the previous title of the very same window. So the
+  // hint is resolved against the live desktop and the verdict is based on
+  // window identity — hwnd, then process — not on title text.
   if (windowTitle) {
-    const normalizedHint = normalizeTitle(windowTitle);
-    if (!normalizedCached.includes(normalizedHint)) {
+    const verdict = classifyTitleHint(windowTitle, cached);
+    if (verdict === "same_process") {
+      // An owned dialog / popup of the named application. The old behaviour
+      // (deliver, with a warning) was correct here — clicking a "Save As"
+      // dialog under the app's title is routine, not an aiming error.
+      warnings.push(
+        `windowTitle "${windowTitle}" does not match containing window "${cached.title}", ` +
+        `but both belong to the same process — proceeding (owned dialog / popup)`
+      );
+    } else if (verdict !== "match") {
       warnings.push(
         `windowTitle "${windowTitle}" does not match containing window "${cached.title}"`
       );
@@ -387,13 +425,90 @@ async function resolveCoordinateTarget(
         identity: null,
         candidates: 1,
         warnings,
-        titleMismatch: { requested: windowTitle, resolved: cached.title },
+        titleMismatch: { requested: windowTitle, resolved: cached.title, kind: verdict },
       };
     }
   }
 
   const titleForSpec = windowTitle ? normalizeTitle(windowTitle) : normalizedCached;
   return buildWindowLensResult(hwnd, cached.title, titleForSpec, actionKind, 1, warnings);
+}
+
+/**
+ * Does the caller's `windowTitle` hint name the window that contains the point?
+ *
+ * Verdicts:
+ *   - `"match"`            — yes: the containing title contains the hint (raw
+ *                            form checked BEFORE the normalized form, so a bare
+ *                            browser name still matches the suffix it would be
+ *                            stripped of), or the hint resolves to the
+ *                            containing window's hwnd under its live title.
+ *   - `"same_process"`     — the hint names a different window of the SAME
+ *                            process: an owned dialog / popup clicked under the
+ *                            parent application's title. Deliver with a warning.
+ *   - `"different_window"` — the hint names a live window of another process,
+ *                            or the desktop could not be enumerated to check.
+ *                            The coordinates are wrong for the named window.
+ *   - `"not_found"`        — the hint matches no open window at all.
+ *
+ * On `"not_found"` the refusal is deliberate rather than the pre-existing
+ * warn-and-deliver: the window that is named but not open is the reported
+ * symptom itself (close, rebuild, click), and delivering that click to
+ * whatever now occupies the point is the failure this fix exists to stop. The
+ * cost is a refusal when the hint is merely stale (a window whose title
+ * changed, e.g. a terminal), and that refusal names the actual containing
+ * window, so the caller can retry with a title that exists. Enumeration
+ * failure also refuses (`"different_window"`): the mismatch was already
+ * observed against the cache, and an unverifiable mismatch delivered anyway
+ * would be the silent misdirect again.
+ */
+function classifyTitleHint(
+  windowTitle: string,
+  containing: { hwnd: bigint; title: string }
+): "match" | "same_process" | "different_window" | "not_found" {
+  const rawHint = windowTitle.trim().toLowerCase();
+  if (rawHint === "") return "match"; // vacuous hint names nothing — nothing to validate
+  const normalizedHint = normalizeTitle(windowTitle);
+
+  const containsHint = (title: string): boolean => {
+    const raw = title.toLowerCase();
+    if (raw.includes(rawHint)) return true;
+    return normalizedHint !== "" && normalizeTitle(title).includes(normalizedHint);
+  };
+
+  // Fast accept on the containing window's cached title — no enumeration.
+  if (containsHint(containing.title)) return "match";
+
+  // The cached title does not contain the hint. Resolve the hint against the
+  // live desktop before deciding anything — the cache is not the authority on
+  // what the hint names.
+  let matches: WindowZInfo[];
+  try {
+    matches = enumWindowsInZOrder().filter((w) => containsHint(w.title));
+  } catch {
+    return "different_window"; // cannot verify → fail closed
+  }
+
+  // The containing window itself may match under its LIVE title — the cache
+  // can hold the previous title of the same window (terminals retitle on
+  // every command; hwnd / "@active" hints are the live title by construction).
+  const containingKey = String(containing.hwnd);
+  if (matches.some((w) => String(w.hwnd) === containingKey)) return "match";
+
+  if (matches.length === 0) return "not_found";
+
+  // The hint names some OTHER live window. Same process → owned dialog /
+  // popup; different process → the click is aimed at the wrong window. The
+  // pid probe is best-effort: when it cannot answer, the same-process
+  // allowance simply does not apply.
+  const containingPid = win32.getWindowProcessId?.(containing.hwnd) ?? 0;
+  if (
+    containingPid !== 0 &&
+    matches.some((w) => win32.getWindowProcessId?.(w.hwnd) === containingPid)
+  ) {
+    return "same_process";
+  }
+  return "different_window";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

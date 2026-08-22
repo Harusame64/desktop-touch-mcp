@@ -76,7 +76,7 @@
   "samples": [
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 871,
+      "line": 893,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
@@ -377,28 +377,28 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 892,
+      "line": 903,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 983,
+      "line": 994,
       "tool": "mouse_drag",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1454,
+      "line": 1465,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1664,
+      "line": 1675,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"

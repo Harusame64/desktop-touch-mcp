@@ -862,8 +862,19 @@ export const mouseDragHandler = async ({
       perceptionEnv = ag.summary;
 
       // Phase I: endpoint guard (v3 §5.2)
+      //
+      // Deliberately WITHOUT `windowTitle`: the endpoint of a drag is allowed
+      // to be in a window other than the named one — that is what a
+      // cross-window drag IS, and `allowCrossWindowDrag` exists to consent to
+      // exactly that. Passing the title here would let the resolver's
+      // title-mismatch refusal (which knows nothing about the flag) veto a
+      // drag the caller explicitly authorised, and even without the flag it
+      // would pre-empt the dedicated cross-window check below — the one whose
+      // refusal actually names the flag. The endpoint is still guarded: the
+      // window containing it is verified for identity and a readable live
+      // rect. It is just not required to be the window the drag START named.
       const descEnd: import("./_action-guard.js").ActionTargetDescriptor = {
-        kind: "coordinate", x: tex, y: tey, windowTitle: effectiveTitle,
+        kind: "coordinate", x: tex, y: tey,
       };
       const agEnd = await runActionGuard({
         toolName: "mouse_drag", actionKind: "mouseDrag", descriptor: descEnd, clickCoordinates: { x: tex, y: tey },
