@@ -13,7 +13,12 @@ import {
   getWindowClassName,
   type WindowZInfo,
 } from "../engine/win32.js";
-import { logResolve, logDispatchSink } from "./_resolve-log.js";
+import { logResolve, logDispatchSink, appendTopologyWarnings } from "./_resolve-log.js";
+// ADR-035 Phase C-0: the terminal-image-name pattern moved to a leaf module so
+// the topology logger in `_resolve-log.ts` can share it without importing this
+// file (which imports `_resolve-log.ts` — the cycle `auto-guard-env.ts` was
+// split out to avoid during Phase 1). Re-exported unchanged at the bottom.
+import { TERMINAL_PROCESS_RE } from "../utils/terminal-process.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -154,9 +159,16 @@ export const terminalSendSchema = {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TERMINAL_PROCESS_RE = /^(WindowsTerminal|conhost|pwsh|powershell|cmd|bash|wsl|alacritty|wezterm|mintty)(\.exe)?$/i;
-
-function findTerminalWindow(partialTitle: string): WindowZInfo | null {
+/**
+ * @param intent ADR-035 Phase C-0. `"write"` only where the resolved window is
+ *   about to be written to — it turns on the `topology_relation` record. `read`
+ *   also covers `run`'s polling loop, which calls this once per poll and would
+ *   otherwise bury the write records under its own noise (Opus Round 1 P1).
+ */
+function findTerminalWindow(
+  partialTitle: string,
+  intent: "read" | "write",
+): WindowZInfo | null {
   const wins = enumWindowsInZOrder();
   const q = partialTitle.toLowerCase();
   // First try exact partial match on title.
@@ -171,6 +183,7 @@ function findTerminalWindow(partialTitle: string): WindowZInfo | null {
       query: partialTitle,
       matches: titleMatches,
       identity: "lookup",
+      ...(intent === "write" && { intent }),
     });
     return candidate;
   }
@@ -190,6 +203,7 @@ function findTerminalWindow(partialTitle: string): WindowZInfo | null {
         matches: [],
         chosen: { ...w, pid: ident.pid, processName: ident.processName },
         fallback: "process-name",
+        ...(intent === "write" && { intent }),
       });
       return w;
     }
@@ -659,8 +673,23 @@ export function resolvePaneTitle(paneId: string): string | null {
 export function findTerminalWindowByPaneId(paneId: string): WindowZInfo | null {
   const parsed = parsePaneId(paneId);
   if (parsed === null) return null;
-  if (parsed.kind === "classic") return findTerminalWindowByHwnd(parsed.hwnd);
-  return resolveWtPaneWindow(paneId)?.win ?? null;
+  const win =
+    parsed.kind === "classic"
+      ? findTerminalWindowByHwnd(parsed.hwnd)
+      : (resolveWtPaneWindow(paneId)?.win ?? null);
+  // ADR-035 Phase C-0. The only caller is the send handler, so this is
+  // unconditionally a write. `matches` is the resolved window or nothing — both
+  // pane forms resolve to exactly one window or decline, so there is no
+  // runner-up list to record and `matchCount` is 0 or 1 by construction.
+  logResolve({
+    resolver: "findTerminalWindowByPaneId",
+    query: paneId,
+    matches: win === null ? [] : [win],
+    identity: "lookup",
+    intent: "write",
+    ...(parsed.kind === "classic" && { pinnedByHwnd: true }),
+  });
+  return win;
 }
 
 /**
@@ -1004,7 +1033,7 @@ export const terminalReadHandler = async ({
     if (windowTitle === undefined || windowTitle === "") {
       return failWith("terminal(action='read') requires windowTitle or paneId", "terminal:read", {});
     }
-    const win = findTerminalWindow(windowTitle);
+    const win = findTerminalWindow(windowTitle, "read");
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal:read", { windowTitle });
     }
@@ -1146,7 +1175,7 @@ export const terminalSendHandler = async ({
     if (paneId !== undefined) {
       win = findTerminalWindowByPaneId(paneId);
     } else if (windowTitle !== undefined && windowTitle !== "") {
-      win = findTerminalWindow(windowTitle);
+      win = findTerminalWindow(windowTitle, "write");
     } else {
       // windowTitle is optional in the schema (paneId is the alternative) — one of the two is required.
       return failWith("terminal(action='send') requires windowTitle or paneId", "terminal:send", {});
@@ -1361,6 +1390,7 @@ export const terminalSendHandler = async ({
                 "clipboard restore skipped — another app changed the clipboard during the paste",
               );
             }
+            appendTopologyWarnings(cpWarnings);
             markDispatched(); // delivered via native console-paste
             return ok({
               ok: true,
@@ -1605,6 +1635,7 @@ export const terminalSendHandler = async ({
             }
           : null;
 
+      appendTopologyWarnings(bgWarnings);
       markDispatched(); // delivered via chunked wm_char
       return ok({
         ok: true,
@@ -1753,6 +1784,9 @@ export const terminalSendHandler = async ({
     const ident = observeTarget(windowTitle, win.hwnd, win.title);
 
     markDispatched(); // delivered via foreground keyboard/clipboard type
+    // ADR-035 Phase C-0: the stage-1 topology advisory, if `findTerminalWindow`
+    // (or any resolver this call went through) raised one. Non-blocking.
+    appendTopologyWarnings(warnings);
     return ok({
       ok: true,
       sent: input,
@@ -2114,7 +2148,7 @@ function keepOnlyProvidedKeys<T extends Record<string, unknown>>(
  * Returns null if window not found.
  */
 export async function readTerminalRaw(windowTitle: string): Promise<{ text: string; marker: string } | null> {
-  const win = findTerminalWindow(windowTitle);
+  const win = findTerminalWindow(windowTitle, "read");
   if (!win) return null;
   const raw = (await getTextViaTextPattern(win.title)) ?? "";
   const cleaned = stripAnsi(raw);
@@ -2243,7 +2277,7 @@ export const terminalRunHandler = async ({
   }
 
   // ── Phase 1: Send ──────────────────────────────────────────────────────────
-  const win = findTerminalWindow(windowTitle);
+  const win = findTerminalWindow(windowTitle, "write");
   if (!win) {
     const res: TerminalRunResponse = {
       ok: false,
@@ -2818,6 +2852,8 @@ export const terminalRunHandler = async ({
     }
   }
 
+  // ADR-035 Phase C-0 — same advisory as the send path above.
+  appendTopologyWarnings(warnings);
   const response: TerminalRunResponse = {
     ok: readError === undefined,
     output,

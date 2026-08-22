@@ -643,6 +643,33 @@ export function getForegroundHwnd(): bigint | null {
 }
 
 /**
+ * ADR-035 Phase C-0 — the HWND of the console THIS process is attached to.
+ * `available` says whether the question could be asked at all; `hwnd` is `null`
+ * when `GetConsoleWindow()` genuinely returned NULL.
+ *
+ * Measurement only. The value goes into the startup topology snapshot so
+ * ADR-035 OQ-P4 can be settled on data instead of on the circumstantial
+ * "the server owns a conhost child" argument the plan currently rests on.
+ * Nothing branches on it today, and `{available:true, hwnd:null}` is a
+ * legitimate reading (a windowless service host has no console), not an error.
+ */
+export function readOwnConsoleWindow(): { available: boolean; hwnd: bigint | null } {
+  try {
+    const fn = requireNativeWin32().win32GetConsoleWindow;
+    // `available:false` is NOT the same reading as `hwnd:null`: an older `.node`
+    // without the binding, or a failed call, tells you nothing about whether
+    // this process has a console, while a successful `null` says it has none.
+    // Collapsing the two would let "we could not look" be counted as "it is not
+    // our console" in the very data ADR-035 OQ-P4 is decided from (Opus Round 2
+    // P1).
+    if (typeof fn !== "function") return { available: false, hwnd: null };
+    return { available: true, hwnd: fn() };
+  } catch {
+    return { available: false, hwnd: null };
+  }
+}
+
+/**
  * Return the registered class name of a window.
  * Returns an empty string if the window no longer exists or the call fails.
  */

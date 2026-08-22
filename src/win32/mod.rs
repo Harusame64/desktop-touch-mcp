@@ -91,3 +91,8 @@ pub(crate) mod imm;
 // cross-session control surface (out of scope per ADR-017 v1 §2.2).
 #[cfg(windows)]
 pub(crate) mod session;
+// ADR-035 Phase C-0: `GetConsoleWindow` — the decisive read for whether the
+// window a caller named is this server's own console (OQ-P4 design input).
+// Measurement only; see `src/win32/console_window.rs`.
+#[cfg(windows)]
+pub(crate) mod console_window;
