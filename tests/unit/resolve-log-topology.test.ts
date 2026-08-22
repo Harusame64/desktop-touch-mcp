@@ -803,6 +803,29 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     expect((snap.ancestry as unknown[]).length).toBe(2);   // self + parent only
   });
 
+  it("stops the walk at an unreadable link, rather than verifying the links above it", () => {
+    // Without a readable creation time on the child, the parent-vs-child
+    // comparison has nothing to compare against — so a replacement process and
+    // ITS readable ancestors would be cached as verified ancestors of ours.
+    processStartTimes.set(CLI_PID, 0);
+    _resetTopologyCachesForTest();
+
+    runWithCallId(() => resolveOnto(SESSION_WT_HWND));
+
+    const rel = events("topology_relation")[0];
+    // WT is above the unreadable link, so it is no longer in the chain at all.
+    expect(rel).toMatchObject({
+      ownerInAncestry: false,
+      ancestryTruncatedAtUnreadableLink: true,
+    });
+    expect(rel).not.toHaveProperty("ancestryPidHit");
+    expect(rel.advisoryQueued).toBe(false);
+
+    mockLogDiagnostic.mockClear();
+    logTopologySnapshot();
+    expect((events("topology_snapshot")[0].ancestry as unknown[]).length).toBe(2);
+  });
+
   it("leaves the truncation marker off for an ordinary chain", () => {
     _resetTopologyCachesForTest();
     resolveOnto(OTHER_TERM_HWND);
@@ -910,10 +933,30 @@ describe("ADR-035 Phase C-0 — the terminal-class predicate", () => {
     for (const name of ["notepad.exe", "chrome.exe", "", "cmd.com", "mycmd.exe"]) {
       expect(TERMINAL_PROCESS_RE.test(name)).toBe(false);
     }
-    // The one C-0 widens by: the modern console host is NOT in the base pattern
-    // (plan Round 25 W-1), and Phase 2 is what folds it in.
-    expect(TERMINAL_PROCESS_RE.test("OpenConsole.exe")).toBe(false);
-    expect(isTerminalClassProcessName("OpenConsole.exe")).toBe(true);
+    // What C-0 widens by, and Phase 2 folds in: the modern console host (plan
+    // Round 25 W-1) and ConEmu, which this project documents as accepting the
+    // WM_CHAR typing route and which both terminal write resolvers can select.
+    for (const host of ["OpenConsole.exe", "ConEmu64.exe", "ConEmu", "ConEmuC64.exe"]) {
+      expect(TERMINAL_PROCESS_RE.test(host)).toBe(false);
+      expect(isTerminalClassProcessName(host)).toBe(true);
+    }
+    expect(isTerminalClassProcessName("notepad.exe")).toBe(false);
+  });
+
+  it("records a write that lands in ConEmu", () => {
+    const CONEMU_PID = 9300;
+    const CONEMU_HWND = 0x12340n;
+    processNames.set(CONEMU_PID, "ConEmu64.exe");
+    windowOwners.set(CONEMU_HWND, CONEMU_PID);
+    parentMap.set(CONEMU_PID, 1);
+    _resetTopologyCachesForTest();
+
+    resolveOnto(CONEMU_HWND);
+
+    expect(events("topology_relation")[0]).toMatchObject({
+      ownerProcessName: "ConEmu64.exe",
+      ownerIsConsoleHost: false,
+    });
   });
 
   it("counts only the two console hosts as console hosts", () => {

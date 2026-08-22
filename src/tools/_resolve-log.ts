@@ -437,6 +437,12 @@ interface AncestryInfo {
    */
   truncatedAtRecycledPid: boolean;
   /**
+   * The walk stopped because a link's creation time could not be read. Above
+   * that point nothing can be verified, so the chain is short by construction
+   * and an `ownerInAncestry: false` on it may be a false negative.
+   */
+  truncatedAtUnreadableLink: boolean;
+  /**
    * The snapshot the chain was walked over. Held so the startup record's
    * conhost-child scan describes the SAME read as `processSnapshotUnavailable`
    * rather than a second, independent one (Opus Round 3 P2).
@@ -556,6 +562,7 @@ function ancestry(): AncestryInfo {
   const chain: AncestryInfo["chain"] = [];
   const ancestors = new Map<number, { startTimeMs: number; depth: number }>();
   let truncatedAtRecycledPid = false;
+  let truncatedAtUnreadableLink = false;
   let pid = process.pid;
   let childStartTimeMs = 0;
   for (let depth = 0; depth < ANCESTRY_LIMIT; depth++) {
@@ -584,6 +591,16 @@ function ancestry(): AncestryInfo {
       processName: ident.processName,
       startTimeMs: ident.processStartTimeMs,
     });
+    // An unreadable creation time ends the walk. The link itself stays in the
+    // chain — `classifyAncestry` can only ever call it `"unverified"`, which is
+    // the honest answer — but everything ABOVE it is not verifiable at all: the
+    // parent-vs-child comparison that catches a reused pid has nothing to
+    // compare against, so a replacement process and ITS readable ancestors
+    // would be cached as verified ancestors of ours (Codex Round 6).
+    if (ident.processStartTimeMs === 0) {
+      truncatedAtUnreadableLink = true;
+      break;
+    }
     childStartTimeMs = ident.processStartTimeMs;
     const parent = parentMap.get(pid);
     // pid 0 is the idle process — the documented top of the tree, not a parent.
@@ -595,6 +612,7 @@ function ancestry(): AncestryInfo {
     ancestors,
     unavailable: parentMap.size === 0,
     truncatedAtRecycledPid,
+    truncatedAtUnreadableLink,
     // Only worth holding until the startup scan has read it. A rebuild after
     // that would otherwise hang a fresh full process table on the cache that
     // nothing ever reads or frees (Opus Round 6 P3).
@@ -712,6 +730,7 @@ export function logTopologySnapshot(): void {
       launchPath: anc.chain.map((p) => p.processName || "pid:" + String(p.pid)).join(" < "),
       processSnapshotUnavailable: anc.unavailable,
       ...(anc.truncatedAtRecycledPid && { ancestryTruncatedAtRecycledPid: true }),
+      ...(anc.truncatedAtUnreadableLink && { ancestryTruncatedAtUnreadableLink: true }),
     });
     // The scan above is this map's only reader. See `AncestryInfo.parentMap`.
     anc.parentMap = null;
@@ -845,6 +864,7 @@ function logTopologyRelation(
     // log (Opus Round 1 P1).
     ancestryUnavailable: anc.unavailable,
     ...(anc.truncatedAtRecycledPid && { ancestryTruncatedAtRecycledPid: true }),
+    ...(anc.truncatedAtUnreadableLink && { ancestryTruncatedAtUnreadableLink: true }),
     ownerIsConsoleHost,
     ...(parentMapUnavailable === true && { parentMapUnavailable: true }),
     // Only when a snapshot was actually read. `_parentMapAtMs` is deliberately

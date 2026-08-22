@@ -349,6 +349,14 @@ export type DiagnosticEvent =
       processSnapshotUnavailable: boolean;
       /** As on `topology_relation` — the walk stopped at a reused pid. */
       ancestryTruncatedAtRecycledPid?: boolean;
+      /**
+       * The ancestor walk stopped because a link's creation time could not be
+       * read. Above that point the parent-vs-child comparison that catches a
+       * reused pid has nothing to compare against, so the chain is deliberately
+       * short and an `ownerInAncestry: false` on it may be a false negative
+       * (Codex Round 6).
+       */
+      ancestryTruncatedAtUnreadableLink?: boolean;
     }
   | {
       // ADR-035 Phase C-0 — how one write destination relates to this server.
@@ -447,6 +455,14 @@ export type DiagnosticEvent =
        * (Codex Round 4 P2).
        */
       ancestryTruncatedAtRecycledPid?: boolean;
+      /**
+       * The ancestor walk stopped because a link's creation time could not be
+       * read. Above that point the parent-vs-child comparison that catches a
+       * reused pid has nothing to compare against, so the chain is deliberately
+       * short and an `ownerInAncestry: false` on it may be a false negative
+       * (Codex Round 6).
+       */
+      ancestryTruncatedAtUnreadableLink?: boolean;
       /** Owner is `conhost` / `OpenConsole` — a console HOST, not a shell. */
       ownerIsConsoleHost: boolean;
       /**
