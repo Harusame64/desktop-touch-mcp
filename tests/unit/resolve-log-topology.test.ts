@@ -196,6 +196,22 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     });
   });
 
+  it("releases the process table once the startup scan has read it", () => {
+    // A full process table held for the life of the server, for a value read
+    // once. The startup scan is its only reader.
+    parentMap.set(6400, SELF);
+    processNames.set(6400, "conhost.exe");
+    _resetTopologyCachesForTest();
+    logTopologySnapshot();
+    expect(events("topology_snapshot")[0].ownConsoleHostChildPid).toBe(6400);
+
+    // The record is a startup one-shot, so a second call finding the map gone
+    // is not a regression — it is what pins that nothing holds onto the table.
+    mockLogDiagnostic.mockClear();
+    logTopologySnapshot();
+    expect(events("topology_snapshot")[0].ownConsoleHostChildPid).toBeNull();
+  });
+
   it("leaves the scan marker off when every child read fine", () => {
     parentMap.set(6300, SELF);
     processNames.set(6300, "notepad.exe");
@@ -735,6 +751,59 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
       consoleHostParentPid: REUSED_PID,
       consoleHostParentState: "recycled",
     });
+  });
+
+  it("stops the walk at a parent younger than its own child, rather than adopting it", () => {
+    // The real ancestor exited and Windows handed its pid on before the first
+    // snapshot. Toolhelp still reports the historical parent pid, so walking
+    // into the replacement would cache an unrelated process AS an ancestor —
+    // and every later identity check would then agree with itself, logging that
+    // process's terminals as ours, advisory and all.
+    processStartTimes.set(SELF, 1_000);
+    processStartTimes.set(CLI_PID, 500);
+    processStartTimes.set(WT_PID, 9_000);        // "grandparent" younger than parent
+    _resetTopologyCachesForTest();
+
+    runWithCallId(() => resolveOnto(SESSION_WT_HWND));
+
+    const rel = events("topology_relation")[0];
+    expect(rel).toMatchObject({
+      ownerInAncestry: false,
+      ancestryTruncatedAtRecycledPid: true,
+    });
+    // …and no advisory, because the window is not a verified ancestor's.
+    expect(rel.advisoryQueued).toBe(false);
+
+    mockLogDiagnostic.mockClear();
+    logTopologySnapshot();
+    const snap = events("topology_snapshot")[0];
+    expect(snap.ancestryTruncatedAtRecycledPid).toBe(true);
+    expect((snap.ancestry as unknown[]).length).toBe(2);   // self + parent only
+  });
+
+  it("leaves the truncation marker off for an ordinary chain", () => {
+    _resetTopologyCachesForTest();
+    resolveOnto(OTHER_TERM_HWND);
+    expect(events("topology_relation")[0]).not.toHaveProperty(
+      "ancestryTruncatedAtRecycledPid",
+    );
+  });
+
+  it("backs off after concluding an unreadable link is gone, instead of re-checking per record", () => {
+    // Concluding "nothing to come back for" must also stop the clock, or the
+    // check that reached that conclusion — which costs a process snapshot every
+    // cache interval — runs again on every single record forever. The launching
+    // shell exiting and orphaning the server is the ordinary case.
+    processStartTimes.set(WT_PID, 0);
+    parentMap.delete(WT_PID);
+    _resetTopologyCachesForTest();
+    resolveOnto(SESSION_WT_HWND);
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 6_000);   // past the snapshot cache, not the retry window
+    mockBuildProcessParentMap.mockClear();
+    for (let i = 0; i < 5; i++) resolveOnto(SESSION_WT_HWND);
+    expect(mockBuildProcessParentMap).not.toHaveBeenCalled();
   });
 
   it("says why a console host's parent is not an ancestor, when the answer is not a plain no", () => {

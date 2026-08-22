@@ -1748,6 +1748,12 @@ export const keyboardTypeHandler = async ({
           const bgPerception = bgGuard.perceptionEnv;
 
           const bgWarnings: string[] = [];
+          // ADR-035 Phase C-0: the advisory was appended to the handler-level
+          // `warnings` when the destination resolved, but this branch answers
+          // from its own array — so without this the record would say the
+          // advisory was queued and the response would not carry it
+          // (Codex Round 4 P2).
+          appendTopologyWarnings(bgWarnings);
           if (use_clipboard && !forceKeystrokes) {
             bgWarnings.push("BackgroundClipboardDowngraded");
           }
@@ -2637,13 +2643,23 @@ export const keyboardPressHandler = async ({
               }
           : null;
 
+        // ADR-035 Phase C-0 — same reason as the background type branch: this
+        // response assembles its own hints and would otherwise drop the
+        // advisory the record says was queued (Codex Round 4 P2).
+        const bgPressWarnings: string[] = [];
+        appendTopologyWarnings(bgPressWarnings);
         return ok({
           ok: true,
           pressed: keys,
           method: "background",
           channel: "wm_char",
           foregroundChanged: false,
-          ...(verifyDelivery && { hints: { verifyDelivery } }),
+          ...((verifyDelivery || bgPressWarnings.length > 0) && {
+            hints: {
+              ...(bgPressWarnings.length > 0 && { warnings: bgPressWarnings }),
+              ...(verifyDelivery && { verifyDelivery }),
+            },
+          }),
           ...(bgPerception && { _perceptionForPost: bgPerception }),
         });
       } else if (effectiveMethod === "background") {

@@ -430,11 +430,22 @@ interface AncestryInfo {
   /** `buildProcessParentMap` returned empty — it does that on failure, too. */
   unavailable: boolean;
   /**
+   * The walk stopped early because a candidate parent was younger than its own
+   * child, i.e. its pid had already been handed on. Everything above that point
+   * is unknown, so an `ownerInAncestry: false` on this chain may be a false
+   * negative.
+   */
+  truncatedAtRecycledPid: boolean;
+  /**
    * The snapshot the chain was walked over. Held so the startup record's
    * conhost-child scan describes the SAME read as `processSnapshotUnavailable`
    * rather than a second, independent one (Opus Round 3 P2).
+   *
+   * Released once that scan has run — it is a full process table and this is
+   * its only reader, so keeping it for the life of the server would hold
+   * hundreds of entries for a value used once (Opus Round 5 P3).
    */
-  parentMap: Map<number, number>;
+  parentMap: Map<number, number> | null;
 }
 
 /** How an owning pid compares against the cached ancestor chain. */
@@ -466,6 +477,7 @@ let _ancestry: AncestryInfo | null = null;
 let _ancestryAtMs = 0;
 let _ancestryAttempts = 0;
 let _ownConsoleWindow: { available: boolean; hwnd: bigint | null } | null = null;
+let _ownConsoleWindowAtMs = 0;
 let _parentMap: Map<number, number> | null = null;
 /** When the cached map was last read SUCCESSFULLY. */
 let _parentMapAtMs = 0;
@@ -485,6 +497,9 @@ const ANCESTRY_RETRY_MS = 30_000;
  * best reading available. Bounds the permanently-unreadable case.
  */
 const ANCESTRY_MAX_ATTEMPTS = 3;
+
+/** How long to wait before re-asking for a console handle that could not be read. */
+const CONSOLE_WINDOW_RETRY_MS = 30_000;
 
 /**
  * This process's launch chain, computed once. The chain is a launch-time fact
@@ -516,11 +531,21 @@ function ancestry(): AncestryInfo {
     if (Date.now() - _ancestryAtMs <= ANCESTRY_RETRY_MS) return cached;
     if (!cached.unavailable) {
       const map = freshParentMap();
-      if (!cached.chain.some((p) => p.startTimeMs === 0 && map.has(p.pid))) return cached;
+      if (!cached.chain.some((p) => p.startTimeMs === 0 && map.has(p.pid))) {
+        // Every unreadable link belongs to a process that has left the table, so
+        // there is nothing to come back for. Stamp the clock anyway: without it
+        // the time gate above never trips again and this branch — which costs a
+        // process snapshot every cache interval — is re-entered on every single
+        // record for the life of the server (Opus Round 5 P2). The launching
+        // shell exiting and orphaning the server is the ordinary case.
+        _ancestryAtMs = Date.now();
+        return cached;
+      }
     }
   }
   _ancestryAttempts += 1;
   // The SAME snapshot the console-host branch and the startup record use.
+  // (Continues below.)
   // They used to take two independent ones, which let the startup record assert
   // "this process owns no console host child" out of a failed read while
   // reporting `processSnapshotUnavailable:false` from a successful one
@@ -528,35 +553,66 @@ function ancestry(): AncestryInfo {
   const parentMap = freshParentMap();
   const chain: AncestryInfo["chain"] = [];
   const ancestors = new Map<number, { startTimeMs: number; depth: number }>();
+  let truncatedAtRecycledPid = false;
   let pid = process.pid;
+  let childStartTimeMs = 0;
   for (let depth = 0; depth < ANCESTRY_LIMIT; depth++) {
     if (ancestors.has(pid)) break; // a cycle in the snapshot; stop rather than spin
     const ident = getProcessIdentityByPid(pid);
+    // A parent starts before its child. If this candidate did not, the pid it
+    // was reached by belongs to a process that has since exited and been
+    // replaced — Toolhelp still reports the historical parent pid, and walking
+    // into the replacement would cache an unrelated process AS an ancestor.
+    // Every later check would then agree with itself and log terminals that
+    // process owns as `ownerInAncestry:true`, advisory and all. This is the
+    // reuse that happens BEFORE the chain is cached; `classifyAncestry` covers
+    // the one that happens after (Codex Round 4 P2).
+    if (
+      depth > 0 &&
+      childStartTimeMs !== 0 &&
+      ident.processStartTimeMs !== 0 &&
+      ident.processStartTimeMs > childStartTimeMs
+    ) {
+      truncatedAtRecycledPid = true;
+      break;
+    }
     ancestors.set(pid, { startTimeMs: ident.processStartTimeMs, depth });
     chain.push({
       pid,
       processName: ident.processName,
       startTimeMs: ident.processStartTimeMs,
     });
+    childStartTimeMs = ident.processStartTimeMs;
     const parent = parentMap.get(pid);
     // pid 0 is the idle process — the documented top of the tree, not a parent.
     if (parent === undefined || parent === 0) break;
     pid = parent;
   }
-  _ancestry = { chain, ancestors, unavailable: parentMap.size === 0, parentMap };
+  _ancestry = {
+    chain,
+    ancestors,
+    unavailable: parentMap.size === 0,
+    truncatedAtRecycledPid,
+    parentMap,
+  };
   _ancestryAtMs = Date.now();
   return _ancestry;
 }
 
 /** `GetConsoleWindow()` for this process, read once (it cannot change). */
 function ownConsoleWindow(): { available: boolean; hwnd: bigint | null } {
-  // Only a SUCCESSFUL read is cached. `available:false` is usually permanent (an
-  // older `.node` has no binding) but can also be a native-load race at startup,
-  // and this is the one reading the whole slice exists to collect — cheap enough
-  // to ask again rather than write it off for the life of the process.
-  if (_ownConsoleWindow === null || !_ownConsoleWindow.available) {
-    _ownConsoleWindow = readOwnConsoleWindow();
-  }
+  // Only a SUCCESSFUL read is cached indefinitely. `available:false` is usually
+  // permanent (an older `.node` has no binding) but can also be a native-load
+  // race at startup, and this is the one reading the whole slice exists to
+  // collect — so it is asked again rather than written off for the life of the
+  // process. Throttled, because the failure can be a THROWN exception rather
+  // than a missing property, and one of those per record is not free.
+  const cached = _ownConsoleWindow;
+  if (cached !== null && cached.available) return cached;
+  const now = Date.now();
+  if (cached !== null && now - _ownConsoleWindowAtMs <= CONSOLE_WINDOW_RETRY_MS) return cached;
+  _ownConsoleWindowAtMs = now;
+  _ownConsoleWindow = readOwnConsoleWindow();
   return _ownConsoleWindow;
 }
 
@@ -592,6 +648,7 @@ export function _resetTopologyCachesForTest(): void {
   _ancestryAtMs = 0;
   _ancestryAttempts = 0;
   _ownConsoleWindow = null;
+  _ownConsoleWindowAtMs = 0;
   _parentMap = null;
   _parentMapAtMs = 0;
   _parentMapTriedAtMs = 0;
@@ -623,7 +680,7 @@ export function logTopologySnapshot(): void {
     // (Opus Round 4 P2). The map can also be a few seconds stale, so a child
     // that has since exited reads as unreadable too.
     let unreadableChildren = 0;
-    for (const [pid, parentPid] of anc.parentMap) {
+    for (const [pid, parentPid] of anc.parentMap ?? []) {
       if (parentPid !== process.pid) continue;
       const name = getProcessIdentityByPid(pid).processName;
       if (name === "") {
@@ -648,7 +705,10 @@ export function logTopologySnapshot(): void {
       ancestry: anc.chain,
       launchPath: anc.chain.map((p) => p.processName || "pid:" + String(p.pid)).join(" < "),
       processSnapshotUnavailable: anc.unavailable,
+      ...(anc.truncatedAtRecycledPid && { ancestryTruncatedAtRecycledPid: true }),
     });
+    // The scan above is this map's only reader. See `AncestryInfo.parentMap`.
+    anc.parentMap = null;
   } catch {
     // Same contract as the loggers above: measurement never crashes startup.
   }
@@ -777,6 +837,7 @@ function logTopologyRelation(
     // the startup snapshot that also reports it may be many hours away in the
     // log (Opus Round 1 P1).
     ancestryUnavailable: anc.unavailable,
+    ...(anc.truncatedAtRecycledPid && { ancestryTruncatedAtRecycledPid: true }),
     ownerIsConsoleHost,
     ...(parentMapUnavailable === true && { parentMapUnavailable: true }),
     // Only when a snapshot was actually read. `_parentMapAtMs` is deliberately

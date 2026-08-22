@@ -347,6 +347,8 @@ export type DiagnosticEvent =
        * process, and a reader must NOT take "no ancestors" at face value.
        */
       processSnapshotUnavailable: boolean;
+      /** As on `topology_relation` — the walk stopped at a reused pid. */
+      ancestryTruncatedAtRecycledPid?: boolean;
     }
   | {
       // ADR-035 Phase C-0 — how one write destination relates to this server.
@@ -381,6 +383,13 @@ export type DiagnosticEvent =
       // would have silently dropped every WT write). When the two disagree on a
       // handle-addressed sink, that disagreement is itself the H2 finding and
       // not a join problem.
+      //
+      // Two limits of the fallback, for whoever reads the log: `fgHwnd` can be
+      // null (no foreground window — a locked or secure desktop), leaving that
+      // sink row with no join key at all; and on a handle-less sink the
+      // foreground IS the only window identifier, so a write that landed
+      // somewhere other than the resolved window is credited to whatever was in
+      // front. There is nothing there to disagree with.
       kind: "topology_relation";
       /**
        * The resolver that FIRST reached this window in this call. When a call
@@ -430,6 +439,14 @@ export type DiagnosticEvent =
        * the log (Opus Round 1 P1).
        */
       ancestryUnavailable: boolean;
+      /**
+       * The ancestor walk stopped early: a candidate parent turned out to be
+       * YOUNGER than its own child, so the pid it was reached by has been
+       * handed on since. Everything above that point is unknown, and an
+       * `ownerInAncestry: false` on such a chain may be a false negative
+       * (Codex Round 4 P2).
+       */
+      ancestryTruncatedAtRecycledPid?: boolean;
       /** Owner is `conhost` / `OpenConsole` — a console HOST, not a shell. */
       ownerIsConsoleHost: boolean;
       /**
