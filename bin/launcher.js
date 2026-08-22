@@ -263,37 +263,44 @@ async function writeCurrentRelease(expected) {
 }
 
 async function fetchReleaseByTag(expected) {
-  const response = await fetch(REPO_API_URL, {
-    headers: getGitHubHeaders({
-      "Accept": "application/vnd.github+json",
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(process.env.DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS ?? 15000));
+  try {
+    const response = await fetch(REPO_API_URL, {
+      headers: getGitHubHeaders({
+        "Accept": "application/vnd.github+json",
+      }),
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(`GitHub Releases API returned ${response.status} ${response.statusText} for ${expected.tagName}`);
+    if (!response.ok) {
+      throw new Error(`GitHub Releases API returned ${response.status} ${response.statusText} for ${expected.tagName}`);
+    }
+
+    const release = await response.json();
+    const asset = Array.isArray(release.assets)
+      ? release.assets.find((entry) => entry?.name === ASSET_NAME)
+      : undefined;
+
+    if (!release.tag_name || !asset?.browser_download_url) {
+      throw new Error(`Release ${expected.tagName} does not contain ${ASSET_NAME}`);
+    }
+
+    const tagName = String(release.tag_name);
+    if (!/^v\d+\.\d+\.\d+$/.test(tagName)) {
+      throw new Error(`Unexpected tag format: ${tagName}`);
+    }
+    if (tagName !== expected.tagName) {
+      throw new Error(`Unexpected tag: expected ${expected.tagName}, got ${tagName}`);
+    }
+
+    return {
+      tagName,
+      assetUrl: asset.browser_download_url,
+    };
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const release = await response.json();
-  const asset = Array.isArray(release.assets)
-    ? release.assets.find((entry) => entry?.name === ASSET_NAME)
-    : undefined;
-
-  if (!release.tag_name || !asset?.browser_download_url) {
-    throw new Error(`Release ${expected.tagName} does not contain ${ASSET_NAME}`);
-  }
-
-  const tagName = String(release.tag_name);
-  if (!/^v\d+\.\d+\.\d+$/.test(tagName)) {
-    throw new Error(`Unexpected tag format: ${tagName}`);
-  }
-  if (tagName !== expected.tagName) {
-    throw new Error(`Unexpected tag: expected ${expected.tagName}, got ${tagName}`);
-  }
-
-  return {
-    tagName,
-    assetUrl: asset.browser_download_url,
-  };
 }
 
 async function sha256File(filePath) {
@@ -414,9 +421,54 @@ async function ensureRelease() {
     return current.releaseDir;
   }
 
-  const release = await fetchReleaseByTag(expected);
+  // Offline-first: the release may already exist on disk even if the
+  // metadata/SHA256 check above failed (e.g. an interrupted earlier install).
+  // Prefer it over a network round-trip that can hang on flaky GitHub access
+  // and stall MCP startup far past host timeouts (DSH's mcp-client blocks
+  // plugin activation on connection.ready - a launcher that waits minutes on
+  // fetchReleaseByTag bricks the whole host startup).
+  if (existsSync(path.join(targetDir, "dist", "index.js"))) {
+    warn(`${expected.tagName} exists but release metadata check failed - using local copy without re-verification`);
+    await writeCurrentRelease(expected);
+    return targetDir;
+  }
+
+  let release;
+  try {
+    release = await fetchReleaseByTag(expected);
+  } catch (error) {
+    // Network unreachable/unresponsive: do NOT hard-fail here. If any prior
+    // version is cached, keep serving it so the host does not time out.
+    warn(`Release fetch failed (${error?.message ?? String(error)}); falling back to any locally cached release`);
+    const cached = await scanInstalledReleases();
+    if (cached) {
+      return cached;
+    }
+    throw error;
+  }
 
   return installRelease(release, expected);
+}
+
+/** Finds any release dir whose dist/index.js exists, newest tag first. */
+async function scanInstalledReleases() {
+  let entries;
+  try {
+    entries = await readdir(RELEASES_DIR, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const dirs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  for (const dirName of dirs) {
+    const dir = path.join(RELEASES_DIR, dirName);
+    if (existsSync(path.join(dir, "dist", "index.js"))) {
+      return dir;
+    }
+  }
+  return null;
 }
 
 function launchServer(releaseDir) {
