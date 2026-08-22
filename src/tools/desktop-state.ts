@@ -547,6 +547,19 @@ export const desktopStateHandler = async (args: {
 } = {}): Promise<ToolResult> => {
   try {
     const wins = enumWindowsInZOrder();
+    // NOT written into the window cache, deliberately. It would look like the
+    // right thing — the guard's `target_not_found` advice names this tool — but
+    // the recovery does not need it: an aiming miss re-reads the window list on
+    // its own (`findContainingWindowFresh`), so the retry succeeds without the
+    // caller doing anything in particular.
+    //
+    // And writing it here would cost more than it gives. Several screenshot
+    // modes seed only the main cache and no snapshot, which makes that cache the
+    // homing reference for coordinates the caller read off the screenshot.
+    // Refreshing it to the live rectangle would make the correction compare a
+    // window against itself, yield a zero delta, and leave those coordinates
+    // uncorrected after the window moved — on the one tool the guard actively
+    // tells callers to reach for.
     const fg = wins.find((w) => w.isActive) ?? null;
     const cursor = await mouse.getPosition().catch(() => ({ x: 0, y: 0 }));
 

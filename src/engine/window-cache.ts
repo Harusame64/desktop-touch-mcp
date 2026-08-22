@@ -8,7 +8,7 @@
  */
 
 import type { WindowZInfo } from "./win32.js";
-import { getWindowRectByHwnd } from "./win32.js";
+import { getWindowRectByHwnd, enumWindowsInZOrder } from "./win32.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -121,35 +121,174 @@ export function updateWindowCache(windows: WindowZInfo[]): void {
 }
 
 /**
+ * Drop one window from the cache.
+ *
+ * Called when a resolved HWND turns out to have no readable rect. This is NOT
+ * an assertion that the window died — `getWindowRectByHwnd` returns null both
+ * for "no such window" and for "the handle could not be read" and does not
+ * distinguish them. It is a cache contract: **an entry that cannot be verified
+ * stops being an aiming candidate.**
+ *
+ * The failure modes are asymmetric, which is why the unverifiable case is
+ * evicted rather than kept. Evicting a window that was alive but momentarily
+ * unreadable costs one explicit `target_not_found`, and the next enumerating
+ * tool puts it back. Keeping an entry that cannot be verified costs a **silent
+ * click on a stale rectangle** — a window that closed leaves its rectangle
+ * behind, and the next click aimed anywhere inside it lands on whatever is
+ * there now, with no warning at all.
+ *
+ * Returns whether an entry was actually removed.
+ */
+export function evictWindowFromCache(hwnd: bigint): boolean {
+  return cache.delete(String(hwnd));
+}
+
+/**
+ * Is this entry still young enough to aim with?
+ *
+ * The aiming lookups below used to ignore timestamps entirely — `CACHE_TTL_MS`
+ * was applied only by `computeWindowDelta` and by `applyHoming`'s own checks —
+ * so a rectangle left behind by a closed window kept catching clicks
+ * **indefinitely**, until some tool happened to enumerate windows and prune it.
+ * That is the mechanism behind "clicks start getting rejected and only
+ * reconnecting fixes it": nothing in the click path expires a stale rectangle,
+ * and reconnecting restarts the process, which is what actually clears it.
+ */
+function isFresh(w: CachedWindow, now: number): boolean {
+  return now - w.timestamp <= CACHE_TTL_MS;
+}
+
+/** Right and bottom edges are exclusive — the convention both lookups share. */
+function containsPoint(
+  r: { x: number; y: number; width: number; height: number },
+  x: number,
+  y: number,
+): boolean {
+  return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+}
+
+/**
  * Find the cached window that contains the given screen coordinate.
  * Searches in Z-order (lowest zOrder = frontmost) so overlapping windows
  * resolve to the topmost one — matching what the LLM saw in the screenshot.
  * Returns null if no cached window contains the point.
+ *
+ * Entries older than `CACHE_TTL_MS` are not candidates (see {@link isFresh}).
  */
 export function findContainingWindow(x: number, y: number): CachedWindow | null {
+  const now = Date.now();
   let best: CachedWindow | null = null;
   let bestZ = Infinity;
   for (const w of cache.values()) {
-    const r = w.region;
-    if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
-      if (w.zOrder < bestZ) {
-        best = w;
-        bestZ = w.zOrder;
-      }
+    if (!isFresh(w, now)) continue;
+    if (containsPoint(w.region, x, y) && w.zOrder < bestZ) {
+      best = w;
+      bestZ = w.zOrder;
     }
   }
   return best;
 }
 
 /**
+ * `findContainingWindow`, re-enumerating once when nothing fresh answers.
+ *
+ * The staleness bound above is only half of the story. Expiring an entry has to
+ * mean **"re-verify"**, not **"unclickable"** — otherwise a window that is alive
+ * and has not moved becomes unclickable simply because no tool happened to
+ * enumerate windows for a minute, and the caller is told the target was not
+ * found. Worse, the recovery the guard suggests does not repopulate this cache
+ * (only screenshot / window / workspace / browser / mouse tools write to it), so
+ * a retry lands in exactly the same place: a refusal loop on a perfectly good
+ * window.
+ *
+ * So a miss re-enumerates once and asks again. The enumeration is the same call
+ * every window-listing tool already makes, and it is paid only when the cache
+ * cannot answer — which, before the staleness bound existed, was the case where
+ * it answered with a rectangle that might belong to a window that had closed.
+ *
+ * Briefly throttled, because some misses are permanent: a point over the
+ * desktop background is inside no window and always will be, so without this
+ * every such click would enumerate twice (here, and again in the sensor refresh
+ * that follows). The window a caller just opened is still found — the throttle
+ * is short enough to be invisible at the rate an agent issues clicks.
+ *
+ * **Answers from the enumeration without writing it back.** Refreshing the
+ * cache here would look like the obvious thing and would quietly break the
+ * other job this map does: several screenshot modes seed only this cache and no
+ * snapshot, which makes the region stored here the reference `applyHoming`
+ * measures a window's movement against. Overwriting every region with its
+ * current one makes that comparison a window against itself — a zero delta —
+ * so coordinates read off a screenshot stop being corrected after the window
+ * moves. One map is serving two purposes with opposite freshness requirements;
+ * until they are separated, the aiming question is answered from live data and
+ * the stored regions are left alone.
+ */
+const REFRESH_ON_MISS_THROTTLE_MS = 250;
+let _lastMissRefreshAtMs = 0;
+/**
+ * The enumeration behind the last miss, kept so a throttled miss can still be
+ * ANSWERED.
+ *
+ * The throttle limits how often the desktop is enumerated. It must not limit
+ * how often the question can be answered — that distinction was invisible while
+ * a miss wrote its enumeration into the cache, because the second caller was
+ * then rescued by a cache hit. It stopped being invisible the moment the write
+ * was removed, and returning null instead is a hard failure: one
+ * `mouse_drag` without a window title asks twice, milliseconds apart, so the
+ * endpoint saw null, resolved to no window and refused — identically on every
+ * retry, because the first ask re-armed the throttle each time.
+ */
+let _lastMissSnapshot: WindowZInfo[] = [];
+
+export function findContainingWindowFresh(x: number, y: number): CachedWindow | null {
+  const hit = findContainingWindow(x, y);
+  if (hit) return hit;
+  const now = Date.now();
+  if (now - _lastMissRefreshAtMs > REFRESH_ON_MISS_THROTTLE_MS) {
+    _lastMissRefreshAtMs = now;
+    try {
+      _lastMissSnapshot = enumWindowsInZOrder();
+    } catch {
+      // Enumeration unavailable (no native addon). The clock is armed anyway so
+      // a broken binding is not asked again on every call.
+      _lastMissSnapshot = [];
+      return null;
+    }
+  }
+  // Frontmost (lowest zOrder) live window containing the point. Minimized
+  // windows are skipped for the same reason `updateWindowCache` refuses to
+  // store them: their region is zeroed and would swallow the origin.
+  let best: CachedWindow | null = null;
+  let bestZ = Infinity;
+  for (const w of _lastMissSnapshot) {
+    if (w.isMinimized) continue;
+    if (containsPoint(w.region, x, y) && w.zOrder < bestZ) {
+      best = { hwnd: w.hwnd, title: w.title, region: { ...w.region }, zOrder: w.zOrder, timestamp: now };
+      bestZ = w.zOrder;
+    }
+  }
+  return best;
+}
+
+/** @internal Test-only — forget the last refresh-on-miss so the throttle reopens. */
+export function _resetRefreshThrottleForTest(): void {
+  _lastMissRefreshAtMs = 0;
+  _lastMissSnapshot = [];
+}
+
+/**
  * Look up a cached window by partial title match (case-insensitive).
  * Returns the frontmost match (lowest zOrder).
+ *
+ * Entries older than `CACHE_TTL_MS` are not candidates (see {@link isFresh}).
  */
 export function getCachedWindowByTitle(title: string): CachedWindow | null {
+  const now = Date.now();
   const query = title.toLowerCase();
   let best: CachedWindow | null = null;
   let bestZ = Infinity;
   for (const w of cache.values()) {
+    if (!isFresh(w, now)) continue;
     if (w.title.toLowerCase().includes(query) && w.zOrder < bestZ) {
       best = w;
       bestZ = w.zOrder;

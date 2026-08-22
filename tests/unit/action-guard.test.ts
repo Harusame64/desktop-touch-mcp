@@ -28,6 +28,7 @@ vi.mock("../../src/engine/perception/guards.js", () => ({
 
 // Import after mocking
 import { runActionGuard, isAutoGuardEnabled } from "../../src/tools/_action-guard.js";
+import { listEventsForTarget } from "../../src/engine/perception/target-timeline.js";
 import type { PerceptionLens, LensSpec } from "../../src/engine/perception/types.js";
 import { FluentStore } from "../../src/engine/perception/fluent-store.js";
 
@@ -57,7 +58,8 @@ function makeOkGuardResult() {
 }
 
 function makeFailGuardResult(failedKind: string) {
-  const failedGuard = { kind: failedKind as import("../../src/engine/perception/types.js").GuardKind, ok: false, confidence: 0, reason: "test" };
+  const failedGuard: import("../../src/engine/perception/types.js").GuardResult =
+    { kind: failedKind as import("../../src/engine/perception/types.js").GuardKind, ok: false, confidence: 0, reason: "test" };
   return { ok: false, policy: "block" as const, attention: "guard_failed" as const, results: [failedGuard], failedGuard };
 }
 
@@ -190,6 +192,180 @@ describe("runActionGuard", () => {
     });
     expect(result.block).toBe(true);
     expect(result.summary.status).toBe("unsafe_coordinates");
+  });
+
+  it("reports an unreadable rect as a missing window, not a misplaced click", async () => {
+    // `safe.clickCoordinates` normally maps to `unsafe_coordinates`, whose
+    // advice is "the click is outside the window rect — take a new screenshot".
+    // That is the exact sentence the user complained about, and it is wrong
+    // here: the click is not misplaced, the target is gone. The status the
+    // guard asks for instead carries advice that actually recovers, because a
+    // screenshot is one of the few things that repopulates the window cache.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+    });
+    const failed = makeFailGuardResult("safe.clickCoordinates");
+    failed.failedGuard.statusOverride = "identity_changed";
+    mockEvaluateGuards.mockReturnValue(failed);
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200 },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("identity_changed");
+    expect(result.summary.next).not.toMatch(/outside the target window rect/i);
+    // And no one-call re-approval of a click into a window that is not there.
+    expect(result.suggestedFix).toBeUndefined();
+    expect(result.summary.next).not.toMatch(/fixId/);
+  });
+
+  it("still reports a genuinely misplaced click as unsafe_coordinates", async () => {
+    // The negative control: the override must not swallow the case it is
+    // distinguishing itself from.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+    });
+    mockEvaluateGuards.mockReturnValue(makeFailGuardResult("safe.clickCoordinates"));
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 999, y: 999 },
+      clickCoordinates: { x: 999, y: 999 },
+    });
+
+    expect(result.summary.status).toBe("unsafe_coordinates");
+  });
+
+  it("refuses when the point is inside a window other than the one named", async () => {
+    // The regression re-verifying created: once an expired entry stops catching
+    // the point, the point resolves to whatever occupies that area NOW. Building
+    // the lens for that window would check THAT window and report success — a
+    // click aimed at one window delivered to another, with the only warning
+    // going to stderr. Refusing restores the fail-closed behaviour the stale
+    // entry used to provide by accident.
+    mockResolveActionTarget.mockResolvedValue({
+      lens: null, localStore: null, identity: null, candidates: 1,
+      warnings: ['windowTitle "MyApp" does not match containing window "Other App"'],
+      titleMismatch: { requested: "MyApp", resolved: "Other App" },
+    });
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "MyApp" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("unsafe_coordinates");
+    // The caller is told which window is actually there — the old warning never
+    // left stderr.
+    expect(result.summary.next).toContain("Other App");
+    expect(result.summary.next).toContain("MyApp");
+  });
+
+  it("refuses target_not_found when the named window is not open at all", async () => {
+    // The other mismatch form: the hint matches no open window. The named
+    // window being gone is the reported symptom itself, so the status says
+    // "not found" rather than "coordinates wrong" — and still names the
+    // window that actually occupies the point.
+    mockResolveActionTarget.mockResolvedValue({
+      lens: null, localStore: null, identity: null, candidates: 1,
+      warnings: ['windowTitle "MyApp" does not match containing window "Other App"'],
+      titleMismatch: { requested: "MyApp", resolved: "Other App", kind: "not_found" },
+    });
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "MyApp" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("target_not_found");
+    expect(result.summary.next).toContain("MyApp");
+    expect(result.summary.next).toContain("Other App");
+  });
+
+  it("records the mismatch refusal on the target timeline", async () => {
+    // Round 2 P3: this early return used to run before deriveTargetKey, making
+    // it the one block that left no trace on the timeline.
+    mockResolveActionTarget.mockResolvedValue({
+      lens: null, localStore: null, identity: null, candidates: 1,
+      warnings: [],
+      titleMismatch: { requested: "Timeline Mismatch App", resolved: "Other App", kind: "different_window" },
+    });
+
+    await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "Timeline Mismatch App" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    const events = listEventsForTarget("window:timeline mismatch app");
+    expect(events.some((e) => e.semantic === "action_blocked" && e.result === "blocked")).toBe(true);
+  });
+
+  it("offers no fix on the common close path (window absent from the enumeration)", async () => {
+    // The sensor pushes target.identity = null and target.identityStable fails
+    // FIRST, so the null-rect branch — and its statusOverride — is never
+    // reached. The fix suppression must still hold: a fix here would be a
+    // one-call re-approval of a click into a window that is not there.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+      // No `changed` — the coordinate path never fills it, and a gone window
+      // has no live replacement identity to record.
+    });
+    mockEvaluateGuards.mockReturnValue(makeFailGuardResult("target.identityStable"));
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "coordinate", x: 200, y: 200, windowTitle: "Gone App" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("identity_changed");
+    expect(result.suggestedFix).toBeUndefined();
+    expect(result.summary.next).not.toMatch(/fixId/);
+  });
+
+  it("still offers the designed identity fix when a live replacement identity resolved", async () => {
+    // The negative control: identity_changed with `changed: ["identity"]`
+    // means the window was REPLACED by a new instance that resolved — the fix
+    // re-approves against the new identity, which is the designed recovery
+    // (Phase C/G), and must not be swallowed by the gone-target suppression.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(),
+      identity: { hwnd: "12345", pid: 42, processName: "notepad.exe", processStartTimeMs: 5, titleResolved: "Untitled - Notepad" },
+      candidates: 1, warnings: [],
+      changed: ["identity"],
+    });
+    mockEvaluateGuards.mockReturnValue(makeFailGuardResult("target.identityStable"));
+
+    const result = await runActionGuard({
+      toolName: "mouse_click",
+      actionKind: "mouseClick",
+      descriptor: { kind: "window", titleIncludes: "notepad" },
+      clickCoordinates: { x: 200, y: 200 },
+    });
+
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("identity_changed");
+    expect(result.suggestedFix).toBeDefined();
+    expect(result.summary.next).toMatch(/fixId/);
   });
 
   it("maps browser_not_ready guard failure to correct status", async () => {

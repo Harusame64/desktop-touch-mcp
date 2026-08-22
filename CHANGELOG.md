@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+- **A window that closes stops catching your clicks.** When an app you had been
+  working with went away, its last known rectangle stayed in the window cache
+  and kept answering "the click at this point belongs to me" — with no expiry
+  and nothing to remove it. Depending on where the point landed you would see
+  clicks refused with "coordinates are outside the target window", or worse, a
+  click quietly delivered to whatever now occupies that part of the screen.
+  Restarting the server was the only thing that reliably cleared it, which is
+  why reconnecting appeared to be the fix.
+
+  Two things change. A cached window now stops being a click target once its
+  entry ages past the cache lifetime, instead of never. And when a window that
+  was already resolved stops reporting a position at all, its entry is dropped
+  at that moment, and the click is refused with `Target window rect could not be
+  read — the window may have closed` rather than being waved through unchecked.
+
+  An expired entry means "check again", not "unreachable": when a click lands
+  somewhere the cache cannot currently account for, the window list is re-read
+  once and the click proceeds normally if the window is there. So a window that
+  is open and simply has not been looked at for a while stays clickable, and a
+  click that is refused has actually been checked rather than merely missing
+  from a cache.
+
+  A click that names a window is now refused when the point turns out to be
+  inside a different application's window, and the response says which window is
+  actually there. It used to be delivered to that other window and reported as a
+  success, with the mismatch mentioned only in the server's own log. The same
+  applies when the named window is not open at all — the click is refused and
+  the response names the window that occupies the point, instead of quietly
+  clicking it. A click whose point lands in another window of the SAME
+  application still goes through — a dialog the application opened, but also a
+  second window of it — so this refusal is about hitting a different program,
+  not a different window. A browser window still matches its browser's name
+  ("Google Chrome", "Microsoft Edge") even when the page title comes first.
+
+  **What you may notice:** a click that used to land somewhere unintended now
+  fails, and tells you either that the target window was replaced or which
+  window your coordinates actually fall in. Take a fresh screenshot and carry
+  on. A window that is open and has not moved, addressed by a title it still
+  carries or by its handle, behaves exactly as before.
+
+  **Not covered by this change:** the separate cache of screenshot-time window
+  positions, used to correct coordinates when a window moves between the
+  screenshot and the click. It keeps entries for 90 seconds and does not record
+  which window they belong to, so a window that closes and reopens can still
+  skew that correction until the entry expires. That one is a separate fix.
+
 - **The diagnostic log now records how a terminal window relates to the server
   process itself.** When a write lands in a terminal, it is worth knowing
   whether that terminal is the one this server is running inside — the failure

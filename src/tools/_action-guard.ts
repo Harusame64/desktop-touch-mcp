@@ -607,6 +607,11 @@ function mapGuardResult(
   } else if (failedKind === "safe.clickCoordinates") {
     status = "unsafe_coordinates";
   }
+  // A guard may know its failure means something the kind alone does not convey
+  // — an unreadable rect is a missing window, not a misplaced click.
+  if (gr.failedGuard?.statusOverride) {
+    status = gr.failedGuard.statusOverride;
+  }
   // modal guard is not in GUARD_KINDS, so guard won't fire for it in Phase A
 
   const shouldBlock = gr.policy === "block";
@@ -676,6 +681,50 @@ export async function runActionGuard(
 
   if (resolved.warnings.length > 0) {
     process.stderr.write(`[auto-guard] ${toolName}: ${resolved.warnings.join("; ")}\n`);
+  }
+
+  // The point is inside a window, just not the one the caller named. Refuse:
+  // building the lens for the window that happens to be there instead would
+  // deliver a click aimed at one window to another and report success.
+  //
+  // Two forms, telling the caller two different things (see the field's doc):
+  //   - the named window is open elsewhere → `unsafe_coordinates`: the
+  //     coordinates are not inside the target the caller asked for.
+  //   - the named window is not open at all → `target_not_found`: the click
+  //     names a window that is gone, which is the reported symptom itself.
+  if (resolved.titleMismatch) {
+    const tm = resolved.titleMismatch;
+    const point = `(${clickCoordinates?.x ?? "?"},${clickCoordinates?.y ?? "?"})`;
+    const notFound = tm.kind === "not_found";
+    const status: AutoGuardEnvelope["status"] = notFound ? "target_not_found" : "unsafe_coordinates";
+    const next = notFound
+      ? `No open window matches "${tm.requested}" — point ${point} is inside "${tm.resolved}". ` +
+        `Call desktop_discover to verify the window title, then retry.`
+      : `Point ${point} is inside "${tm.resolved}", not "${tm.requested}". ` +
+        `Take a new screenshot to get fresh coordinates.`;
+    // This refusal used to return before deriveTargetKey ran, making it the
+    // one block that left no trace on the target timeline (Round 2 P3). The
+    // semantics mirror the sibling paths: a named window that is not open
+    // records `target_closed` (like the 0-candidates path below), a click
+    // refused for a live target records `action_blocked`.
+    const mismatchKey = deriveTargetKey(descriptor);
+    if (mismatchKey) {
+      appendEvent(
+        notFound
+          ? { targetKey: mismatchKey, identity: null, source: "action_guard", semantic: "target_closed", tool: toolName, summary: `Named window not open; point inside "${tm.resolved}"` }
+          : { targetKey: mismatchKey, identity: null, source: "action_guard", semantic: "action_blocked", tool: toolName, result: "blocked", summary: `${toolName} blocked: point inside "${tm.resolved}", not "${tm.requested}"` }
+      );
+    }
+    return {
+      summary: {
+        kind: "auto",
+        status,
+        canContinue: false,
+        target: `window:${tm.requested}`,
+        next,
+      },
+      block: true,
+    };
   }
 
   // No candidates → target not found
@@ -789,7 +838,32 @@ export async function runActionGuard(
   // ADR-023 Phase 1: callers with an idempotent, fixId-less re-invocation path
   // (browser_click by-axis) suppress this — a fixId hint they cannot honor would
   // be a dead promise (Opus PR3 Round 1 P2).
-  if (result.block && !suppressSuggestedFix) {
+  // A fix is a one-call re-approval of the SAME action. Offering one for a
+  // target that is GONE invites the caller to re-approve a click into a window
+  // that is not there. Recovery does not depend on the caller doing anything in
+  // particular: the entry is evicted when it stops answering, and the next
+  // click re-reads the window list.
+  //
+  // "Gone" is keyed on MEANING, not on one branch's flag, because two branches
+  // say it (Codex, final round):
+  //   - the narrow race: the window was enumerated but its rect read null —
+  //     `safe.clickCoordinates` sets `statusOverride: "identity_changed"`.
+  //   - the common close path: the window is not in the enumeration at all —
+  //     the sensor pushes `target.identity = null` and `target.identityStable`
+  //     fails FIRST, so the null-rect branch (and its override) is never
+  //     reached.
+  // An identity failure WITHOUT a live replacement identity is the gone case.
+  // With one (`resolved.changed` includes "identity" — the window was replaced
+  // by a new instance that resolved), the fix is the designed recovery: it
+  // re-approves against the NEW identity, and stays offered. Today
+  // `tryBuildSuggestedFix` mints an identity fix only in that replacement case,
+  // so this predicate changes no observable behaviour — it makes the contract
+  // hold by construction instead of by coincidence across three files.
+  const targetGone =
+    gr.failedGuard?.statusOverride === "identity_changed" ||
+    (gr.failedGuard?.kind === "target.identityStable" &&
+      !resolved.changed?.includes("identity"));
+  if (result.block && !suppressSuggestedFix && !targetGone) {
     const fix = tryBuildSuggestedFix(
       gr,
       descriptor,

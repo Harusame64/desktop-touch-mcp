@@ -17,6 +17,9 @@ import {
 } from "../win32.js";
 import { subscribe, poll, unsubscribe } from "../event-bus.js";
 import { observeTarget } from "../identity-tracker.js";
+// A resolved handle that yields no rectangle stops being an aiming candidate —
+// see `evictWindowFromCache`'s contract note.
+import { evictWindowFromCache } from "../window-cache.js";
 
 // Modal detection — title heuristic used as confidence booster only (not primary trigger)
 const MODAL_TITLE_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確認|通知|ダイアログ/i;
@@ -166,6 +169,13 @@ export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation
   if (!target) {
     // Window gone — identity fluent marks it null
     obs.push(makeObs("target.identity", null, 0.98));
+    // Absence from the enumeration is NOT proof the window closed:
+    // `enumWindowsInZOrder` deliberately drops invisible / untitled / tiny
+    // windows (`win32.ts:159-170`). So ask the same question the rect probe
+    // below asks — a live-but-unenumerated window still answers — and evict
+    // only when nothing answers. Without this the guard fails on identity and
+    // the caller retries forever against a cache entry nothing ever removes.
+    evictIfRectUnreadable(hwndBig);
     return obs;
   }
 
@@ -181,6 +191,11 @@ export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation
   // target.rect (fresh from Win32, not from enumWindowsInZOrder's snapshot)
   const rect = getWindowRectByHwnd(hwndBig);
   obs.push(makeObs("target.rect", rect, rect ? 0.98 : 0.40));
+  // A resolved handle whose rectangle cannot be read stops being an aiming
+  // candidate. See `evictWindowFromCache`. Both this and the branch above
+  // reduce to the same question — "does this handle still yield a rect?" — so
+  // there is one rule, asked from two places that reach it differently.
+  if (rect === null) evictWindowFromCache(hwndBig);
 
   // target.identity (via identity-tracker for processStartTimeMs)
   const { identity } = observeTarget(titleKey, hwndBig, target.title);
@@ -205,6 +220,15 @@ export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation
 // ─────────────────────────────────────────────────────────────────────────────
 // Public: build a WindowIdentity from live Win32 data (used at lens registration)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Probe the handle and evict it from the window cache when it yields no rect.
+ * Used on the path that never reaches the rect observation because the window
+ * was not enumerated at all.
+ */
+function evictIfRectUnreadable(hwnd: bigint): void {
+  if (getWindowRectByHwnd(hwnd) === null) evictWindowFromCache(hwnd);
+}
 
 export function buildWindowIdentity(hwnd: string): WindowIdentity | null {
   try {

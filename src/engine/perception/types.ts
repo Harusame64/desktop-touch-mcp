@@ -195,6 +195,19 @@ export interface GuardResult {
   suggestedAction?: string;
   /** Phase F: informational note for pass-with-note browser readiness outcomes. */
   note?: string;
+  /**
+   * Overrides the status the auto-guard would derive from `kind` alone.
+   *
+   * `safe.clickCoordinates` normally maps to `unsafe_coordinates`, whose advice
+   * is "the click is outside the window rect — take a new screenshot". That is
+   * the wrong thing to say when the window's rectangle could not be read at
+   * all: the click is not misplaced, the target is gone. Reporting the
+   * replacement status instead gives the caller advice that actually recovers
+   * (a screenshot repopulates the window cache) and keeps the guard from
+   * offering a one-click re-approval of an action into a window that is not
+   * there.
+   */
+  statusOverride?: "identity_changed";
 }
 
 export interface GuardEvalResult {

@@ -76,7 +76,7 @@
   "samples": [
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 838,
+      "line": 912,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
@@ -223,21 +223,21 @@
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 869,
+      "line": 882,
       "tool": "desktop_state",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 884,
+      "line": 897,
       "tool": "get_history",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 909,
+      "line": 922,
       "tool": "get_document_state",
       "errKind": "identifier",
       "contextShape": "none"
@@ -356,49 +356,49 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 473,
+      "line": 474,
       "tool": "mouse_move",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 502,
+      "line": 503,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 505,
+      "line": 506,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 889,
+      "line": 903,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 978,
+      "line": 994,
       "tool": "mouse_drag",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1449,
+      "line": 1465,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1659,
+      "line": 1675,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"

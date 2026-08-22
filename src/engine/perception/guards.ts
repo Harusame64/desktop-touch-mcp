@@ -270,6 +270,26 @@ function evalClickCoordinates(
     };
   }
 
+  // A rect the sensor could not read is not evidence of anything — and it used
+  // to pass this guard silently: the point-in-rect check below is written
+  // `if (rect)`, so a null value skipped it and the function fell through to
+  // `ok: true`. The confidence branch does not catch it either, because
+  // `readValue` reports the SOURCE's base confidence (win32 = 0.98), not the
+  // 0.40 the sensor attaches to a null rect — so an unreadable rectangle scored
+  // 0.98 and sailed past the 0.90 threshold. Checked before the confidence
+  // branch so an unreadable rect always reports the reason it actually failed.
+  if (rectFluent.value == null) {
+    return {
+      kind: "safe.clickCoordinates",
+      ok: false,
+      confidence: 0,
+      reason: "Target window rect could not be read — the window may have closed",
+      suggestedAction: "Confirm the window is still open — call desktop_state or take a window screenshot",
+      // Not "the click is outside the rect" — there is no rect. See the field.
+      statusOverride: "identity_changed",
+    };
+  }
+
   if (rectFluent.confidence < THRESHOLD_CLICK) {
     return {
       kind: "safe.clickCoordinates",
