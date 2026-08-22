@@ -300,56 +300,56 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1294,
+      "line": 1300,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1463,
+      "line": 1469,
       "tool": "keyboard",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2112,
+      "line": 2118,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2183,
+      "line": 2189,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2644,
+      "line": 2650,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2711,
+      "line": 2717,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2800,
+      "line": 2806,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3016,
+      "line": 3022,
       "tool": "keyboard:sequence",
       "errKind": "expression",
       "contextShape": "object-plain"
@@ -391,14 +391,14 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1441,
+      "line": 1449,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1651,
+      "line": 1659,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"
@@ -482,7 +482,7 @@
     },
     {
       "file": "src/tools/scroll-read.ts",
-      "line": 123,
+      "line": 124,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "none"
@@ -517,7 +517,7 @@
     },
     {
       "file": "src/tools/smart-scroll.ts",
-      "line": 427,
+      "line": 433,
       "tool": "scroll(action='smart')",
       "errKind": "string-literal",
       "contextShape": "object-plain"
@@ -545,7 +545,7 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1491,
+      "line": 1490,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"

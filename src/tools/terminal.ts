@@ -1346,8 +1346,7 @@ export const terminalSendHandler = async ({
           // single strip the delivered trailing-Enter count is (N-1)+1 = N for
           // N>=1 and 0+1 = 1 for N=0 — matching the WM_CHAR path's max(N,1).
           const pasteText = input.replace(/(?:\r\n|\r|\n)$/, "");
-          logDispatchSink({ sink: "console_paste", tool: "terminal:send", targetHwnd: win.hwnd });
-          const paste = await pasteIntoConsoleNoFocus(win.hwnd, pasteText);
+          const paste = await pasteIntoConsoleNoFocus(win.hwnd, pasteText, "terminal:send");
           if (paste.ok) {
             const cpWarnings: string[] = [];
             if (paste.skippedFormats && paste.skippedFormats.length > 0) {
@@ -2379,8 +2378,7 @@ export const terminalRunHandler = async ({
       try { return getWindowClassName(hwnd); } catch { return ""; }
     })();
     if (targetClass === "ConsoleWindowClass") {
-      logDispatchSink({ sink: "console_paste", tool: "terminal:run", targetHwnd: hwnd });
-      const paste = await pasteIntoConsoleNoFocus(hwnd, sendInput);
+      const paste = await pasteIntoConsoleNoFocus(hwnd, sendInput, "terminal:run");
       sendPayload = paste.ok ? { ok: true } : { ok: false, code: paste.reason };
       // issue #386: surface native-clipboard hints — ONLY on success. They are
       // success-context ("the paste worked, but a format was not preserved" /

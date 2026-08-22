@@ -1391,6 +1391,13 @@ export const scrollHandler = async ({
                       status: "delivered" as const,
                       channel: "postmessage" as const,
                     },
+                    // ADR-035 §6.3: this early-success branch builds its own
+                    // hints and returns before the common builder below, so the
+                    // ambiguity advisory has to be merged here too — a
+                    // duplicate-title scroll that lands on a page boundary is
+                    // exactly a case where the caller wants to know the title
+                    // matched more than one window (Codex Round 2).
+                    ...(scrollWarnings.length > 0 && { warnings: scrollWarnings }),
                   },
                 }),
               }],
@@ -1428,6 +1435,7 @@ export const scrollHandler = async ({
                     reason: "scrollbar_unavailable" as const,
                     axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
                   },
+                  ...(scrollWarnings.length > 0 && { warnings: scrollWarnings }),
                 },
               }),
             }],

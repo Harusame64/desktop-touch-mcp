@@ -7,6 +7,7 @@
  */
 
 import { recognizeWindowByHwnd, ocrWordsToLines, detectOcrLanguage } from "../engine/ocr-bridge.js";
+import { logDispatchSink } from "./_resolve-log.js";
 
 // Re-export for backward compatibility (canonical definition now in ocr-bridge.ts)
 export { detectOcrLanguage };
@@ -194,6 +195,13 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       // fallback so the page actually scrolls.
       const combo = SCROLL_KEY_COMBO[args.scrollKey]!;
       const canBg = canInjectAtTarget(focusedHwnd);
+      // ADR-035 Phase 1 — two channels, two events, each at its own boundary:
+      // the background post is addressed to the handle, the foreground fallback
+      // below follows focus. Without them the resolution logged by the shared
+      // helper has no joinable write (Codex Round 2).
+      if (canBg.supported) {
+        logDispatchSink({ sink: "wm_char", tool: "scroll:read", targetHwnd: focusedHwnd });
+      }
       const bgOk = canBg.supported && postKeyComboToHwnd(focusedHwnd, combo);
       if (!bgOk) {
         // ADR-018 Phase 5: re-focus via `restoreAndFocusWindow(hwnd)` (Win32
@@ -203,6 +211,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         restoreAndFocusWindow(focusedHwnd);
         await new Promise<void>((r) => setTimeout(r, 100));
         const arr = parseKeys(combo);
+        logDispatchSink({ sink: "sendinput", tool: "scroll:read", targetHwnd: null });
         await keyboard.pressKey(...arr);
         await keyboard.releaseKey(...arr);
       }

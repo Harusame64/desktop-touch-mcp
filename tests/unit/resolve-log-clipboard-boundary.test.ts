@@ -135,12 +135,43 @@ describe("ADR-035 Phase 1 — the clipboard paste boundary", () => {
     expect(pasteEvents()[0]).toMatchObject({ tool: "terminal:send" });
   });
 
-  it("native: the event precedes the addon call, because the whole transaction is inside it", async () => {
+  it("native: records a paste when the addon reports the chord went out", async () => {
     nativeAvailable = true;
     await typeViaClipboard("hello", "ctrl+v", "keyboard:type");
     expect(mockNativeCall).toHaveBeenCalledTimes(1);
     expect(pasteEvents()).toHaveLength(1);
     // No PowerShell was spawned on this path.
     expect(mockExec).not.toHaveBeenCalled();
+  });
+
+  it("native: records NOTHING when the addon reports nothing was typed", async () => {
+    // `paste_deadline_exceeded` — the composite ran, replaced the clipboard,
+    // and refused to send the chord. The handler tells the caller nothing was
+    // typed, so the log must not say otherwise (Codex Round 2).
+    nativeAvailable = true;
+    mockNativeCall.mockResolvedValueOnce({
+      ok: false,
+      pasted: false,
+      reason: "paste_deadline_exceeded",
+      clipboardRestored: false,
+      verify: { ok: false, postCloseChecked: false },
+    } as never);
+    await expect(typeViaClipboard("hello", "ctrl+v", "keyboard:type")).rejects.toThrow();
+    expect(pasteEvents()).toHaveLength(0);
+  });
+
+  it("native: records a paste for a partially-accepted chord that may have landed", async () => {
+    // `send_input_partial`: a prefix reached the V key-down, so the target may
+    // already have pasted. Recording it is the honest half of the same rule.
+    nativeAvailable = true;
+    mockNativeCall.mockResolvedValueOnce({
+      ok: false,
+      pasted: true,
+      reason: "send_input_partial",
+      clipboardRestored: true,
+      verify: { ok: false, postCloseChecked: false },
+    } as never);
+    await expect(typeViaClipboard("hello", "ctrl+v", "keyboard:type")).rejects.toThrow();
+    expect(pasteEvents()).toHaveLength(1);
   });
 });

@@ -272,6 +272,7 @@ export class TypeViaClipboardDeliveryError extends Error {
 async function nativeTypeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v",
+  tool: string,
 ): Promise<TypeViaClipboardOutcome> {
   // UTF-16LE bytes rather than a JS string: napi's String bridge transcodes
   // through UTF-8, which cannot represent an unpaired surrogate, so it would
@@ -300,6 +301,18 @@ async function nativeTypeViaClipboard(
     // clipboard may still be holding the payload.
     `native clipboard paste gave up after ${CLIPBOARD_WRITE_TIMEOUT_MS}ms waiting for the clipboard owner; the paste and the clipboard contents are indeterminate after this — the keystroke may still arrive and the clipboard may not have been restored`,
   );
+
+  // ADR-035 Phase 1 — recorded from the addon's OWN report of whether the
+  // chord went out, not before the call. The composite can end in
+  // `paste_deadline_exceeded`, a verification failure, or `send_input_failed`,
+  // and the handler then tells the caller nothing was typed; an event on entry
+  // would contradict that in the log (Codex Round 2). `pasted` is also true for
+  // `send_input_partial`, which is correct: a prefix reaching the V key-down
+  // may well have pasted, and the whole point of tracking it is not to claim
+  // otherwise.
+  if (r.pasted) {
+    logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
+  }
 
   if (!r.ok) {
     // Every one of these ran far enough to replace the user's clipboard, so
@@ -710,14 +723,7 @@ export async function typeViaClipboard(
   // in `nutjs.ts` describes. So: native = the whole transaction, fallback = the
   // chord only.
   return hasNativeTypeViaClipboard()
-    ? withKeyboardLock(() => {
-        // The addon owns save / verify / paste / restore as one indivisible
-        // transaction, so this is the finest boundary there is on this path —
-        // and unlike the fallback below, everything that can fail before the
-        // keystroke fails INSIDE the call being recorded.
-        logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
-        return nativeTypeViaClipboard(text, pasteCombo);
-      })
+    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo, tool))
     : powershellTypeViaClipboard(text, pasteCombo, tool);
 }
 

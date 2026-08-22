@@ -13,7 +13,7 @@ import {
   scrollElementIntoView,
 } from "../engine/uia-bridge.js";
 import { readScrollInfo, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
-import { logResolve } from "./_resolve-log.js";
+import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import {
   dHashFromRaw,
   hammingDistance,
@@ -407,6 +407,12 @@ async function tryImage(params: {
     const ticks = Math.round(Math.abs(delta) * SCROLL_TICKS_PER_PAGE);
     const effectiveTicks = Math.max(1, ticks) * SCROLL_MULTIPLIER;
 
+    // ADR-035 Phase 1 — this path resolves a window (logged above as
+    // `smartScrollImage`) and then scrolls through SendInput, which follows the
+    // CURSOR, not the handle. Without this the resolution has no write to be
+    // joined to (Codex Round 2). One event per burst, because each iteration is
+    // a separate dispatch.
+    logDispatchSink({ sink: "sendinput", tool: "scroll:smart", targetHwnd: null });
     if (delta > 0) {
       await mouse.scrollDown(effectiveTicks);
     } else {

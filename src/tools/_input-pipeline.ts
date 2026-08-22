@@ -1500,12 +1500,21 @@ export async function dispatchScrollWheel(
       const scrollByWheel = nativeUia?.uiaScrollByWheelAtHwnd;
       if (typeof scrollByWheel === "function") {
         const wheelDelta = wheelDeltaForNotch(params);
-        logDispatchSink({ sink: "uia", tool: "scroll", targetHwnd: dest.hwnd, tier: "1" });
         const result = (await scrollByWheel({
           hwnd: dest.hwnd.toString(),
           wheelDeltaY: wheelDelta.y,
           wheelDeltaX: wheelDelta.x,
         })) ?? { ok: false, scrolled: false };
+        // ADR-035 Phase 1 — recorded from the RESULT, not before the call: the
+        // native side returns `ok:false` without ever reaching
+        // `SetScrollPercent` when the target has no usable ScrollPattern, and
+        // the caller then falls through to Tier 3. Logging on entry would put
+        // both a UIA and a PostMessage dispatch in the log for one write
+        // (Codex Round 2). `ok:true, scrolled:false` DID call it — a boundary
+        // no-op is still a dispatch.
+        if (result.ok === true) {
+          logDispatchSink({ sink: "uia", tool: "scroll", targetHwnd: dest.hwnd, tier: "1" });
+        }
         if (result.ok === true && result.scrolled === true) {
           return {
             scrolled: true,
@@ -1546,7 +1555,11 @@ export async function dispatchScrollWheel(
       // future phase. The tab is the destination, not the point.
       const cx = params.x ?? Math.floor(pre.clientWidth / 2);
       const cy = params.y ?? Math.floor(pre.clientHeight / 2);
-      logDispatchSink({ sink: "cdp", tool: "scroll", targetHwnd: null, tier: "2" });
+      // Recorded AFTER the await for the same reason as Tier 1: the helper
+      // resolves the tab and opens a session first, and either can fail — the
+      // surrounding catch turns that into a plain `null` outcome, so an event
+      // on entry would report a wheel that was never sent (Codex Round 2). The
+      // await resolving means the protocol command went out.
       await dispatchWheelInTab(
         wheelDelta.x,
         wheelDelta.y,
@@ -1555,6 +1568,7 @@ export async function dispatchScrollWheel(
         dest.tabId,
         port,
       );
+      logDispatchSink({ sink: "cdp", tool: "scroll", targetHwnd: null, tier: "2" });
       // Settle: CDP wheel handling is synchronous on the renderer side but
       // scrollTop reflects the layout-flushed value. A tiny yield is enough
       // to land on the post-frame state without burning latency.

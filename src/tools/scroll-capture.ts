@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { logDispatchSink } from "./_resolve-log.js";
 import sharp from "sharp";
 import { keyboard, mouse } from "../engine/nutjs.js";
 import { restoreAndFocusWindow } from "../engine/win32.js";
@@ -99,6 +100,11 @@ async function captureRawRegion(
 
 async function pressAndRelease(keyCombo: string): Promise<void> {
   const keys = parseKeys(keyCombo);
+  // ADR-035 Phase 1 — the capture path resolves a window and then drives it
+  // with foreground keystrokes, which follow FOCUS, not the handle. The
+  // resolution is already logged by the shared helper; without this the two
+  // cannot be joined (Codex Round 2).
+  logDispatchSink({ sink: "sendinput", tool: "scroll:capture", targetHwnd: null });
   await keyboard.pressKey(...keys);
   await keyboard.releaseKey(...keys);
 }
@@ -439,6 +445,7 @@ export const scrollCaptureHandler = async ({
         if (direction === "down") {
           await pressAndRelease("pagedown");
         } else {
+          logDispatchSink({ sink: "sendinput", tool: "scroll:capture", targetHwnd: null });
           await mouse.scrollRight(H_SCROLL_STEPS);
         }
         await sleep(scrollDelayMs);

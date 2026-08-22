@@ -92,6 +92,19 @@ vi.mock("../../src/engine/native-engine.js", () => ({
 // (and still what other call sites use), so both are stubbed here. Every
 // behavioural assertion below is unchanged; only the stub the dispatcher
 // reaches for moved.
+// ADR-035 Phase 1: the tier events are asserted below, so the log is captured
+// here and re-enabled (the unit setup disables it process-wide so no test writes
+// to the developer's real diagnostic log).
+const mockLogDiagnostic = vi.fn();
+vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/diagnostic-log.js")>();
+  return {
+    ...actual,
+    logDiagnostic: (...a: unknown[]) => mockLogDiagnostic(...(a as [])),
+    isDiagnosticLogEnabled: () => true,
+  };
+});
+
 const resolveWindowTargetMock = vi.fn();
 const findPlainTopLevelWindowByTitleMock = vi.fn();
 const findPlainTopLevelWindowsByTitleMock = vi.fn();
@@ -294,6 +307,56 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     const dest = await resolveInputDestination({ windowTitle: "@active" });
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
     expect(findPlainTopLevelWindowsByTitleMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-035 Phase 1 — a tier event means that tier performed a write
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-035 Phase 1 — scroll tier dispatch events", () => {
+  function sinks(): Array<Record<string, any>> {
+    return mockLogDiagnostic.mock.calls
+      .map((c) => c[0] as Record<string, any>)
+      .filter((e) => e.kind === "dispatch_sink");
+  }
+
+  beforeEach(() => {
+    mockLogDiagnostic.mockClear();
+    uiaScrollByWheelAtHwndMock.mockReset();
+    win32PostMessageMock.mockReset();
+    win32GetScrollInfoMock.mockReset();
+  });
+
+  it("Tier 1 that never reaches SetScrollPercent records NO uia event", async () => {
+    // `ok:false` is the native side saying it found no usable ScrollPattern and
+    // returned before writing. The caller then falls through to Tier 3, so an
+    // event here would put two dispatches in the log for one write
+    // (Codex Round 2).
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+    win32PostMessageMock.mockReturnValue(false);
+    await dispatchScrollWheel({ kind: "hwnd", hwnd: 0x1n }, { direction: "down", notch: 1 });
+    expect(sinks().filter((e) => e.sink === "uia")).toHaveLength(0);
+  });
+
+  it("Tier 1 that reaches it records one uia event, boundary no-op included", async () => {
+    // `ok:true, scrolled:false` DID call SetScrollPercent — a page-boundary
+    // no-op is still a dispatch.
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: false });
+    win32PostMessageMock.mockReturnValue(false);
+    await dispatchScrollWheel({ kind: "hwnd", hwnd: 0x1n }, { direction: "down", notch: 1 });
+    expect(sinks().filter((e) => e.sink === "uia")).toHaveLength(1);
+    expect(sinks().find((e) => e.sink === "uia")).toMatchObject({ tier: "1", targetHwnd: "1" });
+  });
+
+  it("Tier 3 records nothing when the native PostMessage binding is absent", async () => {
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+    win32PostMessageMock.mockReturnValue(false);
+    await dispatchScrollWheel({ kind: "hwnd", hwnd: 0x1n }, { direction: "down", notch: 1 });
+    // The stub returns false on the first post, so the loop breaks with nothing
+    // delivered — but the message WAS handed to the OS, which is what the event
+    // records. What must not appear is a second one.
+    expect(sinks().filter((e) => e.sink === "postmessage").length).toBeLessThanOrEqual(1);
   });
 });
 

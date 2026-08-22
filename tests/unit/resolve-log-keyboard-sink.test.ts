@@ -43,9 +43,13 @@ vi.mock("../../src/engine/nutjs.js", () => ({
 // PowerShell fallback is no better — it shells out and clobbers the clipboard —
 // so `hasNativeTypeViaClipboard` is pinned TRUE and the addon call is replaced,
 // which keeps the branch under test while nothing leaves the process.
+// The addon's own result shape: `pasted` is what says the chord went out, and
+// the observer now reads it rather than assuming (Codex Round 2).
 const mockNativeTypeViaClipboard = vi.fn(async () => ({
-  backend: "native" as const,
+  ok: true,
+  pasted: true,
   clipboardRestored: true,
+  verify: { ok: true, postCloseChecked: true },
 }));
 vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/native-engine.js")>();
