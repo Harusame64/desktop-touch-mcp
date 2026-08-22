@@ -11,12 +11,17 @@
  * pre-empted the dedicated cross-window check — the one whose refusal names
  * the flag.
  *
- * Two pins:
- *   1. start descriptor carries the title, endpoint descriptor does not, and
- *      an authorised cross-window drag executes (negative control).
- *   2. without the flag, an endpoint in another window is refused by the
- *      CrossWindowDragBlocked check — whose message names the flag — not by a
- *      title-mismatch refusal that cannot.
+ * Two pins, and they are not equally strong — worth saying so rather than
+ * letting the file look better covered than it is:
+ *   1. **Pins this change.** The start descriptor carries the title, the
+ *      endpoint descriptor does not, and an authorised cross-window drag runs
+ *      to the button release. Put the title back on the endpoint and this
+ *      fails.
+ *   2. **Regression guard only.** Without the flag, an endpoint in another
+ *      window is refused by the CrossWindowDragBlocked check — whose message
+ *      names the flag. This mocks `runActionGuard` wholesale, so it passes
+ *      with or without the endpoint change; it is here to catch the check
+ *      being lost, not to demonstrate the fix.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

@@ -22,8 +22,8 @@ const { mockEnumWindows, mockBuildWindowIdentity, mockRefreshWin32Fluents,
 
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: mockEnumWindows,
-  // Used by the coordinate path's title-hint verdict (same-process allowance
-  // for owned dialogs / popups).
+  // Used by the coordinate path's title-hint verdict. The allowance is pid
+  // equality, which covers owned dialogs and same-application siblings alike.
   getWindowProcessId: mockGetWindowProcessId,
 }));
 
@@ -183,6 +183,34 @@ describe("resolveActionTarget — coordinate kind", () => {
       { actionKind: "mouseClick" }
     );
     expect(result.warnings.some(w => w.includes("does not match"))).toBe(true);
+  });
+
+  it("delivers into a SIBLING window of the same process, not just an owned dialog", async () => {
+    // The same-process allowance is pid equality, which is wider than
+    // ownership: one process routinely owns several unrelated top-level windows
+    // (every Chrome window, every File Explorer window, two Windows Terminal
+    // windows measured on this project at pid 16372). So naming one of those
+    // and landing in a sibling is DELIVERED, not refused.
+    //
+    // Pinned deliberately. It is not a regression — that click was delivered
+    // before this change too — but it is the shape the CHANGELOG has to
+    // describe honestly, and tightening it later must be a decision somebody
+    // makes on purpose rather than a quiet side effect.
+    mockFindContainingWindow.mockReturnValue({ hwnd: BigInt("3001"), title: "Downloads", zOrder: 0 });
+    mockEnumWindows.mockReturnValue([
+      { hwnd: BigInt("3001"), title: "Downloads", zOrder: 0 },
+      { hwnd: BigInt("3002"), title: "Documents", zOrder: 1 },
+    ]);
+    mockGetWindowProcessId.mockReturnValue(4242);   // one explorer.exe for both
+
+    const result = await resolveActionTarget(
+      { kind: "coordinate", x: 100, y: 100, windowTitle: "Documents" },
+      { actionKind: "mouseClick" }
+    );
+
+    expect(result.titleMismatch).toBeUndefined();
+    expect(result.lens).not.toBeNull();
+    expect(result.warnings.some(w => w.includes("same process"))).toBe(true);
   });
 
   it("no warning when windowTitle hint matches containing window", async () => {

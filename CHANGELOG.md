@@ -30,10 +30,11 @@
   success, with the mismatch mentioned only in the server's own log. The same
   applies when the named window is not open at all — the click is refused and
   the response names the window that occupies the point, instead of quietly
-  clicking it. Dialogs and popups that belong to the named application still
-  accept clicks under the application's title, and a browser window still
-  matches its browser's name ("Google Chrome", "Microsoft Edge") even when the
-  page title comes first.
+  clicking it. A click whose point lands in another window of the SAME
+  application still goes through — a dialog the application opened, but also a
+  second window of it — so this refusal is about hitting a different program,
+  not a different window. A browser window still matches its browser's name
+  ("Google Chrome", "Microsoft Edge") even when the page title comes first.
 
   **What you may notice:** a click that used to land somewhere unintended now
   fails, and tells you either that the target window was replaced or which

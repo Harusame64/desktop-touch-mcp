@@ -109,9 +109,10 @@ export interface ResolveActionTargetResult {
    *     itself — a click naming a closed window must not be delivered to
    *     whatever now occupies the point.
    * A mismatch is NOT reported when the hint resolves to the containing window
-   * itself (by hwnd, under its live title) or to a window of the same process
-   * (an owned dialog / popup clicked under the parent application's title) —
-   * those were the Round 2 false refusals.
+   * itself (by hwnd, under its live title) or to a window of the same process —
+   * those were the Round 2 false refusals. The same-process allowance is pid
+   * equality and therefore wider than "an owned dialog": see the note on that
+   * branch in `classifyTitleHint`.
    */
   titleMismatch?: { requested: string; resolved: string; kind?: "different_window" | "not_found" };
 }
@@ -438,14 +439,17 @@ async function resolveCoordinateTarget(
  * Does the caller's `windowTitle` hint name the window that contains the point?
  *
  * Verdicts:
- *   - `"match"`            — yes: the containing title contains the hint (raw
- *                            form checked BEFORE the normalized form, so a bare
- *                            browser name still matches the suffix it would be
- *                            stripped of), or the hint resolves to the
- *                            containing window's hwnd under its live title.
+ *   - `"match"`            — yes: the containing title contains the hint in
+ *                            either its raw or its normalized form (a bare
+ *                            browser name matches the raw one, which still
+ *                            carries the suffix the normalized one strips), or
+ *                            the hint resolves to the containing window's hwnd
+ *                            under its live title.
  *   - `"same_process"`     — the hint names a different window of the SAME
- *                            process: an owned dialog / popup clicked under the
- *                            parent application's title. Deliver with a warning.
+ *                            process. That is the owned-dialog case it was
+ *                            added for, but pid equality is wider than
+ *                            ownership — see the note at the branch itself.
+ *                            Deliver with a warning.
  *   - `"different_window"` — the hint names a live window of another process,
  *                            or the desktop could not be enumerated to check.
  *                            The coordinates are wrong for the named window.
@@ -497,10 +501,27 @@ function classifyTitleHint(
 
   if (matches.length === 0) return "not_found";
 
-  // The hint names some OTHER live window. Same process → owned dialog /
-  // popup; different process → the click is aimed at the wrong window. The
-  // pid probe is best-effort: when it cannot answer, the same-process
-  // allowance simply does not apply.
+  // The hint names some OTHER live window. Different process → the click is
+  // aimed at the wrong application; same process → deliver.
+  //
+  // Read that allowance for what it is: **pid equality, not ownership.** It
+  // covers the case it was added for — an owned dialog clicked under its
+  // parent application's title — but it covers more, because one process
+  // routinely owns several unrelated top-level windows: every Chrome window,
+  // every File Explorer window, and (measured on this project) two Windows
+  // Terminal windows sharing pid 16372. So a click naming one of those whose
+  // point lands in a SIBLING is still delivered.
+  //
+  // Left that way on purpose. It is not a regression — that click was
+  // delivered before this change too — and tightening it to an owner-chain /
+  // dialog-class test (`WindowZInfo` already carries `ownerHwnd` and
+  // `className`) would add refusals to a release whose last two rounds were
+  // spent removing refusals that fired on ordinary work. Recorded as a
+  // residual, to be closed with the destination-pin work that removes the need
+  // to infer any of this from titles.
+  //
+  // The pid probe is best-effort: when it cannot answer, the allowance simply
+  // does not apply (fail closed).
   const containingPid = win32.getWindowProcessId?.(containing.hwnd) ?? 0;
   if (
     containingPid !== 0 &&
