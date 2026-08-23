@@ -45,7 +45,13 @@ function networkFailure() {
 describe("launcher release resolution", () => {
   let home: string;
   let warnings: string[];
-  const savedEnv = { ...process.env };
+  const OWNED_ENV = [
+    "DESKTOP_TOUCH_MCP_HOME",
+    "DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED",
+    "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK",
+    "DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS",
+  ] as const;
+  const savedEnv = Object.fromEntries(OWNED_ENV.map((key) => [key, process.env[key]]));
 
   beforeEach(async () => {
     home = await mkdtemp(path.join(os.tmpdir(), "dtmcp-launcher-"));
@@ -63,7 +69,10 @@ describe("launcher release resolution", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    process.env = { ...savedEnv };
+    for (const key of OWNED_ENV) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
     await rm(home, { recursive: true, force: true });
   });
 
@@ -146,6 +155,30 @@ describe("launcher release resolution", () => {
     await expect(launcher.ensureRelease()).rejects.toThrow(/fetch failed/);
   });
 
+  it("aborts the release lookup once the configured timeout elapses", async () => {
+    process.env.DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS = "50";
+    const launcher = await loadLauncher(home);
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject((init.signal as AbortSignal).reason));
+    })));
+
+    await expect(launcher.ensureRelease()).rejects.toThrow(/timed out after 50ms/);
+  });
+
+  it("ignores an unusable timeout value instead of aborting immediately", async () => {
+    // Through the old Number(env ?? 15000) path this coerced to a ~1ms timer.
+    process.env.DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS = "";
+    const launcher = await loadLauncher(home);
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise((resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject((init.signal as AbortSignal).reason));
+      setTimeout(() => resolve({ ok: false, status: 404, statusText: "Not Found" }), 60);
+    })));
+
+    // Reaching the server at all proves the request was not aborted at ~1ms.
+    await expect(launcher.ensureRelease()).rejects.toThrow(/404/);
+    expect(warnings.join("\n")).toMatch(/is not a positive number/);
+  });
+
   it("rethrows when the fallback is on but nothing is cached", async () => {
     process.env.DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK = "1";
     const launcher = await loadLauncher(home);
@@ -154,6 +187,96 @@ describe("launcher release resolution", () => {
     }));
 
     await expect(launcher.ensureRelease()).rejects.toThrow(/fetch failed/);
+  });
+});
+
+describe("isVerifiedInstall", () => {
+  let home: string;
+  const savedAllowUnverified = process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+
+  beforeEach(async () => {
+    home = await mkdtemp(path.join(os.tmpdir(), "dtmcp-verified-"));
+    process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED = "1";
+  });
+
+  afterEach(async () => {
+    if (savedAllowUnverified === undefined) delete process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+    else process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED = savedAllowUnverified;
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("accepts a finalized hash and rejects a malformed one", async () => {
+    const launcher = await loadLauncher(home);
+    const { assetName } = launcher.expectedReleaseSpec();
+    // The branch every published launcher takes; a source tree never reaches it
+    // through ensureRelease because its own manifest is still PENDING.
+    delete process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+
+    const good = await seedRelease(home, "v1.14.3", { tagName: "v1.14.3", assetName, sha256: "a".repeat(64) });
+    const bad = await seedRelease(home, "v1.14.2", { tagName: "v1.14.2", assetName, sha256: "not-a-hash" });
+
+    await expect(launcher.isVerifiedInstall(good, "v1.14.3")).resolves.toBe(true);
+    await expect(launcher.isVerifiedInstall(bad, "v1.14.2")).resolves.toBe(false);
+  });
+
+  it("accepts an unhashed install only while the development opt-in is set", async () => {
+    const launcher = await loadLauncher(home);
+    const { assetName } = launcher.expectedReleaseSpec();
+    const dir = await seedRelease(home, "v1.14.3", {
+      tagName: "v1.14.3",
+      assetName,
+      sha256: null,
+      sha256Pending: true,
+    });
+
+    await expect(launcher.isVerifiedInstall(dir, "v1.14.3")).resolves.toBe(true);
+    delete process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+    await expect(launcher.isVerifiedInstall(dir, "v1.14.3")).resolves.toBe(false);
+  });
+
+  it("rejects a directory whose marker is missing or names something else", async () => {
+    const launcher = await loadLauncher(home);
+    const { assetName } = launcher.expectedReleaseSpec();
+
+    const unmarked = await seedRelease(home, "v1.14.3", null);
+    const wrongTag = await seedRelease(home, "v1.14.2", { tagName: "v9.9.9", assetName, sha256: "b".repeat(64) });
+    const wrongAsset = await seedRelease(home, "v1.14.1", {
+      tagName: "v1.14.1",
+      assetName: "someone-elses.zip",
+      sha256: "c".repeat(64),
+    });
+
+    await expect(launcher.isVerifiedInstall(unmarked, "v1.14.3")).resolves.toBe(false);
+    await expect(launcher.isVerifiedInstall(wrongTag, "v1.14.2")).resolves.toBe(false);
+    await expect(launcher.isVerifiedInstall(wrongAsset, "v1.14.1")).resolves.toBe(false);
+  });
+});
+
+describe("findCachedRelease", () => {
+  let home: string;
+  const savedAllowUnverified = process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+
+  beforeEach(async () => {
+    home = await mkdtemp(path.join(os.tmpdir(), "dtmcp-cached-"));
+    process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED = "1";
+  });
+
+  afterEach(async () => {
+    if (savedAllowUnverified === undefined) delete process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+    else process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED = savedAllowUnverified;
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("fails closed when the expected tag is not comparable", async () => {
+    const launcher = await loadLauncher(home);
+    const { assetName } = launcher.expectedReleaseSpec();
+    await seedRelease(home, "v99.0.0", { tagName: "v99.0.0", assetName, sha256: "d".repeat(64) });
+
+    // A tag that parseTagVersion cannot read would make every comparison 0,
+    // which would disarm both the at-or-below filter and the ordering.
+    await expect(launcher.findCachedRelease({ tagName: "v1.16.0-rc.1", assetName })).resolves.toBeNull();
+    // Sanity: the same cache is still refused for a comparable, lower tag.
+    await expect(launcher.findCachedRelease({ tagName: "v1.15.0", assetName })).resolves.toBeNull();
   });
 });
 
@@ -174,6 +297,10 @@ describe("parseFetchTimeoutMs", () => {
     expect(parseFetchTimeoutMs("0")).toEqual({ timeoutMs: 15000, invalidValue: "0" });
     expect(parseFetchTimeoutMs("-5")).toEqual({ timeoutMs: 15000, invalidValue: "-5" });
     expect(parseFetchTimeoutMs("Infinity")).toEqual({ timeoutMs: 15000, invalidValue: "Infinity" });
+
+    // Past Node's timer ceiling setTimeout wraps to ~1ms, so an oversized value
+    // is held at the ceiling rather than becoming an instant abort.
+    expect(parseFetchTimeoutMs("999999999999")).toEqual({ timeoutMs: 2147483647, invalidValue: null });
   });
 });
 
@@ -200,6 +327,16 @@ describe("isNetworkClassError", () => {
     expect(isNetworkClassError(new Error("SHA256 mismatch for desktop-touch-mcp-windows.zip"))).toBe(false);
     expect(isNetworkClassError(new Error("Unexpected tag: expected v1.0.0, got v2.0.0"))).toBe(false);
     expect(isNetworkClassError(undefined)).toBe(false);
+
+    // A programming mistake that merely mentions a socket is still a bug.
+    expect(
+      isNetworkClassError(new TypeError("Cannot read properties of undefined (reading 'socket')"))
+    ).toBe(false);
+    expect(isNetworkClassError(new TypeError("x is not a function"))).toBe(false);
+
+    // undici can report a multi-address failure as an AggregateError.
+    const aggregate = new AggregateError([new TypeError("fetch failed")], "all attempts failed");
+    expect(isNetworkClassError(aggregate)).toBe(true);
   });
 });
 

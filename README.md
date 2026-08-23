@@ -105,6 +105,12 @@ Set `DESKTOP_TOUCH_MCP_HOME` to override the cache root directory.
 > startup loudly. Leave it off unless a host timeout forces your hand: while it
 > is set, a corrupted install of your current version is reused instead of being
 > repaired.
+>
+> The two work together: with the fallback on, startup still waits out the
+> timeout before falling back, so lower `DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS` if
+> your host's budget is tight. Note also that a download which is still
+> arriving, however slowly, is never interrupted — the fallback answers when the
+> network has gone silent, not when it is merely slow.
 
 ### Register with Claude CLI
 

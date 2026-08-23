@@ -69,6 +69,8 @@ function offlineFallbackEnabled() {
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15000;
+/** Node's setTimeout ceiling; a larger delay silently becomes a ~1ms timer. */
+const MAX_FETCH_TIMEOUT_MS = 2147483647;
 
 /**
  * Pure parser for DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS. Only a finite, positive
@@ -91,12 +93,20 @@ export function parseFetchTimeoutMs(raw) {
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS, invalidValue: trimmed };
   }
-  return { timeoutMs: parsed, invalidValue: null };
+  // Someone raising the limit to "effectively never" means the opposite of a
+  // ~1ms timer, so hold an oversized value at the ceiling instead of letting
+  // setTimeout wrap it — the same failure this parser exists to prevent.
+  return { timeoutMs: Math.min(parsed, MAX_FETCH_TIMEOUT_MS), invalidValue: null };
 }
 
+let warnedAboutTimeoutValue = null;
+
 function fetchTimeoutMs() {
-  const { timeoutMs, invalidValue } = parseFetchTimeoutMs(process.env.DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS);
-  if (invalidValue !== null) {
+  const raw = process.env.DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS;
+  const { timeoutMs, invalidValue } = parseFetchTimeoutMs(raw);
+  // Resolved once per request (lookup, then download), so warn once per value.
+  if (invalidValue !== null && warnedAboutTimeoutValue !== invalidValue) {
+    warnedAboutTimeoutValue = invalidValue;
     warn(`DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS=${JSON.stringify(invalidValue)} is not a positive number of milliseconds — using the ${DEFAULT_FETCH_TIMEOUT_MS}ms default.`);
   }
   return timeoutMs;
@@ -118,24 +128,30 @@ const NETWORK_ERROR_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 
+/** The exact messages undici uses for a transport failure, not a substring match. */
+const FETCH_TRANSPORT_MESSAGES = new Set(["fetch failed", "terminated", "other side closed"]);
+
 /**
  * True only for "GitHub was unreachable" failures: an abort/stall timeout, a
  * transport-level fetch failure, or a socket error code. An HTTP 404, a 403
  * rate limit, a SHA256 mismatch and an unexpected tag are all answers from a
- * reachable server, so they return false and keep failing loudly.
+ * reachable server, so they return false and keep failing loudly — and so does
+ * a programming mistake, which must never be mistaken for a dead network.
  */
-export function isNetworkClassError(error) {
-  let current = error;
-  for (let depth = 0; current && typeof current === "object" && depth < 5; depth += 1) {
-    if (current.name === "AbortError" || current.name === "TimeoutError") return true;
-    if (typeof current.code === "string" && NETWORK_ERROR_CODES.has(current.code)) return true;
-    // undici reports transport failures as TypeError("fetch failed" / "terminated").
-    if (current instanceof TypeError && /fetch failed|terminated|network|socket/i.test(String(current.message))) {
-      return true;
-    }
-    current = current.cause;
+export function isNetworkClassError(error, depth = 0) {
+  if (!error || typeof error !== "object" || depth > 4) return false;
+  if (error.name === "AbortError" || error.name === "TimeoutError") return true;
+  if (typeof error.code === "string" && NETWORK_ERROR_CODES.has(error.code)) return true;
+  // undici raises TypeError for transport failures. Match its exact wording
+  // rather than a substring, so "Cannot read properties of undefined (reading
+  // 'socket')" stays what it is: a bug, and a loud failure.
+  if (error instanceof TypeError && FETCH_TRANSPORT_MESSAGES.has(String(error.message).trim().toLowerCase())) {
+    return true;
   }
-  return false;
+  if (Array.isArray(error.errors) && error.errors.some((entry) => isNetworkClassError(entry, depth + 1))) {
+    return true;
+  }
+  return isNetworkClassError(error.cause, depth + 1);
 }
 
 /**
@@ -635,8 +651,13 @@ export function compareTagVersions(a, b) {
  * only after a successful verify then rename, and that marker names this very
  * directory. A directory with no metadata is an interrupted or hand-made
  * install and is never eligible as a fallback for a different version.
+ *
+ * The marker is as writable as the runtime it vouches for, so this is not a
+ * defence against someone who already controls the cache directory — it is the
+ * record of which installs completed the verified path, which is what keeps an
+ * interrupted or abandoned download from being served as a silent downgrade.
  */
-async function isVerifiedInstall(releaseDir, tagName) {
+export async function isVerifiedInstall(releaseDir, tagName) {
   if (!existsSync(path.join(releaseDir, "dist", "index.js"))) return false;
   const metadata = await readReleaseMetadata(releaseDir);
   if (!metadata) return false;
@@ -649,7 +670,11 @@ async function isVerifiedInstall(releaseDir, tagName) {
 }
 
 /** Newest verified install at or below the expected tag, or null. */
-async function findCachedRelease(expected) {
+export async function findCachedRelease(expected) {
+  // Without a comparable expected version there is no "at or below", and
+  // compareTagVersions would answer 0 for everything — which would disarm both
+  // the filter and the sort below. Fail closed instead.
+  if (parseTagVersion(expected.tagName) === null) return null;
   let entries;
   try {
     entries = await readdir(RELEASES_DIR, { withFileTypes: true });
