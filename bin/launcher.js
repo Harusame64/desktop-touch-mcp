@@ -80,6 +80,8 @@ const MAX_FETCH_TIMEOUT_MS = 2147483647;
  *
  * @returns {{ timeoutMs: number, invalidValue: string | null }} `invalidValue`
  *   is the offending raw value when the default had to be substituted.
+ *
+ * @internal
  */
 export function parseFetchTimeoutMs(raw) {
   if (raw === undefined || raw === null) {
@@ -90,7 +92,9 @@ export function parseFetchTimeoutMs(raw) {
     return { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS, invalidValue: "" };
   }
   const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  // Below a millisecond there is no wait left to honour: setTimeout rounds it
+  // up to ~1ms, which is the immediate abort this parser exists to prevent.
+  if (!Number.isFinite(parsed) || parsed < 1) {
     return { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS, invalidValue: trimmed };
   }
   // Someone raising the limit to "effectively never" means the opposite of a
@@ -137,6 +141,12 @@ const FETCH_TRANSPORT_MESSAGES = new Set(["fetch failed", "terminated", "other s
  * rate limit, a SHA256 mismatch and an unexpected tag are all answers from a
  * reachable server, so they return false and keep failing loudly — and so does
  * a programming mistake, which must never be mistaken for a dead network.
+ *
+ * The recognised set is deliberately under-inclusive: an unlisted failure falls
+ * through to "not the network" and fails loudly, which is the safe direction —
+ * so add to it only for a failure actually seen in the field.
+ *
+ * @internal
  */
 export function isNetworkClassError(error, depth = 0) {
   if (!error || typeof error !== "object" || depth > 4) return false;
@@ -298,6 +308,7 @@ function releaseMetadataPath(releaseDir) {
   return path.join(releaseDir, RELEASE_METADATA_FILE);
 }
 
+/** @internal Exported for tests; not part of the package's public surface. */
 export function expectedReleaseSpec() {
   if (RELEASE_MANIFEST.tagName !== RELEASE_TAG) {
     throw new Error(
@@ -561,6 +572,7 @@ async function installRelease(release, expected) {
   }
 }
 
+/** @internal Exported for tests; not part of the package's public surface. */
 export async function ensureRelease() {
   const expected = expectedReleaseSpec();
   const targetDir = releaseDirForTag(expected.tagName);
@@ -635,7 +647,7 @@ function parseTagVersion(tagName) {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-/** Orders release tags numerically: v1.10.0 > v1.9.10 > v1.9.9. */
+/** Orders release tags numerically: v1.10.0 > v1.9.10 > v1.9.9. @internal */
 export function compareTagVersions(a, b) {
   const left = parseTagVersion(a);
   const right = parseTagVersion(b);
@@ -656,6 +668,8 @@ export function compareTagVersions(a, b) {
  * defence against someone who already controls the cache directory — it is the
  * record of which installs completed the verified path, which is what keeps an
  * interrupted or abandoned download from being served as a silent downgrade.
+ *
+ * @internal
  */
 export async function isVerifiedInstall(releaseDir, tagName) {
   if (!existsSync(path.join(releaseDir, "dist", "index.js"))) return false;
@@ -669,7 +683,7 @@ export async function isVerifiedInstall(releaseDir, tagName) {
   return metadata.sha256Pending === true && allowUnverifiedRelease();
 }
 
-/** Newest verified install at or below the expected tag, or null. */
+/** Newest verified install at or below the expected tag, or null. @internal */
 export async function findCachedRelease(expected) {
   // Without a comparable expected version there is no "at or below", and
   // compareTagVersions would answer 0 for everything — which would disarm both

@@ -73,7 +73,7 @@ describe("launcher release resolution", () => {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
     }
-    await rm(home, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
 
   it("reuses a verified install without touching the network", async () => {
@@ -193,6 +193,7 @@ describe("launcher release resolution", () => {
 describe("isVerifiedInstall", () => {
   let home: string;
   const savedAllowUnverified = process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+  const savedCacheHome = process.env.DESKTOP_TOUCH_MCP_HOME;
 
   beforeEach(async () => {
     home = await mkdtemp(path.join(os.tmpdir(), "dtmcp-verified-"));
@@ -202,7 +203,11 @@ describe("isVerifiedInstall", () => {
   afterEach(async () => {
     if (savedAllowUnverified === undefined) delete process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
     else process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED = savedAllowUnverified;
-    await rm(home, { recursive: true, force: true });
+    // Leaving this pointing at a deleted directory would bite the next case
+    // appended to this file.
+    if (savedCacheHome === undefined) delete process.env.DESKTOP_TOUCH_MCP_HOME;
+    else process.env.DESKTOP_TOUCH_MCP_HOME = savedCacheHome;
+    await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
 
   it("accepts a finalized hash and rejects a malformed one", async () => {
@@ -255,6 +260,7 @@ describe("isVerifiedInstall", () => {
 describe("findCachedRelease", () => {
   let home: string;
   const savedAllowUnverified = process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
+  const savedCacheHome = process.env.DESKTOP_TOUCH_MCP_HOME;
 
   beforeEach(async () => {
     home = await mkdtemp(path.join(os.tmpdir(), "dtmcp-cached-"));
@@ -264,7 +270,11 @@ describe("findCachedRelease", () => {
   afterEach(async () => {
     if (savedAllowUnverified === undefined) delete process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED;
     else process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED = savedAllowUnverified;
-    await rm(home, { recursive: true, force: true });
+    // Leaving this pointing at a deleted directory would bite the next case
+    // appended to this file.
+    if (savedCacheHome === undefined) delete process.env.DESKTOP_TOUCH_MCP_HOME;
+    else process.env.DESKTOP_TOUCH_MCP_HOME = savedCacheHome;
+    await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
 
   it("fails closed when the expected tag is not comparable", async () => {
@@ -281,7 +291,7 @@ describe("findCachedRelease", () => {
 });
 
 describe("parseFetchTimeoutMs", () => {
-  it("accepts only a finite positive number of milliseconds", async () => {
+  it("accepts only a wait that a timer can actually honour", async () => {
     const launcher = await import(/* @vite-ignore */ `${LAUNCHER_URL}?case=timeout`);
     const { parseFetchTimeoutMs } = launcher;
 
@@ -296,6 +306,8 @@ describe("parseFetchTimeoutMs", () => {
     expect(parseFetchTimeoutMs("abc")).toEqual({ timeoutMs: 15000, invalidValue: "abc" });
     expect(parseFetchTimeoutMs("0")).toEqual({ timeoutMs: 15000, invalidValue: "0" });
     expect(parseFetchTimeoutMs("-5")).toEqual({ timeoutMs: 15000, invalidValue: "-5" });
+    // setTimeout rounds a sub-millisecond delay up to ~1ms, so it is not a wait.
+    expect(parseFetchTimeoutMs("0.5")).toEqual({ timeoutMs: 15000, invalidValue: "0.5" });
     expect(parseFetchTimeoutMs("Infinity")).toEqual({ timeoutMs: 15000, invalidValue: "Infinity" });
 
     // Past Node's timer ceiling setTimeout wraps to ~1ms, so an oversized value
