@@ -6,7 +6,9 @@ import type { Plugin } from "vite";
 const stripShebang: Plugin = {
   name: "strip-shebang",
   transform(code, id) {
-    if (id.endsWith(".js") && code.startsWith("#!")) {
+    // Split on "?" so a cache-busting query (bin/launcher.js?case=1, used by the
+    // release-resolution tests to get a fresh module per case) still matches.
+    if (id.split("?")[0].endsWith(".js") && code.startsWith("#!")) {
       return { code: code.slice(code.indexOf("\n") + 1), map: null };
     }
     return null;
