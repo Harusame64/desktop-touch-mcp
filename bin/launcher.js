@@ -58,6 +58,17 @@ function allowUnverifiedRelease() {
 }
 
 /**
+ * Opt-in escape hatch for offline-first startup. When enabled, the launcher
+ * may run an already-installed release without re-verification, and may fall
+ * back to any cached release when the release fetch fails. The default
+ * (flag unset) keeps the fail-closed contract: a release directory is only
+ * executed after its SHA256/metadata check passes.
+ */
+function offlineFallbackEnabled() {
+  return process.env.DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK === "1";
+}
+
+/**
  * Reads the GitHub token from the environment.
  * Supports both GITHUB_TOKEN (GitHub Actions standard) and GH_TOKEN (gh CLI).
  */
@@ -421,14 +432,15 @@ async function ensureRelease() {
     return current.releaseDir;
   }
 
-  // Offline-first: the release may already exist on disk even if the
+  // Offline-first (opt-in): the release may already exist on disk even if the
   // metadata/SHA256 check above failed (e.g. an interrupted earlier install).
   // Prefer it over a network round-trip that can hang on flaky GitHub access
   // and stall MCP startup far past host timeouts (DSH's mcp-client blocks
   // plugin activation on connection.ready - a launcher that waits minutes on
-  // fetchReleaseByTag bricks the whole host startup).
-  if (existsSync(path.join(targetDir, "dist", "index.js"))) {
-    warn(`${expected.tagName} exists but release metadata check failed - using local copy without re-verification`);
+  // fetchReleaseByTag bricks the whole host startup). Gated behind
+  // DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1 to preserve the fail-closed default.
+  if (offlineFallbackEnabled() && existsSync(path.join(targetDir, "dist", "index.js"))) {
+    warn(`${expected.tagName} exists but release metadata check failed - using local copy without re-verification (DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1)`);
     await writeCurrentRelease(expected);
     return targetDir;
   }
@@ -439,10 +451,13 @@ async function ensureRelease() {
   } catch (error) {
     // Network unreachable/unresponsive: do NOT hard-fail here. If any prior
     // version is cached, keep serving it so the host does not time out.
-    warn(`Release fetch failed (${error?.message ?? String(error)}); falling back to any locally cached release`);
-    const cached = await scanInstalledReleases();
-    if (cached) {
-      return cached;
+    // Gated: default behavior still raises (fail-closed).
+    if (offlineFallbackEnabled()) {
+      warn(`Release fetch failed (${error?.message ?? String(error)}); falling back to any locally cached release (DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1)`);
+      const cached = await scanInstalledReleases();
+      if (cached) {
+        return cached;
+      }
     }
     throw error;
   }
