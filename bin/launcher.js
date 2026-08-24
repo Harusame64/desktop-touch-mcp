@@ -15,7 +15,7 @@ import {
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 const PACKAGE_VERSION = "1.15.0";
@@ -66,6 +66,130 @@ function allowUnverifiedRelease() {
  */
 function offlineFallbackEnabled() {
   return process.env.DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK === "1";
+}
+
+const DEFAULT_FETCH_TIMEOUT_MS = 15000;
+/** Node's setTimeout ceiling; a larger delay silently becomes a ~1ms timer. */
+const MAX_FETCH_TIMEOUT_MS = 2147483647;
+
+/**
+ * Pure parser for DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS. Only a finite, positive
+ * number of milliseconds is honoured: `Number("")` is 0 and a typo is NaN, and
+ * setTimeout turns either into a ~1ms timer — so an empty or misspelled value
+ * would otherwise abort every request before it could start.
+ *
+ * @returns {{ timeoutMs: number, invalidValue: string | null }} `invalidValue`
+ *   is the offending raw value when the default had to be substituted.
+ *
+ * @internal
+ */
+export function parseFetchTimeoutMs(raw) {
+  if (raw === undefined || raw === null) {
+    return { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS, invalidValue: null };
+  }
+  const trimmed = String(raw).trim();
+  if (trimmed === "") {
+    return { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS, invalidValue: "" };
+  }
+  const parsed = Number(trimmed);
+  // Below a millisecond there is no wait left to honour: setTimeout rounds it
+  // up to ~1ms, which is the immediate abort this parser exists to prevent.
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS, invalidValue: trimmed };
+  }
+  // Someone raising the limit to "effectively never" means the opposite of a
+  // ~1ms timer, so hold an oversized value at the ceiling instead of letting
+  // setTimeout wrap it — the same failure this parser exists to prevent.
+  return { timeoutMs: Math.min(parsed, MAX_FETCH_TIMEOUT_MS), invalidValue: null };
+}
+
+let warnedAboutTimeoutValue = null;
+
+function fetchTimeoutMs() {
+  const raw = process.env.DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS;
+  const { timeoutMs, invalidValue } = parseFetchTimeoutMs(raw);
+  // Resolved once per request (lookup, then download), so warn once per value.
+  if (invalidValue !== null && warnedAboutTimeoutValue !== invalidValue) {
+    warnedAboutTimeoutValue = invalidValue;
+    warn(`DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS=${JSON.stringify(invalidValue)} is not a positive number of milliseconds — using the ${DEFAULT_FETCH_TIMEOUT_MS}ms default.`);
+  }
+  return timeoutMs;
+}
+
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+/** The exact messages undici uses for a transport failure, not a substring match. */
+const FETCH_TRANSPORT_MESSAGES = new Set(["fetch failed", "terminated", "other side closed"]);
+
+/**
+ * True only for "GitHub was unreachable" failures: an abort/stall timeout, a
+ * transport-level fetch failure, or a socket error code. An HTTP 404, a 403
+ * rate limit, a SHA256 mismatch and an unexpected tag are all answers from a
+ * reachable server, so they return false and keep failing loudly — and so does
+ * a programming mistake, which must never be mistaken for a dead network.
+ *
+ * The recognised set is deliberately under-inclusive: an unlisted failure falls
+ * through to "not the network" and fails loudly, which is the safe direction —
+ * so add to it only for a failure actually seen in the field.
+ *
+ * @internal
+ */
+export function isNetworkClassError(error, depth = 0) {
+  if (!error || typeof error !== "object" || depth > 4) return false;
+  if (error.name === "AbortError" || error.name === "TimeoutError") return true;
+  if (typeof error.code === "string" && NETWORK_ERROR_CODES.has(error.code)) return true;
+  // undici raises TypeError for transport failures. Match its exact wording
+  // rather than a substring, so "Cannot read properties of undefined (reading
+  // 'socket')" stays what it is: a bug, and a loud failure.
+  if (error instanceof TypeError && FETCH_TRANSPORT_MESSAGES.has(String(error.message).trim().toLowerCase())) {
+    return true;
+  }
+  if (Array.isArray(error.errors) && error.errors.some((entry) => isNetworkClassError(entry, depth + 1))) {
+    return true;
+  }
+  return isNetworkClassError(error.cause, depth + 1);
+}
+
+/**
+ * Arms an abort timer that fires when nothing has progressed for `timeoutMs`.
+ * `reset()` restarts the countdown — a download calls it per chunk, so the
+ * ceiling is "no bytes for timeoutMs" rather than a deadline for the whole
+ * transfer, and a slow but progressing install is never cut off.
+ */
+function createStallTimeout(label, timeoutMs) {
+  const controller = new AbortController();
+  let timer = null;
+  const reset = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      const reason = new Error(`${label} timed out after ${timeoutMs}ms without progress (raise DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS to wait longer)`);
+      reason.name = "TimeoutError";
+      controller.abort(reason);
+    }, timeoutMs);
+  };
+  reset();
+  return {
+    signal: controller.signal,
+    reset,
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
 }
 
 /**
@@ -184,7 +308,8 @@ function releaseMetadataPath(releaseDir) {
   return path.join(releaseDir, RELEASE_METADATA_FILE);
 }
 
-function expectedReleaseSpec() {
+/** @internal Exported for tests; not part of the package's public surface. */
+export function expectedReleaseSpec() {
   if (RELEASE_MANIFEST.tagName !== RELEASE_TAG) {
     throw new Error(
       `Release manifest mismatch: PACKAGE_VERSION=${PACKAGE_VERSION}, manifest=${RELEASE_MANIFEST.tagName}`
@@ -274,14 +399,13 @@ async function writeCurrentRelease(expected) {
 }
 
 async function fetchReleaseByTag(expected) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS ?? 15000));
+  const timeout = createStallTimeout("GitHub Releases API request", fetchTimeoutMs());
   try {
     const response = await fetch(REPO_API_URL, {
       headers: getGitHubHeaders({
         "Accept": "application/vnd.github+json",
       }),
-      signal: controller.signal,
+      signal: timeout.signal,
     });
 
     if (!response.ok) {
@@ -309,8 +433,13 @@ async function fetchReleaseByTag(expected) {
       tagName,
       assetUrl: asset.browser_download_url,
     };
+  } catch (error) {
+    // fetch rejects with its own AbortError; surface the reason we aborted for
+    // instead, so the message names the timeout that actually fired.
+    if (timeout.signal.aborted && timeout.signal.reason instanceof Error) throw timeout.signal.reason;
+    throw error;
   } finally {
-    clearTimeout(timeout);
+    timeout.dispose();
   }
 }
 
@@ -334,18 +463,42 @@ async function verifySha256(filePath, expectedSha256) {
 }
 
 async function downloadFile(url, destination) {
-  const response = await fetch(url, {
-    headers: getGitHubHeaders(),
-  });
+  const timeout = createStallTimeout(`Download of ${ASSET_NAME}`, fetchTimeoutMs());
+  try {
+    const response = await fetch(url, {
+      headers: getGitHubHeaders(),
+      signal: timeout.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(`Download failed with ${response.status} ${response.statusText}`);
-  }
-  if (!response.body) {
-    throw new Error("Download response did not include a body");
-  }
+    if (!response.ok) {
+      throw new Error(`Download failed with ${response.status} ${response.statusText}`);
+    }
+    if (!response.body) {
+      throw new Error("Download response did not include a body");
+    }
 
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(destination));
+    // Every chunk restarts the countdown: the zip may legitimately take minutes
+    // on a thin connection, but a connection that stops delivering bytes must
+    // not hold up startup forever.
+    const heartbeat = new Transform({
+      transform(chunk, _encoding, callback) {
+        timeout.reset();
+        callback(null, chunk);
+      },
+    });
+
+    await pipeline(
+      Readable.fromWeb(response.body),
+      heartbeat,
+      createWriteStream(destination),
+      { signal: timeout.signal }
+    );
+  } catch (error) {
+    if (timeout.signal.aborted && timeout.signal.reason instanceof Error) throw timeout.signal.reason;
+    throw error;
+  } finally {
+    timeout.dispose();
+  }
 }
 
 function run(command, args) {
@@ -419,7 +572,8 @@ async function installRelease(release, expected) {
   }
 }
 
-async function ensureRelease() {
+/** @internal Exported for tests; not part of the package's public surface. */
+export async function ensureRelease() {
   const expected = expectedReleaseSpec();
   const targetDir = releaseDirForTag(expected.tagName);
   if (await isInstalled(targetDir, expected)) {
@@ -432,55 +586,125 @@ async function ensureRelease() {
     return current.releaseDir;
   }
 
-  // Offline-first (opt-in): the release may already exist on disk even if the
-  // metadata/SHA256 check above failed (e.g. an interrupted earlier install).
-  // Prefer it over a network round-trip that can hang on flaky GitHub access
-  // and stall MCP startup far past host timeouts (DSH's mcp-client blocks
-  // plugin activation on connection.ready - a launcher that waits minutes on
-  // fetchReleaseByTag bricks the whole host startup). Gated behind
-  // DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1 to preserve the fail-closed default.
-  if (offlineFallbackEnabled() && existsSync(path.join(targetDir, "dist", "index.js"))) {
-    warn(`${expected.tagName} exists but release metadata check failed - using local copy without re-verification (DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1)`);
-    await writeCurrentRelease(expected);
-    return targetDir;
-  }
-
+  // GitHub is always tried first - bounded by the stall timeout, so a reachable
+  // network still re-installs over a broken tree and the self-heal is intact.
+  // Only when that attempt fails because the network was unusable may the
+  // opt-in offline fallback answer instead.
   let release;
   try {
     release = await fetchReleaseByTag(expected);
   } catch (error) {
-    // Network unreachable/unresponsive: do NOT hard-fail here. If any prior
-    // version is cached, keep serving it so the host does not time out.
-    // Gated: default behavior still raises (fail-closed).
-    if (offlineFallbackEnabled()) {
-      warn(`Release fetch failed (${error?.message ?? String(error)}); falling back to any locally cached release (DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1)`);
-      const cached = await scanInstalledReleases();
-      if (cached) {
-        return cached;
-      }
-    }
+    const fallback = await resolveOfflineFallback(expected, targetDir, error);
+    if (fallback) return fallback;
     throw error;
   }
 
-  return installRelease(release, expected);
+  try {
+    return await installRelease(release, expected);
+  } catch (error) {
+    // A stalled download aborts here rather than in fetchReleaseByTag; a SHA256
+    // mismatch also lands here and is deliberately not network-class, so a
+    // tampered zip still fails loudly instead of booting a cached release.
+    const fallback = await resolveOfflineFallback(expected, targetDir, error);
+    if (fallback) return fallback;
+    throw error;
+  }
 }
 
-/** Finds any release dir whose dist/index.js exists, newest tag first. */
-async function scanInstalledReleases() {
+/**
+ * Opt-in last resort for hosts that abort startup on a slow launcher
+ * (DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1). Returns a release directory to run,
+ * or null when the fallback is off, the failure was not network-class, or
+ * nothing usable is installed - in which case the caller rethrows.
+ *
+ * The expected tag's own directory is accepted without re-verification (it is
+ * the version this launcher was built for, typically an interrupted install).
+ * Any *other* tag would be a silent downgrade, so it must carry the metadata
+ * marker that only a completed verified install writes.
+ */
+async function resolveOfflineFallback(expected, targetDir, error) {
+  if (!offlineFallbackEnabled()) return null;
+  if (!isNetworkClassError(error)) return null;
+
+  const detail = error?.message ?? String(error);
+  if (existsSync(path.join(targetDir, "dist", "index.js"))) {
+    warn(`Could not reach GitHub (${detail}) - starting the already installed ${expected.tagName} without re-verification (DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1).`);
+    return targetDir;
+  }
+
+  const cached = await findCachedRelease(expected);
+  if (cached) {
+    warn(`Could not reach GitHub (${detail}) and ${expected.tagName} is not installed - starting the cached ${cached.tagName} instead (DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1).`);
+    return cached.releaseDir;
+  }
+  return null;
+}
+
+/** Parses "v1.2.3" into a comparable tuple, or null when it is not a release tag. */
+function parseTagVersion(tagName) {
+  const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(String(tagName ?? ""));
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** Orders release tags numerically: v1.10.0 > v1.9.10 > v1.9.9. @internal */
+export function compareTagVersions(a, b) {
+  const left = parseTagVersion(a);
+  const right = parseTagVersion(b);
+  if (!left || !right) return 0;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return left[i] < right[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * True when a release directory carries the marker that installRelease writes
+ * only after a successful verify then rename, and that marker names this very
+ * directory. A directory with no metadata is an interrupted or hand-made
+ * install and is never eligible as a fallback for a different version.
+ *
+ * The marker is as writable as the runtime it vouches for, so this is not a
+ * defence against someone who already controls the cache directory — it is the
+ * record of which installs completed the verified path, which is what keeps an
+ * interrupted or abandoned download from being served as a silent downgrade.
+ *
+ * @internal
+ */
+export async function isVerifiedInstall(releaseDir, tagName) {
+  if (!existsSync(path.join(releaseDir, "dist", "index.js"))) return false;
+  const metadata = await readReleaseMetadata(releaseDir);
+  if (!metadata) return false;
+  if (metadata.tagName !== tagName) return false;
+  if (metadata.assetName !== ASSET_NAME) return false;
+  if (/^[a-f0-9]{64}$/i.test(String(metadata.sha256 ?? ""))) return true;
+  // A PENDING-manifest install was never hash-checked, so it only counts while
+  // the same development opt-in that created it is still set.
+  return metadata.sha256Pending === true && allowUnverifiedRelease();
+}
+
+/** Newest verified install at or below the expected tag, or null. @internal */
+export async function findCachedRelease(expected) {
+  // Without a comparable expected version there is no "at or below", and
+  // compareTagVersions would answer 0 for everything — which would disarm both
+  // the filter and the sort below. Fail closed instead.
+  if (parseTagVersion(expected.tagName) === null) return null;
   let entries;
   try {
     entries = await readdir(RELEASES_DIR, { withFileTypes: true });
   } catch {
     return null;
   }
-  const dirs = entries
+  const candidates = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-  for (const dirName of dirs) {
-    const dir = path.join(RELEASES_DIR, dirName);
-    if (existsSync(path.join(dir, "dist", "index.js"))) {
-      return dir;
+    .filter((name) => parseTagVersion(name) !== null)
+    .filter((name) => compareTagVersions(name, expected.tagName) <= 0)
+    .sort((a, b) => compareTagVersions(b, a));
+  for (const tagName of candidates) {
+    const releaseDir = path.join(RELEASES_DIR, tagName);
+    if (await isVerifiedInstall(releaseDir, tagName)) {
+      return { tagName, releaseDir };
     }
   }
   return null;

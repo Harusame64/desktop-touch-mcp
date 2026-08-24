@@ -83,6 +83,35 @@ Set `DESKTOP_TOUCH_MCP_HOME` to override the cache root directory.
 > `DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1` to skip integrity verification
 > (development only).
 
+> **Does your host give up before the launcher finishes?** Some desktop hosts
+> allow a plugin a fixed budget — 60 seconds is common — to become ready, and a
+> launcher waiting on an unreachable GitHub can spend all of it. Two environment
+> variables cover that case.
+>
+> `DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS` (default `15000`) bounds how long the
+> launcher waits without hearing from GitHub. It applies to the release lookup
+> and to the download; for the download it counts silence rather than total
+> time, so a large runtime still installs over a slow connection. A value that
+> is not a positive number of milliseconds is ignored with a warning.
+>
+> `DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1` lets the launcher start a release that
+> is already installed when GitHub cannot be reached at all. It is off by
+> default. GitHub is always contacted first, so a reachable network still
+> re-downloads and repairs a damaged install; only a network failure reaches the
+> fallback, which starts the copy of your version on disk — without
+> re-verification — or, when that version was never installed, the newest older
+> release that completed a verified install. Answers that are not network
+> failures (a 404, the API rate limit, a mismatched integrity hash) still stop
+> startup loudly. Leave it off unless a host timeout forces your hand: while it
+> is set, a corrupted install of your current version is reused instead of being
+> repaired.
+>
+> The two work together: with the fallback on, startup still waits out the
+> timeout before falling back, so lower `DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS` if
+> your host's budget is tight. Note also that a download which is still
+> arriving, however slowly, is never interrupted — the fallback answers when the
+> network has gone silent, not when it is merely slow.
+
 ### Register with Claude CLI
 
 Add to `~/.claude.json` under `mcpServers`:

@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+- **The launcher no longer waits forever on an unreachable GitHub.** Starting
+  the server begins by looking up the release that matches your installed
+  package version, and nothing bounded that request or the download after it:
+  against a connection that accepts but never answers, the launcher would wait
+  indefinitely. Hosts that allow a plugin a fixed startup budget — 60 seconds is
+  common — reported the server as failing to start on every cold start, even
+  when the right release was already installed.
+
+  Both the lookup and the download now give up after 15 seconds of silence. For
+  the download that means 15 seconds with no bytes arriving, not a deadline for
+  the whole transfer, so a large runtime still installs over a slow connection.
+  Set `DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS` to change the limit; a value that is
+  not a positive number of milliseconds is now ignored with a warning instead of
+  turning into an immediate abort.
+
+- **New opt-in: start an already installed release when GitHub is unreachable.**
+  With `DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK=1`, a network failure no longer stops
+  startup — the launcher runs the copy of your version that is already on disk,
+  or, when that version was never installed, the newest older release that
+  completed a verified install. It is off by default and changes nothing unless
+  you set it.
+
+  GitHub is always contacted first, so a reachable network still re-downloads
+  and repairs a damaged install. Answers that are not network failures — a 404,
+  the API rate limit, a mismatched integrity hash — still stop startup loudly
+  rather than quietly starting an older version. Worth knowing before you turn
+  it on: while it is set, a corrupted install of your current version is reused
+  instead of being repaired.
+
+  Thanks to @cloga for diagnosing the startup-timeout failure and contributing
+  the first version of this fix.
+
 ## [1.15.0] - 2026-08-22 — A closed window stops catching clicks; keyboard writes need a destination
 
 - **A window that closes stops catching your clicks.** When an app you had been
