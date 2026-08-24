@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.15.1] - 2026-08-24 — The launcher stops hanging when GitHub is unreachable
 
 - **The launcher no longer waits forever on an unreachable GitHub.** Starting
   the server begins by looking up the release that matches your installed
