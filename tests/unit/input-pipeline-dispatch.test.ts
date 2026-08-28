@@ -1726,7 +1726,7 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     expect(result!.scrolled).toBe(true);
   });
 
-  it("each watched HWND's post is read from the same HWND as its pre", async () => {
+  it("both ends of the chain are read before the dispatch, in order", async () => {
     // Guards against a future edit that reads `post` from the dispatch target
     // while `pre` came from somewhere else: the delta would then be computed
     // across two different windows and could report either way at random.
@@ -1748,10 +1748,12 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     const reads = win32GetScrollInfoMock.mock.calls
       .filter((c) => c[1] === "vertical")
       .map((c) => c[0]);
-    // Both ends of the propagation chain are watched before the dispatch, and
-    // the post-read starts again from the same first candidate — so no delta is
-    // ever computed across two different windows. (`some` short-circuits on the
-    // leaf here, which is why only one post-read follows.)
+    // Both ends of the propagation chain are read before the dispatch, in
+    // order. That each candidate's post is read from ITS OWN hwnd is pinned by
+    // the two tests above, which only pass when the delta is computed per
+    // window (a static leaf plus a moving ancestor, and the reverse); this one
+    // pins the chain composition and ordering, which those cannot see.
+    // (`some` short-circuits on the leaf here, so one post-read follows.)
     expect(reads.slice(0, 2)).toEqual([LEAF, TOP]);
     expect(reads[2]).toBe(LEAF);
   });
@@ -1877,6 +1879,20 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
     expect(targets.every((t) => t === LEAF)).toBe(true);
     expect(result).toBeNull();
+  });
+
+  it("an older .node without the hit-test export degrades to the top-level post", async () => {
+    // Mixed-version builds are a supported state (the launcher can start a
+    // runtime older than the JS). Every other native call in this path is
+    // optional-chained for that reason; the hit test must be too.
+    delete nativeWin32Mock.win32FindWheelLeafByHittest;
+    win32GetScrollInfoMock.mockImplementation(() => scrollInfo(0));
+
+    await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(TOP);
+    // Restore for the remaining tests in this block.
+    nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
   });
 
   it("the class table wins: a chain-table hit is never overridden by the hit test", async () => {

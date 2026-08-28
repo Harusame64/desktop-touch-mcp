@@ -1031,6 +1031,14 @@ export interface ScrollSnapshot {
   /** Image hash captured for the window (fallback when both Win32 axes are null). */
   dHash: bigint | null;
   /**
+   * Geometry of the capture that produced `rawPixels`. Carried because a byte
+   * comparison is only meaningful between two frames of the same shape, and
+   * the capture stack can change shape on its own — `captureWindowRawWithFallback`
+   * re-picks PrintWindow → WGC → BitBlt per call and each stage reports its own
+   * width / height / channels.
+   */
+  frame: { width: number; height: number; channels: 3 | 4 } | null;
+  /**
    * Raw pixels from the same capture that produced `dHash`, kept so callers
    * can compare exact bytes rather than the perceptual hash.
    *
@@ -1056,16 +1064,32 @@ export interface ScrollSnapshot {
  * of evidence is not evidence of motion, and the caller degrades to
  * `unverifiable` rather than claiming delivery.
  *
- * A length change counts as motion: the only way the capture region changes
- * size mid-dispatch is the window itself resizing, which is observable motion
- * by any definition and must not be reported as "nothing happened".
+ * **Frames of different shape are `false`, not `true`.** A first version read a
+ * length change as motion, reasoning that only a resize could change it. That
+ * is wrong: `captureWindowRawWithFallback` re-picks PrintWindow → WGC → BitBlt
+ * on every call, and the stages report different width / height / channels — so
+ * a GPU-composited window whose PrintWindow frame is judged blank on the second
+ * call alone is enough to change the shape. Calling that motion would report
+ * `delivered` for a wheel that never arrived, which is the silent success this
+ * whole pipeline exists to remove. Different shapes mean the two captures are
+ * not comparable, i.e. no evidence.
  */
 export function scrollPixelsChanged(
-  pre: Buffer | null,
-  post: Buffer | null,
+  pre: ScrollSnapshot["rawPixels"],
+  post: ScrollSnapshot["rawPixels"],
+  preFrame: ScrollSnapshot["frame"],
+  postFrame: ScrollSnapshot["frame"],
 ): boolean {
   if (pre === null || post === null) return false;
-  if (pre.length !== post.length) return true;
+  if (preFrame === null || postFrame === null) return false;
+  if (
+    preFrame.width !== postFrame.width ||
+    preFrame.height !== postFrame.height ||
+    preFrame.channels !== postFrame.channels
+  ) {
+    return false;
+  }
+  if (pre.length !== post.length) return false;
   return !pre.equals(post);
 }
 
@@ -1074,12 +1098,13 @@ async function captureScrollSnapshot(
   region: { x: number; y: number; width: number; height: number } | null,
 ): Promise<ScrollSnapshot> {
   if (hwnd === null) {
-    return { vertical: null, horizontal: null, dHash: null, rawPixels: null };
+    return { vertical: null, horizontal: null, dHash: null, rawPixels: null, frame: null };
   }
   const v = readScrollInfo(hwnd, "vertical");
   const h = readScrollInfo(hwnd, "horizontal");
   let dHash: bigint | null = null;
   let rawPixels: Buffer | null = null;
+  let frame: ScrollSnapshot["frame"] = null;
   // Only spend time on dHash when at least one Win32 axis is missing — otherwise
   // the percent diff alone is authoritative and dHash adds only image-capture cost.
   if ((v === null || h === null) && region !== null) {
@@ -1088,9 +1113,14 @@ async function captureScrollSnapshot(
       dHash = cap?.dHash ?? null;
       // Same capture, no extra cost — see `ScrollSnapshot.rawPixels`.
       rawPixels = cap?.rawPixels ?? null;
+      frame =
+        cap != null
+          ? { width: cap.width, height: cap.height, channels: cap.channels }
+          : null;
     } catch {
       dHash = null;
       rawPixels = null;
+      frame = null;
     }
   }
   return {
@@ -1098,6 +1128,7 @@ async function captureScrollSnapshot(
     horizontal: h?.pageRatio ?? null,
     dHash,
     rawPixels,
+    frame,
   };
 }
 
@@ -1508,11 +1539,22 @@ export const scrollHandler = async ({
           // The post-capture is skipped entirely when the pre-capture failed:
           // with nothing to compare against, the comparison is `false` by
           // definition and a full-window capture would be pure cost.
-          const postPixels =
+          const postFrame =
             pre.rawPixels === null || observedHwnd === null || observedRect === null
               ? null
-              : (await captureFrame(observedHwnd, observedRect))?.rawPixels ?? null;
-          const pixelsDiffer = scrollPixelsChanged(pre.rawPixels, postPixels);
+              : await captureFrame(observedHwnd, observedRect);
+          const pixelsDiffer = scrollPixelsChanged(
+            pre.rawPixels,
+            postFrame?.rawPixels ?? null,
+            pre.frame,
+            postFrame !== null
+              ? {
+                  width: postFrame.width,
+                  height: postFrame.height,
+                  channels: postFrame.channels,
+                }
+              : null,
+          );
           const observedAxis =
             direction === "up" || direction === "down" ? "vertical" : "horizontal";
           return {

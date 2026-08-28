@@ -13,48 +13,64 @@
  *   - either capture missing   → false (no evidence ⇒ caller stays unverifiable)
  *   - byte-identical           → false (page-end no-op and silent drop both land here)
  *   - any byte differs         → true
- *   - length differs           → true (window resized ⇒ observable motion)
+ *   - shape or length differs  → false (the two captures are not comparable, so
+ *                                there is no evidence either way — the capture
+ *                                stack re-picks PrintWindow / WGC / BitBlt per
+ *                                call and the stages report different geometry)
  */
 
 import { describe, it, expect } from "vitest";
 import { scrollPixelsChanged } from "../../src/tools/mouse.js";
 
 const frame = (...bytes: number[]): Buffer => Buffer.from(bytes);
+/** Same shape for both sides unless a test is specifically about shape. */
+const shape = (width: number, height: number, channels: 3 | 4 = 4) => ({
+  width,
+  height,
+  channels,
+});
+const S = shape(2, 2);
+const changed = (
+  pre: Buffer | null,
+  post: Buffer | null,
+  preShape: ReturnType<typeof shape> | null = S,
+  postShape: ReturnType<typeof shape> | null = S,
+): boolean => scrollPixelsChanged(pre, post, preShape, postShape);
 
 describe("scrollPixelsChanged — evidence present", () => {
   it("byte-identical frames → false (cannot claim motion)", () => {
-    expect(scrollPixelsChanged(frame(1, 2, 3, 4), frame(1, 2, 3, 4))).toBe(false);
+    expect(changed(frame(1, 2, 3, 4), frame(1, 2, 3, 4))).toBe(false);
   });
 
   it("a single differing byte → true", () => {
-    expect(scrollPixelsChanged(frame(1, 2, 3, 4), frame(1, 2, 3, 5))).toBe(true);
+    expect(changed(frame(1, 2, 3, 4), frame(1, 2, 3, 5))).toBe(true);
   });
 
   it("first byte differing → true (no prefix-only comparison)", () => {
-    expect(scrollPixelsChanged(frame(9, 2, 3, 4), frame(1, 2, 3, 4))).toBe(true);
+    expect(changed(frame(9, 2, 3, 4), frame(1, 2, 3, 4))).toBe(true);
   });
 
-  it("length change (window resized mid-dispatch) → true", () => {
-    expect(scrollPixelsChanged(frame(1, 2, 3, 4), frame(1, 2, 3))).toBe(true);
-    expect(scrollPixelsChanged(frame(1, 2, 3), frame(1, 2, 3, 4))).toBe(true);
+  it("length change → false (not comparable, so no evidence of motion)", () => {
+    expect(changed(frame(1, 2, 3, 4), frame(1, 2, 3))).toBe(false);
+    expect(changed(frame(1, 2, 3), frame(1, 2, 3, 4))).toBe(false);
   });
 
   it("two empty frames → false (degenerate capture is not motion)", () => {
-    expect(scrollPixelsChanged(Buffer.alloc(0), Buffer.alloc(0))).toBe(false);
+    expect(changed(Buffer.alloc(0), Buffer.alloc(0))).toBe(false);
   });
 });
 
 describe("scrollPixelsChanged — evidence missing", () => {
   it("pre capture missing → false", () => {
-    expect(scrollPixelsChanged(null, frame(1, 2, 3, 4))).toBe(false);
+    expect(changed(null, frame(1, 2, 3, 4))).toBe(false);
   });
 
   it("post capture missing → false", () => {
-    expect(scrollPixelsChanged(frame(1, 2, 3, 4), null)).toBe(false);
+    expect(changed(frame(1, 2, 3, 4), null)).toBe(false);
   });
 
   it("both missing → false", () => {
-    expect(scrollPixelsChanged(null, null)).toBe(false);
+    expect(changed(null, null)).toBe(false);
   });
 });
 
@@ -66,13 +82,38 @@ describe("scrollPixelsChanged — realistic frame sizes", () => {
     const pre = Buffer.alloc(size, 0x20);
     const post = Buffer.alloc(size, 0x20);
     post[size - 1] = 0x21;
-    expect(scrollPixelsChanged(pre, post)).toBe(true);
+    expect(changed(pre, post)).toBe(true);
   });
 
   it("an untouched large frame reports no motion", () => {
     const size = 1280 * 840 * 3;
     expect(
-      scrollPixelsChanged(Buffer.alloc(size, 0x20), Buffer.alloc(size, 0x20)),
+      changed(Buffer.alloc(size, 0x20), Buffer.alloc(size, 0x20)),
     ).toBe(false);
+  });
+});
+
+describe("scrollPixelsChanged — capture shape changed between the two frames", () => {
+  // The capture stack re-picks PrintWindow → WGC → BitBlt per call and the
+  // stages report different geometry, so two frames of a window that never
+  // moved can differ in shape. Reading that as motion would claim `delivered`
+  // for a wheel that never arrived.
+  it("different width → false", () => {
+    expect(changed(frame(1, 2, 3, 4), frame(9, 9, 9, 9), shape(2, 2), shape(4, 1))).toBe(false);
+  });
+
+  it("different channel count → false, even with identical byte length", () => {
+    expect(
+      changed(frame(1, 2, 3, 4), frame(1, 2, 3, 9), shape(1, 1, 4), shape(2, 2, 3)),
+    ).toBe(false);
+  });
+
+  it("missing shape on either side → false", () => {
+    expect(changed(frame(1, 2, 3, 4), frame(1, 2, 3, 9), null, S)).toBe(false);
+    expect(changed(frame(1, 2, 3, 4), frame(1, 2, 3, 9), S, null)).toBe(false);
+  });
+
+  it("same shape still detects a real change", () => {
+    expect(changed(frame(1, 2, 3, 4), frame(1, 2, 3, 9), S, S)).toBe(true);
   });
 });

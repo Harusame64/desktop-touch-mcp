@@ -546,12 +546,14 @@ mod tests {
     #[test]
     fn hittest_descent_finds_the_child_that_covers_the_centre() {
         let Some(parent) = make_window(None) else {
-            // No window station (rare CI configuration) — nothing to assert.
+            // No window station (a restricted CI configuration) — the only
+            // legitimate reason to skip. Every creation AFTER this one asserts,
+            // so a half-working environment fails loudly instead of passing
+            // silently.
             return;
         };
-        let Some(child) = make_window(Some(parent.0)) else {
-            return;
-        };
+        let child = make_window(Some(parent.0))
+            .expect("a child window must be creatable once the parent was");
 
         let leaf = find_wheel_leaf_by_hittest(parent.0);
         assert_eq!(
@@ -627,9 +629,8 @@ mod tests {
             return;
         }
         let parent = TestWindow(parent);
-        let Some(child) = make_window(Some(parent.0)) else {
-            return;
-        };
+        let child = make_window(Some(parent.0))
+            .expect("a child window must be creatable once the parent was");
         // The child covers the centre, so without the refusal the descent
         // would happily return it.
         assert_eq!(
@@ -648,12 +649,10 @@ mod tests {
         let Some(parent) = make_window(None) else {
             return;
         };
-        let Some(child) = make_window(Some(parent.0)) else {
-            return;
-        };
-        let Some(stranger) = make_window(None) else {
-            return;
-        };
+        let child = make_window(Some(parent.0))
+            .expect("a child window must be creatable once the parent was");
+        let stranger =
+            make_window(None).expect("a second top-level window must be creatable");
 
         let leaf = find_wheel_leaf_by_hittest(parent.0);
         assert_ne!(
