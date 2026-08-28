@@ -15,8 +15,10 @@ import { describe, it, expect } from "vitest";
 import {
   collapseScrollObserved,
   evaluateScrollDelivery,
+  resolveScrollOutcome,
   type ScrollSnapshot,
 } from "../../src/tools/mouse.js";
+import type { DispatchOutcome } from "../../src/tools/_input-pipeline.js";
 
 const snap = (
   v: number | null,
@@ -251,3 +253,88 @@ describe("collapseScrollObserved — ADR-018 Phase 3 / issue #294 envelope norma
     expect(r.delta).toEqual({ x: 0, y: 0 });
   });
 });
+
+// ADR-018 §2.6.1 — the dispatcher→envelope seam. `scrollHandler` cannot be
+// driven from a unit test (its Tier 4 path reaches real cursor and wheel
+// input), so this routing is pinned on the pure function it was extracted
+// into. Phase 6 §14: this seam being untested is what let one whole
+// configuration report the wrong outcome through six review rounds.
+describe("resolveScrollOutcome — dispatcher shape → envelope status/channel", () => {
+  const OFF_BOUNDARY = snap(0.5, null);
+  const dispatch = (o: Partial<DispatchOutcome>): DispatchOutcome => ({
+    scrolled: true,
+    channel: "postmessage",
+    reason: "delivered_via_postmessage",
+    ...o,
+  });
+
+  it("scrolled:true → delivered on the dispatching channel, whatever the snapshots say", () => {
+    // Pre and post are identical and off-boundary, i.e. the legacy path would
+    // call this a silent drop. The dispatcher observed delivery through a
+    // channel the caller cannot see, and it wins.
+    const r = resolveScrollOutcome(
+      dispatch({ channel: "uia", reason: "delivered_via_uia" }),
+      OFF_BOUNDARY,
+      OFF_BOUNDARY,
+      "down",
+      1n,
+    );
+    expect(r.outcome.status).toBe("delivered");
+    expect(r.channel).toBe("uia");
+  });
+
+  it("scrolled:false + pixel_delta_observed → unverifiable, NOT delivered and NOT a failure", () => {
+    const r = resolveScrollOutcome(
+      dispatch({ scrolled: false, reason: "pixel_delta_observed" }),
+      OFF_BOUNDARY,
+      OFF_BOUNDARY,
+      "down",
+      1n,
+    );
+    expect(r.outcome.status).toBe("unverifiable");
+    expect(r.outcome.reason).toBe("pixel_delta_observed");
+    expect(r.channel).toBe("postmessage"); // the wheel went by PostMessage, not SendInput
+    expect(r.outcome.axis).toBe("vertical");
+  });
+
+  it("...and its delta stays \"unverifiable\" rather than printing the watched window's zero", () => {
+    // The watched window is precisely the one that did not move, so a measured
+    // `0` beside `unverifiable` would read as a contradiction. The other
+    // emitter of this reason makes the same choice.
+    const r = resolveScrollOutcome(
+      dispatch({ scrolled: false, reason: "pixel_delta_observed" }),
+      snap(0.5, 0.5),
+      snap(0.5, 0.5),
+      "right",
+      1n,
+    );
+    expect(r.outcome.delta).toBe("unverifiable");
+    expect(r.outcome.axis).toBe("horizontal");
+  });
+
+  it("null dispatcher → the legacy evaluateScrollDelivery path on wheel_send_input", () => {
+    const r = resolveScrollOutcome(null, snap(0.5, null), snap(0.5, null), "down", 1n);
+    expect(r.outcome.status).toBe("not_delivered"); // off-boundary, unchanged
+    expect(r.channel).toBe("wheel_send_input");
+  });
+
+  it("no observed window → unverifiable / no_target_window", () => {
+    const r = resolveScrollOutcome(null, snap(null, null), snap(null, null), "down", null);
+    expect(r.outcome.status).toBe("unverifiable");
+    expect(r.outcome.reason).toBe("no_target_window");
+    expect(r.channel).toBe("wheel_send_input");
+  });
+
+  it("a channel this envelope does not name degrades to wheel_send_input, never leaks", () => {
+    const r = resolveScrollOutcome(
+      dispatch({ channel: "send_input" }),
+      OFF_BOUNDARY,
+      OFF_BOUNDARY,
+      "down",
+      1n,
+    );
+    expect(r.outcome.status).toBe("delivered");
+    expect(r.channel).toBe("wheel_send_input");
+  });
+});
+

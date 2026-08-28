@@ -476,8 +476,13 @@ const SUGGESTS: Record<string, string[]> = {
   // post-ack silent-drop case the other two cannot catch.
   //
   // ADR-018 Phase 1b will replace the 4-value `hints.verifyDelivery.reason` enum
-  // with a 5-value tier-based enum (delivered_via_uia / delivered_via_cdp /
-  // delivered_via_postmessage / wheel_overlay_intercepted / target_unreachable).
+  // with a tier-based enum, six values since Phase 6 (delivered_via_uia /
+  // delivered_via_cdp / delivered_via_postmessage / pixel_delta_observed /
+  // wheel_overlay_intercepted / target_unreachable). The SSOT for the list is
+  // ADR-018 §2.6.2 and the `ScrollVerifyOutcome.reason` union in `mouse.ts`;
+  // only the `not_delivered` values below belong in this failure-path suggest
+  // list, which is why a `delivered` reason such as `pixel_delta_observed`
+  // appears in the count and not in the copy.
   // The suggest copy below references the new names where appropriate so callers
   // reading suggestions today are already pointed at the destination-explicit
   // recovery strategies (UIA ScrollPattern / CDP / PostMessage) that ADR-018

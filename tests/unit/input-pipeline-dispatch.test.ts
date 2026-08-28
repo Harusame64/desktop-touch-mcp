@@ -1909,14 +1909,18 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
   });
 
-  const rawFrame = (fill: number) => ({
+  const rawFrame = (
+    fill: number,
+    source: "printwindow" | "wgc" | "bitblt-fallback" = "printwindow",
+  ) => ({
     rawPixels: Buffer.alloc(64, fill),
     width: 4,
     height: 4,
     channels: 4 as const,
+    source,
   });
 
-  it("the leaf's own pixels moved — no retry, and those pixels ARE the delivery evidence", async () => {
+  it("the leaf's own pixels moved — no retry, and the pixels are reported rather than dropped", async () => {
     // A scrollable frame hosting a WebView2 child. The child consumes the
     // wheel and scrolls web content, which no Win32 scrollbar reports, while
     // the frame's own position stays put. Re-posting at the frame would scroll
@@ -1934,13 +1938,18 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
 
     const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
     expect(targets.every((t) => t === LEAF)).toBe(true);
-    // ...and the same pixels are reported as delivery. Returning null here
-    // would hand `scrollHandler` a hard `ScrollNotDelivered` for a WebView that
-    // visibly scrolled, and its own pixel fallback cannot recover it: that
+    // ...and the same pixels are surfaced rather than dropped. Returning null
+    // here would hand `scrollHandler` a hard `ScrollNotDelivered` for a WebView
+    // that visibly scrolled, and its own pixel fallback cannot recover it: that
     // branch requires the watched window to expose no scrollbar on either axis,
     // and here the frame exposes one.
+    //
+    // `scrolled: false` with a reason is NOT "fall through to the next tier"
+    // (that is `null`): the caller routes this shape to `unverifiable`. A leaf
+    // repaints for hover, caret, spinner or video too, so these pixels are
+    // enough to withdraw a false error and not enough to claim a scroll.
     expect(result).not.toBeNull();
-    expect(result!.scrolled).toBe(true);
+    expect(result!.scrolled).toBe(false);
     expect(result!.channel).toBe("postmessage");
     expect(result!.reason).toBe("pixel_delta_observed");
   });
@@ -1984,6 +1993,32 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     expect(postedToTop).toBe(true);
     expect(result).not.toBeNull();
     expect(result!.scrolled).toBe(true);
+  });
+
+  it("a capture-backend flip is not motion — different provenance, same shape", async () => {
+    // The rungs (PrintWindow → WGC → BitBlt) are built to agree on device-pixel
+    // dimensions and all report `channels: 4`, so a flip between the two
+    // captures passes every shape test while changing nearly every byte. One
+    // PrintWindow frame judged blank is enough to cause it, on exactly the
+    // GPU-composited windows this retarget exists for. Reading it as motion
+    // would suppress the retry AND claim delivery for a wheel that did nothing.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let postedToTop = false;
+    win32PostMessageMock.mockImplementation((h: bigint) => {
+      if (h === TOP) postedToTop = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10, "printwindow"))
+      .mockResolvedValueOnce(rawFrame(0x20, "wgc")); // same shape, other backend
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(postedToTop).toBe(true); // treated as no evidence → retry ran
+    expect(result).toBeNull(); // ...and nothing was claimed
   });
 
   it("the class table wins: a chain-table hit is never overridden by the hit test", async () => {

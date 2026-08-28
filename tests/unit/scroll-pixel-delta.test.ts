@@ -17,6 +17,11 @@
  *                                there is no evidence either way — the capture
  *                                stack re-picks PrintWindow / WGC / BitBlt per
  *                                call and the stages report different geometry)
+ *   - capture source differs   → false, and the shape check does NOT imply it:
+ *                                the rungs are built to agree on device-pixel
+ *                                dimensions and all report `channels: 4`, so a
+ *                                PrintWindow → WGC/BitBlt flip passes every
+ *                                geometry test while changing nearly every byte
  */
 
 import { describe, it, expect } from "vitest";
@@ -24,10 +29,16 @@ import { scrollPixelsChanged } from "../../src/tools/mouse.js";
 
 const frame = (...bytes: number[]): Buffer => Buffer.from(bytes);
 /** Same shape for both sides unless a test is specifically about shape. */
-const shape = (width: number, height: number, channels: 3 | 4 = 4) => ({
+const shape = (
+  width: number,
+  height: number,
+  channels: 3 | 4 = 4,
+  source: "printwindow" | "wgc" | "bitblt-fallback" | undefined = "printwindow",
+) => ({
   width,
   height,
   channels,
+  source,
 });
 const S = shape(2, 2);
 const changed = (
@@ -53,6 +64,59 @@ describe("scrollPixelsChanged — evidence present", () => {
   it("length change → false (not comparable, so no evidence of motion)", () => {
     expect(changed(frame(1, 2, 3, 4), frame(1, 2, 3))).toBe(false);
     expect(changed(frame(1, 2, 3), frame(1, 2, 3, 4))).toBe(false);
+  });
+
+  it("differing capture source → false, even with matching shape and differing bytes", () => {
+    // The rungs agree on dimensions and channels by design, so this pair looks
+    // comparable to every other guard. It is a picture of the same window taken
+    // two different ways, not a picture of the window before and after a wheel.
+    expect(
+      changed(
+        frame(1, 2, 3, 4),
+        frame(9, 9, 9, 9),
+        shape(2, 2, 4, "printwindow"),
+        shape(2, 2, 4, "wgc"),
+      ),
+    ).toBe(false);
+    expect(
+      changed(
+        frame(1, 2, 3, 4),
+        frame(9, 9, 9, 9),
+        shape(2, 2, 4, "printwindow"),
+        shape(2, 2, 4, "bitblt-fallback"),
+      ),
+    ).toBe(false);
+  });
+
+  it("matching capture source → the byte comparison still decides", () => {
+    expect(
+      changed(
+        frame(1, 2, 3, 4),
+        frame(9, 9, 9, 9),
+        shape(2, 2, 4, "wgc"),
+        shape(2, 2, 4, "wgc"),
+      ),
+    ).toBe(true);
+    expect(
+      changed(
+        frame(1, 2, 3, 4),
+        frame(1, 2, 3, 4),
+        shape(2, 2, 4, "wgc"),
+        shape(2, 2, 4, "wgc"),
+      ),
+    ).toBe(false);
+  });
+
+  it("an unrecorded source is its own provenance — never comparable with a named one", () => {
+    // Written as literals, not via `shape(…, undefined)`: a default parameter
+    // would substitute "printwindow" for the very value under test.
+    const unlabelled = { width: 2, height: 2, channels: 4 as const, source: undefined };
+    expect(
+      changed(frame(1, 2, 3, 4), frame(9, 9, 9, 9), unlabelled, shape(2, 2, 4, "printwindow")),
+    ).toBe(false);
+    // ...but two unrecorded frames compare normally, so a capture path that
+    // does not label its frames keeps working rather than going silently blind.
+    expect(changed(frame(1, 2, 3, 4), frame(9, 9, 9, 9), unlabelled, unlabelled)).toBe(true);
   });
 
   it("two empty frames → false (degenerate capture is not motion)", () => {

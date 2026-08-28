@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(
             find_wheel_leaf_by_hittest(parent.0),
             None,
-            "a SCROLL_LEAF_CHAINS class must be refused so the caller posts to the top level;              returning {:?} would override a deliberate safety refusal",
+            "a SCROLL_LEAF_CHAINS class must be refused so the caller posts to the top level; returning {:?} would override a deliberate safety refusal",
             child.0,
         );
     }

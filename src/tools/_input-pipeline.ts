@@ -380,13 +380,24 @@ export interface DispatchOutcome {
    * comment above for the routing contract.
    *
    * **ADR-018 Phase 6 §2.3 additive value**: `'pixel_delta_observed'` paired
-   * with `scrolled: true` is the weakest delivery evidence in the taxonomy —
-   * the target's raw pixels changed across the dispatch, which proves a
-   * repaint and not a scroll. `mouse.ts` emits it from its own last-resort
-   * comparison; `postWheelToHwnd` emits it when a structural hit-test
-   * retarget moved the leaf's pixels while no watched scrollbar moved, a
-   * shape the caller's comparison cannot reach because it runs only when the
-   * window it watched exposes no scrollbar at all.
+   * with **`scrolled: false`** is the pixel-evidence signal emitted by
+   * `postWheelToHwnd` when a structural hit-test retarget moved the leaf's own
+   * pixels while nothing on the observation chain moved. `mouse.ts:scrollHandler`
+   * detects this shape and routes it to an **`unverifiable`** envelope — not to
+   * `delivered`, and not to the `ScrollNotDelivered` that `null` would produce.
+   *
+   * The asymmetry with `mouse.ts`'s own `pixel_delta_observed` (which does
+   * report `delivered`) is deliberate and is about what the evidence displaces,
+   * not about its strength. There, the alternative was a constant
+   * `unverifiable`, so pixels can only add information. Here the alternative is
+   * a typed failure, and a leaf repaints for reasons that have nothing to do
+   * with the wheel (hover, caret, spinner, video) — so reading pixels as
+   * `delivered` would turn a real silent drop into a success claim. The rule
+   * across both emitters: **pixel evidence may upgrade "no information" to
+   * "delivered", and may only upgrade "failure" to "unverifiable".**
+   *
+   * `scrolled: false` here therefore does NOT mean "fall through to the next
+   * tier" — `null` is still the only value with that meaning.
    */
   reason:
     | "delivered_via_uia"
@@ -1653,9 +1664,22 @@ export async function postWheelToHwnd(
     // returned first, so removing it changed nothing and a mutation test could
     // not see it.
     // The leaf acted if its pixels moved, even though no scrollbar shows it.
-    // Frames of different shape are not comparable (the capture stack re-picks
-    // its stage per call), so that counts as "no evidence the leaf acted" and
-    // the retry proceeds — the same direction the null-frame case takes.
+    //
+    // Two frames are comparable only when they have the same shape AND the same
+    // provenance. `captureWindowRawWithFallback` re-picks PrintWindow → WGC →
+    // BitBlt per call, and the rungs are built to agree on device-pixel
+    // dimensions and all report `channels: 4` — so a flip is invisible to the
+    // shape check while changing essentially every byte, and one PrintWindow
+    // frame judged blank is enough to cause it on exactly the GPU-composited
+    // windows this retarget exists for. The BitBlt rung is additionally a
+    // screen grab that includes whatever overlaps the leaf, so it is not a
+    // picture of the same surface at all.
+    //
+    // Both mismatches, and a failed capture, count as "no evidence the leaf
+    // acted" and let the retry proceed. That direction is deliberate: the
+    // alternative reading — treating an incomparable pair as motion — would
+    // suppress the retry AND assert delivery below, which is the silent success
+    // this pipeline exists to remove.
     const leafActed = await (async (): Promise<boolean> => {
       if (!retryCouldFire || moved || leafPreFrame === null || rect === null) return false;
       const leafPostFrame = await captureFrame(effectiveHwnd, {
@@ -1669,6 +1693,7 @@ export async function postWheelToHwnd(
         leafPostFrame.width !== leafPreFrame.width ||
         leafPostFrame.height !== leafPreFrame.height ||
         leafPostFrame.channels !== leafPreFrame.channels ||
+        leafPostFrame.source !== leafPreFrame.source ||
         leafPostFrame.rawPixels.length !== leafPreFrame.rawPixels.length
       ) {
         return false;
@@ -1692,8 +1717,9 @@ export async function postWheelToHwnd(
     }
 
     // The leaf's pixels decide in both directions. Above they suppress a retry
-    // that would scroll a second surface; here they are the only evidence that
-    // the wheel arrived at all, because nothing on the observation chain moved.
+    // that would scroll a second surface; here they are the only thing that
+    // separates "the wheel did something we cannot measure" from "the wheel was
+    // swallowed", because nothing on the observation chain moved.
     //
     // Dropping them at this point returns `null`, which the caller turns into a
     // hard `ScrollNotDelivered` — for a WebView that visibly scrolled. Its own
@@ -1702,13 +1728,17 @@ export async function postWheelToHwnd(
     // exactly when it does (a scrollable frame hosting a WebView child, the
     // frame's scrollbar readable and stationary).
     //
-    // Ranked as `pixel_delta_observed`, the same reason the caller-side
-    // comparison emits, and for the same reason: a changed frame proves the
-    // leaf repainted, not that a view scrolled, so it sits below the Win32
-    // percent diff in the §2.6.2 taxonomy.
+    // Reported as `unverifiable`, not `delivered`. A leaf repaints for reasons
+    // that have nothing to do with the wheel — the hover the caller's own
+    // cursor move just triggered, a caret, a spinner, a video — so treating
+    // these pixels as delivery would turn a genuine silent drop into a success
+    // claim, which is the failure mode this whole pipeline exists to remove.
+    // `unverifiable` is the honest reading in both worlds: it removes a false
+    // error without asserting a scroll nobody measured. See the routing
+    // contract on `DispatchOutcome.reason`.
     if (!moved && leafActed) {
       return {
-        scrolled: true,
+        scrolled: false,
         channel: "postmessage",
         reason: "pixel_delta_observed",
       };

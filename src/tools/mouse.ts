@@ -20,7 +20,7 @@ import {
 } from "../engine/window-cache.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
 import { captureWindowRawAndHash } from "../engine/layer-buffer.js";
-import { hammingDistance } from "../engine/image.js";
+import { hammingDistance, type CaptureSource } from "../engine/image.js";
 import { nativeWin32 } from "../engine/native-engine.js";
 import { coercedBoolean } from "./_coerce.js";
 import { ok } from "./_types.js";
@@ -50,6 +50,7 @@ import {
   assertTier4Reachable,
   WHEEL_DELTA_PER_NOTCH,
   WHEEL_DELTA_MAX_PER_MSG,
+  type DispatchOutcome,
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
 import { logDispatchSink } from "./_resolve-log.js";
@@ -1037,7 +1038,24 @@ export interface ScrollSnapshot {
    * re-picks PrintWindow → WGC → BitBlt per call and each stage reports its own
    * width / height / channels.
    */
-  frame: { width: number; height: number; channels: 3 | 4 } | null;
+  frame: {
+    width: number;
+    height: number;
+    channels: 3 | 4;
+    /**
+     * Which capture backend produced the frame. Part of the comparability
+     * check, not of the picture: `captureWindowRawWithFallback` re-picks
+     * PrintWindow → WGC → BitBlt on every call, so two frames of the same
+     * window can share `width`/`height`/`channels` and still be pictures of
+     * different things.
+     *
+     * `undefined` is a provenance of its own — "not recorded" — and compares
+     * unequal to any named backend, so an unlabelled frame is never declared
+     * comparable with a labelled one. Every capture on this path does record
+     * it; the union keeps a future one that does not from silently passing.
+     */
+    source: CaptureSource | undefined;
+  } | null;
   /**
    * Raw pixels from the same capture that produced `dHash`, kept so callers
    * can compare exact bytes rather than the perceptual hash.
@@ -1073,6 +1091,16 @@ export interface ScrollSnapshot {
  * `delivered` for a wheel that never arrived, which is the silent success this
  * whole pipeline exists to remove. Different shapes mean the two captures are
  * not comparable, i.e. no evidence.
+ *
+ * **Frames of different provenance are `false` for the same reason, and the
+ * shape check does not imply it.** The rungs are designed to return matching
+ * device-pixel dimensions and all report `channels: 4`, so a PrintWindow →
+ * WGC/BitBlt flip between the two calls — one blank-judged PrintWindow frame is
+ * enough, on exactly the GPU-composited windows this path exists for — passes
+ * every dimension test while changing essentially every byte. Worse, the BitBlt
+ * rung is a screen grab that includes whatever overlaps the window, so it is
+ * not even a picture of the same surface. `source` mismatch is therefore
+ * "not comparable", identical to a shape mismatch.
  */
 export function scrollPixelsChanged(
   pre: ScrollSnapshot["rawPixels"],
@@ -1085,7 +1113,8 @@ export function scrollPixelsChanged(
   if (
     preFrame.width !== postFrame.width ||
     preFrame.height !== postFrame.height ||
-    preFrame.channels !== postFrame.channels
+    preFrame.channels !== postFrame.channels ||
+    preFrame.source !== postFrame.source
   ) {
     return false;
   }
@@ -1115,7 +1144,12 @@ async function captureScrollSnapshot(
       rawPixels = cap?.rawPixels ?? null;
       frame =
         cap != null
-          ? { width: cap.width, height: cap.height, channels: cap.channels }
+          ? {
+              width: cap.width,
+              height: cap.height,
+              channels: cap.channels,
+              source: cap.source,
+            }
           : null;
     } catch {
       dHash = null;
@@ -1160,18 +1194,29 @@ export interface ScrollVerifyOutcome {
    *     exhausted without observable delta (path-b, e.g. Word _WwG).
    *
    * ADR-018 Phase 6 §2.3 adds one value:
-   *   - `pixel_delta_observed`: emitted under `status='delivered'` when the
-   *     only evidence of delivery is that raw pixels changed across the
-   *     dispatch. It proves a repaint, not a scroll (self-animating content
-   *     repaints on its own), so it ranks below the Win32 percent diff — but
-   *     it is the only signal available on WebView / custom-paint hosts, which
-   *     previously always reported `unverifiable`. **Two emitters**, and they
-   *     cover disjoint shapes: `scrollHandler` below compares the destination
-   *     window when it exposes no Win32 scrollbar on either axis;
-   *     `postWheelToHwnd` compares the hit-test **leaf** when it does expose
-   *     one but nothing on the observation chain moved (a scrollable frame
-   *     hosting a WebView child — the frame's own scrollbar is readable, so
-   *     the branch below never runs).
+   *   - `pixel_delta_observed`: the only evidence was that raw pixels changed
+   *     across the dispatch. It proves a repaint, not a scroll (a window
+   *     repaints for hover, caret, spinner or video on its own), so it ranks
+   *     below the Win32 percent diff — but it is the only signal available on
+   *     WebView / custom-paint hosts, which previously always reported
+   *     `unverifiable` or, worse, a hard `ScrollNotDelivered`.
+   *
+   *     **Two emitters, disjoint shapes, and deliberately different statuses.**
+   *     `scrollHandler` below compares the destination window when it exposes
+   *     no Win32 scrollbar on either axis, and emits `status='delivered'`.
+   *     `postWheelToHwnd` compares the hit-test **leaf** when the destination
+   *     does expose one but nothing on the observation chain moved (a
+   *     scrollable frame hosting a WebView child — the frame's own scrollbar is
+   *     readable, so the branch below never runs), and that routes to
+   *     `status='unverifiable'` via `resolveScrollOutcome`.
+   *
+   *     The difference is what the evidence displaces, not how strong it is.
+   *     The first emitter replaces a constant `unverifiable`, so pixels can
+   *     only add information. The second replaces a typed failure, and calling
+   *     an unrelated repaint `delivered` would turn a real silent drop into a
+   *     success claim. The rule across both: **pixel evidence may upgrade "no
+   *     information" to `delivered`, and may only upgrade "failure" to
+   *     `unverifiable`.**
    *
    * See `docs/adr-018-input-pipeline-3tier.md` §2.6.3 for the full migration
    * table; CLAUDE.md §3.1 multi-table fact sweep across `_errors.ts` /
@@ -1289,6 +1334,90 @@ export function evaluateScrollDelivery(
     status: "not_delivered",
     delta: { x: dx, y: dy },
     axis: axisOfInterest,
+  };
+}
+
+/**
+ * ADR-018 §2.6 — turn a dispatcher result plus the caller's own pre/post
+ * snapshots into the envelope's `status` / `channel` / `reason`.
+ *
+ * @internal Exported for unit testing. `scrollHandler` itself cannot be driven
+ * from a unit test — its Tier 4 path reaches real cursor and wheel input, and
+ * mocking `engine/nutjs.js` does not close every route there — so the seam
+ * between the dispatcher and the envelope is pulled out here instead. That seam
+ * being untested is what let a whole configuration report the wrong outcome
+ * through six review rounds (ADR-018 Phase 6 §14).
+ *
+ * The three dispatcher shapes and where they go:
+ *   - `scrolled: true` → `delivered`. The tier established delivery; the Win32
+ *     diff is still computed so `scrollObserved.delta` carries numbers, but it
+ *     does not get to overrule the dispatcher.
+ *   - `scrolled: false, reason: "pixel_delta_observed"` → `unverifiable` on the
+ *     dispatching channel. The hit-test leaf's own pixels changed while nothing
+ *     on the observation chain moved: enough to withdraw a false
+ *     `ScrollNotDelivered`, not enough to claim a scroll (a leaf repaints for
+ *     hover, caret, spinner, video). No post-snapshot reading applies — the
+ *     watched window is precisely the one that did not move, so its `0` delta
+ *     would contradict the status it is printed beside; `delta` stays
+ *     `"unverifiable"`, matching the other emitter of this reason.
+ *   - anything else (including `null`) → the legacy `evaluateScrollDelivery`
+ *     path on the caller's own snapshots.
+ *
+ * `scrolled: false, reason: "target_unreachable"` (the ADR-019 Stage 2b gate)
+ * never reaches here — `scrollHandler` routes it to a typed failure earlier.
+ */
+export function resolveScrollOutcome(
+  tier1: DispatchOutcome | null,
+  pre: ScrollSnapshot,
+  post: ScrollSnapshot,
+  direction: "up" | "down" | "left" | "right",
+  observedHwnd: bigint | null,
+): {
+  outcome: ScrollVerifyOutcome;
+  channel: "uia" | "cdp" | "postmessage" | "wheel_send_input";
+} {
+  // **Explicit narrowing**, not an `as` cast: `tier1.channel` carries the broad
+  // `Channel` union ("uia" | "cdp" | "postmessage" | "send_input"), and casting
+  // to the narrow envelope union would silently leak the wrong channel if a
+  // future tier is added without updating this branch. (Opus PR #324 Round 1 P2.)
+  const dispatchChannel =
+    tier1 !== null &&
+    (tier1.channel === "uia" || tier1.channel === "cdp" || tier1.channel === "postmessage")
+      ? tier1.channel
+      : null;
+
+  if (tier1 !== null && tier1.scrolled) {
+    return {
+      outcome: { status: "delivered", delta: evaluateScrollDelivery(pre, post, direction).delta },
+      // Falls back to the Tier 4 literal for a future channel: extend the
+      // narrowing above and this stays correct.
+      channel: dispatchChannel ?? "wheel_send_input",
+    };
+  }
+
+  if (tier1 !== null && tier1.reason === "pixel_delta_observed") {
+    return {
+      outcome: {
+        status: "unverifiable",
+        delta: "unverifiable",
+        reason: "pixel_delta_observed",
+        axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+      },
+      channel: dispatchChannel ?? "wheel_send_input",
+    };
+  }
+
+  // Tier 4 ran (or nothing resolved): the wheel went through cursor-routed
+  // SendInput, which is what `wheel_send_input` names.
+  if (observedHwnd === null) {
+    return {
+      outcome: { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" },
+      channel: "wheel_send_input",
+    };
+  }
+  return {
+    outcome: evaluateScrollDelivery(pre, post, direction),
+    channel: "wheel_send_input",
   };
 }
 
@@ -1557,6 +1686,7 @@ export const scrollHandler = async ({
                   width: postFrame.width,
                   height: postFrame.height,
                   channels: postFrame.channels,
+                  source: postFrame.source,
                 }
               : null,
           );
@@ -1706,15 +1836,15 @@ export const scrollHandler = async ({
     // Phase 4: post-scroll snapshot + delivery evaluation.
     const post = await captureScrollSnapshot(observedHwnd, observedRect);
 
-    // When Tier 1 UIA succeeded (`tier1 !== null && tier1.scrolled`), the dispatcher
-    // already established delivery. We still capture a Win32 snapshot diff so
-    // `scrollObserved.delta` carries a numeric value for callers that inspect it,
-    // but we trust the dispatcher's success signal for `status`/`channel`/`reason`.
-    const outcome: ScrollVerifyOutcome = tier1 !== null && tier1.scrolled
-      ? { status: "delivered", delta: evaluateScrollDelivery(pre, post, direction).delta }
-      : observedHwnd === null
-        ? { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" }
-        : evaluateScrollDelivery(pre, post, direction);
+    // ADR-018 §2.6.1 — status/channel/reason routing. Pure and exported so the
+    // dispatcher→envelope seam is unit-testable; see `resolveScrollOutcome`.
+    const { outcome, channel: effectiveChannel } = resolveScrollOutcome(
+      tier1,
+      pre,
+      post,
+      direction,
+      observedHwnd,
+    );
 
     // hints.scrollObserved (issue #179 body shape) carries the raw delta values
     // for caller introspection; hints.verifyDelivery (matrix doc §4 shape) carries
@@ -1729,35 +1859,11 @@ export const scrollHandler = async ({
     // both axes are null).
     const scrollObserved = collapseScrollObserved(outcome);
 
-    // ADR-018 §2.6.1 — channel is the transport identifier (always populated,
-    // including for `status:'not_delivered'`). Phase 1b emits 'uia' when Tier 1
-    // succeeded; Phase 3 adds 'cdp' for the Tier 2 CDP dispatch; Phase 4 adds
-    // 'postmessage' for Tier 3. The legacy SendInput path retains
-    // 'wheel_send_input' for back-compat — the ADR §2.6.3 rename to 'send_input'
-    // is deferred to a future cleanup PR (the Tier 4 `kind:'unresolved'` path
-    // is the only remaining emitter once Phase 4 lands).
-    //
-    // **Explicit narrowing**, not an `as` cast: `tier1.channel` carries the
-    // broad `Channel` union ("uia" | "cdp" | "postmessage" | "send_input"),
-    // and casting to the narrow union would silently leak the wrong channel
-    // into `verifyDelivery` if a future tier is added without updating this
-    // branch. (Opus Round 1 P2.)
-    let effectiveChannel:
-      | "uia"
-      | "cdp"
-      | "postmessage"
-      | "wheel_send_input" = "wheel_send_input";
-    if (tier1 !== null && tier1.scrolled) {
-      if (
-        tier1.channel === "uia" ||
-        tier1.channel === "cdp" ||
-        tier1.channel === "postmessage"
-      ) {
-        effectiveChannel = tier1.channel;
-      }
-      // else: a future tier. Extend the local union and add the case when a
-      // new channel is added here.
-    }
+    // `effectiveChannel` comes from `resolveScrollOutcome` above. ADR-018
+    // §2.6.1 — channel is the transport identifier and is always populated,
+    // including for `status:'not_delivered'`. The legacy SendInput path retains
+    // 'wheel_send_input' for back-compat; the ADR §2.6.3 rename to 'send_input'
+    // is deferred to a future cleanup PR.
 
     if (outcome.status === "not_delivered") {
       // Silent drop: pre off-boundary, post unchanged. ScrollNotDelivered with
@@ -1818,7 +1924,11 @@ export const scrollHandler = async ({
         }
       : {
           status: "unverifiable" as const,
-          channel: "wheel_send_input" as const,
+          // Was a `"wheel_send_input"` literal, which was true while every
+          // route here had run Tier 4. Phase 6 added one that has not: the
+          // dispatcher's leaf-pixel `unverifiable` was carried by PostMessage,
+          // and naming SendInput there would misreport the transport.
+          channel: effectiveChannel,
           reason: outcome.reason ?? "read_back_unsupported",
           ...(outcome.axis ? { axis: outcome.axis } : {}),
           ...(dispatcherObservation ? { observation: dispatcherObservation } : {}),

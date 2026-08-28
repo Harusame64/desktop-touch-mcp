@@ -49,12 +49,14 @@
   Unchanged pixels still report `"unverifiable"`, because a page already at its
   end looks identical too.
 
-  The same comparison also covers a web view embedded in a window that *does*
-  have a scrollbar of its own — a page hosted inside a scrollable frame.
-  Scrolling one of those used to come back as an outright failure
-  (`ScrollNotDelivered`), because the frame's scrollbar had not moved even
-  though the page had; it now reports `status: "delivered"` on the same pixel
-  evidence.
+  A related case is a web view embedded in a window that *does* have a scrollbar
+  of its own — a page hosted inside a scrollable frame. Scrolling one of those
+  used to come back as an outright failure (`ScrollNotDelivered`), because the
+  frame's scrollbar had not moved even though the page had. `scroll` now
+  compares the embedded view's own pixels and reports `"unverifiable"` instead
+  of failing. Not `"delivered"`: an embedded view repaints for reasons that have
+  nothing to do with your scroll, and turning that into a success would hide the
+  case where the wheel really was swallowed.
 
 ## [1.15.1] - 2026-08-24 — The launcher stops hanging when GitHub is unreachable
 
