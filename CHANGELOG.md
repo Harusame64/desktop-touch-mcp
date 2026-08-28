@@ -19,14 +19,14 @@
   What to change: if you had compensated by passing a large number — `amount:150`
   to move a few screens — divide it by 40. Roughly one notch is one line of text
   in desktop apps such as Notepad, Explorer and Office, and about 100 pixels in
-  browsers and WebView-based apps. `amount:3` is a small nudge and `amount:10` is
-  about half a screen, on any window.
+  browsers and WebView-based apps, so `amount:3` is a small nudge everywhere and
+  8-10 notches covers a browser viewport. A saved `run_macro` recording that
+  passes a `scroll` amount above the new 1000 ceiling will be rejected rather
+  than run; re-record it or divide the value.
 
   `scroll(action='smart')` was affected by the same bug from the inside: it
   computed how far to scroll, then moved a fortieth of that, ran out of attempts
   and reported that it could not reach the target. It now converges.
-
-
 
 - **Scrolling now works on apps built with Tauri, Electron, WebView2 and CEF.**
   These apps host their page inside nested child windows — often in a separate
@@ -2217,8 +2217,6 @@ are identical.
 - **Security audit pass.** CWE-94 in CDP `cdpFill` fixed (raw selector interpolation → JSON.stringify), HTTP CORS narrowed from `*` to a localhost-origin allowlist with proper `Vary: Origin`, native vision-backend Mutex poison handled.
 - **CI gains Rust regression coverage.** windows-latest CI now runs the napi-rs build (`build:rs:debug`) on every PR, so any drift in the FFI shape / `build.rs` / Cargo features fails fast.
 - **Two new browser DX wins.** `wait_until(url_matches)` waits on `location.href`; `browser_get_dom` now attaches a body-structure hint to ElementNotFound errors so the LLM gets an alternative-selector starting point.
-
-
 
 ### Breaking Changes — Phase 1 (Naming Redesign, 10 tools)
 

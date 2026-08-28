@@ -1695,6 +1695,47 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     expect(result!.reason).toBe("delivered_via_postmessage");
   });
 
+  it("motion on the input HWND counts even when the leaf owns a scrollbar of its own", async () => {
+    // The shape a one-directional fallback misses: the leaf carries a vestigial
+    // WS_VSCROLL, so reading it succeeds and a "prefer the leaf, fall back on
+    // null" rule never looks further — while the ancestor is what actually
+    // scrolls. Watching only the leaf reports a working scroll as undelivered.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let posted = false;
+    win32PostMessageMock.mockImplementation(() => {
+      posted = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return scrollInfo(50); // readable, but never moves
+      return scrollInfo(posted ? 700 : 100); // the ancestor is what scrolls
+    });
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+  });
+
+  it("each watched HWND's post is read from the same HWND as its pre", async () => {
+    // Guards against a future edit that reads `post` from the dispatch target
+    // while `pre` came from somewhere else: the delta would then be computed
+    // across two different windows and could report either way at random.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockImplementation(() => scrollInfo(100));
+
+    await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    const axis = "vertical";
+    const reads = win32GetScrollInfoMock.mock.calls.filter((c) => c[1] === axis);
+    const preReads = reads.slice(0, 2).map((c) => c[0]);
+    const postReads = reads.slice(2).map((c) => c[0]);
+    // Both ends of the propagation chain are watched, in the same order, on
+    // both sides of the dispatch.
+    expect(preReads).toEqual([LEAF, TOP]);
+    expect(postReads).toEqual([LEAF, TOP]);
+  });
+
   it("the class table wins: a chain-table hit is never overridden by the hit test", async () => {
     const CHAIN_LEAF = 0xFEEDn;
     win32FindScrollLeafForTopLevelMock.mockReturnValue(CHAIN_LEAF);

@@ -1229,30 +1229,37 @@ export async function postWheelToHwnd(
     //      collapses to an essentially-constant perceptual hash even when
     //      raw pixels show real change — see §2.6.2 row notes).
     const getScrollInfoAvailable = typeof getScrollInfo === "function";
-    // Observation target. It follows the dispatch target for a class-table
-    // retarget — those leaves ARE the scrolling surface — but a hit-test
-    // retarget needs one extra step, because the two answer different
-    // questions: dispatch asks "who should receive the message", observation
-    // asks "whose scroll position moves".
+    // Observation targets. Dispatch and observation answer different questions:
+    // dispatch asks "who should receive the message", observation asks "whose
+    // scroll position moves". For a class-table retarget those are the same
+    // window — the table's leaves ARE the scrolling surface — but for a
+    // structural hit-test retarget they need not be.
     //
     // `WM_MOUSEWHEEL` propagates UP (`DefWindowProc`), so a wheel posted to a
-    // descendant that does not handle it is processed by an ancestor — and the
-    // scrollbar that moves is then the ancestor's, not the leaf's. Reading the
-    // leaf unconditionally would report `null` for a window that scrolled
-    // perfectly well, and the caller turns a null observation into
-    // `ScrollNotDelivered`: a working scroll reported as a hard error, on any
-    // window that owns a Win32 scrollbar and has a visible child over its
-    // centre (scrollable MFC / VCL frames with a full-size child panel).
-    // Fall back to the window we were asked to scroll.
-    let observationHwnd = effectiveHwnd;
-    let pre = getScrollInfoAvailable ? getScrollInfo(observationHwnd, axisName) : null;
-    if (pre === null && retargetedByHitTest && getScrollInfoAvailable) {
-      const fromInputHwnd = getScrollInfo(hwnd, axisName);
-      if (fromInputHwnd !== null) {
-        observationHwnd = hwnd;
-        pre = fromInputHwnd;
-      }
-    }
+    // descendant may be handled anywhere along the chain to the window we were
+    // asked to scroll. Watching only one end of that chain produces a false
+    // `ScrollNotDelivered` — a scroll that plainly worked, reported as a hard
+    // error — and it does so from either end:
+    //   - watch only the leaf, and a scrollable frame whose full-size child
+    //     panel has no scrollbar reads `null` while the frame scrolls;
+    //   - watch only the input window, and a child that owns the real
+    //     scrollbar moves invisibly.
+    // A first fix that merely preferred the leaf and fell back on `null` still
+    // missed a third shape: a child carrying a vestigial `WS_VSCROLL` reads
+    // non-null, suppressing the fallback, while the ancestor is what actually
+    // scrolls. So watch every candidate and treat motion anywhere on the chain
+    // as delivery — which is what upward propagation means.
+    const observationHwnds: bigint[] =
+      retargetedByHitTest && effectiveHwnd !== hwnd ? [effectiveHwnd, hwnd] : [effectiveHwnd];
+    const observed = getScrollInfoAvailable
+      ? observationHwnds
+          .map((h) => ({ hwnd: h, pre: getScrollInfo(h, axisName) }))
+          .filter((o): o is { hwnd: bigint; pre: NonNullable<typeof o.pre> } => o.pre !== null)
+      : [];
+    // The `pre === null` gate below means "no axis is observable anywhere on
+    // the chain", which is what routes chain-trust and the caller's own
+    // evidence. Keep the first readable candidate as its representative.
+    const pre = observed.length > 0 ? observed[0]!.pre : null;
 
     // ADR-019 Stage 2a — capture the dispatch-pre reference frame (T_pre)
     // *before* the chunking loop runs. Gated on:
@@ -1490,11 +1497,19 @@ export async function postWheelToHwnd(
       }
       return null;
     }
-    const post = getScrollInfo!(observationHwnd, axisName);
-    if (post === null) return null;
-
-    const delta = Math.abs(post.nPos - pre.nPos);
-    if (delta < POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS) return null;
+    // Motion on ANY watched HWND counts: the post travels up the chain, so the
+    // window whose position changes is not necessarily the one it was sent to.
+    // Each candidate's post is read from the same HWND as its own pre.
+    let moved = false;
+    for (const o of observed) {
+      const post = getScrollInfo!(o.hwnd, axisName);
+      if (post === null) continue;
+      if (Math.abs(post.nPos - o.pre.nPos) >= POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS) {
+        moved = true;
+        break;
+      }
+    }
+    if (!moved) return null;
 
     return {
       scrolled: true,

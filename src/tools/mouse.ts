@@ -433,17 +433,6 @@ export const mouseDragSchema = {
   verifyDelivery: verifyDeliveryParam,
 };
 
-export const scrollSchema = {
-  direction: z.enum(["up", "down", "left", "right"]).describe("Scroll direction"),
-  amount: z.coerce.number().int().positive().default(3).describe("Number of scroll steps (default 3)"),
-  x: z.coerce.number().optional().describe("X coordinate to scroll at (moves cursor there first)"),
-  y: z.coerce.number().optional().describe("Y coordinate to scroll at"),
-  speed: speedParam,
-  homing: homingParam,
-  windowTitle: windowTitleParam,
-  hwnd: hwndParam,
-};
-
 export const getCursorPositionSchema = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
