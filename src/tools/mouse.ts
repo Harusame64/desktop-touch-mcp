@@ -1846,6 +1846,22 @@ export const scrollHandler = async ({
       observedHwnd,
     );
 
+    // ADR-018 Phase 6 §14.2 — the leaf-pixel route replaced a typed
+    // `ScrollNotDelivered`, and with it the `SUGGESTS.ScrollNotDelivered`
+    // entries that pointed the caller at the channels which do not go through
+    // the wheel. An `ok: true` envelope carries no `suggest`, so without this
+    // the caller is left holding "something repainted" and no next step —
+    // strictly less useful than the error it replaced, which was not the point
+    // of the change. Rides the advisory channel instead.
+    if (outcome.status === "unverifiable" && outcome.reason === "pixel_delta_observed") {
+      scrollWarnings.push(
+        "The view under the pointer repainted, but no scrollbar could confirm a scroll — " +
+          "this window reports its scroll position through neither channel. If the page did not " +
+          "move, retry with scroll({action:'smart', target:'<selector>'}) or " +
+          "scroll({action:'to_element', name|selector}), neither of which relies on the wheel.",
+      );
+    }
+
     // hints.scrollObserved (issue #179 body shape) carries the raw delta values
     // for caller introspection; hints.verifyDelivery (matrix doc §4 shape) carries
     // the typed status/reason envelope. The two are kept side-by-side: scrollObserved

@@ -479,10 +479,11 @@ const SUGGESTS: Record<string, string[]> = {
   // with a tier-based enum, six values since Phase 6 (delivered_via_uia /
   // delivered_via_cdp / delivered_via_postmessage / pixel_delta_observed /
   // wheel_overlay_intercepted / target_unreachable). The SSOT for the list is
-  // ADR-018 §2.6.2 and the `ScrollVerifyOutcome.reason` union in `mouse.ts`;
-  // only the `not_delivered` values below belong in this failure-path suggest
-  // list, which is why a `delivered` reason such as `pixel_delta_observed`
-  // appears in the count and not in the copy.
+  // ADR-018 §2.6.2 and the `ScrollVerifyOutcome.reason` union in `mouse.ts`.
+  // This list is the FAILURE path, so only `not_delivered` reasons belong in
+  // the copy below: `pixel_delta_observed` is counted above and absent here
+  // because it is never a failure — `delivered` from the scrollHandler emitter,
+  // `unverifiable` from the dispatcher one.
   // The suggest copy below references the new names where appropriate so callers
   // reading suggestions today are already pointed at the destination-explicit
   // recovery strategies (UIA ScrollPattern / CDP / PostMessage) that ADR-018
