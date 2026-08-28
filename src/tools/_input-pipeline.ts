@@ -1124,6 +1124,64 @@ function makeScreenLParam(screenX: number, screenY: number): bigint {
  *
  * Exported for unit testing.
  */
+/**
+ * `GetAncestor` flag for the immediate parent (winuser.h `GA_PARENT`).
+ */
+const GA_PARENT = 1;
+
+/**
+ * Depth cap for the parent walk. Matches the descent's own cap in
+ * `find_wheel_leaf_by_hittest`, so the walk can always get back up whatever
+ * the descent came down.
+ */
+const OBSERVATION_CHAIN_MAX_DEPTH = 8;
+
+/**
+ * Every HWND whose scroll position could legitimately move in response to a
+ * wheel posted at `leaf`, for a target the caller named as `inputHwnd`.
+ *
+ * `WM_MOUSEWHEEL` propagates UP: an unhandled wheel is passed to the parent,
+ * and so on, so the window that ends up scrolling is anywhere on the chain
+ * from the post target to the window we were asked to scroll — **including
+ * the middle**. Watching only the two ends looks sufficient until an
+ * intermediate container owns the scrollbar (a scrollable panel between a
+ * WebView host and its render widget), at which point a scroll that plainly
+ * happened is reported as `ScrollNotDelivered`.
+ *
+ * Returns `[leaf]` unchanged for a class-table retarget (the table's leaves
+ * ARE the scrolling surface) and for the no-retarget case, so the common paths
+ * pay nothing.
+ */
+function buildObservationChain(
+  leaf: bigint,
+  inputHwnd: bigint,
+  retargetedByHitTest: boolean,
+): bigint[] {
+  if (!retargetedByHitTest || leaf === inputHwnd) return [leaf];
+  const chain: bigint[] = [leaf];
+  const getAncestor = nativeWin32?.win32GetAncestor;
+  if (typeof getAncestor === "function") {
+    let current = leaf;
+    for (let depth = 0; depth < OBSERVATION_CHAIN_MAX_DEPTH; depth++) {
+      if (current === inputHwnd) break;
+      let parent: bigint | null | undefined;
+      try {
+        parent = getAncestor(current, GA_PARENT);
+      } catch {
+        break; // Defensive: a native throw must not lose the endpoints below.
+      }
+      if (parent === null || parent === undefined || parent === current) break;
+      if (!chain.includes(parent)) chain.push(parent);
+      current = parent;
+    }
+  }
+  // The window the caller named is always watched, even when the walk could
+  // not run (missing binding) or stopped early — that keeps this at least as
+  // good as watching the two endpoints.
+  if (!chain.includes(inputHwnd)) chain.push(inputHwnd);
+  return chain;
+}
+
 export async function postWheelToHwnd(
   hwnd: bigint,
   params: WheelParams,
@@ -1249,8 +1307,11 @@ export async function postWheelToHwnd(
     // non-null, suppressing the fallback, while the ancestor is what actually
     // scrolls. So watch every candidate and treat motion anywhere on the chain
     // as delivery — which is what upward propagation means.
-    const observationHwnds: bigint[] =
-      retargetedByHitTest && effectiveHwnd !== hwnd ? [effectiveHwnd, hwnd] : [effectiveHwnd];
+    const observationHwnds = buildObservationChain(
+      effectiveHwnd,
+      hwnd,
+      retargetedByHitTest,
+    );
     const observed = getScrollInfoAvailable
       ? observationHwnds
           .map((h) => ({ hwnd: h, pre: getScrollInfo(h, axisName) }))
@@ -1338,8 +1399,13 @@ export async function postWheelToHwnd(
     // single-message implementation wrapped the sign bit and silently
     // reversed scroll direction (Codex PR #305 review P2-B).
     const sign = signedDelta < 0 ? -1 : 1;
-    let remaining = Math.abs(signedDelta);
     let postedAny = false;
+    // Emit the whole (chunked) wheel request at one HWND. Factored out because
+    // a hit-test retarget may have to repeat it at the input window — see the
+    // retry below. `logDispatchSink` / L1 record the HWND actually posted to.
+    const postAllChunksTo = (targetHwnd: bigint, targetLParam: bigint): boolean => {
+    let remaining = Math.abs(signedDelta);
+    let postedHere = false;
     while (remaining > 0) {
       const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
       const chunkSigned = sign * chunkMagnitude;
@@ -1350,17 +1416,17 @@ export async function postWheelToHwnd(
       // otherwise write a dispatch event for a message that was never posted
       // (Codex Round 1 P2). Once per call, not per chunk; the handle is the
       // LEAF the walker resolved, which is what actually receives the message.
-      if (!postedAny) {
-        logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd: effectiveHwnd, tier: "3" });
+      if (!postedHere) {
+        logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd, tier: "3" });
       }
-      const posted = postMessage(effectiveHwnd, message, wParam, lParam);
+      const posted = postMessage(targetHwnd, message, wParam, targetLParam);
       if (!posted) {
         // Receiver rejected this chunk. If at least one earlier chunk
-        // delivered, fall through to observation; if NOTHING posted, return
-        // null so the caller emits target_unreachable.
-        if (!postedAny) return null;
+        // delivered, fall through to observation; if NOTHING posted, report
+        // that so the caller emits target_unreachable.
         break;
       }
+      postedHere = true;
       postedAny = true;
       // ADR-007 P5a L1 capture contract — record every successful chunk to
       // the L1 ring for replay-accurate observability. `postMessageToHwnd`
@@ -1370,13 +1436,17 @@ export async function postWheelToHwnd(
       // ADR-018 Phase 5+N: records the **leaf** HWND (effectiveHwnd) — the
       // destination-explicit record per ADR-007 P5a contract.
       nativeL1?.l1PushHwInputPostMessage?.(
-        effectiveHwnd,
+        targetHwnd,
         message >>> 0,
         wParam,
-        lParam,
+        targetLParam,
       );
       remaining -= chunkMagnitude;
     }
+    return postedHere;
+    };
+
+    postAllChunksTo(effectiveHwnd, lParam);
 
     // `notch=0` (or any zero-magnitude call) loops zero times → nothing was
     // ever posted. Surface as null so the caller emits `target_unreachable`
@@ -1500,15 +1570,60 @@ export async function postWheelToHwnd(
     // Motion on ANY watched HWND counts: the post travels up the chain, so the
     // window whose position changes is not necessarily the one it was sent to.
     // Each candidate's post is read from the same HWND as its own pre.
-    let moved = false;
-    for (const o of observed) {
-      const post = getScrollInfo!(o.hwnd, axisName);
-      if (post === null) continue;
-      if (Math.abs(post.nPos - o.pre.nPos) >= POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS) {
-        moved = true;
-        break;
+    const observeMotion = (): boolean =>
+      observed.some((o) => {
+        const post = getScrollInfo!(o.hwnd, axisName);
+        return (
+          post !== null &&
+          Math.abs(post.nPos - o.pre.nPos) >= POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS
+        );
+      });
+
+    let moved = observeMotion();
+
+    // Dispatch retry for a structural retarget. Upward propagation is what
+    // makes posting to a descendant safe, but it only holds when that
+    // descendant hands the message to `DefWindowProc`. A child that CONSUMES
+    // `WM_MOUSEWHEEL` without scrolling and without forwarding breaks the
+    // assumption, and the window whose handler used to do the scrolling never
+    // sees the wheel at all — a regression against posting to the top level,
+    // which is what this code did before the hit test existed. So when a
+    // hit-test retarget produced no motion anywhere we can see, send the same
+    // request to the window the caller actually named.
+    //
+    // Never retry when nothing is observable: we cannot tell "nothing happened"
+    // from "something we cannot measure happened", and a retry would then
+    // scroll a WebView host twice — the leaf really is the receiver there,
+    // which is the case this whole retarget exists for. Unmeasurable stays
+    // single-shot and falls through to the caller's own pixel evidence.
+    //
+    // Today that is already guaranteed upstream: `observed` empty means
+    // `pre === null`, and Case 2 above has returned by this point. The explicit
+    // `observed.length > 0` below is therefore belt-and-braces, and a mutation
+    // test confirms it is NOT independently load-bearing — removing it changes
+    // no behaviour. It is kept because the invariant it states ("no retry
+    // without evidence") must survive any future restructuring of Case 2, and
+    // reading it here saves the next person that trace.
+    if (
+      !moved &&
+      observed.length > 0 &&
+      retargetedByHitTest &&
+      effectiveHwnd !== hwnd
+    ) {
+      const inputRect = getWindowRectByHwnd(hwnd);
+      const inputLParam =
+        inputRect !== null
+          ? makeScreenLParam(
+              Math.round(inputRect.x + inputRect.width / 2),
+              Math.round(inputRect.y + inputRect.height / 2),
+            )
+          : lParam;
+      if (postAllChunksTo(hwnd, inputLParam)) {
+        await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
+        moved = observeMotion();
       }
     }
+
     if (!moved) return null;
 
     return {
