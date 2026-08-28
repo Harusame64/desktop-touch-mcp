@@ -1404,46 +1404,46 @@ export async function postWheelToHwnd(
     // a hit-test retarget may have to repeat it at the input window — see the
     // retry below. `logDispatchSink` / L1 record the HWND actually posted to.
     const postAllChunksTo = (targetHwnd: bigint, targetLParam: bigint): boolean => {
-    let remaining = Math.abs(signedDelta);
-    let postedHere = false;
-    while (remaining > 0) {
-      const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
-      const chunkSigned = sign * chunkMagnitude;
-      const wParam = makeWheelWParam(0, chunkSigned);
-      // ADR-035 Phase 1 — recorded HERE, at the real message boundary, not at
-      // the tier-3 branch above: every early return before this point (missing
-      // native binding, a zero-magnitude call, a pre-dispatch failure) would
-      // otherwise write a dispatch event for a message that was never posted
-      // (Codex Round 1 P2). Once per call, not per chunk; the handle is the
-      // LEAF the walker resolved, which is what actually receives the message.
-      if (!postedHere) {
-        logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd, tier: "3" });
+      let remaining = Math.abs(signedDelta);
+      let postedHere = false;
+      while (remaining > 0) {
+        const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
+        const chunkSigned = sign * chunkMagnitude;
+        const wParam = makeWheelWParam(0, chunkSigned);
+        // ADR-035 Phase 1 — recorded HERE, at the real message boundary, not at
+        // the tier-3 branch above: every early return before this point (missing
+        // native binding, a zero-magnitude call, a pre-dispatch failure) would
+        // otherwise write a dispatch event for a message that was never posted
+        // (Codex Round 1 P2). Once per call, not per chunk; the handle is the
+        // LEAF the walker resolved, which is what actually receives the message.
+        if (!postedHere) {
+          logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd, tier: "3" });
+        }
+        const posted = postMessage(targetHwnd, message, wParam, targetLParam);
+        if (!posted) {
+          // Receiver rejected this chunk. If at least one earlier chunk
+          // delivered, fall through to observation; if NOTHING posted, report
+          // that so the caller emits target_unreachable.
+          break;
+        }
+        postedHere = true;
+        postedAny = true;
+        // ADR-007 P5a L1 capture contract — record every successful chunk to
+        // the L1 ring for replay-accurate observability. `postMessageToHwnd`
+        // in `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY
+        // paths; Tier 3 wheel posts must follow the same contract or the L1
+        // stream loses an entire input class. (Opus PR #305 Round 1 P2-1.)
+        // ADR-018 Phase 5+N: records the **leaf** HWND (effectiveHwnd) — the
+        // destination-explicit record per ADR-007 P5a contract.
+        nativeL1?.l1PushHwInputPostMessage?.(
+          targetHwnd,
+          message >>> 0,
+          wParam,
+          targetLParam,
+        );
+        remaining -= chunkMagnitude;
       }
-      const posted = postMessage(targetHwnd, message, wParam, targetLParam);
-      if (!posted) {
-        // Receiver rejected this chunk. If at least one earlier chunk
-        // delivered, fall through to observation; if NOTHING posted, report
-        // that so the caller emits target_unreachable.
-        break;
-      }
-      postedHere = true;
-      postedAny = true;
-      // ADR-007 P5a L1 capture contract — record every successful chunk to
-      // the L1 ring for replay-accurate observability. `postMessageToHwnd`
-      // in `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY
-      // paths; Tier 3 wheel posts must follow the same contract or the L1
-      // stream loses an entire input class. (Opus PR #305 Round 1 P2-1.)
-      // ADR-018 Phase 5+N: records the **leaf** HWND (effectiveHwnd) — the
-      // destination-explicit record per ADR-007 P5a contract.
-      nativeL1?.l1PushHwInputPostMessage?.(
-        targetHwnd,
-        message >>> 0,
-        wParam,
-        targetLParam,
-      );
-      remaining -= chunkMagnitude;
-    }
-    return postedHere;
+      return postedHere;
     };
 
     postAllChunksTo(effectiveHwnd, lParam);
@@ -1581,7 +1581,12 @@ export async function postWheelToHwnd(
 
     let moved = observeMotion();
 
-    // Dispatch retry for a structural retarget. Upward propagation is what
+    // Dispatch retry for a structural retarget.
+    //
+    // Note for anyone joining resolve→dispatch telemetry: when this fires, the
+    // tool call emits TWO `logDispatchSink` events with different `targetHwnd`.
+    // That is the truth — two posts really happened — but analysis that assumes
+    // one dispatch per call needs to account for it. Upward propagation is what
     // makes posting to a descendant safe, but it only holds when that
     // descendant hands the message to `DefWindowProc`. A child that CONSUMES
     // `WM_MOUSEWHEEL` without scrolling and without forwarding breaks the
@@ -1591,24 +1596,30 @@ export async function postWheelToHwnd(
     // hit-test retarget produced no motion anywhere we can see, send the same
     // request to the window the caller actually named.
     //
-    // Never retry when nothing is observable: we cannot tell "nothing happened"
-    // from "something we cannot measure happened", and a retry would then
-    // scroll a WebView host twice — the leaf really is the receiver there,
-    // which is the case this whole retarget exists for. Unmeasurable stays
-    // single-shot and falls through to the caller's own pixel evidence.
+    // Only retry when the RETRY TARGET's own movement is observable. The risk
+    // being guarded against is scrolling twice: if the first post already
+    // reached `hwnd` by propagation and moved it, but we cannot see `hwnd`'s
+    // position, then "no motion seen" does not mean "nothing happened" and a
+    // second post adds a second scroll.
     //
-    // Today that is already guaranteed upstream: `observed` empty means
-    // `pre === null`, and Case 2 above has returned by this point. The explicit
-    // `observed.length > 0` below is therefore belt-and-braces, and a mutation
-    // test confirms it is NOT independently load-bearing — removing it changes
-    // no behaviour. It is kept because the invariant it states ("no retry
-    // without evidence") must survive any future restructuring of Case 2, and
-    // reading it here saves the next person that trace.
+    // "Something on the chain is readable" is NOT sufficient, and the gap is
+    // reachable in exactly the shape that motivated watching the chain at all:
+    // a leaf with custom-painted scrollbars (unreadable), an intermediate
+    // container carrying a vestigial `WS_VSCROLL` (readable, never moves), and
+    // a custom-paint top level (unreadable). The wheel bubbles to the top
+    // level and scrolls it; `observeMotion` sees only the static middle and
+    // reports nothing; a gate on "any candidate readable" is satisfied by that
+    // middle and fires the retry — double scroll.
+    //
+    // Narrowing the gate to `hwnd` itself also makes it load-bearing: with the
+    // earlier `observed.length > 0` form, the unobservable-`pre` branch already
+    // returned first, so removing it changed nothing and a mutation test could
+    // not see it.
     if (
       !moved &&
-      observed.length > 0 &&
       retargetedByHitTest &&
-      effectiveHwnd !== hwnd
+      effectiveHwnd !== hwnd &&
+      observed.some((o) => o.hwnd === hwnd)
     ) {
       const inputRect = getWindowRectByHwnd(hwnd);
       const inputLParam =

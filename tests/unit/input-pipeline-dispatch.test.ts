@@ -1788,11 +1788,10 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     // scroll such a host a second time. It stays single-shot and the caller
     // falls back to its own pixel evidence.
     //
-    // What enforces that today is the unobservable-pre branch returning before
-    // the retry is reached, not the retry's own `observed.length > 0` guard —
-    // mutating that guard away leaves this test green. The test pins the
-    // user-visible invariant (an unmeasurable host is posted to exactly once)
-    // rather than one particular line, which is why it is worth keeping.
+    // This case is caught twice over: the unobservable-`pre` branch returns
+    // before the retry is reached, and the retry's own gate requires the retry
+    // target to be readable. The test pins the user-visible invariant — an
+    // unmeasurable host is posted to exactly once — rather than either line.
     win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
     win32GetScrollInfoMock.mockReturnValue(null);
 
@@ -1851,6 +1850,33 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     expect(result!.scrolled).toBe(true);
     // The middle scrolled, so nothing needed a second dispatch.
     expect(win32PostMessageMock.mock.calls.every((c) => c[0] === LEAF)).toBe(true);
+  });
+
+  it("no retry when the retry target itself is unobservable, even if something else on the chain is readable", async () => {
+    // The shape a "something on the chain is readable" gate gets wrong, and it
+    // is the same shape that motivated watching the chain in the first place:
+    //   leaf   — custom-painted scrollbars, unreadable
+    //   middle — vestigial WS_VSCROLL, readable, never moves
+    //   top    — custom-paint, unreadable, and where the wheel actually lands
+    // The first post bubbles up and scrolls the top level. We cannot see that,
+    // so "no motion observed" must NOT be read as "nothing happened": posting
+    // again would scroll it a second time.
+    const MIDDLE = 0xA11Dn;
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetAncestorMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return MIDDLE;
+      if (h === MIDDLE) return TOP;
+      return null;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === MIDDLE ? scrollInfo(100) : null,
+    );
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets.every((t) => t === LEAF)).toBe(true);
+    expect(result).toBeNull();
   });
 
   it("the class table wins: a chain-table hit is never overridden by the hit test", async () => {
