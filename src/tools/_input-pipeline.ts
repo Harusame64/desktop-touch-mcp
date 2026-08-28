@@ -1344,6 +1344,33 @@ export async function postWheelToHwnd(
       });
     }
 
+    // ADR-018 Phase 6 §2.2 — evidence for the retry decision further down.
+    //
+    // When a structural retarget produces no observable motion there are two
+    // possible worlds, and `GetScrollInfo` cannot tell them apart: the leaf
+    // consumed the wheel and scrolled something with no Win32 scrollbar (a
+    // WebView inside a scrollable frame), or the leaf consumed it and did
+    // nothing. Re-posting is right in the second world and scrolls twice in the
+    // first. The leaf's own pixels answer it.
+    //
+    // Captured only in the configuration where a retry could actually fire —
+    // structural retarget, and the retry target readable — so the ordinary
+    // WebView scroll pays nothing. The condition is decidable here, before
+    // dispatch, which is the only place a "pre" frame can be taken.
+    const retryCouldFire =
+      retargetedByHitTest &&
+      effectiveHwnd !== hwnd &&
+      observed.some((o) => o.hwnd === hwnd);
+    const leafPreFrame =
+      retryCouldFire && rect !== null
+        ? await captureFrame(effectiveHwnd, {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          })
+        : null;
+
     // ADR-019 MVP-1 (Stage 1) — read-only UIA `ScrollPercent` pre-snapshot.
     // The dispatcher's chain-trust branch (Case 2a below) prefers UIA percent
     // when available because it's the OS-canonical observation (TMOL
@@ -1615,12 +1642,31 @@ export async function postWheelToHwnd(
     // earlier `observed.length > 0` form, the unobservable-`pre` branch already
     // returned first, so removing it changed nothing and a mutation test could
     // not see it.
-    if (
-      !moved &&
-      retargetedByHitTest &&
-      effectiveHwnd !== hwnd &&
-      observed.some((o) => o.hwnd === hwnd)
-    ) {
+    // The leaf acted if its pixels moved, even though no scrollbar shows it.
+    // Frames of different shape are not comparable (the capture stack re-picks
+    // its stage per call), so that counts as "no evidence the leaf acted" and
+    // the retry proceeds — the same direction the null-frame case takes.
+    const leafActed = await (async (): Promise<boolean> => {
+      if (!retryCouldFire || moved || leafPreFrame === null || rect === null) return false;
+      const leafPostFrame = await captureFrame(effectiveHwnd, {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      });
+      if (leafPostFrame === null) return false;
+      if (
+        leafPostFrame.width !== leafPreFrame.width ||
+        leafPostFrame.height !== leafPreFrame.height ||
+        leafPostFrame.channels !== leafPreFrame.channels ||
+        leafPostFrame.rawPixels.length !== leafPreFrame.rawPixels.length
+      ) {
+        return false;
+      }
+      return !leafPostFrame.rawPixels.equals(leafPreFrame.rawPixels);
+    })();
+
+    if (!moved && retryCouldFire && !leafActed) {
       const inputRect = getWindowRectByHwnd(hwnd);
       const inputLParam =
         inputRect !== null

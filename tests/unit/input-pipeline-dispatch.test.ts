@@ -165,6 +165,18 @@ vi.mock("../../src/engine/cdp-bridge.js", () => ({
 
 // Mock CDP port lookup — keeps `resolveCdpDestinationForHwnd` deterministic.
 const getCdpPortMock = vi.fn(() => 9222);
+// ADR-018 Phase 6 §2.2 — the retry decision reads the leaf's own pixels to
+// tell "the leaf scrolled something unobservable" from "the leaf did nothing".
+const captureFrameMock = vi.fn<
+  [bigint, { x: number; y: number; width: number; height: number }],
+  Promise<{ rawPixels: Buffer; width: number; height: number; channels: 3 | 4 } | null>
+>(async () => null);
+vi.mock("../../src/engine/layer-buffer.js", () => ({
+  captureFrame: (...args: unknown[]) =>
+    (captureFrameMock as unknown as (...a: unknown[]) => unknown)(...args),
+  pollUntilStable: vi.fn(async () => null),
+}));
+
 vi.mock("../../src/utils/desktop-config.js", () => ({
   getCdpPort: getCdpPortMock,
 }));
@@ -1630,6 +1642,8 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     win32FindWheelLeafByHittestMock.mockReset();
     win32GetAncestorMock.mockReset();
     win32GetAncestorMock.mockReturnValue(null);
+    captureFrameMock.mockReset();
+    captureFrameMock.mockResolvedValue(null);
     uiaReadScrollPercentAtHwndMock.mockReset();
     uiaReadScrollPercentAtHwndMock.mockImplementation(async () => null);
     nativeWin32Mock.win32PostMessage = win32PostMessageMock;
@@ -1893,6 +1907,55 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     expect(win32PostMessageMock.mock.calls[0]![0]).toBe(TOP);
     // Restore for the remaining tests in this block.
     nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
+  });
+
+  const rawFrame = (fill: number) => ({
+    rawPixels: Buffer.alloc(64, fill),
+    width: 4,
+    height: 4,
+    channels: 4 as const,
+  });
+
+  it("no retry when the leaf's own pixels moved — it scrolled something unobservable", async () => {
+    // A scrollable frame hosting a WebView2 child. The child consumes the
+    // wheel and scrolls web content, which no Win32 scrollbar reports, while
+    // the frame's own position stays put. Re-posting at the frame would scroll
+    // a second surface in one call — visibly wrong, and different from both the
+    // old behaviour and a real mouse.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10)) // leaf, before
+      .mockResolvedValueOnce(rawFrame(0x20)); // leaf, after — it repainted
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets.every((t) => t === LEAF)).toBe(true);
+    expect(result).toBeNull();
+  });
+
+  it("retry when the leaf's pixels did not move — it swallowed the wheel", async () => {
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let postedToTop = false;
+    win32PostMessageMock.mockImplementation((h: bigint) => {
+      if (h === TOP) postedToTop = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(postedToTop ? 600 : 100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10)) // leaf, before
+      .mockResolvedValueOnce(rawFrame(0x10)); // leaf, after — nothing happened
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(postedToTop).toBe(true);
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
   });
 
   it("the class table wins: a chain-table hit is never overridden by the hit test", async () => {
