@@ -1586,16 +1586,22 @@ export const scrollHandler = async ({
       // `amount:40` under the old constant scrolled exactly 100 px = 1 notch.
       //
       // The 40x scale-up brings large `amount` values into the range where a
-      // single wheel event stops behaving linearly, so the request is split the
-      // same way Tier 3 splits its PostMessage chunks. `amount` has no schema
-      // upper bound, and "scroll to the bottom" is a natural reason to pass a
-      // three-digit value. Measured on the same host: one un-split event of
-      // 274 notches (32880 units, just past the signed-16-bit range a receiver
-      // reads via `GET_WHEEL_DELTA_WPARAM`) moved about one viewport instead of
-      // 274 notches — no direction reversal here, but an order-of-magnitude
-      // under-delivery. Tier 3's own chunking comment records the reversal that
-      // the same threshold produced on the PostMessage path, so the cap is
-      // enforced on both paths rather than trusting one receiver's leniency.
+      // single wheel event crosses the signed-16-bit boundary a receiver reads
+      // through `GET_WHEEL_DELTA_WPARAM`: at 274 notches the delta is 32880,
+      // past 32767. Tier 3 already splits its PostMessage chunks for exactly
+      // this reason, and its comment records a real direction reversal at that
+      // threshold. Before the unit fix, reaching it needed `amount >= 10923`
+      // (unreachable in practice); after it, 274 — and "scroll to the bottom"
+      // is a natural reason to pass a three-digit value.
+      //
+      // The chunk size is the largest whole number of notches that stays inside
+      // the bound, and it was checked against the most faithful possible form:
+      // on a WebView2 host, one 273-notch event and 273 single-notch events
+      // landed on a byte-identical frame, so splitting here costs nothing in
+      // delivered distance. Past the bound the delivered distance stopped
+      // matching the request; the exact mechanism was not isolated and no
+      // reversal was observed on that host, which is why the cap is taken from
+      // the documented encoding limit rather than from that observation.
       const notchesPerEvent = Math.floor(WHEEL_DELTA_MAX_PER_MSG / WHEEL_DELTA_PER_NOTCH);
       let remainingNotches = amount;
       while (remainingNotches > 0) {

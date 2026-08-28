@@ -1521,9 +1521,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "amount": {
-          "description": "Number of scroll notches (default 3). One notch = one physical wheel detent on every dispatch path. Typical distance per notch: ≈1 text line in UIA-capable apps (Notepad, Explorer, WPF), ≈100 px in browsers and WebView-based apps (Chrome, Electron, Tauri). So amount:3 (default) is a small nudge, and about 8-10 notches covers a typical browser viewport while the same count is only ~10 lines in a native app. Exact distance depends on the app and the OS wheel-speed setting.",
+          "description": "Number of scroll notches (default 3, max 1000). One notch = one physical wheel detent on every dispatch path. Typical distance per notch: ≈1 text line in UIA-capable apps (Notepad, Explorer, WPF), ≈100 px in browsers and WebView-based apps (Chrome, Electron, Tauri). So amount:3 (default) is a small nudge, and about 8-10 notches covers a typical browser viewport while the same count is only ~10 lines in a native app. Exact distance depends on the app and the OS wheel-speed setting. The 1000-notch ceiling exists because each notch is dispatched as real wheel input; to reach a specific place in a long document use action='to_element' or action='smart' instead of a huge amount.",
           "type": "integer",
-          "default": 3
+          "default": 3,
+          "maximum": 1000
         },
         "x": {
           "description": "X coordinate to scroll at (moves cursor there first)",

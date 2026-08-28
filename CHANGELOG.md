@@ -9,6 +9,13 @@
   notch, so the default `amount:3` moved about 7 pixels and looked like
   scrolling was broken. One unit is now one notch on every window.
 
+  `amount` is now also capped at 1000 notches. Each notch is dispatched as real
+  wheel input, so an unbounded value meant an unbounded amount of work; to reach
+  a specific place in a long document, use `action='to_element'` or
+  `action='smart'` rather than a very large `amount`. Requests larger than one
+  wheel event can carry are split internally, which changes nothing you can
+  observe except that very large scrolls now arrive in full.
+
   What to change: if you had compensated by passing a large number — `amount:150`
   to move a few screens — divide it by 40. Roughly one notch is one line of text
   in desktop apps such as Notepad, Explorer and Office, and about 100 pixels in
@@ -19,10 +26,7 @@
   computed how far to scroll, then moved a fortieth of that, ran out of attempts
   and reported that it could not reach the target. It now converges.
 
-  Large values are also split into several wheel events instead of one oversized
-  one. A single event asking for hundreds of notches is not delivered in
-  proportion — measured, one 274-notch event moved about one screen — and on some
-  windows an event that large scrolls the wrong way.
+
 
 - **Scrolling now works on apps built with Tauri, Electron, WebView2 and CEF.**
   These apps host their page inside nested child windows — often in a separate

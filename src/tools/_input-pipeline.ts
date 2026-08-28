@@ -264,6 +264,10 @@ const WM_MOUSEHWHEEL = 0x020e;
  * each emitted message stays within the signed 16-bit range (otherwise the
  * sign bit wraps and a "scroll down" emerges as a "scroll up" on the
  * receiver, per Codex PR #305 review).
+ *
+ * ADR-018 Phase 6: the same cap now bounds Tier 4's SendInput events
+ * (`mouse.ts` scrollHandler). The limit is a property of how a receiver reads
+ * the delta, not of the transport, so both paths honour it.
  */
 export const WHEEL_DELTA_MAX_PER_MSG = 0x7fff;
 
@@ -1168,12 +1172,16 @@ export async function postWheelToHwnd(
     // pipeline exists to remove — and would also make the Phase 6 §2.3
     // pixel-delta fallback unreachable on exactly the hosts it was built for,
     // since this function would stop returning null for them.
+    let retargetedByHitTest = false;
     if (!retargetedByLeafWalker) {
       const findLeafByHitTest = nativeWin32?.win32FindWheelLeafByHittest;
       if (typeof findLeafByHitTest === "function") {
         try {
           const leaf = findLeafByHitTest(hwnd);
-          if (leaf !== null && leaf !== undefined) effectiveHwnd = leaf;
+          if (leaf !== null && leaf !== undefined) {
+            effectiveHwnd = leaf;
+            retargetedByHitTest = true;
+          }
         } catch {
           // Defensive: any native throw → keep input HWND (top-level POST).
         }
@@ -1221,9 +1229,30 @@ export async function postWheelToHwnd(
     //      collapses to an essentially-constant perceptual hash even when
     //      raw pixels show real change — see §2.6.2 row notes).
     const getScrollInfoAvailable = typeof getScrollInfo === "function";
-    const pre = getScrollInfoAvailable
-      ? getScrollInfo(effectiveHwnd, axisName)
-      : null;
+    // Observation target. It follows the dispatch target for a class-table
+    // retarget — those leaves ARE the scrolling surface — but a hit-test
+    // retarget needs one extra step, because the two answer different
+    // questions: dispatch asks "who should receive the message", observation
+    // asks "whose scroll position moves".
+    //
+    // `WM_MOUSEWHEEL` propagates UP (`DefWindowProc`), so a wheel posted to a
+    // descendant that does not handle it is processed by an ancestor — and the
+    // scrollbar that moves is then the ancestor's, not the leaf's. Reading the
+    // leaf unconditionally would report `null` for a window that scrolled
+    // perfectly well, and the caller turns a null observation into
+    // `ScrollNotDelivered`: a working scroll reported as a hard error, on any
+    // window that owns a Win32 scrollbar and has a visible child over its
+    // centre (scrollable MFC / VCL frames with a full-size child panel).
+    // Fall back to the window we were asked to scroll.
+    let observationHwnd = effectiveHwnd;
+    let pre = getScrollInfoAvailable ? getScrollInfo(observationHwnd, axisName) : null;
+    if (pre === null && retargetedByHitTest && getScrollInfoAvailable) {
+      const fromInputHwnd = getScrollInfo(hwnd, axisName);
+      if (fromInputHwnd !== null) {
+        observationHwnd = hwnd;
+        pre = fromInputHwnd;
+      }
+    }
 
     // ADR-019 Stage 2a — capture the dispatch-pre reference frame (T_pre)
     // *before* the chunking loop runs. Gated on:
@@ -1461,7 +1490,7 @@ export async function postWheelToHwnd(
       }
       return null;
     }
-    const post = getScrollInfo!(effectiveHwnd, axisName);
+    const post = getScrollInfo!(observationHwnd, axisName);
     if (post === null) return null;
 
     const delta = Math.abs(post.nPos - pre.nPos);

@@ -61,14 +61,23 @@ const win32GetScrollInfoMock = vi.fn<
 // (no retarget) so existing Phase 4 tests stay bit-equal; the dedicated
 // leaf-walker describe block below overrides per-test.
 const win32FindScrollLeafForTopLevelMock = vi.fn<[bigint], bigint | null>(() => null);
+// ADR-018 Phase 6: structural hit-test fallback, tried only after a class-table
+// miss. Default impl returns `null` (no retarget) so every pre-Phase-6 test
+// stays bit-equal. Without this mock entry the `typeof` guard in
+// `postWheelToHwnd` skips the branch entirely and the new path is never
+// exercised — the Phase 6 tests below would pass against an implementation
+// that sets the chain-trust flag, which is the exact defect Round 1 found.
+const win32FindWheelLeafByHittestMock = vi.fn<[bigint], bigint | null>(() => null);
 const nativeWin32Mock: {
   win32PostMessage?: unknown;
   win32GetScrollInfo?: unknown;
   win32FindScrollLeafForTopLevel?: unknown;
+  win32FindWheelLeafByHittest?: unknown;
 } = {
   win32PostMessage: win32PostMessageMock,
   win32GetScrollInfo: win32GetScrollInfoMock,
   win32FindScrollLeafForTopLevel: win32FindScrollLeafForTopLevelMock,
+  win32FindWheelLeafByHittest: win32FindWheelLeafByHittestMock,
 };
 vi.mock("../../src/engine/native-engine.js", () => ({
   nativeUia: nativeUiaMock,
@@ -1034,6 +1043,8 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     win32GetScrollInfoMock.mockReset();
     getWindowRectByHwndMock.mockReset();
     win32FindScrollLeafForTopLevelMock.mockReset();
+    win32FindWheelLeafByHittestMock.mockReset();
+    win32FindWheelLeafByHittestMock.mockReturnValue(null);
     // ADR-019 MVP-1 (Stage 1) — reset UIA percent mock; default impl returns
     // null (no pattern exposed) so the chain-trust fall-through is the
     // baseline observation. Tests that exercise the UIA observation path
@@ -1044,6 +1055,7 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
     nativeWin32Mock.win32FindScrollLeafForTopLevel =
       win32FindScrollLeafForTopLevelMock;
+    nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
     nativeUiaMock.uiaReadScrollPercentAtHwnd = uiaReadScrollPercentAtHwndMock;
     win32PostMessageMock.mockReturnValue(true);
   });
@@ -1581,5 +1593,120 @@ describe("ADR-018 Phase 4 — dispatchScrollWheel (Tier 1 UIA → Tier 3 PostMes
     expect(result).toBeNull();
     expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
     expect(win32PostMessageMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-018 Phase 6 §2.2 — structural hit-test retarget (WebView hosts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electron / CEF)", () => {
+  // The class-chain table only covers shapes we have already hit. WebView hosts
+  // put the wheel receiver several levels down and across a process boundary,
+  // so a structural descent resolves it instead. Two contract points matter,
+  // and both were defects caught in review rather than hypotheticals:
+  //
+  //   1. A hit-test result must NOT be treated as chain-trust. That flag means
+  //      "the post target is a documented scroll leaf, so a queued post counts
+  //      as delivered without reading a scrollbar". A structural guess carries
+  //      no such guarantee: letting it assert delivery would have made every
+  //      child-hosted window claim success with nothing observed.
+  //   2. Observation must not blindly follow the retarget. WM_MOUSEWHEEL
+  //      propagates UP, so the scrollbar that moves may belong to the window we
+  //      were asked to scroll, not to the leaf.
+
+  beforeEach(() => {
+    win32PostMessageMock.mockReset();
+    win32GetScrollInfoMock.mockReset();
+    getWindowRectByHwndMock.mockReset();
+    win32FindScrollLeafForTopLevelMock.mockReset();
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(null); // class-table miss
+    win32FindWheelLeafByHittestMock.mockReset();
+    uiaReadScrollPercentAtHwndMock.mockReset();
+    uiaReadScrollPercentAtHwndMock.mockImplementation(async () => null);
+    nativeWin32Mock.win32PostMessage = win32PostMessageMock;
+    nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
+    nativeWin32Mock.win32FindScrollLeafForTopLevel =
+      win32FindScrollLeafForTopLevelMock;
+    nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
+    nativeUiaMock.uiaReadScrollPercentAtHwnd = uiaReadScrollPercentAtHwndMock;
+    win32PostMessageMock.mockReturnValue(true);
+    getWindowRectByHwndMock.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+  });
+
+  const scrollInfo = (nPos: number) => ({
+    nMin: 0,
+    nMax: 1000,
+    nPage: 100,
+    nPos,
+    pageRatio: nPos / 1000,
+  });
+
+  const TOP = 0xB00Bn;  // fake "Tauri Window"
+  const LEAF = 0xC0DEn; // fake "Chrome_WidgetWin_1"
+
+  it("hit-test leaf receives the post, but a scrollbar-less leaf does NOT assert delivery", async () => {
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    // Neither window exposes a Win32 scrollbar — the WebView case.
+    win32GetScrollInfoMock.mockReturnValue(null);
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    // The post goes to the leaf: that is the whole point of the retarget.
+    expect(win32PostMessageMock).toHaveBeenCalled();
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(LEAF);
+    // But with no observation behind it, the dispatcher must return null so the
+    // caller falls through to its own evidence (the Phase 6 pixel comparison)
+    // instead of claiming `delivered_via_postmessage` on chain-trust.
+    expect(result).toBeNull();
+  });
+
+  it("a class-table miss followed by a hit-test miss leaves the top-level HWND as the target", async () => {
+    win32FindWheelLeafByHittestMock.mockReturnValue(null);
+    win32GetScrollInfoMock.mockImplementation(() => scrollInfo(0));
+
+    await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(TOP);
+  });
+
+  it("observation falls back to the input HWND when the hit-test leaf exposes no scrollbar", async () => {
+    // The regression this pins: a window that owns a Win32 scrollbar and has a
+    // visible child over its centre. The wheel is posted to the child, bubbles
+    // up, and the TOP-LEVEL scroll position moves. Reading only the leaf would
+    // see null and report the scroll as undelivered — a working scroll turned
+    // into a hard error by the caller.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let posted = false;
+    win32PostMessageMock.mockImplementation(() => {
+      posted = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return null;            // the child has no scrollbar
+      return scrollInfo(posted ? 400 : 100);  // the top-level's position moves
+    });
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(LEAF);
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+    expect(result!.reason).toBe("delivered_via_postmessage");
+  });
+
+  it("the class table wins: a chain-table hit is never overridden by the hit test", async () => {
+    const CHAIN_LEAF = 0xFEEDn;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(CHAIN_LEAF);
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockReturnValue(null);
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(CHAIN_LEAF);
+    expect(win32FindWheelLeafByHittestMock).not.toHaveBeenCalled();
+    // Chain-trust still applies to table members with no readable scrollbar.
+    expect(result).not.toBeNull();
+    expect(result!.reason).toBe("delivered_via_postmessage");
   });
 });

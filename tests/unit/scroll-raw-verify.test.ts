@@ -133,14 +133,15 @@ describe("evaluateScrollDelivery — image hash fallback", () => {
   });
 });
 
-// ADR-018 Phase 1a contract lock: pin that the new 5-value reason enum is
+// ADR-018 Phase 1a contract lock: pin that the ADR-018 reason enum is
 // type-assignable to ScrollVerifyOutcome.reason. This is the trunk-stage
 // guarantee that Phase 1b / 3 / 4 can emit these values without further
-// type changes. The 4 legacy reasons (read_back_unsupported /
+// type changes. Phase 6 added a sixth value (`pixel_delta_observed`), so the
+// count assertion below is 6 — keep the two in sync when the enum grows. The 4 legacy reasons (read_back_unsupported /
 // page_end_inferred / scrollbar_unavailable / no_target_window) are still
 // emittable by the current dispatcher; Phase 1b will remove them once the
 // 3-tier pipeline lands.
-describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-level lock)", () => {
+describe("evaluateScrollDelivery — ADR-018 §2.6.2 reason enum, 6 values after Phase 6 (type-level lock)", () => {
   it("ScrollVerifyOutcome.reason accepts all 5 ADR-018 reason values plus pixel_delta_observed", () => {
     // The cast-and-assign pattern below fails to compile if any member is
     // missing from the union, which is the trunk contract.

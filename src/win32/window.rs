@@ -318,6 +318,22 @@ const WHEEL_LEAF_MAX_DEPTH: usize = 8;
 /// `Chrome_WidgetWin_1`, which accepts the wheel; the top-level window and the
 /// intermediate `WRY_WEBVIEW` both ignore it.
 fn find_wheel_leaf_by_hittest(top: HWND) -> Option<HWND> {
+    // A class-table member is NEVER hit tested, even when its chain failed to
+    // resolve. `win32_find_scroll_leaf_for_top_level` returns `None` for both
+    // "class not in the table" and "class matched but a segment is missing",
+    // so a caller cannot tell those apart — and for the second case the
+    // documented behaviour is to post to the top level, precisely because a
+    // half-matched Office shape means the app reorganised and guessing is
+    // worse. Enforcing that here rather than in the caller keeps the rule in
+    // one place: the refusal cannot be overridden by whoever calls next.
+    let top_class = get_class_name(top);
+    if SCROLL_LEAF_CHAINS
+        .iter()
+        .any(|(cls, _)| *cls == top_class.as_str())
+    {
+        return None;
+    }
+
     // A minimised window still reports a non-empty rect (Windows parks it at
     // roughly (-32000,-32000)), so the emptiness check below does NOT cover it
     // — ask explicitly. There is nothing meaningful to hit test on a window
@@ -466,9 +482,23 @@ fn get_class_name(hwnd: HWND) -> String {
 mod tests {
     use super::*;
     use windows::core::w;
+    use windows::Win32::Foundation::{LRESULT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, HMENU, WINDOW_EX_STYLE, WS_CHILD, WS_POPUP, WS_VISIBLE,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, HMENU, WINDOW_EX_STYLE,
+        WNDCLASSEXW, WS_CHILD, WS_POPUP, WS_VISIBLE,
     };
+
+    /// `WNDCLASSEXW.lpfnWndProc` needs an `extern "system"` pointer; the crate's
+    /// `DefWindowProcW` is a plain Rust `unsafe fn`, so it cannot be passed
+    /// directly. This forwards to it.
+    unsafe extern "system" fn test_wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
 
     /// RAII wrapper so a failing assertion still destroys the test windows.
     struct TestWindow(HWND);
@@ -551,6 +581,62 @@ mod tests {
             find_wheel_leaf_by_hittest(HWND(std::ptr::null_mut())),
             None,
             "an unresolvable HWND must degrade to None, never panic across the napi boundary",
+        );
+    }
+
+    #[test]
+    fn hittest_descent_refuses_a_class_table_member() {
+        // A window whose class IS in SCROLL_LEAF_CHAINS must never be hit
+        // tested, even when its chain fails to resolve — which is exactly what
+        // a `STATIC`-classed stand-in reproduces here, since no `XLDESK` child
+        // exists under it. The class-table path returning `None` means "post to
+        // the top level", and a hit test would silently override that refusal.
+        //
+        // The table is keyed on class name, so the test needs a window OF that
+        // class. `RegisterClassExW` with the Excel top-level class name gives
+        // one without involving Excel.
+        let class = w!("XLMAIN");
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(test_wnd_proc),
+            lpszClassName: class,
+            ..Default::default()
+        };
+        // Safety: static class name, zeroed remainder. A duplicate registration
+        // from a previous test run in the same process returns 0, which is fine
+        // — CreateWindowExW below only needs the class to exist.
+        unsafe { RegisterClassExW(&wc) };
+        let parent = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                class,
+                w!("desktop-touch chain-table refusal test"),
+                WS_POPUP | WS_VISIBLE,
+                -20_000,
+                -20_000,
+                400,
+                300,
+                None,
+                None::<HMENU>,
+                None,
+                None,
+            )
+        };
+        let Ok(parent) = parent else { return };
+        if parent.0.is_null() {
+            return;
+        }
+        let parent = TestWindow(parent);
+        let Some(child) = make_window(Some(parent.0)) else {
+            return;
+        };
+        // The child covers the centre, so without the refusal the descent
+        // would happily return it.
+        assert_eq!(
+            find_wheel_leaf_by_hittest(parent.0),
+            None,
+            "a SCROLL_LEAF_CHAINS class must be refused so the caller posts to the top level;              returning {:?} would override a deliberate safety refusal",
+            child.0,
         );
     }
 
