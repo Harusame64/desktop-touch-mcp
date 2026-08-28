@@ -10,11 +10,13 @@ use std::sync::atomic::Ordering;
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
 use windows::core::{BOOL, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowExW, GetAncestor, GetClassNameW, GetForegroundWindow,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-    IsIconic, IsWindowVisible, IsZoomed, GA_ROOT, WINDOW_LONG_PTR_INDEX,
+    ChildWindowFromPointEx, EnumWindows, FindWindowExW, GetAncestor, GetClassNameW,
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, CWP_SKIPDISABLED,
+    CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, WINDOW_LONG_PTR_INDEX,
 };
 
 use super::safety::{napi_safe_call, PANIC_COUNTER};
@@ -282,11 +284,97 @@ static SCROLL_LEAF_CHAINS: &[(&str, &[&str])] = &[
     ("OpusApp", &["_WwF", "_WwG"]),
 ];
 
+/// Depth cap for the generic hit-test descent. Deep enough for the measured
+/// WebView2 chain (`WRY_WEBVIEW` -> `Chrome_WidgetWin_0` -> `Chrome_WidgetWin_1`,
+/// 3 levels) with headroom; bounded so a pathological / cyclic parent-child
+/// arrangement cannot spin.
+const WHEEL_LEAF_MAX_DEPTH: usize = 8;
+
+/// Generic stage-2 leaf resolution: hit-test the target's OWN client centre
+/// down its OWN descendant chain (ADR-018 Phase 6 §2.2).
+///
+/// Motivation: `SCROLL_LEAF_CHAINS` only covers class shapes we have already
+/// hit. WebView-based apps (Tauri/WRY, Electron, CEF) host the wheel receiver
+/// several levels down and across a process boundary, so a class table would
+/// need a new row per framework and per version. The hit test finds the
+/// receiver structurally instead.
+///
+/// **Why not `WindowFromPoint`**: it hit-tests the whole screen, so a foreign
+/// always-on-top overlay (Dell DDPM `EAWorkWindow`, Logitech Options+, AHK)
+/// would be returned — exactly the ADR-018 §1.2 root cause this pipeline was
+/// built to eliminate. `ChildWindowFromPointEx` walks `parent`'s own children
+/// only, so the result is provably inside the destination's window tree.
+///
+/// **Why the window centre, not the cursor**: Tier 3 is destination-explicit.
+/// The cursor is not part of the destination and must not influence routing.
+///
+/// **Why this cannot make delivery worse**: `DefWindowProc` forwards an
+/// unhandled `WM_MOUSEWHEEL` **up** the parent chain, so posting to a
+/// descendant that ignores the wheel degenerates to the top-level post we
+/// would have done anyway. Posting to the top level, by contrast, can never
+/// reach downward.
+///
+/// Measured on a Tauri host 2026-08-28: descent terminates at
+/// `Chrome_WidgetWin_1`, which accepts the wheel; the top-level window and the
+/// intermediate `WRY_WEBVIEW` both ignore it.
+fn find_wheel_leaf_by_hittest(top: HWND) -> Option<HWND> {
+    let mut rect = RECT::default();
+    // Safety: `GetWindowRect` writes into a caller-owned RECT and reports
+    // failure through its Result; an invalid HWND returns Err rather than
+    // touching the buffer.
+    if unsafe { GetWindowRect(top, &mut rect) }.is_err() {
+        return None;
+    }
+    // A minimised or zero-area window has no meaningful interior point to hit
+    // test; skip the descent rather than probing an off-screen coordinate.
+    if rect.right <= rect.left || rect.bottom <= rect.top {
+        return None;
+    }
+    let centre = POINT {
+        x: rect.left + (rect.right - rect.left) / 2,
+        y: rect.top + (rect.bottom - rect.top) / 2,
+    };
+
+    let mut parent = top;
+    for _ in 0..WHEEL_LEAF_MAX_DEPTH {
+        // `ChildWindowFromPointEx` takes coordinates in `parent`'s CLIENT
+        // space, so the screen point is re-converted at every level.
+        let mut pt = centre;
+        // Safety: `ScreenToClient` writes through a caller-owned POINT.
+        if !unsafe { ScreenToClient(parent, &mut pt) }.as_bool() {
+            break;
+        }
+        // Safety: returns a plain HWND (NULL when the point is outside
+        // `parent`'s client area or every child is skipped by the flags).
+        let child = unsafe {
+            ChildWindowFromPointEx(
+                parent,
+                pt,
+                CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT | CWP_SKIPDISABLED,
+            )
+        };
+        // NULL, or the documented "point is in `parent` itself" self-return,
+        // both mean the walk is finished.
+        if child.0.is_null() || child == parent {
+            break;
+        }
+        parent = child;
+    }
+
+    (parent != top).then_some(parent)
+}
+
 /// Resolve a top-level HWND to the descendant HWND that actually receives
-/// `WM_MOUSEWHEEL` for MDI / OLE apps whose scrollable surface is a child
-/// window. Returns `None` when the top-level class is not in the chain table,
-/// or when any segment of the chain fails to resolve (defensive: a future
-/// app reorganisation falls back to top-level POST rather than mis-routing).
+/// `WM_MOUSEWHEEL`, for apps whose scrollable surface is a child window.
+///
+/// Two stages, cheapest first:
+/// 1. `SCROLL_LEAF_CHAINS` class-chain walk — the confirmed MDI / OLE shapes
+///    (Excel, Word). A chain whose top-level class matches but whose segments
+///    fail to resolve returns `None` without trying stage 2: a half-matched
+///    Office shape means the app reorganised, and guessing is worse than the
+///    top-level POST.
+/// 2. `find_wheel_leaf_by_hittest` — structural descent for everything else
+///    (WebView hosts and any other child-hosted surface).
 ///
 /// The caller treats `None` as "no retarget needed; use the input HWND".
 #[napi]
@@ -302,7 +390,11 @@ pub fn win32_find_scroll_leaf_for_top_level(top: BigInt) -> napi::Result<Option<
             .find(|(cls, _)| *cls == top_class.as_str())
         {
             Some((_, chain)) => *chain,
-            None => return Ok(None),
+            // ADR-018 Phase 6 §2.2 — stage 2. The class table only knows the
+            // shapes we have already hit; fall back to the structural hit-test
+            // descent so WebView hosts (Tauri/WRY, Electron, CEF) resolve
+            // without a per-framework row.
+            None => return Ok(find_wheel_leaf_by_hittest(top_hwnd).map(hwnd_to_bigint)),
         };
         let mut parent = top_hwnd;
         for child_class in chain {
@@ -343,5 +435,122 @@ fn get_class_name(hwnd: HWND) -> String {
         String::new()
     } else {
         String::from_utf16_lossy(&buf[..len as usize])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, HMENU, WINDOW_EX_STYLE, WS_CHILD, WS_POPUP, WS_VISIBLE,
+    };
+
+    /// RAII wrapper so a failing assertion still destroys the test windows.
+    struct TestWindow(HWND);
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            // Safety: `DestroyWindow` on an already-destroyed HWND returns Err
+            // rather than faulting; the result is intentionally ignored.
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    /// Create a window far off-screen so the test never flashes anything on the
+    /// user's desktop. Off-screen placement does not affect the hit test:
+    /// `ChildWindowFromPointEx` works in the parent's CLIENT coordinates, which
+    /// are independent of where the window sits on the virtual screen.
+    fn make_window(parent: Option<HWND>) -> Option<TestWindow> {
+        let (style, x, y) = match parent {
+            // Child fills the parent's client area, so the parent's centre
+            // point lands inside it.
+            Some(_) => (WS_CHILD | WS_VISIBLE, 0, 0),
+            None => (WS_POPUP | WS_VISIBLE, -20_000, -20_000),
+        };
+        // Safety: "STATIC" is a predefined system class, so no RegisterClassExW
+        // is needed. All pointer arguments are static wide literals or None.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("desktop-touch wheel-leaf test"),
+                style,
+                x,
+                y,
+                400,
+                300,
+                parent,
+                None::<HMENU>,
+                None,
+                None,
+            )
+        }
+        .ok()?;
+        (!hwnd.0.is_null()).then(|| TestWindow(hwnd))
+    }
+
+    #[test]
+    fn hittest_descent_finds_the_child_that_covers_the_centre() {
+        let Some(parent) = make_window(None) else {
+            // No window station (rare CI configuration) — nothing to assert.
+            return;
+        };
+        let Some(child) = make_window(Some(parent.0)) else {
+            return;
+        };
+
+        let leaf = find_wheel_leaf_by_hittest(parent.0);
+        assert_eq!(
+            leaf,
+            Some(child.0),
+            "descent must retarget the top-level window to the child covering its centre; \
+             returning None here is the pre-Phase-6 behaviour that left WebView hosts unscrollable",
+        );
+    }
+
+    #[test]
+    fn hittest_descent_returns_none_for_a_childless_window() {
+        let Some(solo) = make_window(None) else {
+            return;
+        };
+        assert_eq!(
+            find_wheel_leaf_by_hittest(solo.0),
+            None,
+            "a window with no children must not be retargeted — the caller relies on None \
+             meaning 'post to the input HWND', and a self-retarget would be a silent no-op",
+        );
+    }
+
+    #[test]
+    fn hittest_descent_returns_none_for_an_invalid_window() {
+        assert_eq!(
+            find_wheel_leaf_by_hittest(HWND(std::ptr::null_mut())),
+            None,
+            "an unresolvable HWND must degrade to None, never panic across the napi boundary",
+        );
+    }
+
+    #[test]
+    fn hittest_descent_stays_inside_the_target_tree() {
+        // The whole point of ChildWindowFromPointEx over WindowFromPoint: a
+        // window that is NOT a descendant can never be selected, no matter what
+        // else is on screen at that coordinate (ADR-018 §1.2 overlay root cause).
+        let Some(parent) = make_window(None) else {
+            return;
+        };
+        let Some(child) = make_window(Some(parent.0)) else {
+            return;
+        };
+        let Some(stranger) = make_window(None) else {
+            return;
+        };
+
+        let leaf = find_wheel_leaf_by_hittest(parent.0);
+        assert_ne!(
+            leaf,
+            Some(stranger.0),
+            "descent must never return a window outside the target's own tree",
+        );
+        assert_eq!(leaf, Some(child.0));
     }
 }
