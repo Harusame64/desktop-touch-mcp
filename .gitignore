@@ -114,3 +114,16 @@ scripts/spikes/
 
 # transient review-fetch scratch
 .codex-review.txt
+
+# napi-rs build transaction scratch (created by scripts/build-rs.mjs). The
+# staging files are named after their target with a uuid suffix, and the
+# retired .node copy is ~6 MB, so they must never reach a commit.
+.napi-rs-filesystem-transaction.swp/
+*.prepared.tmp
+*.retired.tmp
+# `.[.]*.node.*.tmp` was the intent here and it never matched: the character
+# class makes the second dot mandatory, so it only caught names beginning with
+# TWO dots and the real artifacts sailed past it. That mattered — napi writes a
+# third kind, `rollback`, which no `*.<kind>.tmp` line above covers, and a
+# rollback artifact is a full ~6 MB copy of the .node.
+.*.node.*.tmp

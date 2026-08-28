@@ -438,7 +438,21 @@ export function getCachedDHash(hwnd: bigint): bigint | null {
 export async function captureWindowRawAndHash(
   hwnd: bigint,
   region: { x: number; y: number; width: number; height: number }
-): Promise<{ rawPixels: Buffer; channels: 3 | 4; width: number; height: number; dHash: bigint } | null> {
+): Promise<{
+  rawPixels: Buffer;
+  channels: 3 | 4;
+  width: number;
+  height: number;
+  dHash: bigint;
+  /**
+   * Capture provenance, already carried by the `captureWindowRaw` result this
+   * spreads. Declared here because a caller that compares two of these frames
+   * byte-for-byte MUST first check they came from the same backend — the
+   * fallback re-picks PrintWindow / WGC / BitBlt per call and the rungs can
+   * agree on dimensions while disagreeing on every pixel.
+   */
+  source: CaptureSource;
+} | null> {
   const raw = await captureWindowRaw(hwnd, region);
   if (!raw) return null;
   const dHash = await dHashFromRaw(raw.rawPixels, raw.width, raw.height, raw.channels);

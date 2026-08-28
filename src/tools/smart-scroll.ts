@@ -26,6 +26,7 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
+import { WHEEL_DELTA_PER_NOTCH } from "./_input-pipeline.js";
 
 const _defaultPort = getCdpPort();
 
@@ -33,8 +34,8 @@ const _defaultPort = getCdpPort();
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Wheel notches that move roughly one viewport on a typical page. */
 const SCROLL_TICKS_PER_PAGE = 6;
-const SCROLL_MULTIPLIER = 3;  // nut-js multiplier matching existing scroll tool
 const HASH_MOVE_THRESHOLD = 5; // Hamming distance below which we consider scroll a no-op
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -405,7 +406,15 @@ async function tryImage(params: {
     }
 
     const ticks = Math.round(Math.abs(delta) * SCROLL_TICKS_PER_PAGE);
-    const effectiveTicks = Math.max(1, ticks) * SCROLL_MULTIPLIER;
+    // `ticks` is the notch count the binary search wants; nut-js forwards this
+    // argument straight to libnut's `INPUT.mi.mouseData`, which is RAW
+    // `WHEEL_DELTA` units — hence the scale.
+    //
+    // ADR-018 Phase 6 §2.1 — this used to be a private `SCROLL_MULTIPLIER = 3`,
+    // so a full-page request delivered 18/120 of a notch and the search below
+    // could not converge within `retryCount <= 4` on pages that scroll
+    // perfectly well.
+    const effectiveWheelUnits = Math.max(1, ticks) * WHEEL_DELTA_PER_NOTCH;
 
     // ADR-035 Phase 1 — this path resolves a window (logged above as
     // `smartScrollImage`) and then scrolls through SendInput, which follows the
@@ -414,9 +423,9 @@ async function tryImage(params: {
     // a separate dispatch.
     logDispatchSink({ sink: "sendinput", tool: "scroll:smart", targetHwnd: null });
     if (delta > 0) {
-      await mouse.scrollDown(effectiveTicks);
+      await mouse.scrollDown(effectiveWheelUnits);
     } else {
-      await mouse.scrollUp(effectiveTicks);
+      await mouse.scrollUp(effectiveWheelUnits);
     }
 
     await new Promise(r => setTimeout(r, 100));

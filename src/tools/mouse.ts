@@ -20,7 +20,7 @@ import {
 } from "../engine/window-cache.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
 import { captureWindowRawAndHash } from "../engine/layer-buffer.js";
-import { hammingDistance } from "../engine/image.js";
+import { hammingDistance, type CaptureSource } from "../engine/image.js";
 import { nativeWin32 } from "../engine/native-engine.js";
 import { coercedBoolean } from "./_coerce.js";
 import { ok } from "./_types.js";
@@ -48,6 +48,9 @@ import {
   resolveInputDestination,
   dispatchScrollWheel,
   assertTier4Reachable,
+  WHEEL_DELTA_PER_NOTCH,
+  WHEEL_DELTA_MAX_PER_MSG,
+  type DispatchOutcome,
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
 import { logDispatchSink } from "./_resolve-log.js";
@@ -429,17 +432,6 @@ export const mouseDragSchema = {
     "Note: active only when auto-guard is enabled (same scope as allowCrossWindowDrag)."
   ),
   verifyDelivery: verifyDeliveryParam,
-};
-
-export const scrollSchema = {
-  direction: z.enum(["up", "down", "left", "right"]).describe("Scroll direction"),
-  amount: z.coerce.number().int().positive().default(3).describe("Number of scroll steps (default 3)"),
-  x: z.coerce.number().optional().describe("X coordinate to scroll at (moves cursor there first)"),
-  y: z.coerce.number().optional().describe("Y coordinate to scroll at"),
-  speed: speedParam,
-  homing: homingParam,
-  windowTitle: windowTitleParam,
-  hwnd: hwndParam,
 };
 
 export const getCursorPositionSchema = {};
@@ -1039,30 +1031,138 @@ export interface ScrollSnapshot {
   horizontal: number | null;
   /** Image hash captured for the window (fallback when both Win32 axes are null). */
   dHash: bigint | null;
+  /**
+   * Geometry of the capture that produced `rawPixels`. Carried because a byte
+   * comparison is only meaningful between two frames of the same shape, and
+   * the capture stack can change shape on its own — `captureWindowRawWithFallback`
+   * re-picks PrintWindow → WGC → BitBlt per call and each stage reports its own
+   * width / height / channels.
+   */
+  frame: {
+    width: number;
+    height: number;
+    channels: 3 | 4;
+    /**
+     * Which capture backend produced the frame. Part of the comparability
+     * check, not of the picture: `captureWindowRawWithFallback` re-picks
+     * PrintWindow → WGC → BitBlt on every call, so two frames of the same
+     * window can share `width`/`height`/`channels` and still be pictures of
+     * different things.
+     *
+     * `undefined` is a provenance of its own — "not recorded" — and compares
+     * unequal to any named backend, so an unlabelled frame is never declared
+     * comparable with a labelled one. Every capture on this path does record
+     * it; the union keeps a future one that does not from silently passing.
+     */
+    source: CaptureSource | undefined;
+  } | null;
+  /**
+   * Raw pixels from the same capture that produced `dHash`, kept so callers
+   * can compare exact bytes rather than the perceptual hash.
+   *
+   * ADR-018 Phase 6 §2.3 — dHash is deliberately NOT the signal here: a
+   * mostly-uniform surface collapses to a constant hash under real movement
+   * (ADR-018 §2.6.2 records this for Excel's cell grid). Byte inequality has
+   * no such blind spot. `null` when no capture was taken or it failed.
+   */
+  rawPixels: Buffer | null;
+}
+
+/**
+ * ADR-018 Phase 6 §2.3 — did the destination window's pixels change across the
+ * dispatch?
+ *
+ * @internal Exported for unit testing of the pure verification math
+ * (tests/unit/scroll-pixel-delta.test.ts). Not part of the public tool surface.
+ *
+ * Exact bytes, not a perceptual hash: dHash collapses to a constant on
+ * mostly-uniform surfaces even under real movement (ADR-018 §2.6.2 records
+ * this for Excel's cell grid), which is precisely the "did anything happen"
+ * question this answers. A missing capture on either side is `false` — absence
+ * of evidence is not evidence of motion, and the caller degrades to
+ * `unverifiable` rather than claiming delivery.
+ *
+ * **Frames of different shape are `false`, not `true`.** A first version read a
+ * length change as motion, reasoning that only a resize could change it. That
+ * is wrong: `captureWindowRawWithFallback` re-picks PrintWindow → WGC → BitBlt
+ * on every call, and the stages report different width / height / channels — so
+ * a GPU-composited window whose PrintWindow frame is judged blank on the second
+ * call alone is enough to change the shape. Calling that motion would report
+ * `delivered` for a wheel that never arrived, which is the silent success this
+ * whole pipeline exists to remove. Different shapes mean the two captures are
+ * not comparable, i.e. no evidence.
+ *
+ * **Frames of different provenance are `false` for the same reason, and the
+ * shape check does not imply it.** The rungs are designed to return matching
+ * device-pixel dimensions and all report `channels: 4`, so a PrintWindow →
+ * WGC/BitBlt flip between the two calls — one blank-judged PrintWindow frame is
+ * enough, on exactly the GPU-composited windows this path exists for — passes
+ * every dimension test while changing essentially every byte. Worse, the BitBlt
+ * rung is a screen grab that includes whatever overlaps the window, so it is
+ * not even a picture of the same surface. `source` mismatch is therefore
+ * "not comparable", identical to a shape mismatch.
+ */
+export function scrollPixelsChanged(
+  pre: ScrollSnapshot["rawPixels"],
+  post: ScrollSnapshot["rawPixels"],
+  preFrame: ScrollSnapshot["frame"],
+  postFrame: ScrollSnapshot["frame"],
+): boolean {
+  if (pre === null || post === null) return false;
+  if (preFrame === null || postFrame === null) return false;
+  if (
+    preFrame.width !== postFrame.width ||
+    preFrame.height !== postFrame.height ||
+    preFrame.channels !== postFrame.channels ||
+    preFrame.source !== postFrame.source
+  ) {
+    return false;
+  }
+  if (pre.length !== post.length) return false;
+  return !pre.equals(post);
 }
 
 async function captureScrollSnapshot(
   hwnd: bigint | null,
   region: { x: number; y: number; width: number; height: number } | null,
 ): Promise<ScrollSnapshot> {
-  if (hwnd === null) return { vertical: null, horizontal: null, dHash: null };
+  if (hwnd === null) {
+    return { vertical: null, horizontal: null, dHash: null, rawPixels: null, frame: null };
+  }
   const v = readScrollInfo(hwnd, "vertical");
   const h = readScrollInfo(hwnd, "horizontal");
   let dHash: bigint | null = null;
+  let rawPixels: Buffer | null = null;
+  let frame: ScrollSnapshot["frame"] = null;
   // Only spend time on dHash when at least one Win32 axis is missing — otherwise
   // the percent diff alone is authoritative and dHash adds only image-capture cost.
   if ((v === null || h === null) && region !== null) {
     try {
       const cap = await captureWindowRawAndHash(hwnd, region);
       dHash = cap?.dHash ?? null;
+      // Same capture, no extra cost — see `ScrollSnapshot.rawPixels`.
+      rawPixels = cap?.rawPixels ?? null;
+      frame =
+        cap != null
+          ? {
+              width: cap.width,
+              height: cap.height,
+              channels: cap.channels,
+              source: cap.source,
+            }
+          : null;
     } catch {
       dHash = null;
+      rawPixels = null;
+      frame = null;
     }
   }
   return {
     vertical: v?.pageRatio ?? null,
     horizontal: h?.pageRatio ?? null,
     dHash,
+    rawPixels,
+    frame,
   };
 }
 
@@ -1093,6 +1193,31 @@ export interface ScrollVerifyOutcome {
    *     destination resolution failed (path-a) or every applicable tier was
    *     exhausted without observable delta (path-b, e.g. Word _WwG).
    *
+   * ADR-018 Phase 6 §2.3 adds one value:
+   *   - `pixel_delta_observed`: the only evidence was that raw pixels changed
+   *     across the dispatch. It proves a repaint, not a scroll (a window
+   *     repaints for hover, caret, spinner or video on its own), so it ranks
+   *     below the Win32 percent diff — but it is the only signal available on
+   *     WebView / custom-paint hosts, which previously always reported
+   *     `unverifiable` or, worse, a hard `ScrollNotDelivered`.
+   *
+   *     **Two emitters, disjoint shapes, and deliberately different statuses.**
+   *     `scrollHandler` below compares the destination window when it exposes
+   *     no Win32 scrollbar on either axis, and emits `status='delivered'`.
+   *     `postWheelToHwnd` compares the hit-test **leaf** when the destination
+   *     does expose one but nothing on the observation chain moved (a
+   *     scrollable frame hosting a WebView child — the frame's own scrollbar is
+   *     readable, so the branch below never runs), and that routes to
+   *     `status='unverifiable'` via `resolveScrollOutcome`.
+   *
+   *     The difference is what the evidence displaces, not how strong it is.
+   *     The first emitter replaces a constant `unverifiable`, so pixels can
+   *     only add information. The second replaces a typed failure, and calling
+   *     an unrelated repaint `delivered` would turn a real silent drop into a
+   *     success claim. The rule across both: **pixel evidence may upgrade "no
+   *     information" to `delivered`, and may only upgrade "failure" to
+   *     `unverifiable`.**
+   *
    * See `docs/adr-018-input-pipeline-3tier.md` §2.6.3 for the full migration
    * table; CLAUDE.md §3.1 multi-table fact sweep across `_errors.ts` /
    * `scroll.ts` description / this union / `scroll-raw-verify.test.ts`.
@@ -1108,7 +1233,9 @@ export interface ScrollVerifyOutcome {
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
     | "wheel_overlay_intercepted"
-    | "target_unreachable";
+    | "target_unreachable"
+    // ADR-018 Phase 6 §2.3 — pixel-delta observation fallback
+    | "pixel_delta_observed";
   /** Axis on which silent drop / unverifiable was detected (for context). */
   axis?: "vertical" | "horizontal";
   /**
@@ -1207,6 +1334,90 @@ export function evaluateScrollDelivery(
     status: "not_delivered",
     delta: { x: dx, y: dy },
     axis: axisOfInterest,
+  };
+}
+
+/**
+ * ADR-018 §2.6 — turn a dispatcher result plus the caller's own pre/post
+ * snapshots into the envelope's `status` / `channel` / `reason`.
+ *
+ * @internal Exported for unit testing. `scrollHandler` itself cannot be driven
+ * from a unit test — its Tier 4 path reaches real cursor and wheel input, and
+ * mocking `engine/nutjs.js` does not close every route there — so the seam
+ * between the dispatcher and the envelope is pulled out here instead. That seam
+ * being untested is what let a whole configuration report the wrong outcome
+ * through six review rounds (ADR-018 Phase 6 §14).
+ *
+ * The three dispatcher shapes and where they go:
+ *   - `scrolled: true` → `delivered`. The tier established delivery; the Win32
+ *     diff is still computed so `scrollObserved.delta` carries numbers, but it
+ *     does not get to overrule the dispatcher.
+ *   - `scrolled: false, reason: "pixel_delta_observed"` → `unverifiable` on the
+ *     dispatching channel. The hit-test leaf's own pixels changed while nothing
+ *     on the observation chain moved: enough to withdraw a false
+ *     `ScrollNotDelivered`, not enough to claim a scroll (a leaf repaints for
+ *     hover, caret, spinner, video). No post-snapshot reading applies — the
+ *     watched window is precisely the one that did not move, so its `0` delta
+ *     would contradict the status it is printed beside; `delta` stays
+ *     `"unverifiable"`, matching the other emitter of this reason.
+ *   - anything else (including `null`) → the legacy `evaluateScrollDelivery`
+ *     path on the caller's own snapshots.
+ *
+ * `scrolled: false, reason: "target_unreachable"` (the ADR-019 Stage 2b gate)
+ * never reaches here — `scrollHandler` routes it to a typed failure earlier.
+ */
+export function resolveScrollOutcome(
+  tier1: DispatchOutcome | null,
+  pre: ScrollSnapshot,
+  post: ScrollSnapshot,
+  direction: "up" | "down" | "left" | "right",
+  observedHwnd: bigint | null,
+): {
+  outcome: ScrollVerifyOutcome;
+  channel: "uia" | "cdp" | "postmessage" | "wheel_send_input";
+} {
+  // **Explicit narrowing**, not an `as` cast: `tier1.channel` carries the broad
+  // `Channel` union ("uia" | "cdp" | "postmessage" | "send_input"), and casting
+  // to the narrow envelope union would silently leak the wrong channel if a
+  // future tier is added without updating this branch. (Opus PR #324 Round 1 P2.)
+  const dispatchChannel =
+    tier1 !== null &&
+    (tier1.channel === "uia" || tier1.channel === "cdp" || tier1.channel === "postmessage")
+      ? tier1.channel
+      : null;
+
+  if (tier1 !== null && tier1.scrolled) {
+    return {
+      outcome: { status: "delivered", delta: evaluateScrollDelivery(pre, post, direction).delta },
+      // Falls back to the Tier 4 literal for a future channel: extend the
+      // narrowing above and this stays correct.
+      channel: dispatchChannel ?? "wheel_send_input",
+    };
+  }
+
+  if (tier1 !== null && tier1.reason === "pixel_delta_observed") {
+    return {
+      outcome: {
+        status: "unverifiable",
+        delta: "unverifiable",
+        reason: "pixel_delta_observed",
+        axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+      },
+      channel: dispatchChannel ?? "wheel_send_input",
+    };
+  }
+
+  // Tier 4 ran (or nothing resolved): the wheel went through cursor-routed
+  // SendInput, which is what `wheel_send_input` names.
+  if (observedHwnd === null) {
+    return {
+      outcome: { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" },
+      channel: "wheel_send_input",
+    };
+  }
+  return {
+    outcome: evaluateScrollDelivery(pre, post, direction),
+    channel: "wheel_send_input",
   };
 }
 
@@ -1436,6 +1647,51 @@ export const scrollHandler = async ({
           pre.horizontal === null &&
           postMessageAvailable
         ) {
+          // ADR-018 Phase 6 §2.3 — last-resort observation. Without a Win32
+          // scrollbar this branch used to return a constant `unverifiable`,
+          // so a 0-px scroll and a correct one were indistinguishable in the
+          // response; that is how the WebView2 mis-routing in §1.2 stayed
+          // invisible through a whole dogfood session. Re-capture the SAME
+          // region and compare exact bytes.
+          //
+          // What this can and cannot say: byte inequality proves the window
+          // repainted, not that the view scrolled — self-animating content
+          // (video, spinner, clock) repaints on its own, so `delivered` from
+          // this channel is weaker than the Win32 percent diff. Byte equality
+          // stays `unverifiable` rather than becoming `not_delivered`, because
+          // a genuine page-end no-op is byte-identical too and this channel
+          // cannot separate the two. It never turns a real failure into a
+          // success claim: the `not_delivered` path below is unchanged.
+          //
+          // `captureFrame`, not `captureScrollSnapshot`: the snapshot path goes
+          // through `captureWindowRawAndHash`, which overwrites the layer
+          // cache's baseline frame. Advancing that baseline to the POST-scroll
+          // frame would make a `screenshot(diffMode)` taken straight after this
+          // call report no change — an observation read must not consume the
+          // very difference another tool is about to look for.
+          //
+          // The post-capture is skipped entirely when the pre-capture failed:
+          // with nothing to compare against, the comparison is `false` by
+          // definition and a full-window capture would be pure cost.
+          const postFrame =
+            pre.rawPixels === null || observedHwnd === null || observedRect === null
+              ? null
+              : await captureFrame(observedHwnd, observedRect);
+          const pixelsDiffer = scrollPixelsChanged(
+            pre.rawPixels,
+            postFrame?.rawPixels ?? null,
+            pre.frame,
+            postFrame !== null
+              ? {
+                  width: postFrame.width,
+                  height: postFrame.height,
+                  channels: postFrame.channels,
+                  source: postFrame.source,
+                }
+              : null,
+          );
+          const observedAxis =
+            direction === "up" || direction === "down" ? "vertical" : "horizontal";
           return {
             content: [{
               type: "text" as const,
@@ -1446,10 +1702,12 @@ export const scrollHandler = async ({
                 hints: {
                   scrollObserved: { delta: "unverifiable" as const },
                   verifyDelivery: {
-                    status: "unverifiable" as const,
+                    status: pixelsDiffer ? ("delivered" as const) : ("unverifiable" as const),
                     channel: "postmessage" as const,
-                    reason: "scrollbar_unavailable" as const,
-                    axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+                    reason: pixelsDiffer
+                      ? ("pixel_delta_observed" as const)
+                      : ("scrollbar_unavailable" as const),
+                    axis: observedAxis,
                   },
                   ...(scrollWarnings.length > 0 && { warnings: scrollWarnings }),
                 },
@@ -1483,16 +1741,52 @@ export const scrollHandler = async ({
       // window recorded here IS where the wheel lands. That is the whole H2
       // question for scroll.
       logDispatchSink({ sink: "sendinput", tool: "scroll", targetHwnd: null, tier: "4" });
-      const SCROLL_MULTIPLIER = 3;
-      switch (direction) {
-        case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;
-        case "up":    await mouse.scrollUp(amount * SCROLL_MULTIPLIER); break;
-        case "right":
-          for (let i = 0; i < amount; i++) await mouse.scrollRight(SCROLL_MULTIPLIER);
-          break;
-        case "left":
-          for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
-          break;
+      // ADR-018 Phase 6 §2.1 — `amount` is notches on every tier. nut-js's
+      // `scrollDown(n)` forwards `n` to libnut's `scrollMouse`, which writes it
+      // straight into `INPUT.mi.mouseData` — i.e. RAW `WHEEL_DELTA` units, not
+      // notches. Tier 1/3 already scale by `WHEEL_DELTA` (`win32WheelEncoding`
+      // in `_input-pipeline.ts`), so the previous `* 3` made one `amount` unit
+      // mean 1/40 of a notch here and a whole notch there — a 40x
+      // divergence the caller could not see, with `amount:3` (the schema
+      // default) moving 7.5 px. Measured on a WebView2 host 2026-08-28:
+      // `amount:40` under the old constant scrolled exactly 100 px = 1 notch.
+      //
+      // The 40x scale-up brings large `amount` values into the range where a
+      // single wheel event crosses the signed-16-bit boundary a receiver reads
+      // through `GET_WHEEL_DELTA_WPARAM`: at 274 notches the delta is 32880,
+      // past 32767. Tier 3 already splits its PostMessage chunks for exactly
+      // this reason, and its comment records a real direction reversal at that
+      // threshold. Before the unit fix, reaching it needed `amount >= 10923`
+      // (unreachable in practice); after it, 274 — and "scroll to the bottom"
+      // is a natural reason to pass a three-digit value.
+      //
+      // The chunk size is the largest whole number of notches that stays inside
+      // the bound, and it was checked against the most faithful possible form:
+      // on a WebView2 host, one 273-notch event and 273 single-notch events
+      // landed on a byte-identical frame, so splitting here costs nothing in
+      // delivered distance. Past the bound the delivered distance stopped
+      // matching the request; the exact mechanism was not isolated and no
+      // reversal was observed on that host, which is why the cap is taken from
+      // the documented encoding limit rather than from that observation.
+      const notchesPerEvent = Math.floor(WHEEL_DELTA_MAX_PER_MSG / WHEEL_DELTA_PER_NOTCH);
+      let remainingNotches = amount;
+      while (remainingNotches > 0) {
+        const chunk = Math.min(remainingNotches, notchesPerEvent);
+        const units = chunk * WHEEL_DELTA_PER_NOTCH;
+        switch (direction) {
+          case "down":  await mouse.scrollDown(units); break;
+          case "up":    await mouse.scrollUp(units); break;
+          // Horizontal keeps its per-notch loop: libnut's horizontal path is
+          // the less-exercised one and a per-notch event is what receivers see
+          // from a real tilt wheel.
+          case "right":
+            for (let i = 0; i < chunk; i++) await mouse.scrollRight(WHEEL_DELTA_PER_NOTCH);
+            break;
+          case "left":
+            for (let i = 0; i < chunk; i++) await mouse.scrollLeft(WHEEL_DELTA_PER_NOTCH);
+            break;
+        }
+        remainingNotches -= chunk;
       }
     }
 
@@ -1542,15 +1836,31 @@ export const scrollHandler = async ({
     // Phase 4: post-scroll snapshot + delivery evaluation.
     const post = await captureScrollSnapshot(observedHwnd, observedRect);
 
-    // When Tier 1 UIA succeeded (`tier1 !== null && tier1.scrolled`), the dispatcher
-    // already established delivery. We still capture a Win32 snapshot diff so
-    // `scrollObserved.delta` carries a numeric value for callers that inspect it,
-    // but we trust the dispatcher's success signal for `status`/`channel`/`reason`.
-    const outcome: ScrollVerifyOutcome = tier1 !== null && tier1.scrolled
-      ? { status: "delivered", delta: evaluateScrollDelivery(pre, post, direction).delta }
-      : observedHwnd === null
-        ? { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" }
-        : evaluateScrollDelivery(pre, post, direction);
+    // ADR-018 §2.6.1 — status/channel/reason routing. Pure and exported so the
+    // dispatcher→envelope seam is unit-testable; see `resolveScrollOutcome`.
+    const { outcome, channel: effectiveChannel } = resolveScrollOutcome(
+      tier1,
+      pre,
+      post,
+      direction,
+      observedHwnd,
+    );
+
+    // ADR-018 Phase 6 §14.2 — the leaf-pixel route replaced a typed
+    // `ScrollNotDelivered`, and with it the `SUGGESTS.ScrollNotDelivered`
+    // entries that pointed the caller at the channels which do not go through
+    // the wheel. An `ok: true` envelope carries no `suggest`, so without this
+    // the caller is left holding "something repainted" and no next step —
+    // strictly less useful than the error it replaced, which was not the point
+    // of the change. Rides the advisory channel instead.
+    if (outcome.status === "unverifiable" && outcome.reason === "pixel_delta_observed") {
+      scrollWarnings.push(
+        "The view under the pointer repainted, but no scrollbar could confirm a scroll — " +
+          "this window reports its scroll position through neither channel. If the page did not " +
+          "move, retry with scroll({action:'smart', target:'<selector>'}) or " +
+          "scroll({action:'to_element', name|selector}), neither of which relies on the wheel.",
+      );
+    }
 
     // hints.scrollObserved (issue #179 body shape) carries the raw delta values
     // for caller introspection; hints.verifyDelivery (matrix doc §4 shape) carries
@@ -1565,35 +1875,11 @@ export const scrollHandler = async ({
     // both axes are null).
     const scrollObserved = collapseScrollObserved(outcome);
 
-    // ADR-018 §2.6.1 — channel is the transport identifier (always populated,
-    // including for `status:'not_delivered'`). Phase 1b emits 'uia' when Tier 1
-    // succeeded; Phase 3 adds 'cdp' for the Tier 2 CDP dispatch; Phase 4 adds
-    // 'postmessage' for Tier 3. The legacy SendInput path retains
-    // 'wheel_send_input' for back-compat — the ADR §2.6.3 rename to 'send_input'
-    // is deferred to a future cleanup PR (the Tier 4 `kind:'unresolved'` path
-    // is the only remaining emitter once Phase 4 lands).
-    //
-    // **Explicit narrowing**, not an `as` cast: `tier1.channel` carries the
-    // broad `Channel` union ("uia" | "cdp" | "postmessage" | "send_input"),
-    // and casting to the narrow union would silently leak the wrong channel
-    // into `verifyDelivery` if a future tier is added without updating this
-    // branch. (Opus Round 1 P2.)
-    let effectiveChannel:
-      | "uia"
-      | "cdp"
-      | "postmessage"
-      | "wheel_send_input" = "wheel_send_input";
-    if (tier1 !== null && tier1.scrolled) {
-      if (
-        tier1.channel === "uia" ||
-        tier1.channel === "cdp" ||
-        tier1.channel === "postmessage"
-      ) {
-        effectiveChannel = tier1.channel;
-      }
-      // else: a future tier. Extend the local union and add the case when a
-      // new channel is added here.
-    }
+    // `effectiveChannel` comes from `resolveScrollOutcome` above. ADR-018
+    // §2.6.1 — channel is the transport identifier and is always populated,
+    // including for `status:'not_delivered'`. The legacy SendInput path retains
+    // 'wheel_send_input' for back-compat; the ADR §2.6.3 rename to 'send_input'
+    // is deferred to a future cleanup PR.
 
     if (outcome.status === "not_delivered") {
       // Silent drop: pre off-boundary, post unchanged. ScrollNotDelivered with
@@ -1634,16 +1920,31 @@ export const scrollHandler = async ({
     const dispatcherObservation: VisualMotionObservation | undefined =
       tier1 !== null ? tier1.observation : undefined;
 
+    // The dispatcher's `reason` union is a subset of this envelope's, and the
+    // annotation is what enforces it: `verifyDelivery` below is an inferred
+    // object literal, so a value added to `DispatchOutcome.reason` and not to
+    // `ScrollVerifyOutcome.reason` would reach callers as an out-of-taxonomy
+    // string with nothing failing. The type-level locks in
+    // `tests/unit/scroll-raw-verify.test.ts` cannot catch that — `tsc` covers
+    // `src/**/*` only (tsconfig `include`) and vitest strips types without
+    // checking them — so the guard has to live here, in compiled code.
+    const dispatcherReason: ScrollVerifyOutcome["reason"] =
+      tier1 !== null && tier1.reason !== null ? tier1.reason : undefined;
+
     const verifyDelivery = outcome.status === "delivered"
       ? {
           status: "delivered" as const,
           channel: effectiveChannel,
-          ...(tier1 !== null && tier1.reason !== null ? { reason: tier1.reason } : {}),
+          ...(dispatcherReason !== undefined ? { reason: dispatcherReason } : {}),
           ...(dispatcherObservation ? { observation: dispatcherObservation } : {}),
         }
       : {
           status: "unverifiable" as const,
-          channel: "wheel_send_input" as const,
+          // Was a `"wheel_send_input"` literal, which was true while every
+          // route here had run Tier 4. Phase 6 added one that has not: the
+          // dispatcher's leaf-pixel `unverifiable` was carried by PostMessage,
+          // and naming SendInput there would misreport the transport.
+          channel: effectiveChannel,
           reason: outcome.reason ?? "read_back_unsupported",
           ...(outcome.axis ? { axis: outcome.axis } : {}),
           ...(dispatcherObservation ? { observation: dispatcherObservation } : {}),

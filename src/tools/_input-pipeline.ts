@@ -264,8 +264,24 @@ const WM_MOUSEHWHEEL = 0x020e;
  * each emitted message stays within the signed 16-bit range (otherwise the
  * sign bit wraps and a "scroll down" emerges as a "scroll up" on the
  * receiver, per Codex PR #305 review).
+ *
+ * ADR-018 Phase 6: the same cap now bounds Tier 4's SendInput events
+ * (`mouse.ts` scrollHandler). The limit is a property of how a receiver reads
+ * the delta, not of the transport, so both paths honour it.
  */
-const WHEEL_DELTA_MAX_PER_MSG = 0x7fff;
+export const WHEEL_DELTA_MAX_PER_MSG = 0x7fff;
+
+/**
+ * Raw wheel units per notch — the Win32 `WHEEL_DELTA` constant, unchanged
+ * since Windows 2000. One detent of a physical wheel is 120 units.
+ *
+ * ADR-018 Phase 6 §2.1 — SSOT for the whole input pipeline. Every tier takes
+ * `amount` / `notch` in **notches** and scales here; Tier 4 (`mouse.ts`
+ * nut-js → libnut `INPUT.mi.mouseData`) previously used a private `* 3`
+ * constant, which made one caller-supplied unit mean 1/40 of a notch on that
+ * tier and a full notch on Tier 1/3. Import this rather than re-deriving it.
+ */
+export const WHEEL_DELTA_PER_NOTCH = 120;
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -362,11 +378,32 @@ export interface DispatchOutcome {
    * `scrolled: false` is the TMOL gate-fail signal emitted by the chain-
    * trust branch when `observation.motion === "no_change"`. See type-level
    * comment above for the routing contract.
+   *
+   * **ADR-018 Phase 6 §2.3 additive value**: `'pixel_delta_observed'` paired
+   * with **`scrolled: false`** is the pixel-evidence signal emitted by
+   * `postWheelToHwnd` when a structural hit-test retarget moved the leaf's own
+   * pixels while nothing on the observation chain moved. `mouse.ts:scrollHandler`
+   * detects this shape and routes it to an **`unverifiable`** envelope — not to
+   * `delivered`, and not to the `ScrollNotDelivered` that `null` would produce.
+   *
+   * The asymmetry with `mouse.ts`'s own `pixel_delta_observed` (which does
+   * report `delivered`) is deliberate and is about what the evidence displaces,
+   * not about its strength. There, the alternative was a constant
+   * `unverifiable`, so pixels can only add information. Here the alternative is
+   * a typed failure, and a leaf repaints for reasons that have nothing to do
+   * with the wheel (hover, caret, spinner, video) — so reading pixels as
+   * `delivered` would turn a real silent drop into a success claim. The rule
+   * across both emitters: **pixel evidence may upgrade "no information" to
+   * "delivered", and may only upgrade "failure" to "unverifiable".**
+   *
+   * `scrolled: false` here therefore does NOT mean "fall through to the next
+   * tier" — `null` is still the only value with that meaning.
    */
   reason:
     | "delivered_via_uia"
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
+    | "pixel_delta_observed"
     | "target_unreachable"
     | null;
   /**
@@ -1047,7 +1084,7 @@ function win32WheelEncoding(params: WheelParams): {
   message: number;
   signedDelta: number;
 } {
-  const magnitude = 120 * Math.abs(params.notch);
+  const magnitude = WHEEL_DELTA_PER_NOTCH * Math.abs(params.notch);
   switch (params.direction) {
     case "down":
       // UIA down=+ → Win32 vertical forward=- (scroll up=+ ⇒ scroll down=-).
@@ -1108,6 +1145,64 @@ function makeScreenLParam(screenX: number, screenY: number): bigint {
  *
  * Exported for unit testing.
  */
+/**
+ * `GetAncestor` flag for the immediate parent (winuser.h `GA_PARENT`).
+ */
+const GA_PARENT = 1;
+
+/**
+ * Depth cap for the parent walk. Matches the descent's own cap in
+ * `find_wheel_leaf_by_hittest`, so the walk can always get back up whatever
+ * the descent came down.
+ */
+const OBSERVATION_CHAIN_MAX_DEPTH = 8;
+
+/**
+ * Every HWND whose scroll position could legitimately move in response to a
+ * wheel posted at `leaf`, for a target the caller named as `inputHwnd`.
+ *
+ * `WM_MOUSEWHEEL` propagates UP: an unhandled wheel is passed to the parent,
+ * and so on, so the window that ends up scrolling is anywhere on the chain
+ * from the post target to the window we were asked to scroll — **including
+ * the middle**. Watching only the two ends looks sufficient until an
+ * intermediate container owns the scrollbar (a scrollable panel between a
+ * WebView host and its render widget), at which point a scroll that plainly
+ * happened is reported as `ScrollNotDelivered`.
+ *
+ * Returns `[leaf]` unchanged for a class-table retarget (the table's leaves
+ * ARE the scrolling surface) and for the no-retarget case, so the common paths
+ * pay nothing.
+ */
+function buildObservationChain(
+  leaf: bigint,
+  inputHwnd: bigint,
+  retargetedByHitTest: boolean,
+): bigint[] {
+  if (!retargetedByHitTest || leaf === inputHwnd) return [leaf];
+  const chain: bigint[] = [leaf];
+  const getAncestor = nativeWin32?.win32GetAncestor;
+  if (typeof getAncestor === "function") {
+    let current = leaf;
+    for (let depth = 0; depth < OBSERVATION_CHAIN_MAX_DEPTH; depth++) {
+      if (current === inputHwnd) break;
+      let parent: bigint | null | undefined;
+      try {
+        parent = getAncestor(current, GA_PARENT);
+      } catch {
+        break; // Defensive: a native throw must not lose the endpoints below.
+      }
+      if (parent === null || parent === undefined || parent === current) break;
+      if (!chain.includes(parent)) chain.push(parent);
+      current = parent;
+    }
+  }
+  // The window the caller named is always watched, even when the walk could
+  // not run (missing binding) or stopped early — that keeps this at least as
+  // good as watching the two endpoints.
+  if (!chain.includes(inputHwnd)) chain.push(inputHwnd);
+  return chain;
+}
+
 export async function postWheelToHwnd(
   hwnd: bigint,
   params: WheelParams,
@@ -1139,6 +1234,36 @@ export async function postWheelToHwnd(
         }
       } catch {
         // Defensive: any native throw → keep input HWND (top-level POST).
+      }
+    }
+
+    // ADR-018 Phase 6 §2.2 — structural fallback, tried ONLY after a class-table
+    // miss. WebView hosts (Tauri/WRY, Electron, CEF) put the wheel receiver
+    // several levels down and across a process boundary, so no class table can
+    // keep up; a hit test down the target's own children finds it structurally.
+    //
+    // `retargetedByLeafWalker` is deliberately NOT set here. That flag is the
+    // chain-trust signal consumed at the `pre === null` branch below: it means
+    // "the destination is a KNOWN scroll leaf, so a post to it can be asserted
+    // as delivered without a scrollbar reading". A hit-test result carries no
+    // such guarantee. Setting it would make every child-hosted window claim
+    // `delivered` with no observation behind it — the silent-success mode this
+    // pipeline exists to remove — and would also make the Phase 6 §2.3
+    // pixel-delta fallback unreachable on exactly the hosts it was built for,
+    // since this function would stop returning null for them.
+    let retargetedByHitTest = false;
+    if (!retargetedByLeafWalker) {
+      const findLeafByHitTest = nativeWin32?.win32FindWheelLeafByHittest;
+      if (typeof findLeafByHitTest === "function") {
+        try {
+          const leaf = findLeafByHitTest(hwnd);
+          if (leaf !== null && leaf !== undefined) {
+            effectiveHwnd = leaf;
+            retargetedByHitTest = true;
+          }
+        } catch {
+          // Defensive: any native throw → keep input HWND (top-level POST).
+        }
       }
     }
 
@@ -1183,9 +1308,40 @@ export async function postWheelToHwnd(
     //      collapses to an essentially-constant perceptual hash even when
     //      raw pixels show real change — see §2.6.2 row notes).
     const getScrollInfoAvailable = typeof getScrollInfo === "function";
-    const pre = getScrollInfoAvailable
-      ? getScrollInfo(effectiveHwnd, axisName)
-      : null;
+    // Observation targets. Dispatch and observation answer different questions:
+    // dispatch asks "who should receive the message", observation asks "whose
+    // scroll position moves". For a class-table retarget those are the same
+    // window — the table's leaves ARE the scrolling surface — but for a
+    // structural hit-test retarget they need not be.
+    //
+    // `WM_MOUSEWHEEL` propagates UP (`DefWindowProc`), so a wheel posted to a
+    // descendant may be handled anywhere along the chain to the window we were
+    // asked to scroll. Watching only one end of that chain produces a false
+    // `ScrollNotDelivered` — a scroll that plainly worked, reported as a hard
+    // error — and it does so from either end:
+    //   - watch only the leaf, and a scrollable frame whose full-size child
+    //     panel has no scrollbar reads `null` while the frame scrolls;
+    //   - watch only the input window, and a child that owns the real
+    //     scrollbar moves invisibly.
+    // A first fix that merely preferred the leaf and fell back on `null` still
+    // missed a third shape: a child carrying a vestigial `WS_VSCROLL` reads
+    // non-null, suppressing the fallback, while the ancestor is what actually
+    // scrolls. So watch every candidate and treat motion anywhere on the chain
+    // as delivery — which is what upward propagation means.
+    const observationHwnds = buildObservationChain(
+      effectiveHwnd,
+      hwnd,
+      retargetedByHitTest,
+    );
+    const observed = getScrollInfoAvailable
+      ? observationHwnds
+          .map((h) => ({ hwnd: h, pre: getScrollInfo(h, axisName) }))
+          .filter((o): o is { hwnd: bigint; pre: NonNullable<typeof o.pre> } => o.pre !== null)
+      : [];
+    // The `pre === null` gate below means "no axis is observable anywhere on
+    // the chain", which is what routes chain-trust and the caller's own
+    // evidence. Keep the first readable candidate as its representative.
+    const pre = observed.length > 0 ? observed[0]!.pre : null;
 
     // ADR-019 Stage 2a — capture the dispatch-pre reference frame (T_pre)
     // *before* the chunking loop runs. Gated on:
@@ -1208,6 +1364,33 @@ export async function postWheelToHwnd(
         height: rect.height,
       });
     }
+
+    // ADR-018 Phase 6 §2.2 — evidence for the retry decision further down.
+    //
+    // When a structural retarget produces no observable motion there are two
+    // possible worlds, and `GetScrollInfo` cannot tell them apart: the leaf
+    // consumed the wheel and scrolled something with no Win32 scrollbar (a
+    // WebView inside a scrollable frame), or the leaf consumed it and did
+    // nothing. Re-posting is right in the second world and scrolls twice in the
+    // first. The leaf's own pixels answer it.
+    //
+    // Captured only in the configuration where a retry could actually fire —
+    // structural retarget, and the retry target readable — so the ordinary
+    // WebView scroll pays nothing. The condition is decidable here, before
+    // dispatch, which is the only place a "pre" frame can be taken.
+    const retryCouldFire =
+      retargetedByHitTest &&
+      effectiveHwnd !== hwnd &&
+      observed.some((o) => o.hwnd === hwnd);
+    const leafPreFrame =
+      retryCouldFire && rect !== null
+        ? await captureFrame(effectiveHwnd, {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          })
+        : null;
 
     // ADR-019 MVP-1 (Stage 1) — read-only UIA `ScrollPercent` pre-snapshot.
     // The dispatcher's chain-trust branch (Case 2a below) prefers UIA percent
@@ -1264,45 +1447,54 @@ export async function postWheelToHwnd(
     // single-message implementation wrapped the sign bit and silently
     // reversed scroll direction (Codex PR #305 review P2-B).
     const sign = signedDelta < 0 ? -1 : 1;
-    let remaining = Math.abs(signedDelta);
     let postedAny = false;
-    while (remaining > 0) {
-      const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
-      const chunkSigned = sign * chunkMagnitude;
-      const wParam = makeWheelWParam(0, chunkSigned);
-      // ADR-035 Phase 1 — recorded HERE, at the real message boundary, not at
-      // the tier-3 branch above: every early return before this point (missing
-      // native binding, a zero-magnitude call, a pre-dispatch failure) would
-      // otherwise write a dispatch event for a message that was never posted
-      // (Codex Round 1 P2). Once per call, not per chunk; the handle is the
-      // LEAF the walker resolved, which is what actually receives the message.
-      if (!postedAny) {
-        logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd: effectiveHwnd, tier: "3" });
+    // Emit the whole (chunked) wheel request at one HWND. Factored out because
+    // a hit-test retarget may have to repeat it at the input window — see the
+    // retry below. `logDispatchSink` / L1 record the HWND actually posted to.
+    const postAllChunksTo = (targetHwnd: bigint, targetLParam: bigint): boolean => {
+      let remaining = Math.abs(signedDelta);
+      let postedHere = false;
+      while (remaining > 0) {
+        const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
+        const chunkSigned = sign * chunkMagnitude;
+        const wParam = makeWheelWParam(0, chunkSigned);
+        // ADR-035 Phase 1 — recorded HERE, at the real message boundary, not at
+        // the tier-3 branch above: every early return before this point (missing
+        // native binding, a zero-magnitude call, a pre-dispatch failure) would
+        // otherwise write a dispatch event for a message that was never posted
+        // (Codex Round 1 P2). Once per call, not per chunk; the handle is the
+        // LEAF the walker resolved, which is what actually receives the message.
+        if (!postedHere) {
+          logDispatchSink({ sink: "postmessage", tool: "scroll", targetHwnd, tier: "3" });
+        }
+        const posted = postMessage(targetHwnd, message, wParam, targetLParam);
+        if (!posted) {
+          // Receiver rejected this chunk. If at least one earlier chunk
+          // delivered, fall through to observation; if NOTHING posted, report
+          // that so the caller emits target_unreachable.
+          break;
+        }
+        postedHere = true;
+        postedAny = true;
+        // ADR-007 P5a L1 capture contract — record every successful chunk to
+        // the L1 ring for replay-accurate observability. `postMessageToHwnd`
+        // in `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY
+        // paths; Tier 3 wheel posts must follow the same contract or the L1
+        // stream loses an entire input class. (Opus PR #305 Round 1 P2-1.)
+        // ADR-018 Phase 5+N: records the **leaf** HWND (effectiveHwnd) — the
+        // destination-explicit record per ADR-007 P5a contract.
+        nativeL1?.l1PushHwInputPostMessage?.(
+          targetHwnd,
+          message >>> 0,
+          wParam,
+          targetLParam,
+        );
+        remaining -= chunkMagnitude;
       }
-      const posted = postMessage(effectiveHwnd, message, wParam, lParam);
-      if (!posted) {
-        // Receiver rejected this chunk. If at least one earlier chunk
-        // delivered, fall through to observation; if NOTHING posted, return
-        // null so the caller emits target_unreachable.
-        if (!postedAny) return null;
-        break;
-      }
-      postedAny = true;
-      // ADR-007 P5a L1 capture contract — record every successful chunk to
-      // the L1 ring for replay-accurate observability. `postMessageToHwnd`
-      // in `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY
-      // paths; Tier 3 wheel posts must follow the same contract or the L1
-      // stream loses an entire input class. (Opus PR #305 Round 1 P2-1.)
-      // ADR-018 Phase 5+N: records the **leaf** HWND (effectiveHwnd) — the
-      // destination-explicit record per ADR-007 P5a contract.
-      nativeL1?.l1PushHwInputPostMessage?.(
-        effectiveHwnd,
-        message >>> 0,
-        wParam,
-        lParam,
-      );
-      remaining -= chunkMagnitude;
-    }
+      return postedHere;
+    };
+
+    postAllChunksTo(effectiveHwnd, lParam);
 
     // `notch=0` (or any zero-magnitude call) loops zero times → nothing was
     // ever posted. Surface as null so the caller emits `target_unreachable`
@@ -1423,11 +1615,136 @@ export async function postWheelToHwnd(
       }
       return null;
     }
-    const post = getScrollInfo!(effectiveHwnd, axisName);
-    if (post === null) return null;
+    // Motion on ANY watched HWND counts: the post travels up the chain, so the
+    // window whose position changes is not necessarily the one it was sent to.
+    // Each candidate's post is read from the same HWND as its own pre.
+    const observeMotion = (): boolean =>
+      observed.some((o) => {
+        const post = getScrollInfo!(o.hwnd, axisName);
+        return (
+          post !== null &&
+          Math.abs(post.nPos - o.pre.nPos) >= POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS
+        );
+      });
 
-    const delta = Math.abs(post.nPos - pre.nPos);
-    if (delta < POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS) return null;
+    let moved = observeMotion();
+
+    // Dispatch retry for a structural retarget.
+    //
+    // Note for anyone joining resolve→dispatch telemetry: when this fires, the
+    // tool call emits TWO `logDispatchSink` events with different `targetHwnd`.
+    // That is the truth — two posts really happened — but analysis that assumes
+    // one dispatch per call needs to account for it. Upward propagation is what
+    // makes posting to a descendant safe, but it only holds when that
+    // descendant hands the message to `DefWindowProc`. A child that CONSUMES
+    // `WM_MOUSEWHEEL` without scrolling and without forwarding breaks the
+    // assumption, and the window whose handler used to do the scrolling never
+    // sees the wheel at all — a regression against posting to the top level,
+    // which is what this code did before the hit test existed. So when a
+    // hit-test retarget produced no motion anywhere we can see, send the same
+    // request to the window the caller actually named.
+    //
+    // Only retry when the RETRY TARGET's own movement is observable. The risk
+    // being guarded against is scrolling twice: if the first post already
+    // reached `hwnd` by propagation and moved it, but we cannot see `hwnd`'s
+    // position, then "no motion seen" does not mean "nothing happened" and a
+    // second post adds a second scroll.
+    //
+    // "Something on the chain is readable" is NOT sufficient, and the gap is
+    // reachable in exactly the shape that motivated watching the chain at all:
+    // a leaf with custom-painted scrollbars (unreadable), an intermediate
+    // container carrying a vestigial `WS_VSCROLL` (readable, never moves), and
+    // a custom-paint top level (unreadable). The wheel bubbles to the top
+    // level and scrolls it; `observeMotion` sees only the static middle and
+    // reports nothing; a gate on "any candidate readable" is satisfied by that
+    // middle and fires the retry — double scroll.
+    //
+    // Narrowing the gate to `hwnd` itself also makes it load-bearing: with the
+    // earlier `observed.length > 0` form, the unobservable-`pre` branch already
+    // returned first, so removing it changed nothing and a mutation test could
+    // not see it.
+    // The leaf acted if its pixels moved, even though no scrollbar shows it.
+    //
+    // Two frames are comparable only when they have the same shape AND the same
+    // provenance. `captureWindowRawWithFallback` re-picks PrintWindow → WGC →
+    // BitBlt per call, and the rungs are built to agree on device-pixel
+    // dimensions and all report `channels: 4` — so a flip is invisible to the
+    // shape check while changing essentially every byte, and one PrintWindow
+    // frame judged blank is enough to cause it on exactly the GPU-composited
+    // windows this retarget exists for. The BitBlt rung is additionally a
+    // screen grab that includes whatever overlaps the leaf, so it is not a
+    // picture of the same surface at all.
+    //
+    // Both mismatches, and a failed capture, count as "no evidence the leaf
+    // acted" and let the retry proceed. That direction is deliberate: the
+    // alternative reading — treating an incomparable pair as motion — would
+    // suppress the retry AND assert delivery below, which is the silent success
+    // this pipeline exists to remove.
+    const leafActed = await (async (): Promise<boolean> => {
+      if (!retryCouldFire || moved || leafPreFrame === null || rect === null) return false;
+      const leafPostFrame = await captureFrame(effectiveHwnd, {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      });
+      if (leafPostFrame === null) return false;
+      if (
+        leafPostFrame.width !== leafPreFrame.width ||
+        leafPostFrame.height !== leafPreFrame.height ||
+        leafPostFrame.channels !== leafPreFrame.channels ||
+        leafPostFrame.source !== leafPreFrame.source ||
+        leafPostFrame.rawPixels.length !== leafPreFrame.rawPixels.length
+      ) {
+        return false;
+      }
+      return !leafPostFrame.rawPixels.equals(leafPreFrame.rawPixels);
+    })();
+
+    if (!moved && retryCouldFire && !leafActed) {
+      const inputRect = getWindowRectByHwnd(hwnd);
+      const inputLParam =
+        inputRect !== null
+          ? makeScreenLParam(
+              Math.round(inputRect.x + inputRect.width / 2),
+              Math.round(inputRect.y + inputRect.height / 2),
+            )
+          : lParam;
+      if (postAllChunksTo(hwnd, inputLParam)) {
+        await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
+        moved = observeMotion();
+      }
+    }
+
+    // The leaf's pixels decide in both directions. Above they suppress a retry
+    // that would scroll a second surface; here they are the only thing that
+    // separates "the wheel did something we cannot measure" from "the wheel was
+    // swallowed", because nothing on the observation chain moved.
+    //
+    // Dropping them at this point returns `null`, which the caller turns into a
+    // hard `ScrollNotDelivered` — for a WebView that visibly scrolled. Its own
+    // pixel fallback cannot rescue that: it runs only when the window it
+    // watched exposes no scrollbar on either axis, and this shape is reachable
+    // exactly when it does (a scrollable frame hosting a WebView child, the
+    // frame's scrollbar readable and stationary).
+    //
+    // Reported as `unverifiable`, not `delivered`. A leaf repaints for reasons
+    // that have nothing to do with the wheel — the hover the caller's own
+    // cursor move just triggered, a caret, a spinner, a video — so treating
+    // these pixels as delivery would turn a genuine silent drop into a success
+    // claim, which is the failure mode this whole pipeline exists to remove.
+    // `unverifiable` is the honest reading in both worlds: it removes a false
+    // error without asserting a scroll nobody measured. See the routing
+    // contract on `DispatchOutcome.reason`.
+    if (!moved && leafActed) {
+      return {
+        scrolled: false,
+        channel: "postmessage",
+        reason: "pixel_delta_observed",
+      };
+    }
+
+    if (!moved) return null;
 
     return {
       scrolled: true,
@@ -1607,7 +1924,7 @@ export async function dispatchScrollWheel(
  * sign at the `postWheelToHwnd` napi boundary.
  */
 function wheelDeltaForNotch(params: WheelParams): { x: number; y: number } {
-  const unit = 120 * params.notch;
+  const unit = WHEEL_DELTA_PER_NOTCH * params.notch;
   switch (params.direction) {
     case "down":
       return { x: 0, y: unit };

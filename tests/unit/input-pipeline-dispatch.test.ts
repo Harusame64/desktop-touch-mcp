@@ -61,14 +61,29 @@ const win32GetScrollInfoMock = vi.fn<
 // (no retarget) so existing Phase 4 tests stay bit-equal; the dedicated
 // leaf-walker describe block below overrides per-test.
 const win32FindScrollLeafForTopLevelMock = vi.fn<[bigint], bigint | null>(() => null);
+// ADR-018 Phase 6: structural hit-test fallback, tried only after a class-table
+// miss. Default impl returns `null` (no retarget) so every pre-Phase-6 test
+// stays bit-equal. Without this mock entry the `typeof` guard in
+// `postWheelToHwnd` skips the branch entirely and the new path is never
+// exercised — the Phase 6 tests below would pass against an implementation
+// that sets the chain-trust flag, which is the exact defect Round 1 found.
+const win32FindWheelLeafByHittestMock = vi.fn<[bigint], bigint | null>(() => null);
+// ADR-018 Phase 6: parent walk for the observation chain. Default impl returns
+// null (walk cannot proceed), which degrades to watching the two endpoints —
+// the behaviour every pre-parent-walk test expects.
+const win32GetAncestorMock = vi.fn<[bigint, number], bigint | null>(() => null);
 const nativeWin32Mock: {
   win32PostMessage?: unknown;
   win32GetScrollInfo?: unknown;
   win32FindScrollLeafForTopLevel?: unknown;
+  win32FindWheelLeafByHittest?: unknown;
+  win32GetAncestor?: unknown;
 } = {
   win32PostMessage: win32PostMessageMock,
   win32GetScrollInfo: win32GetScrollInfoMock,
   win32FindScrollLeafForTopLevel: win32FindScrollLeafForTopLevelMock,
+  win32FindWheelLeafByHittest: win32FindWheelLeafByHittestMock,
+  win32GetAncestor: win32GetAncestorMock,
 };
 vi.mock("../../src/engine/native-engine.js", () => ({
   nativeUia: nativeUiaMock,
@@ -150,6 +165,18 @@ vi.mock("../../src/engine/cdp-bridge.js", () => ({
 
 // Mock CDP port lookup — keeps `resolveCdpDestinationForHwnd` deterministic.
 const getCdpPortMock = vi.fn(() => 9222);
+// ADR-018 Phase 6 §2.2 — the retry decision reads the leaf's own pixels to
+// tell "the leaf scrolled something unobservable" from "the leaf did nothing".
+const captureFrameMock = vi.fn<
+  [bigint, { x: number; y: number; width: number; height: number }],
+  Promise<{ rawPixels: Buffer; width: number; height: number; channels: 3 | 4 } | null>
+>(async () => null);
+vi.mock("../../src/engine/layer-buffer.js", () => ({
+  captureFrame: (...args: unknown[]) =>
+    (captureFrameMock as unknown as (...a: unknown[]) => unknown)(...args),
+  pollUntilStable: vi.fn(async () => null),
+}));
+
 vi.mock("../../src/utils/desktop-config.js", () => ({
   getCdpPort: getCdpPortMock,
 }));
@@ -1034,6 +1061,8 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     win32GetScrollInfoMock.mockReset();
     getWindowRectByHwndMock.mockReset();
     win32FindScrollLeafForTopLevelMock.mockReset();
+    win32FindWheelLeafByHittestMock.mockReset();
+    win32FindWheelLeafByHittestMock.mockReturnValue(null);
     // ADR-019 MVP-1 (Stage 1) — reset UIA percent mock; default impl returns
     // null (no pattern exposed) so the chain-trust fall-through is the
     // baseline observation. Tests that exercise the UIA observation path
@@ -1044,6 +1073,7 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
     nativeWin32Mock.win32FindScrollLeafForTopLevel =
       win32FindScrollLeafForTopLevelMock;
+    nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
     nativeUiaMock.uiaReadScrollPercentAtHwnd = uiaReadScrollPercentAtHwndMock;
     win32PostMessageMock.mockReturnValue(true);
   });
@@ -1581,5 +1611,428 @@ describe("ADR-018 Phase 4 — dispatchScrollWheel (Tier 1 UIA → Tier 3 PostMes
     expect(result).toBeNull();
     expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
     expect(win32PostMessageMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-018 Phase 6 §2.2 — structural hit-test retarget (WebView hosts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electron / CEF)", () => {
+  // The class-chain table only covers shapes we have already hit. WebView hosts
+  // put the wheel receiver several levels down and across a process boundary,
+  // so a structural descent resolves it instead. Two contract points matter,
+  // and both were defects caught in review rather than hypotheticals:
+  //
+  //   1. A hit-test result must NOT be treated as chain-trust. That flag means
+  //      "the post target is a documented scroll leaf, so a queued post counts
+  //      as delivered without reading a scrollbar". A structural guess carries
+  //      no such guarantee: letting it assert delivery would have made every
+  //      child-hosted window claim success with nothing observed.
+  //   2. Observation must not blindly follow the retarget. WM_MOUSEWHEEL
+  //      propagates UP, so the scrollbar that moves may belong to the window we
+  //      were asked to scroll, not to the leaf.
+
+  beforeEach(() => {
+    win32PostMessageMock.mockReset();
+    win32GetScrollInfoMock.mockReset();
+    getWindowRectByHwndMock.mockReset();
+    win32FindScrollLeafForTopLevelMock.mockReset();
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(null); // class-table miss
+    win32FindWheelLeafByHittestMock.mockReset();
+    win32GetAncestorMock.mockReset();
+    win32GetAncestorMock.mockReturnValue(null);
+    captureFrameMock.mockReset();
+    captureFrameMock.mockResolvedValue(null);
+    uiaReadScrollPercentAtHwndMock.mockReset();
+    uiaReadScrollPercentAtHwndMock.mockImplementation(async () => null);
+    nativeWin32Mock.win32PostMessage = win32PostMessageMock;
+    nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
+    nativeWin32Mock.win32FindScrollLeafForTopLevel =
+      win32FindScrollLeafForTopLevelMock;
+    nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
+    nativeWin32Mock.win32GetAncestor = win32GetAncestorMock;
+    nativeUiaMock.uiaReadScrollPercentAtHwnd = uiaReadScrollPercentAtHwndMock;
+    win32PostMessageMock.mockReturnValue(true);
+    getWindowRectByHwndMock.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+  });
+
+  const scrollInfo = (nPos: number) => ({
+    nMin: 0,
+    nMax: 1000,
+    nPage: 100,
+    nPos,
+    pageRatio: nPos / 1000,
+  });
+
+  const TOP = 0xB00Bn;  // fake "Tauri Window"
+  const LEAF = 0xC0DEn; // fake "Chrome_WidgetWin_1"
+
+  it("hit-test leaf receives the post, but a scrollbar-less leaf does NOT assert delivery", async () => {
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    // Neither window exposes a Win32 scrollbar — the WebView case.
+    win32GetScrollInfoMock.mockReturnValue(null);
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    // The post goes to the leaf: that is the whole point of the retarget.
+    expect(win32PostMessageMock).toHaveBeenCalled();
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(LEAF);
+    // But with no observation behind it, the dispatcher must return null so the
+    // caller falls through to its own evidence (the Phase 6 pixel comparison)
+    // instead of claiming `delivered_via_postmessage` on chain-trust.
+    expect(result).toBeNull();
+  });
+
+  it("a class-table miss followed by a hit-test miss leaves the top-level HWND as the target", async () => {
+    win32FindWheelLeafByHittestMock.mockReturnValue(null);
+    win32GetScrollInfoMock.mockImplementation(() => scrollInfo(0));
+
+    await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(TOP);
+  });
+
+  it("observation falls back to the input HWND when the hit-test leaf exposes no scrollbar", async () => {
+    // The regression this pins: a window that owns a Win32 scrollbar and has a
+    // visible child over its centre. The wheel is posted to the child, bubbles
+    // up, and the TOP-LEVEL scroll position moves. Reading only the leaf would
+    // see null and report the scroll as undelivered — a working scroll turned
+    // into a hard error by the caller.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let posted = false;
+    win32PostMessageMock.mockImplementation(() => {
+      posted = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return null;            // the child has no scrollbar
+      return scrollInfo(posted ? 400 : 100);  // the top-level's position moves
+    });
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(LEAF);
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+    expect(result!.reason).toBe("delivered_via_postmessage");
+  });
+
+  it("motion on the input HWND counts even when the leaf owns a scrollbar of its own", async () => {
+    // The shape a one-directional fallback misses: the leaf carries a vestigial
+    // WS_VSCROLL, so reading it succeeds and a "prefer the leaf, fall back on
+    // null" rule never looks further — while the ancestor is what actually
+    // scrolls. Watching only the leaf reports a working scroll as undelivered.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let posted = false;
+    win32PostMessageMock.mockImplementation(() => {
+      posted = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return scrollInfo(50); // readable, but never moves
+      return scrollInfo(posted ? 700 : 100); // the ancestor is what scrolls
+    });
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+  });
+
+  it("both ends of the chain are read before the dispatch, in order", async () => {
+    // Guards against a future edit that reads `post` from the dispatch target
+    // while `pre` came from somewhere else: the delta would then be computed
+    // across two different windows and could report either way at random.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    // The leaf scrolls, so observation succeeds on the first pass and the
+    // retry path stays out of the call sequence being asserted here.
+    let posted = false;
+    win32PostMessageMock.mockImplementation(() => {
+      posted = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return scrollInfo(posted ? 400 : 100);
+      return scrollInfo(100);
+    });
+
+    await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    const reads = win32GetScrollInfoMock.mock.calls
+      .filter((c) => c[1] === "vertical")
+      .map((c) => c[0]);
+    // Both ends of the propagation chain are read before the dispatch, in
+    // order. That each candidate's post is read from ITS OWN hwnd is pinned by
+    // the two tests above, which only pass when the delta is computed per
+    // window (a static leaf plus a moving ancestor, and the reverse); this one
+    // pins the chain composition and ordering, which those cannot see.
+    // (`some` short-circuits on the leaf here, so one post-read follows.)
+    expect(reads.slice(0, 2)).toEqual([LEAF, TOP]);
+    expect(reads[2]).toBe(LEAF);
+  });
+
+  it("a child that swallows the wheel gets a retry at the window the caller named", async () => {
+    // Upward propagation is what makes posting to a descendant safe, and it
+    // only holds when that descendant defers to DefWindowProc. A child that
+    // consumes WM_MOUSEWHEEL without scrolling and without forwarding breaks
+    // it, and the top-level handler that used to do the scrolling never sees
+    // the wheel — a regression against the pre-hit-test behaviour.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let postedToTop = false;
+    win32PostMessageMock.mockImplementation((h: bigint) => {
+      if (h === TOP) postedToTop = true;
+      return true; // the child accepts the message and silently eats it
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return scrollInfo(50); // never moves
+      return scrollInfo(postedToTop ? 600 : 100); // only the retry scrolls it
+    });
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(LEAF);
+    expect(postedToTop).toBe(true);
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+  });
+
+  it("no retry when nothing is observable — an unmeasurable host must not be scrolled twice", async () => {
+    // The WebView case this retarget exists for: the leaf really is the
+    // receiver and no scrollbar can be read anywhere. "No motion seen" is then
+    // indistinguishable from "motion we cannot measure", so a retry would
+    // scroll such a host a second time. It stays single-shot and the caller
+    // falls back to its own pixel evidence.
+    //
+    // This case is caught twice over: the unobservable-`pre` branch returns
+    // before the retry is reached, and the retry's own gate requires the retry
+    // target to be readable. The test pins the user-visible invariant — an
+    // unmeasurable host is posted to exactly once — rather than either line.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockReturnValue(null);
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets.every((t) => t === LEAF)).toBe(true);
+    expect(result).toBeNull();
+  });
+
+  it("no retry when the hit-test leaf did scroll", async () => {
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let posted = false;
+    win32PostMessageMock.mockImplementation(() => {
+      posted = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return scrollInfo(posted ? 500 : 100);
+      return scrollInfo(100);
+    });
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets.every((t) => t === LEAF)).toBe(true);
+    expect(result!.scrolled).toBe(true);
+  });
+
+  it("an intermediate ancestor that owns the scrollbar is watched, not just the two ends", async () => {
+    // Post target and caller-named window are only the ends of the chain. A
+    // scrollable container in the middle — a panel between a WebView host and
+    // its render widget — is where the scroll position can actually live, and
+    // watching only the endpoints reports that scroll as undelivered.
+    const MIDDLE = 0xA11Dn; // a scrollable container between LEAF and TOP
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetAncestorMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return MIDDLE;
+      if (h === MIDDLE) return TOP;
+      return null;
+    });
+    let posted = false;
+    win32PostMessageMock.mockImplementation(() => {
+      posted = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) => {
+      if (h === MIDDLE) return scrollInfo(posted ? 800 : 100); // only this moves
+      return scrollInfo(100); // both ends sit still
+    });
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(win32GetScrollInfoMock.mock.calls.map((c) => c[0])).toContain(MIDDLE);
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+    // The middle scrolled, so nothing needed a second dispatch.
+    expect(win32PostMessageMock.mock.calls.every((c) => c[0] === LEAF)).toBe(true);
+  });
+
+  it("no retry when the retry target itself is unobservable, even if something else on the chain is readable", async () => {
+    // The shape a "something on the chain is readable" gate gets wrong, and it
+    // is the same shape that motivated watching the chain in the first place:
+    //   leaf   — custom-painted scrollbars, unreadable
+    //   middle — vestigial WS_VSCROLL, readable, never moves
+    //   top    — custom-paint, unreadable, and where the wheel actually lands
+    // The first post bubbles up and scrolls the top level. We cannot see that,
+    // so "no motion observed" must NOT be read as "nothing happened": posting
+    // again would scroll it a second time.
+    const MIDDLE = 0xA11Dn;
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetAncestorMock.mockImplementation((h: bigint) => {
+      if (h === LEAF) return MIDDLE;
+      if (h === MIDDLE) return TOP;
+      return null;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === MIDDLE ? scrollInfo(100) : null,
+    );
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets.every((t) => t === LEAF)).toBe(true);
+    expect(result).toBeNull();
+  });
+
+  it("an older .node without the hit-test export degrades to the top-level post", async () => {
+    // Mixed-version builds are a supported state (the launcher can start a
+    // runtime older than the JS). Every other native call in this path is
+    // optional-chained for that reason; the hit test must be too.
+    delete nativeWin32Mock.win32FindWheelLeafByHittest;
+    win32GetScrollInfoMock.mockImplementation(() => scrollInfo(0));
+
+    await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(TOP);
+    // Restore for the remaining tests in this block.
+    nativeWin32Mock.win32FindWheelLeafByHittest = win32FindWheelLeafByHittestMock;
+  });
+
+  const rawFrame = (
+    fill: number,
+    source: "printwindow" | "wgc" | "bitblt-fallback" = "printwindow",
+  ) => ({
+    rawPixels: Buffer.alloc(64, fill),
+    width: 4,
+    height: 4,
+    channels: 4 as const,
+    source,
+  });
+
+  it("the leaf's own pixels moved — no retry, and the pixels are reported rather than dropped", async () => {
+    // A scrollable frame hosting a WebView2 child. The child consumes the
+    // wheel and scrolls web content, which no Win32 scrollbar reports, while
+    // the frame's own position stays put. Re-posting at the frame would scroll
+    // a second surface in one call — visibly wrong, and different from both the
+    // old behaviour and a real mouse.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10)) // leaf, before
+      .mockResolvedValueOnce(rawFrame(0x20)); // leaf, after — it repainted
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets.every((t) => t === LEAF)).toBe(true);
+    // ...and the same pixels are surfaced rather than dropped. Returning null
+    // here would hand `scrollHandler` a hard `ScrollNotDelivered` for a WebView
+    // that visibly scrolled, and its own pixel fallback cannot recover it: that
+    // branch requires the watched window to expose no scrollbar on either axis,
+    // and here the frame exposes one.
+    //
+    // `scrolled: false` with a reason is NOT "fall through to the next tier"
+    // (that is `null`): the caller routes this shape to `unverifiable`. A leaf
+    // repaints for hover, caret, spinner or video too, so these pixels are
+    // enough to withdraw a false error and not enough to claim a scroll.
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(false);
+    expect(result!.channel).toBe("postmessage");
+    expect(result!.reason).toBe("pixel_delta_observed");
+  });
+
+  it("a leaf that neither moved a scrollbar nor repainted is still not delivered", async () => {
+    // The negative half of the pin above: `pixel_delta_observed` must come from
+    // the pixels, not from having taken the hit-test path. Same topology, same
+    // unreadable leaf — only the frames are identical, so the retry runs, finds
+    // nothing, and the call reports non-delivery.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10)) // leaf, before
+      .mockResolvedValueOnce(rawFrame(0x10)); // leaf, after — nothing repainted
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets).toContain(TOP); // the retry did fire
+    expect(result).toBeNull();
+  });
+
+  it("retry when the leaf's pixels did not move — it swallowed the wheel", async () => {
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let postedToTop = false;
+    win32PostMessageMock.mockImplementation((h: bigint) => {
+      if (h === TOP) postedToTop = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(postedToTop ? 600 : 100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10)) // leaf, before
+      .mockResolvedValueOnce(rawFrame(0x10)); // leaf, after — nothing happened
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(postedToTop).toBe(true);
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+  });
+
+  it("a capture-backend flip is not motion — different provenance, same shape", async () => {
+    // The rungs (PrintWindow → WGC → BitBlt) are built to agree on device-pixel
+    // dimensions and all report `channels: 4`, so a flip between the two
+    // captures passes every shape test while changing nearly every byte. One
+    // PrintWindow frame judged blank is enough to cause it, on exactly the
+    // GPU-composited windows this retarget exists for. Reading it as motion
+    // would suppress the retry AND claim delivery for a wheel that did nothing.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    let postedToTop = false;
+    win32PostMessageMock.mockImplementation((h: bigint) => {
+      if (h === TOP) postedToTop = true;
+      return true;
+    });
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10, "printwindow"))
+      .mockResolvedValueOnce(rawFrame(0x20, "wgc")); // same shape, other backend
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    expect(postedToTop).toBe(true); // treated as no evidence → retry ran
+    expect(result).toBeNull(); // ...and nothing was claimed
+  });
+
+  it("the class table wins: a chain-table hit is never overridden by the hit test", async () => {
+    const CHAIN_LEAF = 0xFEEDn;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(CHAIN_LEAF);
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockReturnValue(null);
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+
+    expect(win32PostMessageMock.mock.calls[0]![0]).toBe(CHAIN_LEAF);
+    expect(win32FindWheelLeafByHittestMock).not.toHaveBeenCalled();
+    // Chain-trust still applies to table members with no readable scrollbar.
+    expect(result).not.toBeNull();
+    expect(result!.reason).toBe("delivered_via_postmessage");
   });
 });

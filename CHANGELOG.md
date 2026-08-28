@@ -1,5 +1,63 @@
 # Changelog
 
+## [Unreleased] — Scrolling works on Tauri, Electron and other WebView apps, and one `amount` unit now means one wheel notch everywhere
+
+- **BREAKING: `scroll(action='raw')` now moves 40x further for the same
+  `amount`.** `amount` has always been documented as a count of mouse-wheel
+  notches, and on windows that expose their scroll position it behaved that
+  way. On every other window it did not: one unit was sending a fortieth of a
+  notch, so the default `amount:3` moved about 7 pixels and looked like
+  scrolling was broken. One unit is now one notch on every window.
+
+  `amount` is now also capped at 1000 notches. Each notch is dispatched as real
+  wheel input, so an unbounded value meant an unbounded amount of work; to reach
+  a specific place in a long document, use `action='to_element'` or
+  `action='smart'` rather than a very large `amount`. Requests larger than one
+  wheel event can carry are split internally, which changes nothing you can
+  observe except that very large scrolls now arrive in full.
+
+  What to change: if you had compensated by passing a large number — `amount:150`
+  to move a few screens — divide it by 40. Roughly one notch is one line of text
+  in desktop apps such as Notepad, Explorer and Office, and about 100 pixels in
+  browsers and WebView-based apps, so `amount:3` is a small nudge everywhere and
+  8-10 notches covers a browser viewport. A saved `run_macro` recording that
+  passes a `scroll` amount above the new 1000 ceiling will be rejected rather
+  than run; re-record it or divide the value.
+
+  `scroll(action='smart')` was affected by the same bug from the inside: it
+  computed how far to scroll, then moved a fortieth of that, ran out of attempts
+  and reported that it could not reach the target. It now converges.
+
+- **Scrolling now works on apps built with Tauri, Electron, WebView2 and CEF.**
+  These apps host their page inside nested child windows — often in a separate
+  process — and the wheel was being delivered to the outer window, which ignores
+  it. `scroll` returned success and nothing moved. It now finds the window that
+  actually receives the wheel by walking down from the window you targeted, so
+  no per-framework configuration is needed. The search never leaves the window
+  you targeted, so an unrelated always-on-top overlay still cannot capture your
+  scroll.
+
+- **`scroll` can now tell you it worked on windows without a scrollbar.** Apps
+  that draw their own scrollbar — most browser-based and custom-drawn apps —
+  gave no way to check the result, so every call came back
+  `verifyDelivery.status: "unverifiable"` whether the page had moved a full
+  screen or not at all. When there is no other evidence, `scroll` now compares
+  the window's pixels before and after and reports
+  `status: "delivered"` with `reason: "pixel_delta_observed"` when they changed.
+  Treat it as weaker evidence than a scrollbar reading: a window that animates on
+  its own — a playing video, a spinner — repaints regardless of your scroll.
+  Unchanged pixels still report `"unverifiable"`, because a page already at its
+  end looks identical too.
+
+  A related case is a web view embedded in a window that *does* have a scrollbar
+  of its own — a page hosted inside a scrollable frame. Scrolling one of those
+  used to come back as an outright failure (`ScrollNotDelivered`), because the
+  frame's scrollbar had not moved even though the page had. `scroll` now
+  compares the embedded view's own pixels and reports `"unverifiable"` instead
+  of failing. Not `"delivered"`: an embedded view repaints for reasons that have
+  nothing to do with your scroll, and turning that into a success would hide the
+  case where the wheel really was swallowed.
+
 ## [1.15.1] - 2026-08-24 — The launcher stops hanging when GitHub is unreachable
 
 - **The launcher no longer waits forever on an unreachable GitHub.** Starting
@@ -2168,8 +2226,6 @@ are identical.
 - **Security audit pass.** CWE-94 in CDP `cdpFill` fixed (raw selector interpolation → JSON.stringify), HTTP CORS narrowed from `*` to a localhost-origin allowlist with proper `Vary: Origin`, native vision-backend Mutex poison handled.
 - **CI gains Rust regression coverage.** windows-latest CI now runs the napi-rs build (`build:rs:debug`) on every PR, so any drift in the FFI shape / `build.rs` / Cargo features fails fast.
 - **Two new browser DX wins.** `wait_until(url_matches)` waits on `location.href`; `browser_get_dom` now attaches a body-structure hint to ElementNotFound errors so the LLM gets an alternative-selector starting point.
-
-
 
 ### Breaking Changes — Phase 1 (Naming Redesign, 10 tools)
 

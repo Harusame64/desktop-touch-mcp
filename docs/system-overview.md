@@ -1028,7 +1028,7 @@ screenshot(diffMode=true)
 | Item | Detail |
 |---|---|
 | Window title | `GetWindowTextW` via koffi — nut-js mangles CJK |
-| Scroll amount | nut-js's single step is tiny → multiplied internally by `SCROLL_MULTIPLIER=3` |
+| Scroll amount | `amount` is wheel notches on every dispatch path; the SendInput path scales by `WHEEL_DELTA` (120 raw units per notch) and splits large requests into per-event chunks |
 | UIA timeout | 8 s default; 500 ms for `getFocusedElement`; 2 s inside `workspace_snapshot` |
 | UIA engine | Rust native (napi-rs + windows-rs 0.62) → PowerShell fallback. Native path: dedicated COM thread (MTA), batch BFS with `FindAllBuildCache(TreeScope_Children)` |
 | UIA focus latency | **2.2 ms** (Rust) vs ~366 ms (PowerShell) |

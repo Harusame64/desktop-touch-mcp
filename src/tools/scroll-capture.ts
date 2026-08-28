@@ -13,8 +13,13 @@ import {
 import type { ToolResult } from "./_types.js";
 import { buildImageBlocks } from "./screenshot-response.js";
 
-// Horizontal mouse scroll units per step (matches nut-js scroll granularity)
-const H_SCROLL_STEPS = 25;
+// Horizontal step between stitched frames, in RAW wheel units (nut-js forwards
+// this straight to libnut's `INPUT.mi.mouseData`), NOT notches: 25 units is
+// about a fifth of one notch. This is the one wheel call site that is not
+// expressed in notches, because its value was tuned against the overlap
+// detector rather than against a scroll distance — re-scaling it would change
+// what this tool stitches. Kept as-is deliberately; see the Phase 6 plan.
+const H_SCROLL_STEP_RAW_UNITS = 25;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -446,7 +451,7 @@ export const scrollCaptureHandler = async ({
           await pressAndRelease("pagedown");
         } else {
           logDispatchSink({ sink: "sendinput", tool: "scroll:capture", targetHwnd: null });
-          await mouse.scrollRight(H_SCROLL_STEPS);
+          await mouse.scrollRight(H_SCROLL_STEP_RAW_UNITS);
         }
         await sleep(scrollDelayMs);
       }

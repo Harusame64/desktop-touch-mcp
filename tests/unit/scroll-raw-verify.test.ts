@@ -15,14 +15,16 @@ import { describe, it, expect } from "vitest";
 import {
   collapseScrollObserved,
   evaluateScrollDelivery,
+  resolveScrollOutcome,
   type ScrollSnapshot,
 } from "../../src/tools/mouse.js";
+import type { DispatchOutcome } from "../../src/tools/_input-pipeline.js";
 
 const snap = (
   v: number | null,
   h: number | null,
   d: bigint | null = null,
-): ScrollSnapshot => ({ vertical: v, horizontal: h, dHash: d });
+): ScrollSnapshot => ({ vertical: v, horizontal: h, dHash: d, rawPixels: null, frame: null });
 
 describe("evaluateScrollDelivery — Win32 axis present", () => {
   it("vertical movement → delivered", () => {
@@ -133,15 +135,16 @@ describe("evaluateScrollDelivery — image hash fallback", () => {
   });
 });
 
-// ADR-018 Phase 1a contract lock: pin that the new 5-value reason enum is
+// ADR-018 Phase 1a contract lock: pin that the ADR-018 reason enum is
 // type-assignable to ScrollVerifyOutcome.reason. This is the trunk-stage
 // guarantee that Phase 1b / 3 / 4 can emit these values without further
-// type changes. The 4 legacy reasons (read_back_unsupported /
+// type changes. Phase 6 added a sixth value (`pixel_delta_observed`), so the
+// count assertion below is 6 — keep the two in sync when the enum grows. The 4 legacy reasons (read_back_unsupported /
 // page_end_inferred / scrollbar_unavailable / no_target_window) are still
 // emittable by the current dispatcher; Phase 1b will remove them once the
 // 3-tier pipeline lands.
-describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-level lock)", () => {
-  it("ScrollVerifyOutcome.reason accepts all 5 ADR-018 reason values", () => {
+describe("evaluateScrollDelivery — ADR-018 §2.6.2 reason enum, 6 values after Phase 6 (type-level lock)", () => {
+  it("ScrollVerifyOutcome.reason accepts all 5 ADR-018 reason values plus pixel_delta_observed", () => {
     // The cast-and-assign pattern below fails to compile if any member is
     // missing from the union, which is the trunk contract.
     const reasons = [
@@ -150,6 +153,8 @@ describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-l
       "delivered_via_postmessage",
       "wheel_overlay_intercepted",
       "target_unreachable",
+      // ADR-018 Phase 6 §2.3 — pixel-delta observation fallback.
+      "pixel_delta_observed",
     ] as const;
     type ReasonField = NonNullable<
       import("../../src/tools/mouse.js").ScrollVerifyOutcome["reason"]
@@ -160,8 +165,9 @@ describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-l
     const _u3: ReasonField = "delivered_via_postmessage";
     const _u4: ReasonField = "wheel_overlay_intercepted";
     const _u5: ReasonField = "target_unreachable";
-    expect(reasons).toHaveLength(5);
-    expect([_u1, _u2, _u3, _u4, _u5].sort()).toEqual([...reasons].sort());
+    const _u6: ReasonField = "pixel_delta_observed";
+    expect(reasons).toHaveLength(6);
+    expect([_u1, _u2, _u3, _u4, _u5, _u6].sort()).toEqual([...reasons].sort());
   });
 
   it("ScrollVerifyOutcome.reason still accepts all 4 legacy reason values (Phase 1b will remove)", () => {
@@ -247,3 +253,88 @@ describe("collapseScrollObserved — ADR-018 Phase 3 / issue #294 envelope norma
     expect(r.delta).toEqual({ x: 0, y: 0 });
   });
 });
+
+// ADR-018 §2.6.1 — the dispatcher→envelope seam. `scrollHandler` cannot be
+// driven from a unit test (its Tier 4 path reaches real cursor and wheel
+// input), so this routing is pinned on the pure function it was extracted
+// into. Phase 6 §14: this seam being untested is what let one whole
+// configuration report the wrong outcome through six review rounds.
+describe("resolveScrollOutcome — dispatcher shape → envelope status/channel", () => {
+  const OFF_BOUNDARY = snap(0.5, null);
+  const dispatch = (o: Partial<DispatchOutcome>): DispatchOutcome => ({
+    scrolled: true,
+    channel: "postmessage",
+    reason: "delivered_via_postmessage",
+    ...o,
+  });
+
+  it("scrolled:true → delivered on the dispatching channel, whatever the snapshots say", () => {
+    // Pre and post are identical and off-boundary, i.e. the legacy path would
+    // call this a silent drop. The dispatcher observed delivery through a
+    // channel the caller cannot see, and it wins.
+    const r = resolveScrollOutcome(
+      dispatch({ channel: "uia", reason: "delivered_via_uia" }),
+      OFF_BOUNDARY,
+      OFF_BOUNDARY,
+      "down",
+      1n,
+    );
+    expect(r.outcome.status).toBe("delivered");
+    expect(r.channel).toBe("uia");
+  });
+
+  it("scrolled:false + pixel_delta_observed → unverifiable, NOT delivered and NOT a failure", () => {
+    const r = resolveScrollOutcome(
+      dispatch({ scrolled: false, reason: "pixel_delta_observed" }),
+      OFF_BOUNDARY,
+      OFF_BOUNDARY,
+      "down",
+      1n,
+    );
+    expect(r.outcome.status).toBe("unverifiable");
+    expect(r.outcome.reason).toBe("pixel_delta_observed");
+    expect(r.channel).toBe("postmessage"); // the wheel went by PostMessage, not SendInput
+    expect(r.outcome.axis).toBe("vertical");
+  });
+
+  it("...and its delta stays \"unverifiable\" rather than printing the watched window's zero", () => {
+    // The watched window is precisely the one that did not move, so a measured
+    // `0` beside `unverifiable` would read as a contradiction. The other
+    // emitter of this reason makes the same choice.
+    const r = resolveScrollOutcome(
+      dispatch({ scrolled: false, reason: "pixel_delta_observed" }),
+      snap(0.5, 0.5),
+      snap(0.5, 0.5),
+      "right",
+      1n,
+    );
+    expect(r.outcome.delta).toBe("unverifiable");
+    expect(r.outcome.axis).toBe("horizontal");
+  });
+
+  it("null dispatcher → the legacy evaluateScrollDelivery path on wheel_send_input", () => {
+    const r = resolveScrollOutcome(null, snap(0.5, null), snap(0.5, null), "down", 1n);
+    expect(r.outcome.status).toBe("not_delivered"); // off-boundary, unchanged
+    expect(r.channel).toBe("wheel_send_input");
+  });
+
+  it("no observed window → unverifiable / no_target_window", () => {
+    const r = resolveScrollOutcome(null, snap(null, null), snap(null, null), "down", null);
+    expect(r.outcome.status).toBe("unverifiable");
+    expect(r.outcome.reason).toBe("no_target_window");
+    expect(r.channel).toBe("wheel_send_input");
+  });
+
+  it("a channel this envelope does not name degrades to wheel_send_input, never leaks", () => {
+    const r = resolveScrollOutcome(
+      dispatch({ channel: "send_input" }),
+      OFF_BOUNDARY,
+      OFF_BOUNDARY,
+      "down",
+      1n,
+    );
+    expect(r.outcome.status).toBe("delivered");
+    expect(r.channel).toBe("wheel_send_input");
+  });
+});
+

@@ -99,6 +99,17 @@ jobs:
         # after the node.lib fetch because the napi test binary links node.lib.
         run: npm run check:rs-test-compile
 
+      - name: Rust window tests (hermetic subset of the compile-guarded suite)
+        # The step above deliberately does not RUN the Rust tests, because the
+        # DXGI / focus ones are non-hermetic on these runners. `win32::window`
+        # is not in that class: it creates its own off-screen windows and
+        # touches no capture pipeline or foreground state. It covers the wheel
+        # leaf resolution contracts (hit-test descent, tree containment,
+        # SCROLL_LEAF_CHAINS refusal), which otherwise have no CI protection at
+        # all. Each test skips itself if the runner has no window station, so a
+        # restricted environment degrades to a no-op rather than a red build.
+        run: cargo test -p desktop-touch-engine --lib win32::window
+
       - name: Build native addon (Rust → .node, debug profile for CI speed)
         run: npm run build:rs:debug
 

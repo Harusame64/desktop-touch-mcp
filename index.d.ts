@@ -412,6 +412,7 @@ export declare function win32GetClassName(hwnd: bigint): string
  * fails — caller falls back to top-level POST in either case.
  */
 export declare function win32FindScrollLeafForTopLevel(top: bigint): bigint | null
+export declare function win32FindWheelLeafByHittest(top: bigint): bigint | null
 export declare function win32GetWindowThreadProcessId(hwnd: bigint): NativeThreadProcessId
 export declare function win32GetWindowLongPtrW(hwnd: bigint, nIndex: number): number
 
