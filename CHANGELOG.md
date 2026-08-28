@@ -1,5 +1,45 @@
 # Changelog
 
+## [Unreleased] — Scrolling works on Tauri, Electron and other WebView apps, and one `amount` unit now means one wheel notch everywhere
+
+- **BREAKING: `scroll(action='raw')` now moves 40x further for the same
+  `amount`.** `amount` has always been documented as a count of mouse-wheel
+  notches, and on windows that expose their scroll position it behaved that
+  way. On every other window it did not: one unit was sending a fortieth of a
+  notch, so the default `amount:3` moved about 7 pixels and looked like
+  scrolling was broken. One unit is now one notch on every window.
+
+  What to change: if you had compensated by passing a large number — `amount:150`
+  to move a few screens — divide it by 40. Roughly one notch is one line of text
+  in desktop apps such as Notepad, Explorer and Office, and about 100 pixels in
+  browsers and WebView-based apps. `amount:3` is a small nudge and `amount:10` is
+  about half a screen, on any window.
+
+  `scroll(action='smart')` was affected by the same bug from the inside: it
+  computed how far to scroll, then moved a fortieth of that, ran out of attempts
+  and reported that it could not reach the target. It now converges.
+
+- **Scrolling now works on apps built with Tauri, Electron, WebView2 and CEF.**
+  These apps host their page inside nested child windows — often in a separate
+  process — and the wheel was being delivered to the outer window, which ignores
+  it. `scroll` returned success and nothing moved. It now finds the window that
+  actually receives the wheel by walking down from the window you targeted, so
+  no per-framework configuration is needed. The search never leaves the window
+  you targeted, so an unrelated always-on-top overlay still cannot capture your
+  scroll.
+
+- **`scroll` can now tell you it worked on windows without a scrollbar.** Apps
+  that draw their own scrollbar — most browser-based and custom-drawn apps —
+  gave no way to check the result, so every call came back
+  `verifyDelivery.status: "unverifiable"` whether the page had moved a full
+  screen or not at all. When there is no other evidence, `scroll` now compares
+  the window's pixels before and after and reports
+  `status: "delivered"` with `reason: "pixel_delta_observed"` when they changed.
+  Treat it as weaker evidence than a scrollbar reading: a window that animates on
+  its own — a playing video, a spinner — repaints regardless of your scroll.
+  Unchanged pixels still report `"unverifiable"`, because a page already at its
+  end looks identical too.
+
 ## [1.15.1] - 2026-08-24 — The launcher stops hanging when GitHub is unreachable
 
 - **The launcher no longer waits forever on an unreachable GitHub.** Starting

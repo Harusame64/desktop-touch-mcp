@@ -48,6 +48,7 @@ import {
   resolveInputDestination,
   dispatchScrollWheel,
   assertTier4Reachable,
+  WHEEL_DELTA_PER_NOTCH,
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
 import { logDispatchSink } from "./_resolve-log.js";
@@ -1039,30 +1040,74 @@ export interface ScrollSnapshot {
   horizontal: number | null;
   /** Image hash captured for the window (fallback when both Win32 axes are null). */
   dHash: bigint | null;
+  /**
+   * Raw pixels from the same capture that produced `dHash`, kept so callers
+   * can compare exact bytes rather than the perceptual hash.
+   *
+   * ADR-018 Phase 6 §2.3 — dHash is deliberately NOT the signal here: a
+   * mostly-uniform surface collapses to a constant hash under real movement
+   * (ADR-018 §2.6.2 records this for Excel's cell grid). Byte inequality has
+   * no such blind spot. `null` when no capture was taken or it failed.
+   */
+  rawPixels: Buffer | null;
+}
+
+/**
+ * ADR-018 Phase 6 §2.3 — did the destination window's pixels change across the
+ * dispatch?
+ *
+ * @internal Exported for unit testing of the pure verification math
+ * (tests/unit/scroll-pixel-delta.test.ts). Not part of the public tool surface.
+ *
+ * Exact bytes, not a perceptual hash: dHash collapses to a constant on
+ * mostly-uniform surfaces even under real movement (ADR-018 §2.6.2 records
+ * this for Excel's cell grid), which is precisely the "did anything happen"
+ * question this answers. A missing capture on either side is `false` — absence
+ * of evidence is not evidence of motion, and the caller degrades to
+ * `unverifiable` rather than claiming delivery.
+ *
+ * A length change counts as motion: the only way the capture region changes
+ * size mid-dispatch is the window itself resizing, which is observable motion
+ * by any definition and must not be reported as "nothing happened".
+ */
+export function scrollPixelsChanged(
+  pre: Buffer | null,
+  post: Buffer | null,
+): boolean {
+  if (pre === null || post === null) return false;
+  if (pre.length !== post.length) return true;
+  return !pre.equals(post);
 }
 
 async function captureScrollSnapshot(
   hwnd: bigint | null,
   region: { x: number; y: number; width: number; height: number } | null,
 ): Promise<ScrollSnapshot> {
-  if (hwnd === null) return { vertical: null, horizontal: null, dHash: null };
+  if (hwnd === null) {
+    return { vertical: null, horizontal: null, dHash: null, rawPixels: null };
+  }
   const v = readScrollInfo(hwnd, "vertical");
   const h = readScrollInfo(hwnd, "horizontal");
   let dHash: bigint | null = null;
+  let rawPixels: Buffer | null = null;
   // Only spend time on dHash when at least one Win32 axis is missing — otherwise
   // the percent diff alone is authoritative and dHash adds only image-capture cost.
   if ((v === null || h === null) && region !== null) {
     try {
       const cap = await captureWindowRawAndHash(hwnd, region);
       dHash = cap?.dHash ?? null;
+      // Same capture, no extra cost — see `ScrollSnapshot.rawPixels`.
+      rawPixels = cap?.rawPixels ?? null;
     } catch {
       dHash = null;
+      rawPixels = null;
     }
   }
   return {
     vertical: v?.pageRatio ?? null,
     horizontal: h?.pageRatio ?? null,
     dHash,
+    rawPixels,
   };
 }
 
@@ -1093,6 +1138,15 @@ export interface ScrollVerifyOutcome {
    *     destination resolution failed (path-a) or every applicable tier was
    *     exhausted without observable delta (path-b, e.g. Word _WwG).
    *
+   * ADR-018 Phase 6 §2.3 adds one value:
+   *   - `pixel_delta_observed`: emitted under `status='delivered'` when no
+   *     Win32 scrollbar exists on either axis and the only evidence is that
+   *     the destination window's raw pixels changed across the dispatch. It
+   *     proves a repaint, not a scroll (self-animating content repaints on its
+   *     own), so it ranks below the Win32 percent diff — but it is the only
+   *     signal available on WebView / custom-paint hosts, which previously
+   *     always reported `unverifiable`.
+   *
    * See `docs/adr-018-input-pipeline-3tier.md` §2.6.3 for the full migration
    * table; CLAUDE.md §3.1 multi-table fact sweep across `_errors.ts` /
    * `scroll.ts` description / this union / `scroll-raw-verify.test.ts`.
@@ -1108,7 +1162,9 @@ export interface ScrollVerifyOutcome {
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
     | "wheel_overlay_intercepted"
-    | "target_unreachable";
+    | "target_unreachable"
+    // ADR-018 Phase 6 §2.3 — pixel-delta observation fallback
+    | "pixel_delta_observed";
   /** Axis on which silent drop / unverifiable was detected (for context). */
   axis?: "vertical" | "horizontal";
   /**
@@ -1436,6 +1492,32 @@ export const scrollHandler = async ({
           pre.horizontal === null &&
           postMessageAvailable
         ) {
+          // ADR-018 Phase 6 §2.3 — last-resort observation. Without a Win32
+          // scrollbar this branch used to return a constant `unverifiable`,
+          // so a 0-px scroll and a correct one were indistinguishable in the
+          // response; that is how the WebView2 mis-routing in §1.2 stayed
+          // invisible through a whole dogfood session. Re-capture the SAME
+          // region and compare exact bytes.
+          //
+          // What this can and cannot say: byte inequality proves the window
+          // repainted, not that the view scrolled — self-animating content
+          // (video, spinner, clock) repaints on its own, so `delivered` from
+          // this channel is weaker than the Win32 percent diff. Byte equality
+          // stays `unverifiable` rather than becoming `not_delivered`, because
+          // a genuine page-end no-op is byte-identical too and this channel
+          // cannot separate the two. It never turns a real failure into a
+          // success claim: the `not_delivered` path below is unchanged.
+          //
+          // The post-capture is skipped entirely when the pre-capture failed:
+          // with nothing to compare against, the comparison is `false` by
+          // definition and a full-window capture would be pure cost.
+          const postPixels =
+            pre.rawPixels === null
+              ? null
+              : (await captureScrollSnapshot(observedHwnd, observedRect)).rawPixels;
+          const pixelsDiffer = scrollPixelsChanged(pre.rawPixels, postPixels);
+          const observedAxis =
+            direction === "up" || direction === "down" ? "vertical" : "horizontal";
           return {
             content: [{
               type: "text" as const,
@@ -1446,10 +1528,12 @@ export const scrollHandler = async ({
                 hints: {
                   scrollObserved: { delta: "unverifiable" as const },
                   verifyDelivery: {
-                    status: "unverifiable" as const,
+                    status: pixelsDiffer ? ("delivered" as const) : ("unverifiable" as const),
                     channel: "postmessage" as const,
-                    reason: "scrollbar_unavailable" as const,
-                    axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+                    reason: pixelsDiffer
+                      ? ("pixel_delta_observed" as const)
+                      : ("scrollbar_unavailable" as const),
+                    axis: observedAxis,
                   },
                   ...(scrollWarnings.length > 0 && { warnings: scrollWarnings }),
                 },
@@ -1483,15 +1567,23 @@ export const scrollHandler = async ({
       // window recorded here IS where the wheel lands. That is the whole H2
       // question for scroll.
       logDispatchSink({ sink: "sendinput", tool: "scroll", targetHwnd: null, tier: "4" });
-      const SCROLL_MULTIPLIER = 3;
+      // ADR-018 Phase 6 §2.1 — `amount` is notches on every tier. nut-js's
+      // `scrollDown(n)` forwards `n` to libnut's `scrollMouse`, which writes it
+      // straight into `INPUT.mi.mouseData` — i.e. RAW `WHEEL_DELTA` units, not
+      // notches. Tier 1/3 already scale by `WHEEL_DELTA` (`win32WheelEncoding`
+      // in `_input-pipeline.ts`), so the previous `* 3` made one `amount` unit
+      // mean 1/40 of a notch here and a whole notch there — a 40x
+      // divergence the caller could not see, with `amount:3` (the schema
+      // default) moving 7.5 px. Measured on a WebView2 host 2026-08-28:
+      // `amount:40` under the old constant scrolled exactly 100 px = 1 notch.
       switch (direction) {
-        case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;
-        case "up":    await mouse.scrollUp(amount * SCROLL_MULTIPLIER); break;
+        case "down":  await mouse.scrollDown(amount * WHEEL_DELTA_PER_NOTCH); break;
+        case "up":    await mouse.scrollUp(amount * WHEEL_DELTA_PER_NOTCH); break;
         case "right":
-          for (let i = 0; i < amount; i++) await mouse.scrollRight(SCROLL_MULTIPLIER);
+          for (let i = 0; i < amount; i++) await mouse.scrollRight(WHEEL_DELTA_PER_NOTCH);
           break;
         case "left":
-          for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
+          for (let i = 0; i < amount; i++) await mouse.scrollLeft(WHEEL_DELTA_PER_NOTCH);
           break;
       }
     }

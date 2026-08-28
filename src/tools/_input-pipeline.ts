@@ -267,6 +267,18 @@ const WM_MOUSEHWHEEL = 0x020e;
  */
 const WHEEL_DELTA_MAX_PER_MSG = 0x7fff;
 
+/**
+ * Raw wheel units per notch — the Win32 `WHEEL_DELTA` constant, unchanged
+ * since Windows 2000. One detent of a physical wheel is 120 units.
+ *
+ * ADR-018 Phase 6 §2.1 — SSOT for the whole input pipeline. Every tier takes
+ * `amount` / `notch` in **notches** and scales here; Tier 4 (`mouse.ts`
+ * nut-js → libnut `INPUT.mi.mouseData`) previously used a private `* 3`
+ * constant, which made one caller-supplied unit mean 1/40 of a notch on that
+ * tier and a full notch on Tier 1/3. Import this rather than re-deriving it.
+ */
+export const WHEEL_DELTA_PER_NOTCH = 120;
+
 // ─── Public types ────────────────────────────────────────────────────────────
 
 /**
@@ -1047,7 +1059,7 @@ function win32WheelEncoding(params: WheelParams): {
   message: number;
   signedDelta: number;
 } {
-  const magnitude = 120 * Math.abs(params.notch);
+  const magnitude = WHEEL_DELTA_PER_NOTCH * Math.abs(params.notch);
   switch (params.direction) {
     case "down":
       // UIA down=+ → Win32 vertical forward=- (scroll up=+ ⇒ scroll down=-).
@@ -1607,7 +1619,7 @@ export async function dispatchScrollWheel(
  * sign at the `postWheelToHwnd` napi boundary.
  */
 function wheelDeltaForNotch(params: WheelParams): { x: number; y: number } {
-  const unit = 120 * params.notch;
+  const unit = WHEEL_DELTA_PER_NOTCH * params.notch;
   switch (params.direction) {
     case "down":
       return { x: 0, y: unit };

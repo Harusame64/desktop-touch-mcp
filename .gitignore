@@ -114,3 +114,11 @@ scripts/spikes/
 
 # transient review-fetch scratch
 .codex-review.txt
+
+# napi-rs build transaction scratch (created by scripts/build-rs.mjs). The
+# staging files are named after their target with a uuid suffix, and the
+# retired .node copy is ~6 MB, so they must never reach a commit.
+.napi-rs-filesystem-transaction.swp/
+*.prepared.tmp
+*.retired.tmp
+.[.]*.node.*.tmp

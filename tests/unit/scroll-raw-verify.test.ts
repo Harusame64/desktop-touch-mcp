@@ -22,7 +22,7 @@ const snap = (
   v: number | null,
   h: number | null,
   d: bigint | null = null,
-): ScrollSnapshot => ({ vertical: v, horizontal: h, dHash: d });
+): ScrollSnapshot => ({ vertical: v, horizontal: h, dHash: d, rawPixels: null });
 
 describe("evaluateScrollDelivery — Win32 axis present", () => {
   it("vertical movement → delivered", () => {

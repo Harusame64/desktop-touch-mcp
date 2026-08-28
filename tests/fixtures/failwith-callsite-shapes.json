@@ -356,49 +356,49 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 474,
+      "line": 475,
       "tool": "mouse_move",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 503,
+      "line": 504,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 506,
+      "line": 507,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 903,
+      "line": 904,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 994,
+      "line": 995,
       "tool": "mouse_drag",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1465,
+      "line": 1545,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1675,
+      "line": 1763,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"
@@ -510,14 +510,14 @@
     },
     {
       "file": "src/tools/smart-scroll.ts",
-      "line": 387,
+      "line": 392,
       "tool": "scroll(action='smart')",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/smart-scroll.ts",
-      "line": 433,
+      "line": 438,
       "tool": "scroll(action='smart')",
       "errKind": "string-literal",
       "contextShape": "object-plain"
