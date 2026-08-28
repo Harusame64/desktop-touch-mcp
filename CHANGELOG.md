@@ -49,6 +49,13 @@
   Unchanged pixels still report `"unverifiable"`, because a page already at its
   end looks identical too.
 
+  The same comparison also covers a web view embedded in a window that *does*
+  have a scrollbar of its own — a page hosted inside a scrollable frame.
+  Scrolling one of those used to come back as an outright failure
+  (`ScrollNotDelivered`), because the frame's scrollbar had not moved even
+  though the page had; it now reports `status: "delivered"` on the same pixel
+  evidence.
+
 ## [1.15.1] - 2026-08-24 — The launcher stops hanging when GitHub is unreachable
 
 - **The launcher no longer waits forever on an unreachable GitHub.** Starting

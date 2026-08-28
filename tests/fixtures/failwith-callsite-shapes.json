@@ -391,14 +391,14 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1588,
+      "line": 1593,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1834,
+      "line": 1850,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"

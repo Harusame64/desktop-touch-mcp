@@ -1916,7 +1916,7 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     channels: 4 as const,
   });
 
-  it("no retry when the leaf's own pixels moved — it scrolled something unobservable", async () => {
+  it("the leaf's own pixels moved — no retry, and those pixels ARE the delivery evidence", async () => {
     // A scrollable frame hosting a WebView2 child. The child consumes the
     // wheel and scrolls web content, which no Win32 scrollbar reports, while
     // the frame's own position stays put. Re-posting at the frame would scroll
@@ -1934,6 +1934,34 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
 
     const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
     expect(targets.every((t) => t === LEAF)).toBe(true);
+    // ...and the same pixels are reported as delivery. Returning null here
+    // would hand `scrollHandler` a hard `ScrollNotDelivered` for a WebView that
+    // visibly scrolled, and its own pixel fallback cannot recover it: that
+    // branch requires the watched window to expose no scrollbar on either axis,
+    // and here the frame exposes one.
+    expect(result).not.toBeNull();
+    expect(result!.scrolled).toBe(true);
+    expect(result!.channel).toBe("postmessage");
+    expect(result!.reason).toBe("pixel_delta_observed");
+  });
+
+  it("a leaf that neither moved a scrollbar nor repainted is still not delivered", async () => {
+    // The negative half of the pin above: `pixel_delta_observed` must come from
+    // the pixels, not from having taken the hit-test path. Same topology, same
+    // unreadable leaf — only the frames are identical, so the retry runs, finds
+    // nothing, and the call reports non-delivery.
+    win32FindWheelLeafByHittestMock.mockReturnValue(LEAF);
+    win32GetScrollInfoMock.mockImplementation((h: bigint) =>
+      h === LEAF ? null : scrollInfo(100),
+    );
+    captureFrameMock
+      .mockResolvedValueOnce(rawFrame(0x10)) // leaf, before
+      .mockResolvedValueOnce(rawFrame(0x10)); // leaf, after — nothing repainted
+
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 3 });
+
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets).toContain(TOP); // the retry did fire
     expect(result).toBeNull();
   });
 

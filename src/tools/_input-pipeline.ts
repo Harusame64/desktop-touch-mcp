@@ -378,11 +378,21 @@ export interface DispatchOutcome {
    * `scrolled: false` is the TMOL gate-fail signal emitted by the chain-
    * trust branch when `observation.motion === "no_change"`. See type-level
    * comment above for the routing contract.
+   *
+   * **ADR-018 Phase 6 §2.3 additive value**: `'pixel_delta_observed'` paired
+   * with `scrolled: true` is the weakest delivery evidence in the taxonomy —
+   * the target's raw pixels changed across the dispatch, which proves a
+   * repaint and not a scroll. `mouse.ts` emits it from its own last-resort
+   * comparison; `postWheelToHwnd` emits it when a structural hit-test
+   * retarget moved the leaf's pixels while no watched scrollbar moved, a
+   * shape the caller's comparison cannot reach because it runs only when the
+   * window it watched exposes no scrollbar at all.
    */
   reason:
     | "delivered_via_uia"
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
+    | "pixel_delta_observed"
     | "target_unreachable"
     | null;
   /**
@@ -1679,6 +1689,29 @@ export async function postWheelToHwnd(
         await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
         moved = observeMotion();
       }
+    }
+
+    // The leaf's pixels decide in both directions. Above they suppress a retry
+    // that would scroll a second surface; here they are the only evidence that
+    // the wheel arrived at all, because nothing on the observation chain moved.
+    //
+    // Dropping them at this point returns `null`, which the caller turns into a
+    // hard `ScrollNotDelivered` — for a WebView that visibly scrolled. Its own
+    // pixel fallback cannot rescue that: it runs only when the window it
+    // watched exposes no scrollbar on either axis, and this shape is reachable
+    // exactly when it does (a scrollable frame hosting a WebView child, the
+    // frame's scrollbar readable and stationary).
+    //
+    // Ranked as `pixel_delta_observed`, the same reason the caller-side
+    // comparison emits, and for the same reason: a changed frame proves the
+    // leaf repainted, not that a view scrolled, so it sits below the Win32
+    // percent diff in the §2.6.2 taxonomy.
+    if (!moved && leafActed) {
+      return {
+        scrolled: true,
+        channel: "postmessage",
+        reason: "pixel_delta_observed",
+      };
     }
 
     if (!moved) return null;

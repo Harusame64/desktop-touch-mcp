@@ -1160,13 +1160,18 @@ export interface ScrollVerifyOutcome {
    *     exhausted without observable delta (path-b, e.g. Word _WwG).
    *
    * ADR-018 Phase 6 §2.3 adds one value:
-   *   - `pixel_delta_observed`: emitted under `status='delivered'` when no
-   *     Win32 scrollbar exists on either axis and the only evidence is that
-   *     the destination window's raw pixels changed across the dispatch. It
-   *     proves a repaint, not a scroll (self-animating content repaints on its
-   *     own), so it ranks below the Win32 percent diff — but it is the only
-   *     signal available on WebView / custom-paint hosts, which previously
-   *     always reported `unverifiable`.
+   *   - `pixel_delta_observed`: emitted under `status='delivered'` when the
+   *     only evidence of delivery is that raw pixels changed across the
+   *     dispatch. It proves a repaint, not a scroll (self-animating content
+   *     repaints on its own), so it ranks below the Win32 percent diff — but
+   *     it is the only signal available on WebView / custom-paint hosts, which
+   *     previously always reported `unverifiable`. **Two emitters**, and they
+   *     cover disjoint shapes: `scrollHandler` below compares the destination
+   *     window when it exposes no Win32 scrollbar on either axis;
+   *     `postWheelToHwnd` compares the hit-test **leaf** when it does expose
+   *     one but nothing on the observation chain moved (a scrollable frame
+   *     hosting a WebView child — the frame's own scrollbar is readable, so
+   *     the branch below never runs).
    *
    * See `docs/adr-018-input-pipeline-3tier.md` §2.6.3 for the full migration
    * table; CLAUDE.md §3.1 multi-table fact sweep across `_errors.ts` /
@@ -1793,11 +1798,22 @@ export const scrollHandler = async ({
     const dispatcherObservation: VisualMotionObservation | undefined =
       tier1 !== null ? tier1.observation : undefined;
 
+    // The dispatcher's `reason` union is a subset of this envelope's, and the
+    // annotation is what enforces it: `verifyDelivery` below is an inferred
+    // object literal, so a value added to `DispatchOutcome.reason` and not to
+    // `ScrollVerifyOutcome.reason` would reach callers as an out-of-taxonomy
+    // string with nothing failing. The type-level locks in
+    // `tests/unit/scroll-raw-verify.test.ts` cannot catch that — `tsc` covers
+    // `src/**/*` only (tsconfig `include`) and vitest strips types without
+    // checking them — so the guard has to live here, in compiled code.
+    const dispatcherReason: ScrollVerifyOutcome["reason"] =
+      tier1 !== null && tier1.reason !== null ? tier1.reason : undefined;
+
     const verifyDelivery = outcome.status === "delivered"
       ? {
           status: "delivered" as const,
           channel: effectiveChannel,
-          ...(tier1 !== null && tier1.reason !== null ? { reason: tier1.reason } : {}),
+          ...(dispatcherReason !== undefined ? { reason: dispatcherReason } : {}),
           ...(dispatcherObservation ? { observation: dispatcherObservation } : {}),
         }
       : {
