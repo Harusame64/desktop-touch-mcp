@@ -121,4 +121,9 @@ scripts/spikes/
 .napi-rs-filesystem-transaction.swp/
 *.prepared.tmp
 *.retired.tmp
-.[.]*.node.*.tmp
+# `.[.]*.node.*.tmp` was the intent here and it never matched: the character
+# class makes the second dot mandatory, so it only caught names beginning with
+# TWO dots and the real artifacts sailed past it. That mattered — napi writes a
+# third kind, `rollback`, which no `*.<kind>.tmp` line above covers, and a
+# rollback artifact is a full ~6 MB copy of the .node.
+.*.node.*.tmp
