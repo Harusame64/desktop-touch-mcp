@@ -141,7 +141,7 @@ describe("evaluateScrollDelivery — image hash fallback", () => {
 // emittable by the current dispatcher; Phase 1b will remove them once the
 // 3-tier pipeline lands.
 describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-level lock)", () => {
-  it("ScrollVerifyOutcome.reason accepts all 5 ADR-018 reason values", () => {
+  it("ScrollVerifyOutcome.reason accepts all 5 ADR-018 reason values plus pixel_delta_observed", () => {
     // The cast-and-assign pattern below fails to compile if any member is
     // missing from the union, which is the trunk contract.
     const reasons = [
@@ -150,6 +150,8 @@ describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-l
       "delivered_via_postmessage",
       "wheel_overlay_intercepted",
       "target_unreachable",
+      // ADR-018 Phase 6 §2.3 — pixel-delta observation fallback.
+      "pixel_delta_observed",
     ] as const;
     type ReasonField = NonNullable<
       import("../../src/tools/mouse.js").ScrollVerifyOutcome["reason"]
@@ -160,8 +162,9 @@ describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-l
     const _u3: ReasonField = "delivered_via_postmessage";
     const _u4: ReasonField = "wheel_overlay_intercepted";
     const _u5: ReasonField = "target_unreachable";
-    expect(reasons).toHaveLength(5);
-    expect([_u1, _u2, _u3, _u4, _u5].sort()).toEqual([...reasons].sort());
+    const _u6: ReasonField = "pixel_delta_observed";
+    expect(reasons).toHaveLength(6);
+    expect([_u1, _u2, _u3, _u4, _u5, _u6].sort()).toEqual([...reasons].sort());
   });
 
   it("ScrollVerifyOutcome.reason still accepts all 4 legacy reason values (Phase 1b will remove)", () => {

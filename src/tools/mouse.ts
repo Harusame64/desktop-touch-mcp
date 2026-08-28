@@ -49,6 +49,7 @@ import {
   dispatchScrollWheel,
   assertTier4Reachable,
   WHEEL_DELTA_PER_NOTCH,
+  WHEEL_DELTA_MAX_PER_MSG,
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
 import { logDispatchSink } from "./_resolve-log.js";
@@ -1508,13 +1509,20 @@ export const scrollHandler = async ({
           // cannot separate the two. It never turns a real failure into a
           // success claim: the `not_delivered` path below is unchanged.
           //
+          // `captureFrame`, not `captureScrollSnapshot`: the snapshot path goes
+          // through `captureWindowRawAndHash`, which overwrites the layer
+          // cache's baseline frame. Advancing that baseline to the POST-scroll
+          // frame would make a `screenshot(diffMode)` taken straight after this
+          // call report no change — an observation read must not consume the
+          // very difference another tool is about to look for.
+          //
           // The post-capture is skipped entirely when the pre-capture failed:
           // with nothing to compare against, the comparison is `false` by
           // definition and a full-window capture would be pure cost.
           const postPixels =
-            pre.rawPixels === null
+            pre.rawPixels === null || observedHwnd === null || observedRect === null
               ? null
-              : (await captureScrollSnapshot(observedHwnd, observedRect)).rawPixels;
+              : (await captureFrame(observedHwnd, observedRect))?.rawPixels ?? null;
           const pixelsDiffer = scrollPixelsChanged(pre.rawPixels, postPixels);
           const observedAxis =
             direction === "up" || direction === "down" ? "vertical" : "horizontal";
@@ -1576,15 +1584,37 @@ export const scrollHandler = async ({
       // divergence the caller could not see, with `amount:3` (the schema
       // default) moving 7.5 px. Measured on a WebView2 host 2026-08-28:
       // `amount:40` under the old constant scrolled exactly 100 px = 1 notch.
-      switch (direction) {
-        case "down":  await mouse.scrollDown(amount * WHEEL_DELTA_PER_NOTCH); break;
-        case "up":    await mouse.scrollUp(amount * WHEEL_DELTA_PER_NOTCH); break;
-        case "right":
-          for (let i = 0; i < amount; i++) await mouse.scrollRight(WHEEL_DELTA_PER_NOTCH);
-          break;
-        case "left":
-          for (let i = 0; i < amount; i++) await mouse.scrollLeft(WHEEL_DELTA_PER_NOTCH);
-          break;
+      //
+      // The 40x scale-up brings large `amount` values into the range where a
+      // single wheel event stops behaving linearly, so the request is split the
+      // same way Tier 3 splits its PostMessage chunks. `amount` has no schema
+      // upper bound, and "scroll to the bottom" is a natural reason to pass a
+      // three-digit value. Measured on the same host: one un-split event of
+      // 274 notches (32880 units, just past the signed-16-bit range a receiver
+      // reads via `GET_WHEEL_DELTA_WPARAM`) moved about one viewport instead of
+      // 274 notches — no direction reversal here, but an order-of-magnitude
+      // under-delivery. Tier 3's own chunking comment records the reversal that
+      // the same threshold produced on the PostMessage path, so the cap is
+      // enforced on both paths rather than trusting one receiver's leniency.
+      const notchesPerEvent = Math.floor(WHEEL_DELTA_MAX_PER_MSG / WHEEL_DELTA_PER_NOTCH);
+      let remainingNotches = amount;
+      while (remainingNotches > 0) {
+        const chunk = Math.min(remainingNotches, notchesPerEvent);
+        const units = chunk * WHEEL_DELTA_PER_NOTCH;
+        switch (direction) {
+          case "down":  await mouse.scrollDown(units); break;
+          case "up":    await mouse.scrollUp(units); break;
+          // Horizontal keeps its per-notch loop: libnut's horizontal path is
+          // the less-exercised one and a per-notch event is what receivers see
+          // from a real tilt wheel.
+          case "right":
+            for (let i = 0; i < chunk; i++) await mouse.scrollRight(WHEEL_DELTA_PER_NOTCH);
+            break;
+          case "left":
+            for (let i = 0; i < chunk; i++) await mouse.scrollLeft(WHEEL_DELTA_PER_NOTCH);
+            break;
+        }
+        remainingNotches -= chunk;
       }
     }
 

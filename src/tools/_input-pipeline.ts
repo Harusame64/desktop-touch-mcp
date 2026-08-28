@@ -265,7 +265,7 @@ const WM_MOUSEHWHEEL = 0x020e;
  * sign bit wraps and a "scroll down" emerges as a "scroll up" on the
  * receiver, per Codex PR #305 review).
  */
-const WHEEL_DELTA_MAX_PER_MSG = 0x7fff;
+export const WHEEL_DELTA_MAX_PER_MSG = 0x7fff;
 
 /**
  * Raw wheel units per notch — the Win32 `WHEEL_DELTA` constant, unchanged
@@ -1151,6 +1151,32 @@ export async function postWheelToHwnd(
         }
       } catch {
         // Defensive: any native throw → keep input HWND (top-level POST).
+      }
+    }
+
+    // ADR-018 Phase 6 §2.2 — structural fallback, tried ONLY after a class-table
+    // miss. WebView hosts (Tauri/WRY, Electron, CEF) put the wheel receiver
+    // several levels down and across a process boundary, so no class table can
+    // keep up; a hit test down the target's own children finds it structurally.
+    //
+    // `retargetedByLeafWalker` is deliberately NOT set here. That flag is the
+    // chain-trust signal consumed at the `pre === null` branch below: it means
+    // "the destination is a KNOWN scroll leaf, so a post to it can be asserted
+    // as delivered without a scrollbar reading". A hit-test result carries no
+    // such guarantee. Setting it would make every child-hosted window claim
+    // `delivered` with no observation behind it — the silent-success mode this
+    // pipeline exists to remove — and would also make the Phase 6 §2.3
+    // pixel-delta fallback unreachable on exactly the hosts it was built for,
+    // since this function would stop returning null for them.
+    if (!retargetedByLeafWalker) {
+      const findLeafByHitTest = nativeWin32?.win32FindWheelLeafByHittest;
+      if (typeof findLeafByHitTest === "function") {
+        try {
+          const leaf = findLeafByHitTest(hwnd);
+          if (leaf !== null && leaf !== undefined) effectiveHwnd = leaf;
+        } catch {
+          // Defensive: any native throw → keep input HWND (top-level POST).
+        }
       }
     }
 

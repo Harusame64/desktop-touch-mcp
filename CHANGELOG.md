@@ -19,6 +19,11 @@
   computed how far to scroll, then moved a fortieth of that, ran out of attempts
   and reported that it could not reach the target. It now converges.
 
+  Large values are also split into several wheel events instead of one oversized
+  one. A single event asking for hundreds of notches is not delivered in
+  proportion — measured, one 274-notch event moved about one screen — and on some
+  windows an event that large scrolls the wrong way.
+
 - **Scrolling now works on apps built with Tauri, Electron, WebView2 and CEF.**
   These apps host their page inside nested child windows — often in a separate
   process — and the wheel was being delivered to the outer window, which ignores

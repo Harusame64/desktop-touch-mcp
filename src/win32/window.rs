@@ -318,6 +318,13 @@ const WHEEL_LEAF_MAX_DEPTH: usize = 8;
 /// `Chrome_WidgetWin_1`, which accepts the wheel; the top-level window and the
 /// intermediate `WRY_WEBVIEW` both ignore it.
 fn find_wheel_leaf_by_hittest(top: HWND) -> Option<HWND> {
+    // A minimised window still reports a non-empty rect (Windows parks it at
+    // roughly (-32000,-32000)), so the emptiness check below does NOT cover it
+    // — ask explicitly. There is nothing meaningful to hit test on a window
+    // that is not on screen.
+    if unsafe { IsIconic(top) }.as_bool() {
+        return None;
+    }
     let mut rect = RECT::default();
     // Safety: `GetWindowRect` writes into a caller-owned RECT and reports
     // failure through its Result; an invalid HWND returns Err rather than
@@ -325,8 +332,7 @@ fn find_wheel_leaf_by_hittest(top: HWND) -> Option<HWND> {
     if unsafe { GetWindowRect(top, &mut rect) }.is_err() {
         return None;
     }
-    // A minimised or zero-area window has no meaningful interior point to hit
-    // test; skip the descent rather than probing an off-screen coordinate.
+    // Zero-area window: no interior point exists to hit test.
     if rect.right <= rect.left || rect.bottom <= rect.top {
         return None;
     }
@@ -365,18 +371,19 @@ fn find_wheel_leaf_by_hittest(top: HWND) -> Option<HWND> {
 }
 
 /// Resolve a top-level HWND to the descendant HWND that actually receives
-/// `WM_MOUSEWHEEL`, for apps whose scrollable surface is a child window.
-///
-/// Two stages, cheapest first:
-/// 1. `SCROLL_LEAF_CHAINS` class-chain walk — the confirmed MDI / OLE shapes
-///    (Excel, Word). A chain whose top-level class matches but whose segments
-///    fail to resolve returns `None` without trying stage 2: a half-matched
-///    Office shape means the app reorganised, and guessing is worse than the
-///    top-level POST.
-/// 2. `find_wheel_leaf_by_hittest` — structural descent for everything else
-///    (WebView hosts and any other child-hosted surface).
+/// `WM_MOUSEWHEEL` for MDI / OLE apps whose scrollable surface is a child
+/// window. Returns `None` when the top-level class is not in the chain table,
+/// or when any segment of the chain fails to resolve (defensive: a future
+/// app reorganisation falls back to top-level POST rather than mis-routing).
 ///
 /// The caller treats `None` as "no retarget needed; use the input HWND".
+///
+/// **Chain-table membership is a trust signal, not just a retarget.** A
+/// non-null result here tells the caller the destination is a *known* scroll
+/// leaf, which `postWheelToHwnd` uses to assert delivery when no Win32
+/// scrollbar can be read (ADR-018 §2.6.2 case 2a). Structural guesses must
+/// therefore NOT come out of this function — that is what the separate
+/// `win32_find_wheel_leaf_by_hittest` below is for.
 #[napi]
 pub fn win32_find_scroll_leaf_for_top_level(top: BigInt) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_find_scroll_leaf_for_top_level", || {
@@ -390,11 +397,7 @@ pub fn win32_find_scroll_leaf_for_top_level(top: BigInt) -> napi::Result<Option<
             .find(|(cls, _)| *cls == top_class.as_str())
         {
             Some((_, chain)) => *chain,
-            // ADR-018 Phase 6 §2.2 — stage 2. The class table only knows the
-            // shapes we have already hit; fall back to the structural hit-test
-            // descent so WebView hosts (Tauri/WRY, Electron, CEF) resolve
-            // without a per-framework row.
-            None => return Ok(find_wheel_leaf_by_hittest(top_hwnd).map(hwnd_to_bigint)),
+            None => return Ok(None),
         };
         let mut parent = top_hwnd;
         for child_class in chain {
@@ -421,6 +424,27 @@ pub fn win32_find_scroll_leaf_for_top_level(top: BigInt) -> napi::Result<Option<
             }
         }
         Ok(Some(hwnd_to_bigint(parent)))
+    })
+}
+
+/// Structural fallback for `WM_MOUSEWHEEL` retargeting: resolve `top` to the
+/// deepest descendant that covers its own client centre.
+///
+/// Separate napi export from `win32_find_scroll_leaf_for_top_level` on
+/// purpose. That function's non-null result doubles as a **trust signal** —
+/// "this destination is a known scroll leaf", which the caller uses to assert
+/// delivery when no scrollbar can be read (ADR-018 §2.6.2 case 2a). A hit-test
+/// result carries no such guarantee: it is a structural guess that happens to
+/// be right for WebView hosts. Folding it into the same return value would
+/// make every child-hosted window claim `delivered` without observation,
+/// which is the silent-success failure mode ADR-018 exists to remove.
+///
+/// Callers should try the class table first and fall back to this; on a
+/// non-null result, retarget the post but do NOT treat delivery as asserted.
+#[napi]
+pub fn win32_find_wheel_leaf_by_hittest(top: BigInt) -> napi::Result<Option<BigInt>> {
+    napi_safe_call("win32_find_wheel_leaf_by_hittest", || {
+        Ok(find_wheel_leaf_by_hittest(hwnd_from_bigint(top)).map(hwnd_to_bigint))
     })
 }
 

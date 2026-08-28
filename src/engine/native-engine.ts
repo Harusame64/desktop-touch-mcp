@@ -147,6 +147,18 @@ export interface NativeWin32 {
    * segment fails — caller treats `null` as "no retarget; use input HWND".
    */
   win32FindScrollLeafForTopLevel?(top: bigint): bigint | null;
+  /**
+   * ADR-018 Phase 6: structural fallback for the above — resolve a top-level
+   * HWND to the deepest descendant covering its own client centre, for hosts
+   * no class table can keep up with (Tauri/WRY, Electron, CEF). Returns `null`
+   * when nothing below the top level covers that point.
+   *
+   * Separate from `win32FindScrollLeafForTopLevel` because that function's
+   * non-null result is a **trust signal** ("known scroll leaf", ADR-018
+   * §2.6.2 case 2a). A hit-test result is a structural guess: retarget the
+   * post, but never assert delivery on it.
+   */
+  win32FindWheelLeafByHittest?(top: bigint): bigint | null;
   win32GetWindowThreadProcessId?(hwnd: bigint): NativeThreadProcessId;
   win32GetWindowLongPtrW?(hwnd: bigint, nIndex: number): number;
 
