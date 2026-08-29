@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — Scrolling works on Tauri, Electron and other WebView apps, and one `amount` unit now means one wheel notch everywhere
+## [1.16.0] - 2026-08-29 — Scrolling works on Tauri, Electron and other WebView apps, and one `amount` unit now means one wheel notch everywhere
 
 - **BREAKING: `scroll(action='raw')` now moves 40x further for the same
   `amount`.** `amount` has always been documented as a count of mouse-wheel
@@ -17,10 +17,11 @@
   observe except that very large scrolls now arrive in full.
 
   What to change: if you had compensated by passing a large number — `amount:150`
-  to move a few screens — divide it by 40. Roughly one notch is one line of text
-  in desktop apps such as Notepad, Explorer and Office, and about 100 pixels in
-  browsers and WebView-based apps, so `amount:3` is a small nudge everywhere and
-  8-10 notches covers a browser viewport. A saved `run_macro` recording that
+  to move a few screens — divide it by 40. To recalibrate, count screenfuls
+  rather than lines: about ten notches move one screenful. Measured on this
+  release, `amount:10` scrolled Notepad by one full window of text, and a
+  WebView-based app moved about 100 pixels per notch — so `amount:3` (the
+  default) is roughly a third of a screen. A saved `run_macro` recording that
   passes a `scroll` amount above the new 1000 ceiling will be rejected rather
   than run; re-record it or divide the value.
 

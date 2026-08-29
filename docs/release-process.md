@@ -137,6 +137,25 @@ silent-success drift discovered post-Phase-6-closure, fixed before
 v1.4.0 release. Every future release should treat dogfood as a release
 gate, not an optional polish step.
 
+#### Narrowing the scope (user decision, per release)
+
+The four steps above are the default. The scope may be narrowed **only** when the
+release's diff is shown to be confined to one tool's path — demonstrate it from the
+diff itself (`git show --stat`, then confirm the shared-module hunks do not reach
+other dispatch paths), not from the PR title. The narrowed pass must still exercise
+that tool end-to-end on a real app, and the decision is the user's, not the agent's.
+
+Record every narrowing here so the exceptions stay visible:
+
+- **v1.16.0 (2026-08-29)** — scroll-only pass. The release carried one functional
+  change (PR #590); its hunks in the shared modules were confined to the wheel
+  dispatch (`postWheelToHwnd` / `dispatchScrollWheel` / wheel encoding), a comment-only
+  edit in `_errors.ts`, and a type-level field declaration in `layer-buffer.ts`.
+  Executed: Step 1 smoke, plus `action='raw'` and `action='smart'` against a Tauri app
+  and Notepad with before/after screenshots. That pass is what caught the wrong
+  "one notch = one line of text" figure in the CHANGELOG and the shipped `scroll`
+  tool description — a narrowed dogfood still earns its place.
+
 ### HTTP Transport Verification (Required)
 
 Before publishing, verify HTTP mode works correctly by running the built server locally:
