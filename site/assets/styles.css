@@ -305,6 +305,11 @@ p, li, td, th, blockquote {
 
 .section-card, .article-card { padding: 30px; }
 
+/* #milestones is the only in-page anchor on the site; without this the sticky
+   header covers the heading the nav just promised. 92px is the same header
+   clearance .article-aside already uses. */
+.section-card[id] { scroll-margin-top: 92px; }
+
 .two-up, .three-up, .feature-grid {
   display: grid;
   gap: 16px;
