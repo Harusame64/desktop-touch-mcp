@@ -23,6 +23,37 @@ jobs:
           node-version: "22"
           cache: "npm"
 
+      # The release body used to be a fixed stub pointing at CHANGELOG.md, so every
+      # "release notes" link landed on a page that said nothing about the release.
+      # Lift this version's section out of CHANGELOG.md instead. A missing section
+      # fails the job rather than publishing an empty release page.
+      #
+      # Runs before the long build steps on purpose: a malformed CHANGELOG heading
+      # should fail in seconds, not after Rust, npm ci and the zip have been built.
+      - name: Build release notes from CHANGELOG
+        shell: pwsh
+        run: |
+          # node writes UTF-8, but PowerShell decodes a native command's stdout using
+          # [Console]::OutputEncoding, which on a Windows runner comes from the console
+          # code page. Without this the CHANGELOG's em-dashes reach the release page
+          # as "â€”" (reproduced locally by forcing cp1252).
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $preamble = @(
+            '## Install',
+            '',
+            '```bash',
+            'npx -y @harusame64/desktop-touch-mcp',
+            '```',
+            '',
+            '## Changes',
+            ''
+          )
+          $section = node scripts/extract-changelog-section.mjs "$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not extract the CHANGELOG section for $env:GITHUB_REF_NAME"
+          }
+          ($preamble + $section) | Set-Content -LiteralPath release-notes.md -Encoding UTF8
+          Write-Host "release notes: $((Get-Content -LiteralPath release-notes.md).Count) lines"
       - name: Set up Rust (MSVC toolchain)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -184,29 +215,6 @@ jobs:
           Pop-Location
           if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
 
-      # The release body used to be a fixed stub pointing at CHANGELOG.md, so every
-      # "release notes" link landed on a page that said nothing about the release.
-      # Lift this version's section out of CHANGELOG.md instead. A missing section
-      # fails the job rather than publishing an empty release page.
-      - name: Build release notes from CHANGELOG
-        shell: pwsh
-        run: |
-          $preamble = @(
-            '## Install',
-            '',
-            '```bash',
-            'npx -y @harusame64/desktop-touch-mcp',
-            '```',
-            '',
-            '## Changes',
-            ''
-          )
-          $section = node scripts/extract-changelog-section.mjs "$env:GITHUB_REF_NAME"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not extract the CHANGELOG section for $env:GITHUB_REF_NAME"
-          }
-          ($preamble + $section) | Set-Content -LiteralPath release-notes.md -Encoding UTF8
-          Write-Host "release notes: $((Get-Content release-notes.md).Count) lines"
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2

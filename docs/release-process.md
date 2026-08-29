@@ -814,6 +814,10 @@ See "npm Trusted Publisher Setup" section below.
 - Add a new `CHANGELOG.md` entry for `X.Y.Z` (see "Version Checklist" above); fold any `## [Unreleased]` section into it.
 - `node --check bin/launcher.js`
 - `npm run build`
+- `node scripts/extract-changelog-section.mjs X.Y.Z` — must exit 0 and print the section.
+  CI builds the GitHub release body with this exact command after the tag push. If it
+  fails there the whole `windows-release` job fails, and since a tag must never be
+  moved, the only way forward is a fresh patch version.
 
 **Done when**: build passes; `package.json`, `src/version.ts`, and `bin/launcher.js` tagName all show the new version; sha256 shows `"PENDING"`; `CHANGELOG.md` has the new entry at the top.
 
@@ -860,6 +864,12 @@ The `npm-publish` job (runs after `windows-release`):
 
 If the `npm-publish` job fails after zip is built: create a new patch version (vX.Y.Z+1).
 Do NOT re-push the same tag.
+
+If `windows-release` fails at **Build release notes from CHANGELOG**, `CHANGELOG.md` has no
+`## [X.Y.Z]` section for the tag (or its heading is malformed). Nothing was published — the
+release is not created and `npm-publish` never runs, because it needs `windows-release`. Fix
+the CHANGELOG and cut vX.Y.Z+1; do not re-push the tag. The step runs before the Rust and
+npm build steps, so this failure costs seconds rather than the whole build.
 
 ### Phase 7 — Smoke test + MCP Registry
 

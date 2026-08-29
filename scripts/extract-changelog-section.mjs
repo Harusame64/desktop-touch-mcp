@@ -49,7 +49,10 @@ try {
 const lines = text.split(/\r?\n/);
 
 // Section heading looks like: ## [1.16.0] - 2026-08-29 — title
-const isHeading = (line) => /^## \[/.test(line);
+// Deliberately lenient on the boundary: a malformed heading BELOW the match
+// would otherwise be skipped, silently swallowing every entry down to the next
+// well-formed one into this release body.
+const isHeading = (line) => /^\s{0,3}#{2}\s*\[/.test(line);
 const startsThisVersion = (line) =>
   line.startsWith(`## [${version}]`);
 
