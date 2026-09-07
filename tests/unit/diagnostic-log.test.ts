@@ -639,6 +639,41 @@ describe("diagnostic-log rotation", () => {
     expect(statSync(logPath).size).toBeLessThanOrEqual(MAX_RECORD);
   });
 
+  it("MUTATION: a second failure episode is reported even though an earlier one already was", () => {
+    // The notice is suppressed after the first one so a persistent failure does
+    // not write one per record — but that suppression has to end when rotation
+    // starts working again. Latched for the process lifetime it silences every
+    // later episode, and the notice that justified the latch does not survive
+    // either: the successful rotations in between carry it into .1, then .2,
+    // then off the end. A viewer that starts holding the file open hours later
+    // would leave an oversized log with nothing in it to say why.
+    const block = (): void => {
+      // A successful rotation leaves `.2` behind as a FILE, so clear it before
+      // putting a non-empty directory in its place.
+      rmSync(`${logPath}.2`, { recursive: true, force: true });
+      mkdirSync(`${logPath}.2`, { recursive: true }); // blocks .1 -> .2
+      writeFileSync(join(`${logPath}.2`, "blocker"), "no", "utf8");
+    };
+    const unblock = (): void => rmSync(`${logPath}.2`, { recursive: true, force: true });
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    writeFileSync(`${logPath}.1`, "GEN1", "utf8"); // a source for the promotion
+    block();
+    _resetDiagnosticLogForTest();
+
+    write(1, "a"); // episode 1: rotation blocked
+    expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
+
+    unblock();
+    write(20, "b"); // rotation works again — and carries episode 1's notice away
+    expect(readFileSync(logPath, "utf8")).not.toContain("log_rotation_failed");
+
+    block();
+    write(20, "c"); // episode 2 must be reported on its own
+    expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
+  });
+
   it("MUTATION: a promotion that fails for any reason but absence aborts the roll instead of overwriting .1", () => {
     // `.1` -> `.2` can fail with `.1` still on disk: `.2` locked, or `.2` a
     // directory. Treating that like "the source was absent" and carrying on

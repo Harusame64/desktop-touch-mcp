@@ -191,6 +191,15 @@ let _bytesSinceStat = 0;
  * A rotation failed and the fact has not yet reached the log. Recorded on the
  * next successful append rather than from inside `rotateIfNeeded`, so the
  * failure path cannot re-enter itself.
+ *
+ * `_rotationFailureRecorded` is per **episode**, not per process: it stops a
+ * persistent failure writing one notice per record, and is cleared again by
+ * the next successful rotation. Latching it for the process lifetime would
+ * silence every later episode — and worse, the notice that justified the latch
+ * does not even survive: the successful rotations in between carry it into
+ * `.1`, then `.2`, then off the end. A viewer that starts holding the live file
+ * open hours later would leave a log growing past its limit with nothing in it
+ * to say why, which is the one thing this notice exists to prevent.
  */
 let _rotationFailurePending = false;
 let _rotationFailureRecorded = false;
@@ -265,6 +274,9 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     renameSync(path, `${path}.1`);
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;
+    // Rotation works again, so the next failure is a new episode and gets its
+    // own notice. See `_rotationFailureRecorded`.
+    _rotationFailureRecorded = false;
   } catch {
     // Deliberately NOT re-checking existence here. The check above covers every
     // case that can be reached deterministically; what would be left is a race
