@@ -766,11 +766,17 @@ If an input call ever seems to type into the wrong window, this is the file that
 it picked and why. A record is written immediately before the write leaves the process, so a
 dispatch that is refused or fails first is not on record as having happened.
 
+The log rolls over: once `diagnostic.log` passes 64 MiB it becomes `diagnostic.log.1`, and at most
+two rolled generations are kept. **The newest records are always in `diagnostic.log`**, but when you
+are searching for something that happened a while ago, search `diagnostic.log*` rather than the one
+file.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `DESKTOP_TOUCH_RESOLVE_LOG_RAW` | *(unset = off)* | Window titles and the titles you search for are recorded as a short hash plus their length, because a title can contain a file name, a mail subject, or a browser page title. Set to `1` to also record the text in clear (the hash stays, so a log with both is still readable end to end). |
 | `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE` | *(unset = on)* | Set to `1` to stop writing the log entirely. |
 | `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` | *(per-user log dir)* | Write the log somewhere else. |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` | `67108864` (64 MiB) | Roll the live log to `diagnostic.log.1` once it passes this size. Two rolled generations are kept, so the whole log directory stays under about three times this value. A value below 1 MiB is raised to 1 MiB, and anything that is not a positive whole number falls back to the default — a typo here cannot switch rotation off. To stop logging entirely, use `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE`. |
 
 ---
 

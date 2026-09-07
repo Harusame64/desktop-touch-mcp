@@ -11,9 +11,13 @@
 
   The live file is now rolled to `diagnostic.log.1` when it passes 64 MiB, and
   at most two rolled generations are kept, so the whole log directory stays
-  under roughly 192 MiB no matter how long the server runs. Nothing about the
-  events themselves changed, and the newest records are always in
-  `diagnostic.log`.
+  under roughly 192 MiB no matter how long the server runs. If several MCP
+  clients are running at once they share one log, and each checks the file's
+  real size periodically rather than on every line, so the live file can run a
+  little over the limit before one of them rolls it — bounded, and nothing like
+  the unbounded growth it replaces. Nothing about the events themselves changed,
+  and the newest records are always in `diagnostic.log`; search
+  `diagnostic.log*` when you are looking further back.
 
   Set `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` to a positive byte count if you
   want a different ceiling; an unusable value falls back to the default rather
@@ -25,7 +29,6 @@
   release bounds future growth but does not delete what has already
   accumulated. Deleting `diagnostic.log` (and any `.1` / `.2` beside it) is
   safe; it is a diagnostic aid, not state the server needs.
-
 
 ## [1.16.0] - 2026-08-29 — Scrolling works on Tauri, Electron and other WebView apps, and one `amount` unit now means one wheel notch everywhere
 

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -328,20 +328,28 @@ describe("DiagnosticEvent type discrimination", () => {
  * The log was append-only with no ceiling; on the maintainer's machine it
  * reached 18,548,383,199 bytes / 34,811,118 lines over ~3.5 months of ordinary
  * traffic (measured 2026-09-07). These tests pin the ceiling AND that the
- * ceiling is load-bearing: the last case is a mutation check — remove the
- * rotation call and it is the one that turns red, because every other
- * assertion here still passes on an unbounded file.
+ * ceiling is load-bearing — several of them are mutation checks, marked as
+ * such, that stay green on an unbounded file unless the specific line they
+ * guard is present.
+ *
+ * The ceiling used here is MIN_CEILING (1 MiB) because anything smaller is
+ * clamped by the floor, so records are padded to REC_BYTES to keep the tests
+ * fast: ~16 records fill one generation.
  */
 describe("diagnostic-log rotation", () => {
   let tmp: string;
   let logPath: string;
   const savedEnv = { ...process.env };
 
+  const MIN_CEILING = 1024 * 1024;
+  const REC_BYTES = 64 * 1024;
+
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "diagrot-"));
     logPath = join(tmp, "sub", "diag.log");
     process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH = logPath;
     delete process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE;
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = String(MIN_CEILING);
     _resetDiagnosticLogForTest();
   });
 
@@ -351,18 +359,24 @@ describe("diagnostic-log rotation", () => {
     _resetDiagnosticLogForTest();
   });
 
-  function write(n: number): void {
+  /** One fat record, so a generation fills in ~16 writes rather than ~8000. */
+  function write(n: number, tag = "t"): void {
     for (let i = 0; i < n; i++) {
-      logDiagnostic({ kind: "slow_tool", tool: `t${i}`, elapsed_ms: i, args_size: 0 });
+      logDiagnostic({
+        kind: "slow_tool",
+        tool: `${tag}${i}` + "p".repeat(REC_BYTES),
+        elapsed_ms: i,
+        args_size: 0,
+      });
     }
   }
 
   describe("parseMaxLogBytes", () => {
     const DEFAULT = 64 * 1024 * 1024;
 
-    it("accepts a positive integer", () => {
-      expect(parseMaxLogBytes("4096")).toBe(4096);
-      expect(parseMaxLogBytes("  4096  ")).toBe(4096);
+    it("accepts a positive integer at or above the floor", () => {
+      expect(parseMaxLogBytes(String(4 * 1024 * 1024))).toBe(4 * 1024 * 1024);
+      expect(parseMaxLogBytes(`  ${4 * 1024 * 1024}  `)).toBe(4 * 1024 * 1024);
     });
 
     it("falls back to the default for every malformed value — a typo must not restore unbounded growth", () => {
@@ -374,26 +388,29 @@ describe("diagnostic-log rotation", () => {
     it('"0" is not a disable switch — DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE is', () => {
       expect(parseMaxLogBytes("0")).toBe(DEFAULT);
     });
+
+    it("clamps an unusably small ceiling to the floor — 64 read as MiB must not become 64 bytes", () => {
+      // Otherwise a reader who takes the variable for MiB gets one rename per
+      // record on the synchronous exit path, every generation holding a single
+      // line: the log destroyed rather than bounded.
+      expect(parseMaxLogBytes("64")).toBe(MIN_CEILING);
+      expect(parseMaxLogBytes("1")).toBe(MIN_CEILING);
+      expect(parseMaxLogBytes(String(MIN_CEILING))).toBe(MIN_CEILING);
+    });
   });
 
   it("rolls the live file to .1 once it passes the ceiling", () => {
-    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "600";
-    _resetDiagnosticLogForTest();
-
     write(1);
     expect(existsSync(logPath)).toBe(true);
     expect(existsSync(`${logPath}.1`)).toBe(false);
 
-    write(20);
+    write(24);
     expect(existsSync(`${logPath}.1`)).toBe(true);
-    expect(statSync(logPath).size).toBeLessThanOrEqual(600);
+    expect(statSync(logPath).size).toBeLessThanOrEqual(MIN_CEILING);
   });
 
   it("keeps at most KEPT_GENERATIONS rotated files — total disk stays bounded", () => {
-    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "400";
-    _resetDiagnosticLogForTest();
-
-    write(200);
+    write(80);
 
     expect(existsSync(`${logPath}.1`)).toBe(true);
     expect(existsSync(`${logPath}.2`)).toBe(true);
@@ -401,42 +418,103 @@ describe("diagnostic-log rotation", () => {
     expect(existsSync(`${logPath}.3`)).toBe(false);
 
     for (const f of [logPath, `${logPath}.1`, `${logPath}.2`]) {
-      expect(statSync(f).size).toBeLessThanOrEqual(400 + 512);
+      expect(statSync(f).size).toBeLessThanOrEqual(MIN_CEILING + REC_BYTES * 2);
     }
   });
 
   it("seeds its byte estimate from a file that already exists, so a restart does not start the count over", () => {
     mkdirSync(join(tmp, "sub"), { recursive: true });
-    writeFileSync(logPath, "x".repeat(500), "utf8");
-    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "600";
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
     _resetDiagnosticLogForTest();
 
-    // One record is far under 600 bytes, but the pre-existing 500 puts the
-    // pair over the ceiling — only a seeded counter notices.
-    write(2);
+    // One record is far under the ceiling, but the pre-existing MiB puts the
+    // pair over it — only a seeded counter notices.
+    write(1);
     expect(existsSync(`${logPath}.1`)).toBe(true);
   });
 
   it("never loses the newest events: whatever the rotation did, the last record written is in the live file", () => {
-    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "400";
-    _resetDiagnosticLogForTest();
-
-    write(60);
+    write(40);
     logDiagnostic({ kind: "slow_tool", tool: "LAST", elapsed_ms: 1, args_size: 0 });
 
-    const live = readFileSync(logPath, "utf8");
-    expect(live).toContain('"tool":"LAST"');
+    expect(readFileSync(logPath, "utf8")).toContain('"tool":"LAST"');
   });
 
   it("MUTATION: without rotation the file grows past the ceiling — this is the assertion that fails if rotateIfNeeded is removed", () => {
-    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "600";
+    write(40);
+
+    // Assert the ceiling directly rather than inferring it from a .1 file, so
+    // this stays meaningful if the rotation scheme is ever reshaped.
+    expect(statSync(logPath).size).toBeLessThanOrEqual(MIN_CEILING);
+  });
+
+  it("MUTATION: rotation is amortized — the records right after a roll do not roll again", () => {
+    // Catches a lost `_bytesOnDisk = 0` after rotation. Without it every
+    // subsequent record re-runs the whole three-syscall rotation, on the
+    // synchronous process.exit path, while every other assertion here still
+    // passes: .1 and .2 still appear and the live file is still small.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
     _resetDiagnosticLogForTest();
 
-    write(100);
+    // SMALL records throughout, deliberately — including the one that triggers
+    // the roll. A fat record leaves `_bytesSinceStat` above the refresh
+    // interval (ceiling/16), so the periodic re-stat corrects a stale estimate
+    // on the very next write and hides the missing reset entirely: measured,
+    // this test passes with the reset removed when the records are 64 KiB.
+    // Real traffic is ~400-byte records, where a stale estimate means a full
+    // three-syscall rotation per record until the interval is finally reached.
+    const small = (i: number): void => {
+      logDiagnostic({ kind: "slow_tool", tool: `small${i}`, elapsed_ms: i, args_size: 0 });
+    };
 
-    // Unbounded growth would put well over 600 bytes in the live file. The
-    // ceiling is the whole point of the change, so assert it directly rather
-    // than inferring it from the presence of a .1 file.
-    expect(statSync(logPath).size).toBeLessThanOrEqual(600);
+    small(0); // the file is already at the ceiling, so this one rolls it
+    expect(existsSync(`${logPath}.1`)).toBe(true);
+    expect(existsSync(`${logPath}.2`)).toBe(false);
+
+    small(1);
+    small(2);
+    expect(existsSync(`${logPath}.2`)).toBe(false); // no second roll
+  });
+
+  it("reconciles with the file's real size, so a second writer cannot push it past the ceiling unnoticed", () => {
+    // The estimate counts only this process's own bytes. Another server sharing
+    // the path is invisible to it, and that undercount is the direction that
+    // breaks the bound — so the estimate is re-read from the file periodically.
+    // Simulated here by appending behind the module's back.
+    write(1); // creates the file, seeds the estimate at ~one record
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+
+    appendFileSync(logPath, "y".repeat(MIN_CEILING), "utf8");
+
+    // One refresh interval is ceiling/16 = 64 KiB, so a couple of fat records
+    // are enough to trigger the reconciliation.
+    write(4);
+
+    expect(existsSync(`${logPath}.1`)).toBe(true);
+    expect(statSync(logPath).size).toBeLessThanOrEqual(MIN_CEILING);
+  });
+
+  it("records a rotation failure once, so an unbounded log can explain itself", () => {
+    // A live file that can never be renamed grows at full speed — the exact
+    // state this module exists to prevent — so the failure must not be silent.
+    // Forced here by making the rotation destination a non-empty directory.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    // Both destinations must be blocked: with only .1 taken, the promotion
+    // step happily renames that directory to .2 and the rotation succeeds.
+    for (const gen of [1, 2]) {
+      mkdirSync(`${logPath}.${gen}`, { recursive: true });
+      writeFileSync(join(`${logPath}.${gen}`, "blocker"), "no", "utf8");
+    }
+    _resetDiagnosticLogForTest();
+
+    write(6);
+
+    const failures = readFileSync(logPath, "utf8")
+      .split("\n")
+      .filter((l) => l.includes('"log_rotation_failed"'));
+    expect(failures.length).toBe(1); // once, not once per record
+    expect(existsSync(logPath)).toBe(true); // and events keep being written
   });
 });

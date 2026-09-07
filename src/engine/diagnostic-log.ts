@@ -48,11 +48,38 @@ const STACK_TRUNCATE_CHARS = 4096;
  * `cpu_spike` / …), not a runaway producer — the growth is inherent to the
  * event rate, so throttling any one event kind would not have closed it.
  *
- * Total disk is bounded by `(KEPT_GENERATIONS + 1) * maxBytes`: the live file
- * plus its rotated generations.
+ * **What the ceiling actually bounds.** One writer: the live file stays at or
+ * under `maxBytes`, so the directory stays under `(KEPT_GENERATIONS + 1) *
+ * maxBytes`. Concurrent writers are the honest caveat — the default path is one
+ * file per user (`DEFAULT_DIR`) and every MCP client spawns its own server, so
+ * N of them can share it. Each counts only its own bytes, so without help the
+ * live file would reach roughly `N * maxBytes` before anyone noticed. That is
+ * why the estimate is re-checked against the file's real size every
+ * `STAT_REFRESH_DIVISOR`-th of the ceiling: the overshoot with N writers is
+ * bounded by one refresh interval each, not by `N * maxBytes`.
  */
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const KEPT_GENERATIONS = 2;
+
+/**
+ * Floor for `maxBytes`.
+ *
+ * Without it, `1` is a "positive integer" and is accepted — and a reader who
+ * takes the variable for MiB and writes `64` gets 64 BYTES: a rename per
+ * record, every generation holding a single line, three syscalls per event on
+ * the synchronous exit path, and the log destroyed rather than bounded. The
+ * same "a typo must not break this" reasoning that rejects `0` and negatives
+ * rejects an unusably small ceiling.
+ */
+const MIN_MAX_BYTES = 1024 * 1024;
+
+/**
+ * How often the in-process estimate is reconciled with the file's real size,
+ * as a fraction of the ceiling. 16 means one `statSync` per ~4 MiB written at
+ * the default ceiling — negligible next to the writes themselves, and the only
+ * thing standing between the stated bound and N concurrent writers.
+ */
+const STAT_REFRESH_DIVISOR = 16;
 
 /**
  * Pure parser, kept separate from the `process.env` read so the parsing rules
@@ -70,6 +97,7 @@ export function parseMaxLogBytes(raw: string | undefined): number {
   if (trimmed === "") return DEFAULT_MAX_BYTES;
   const n = Number(trimmed);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return DEFAULT_MAX_BYTES;
+  if (n < MIN_MAX_BYTES) return MIN_MAX_BYTES;
   return n;
 }
 
@@ -95,13 +123,40 @@ let _maxBytes: number | null = null;
  * sits on the `process.exit` path, so a syscall on every record would be paid
  * by every event to detect a condition that fires once per `maxBytes`.
  *
- * Accepted consequence: the estimate is per process. Two servers writing the
- * same path each hold their own, and one rotating under the other leaves the
- * other's estimate too high — it then rotates early, on a file smaller than
- * `maxBytes`. That costs a generation; it never restores unbounded growth,
- * which is the only property this exists to guarantee.
+ * The estimate drifts in **both** directions, and they are not symmetric:
+ *
+ *   - **Too high** — another process rotated under this one. Harmless: this
+ *     process rotates early, on a file smaller than the ceiling. Costs a
+ *     generation.
+ *   - **Too low** — another process is also appending and this one never saw
+ *     those bytes. **This is the direction that breaks the bound**: with N
+ *     writers each waiting for its own `maxBytes`, the live file would pass
+ *     `N * maxBytes` before any of them acted. The first version of this
+ *     comment documented only the harmless direction and concluded the bound
+ *     held; it did not.
+ *
+ * So the estimate is reconciled with the real size every
+ * `maxBytes / STAT_REFRESH_DIVISOR` bytes this process writes
+ * (`_bytesSinceStat`) — one `statSync` per ~4 MiB at the default ceiling.
  */
 let _bytesOnDisk: number | null = null;
+let _bytesSinceStat = 0;
+
+/**
+ * A rotation failed and the fact has not yet reached the log. Recorded on the
+ * next successful append rather than from inside `rotateIfNeeded`, so the
+ * failure path cannot re-enter itself.
+ */
+let _rotationFailurePending = false;
+let _rotationFailureRecorded = false;
+
+function statSizeOrZero(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0; // no file yet, or its size is unreadable — treat as empty
+  }
+}
 
 function getMaxBytes(): number {
   if (_maxBytes === null) {
@@ -116,17 +171,21 @@ function getMaxBytes(): number {
  * in this module: a rotation that cannot happen must not stop the append.
  */
 function rotateIfNeeded(path: string, incomingBytes: number): void {
-  if (_bytesOnDisk === null) {
-    try {
-      _bytesOnDisk = statSync(path).size;
-    } catch {
-      _bytesOnDisk = 0; // no file yet, or its size is unreadable — treat as empty
-    }
+  const maxBytes = getMaxBytes();
+  const refreshInterval = Math.max(1, Math.floor(maxBytes / STAT_REFRESH_DIVISOR));
+  if (_bytesOnDisk === null || _bytesSinceStat >= refreshInterval) {
+    // Reconcile with the file itself, not with what this process remembers
+    // writing. Without this the ceiling is per process, not per file.
+    _bytesOnDisk = statSizeOrZero(path);
+    _bytesSinceStat = 0;
   }
-  if (_bytesOnDisk + incomingBytes <= getMaxBytes()) return;
+  if (_bytesOnDisk + incomingBytes <= maxBytes) return;
   try {
     // Oldest generation first, so a failure part-way through never leaves a
-    // newer generation overwritten by an older one.
+    // newer generation overwritten by an older one. `renameSync` replaces an
+    // existing destination on both POSIX and Windows (Node uses MoveFileExW
+    // with MOVEFILE_REPLACE_EXISTING), so the unlink only matters where the
+    // destination cannot be replaced in place.
     try {
       unlinkSync(`${path}.${KEPT_GENERATIONS}`);
     } catch {
@@ -141,13 +200,20 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     }
     renameSync(path, `${path}.1`);
     _bytesOnDisk = 0;
+    _bytesSinceStat = 0;
   } catch {
-    // The live file could not be renamed (held open by a viewer, permission
-    // denied, a filesystem that refuses it). Keep appending rather than
-    // dropping events — an oversized log is a smaller failure than a blind
-    // server. Resetting the estimate also puts the next attempt one whole
-    // `maxBytes` away instead of one rename syscall per record.
-    _bytesOnDisk = 0;
+    // The live file could not be renamed (held open without FILE_SHARE_DELETE,
+    // permission denied, a filesystem that refuses it). Keep appending rather
+    // than dropping events — an oversized log is a smaller failure than a blind
+    // server — and back the estimate off by one interval so the retry costs one
+    // rename per interval instead of one per record.
+    //
+    // This outcome is NOT bounded: a file that can never be renamed grows at
+    // full speed, which is the state this module exists to prevent. So it is
+    // recorded once rather than swallowed, and the log can explain its own size.
+    _bytesOnDisk = Math.max(0, _bytesOnDisk - refreshInterval);
+    _bytesSinceStat = 0;
+    if (!_rotationFailureRecorded) _rotationFailurePending = true;
   }
 }
 
@@ -748,6 +814,21 @@ export function logDiagnostic(event: DiagnosticEvent): void {
   try {
     appendFileSync(path, line);
     if (_bytesOnDisk !== null) _bytesOnDisk += lineBytes;
+    _bytesSinceStat += lineBytes;
+    if (_rotationFailurePending) {
+      _rotationFailurePending = false;
+      _rotationFailureRecorded = true;
+      const note =
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          pid: process.pid,
+          uptime_ms: Math.round(process.uptime() * 1000),
+          kind: "log_rotation_failed",
+          maxBytes: getMaxBytes(),
+        }) + "\n";
+      appendFileSync(path, note);
+      if (_bytesOnDisk !== null) _bytesOnDisk += Buffer.byteLength(note, "utf8");
+    }
   } catch {
     // Disk full / permission denied / path invalid — silently drop.
     // We deliberately do NOT log to stderr here because uncaughtException
@@ -854,4 +935,7 @@ export function _resetDiagnosticLogForTest(): void {
   _dirEnsured = false;
   _maxBytes = null;
   _bytesOnDisk = null;
+  _bytesSinceStat = 0;
+  _rotationFailurePending = false;
+  _rotationFailureRecorded = false;
 }
