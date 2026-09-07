@@ -109,7 +109,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@napi-rs/cli": "^3.8.6",
+    "@napi-rs/cli": "^3.9.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "@types/node": "^26.4.1",
     "@types/ws": "^8.18.1",
