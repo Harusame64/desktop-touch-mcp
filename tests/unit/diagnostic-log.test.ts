@@ -639,6 +639,50 @@ describe("diagnostic-log rotation", () => {
     expect(statSync(logPath).size).toBeLessThanOrEqual(MAX_RECORD);
   });
 
+  it("MUTATION: a live file that can never be renamed costs no history at all, however many times it is retried", () => {
+    // The natural order - make room, then fill it - destroys the archive it is
+    // meant to protect. With the shift first, a live file that cannot be moved
+    // still gets `.2` unlinked and `.1` promoted into it on EVERY attempt, so a
+    // persistent failure ends with an oversized log and no retained history:
+    // worse than the unbounded growth this module was written to stop. Staging
+    // the live file first makes a failure cost nothing.
+    //
+    // The live rename is blocked here by putting a non-empty directory at the
+    // staging path, which is the one destination that move must use.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.1`, "GEN1-KEEP-ME", "utf8");
+    writeFileSync(`${logPath}.2`, "GEN2-KEEP-ME", "utf8");
+    mkdirSync(`${logPath}.rotating`, { recursive: true });
+    writeFileSync(join(`${logPath}.rotating`, "blocker"), "no", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    // Several rounds, because one attempt is not what erodes the history - the
+    // retries are. Each `write` here is far more than one ceiling's worth.
+    write(20, "a");
+    write(20, "b");
+
+    expect(readFileSync(`${logPath}.1`, "utf8")).toBe("GEN1-KEEP-ME");
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("GEN2-KEEP-ME");
+    expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
+  });
+
+  it("files a staged file left behind by an interrupted roll instead of replacing it", () => {
+    // A crash between staging the live file and filing it leaves records that
+    // are NEWER than `.1`. Staging the next live file on top of them would
+    // throw those records away, so the leftover is filed first.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.rotating`, "INTERRUPTED-ROLL", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z"); // rolls: the leftover is filed as .1, then pushed to .2
+
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("INTERRUPTED-ROLL");
+    expect(readFileSync(`${logPath}.1`, "utf8")).toContain("x".repeat(64));
+    expect(existsSync(`${logPath}.rotating`)).toBe(false); // and nothing is left staged
+  });
+
   it("MUTATION: a second failure episode is reported even though an earlier one already was", () => {
     // The notice is suppressed after the first one so a persistent failure does
     // not write one per record — but that suppression has to end when rotation

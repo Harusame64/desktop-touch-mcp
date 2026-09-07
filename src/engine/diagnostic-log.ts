@@ -204,6 +204,19 @@ let _bytesSinceStat = 0;
 let _rotationFailurePending = false;
 let _rotationFailureRecorded = false;
 
+/**
+ * True only for a plain file. Used at the staging path, where `existsSync`
+ * would answer yes to a directory sitting there and send it into the generation
+ * chain as if it were a staged log.
+ */
+function isPlainFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function statSizeOrZero(path: string): number {
   try {
     return statSync(path).size;
@@ -217,6 +230,42 @@ function getMaxBytes(): number {
     _maxBytes = parseMaxLogBytes(process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES);
   }
   return _maxBytes;
+}
+
+/**
+ * Suffix for the live file while it is between names.
+ *
+ * Chosen to still match a `diagnostic.log*` glob, so a roll interrupted by a
+ * crash leaves its records findable rather than hidden. The next rotation files
+ * it; until then the directory can hold one file more than the usual three.
+ */
+const STAGING_SUFFIX = ".rotating";
+
+/**
+ * Move `.N-1` up to `.N` for every kept generation, dropping the oldest.
+ *
+ * Destructive, and deliberately separated from the live file's own move so the
+ * caller can order the two correctly: see `rotateIfNeeded`.
+ */
+function shiftGenerations(path: string): void {
+  try {
+    unlinkSync(`${path}.${KEPT_GENERATIONS}`);
+  } catch {
+    // absent — the usual case on the first rotation
+  }
+  for (let gen = KEPT_GENERATIONS; gen >= 2; gen--) {
+    try {
+      renameSync(`${path}.${gen - 1}`, `${path}.${gen}`);
+    } catch (err) {
+      // "The source is not there" is ordinary: fewer generations exist than
+      // the ceiling allows. Anything else is not. If `.1` could not be moved
+      // because `.2` is locked or is a directory, `.1` is STILL ON DISK - and
+      // falling through would let the live file's rename replace it, throwing
+      // away the newest retained generation while recording nothing. Rethrow
+      // so the rotation aborts and the outer handler reports it.
+      if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw err;
+    }
+  }
 }
 
 /**
@@ -247,31 +296,35 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     _bytesSinceStat = 0;
     return;
   }
+  const staging = `${path}${STAGING_SUFFIX}`;
   try {
-    // Oldest generation first, so a failure part-way through never leaves a
-    // newer generation overwritten by an older one. `renameSync` replaces an
-    // existing destination on both POSIX and Windows (Node uses MoveFileExW
-    // with MOVEFILE_REPLACE_EXISTING), so the unlink only matters where the
-    // destination cannot be replaced in place.
-    try {
-      unlinkSync(`${path}.${KEPT_GENERATIONS}`);
-    } catch {
-      // absent — the usual case on the first rotation
+    if (isPlainFile(staging)) {
+      // A previous roll was interrupted between staging the live file and
+      // filing it. Those records are NEWER than `.1`, so file them before
+      // staging anything else - the rename below would otherwise replace them.
+      //
+      // Shifting before the move is safe HERE, unlike for the live file: this
+      // file is ours, was created moments ago, and nothing outside this module
+      // knows the name, so it is not the one a viewer can be holding open.
+      shiftGenerations(path);
+      renameSync(staging, `${path}.1`);
     }
-    for (let gen = KEPT_GENERATIONS; gen >= 2; gen--) {
-      try {
-        renameSync(`${path}.${gen - 1}`, `${path}.${gen}`);
-      } catch (err) {
-        // "The source is not there" is ordinary: fewer generations exist than
-        // the ceiling allows. Anything else is not. If `.1` could not be moved
-        // because `.2` is locked or is a directory, `.1` is STILL ON DISK - and
-        // falling through would let the live file's rename replace it, throwing
-        // away the newest retained generation while recording nothing. Rethrow
-        // so the rotation aborts and the outer handler reports it.
-        if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw err;
-      }
-    }
-    renameSync(path, `${path}.1`);
+    // The live file moves FIRST, before any generation is touched.
+    //
+    // The other order looks natural - make room, then fill it - and it quietly
+    // destroys the archive it is meant to protect. When the live file cannot be
+    // renamed at all (a viewer holding it open with write but not delete
+    // permission, the case this module documents), the shift has already run:
+    // `.2` unlinked, `.1` promoted into it. The append continues, the ceiling
+    // is passed again, and the next attempt eats that generation too. A
+    // persistent failure ends with an oversized log and NO retained history,
+    // which is worse than the unbounded growth this module was written to stop.
+    //
+    // Staged first, a live file that can never be renamed costs nothing at all:
+    // this rename fails, and every generation is exactly where it was.
+    renameSync(path, staging);
+    shiftGenerations(path);
+    renameSync(staging, `${path}.1`);
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;
     // Rotation works again, so the next failure is a new episode and gets its

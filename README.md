@@ -769,7 +769,9 @@ dispatch that is refused or fails first is not on record as having happened.
 The log rolls over: once `diagnostic.log` passes 64 MiB it becomes `diagnostic.log.1`, and at most
 two rolled generations are kept. **With one server running, the newest records are always in
 `diagnostic.log`**, but when you are searching for something that happened a while ago, search
-`diagnostic.log*` rather than the one file.
+`diagnostic.log*` rather than the one file. That glob also catches
+`diagnostic.log.rotating`, which is where the live file sits for the moment it is being rolled; one
+left behind means a roll was interrupted, and the next roll files it.
 
 Every record is measured against the limit before it is written, so a server left running for days
 rolls the file as it goes — there is no scheduled job, nothing to restart, and nothing to clean up by
