@@ -384,6 +384,8 @@ describe("diagnostic-log rotation", () => {
 
   const MIN_CEILING = 1024 * 1024;
   const REC_BYTES = 64 * 1024;
+  /** `MAX_RECORD_BYTES` = the floor / 8; every record must fit under it. */
+  const MAX_RECORD = MIN_CEILING / 8;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "diagrot-"));
@@ -597,13 +599,70 @@ describe("diagnostic-log rotation", () => {
     expect(rec.pid).toBe(process.pid);
   });
 
-  it("escape expansion: a record of control characters still fits the cap", () => {
-    // The head is counted in UTF-16 code units but written as escaped JSON, so
-    // a run of control characters costs 6 bytes per unit. Pins that the
-    // stand-in stays bounded rather than leaving the argument to a comment.
-    logOversizedRecord("\u0001");
+  it("worst-case byte expansion: a multi-byte payload still fits the cap", () => {
+    // The head is counted in UTF-16 code units and the cap is in bytes, so the
+    // two only agree after re-encoding. Control characters are the wrong probe:
+    // the head is sliced from text that is ALREADY JSON, where a control
+    // character is six plain ASCII characters and costs ~1 byte per unit. What
+    // actually sets the worst case is `JSON.stringify` passing non-ASCII
+    // through unescaped, at 3 UTF-8 bytes per BMP unit. A quote-heavy payload
+    // is the other direction: each one is re-escaped on the way in.
+    for (const [name, filler] of [
+      ["multi-byte pass-through", "\u3042"],
+      ["re-escaped quotes", '"'],
+      ["control characters", "\u0001"],
+    ] as const) {
+      rmSync(tmp, { recursive: true, force: true });
+      mkdirSync(join(tmp, "sub"), { recursive: true });
+      _resetDiagnosticLogForTest();
 
-    expect(statSync(logPath).size).toBeLessThanOrEqual(MIN_CEILING / 8);
+      logOversizedRecord(filler);
+
+      const size = statSync(logPath).size;
+      expect(size, name).toBeLessThanOrEqual(MAX_RECORD);
+      expect(size, name).toBeGreaterThan(0);
+    }
+  });
+
+  it("MUTATION: the kind echoed into a capped record is bounded at runtime, not by the type", () => {
+    // `DiagnosticEvent` bounds `kind` at compile time and every call site in
+    // this repo passes a literal - but this is the one record whose whole job
+    // is to be provably small, so the bound has to hold at runtime too. Cast
+    // past the union the way an unchecked producer eventually will.
+    logDiagnostic({
+      kind: "k".repeat(200_000),
+      tool: "t",
+      elapsed_ms: 1,
+      args_size: 0,
+    } as unknown as DiagnosticEvent);
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(MAX_RECORD);
+  });
+
+  it("MUTATION: a roll on a live file that is gone must not destroy the generations that are there", () => {
+    // The generation shift is destructive - it unlinks the oldest and promotes
+    // the rest - so it must not run on the strength of an estimate that turns
+    // out to describe a file that is not there. Discovering the absence only
+    // when the final rename fails is too late: by then .2 is unlinked and .1
+    // has been moved into it, which is exactly the concurrent case the module
+    // plans for (another writer rolled the file, and this one shreds its fresh
+    // .1). Every other assertion in this block still passes without the check.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.1`, "GEN1-KEEP-ME", "utf8");
+    writeFileSync(`${logPath}.2`, "GEN2-KEEP-ME", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING - 45 * 1000), "utf8");
+    _resetDiagnosticLogForTest();
+
+    const CHUNK = 30 * 1000;
+    const chunk = (tag: string): void => {
+      logDiagnostic({ kind: "slow_tool", tool: tag + "z".repeat(CHUNK), elapsed_ms: 1, args_size: 0 });
+    };
+    chunk("first"); // seeds the estimate from the pre-existing file; no roll yet
+    rmSync(logPath);
+    chunk("second"); // the estimate says "over the ceiling"; the file is gone
+
+    expect(readFileSync(`${logPath}.1`, "utf8")).toBe("GEN1-KEEP-ME");
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("GEN2-KEEP-ME");
   });
 
   it("a live file deleted underneath the process is not reported as a rotation failure", () => {

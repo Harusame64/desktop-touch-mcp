@@ -104,13 +104,19 @@ const MAX_RECORD_BYTES = MIN_MAX_BYTES / 8;
 /**
  * How much of an oversized record is kept, as a readable prefix of its JSON.
  *
- * Counted in UTF-16 code units and re-escaped when embedded, so the worst case
- * is 6 bytes per unit (a run of control characters, each becoming a
- * six-character escape) - about 24 KiB, well inside `MAX_RECORD_BYTES`. Pinned
- * by test rather than argued: see "escape expansion" in
- * tests/unit/diagnostic-log.test.ts.
+ * Counted in UTF-16 code units, so the bound is a byte bound only after
+ * re-encoding. The slice is taken from text that is ALREADY `JSON.stringify`
+ * output, so it holds no raw control characters and re-escaping costs almost
+ * nothing; what actually sets the worst case is `JSON.stringify` passing
+ * non-ASCII through unescaped, at 3 UTF-8 bytes per BMP unit. 4096 units is
+ * therefore ~12 KiB at worst, an order of magnitude inside
+ * `MAX_RECORD_BYTES`. Pinned by test with a multi-byte payload rather than
+ * argued: see "worst-case byte expansion" in tests/unit/diagnostic-log.test.ts.
  */
 const OVERSIZE_HEAD_CHARS = 4096;
+
+/** Bound on the `kind` echoed into a truncated record. See `truncatedRecordLine`. */
+const KIND_TRUNCATE_CHARS = 64;
 
 /**
  * How often the in-process estimate is reconciled with the file's real size,
@@ -219,6 +225,19 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     _bytesSinceStat = 0;
   }
   if (_bytesOnDisk + incomingBytes <= maxBytes) return;
+  if (!existsSync(path)) {
+    // Checked BEFORE the shift below, not after it fails. The shift is
+    // destructive - it unlinks the oldest generation and promotes the rest -
+    // and it must not run on the strength of an estimate that turns out to
+    // describe a file that is not there. Getting here means the live file was
+    // deleted by hand, or rolled by another process sharing the path: in the
+    // concurrent case the shift would discard that writer's fresh `.1`
+    // and destroy history faster than `KEPT_GENERATIONS` advertises. Nothing
+    // has failed; re-seed from the empty state and let the append recreate it.
+    _bytesOnDisk = 0;
+    _bytesSinceStat = 0;
+    return;
+  }
   try {
     // Oldest generation first, so a failure part-way through never leaves a
     // newer generation overwritten by an older one. `renameSync` replaces an
@@ -241,16 +260,13 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;
   } catch {
-    if (!existsSync(path)) {
-      // Nothing to rename, because there is nothing there: the live file was
-      // deleted by hand, or rolled by another process between the estimate and
-      // this rename. That is not a rotation failure, and reporting it as one
-      // would put a `log_rotation_failed` record in a log that is rotating
-      // correctly. Re-seed from the empty state and let the append recreate it.
-      _bytesOnDisk = 0;
-      _bytesSinceStat = 0;
-      return;
-    }
+    // Deliberately NOT re-checking existence here. The check above covers every
+    // case that can be reached deterministically; what would be left is a race
+    // so narrow no test can demonstrate it, on a branch that could turn a real,
+    // permanent rotation failure into silence - which is the one outcome this
+    // module exists to prevent. If the race does happen the cost is a single
+    // misleading record, and the next write rotates normally.
+    //
     // The live file could not be renamed (held open without FILE_SHARE_DELETE,
     // permission denied, a filesystem that refuses it). Keep appending rather
     // than dropping events — an oversized log is a smaller failure than a blind
@@ -847,7 +863,11 @@ function truncatedRecordLine(line: string, lineBytes: number, kind: string): str
       ts: new Date().toISOString(),
       pid: process.pid,
       uptime_ms: Math.round(process.uptime() * 1000),
-      kind,
+      // Bounded here rather than trusted to the `DiagnosticEvent` union. Every
+      // call site in this repo passes a literal, but a compile-time union is
+      // not a runtime guarantee, and this is the one record whose whole job is
+      // to be provably small. The longest real kind is ~20 characters.
+      kind: kind.slice(0, KIND_TRUNCATE_CHARS),
       record_truncated: true,
       original_bytes: lineBytes,
       head: line.slice(0, OVERSIZE_HEAD_CHARS),
@@ -866,16 +886,19 @@ function truncatedRecordLine(line: string, lineBytes: number, kind: string): str
  */
 export function logDiagnostic(event: DiagnosticEvent): void {
   if (isDisabled()) return;
-  const path = getDiagnosticLogPath();
-  ensureDir(path);
-  // Serialization is INSIDE the guard. `exit.extra` is `Record<string,
+  // Path resolution and serialization are both INSIDE the guard. `exit.extra` is `Record<string,
   // unknown>`, so a circular reference, a BigInt or a throwing `toJSON` reaches
   // `JSON.stringify` from a caller this module cannot see — and this function
   // runs from the uncaughtException and shutdown handlers, where a thrown
   // exception is exactly the failure the never-throw contract exists to
   // prevent. Rotation needs the serialized length, which is what moved the
-  // stringify out of the guard; it moves back in together with it.
+  // stringify out of the guard; it moves back in together with it. Path
+  // resolution joins them because `homedir()` can throw `ERR_SYSTEM_ERROR` on
+  // a machine with no resolvable home - rare, but the header promises this
+  // function never throws, and it was outside the guard before this change.
   try {
+    const path = getDiagnosticLogPath();
+    ensureDir(path);
     const safeEvent =
       "stack" in event &&
       typeof event.stack === "string" &&
@@ -912,7 +935,10 @@ export function logDiagnostic(event: DiagnosticEvent): void {
           maxBytes: getMaxBytes(),
         }) + "\n";
       appendFileSync(path, note);
-      if (_bytesOnDisk !== null) _bytesOnDisk += Buffer.byteLength(note, "utf8");
+      const noteBytes = Buffer.byteLength(note, "utf8");
+      if (_bytesOnDisk !== null) _bytesOnDisk += noteBytes;
+      _bytesSinceStat += noteBytes; // counted like any other append, so the
+      // periodic reconciliation stays in step with what was actually written
     }
   } catch {
     // Disk full / permission denied / path invalid / an event that cannot be

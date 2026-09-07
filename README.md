@@ -771,15 +771,28 @@ two rolled generations are kept. **The newest records are always in `diagnostic.
 are searching for something that happened a while ago, search `diagnostic.log*` rather than the one
 file.
 
-The size is checked on every record written, so a server left running for days rolls the file as it
-goes — there is no scheduled job, nothing to restart, and nothing to clean up by hand. A server
-sitting idle never rolls anything, because the check only runs when there is something to write.
+Every record is measured against the limit before it is written, so a server left running for days
+rolls the file as it goes — there is no scheduled job, nothing to restart, and nothing to clean up by
+hand. A server sitting idle never rolls anything, because the check only runs when there is something
+to write.
 
 **The ceiling is a size, not an age.** Three generations hold 192 MiB of records, and how far back
 that reaches depends entirely on how busy the machine is: on the install that prompted this limit,
 averaging roughly 170 MB a day, it is a little over one day. If you want to keep a particular
 incident, copy the file out rather than expecting to find it next week; if you would rather trade
 disk space for reach, raise `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES`.
+
+Two situations go past that figure, and both are worth knowing about:
+
+- **Several servers sharing one log.** Every MCP client starts its own server, and by default they
+  all write to the same file. Each tracks the bytes it has written itself and only re-measures the
+  real file every few MB, so the live file can overshoot before one of them rolls it. The overshoot
+  grows with the number of servers running, not without limit.
+- **A live file that cannot be renamed** — held open by another program, or permission denied.
+  Rotation then cannot happen and the log keeps growing at full speed. This is the one case the
+  limit does not cover, so it is not silent: a single `log_rotation_failed` record is written into
+  the log itself. It is the first thing to grep for if you find an oversized `diagnostic.log` after
+  updating.
 
 One record is never allowed to be larger than the file it lives in, so an event carrying an
 unusually large payload is written as a shortened stand-in: same `kind`, plus `record_truncated`,
@@ -790,7 +803,7 @@ the original size, and a `head` field holding the first few KB of what it would 
 | `DESKTOP_TOUCH_RESOLVE_LOG_RAW` | *(unset = off)* | Window titles and the titles you search for are recorded as a short hash plus their length, because a title can contain a file name, a mail subject, or a browser page title. Set to `1` to also record the text in clear (the hash stays, so a log with both is still readable end to end). |
 | `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE` | *(unset = on)* | Set to `1` to stop writing the log entirely. |
 | `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` | *(per-user log dir)* | Write the log somewhere else. |
-| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` | `67108864` (64 MiB) | Roll the live log to `diagnostic.log.1` once it passes this size. Two rolled generations are kept, so the whole log directory stays under about three times this value. A value below 1 MiB is raised to 1 MiB, and anything that is not a positive whole number falls back to the default — a typo here cannot switch rotation off. To stop logging entirely, use `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE`. |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` | `67108864` (64 MiB) | Roll the live log to `diagnostic.log.1` once it passes this size. Two rolled generations are kept, so the log directory ordinarily holds about three times this value — see above for the two situations that go past it. A value below 1 MiB is raised to 1 MiB, and anything that is not a positive whole number falls back to the default — a typo here cannot switch rotation off. To stop logging entirely, use `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE`. |
 
 ---
 

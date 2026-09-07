@@ -10,20 +10,24 @@
   stop it required knowing the log existed.
 
   The live file is now rolled to `diagnostic.log.1` when it passes 64 MiB, and
-  at most two rolled generations are kept, so the whole log directory stays
-  under roughly 192 MiB no matter how long the server runs. If several MCP
-  clients are running at once they share one log, and each checks the file's
-  real size periodically rather than on every line, so the live file can run a
-  little over the limit before one of them rolls it — bounded, and nothing like
-  the unbounded growth it replaces. Nothing about the events themselves changed,
-  and the newest records are always in `diagnostic.log`; search
-  `diagnostic.log*` when you are looking further back.
+  at most two rolled generations are kept, so the log directory ordinarily holds
+  roughly 192 MiB however long the server runs. If several MCP clients are
+  running at once they share one log, and each checks the file's real size
+  periodically rather than on every line, so the live file can overshoot before
+  one of them rolls it — the overshoot grows with the number of servers, not
+  without limit. And if the live file cannot be renamed at all (another program
+  holding it open, or permission denied) rotation cannot happen and the log does
+  keep growing; that case is no longer silent, because a single
+  `log_rotation_failed` record is written into the log itself. Nothing about the
+  events themselves changed, and the newest records are always in
+  `diagnostic.log`; search `diagnostic.log*` when you are looking further back.
 
-  The ceiling is a size, not an age. The file is checked on every record, so a
-  server left running for days rolls it as it goes and never needs restarting
-  or tidying up — but 192 MiB buys as much history as your traffic allows,
-  which on the busy install that prompted this is a little over a day. Copy the
-  file out if you need to keep a particular incident.
+  The ceiling is a size, not an age. Every record is measured against the limit
+  before it is written, so a server left running for days rolls the file as it
+  goes and never needs restarting or tidying up — but 192 MiB buys as much
+  history as your traffic allows, which on the busy install that prompted this
+  is a little over a day. Copy the file out if you need to keep a particular
+  incident.
 
   Set `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` to a positive byte count if you
   want a different ceiling; an unusable value falls back to the default rather
