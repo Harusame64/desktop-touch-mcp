@@ -19,6 +19,12 @@
   and the newest records are always in `diagnostic.log`; search
   `diagnostic.log*` when you are looking further back.
 
+  The ceiling is a size, not an age. The file is checked on every record, so a
+  server left running for days rolls it as it goes and never needs restarting
+  or tidying up — but 192 MiB buys as much history as your traffic allows,
+  which on the busy install that prompted this is a little over a day. Copy the
+  file out if you need to keep a particular incident.
+
   Set `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` to a positive byte count if you
   want a different ceiling; an unusable value falls back to the default rather
   than turning rotation off, so a typo cannot bring the old behaviour back. To

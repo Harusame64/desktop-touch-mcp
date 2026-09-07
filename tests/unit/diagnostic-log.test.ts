@@ -121,6 +121,47 @@ describe("diagnostic-log", () => {
     ).not.toThrow();
   });
 
+  it("does not throw on an event that cannot be serialized (Codex R2 P2)", () => {
+    // `exit.extra` is `Record<string, unknown>`, so callers this module cannot
+    // see may hand it a circular reference, a BigInt, or a throwing `toJSON`.
+    // `logDiagnostic` runs from the uncaughtException and shutdown handlers,
+    // where throwing is the failure the never-throw contract exists to prevent.
+    // Fails if `JSON.stringify` sits outside the try, as it did while rotation
+    // was being added.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const throwingToJson = {
+      toJSON() {
+        throw new Error("no");
+      },
+    };
+
+    for (const extra of [
+      circular,
+      { big: BigInt(1) } as unknown as Record<string, unknown>,
+      { bad: throwingToJson },
+    ]) {
+      expect(() =>
+        logDiagnostic({
+          kind: "exit",
+          trigger: "SIGINT",
+          exitCode: 0,
+          inflight: 0,
+          shutdownPending: false,
+          extra,
+        }),
+      ).not.toThrow();
+    }
+
+    // Dropped, not half-written: whatever is on disk is still valid JSONL.
+    expect(() => readLines()).not.toThrow();
+    expect(readLines()).toHaveLength(0);
+
+    // And the log is still usable afterwards.
+    logDiagnostic({ kind: "exit", trigger: "after", exitCode: 0, inflight: 0, shutdownPending: false });
+    expect(readLines()).toHaveLength(1);
+  });
+
   it("getDiagnosticLogPath defaults to homedir-based path when env unset", () => {
     delete process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH;
     _resetDiagnosticLogForTest();
@@ -516,5 +557,85 @@ describe("diagnostic-log rotation", () => {
       .filter((l) => l.includes('"log_rotation_failed"'));
     expect(failures.length).toBe(1); // once, not once per record
     expect(existsSync(logPath)).toBe(true); // and events keep being written
+  });
+
+  /** Larger than the ceiling itself, so rotation cannot make room for it. */
+  function logOversizedRecord(filler = "p"): void {
+    logDiagnostic({
+      kind: "slow_tool",
+      tool: "OVERSIZE" + filler.repeat(MIN_CEILING * 2),
+      elapsed_ms: 1,
+      args_size: 0,
+    });
+  }
+
+  it("MUTATION: a record larger than the ceiling cannot walk straight through a rotation", () => {
+    // Rotation shrinks the file, not the record: the roll happens, the fresh
+    // live file is empty, and the oversized line is appended anyway. Without a
+    // record cap one event puts the directory past the bound by any amount, and
+    // every other rotation assertion here still passes.
+    logOversizedRecord();
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(MIN_CEILING);
+  });
+
+  it("a capped record keeps its kind, its real size, and a readable head", () => {
+    logOversizedRecord();
+
+    const lines = readFileSync(logPath, "utf8").split("\n").filter((l) => l.length > 0);
+    expect(lines).toHaveLength(1);
+    const rec = JSON.parse(lines[0]) as Record<string, unknown>;
+
+    // `kind` survives, so a grep for the event still finds it.
+    expect(rec.kind).toBe("slow_tool");
+    expect(rec.record_truncated).toBe(true);
+    expect(rec.original_bytes).toBeGreaterThan(MIN_CEILING);
+    // The head is a prefix of the original JSON, so the offending field is
+    // still identifiable.
+    expect(String(rec.head)).toContain('"tool":"OVERSIZE');
+    expect(rec.ts).toBeTruthy();
+    expect(rec.pid).toBe(process.pid);
+  });
+
+  it("escape expansion: a record of control characters still fits the cap", () => {
+    // The head is counted in UTF-16 code units but written as escaped JSON, so
+    // a run of control characters costs 6 bytes per unit. Pins that the
+    // stand-in stays bounded rather than leaving the argument to a comment.
+    logOversizedRecord("\u0001");
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(MIN_CEILING / 8);
+  });
+
+  it("a live file deleted underneath the process is not reported as a rotation failure", () => {
+    // The estimate is only re-read from disk every ceiling/16 bytes, so a log
+    // deleted by hand stays invisible for a while and the next roll renames a
+    // file that is not there. That is not a failure, and calling it one puts a
+    // `log_rotation_failed` record in a log that is rotating correctly.
+    //
+    // Sizes are chosen so the deleted file is still missing when the roll is
+    // attempted: two 30 KB records leave the estimate ~15 KB past the ceiling
+    // (so the second one rolls) while their 60 KB total stays under the 64 KiB
+    // re-stat interval (so the stale estimate is what drives it). A record
+    // small enough to be recreated by an append first would never reach the
+    // branch, and one large enough to trip the re-stat would correct it.
+    const CHUNK = 30 * 1000;
+    const chunk = (tag: string): void => {
+      logDiagnostic({ kind: "slow_tool", tool: tag + "z".repeat(CHUNK), elapsed_ms: 1, args_size: 0 });
+    };
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(logPath, "x".repeat(MIN_CEILING - 45 * 1000), "utf8");
+    _resetDiagnosticLogForTest();
+
+    chunk("first"); // seeds the estimate from the pre-existing file; no roll yet
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+
+    rmSync(logPath);
+    chunk("second"); // the estimate now says "over the ceiling"; the file is gone
+
+    const live = readFileSync(logPath, "utf8");
+    expect(live).not.toContain("log_rotation_failed");
+    expect(existsSync(`${logPath}.1`)).toBe(false); // nothing was there to roll
+    expect(live).toContain('"tool":"second');
   });
 });

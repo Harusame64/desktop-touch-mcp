@@ -21,7 +21,14 @@
  *                                                size (default 64 MiB)
  */
 
-import { appendFileSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { performance } from "node:perf_hooks";
@@ -50,7 +57,9 @@ const STACK_TRUNCATE_CHARS = 4096;
  *
  * **What the ceiling actually bounds.** One writer: the live file stays at or
  * under `maxBytes`, so the directory stays under `(KEPT_GENERATIONS + 1) *
- * maxBytes`. Concurrent writers are the honest caveat — the default path is one
+ * maxBytes`. That holds only because no single record can exceed it either —
+ * see `MAX_RECORD_BYTES`, without which one oversized event walks straight
+ * through a rotation. Concurrent writers are the honest caveat — the default path is one
  * file per user (`DEFAULT_DIR`) and every MCP client spawns its own server, so
  * N of them can share it. Each counts only its own bytes, so without help the
  * live file would reach roughly `N * maxBytes` before anyone noticed. That is
@@ -72,6 +81,36 @@ const KEPT_GENERATIONS = 2;
  * rejects an unusably small ceiling.
  */
 const MIN_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Ceiling for a single serialized record.
+ *
+ * The rotation ceiling only bounds the file if every record fits under it.
+ * `uncaught.msg` and `exit.extra` are free-form, so one event can serialize to
+ * any size at all - and a record larger than `maxBytes` defeats rotation
+ * rather than triggering it: the roll happens, the fresh live file is empty,
+ * and the oversized line is appended anyway. Later rolls only carry it into
+ * `.1` and `.2`, so one event could put the directory past the stated bound by
+ * an arbitrary amount. (`stack` was already capped by `STACK_TRUNCATE_CHARS`;
+ * that bounded one field, not the record.)
+ *
+ * Derived from `MIN_MAX_BYTES` rather than written as its own number so the
+ * two cannot drift apart. Every ceiling `parseMaxLogBytes` accepts is at least
+ * `MIN_MAX_BYTES`, so a capped record is at most an eighth of it and the append
+ * that follows a rotation always fits.
+ */
+const MAX_RECORD_BYTES = MIN_MAX_BYTES / 8;
+
+/**
+ * How much of an oversized record is kept, as a readable prefix of its JSON.
+ *
+ * Counted in UTF-16 code units and re-escaped when embedded, so the worst case
+ * is 6 bytes per unit (a run of control characters, each becoming a
+ * six-character escape) - about 24 KiB, well inside `MAX_RECORD_BYTES`. Pinned
+ * by test rather than argued: see "escape expansion" in
+ * tests/unit/diagnostic-log.test.ts.
+ */
+const OVERSIZE_HEAD_CHARS = 4096;
 
 /**
  * How often the in-process estimate is reconciled with the file's real size,
@@ -202,6 +241,16 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;
   } catch {
+    if (!existsSync(path)) {
+      // Nothing to rename, because there is nothing there: the live file was
+      // deleted by hand, or rolled by another process between the estimate and
+      // this rename. That is not a rotation failure, and reporting it as one
+      // would put a `log_rotation_failed` record in a log that is rotating
+      // correctly. Re-seed from the empty state and let the append recreate it.
+      _bytesOnDisk = 0;
+      _bytesSinceStat = 0;
+      return;
+    }
     // The live file could not be renamed (held open without FILE_SHARE_DELETE,
     // permission denied, a filesystem that refuses it). Keep appending rather
     // than dropping events — an oversized log is a smaller failure than a blind
@@ -786,6 +835,27 @@ export type DispatchSink =
   | "postmessage";
 
 /**
+ * Stand-in for a record that would not fit under `MAX_RECORD_BYTES`.
+ *
+ * Keeps `kind` so existing greps still find the event, says plainly that it was
+ * truncated and how large it really was, and carries a bounded prefix of the
+ * original JSON so the offending field is still readable.
+ */
+function truncatedRecordLine(line: string, lineBytes: number, kind: string): string {
+  return (
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      uptime_ms: Math.round(process.uptime() * 1000),
+      kind,
+      record_truncated: true,
+      original_bytes: lineBytes,
+      head: line.slice(0, OVERSIZE_HEAD_CHARS),
+    }) + "\n"
+  );
+}
+
+/**
  * Append one diagnostic event as a JSONL line. Best-effort: never throws.
  * Synchronous so events written just before `process.exit` reach disk.
  *
@@ -798,20 +868,35 @@ export function logDiagnostic(event: DiagnosticEvent): void {
   if (isDisabled()) return;
   const path = getDiagnosticLogPath();
   ensureDir(path);
-  const safeEvent =
-    "stack" in event && typeof event.stack === "string" && event.stack.length > STACK_TRUNCATE_CHARS
-      ? { ...event, stack: event.stack.slice(0, STACK_TRUNCATE_CHARS) + "…[truncated]" }
-      : event;
-  const record = {
-    ts: new Date().toISOString(),
-    pid: process.pid,
-    uptime_ms: Math.round(process.uptime() * 1000),
-    ...safeEvent,
-  };
-  const line = JSON.stringify(record) + "\n";
-  const lineBytes = Buffer.byteLength(line, "utf8");
-  rotateIfNeeded(path, lineBytes);
+  // Serialization is INSIDE the guard. `exit.extra` is `Record<string,
+  // unknown>`, so a circular reference, a BigInt or a throwing `toJSON` reaches
+  // `JSON.stringify` from a caller this module cannot see — and this function
+  // runs from the uncaughtException and shutdown handlers, where a thrown
+  // exception is exactly the failure the never-throw contract exists to
+  // prevent. Rotation needs the serialized length, which is what moved the
+  // stringify out of the guard; it moves back in together with it.
   try {
+    const safeEvent =
+      "stack" in event &&
+      typeof event.stack === "string" &&
+      event.stack.length > STACK_TRUNCATE_CHARS
+        ? { ...event, stack: event.stack.slice(0, STACK_TRUNCATE_CHARS) + "…[truncated]" }
+        : event;
+    const record = {
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      uptime_ms: Math.round(process.uptime() * 1000),
+      ...safeEvent,
+    };
+    let line = JSON.stringify(record) + "\n";
+    let lineBytes = Buffer.byteLength(line, "utf8");
+    if (lineBytes > MAX_RECORD_BYTES) {
+      // Rotation cannot shrink a record that is itself over the ceiling, so
+      // the record is what has to give. See `MAX_RECORD_BYTES`.
+      line = truncatedRecordLine(line, lineBytes, event.kind);
+      lineBytes = Buffer.byteLength(line, "utf8");
+    }
+    rotateIfNeeded(path, lineBytes);
     appendFileSync(path, line);
     if (_bytesOnDisk !== null) _bytesOnDisk += lineBytes;
     _bytesSinceStat += lineBytes;
@@ -830,7 +915,8 @@ export function logDiagnostic(event: DiagnosticEvent): void {
       if (_bytesOnDisk !== null) _bytesOnDisk += Buffer.byteLength(note, "utf8");
     }
   } catch {
-    // Disk full / permission denied / path invalid — silently drop.
+    // Disk full / permission denied / path invalid / an event that cannot be
+    // serialized — silently drop.
     // We deliberately do NOT log to stderr here because uncaughtException
     // handler also writes diagnostics and a stderr write that itself throws
     // could re-enter the handler.

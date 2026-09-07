@@ -771,6 +771,20 @@ two rolled generations are kept. **The newest records are always in `diagnostic.
 are searching for something that happened a while ago, search `diagnostic.log*` rather than the one
 file.
 
+The size is checked on every record written, so a server left running for days rolls the file as it
+goes — there is no scheduled job, nothing to restart, and nothing to clean up by hand. A server
+sitting idle never rolls anything, because the check only runs when there is something to write.
+
+**The ceiling is a size, not an age.** Three generations hold 192 MiB of records, and how far back
+that reaches depends entirely on how busy the machine is: on the install that prompted this limit,
+averaging roughly 170 MB a day, it is a little over one day. If you want to keep a particular
+incident, copy the file out rather than expecting to find it next week; if you would rather trade
+disk space for reach, raise `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES`.
+
+One record is never allowed to be larger than the file it lives in, so an event carrying an
+unusually large payload is written as a shortened stand-in: same `kind`, plus `record_truncated`,
+the original size, and a `head` field holding the first few KB of what it would have been.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `DESKTOP_TOUCH_RESOLVE_LOG_RAW` | *(unset = off)* | Window titles and the titles you search for are recorded as a short hash plus their length, because a title can contain a file name, a mail subject, or a browser page title. Set to `1` to also record the text in clear (the hash stays, so a log with both is still readable end to end). |
