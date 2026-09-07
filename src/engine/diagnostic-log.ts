@@ -25,6 +25,7 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -233,13 +234,56 @@ function getMaxBytes(): number {
 }
 
 /**
- * Suffix for the live file while it is between names.
+ * Suffix for the live file while it is between names. The **pid** goes in front
+ * of it — see `stagingPathFor`.
  *
  * Chosen to still match a `diagnostic.log*` glob, so a roll interrupted by a
- * crash leaves its records findable rather than hidden. The next rotation files
- * it; until then the directory can hold one file more than the usual three.
+ * crash leaves its records findable rather than hidden. The next rotation by
+ * that pid files it; until then the directory can hold one file more than the
+ * usual three.
  */
 const STAGING_SUFFIX = ".rotating";
+
+/**
+ * Where this process parks the live file mid-roll.
+ *
+ * The pid is not decoration. Every MCP client starts its own server and they
+ * share one log by default, so a single fixed name turns the "is anything
+ * staged?" check and the rename that follows into a race with a destructive
+ * ending: A sees no staged file, B moves the whole live log to the shared name,
+ * C recreates the live path by appending, and A's rename then replaces B's
+ * staged log — up to `maxBytes` of the newest history gone. A name only this
+ * process ever writes cannot be taken from under another one.
+ *
+ * It does not make concurrent rotation *correct* — two servers can still shift
+ * generations over each other, which is recorded as a known limitation — but it
+ * stops this change from making that worse than it already was.
+ */
+function stagingPathFor(target: string): string {
+  return `${target}.${process.pid}${STAGING_SUFFIX}`;
+}
+
+/**
+ * The file a path actually names.
+ *
+ * `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` may point at a symbolic link — a log
+ * collected centrally, say. `statSync` measures the target, but `renameSync`
+ * moves the LINK, and the next append then creates a plain file where the link
+ * used to be: after one roll the configured destination silently stops
+ * receiving anything. Rotating the resolved target instead leaves the link in
+ * place, pointing at the file the next append recreates, and files the
+ * generations beside the real log rather than beside the link.
+ *
+ * Falls back to the path itself on any error, which is the behaviour every
+ * ordinary (non-link) path already had.
+ */
+function realPathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
 
 /**
  * Move `.N-1` up to `.N` for every kept generation, dropping the oldest.
@@ -296,7 +340,11 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     _bytesSinceStat = 0;
     return;
   }
-  const staging = `${path}${STAGING_SUFFIX}`;
+  // Everything below moves files, so it works on what `path` resolves to, not
+  // on `path` itself. Appends keep using `path`: through a link, that is how the
+  // target gets recreated after a roll.
+  const target = realPathOrSelf(path);
+  const staging = stagingPathFor(target);
   try {
     if (isPlainFile(staging)) {
       // A previous roll was interrupted between staging the live file and
@@ -306,8 +354,8 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
       // Shifting before the move is safe HERE, unlike for the live file: this
       // file is ours, was created moments ago, and nothing outside this module
       // knows the name, so it is not the one a viewer can be holding open.
-      shiftGenerations(path);
-      renameSync(staging, `${path}.1`);
+      shiftGenerations(target);
+      renameSync(staging, `${target}.1`);
     }
     // The live file moves FIRST, before any generation is touched.
     //
@@ -322,9 +370,9 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     //
     // Staged first, a live file that can never be renamed costs nothing at all:
     // this rename fails, and every generation is exactly where it was.
-    renameSync(path, staging);
-    shiftGenerations(path);
-    renameSync(staging, `${path}.1`);
+    renameSync(target, staging);
+    shiftGenerations(target);
+    renameSync(staging, `${target}.1`);
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;
     // Rotation works again, so the next failure is a new episode and gets its

@@ -386,6 +386,8 @@ describe("diagnostic-log rotation", () => {
   const REC_BYTES = 64 * 1024;
   /** `MAX_RECORD_BYTES` = the floor / 8; every record must fit under it. */
   const MAX_RECORD = MIN_CEILING / 8;
+  /** Where this process parks the live file mid-roll. The pid is load-bearing. */
+  const staging = (): string => `${logPath}.${process.pid}.rotating`;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "diagrot-"));
@@ -652,8 +654,8 @@ describe("diagnostic-log rotation", () => {
     mkdirSync(join(tmp, "sub"), { recursive: true });
     writeFileSync(`${logPath}.1`, "GEN1-KEEP-ME", "utf8");
     writeFileSync(`${logPath}.2`, "GEN2-KEEP-ME", "utf8");
-    mkdirSync(`${logPath}.rotating`, { recursive: true });
-    writeFileSync(join(`${logPath}.rotating`, "blocker"), "no", "utf8");
+    mkdirSync(staging(), { recursive: true });
+    writeFileSync(join(staging(), "blocker"), "no", "utf8");
     writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
     _resetDiagnosticLogForTest();
 
@@ -672,7 +674,7 @@ describe("diagnostic-log rotation", () => {
     // are NEWER than `.1`. Staging the next live file on top of them would
     // throw those records away, so the leftover is filed first.
     mkdirSync(join(tmp, "sub"), { recursive: true });
-    writeFileSync(`${logPath}.rotating`, "INTERRUPTED-ROLL", "utf8");
+    writeFileSync(staging(), "INTERRUPTED-ROLL", "utf8");
     writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
     _resetDiagnosticLogForTest();
 
@@ -680,7 +682,34 @@ describe("diagnostic-log rotation", () => {
 
     expect(readFileSync(`${logPath}.2`, "utf8")).toBe("INTERRUPTED-ROLL");
     expect(readFileSync(`${logPath}.1`, "utf8")).toContain("x".repeat(64));
-    expect(existsSync(`${logPath}.rotating`)).toBe(false); // and nothing is left staged
+    expect(existsSync(staging())).toBe(false); // and nothing is left staged
+  });
+
+  it("MUTATION: another process's staged log is left alone — the staging name carries the pid", () => {
+    // Servers share one log by default. With a single fixed staging name, the
+    // "is anything staged?" check and the rename after it are a race that ends
+    // destructively: this process sees nothing staged, another moves its whole
+    // live log to the shared name, and this one's rename replaces it — up to a
+    // full ceiling of the newest history gone. A name only this process writes
+    // cannot be taken from under another one.
+    // Two files, and the FIRST is the one that discriminates: it sits at the
+    // name a shared scheme would pick, so a shared name makes this process
+    // adopt another server's staged log as its own leftover and file it away.
+    // The second is the same thing under the real naming, kept because it is
+    // what the scenario actually looks like.
+    const atSharedName = `${logPath}.rotating`;
+    const atOtherPid = `${logPath}.999999.rotating`;
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(atSharedName, "ANOTHER-SERVERS-STAGED-LOG", "utf8");
+    writeFileSync(atOtherPid, "AND-ANOTHERS", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z"); // rolls
+
+    expect(readFileSync(atSharedName, "utf8")).toBe("ANOTHER-SERVERS-STAGED-LOG");
+    expect(readFileSync(atOtherPid, "utf8")).toBe("AND-ANOTHERS");
   });
 
   it("MUTATION: a second failure episode is reported even though an earlier one already was", () => {
