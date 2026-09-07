@@ -639,6 +639,29 @@ describe("diagnostic-log rotation", () => {
     expect(statSync(logPath).size).toBeLessThanOrEqual(MAX_RECORD);
   });
 
+  it("MUTATION: a promotion that fails for any reason but absence aborts the roll instead of overwriting .1", () => {
+    // `.1` -> `.2` can fail with `.1` still on disk: `.2` locked, or `.2` a
+    // directory. Treating that like "the source was absent" and carrying on
+    // means the live file's rename REPLACES the surviving `.1` - the newest
+    // retained generation thrown away, and nothing recorded to say so. Only a
+    // missing source is ordinary; everything else has to abort the rotation.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.1`, "GEN1-KEEP-ME", "utf8");
+    mkdirSync(`${logPath}.2`, { recursive: true }); // blocks both unlink and rename
+    writeFileSync(join(`${logPath}.2`, "blocker"), "no", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    logDiagnostic({ kind: "slow_tool", tool: "after", elapsed_ms: 1, args_size: 0 });
+
+    // The generation that was there is still there, byte for byte.
+    expect(readFileSync(`${logPath}.1`, "utf8")).toBe("GEN1-KEEP-ME");
+    // And the aborted rotation is on record rather than silent.
+    const live = readFileSync(logPath, "utf8");
+    expect(live).toContain("log_rotation_failed");
+    expect(live).toContain('"tool":"after"');
+  });
+
   it("MUTATION: a roll on a live file that is gone must not destroy the generations that are there", () => {
     // The generation shift is destructive - it unlinks the oldest and promotes
     // the rest - so it must not run on the strength of an estimate that turns

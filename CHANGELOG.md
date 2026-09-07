@@ -19,8 +19,9 @@
   holding it open, or permission denied) rotation cannot happen and the log does
   keep growing; that case is no longer silent, because a single
   `log_rotation_failed` record is written into the log itself. Nothing about the
-  events themselves changed, and the newest records are always in
-  `diagnostic.log`; search `diagnostic.log*` when you are looking further back.
+  events themselves changed, and with one server running the newest records are
+  always in `diagnostic.log`; search `diagnostic.log*` when you are looking
+  further back, or when several clients share the file.
 
   The ceiling is a size, not an age. Every record is measured against the limit
   before it is written, so a server left running for days rolls the file as it

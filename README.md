@@ -767,9 +767,9 @@ it picked and why. A record is written immediately before the write leaves the p
 dispatch that is refused or fails first is not on record as having happened.
 
 The log rolls over: once `diagnostic.log` passes 64 MiB it becomes `diagnostic.log.1`, and at most
-two rolled generations are kept. **The newest records are always in `diagnostic.log`**, but when you
-are searching for something that happened a while ago, search `diagnostic.log*` rather than the one
-file.
+two rolled generations are kept. **With one server running, the newest records are always in
+`diagnostic.log`**, but when you are searching for something that happened a while ago, search
+`diagnostic.log*` rather than the one file.
 
 Every record is measured against the limit before it is written, so a server left running for days
 rolls the file as it goes — there is no scheduled job, nothing to restart, and nothing to clean up by
@@ -787,7 +787,10 @@ Two situations go past that figure, and both are worth knowing about:
 - **Several servers sharing one log.** Every MCP client starts its own server, and by default they
   all write to the same file. Each tracks the bytes it has written itself and only re-measures the
   real file every few MB, so the live file can overshoot before one of them rolls it. The overshoot
-  grows with the number of servers running, not without limit.
+  grows with the number of servers running, not without limit. Two servers can also roll at the same
+  moment and step on each other's rename: that costs a generation, and can leave one server's newest
+  record in `diagnostic.log.1` instead of the live file. Grepping `diagnostic.log*` rather than the
+  one file covers both.
 - **A live file that cannot be renamed** — held open by another program, or permission denied.
   Rotation then cannot happen and the log keeps growing at full speed. This is the one case the
   limit does not cover, so it is not silent: a single `log_rotation_failed` record is written into

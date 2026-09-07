@@ -252,8 +252,14 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     for (let gen = KEPT_GENERATIONS; gen >= 2; gen--) {
       try {
         renameSync(`${path}.${gen - 1}`, `${path}.${gen}`);
-      } catch {
-        // absent — fewer generations exist than the ceiling allows
+      } catch (err) {
+        // "The source is not there" is ordinary: fewer generations exist than
+        // the ceiling allows. Anything else is not. If `.1` could not be moved
+        // because `.2` is locked or is a directory, `.1` is STILL ON DISK - and
+        // falling through would let the live file's rename replace it, throwing
+        // away the newest retained generation while recording nothing. Rethrow
+        // so the rotation aborts and the outer handler reports it.
+        if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw err;
       }
     }
     renameSync(path, `${path}.1`);
@@ -924,8 +930,6 @@ export function logDiagnostic(event: DiagnosticEvent): void {
     if (_bytesOnDisk !== null) _bytesOnDisk += lineBytes;
     _bytesSinceStat += lineBytes;
     if (_rotationFailurePending) {
-      _rotationFailurePending = false;
-      _rotationFailureRecorded = true;
       const note =
         JSON.stringify({
           ts: new Date().toISOString(),
@@ -935,6 +939,13 @@ export function logDiagnostic(event: DiagnosticEvent): void {
           maxBytes: getMaxBytes(),
         }) + "\n";
       appendFileSync(path, note);
+      // Flags cleared only after the notice is actually on disk. Clearing them
+      // first meant that if this second append failed - the event line having
+      // just consumed the last of the disk, say - the pending state was gone
+      // for good: later events would resume once space freed up, and the
+      // rotation failure that explains the log's size would never be reported.
+      _rotationFailurePending = false;
+      _rotationFailureRecorded = true;
       const noteBytes = Buffer.byteLength(note, "utf8");
       if (_bytesOnDisk !== null) _bytesOnDisk += noteBytes;
       _bytesSinceStat += noteBytes; // counted like any other append, so the
