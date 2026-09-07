@@ -12,12 +12,16 @@
  *     are not lost in Node's writable-stream buffer
  *   - best-effort: every write is wrapped in try/catch and never throws to the
  *     caller — diagnostic logging must not become a new crash source
+ *   - size-triggered rotation with a bounded number of generations, so the
+ *     file cannot grow without limit (see `DEFAULT_MAX_BYTES`)
  *   - env overrides:
- *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH    — override default path
- *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE — set to "1" to disable entirely
+ *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH      — override default path
+ *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE   — set to "1" to disable entirely
+ *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES — rotate the live file above this
+ *                                                size (default 64 MiB)
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { performance } from "node:perf_hooks";
@@ -35,6 +39,41 @@ const DEFAULT_DIR = ".desktop-touch-mcp/logs";
 const STACK_TRUNCATE_CHARS = 4096;
 
 /**
+ * Rotation ceiling for the live file.
+ *
+ * Before this the log was append-only with **no ceiling at all**: measured on
+ * the maintainer's machine 2026-09-07 at **18,548,383,199 bytes / 34,811,118
+ * lines**, accumulated since 2026-05-19. Sampling the tail showed ordinary
+ * steady-state traffic (`resolve` / `exit` / `uncaught` / `dispatch_sink` /
+ * `cpu_spike` / …), not a runaway producer — the growth is inherent to the
+ * event rate, so throttling any one event kind would not have closed it.
+ *
+ * Total disk is bounded by `(KEPT_GENERATIONS + 1) * maxBytes`: the live file
+ * plus its rotated generations.
+ */
+const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+const KEPT_GENERATIONS = 2;
+
+/**
+ * Pure parser, kept separate from the `process.env` read so the parsing rules
+ * are testable without mutating the environment.
+ *
+ * Anything that is not a positive integer — empty, non-numeric, zero,
+ * negative, fractional, non-finite — falls back to the default rather than
+ * disabling rotation. A typo in this variable must not restore the unbounded
+ * behaviour this function exists to prevent, so `"0"` is NOT a disable switch
+ * (`DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1` turns the log off entirely).
+ */
+export function parseMaxLogBytes(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_MAX_BYTES;
+  const trimmed = raw.trim();
+  if (trimmed === "") return DEFAULT_MAX_BYTES;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return DEFAULT_MAX_BYTES;
+  return n;
+}
+
+/**
  * `_disabled`, `_resolvedPath`, and `_dirEnsured` are memoized on first read.
  *
  * **Runtime mutation contract**: the `DESKTOP_TOUCH_DIAGNOSTIC_LOG_*` env vars
@@ -47,6 +86,70 @@ const STACK_TRUNCATE_CHARS = 4096;
 let _resolvedPath: string | null = null;
 let _disabled: boolean | null = null;
 let _dirEnsured = false;
+let _maxBytes: number | null = null;
+
+/**
+ * Bytes this process believes the live file holds, seeded once from its size.
+ *
+ * Deliberately **not** a `statSync` per write: the append is synchronous and
+ * sits on the `process.exit` path, so a syscall on every record would be paid
+ * by every event to detect a condition that fires once per `maxBytes`.
+ *
+ * Accepted consequence: the estimate is per process. Two servers writing the
+ * same path each hold their own, and one rotating under the other leaves the
+ * other's estimate too high — it then rotates early, on a file smaller than
+ * `maxBytes`. That costs a generation; it never restores unbounded growth,
+ * which is the only property this exists to guarantee.
+ */
+let _bytesOnDisk: number | null = null;
+
+function getMaxBytes(): number {
+  if (_maxBytes === null) {
+    _maxBytes = parseMaxLogBytes(process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES);
+  }
+  return _maxBytes;
+}
+
+/**
+ * Roll `path` -> `path.1` -> … -> `path.KEPT_GENERATIONS` when the next record
+ * would push the live file past the ceiling. Best-effort like every other write
+ * in this module: a rotation that cannot happen must not stop the append.
+ */
+function rotateIfNeeded(path: string, incomingBytes: number): void {
+  if (_bytesOnDisk === null) {
+    try {
+      _bytesOnDisk = statSync(path).size;
+    } catch {
+      _bytesOnDisk = 0; // no file yet, or its size is unreadable — treat as empty
+    }
+  }
+  if (_bytesOnDisk + incomingBytes <= getMaxBytes()) return;
+  try {
+    // Oldest generation first, so a failure part-way through never leaves a
+    // newer generation overwritten by an older one.
+    try {
+      unlinkSync(`${path}.${KEPT_GENERATIONS}`);
+    } catch {
+      // absent — the usual case on the first rotation
+    }
+    for (let gen = KEPT_GENERATIONS; gen >= 2; gen--) {
+      try {
+        renameSync(`${path}.${gen - 1}`, `${path}.${gen}`);
+      } catch {
+        // absent — fewer generations exist than the ceiling allows
+      }
+    }
+    renameSync(path, `${path}.1`);
+    _bytesOnDisk = 0;
+  } catch {
+    // The live file could not be renamed (held open by a viewer, permission
+    // denied, a filesystem that refuses it). Keep appending rather than
+    // dropping events — an oversized log is a smaller failure than a blind
+    // server. Resetting the estimate also puts the next attempt one whole
+    // `maxBytes` away instead of one rename syscall per record.
+    _bytesOnDisk = 0;
+  }
+}
 
 function isDisabled(): boolean {
   if (_disabled === null) {
@@ -639,8 +742,12 @@ export function logDiagnostic(event: DiagnosticEvent): void {
     uptime_ms: Math.round(process.uptime() * 1000),
     ...safeEvent,
   };
+  const line = JSON.stringify(record) + "\n";
+  const lineBytes = Buffer.byteLength(line, "utf8");
+  rotateIfNeeded(path, lineBytes);
   try {
-    appendFileSync(path, JSON.stringify(record) + "\n");
+    appendFileSync(path, line);
+    if (_bytesOnDisk !== null) _bytesOnDisk += lineBytes;
   } catch {
     // Disk full / permission denied / path invalid — silently drop.
     // We deliberately do NOT log to stderr here because uncaughtException
@@ -745,4 +852,6 @@ export function _resetDiagnosticLogForTest(): void {
   _resolvedPath = null;
   _disabled = null;
   _dirEnsured = false;
+  _maxBytes = null;
+  _bytesOnDisk = null;
 }

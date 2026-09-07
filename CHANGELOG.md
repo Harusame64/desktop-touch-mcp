@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased]
+
+- **The diagnostic log no longer grows without limit.** `~/.desktop-touch-mcp/logs/diagnostic.log`
+  is append-only and had no ceiling of any kind — no size cap, no rotation, no
+  age cutoff. On one long-running install it had reached **18.5 GB across 34.8
+  million lines** before anyone noticed, from ordinary day-to-day traffic rather
+  than any single runaway event. Nothing warned about it, and the only ways to
+  stop it required knowing the log existed.
+
+  The live file is now rolled to `diagnostic.log.1` when it passes 64 MiB, and
+  at most two rolled generations are kept, so the whole log directory stays
+  under roughly 192 MiB no matter how long the server runs. Nothing about the
+  events themselves changed, and the newest records are always in
+  `diagnostic.log`.
+
+  Set `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` to a positive byte count if you
+  want a different ceiling; an unusable value falls back to the default rather
+  than turning rotation off, so a typo cannot bring the old behaviour back. To
+  turn the log off entirely, `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1` still
+  does that.
+
+  **If you have been running this server for a while, check that file** — this
+  release bounds future growth but does not delete what has already
+  accumulated. Deleting `diagnostic.log` (and any `.1` / `.2` beside it) is
+  safe; it is a diagnostic aid, not state the server needs.
+
+
 ## [1.16.0] - 2026-08-29 — Scrolling works on Tauri, Electron and other WebView apps, and one `amount` unit now means one wheel notch everywhere
 
 - **BREAKING: `scroll(action='raw')` now moves 40x further for the same

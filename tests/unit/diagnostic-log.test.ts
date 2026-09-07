@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
   safeStringify,
   normalizeThrown,
   wrapHandlerArgWithTiming,
+  parseMaxLogBytes,
   _resetDiagnosticLogForTest,
   type DiagnosticEvent,
 } from "../../src/engine/diagnostic-log.js";
@@ -317,5 +318,125 @@ describe("DiagnosticEvent type discrimination", () => {
       { kind: "drain_oversize", batch_size: 100, overflow: false },
     ];
     expect(events.length).toBe(5);
+  });
+});
+
+
+/**
+ * Rotation (the 18.5 GB defect).
+ *
+ * The log was append-only with no ceiling; on the maintainer's machine it
+ * reached 18,548,383,199 bytes / 34,811,118 lines over ~3.5 months of ordinary
+ * traffic (measured 2026-09-07). These tests pin the ceiling AND that the
+ * ceiling is load-bearing: the last case is a mutation check — remove the
+ * rotation call and it is the one that turns red, because every other
+ * assertion here still passes on an unbounded file.
+ */
+describe("diagnostic-log rotation", () => {
+  let tmp: string;
+  let logPath: string;
+  const savedEnv = { ...process.env };
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "diagrot-"));
+    logPath = join(tmp, "sub", "diag.log");
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH = logPath;
+    delete process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE;
+    _resetDiagnosticLogForTest();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+    process.env = { ...savedEnv };
+    _resetDiagnosticLogForTest();
+  });
+
+  function write(n: number): void {
+    for (let i = 0; i < n; i++) {
+      logDiagnostic({ kind: "slow_tool", tool: `t${i}`, elapsed_ms: i, args_size: 0 });
+    }
+  }
+
+  describe("parseMaxLogBytes", () => {
+    const DEFAULT = 64 * 1024 * 1024;
+
+    it("accepts a positive integer", () => {
+      expect(parseMaxLogBytes("4096")).toBe(4096);
+      expect(parseMaxLogBytes("  4096  ")).toBe(4096);
+    });
+
+    it("falls back to the default for every malformed value — a typo must not restore unbounded growth", () => {
+      for (const raw of [undefined, "", "   ", "abc", "0", "-1", "1.5", "Infinity", "NaN", "1e400"]) {
+        expect(parseMaxLogBytes(raw)).toBe(DEFAULT);
+      }
+    });
+
+    it('"0" is not a disable switch — DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE is', () => {
+      expect(parseMaxLogBytes("0")).toBe(DEFAULT);
+    });
+  });
+
+  it("rolls the live file to .1 once it passes the ceiling", () => {
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "600";
+    _resetDiagnosticLogForTest();
+
+    write(1);
+    expect(existsSync(logPath)).toBe(true);
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+
+    write(20);
+    expect(existsSync(`${logPath}.1`)).toBe(true);
+    expect(statSync(logPath).size).toBeLessThanOrEqual(600);
+  });
+
+  it("keeps at most KEPT_GENERATIONS rotated files — total disk stays bounded", () => {
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "400";
+    _resetDiagnosticLogForTest();
+
+    write(200);
+
+    expect(existsSync(`${logPath}.1`)).toBe(true);
+    expect(existsSync(`${logPath}.2`)).toBe(true);
+    // The third generation is the one that must never appear.
+    expect(existsSync(`${logPath}.3`)).toBe(false);
+
+    for (const f of [logPath, `${logPath}.1`, `${logPath}.2`]) {
+      expect(statSync(f).size).toBeLessThanOrEqual(400 + 512);
+    }
+  });
+
+  it("seeds its byte estimate from a file that already exists, so a restart does not start the count over", () => {
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(logPath, "x".repeat(500), "utf8");
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "600";
+    _resetDiagnosticLogForTest();
+
+    // One record is far under 600 bytes, but the pre-existing 500 puts the
+    // pair over the ceiling — only a seeded counter notices.
+    write(2);
+    expect(existsSync(`${logPath}.1`)).toBe(true);
+  });
+
+  it("never loses the newest events: whatever the rotation did, the last record written is in the live file", () => {
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "400";
+    _resetDiagnosticLogForTest();
+
+    write(60);
+    logDiagnostic({ kind: "slow_tool", tool: "LAST", elapsed_ms: 1, args_size: 0 });
+
+    const live = readFileSync(logPath, "utf8");
+    expect(live).toContain('"tool":"LAST"');
+  });
+
+  it("MUTATION: without rotation the file grows past the ceiling — this is the assertion that fails if rotateIfNeeded is removed", () => {
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES = "600";
+    _resetDiagnosticLogForTest();
+
+    write(100);
+
+    // Unbounded growth would put well over 600 bytes in the live file. The
+    // ceiling is the whole point of the change, so assert it directly rather
+    // than inferring it from the presence of a .1 file.
+    expect(statSync(logPath).size).toBeLessThanOrEqual(600);
   });
 });
