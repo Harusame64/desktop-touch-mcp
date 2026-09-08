@@ -6,7 +6,7 @@ import { captureScreen } from "../engine/image.js";
 import { padCaptureRegion, resolveCaptureRegionAsync } from "../engine/reachable-bounds.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith, failArgs } from "./_errors.js";
+import { failWith, failArgs, failCode } from "./_errors.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
@@ -313,11 +313,25 @@ export const setElementValueHandler = async ({
             "its fallback channels still find the window by title. click_element and " +
             "keyboard take hwnd here. A more specific windowTitle works only if this " +
             "window's title holds text no other open window's title holds: matching is " +
-            "substring-based, and the browser suffix is stripped from your query as " +
-            "well, so \"Report\" beside \"Report archive\", or one page open in two " +
-            "browsers, can never be separated by title. Unsetting DTM_SET_VALUE_CHAIN " +
-            "lets this tool take hwnd too, but that is a server setting, not a call " +
-            "argument.";
+            "substring-based, and a Chrome, Edge or Firefox suffix is stripped from " +
+            "your query as well, so \"Report\" beside \"Report archive\", or one page " +
+            "open in Chrome and in Edge, can never be separated by title. Unsetting " +
+            "DTM_SET_VALUE_CHAIN lets this tool take hwnd too, but that is a server " +
+            "setting, not a call argument.";
+          // The `suggest` catalogue answers by guard STATUS, and its
+          // `ambiguous_target` line offers the two recoveries the sentence above
+          // has just ruled out: pass hwnd, and narrow the title. The response
+          // carried both halves of a contradiction, and the dead half is the one
+          // the server instructions tell the model to read. So this one refusal
+          // answers with its own list; every other block status here keeps the
+          // catalogue, which is right for them.
+          return failCode("AutoGuardBlocked", ag.summary.next, {
+            suggest: [
+              "Read the error message — for this refusal it is the whole recovery.",
+              "desktop_discover returns each open window's hwnd; click_element and keyboard accept it on this window.",
+            ],
+            rootExtras: { _perceptionForPost: ag.summary },
+          });
         }
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "set_element_value", { _perceptionForPost: ag.summary });
       }

@@ -171,29 +171,46 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     } as never));
     const said = JSON.stringify(r);
     expect(said).toContain("DTM_SET_VALUE_CHAIN");
-    // Names recoveries the caller can actually perform, not only an env var.
-    expect(said).toContain("click_element");
-    expect(said).toContain("keyboard");
-    expect(said).not.toContain("Pass hwnd to name one window exactly");
 
-    const next = r.context?._perceptionForPost?.next ?? said;
-    // The title advice must not be offered flat. `ambiguous_target` fires on a
-    // shared title substring: narrowing works when the full titles differ and
-    // is useless when they are identical, which is the case this refusal is
-    // about. Unconditional, it points straight back into the loop.
-    expect(next).not.toMatch(/or use a more specific windowTitle/);
-    expect(next).toMatch(/more specific windowTitle works only if/);
-    // And the limit is stated as the matcher actually behaves. Candidates are
-    // kept by SUBSTRING, so the question is not whether the titles differ but
-    // whether this one holds text no other holds — "Report" beside "Report
-    // archive" differs and still cannot be narrowed, and the browser suffix is
-    // stripped from the query as well, so two browsers showing one page arrive
-    // as a single string. Both wordings this replaced were true and useless.
-    expect(next).toMatch(/no other open window/);
-    expect(next).toMatch(/browser suffix/);
-    // And the recoveries the caller can perform come before the one only an
-    // operator can: this text is read by whoever made the call.
-    expect(next.indexOf("click_element")).toBeLessThan(next.indexOf("Unsetting"));
+    // NOTHING in the whole response may tell this caller to pass hwnd: the
+    // descriptor withholds it on purpose while the chain is armed, so that
+    // advice comes straight back to this refusal. Case-insensitive, because the
+    // two producers differ only in capitalisation — the `suggest` catalogue's
+    // lower-case "pass hwnd to name one window exactly" sat in this same
+    // response, contradicting its own error message, and an assertion written
+    // against the capitalised form did not see it.
+    expect(said).not.toMatch(/pass\s+hwnd/i);
+
+    // Read the field the guard fills, not the serialised envelope.
+    // `_perceptionForPost` is spread onto the ROOT of a failure, not into
+    // `context`; an earlier version of this test looked in `context`, got
+    // `undefined`, and silently asserted against the whole JSON blob — which
+    // includes the static suggest catalogue, so an edit there could have
+    // flipped these.
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).not.toBe("");
+
+    // The recoveries the caller can perform on its next call, named first.
+    expect(next).toContain("click_element");
+    expect(next).toContain("keyboard");
+    // …and the one only an operator can perform, after them. Keyed on the
+    // INSTRUCTION to unset rather than on a chosen word, so a rewrite that keeps
+    // the order keeps passing — and so an extra unset-first sentence cannot slip
+    // in ahead of the tools while a later mention keeps the check happy.
+    const unsetAt = next.search(/unset\w*\s+(?:that variable|the variable|DTM_SET_VALUE_CHAIN)/i);
+    expect(unsetAt).toBeGreaterThan(-1);
+    expect(next.indexOf("click_element")).toBeLessThan(unsetAt);
+
+    // The title advice is never offered flat: whatever sentence mentions
+    // windowTitle has to carry its condition. Two conditions have already been
+    // shot in review — "identical titles" and "differ ahead of the browser
+    // suffix" — because matching is substring-based, so the real one is whether
+    // this window's title holds text no other window's does.
+    expect(next).toMatch(/windowTitle[^.]*only/i);
+    expect(next).toMatch(/no other[^.]*window/i);
+    // Prose, and known to be: the browser suffix is the trap a caller cannot
+    // infer from the rule, so the text has to keep naming it.
+    expect(next).toMatch(/suffix/i);
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {
@@ -206,6 +223,12 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     } as never));
     expect(JSON.stringify(r)).toContain("Pass hwnd to name one window exactly");
     expect(JSON.stringify(r)).not.toContain("DTM_SET_VALUE_CHAIN");
+    // The second half of that same generic line used to offer `name` and
+    // `automationId` as ways to narrow an ambiguous target. The guard counts
+    // WINDOWS — `resolveActionTarget` sees `titleIncludes` and nothing else —
+    // so neither can change the count, in this tool or in any other that shares
+    // the catalogue.
+    expect(JSON.stringify(r)).not.toMatch(/narrow windowTitle \/ name \/ automationId/);
   });
 });
 
