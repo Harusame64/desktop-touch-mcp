@@ -60,7 +60,13 @@
     that this skip happened: the same verdict is returned whenever the read-back
     cannot read its target for any reason. On the machine where this was
     measured the skip was confirmed by timing instead — the skipped call costs
-    about 400 ms less, which is the read-back it did not perform.
+    about 400 ms less, which is the read-back it did not perform. **The count is
+    taken before the action, so this does not cover a same-titled window that the
+    action itself opens** — measured on a real desktop, 8 of 8 such calls read
+    the sibling back and reported a delivery that had happened as
+    `BackgroundInputNotDelivered`, with or without a handle. Closing that needs
+    the read-back pinned to the handle, which changes what the verdict means and
+    is not in this release.
   - `narrate: "rich"` returns no before/after diff when the diff cannot be shown
     to describe the window that was acted on, and says which case in
     `diffDegraded`. That diff is built from UIA snapshots taken *by title*, so it
