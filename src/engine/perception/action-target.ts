@@ -417,6 +417,44 @@ async function resolveCoordinateTarget(
         `but both belong to the same process — proceeding (owned dialog / popup)`
       );
     } else if (verdict !== "match") {
+      // ADR-039 spike — the rectangle says the point is covered. Ask the OS
+      // before refusing.
+      //
+      // `findContainingWindow` decides containment from cached rectangles and
+      // never asks the input stack. A layered window with alpha 0 covers every
+      // rectangle on screen while clicks pass straight through it, so this
+      // branch refuses coordinates that would land (ADR-039 §1, §12.0 M-1/M-10).
+      //
+      // Smallest branch that answers the spike's question: if the OS hit test
+      // resolves the point to a DIFFERENT top-level window, and that window is
+      // the one the caller named, deliver there instead of refusing. Every
+      // other shape — the OS agrees with the rectangle, the OS does not answer,
+      // the OS names a third window — still refuses. A spike does not widen
+      // the pass set beyond the case it is measuring.
+      const osRoot = win32.hitTestTopLevelWindowAt?.(x, y) ?? null;
+      if (osRoot && String(osRoot.hwnd) !== hwnd) {
+        const rawHint = windowTitle.trim().toLowerCase();
+        const normalizedHint = normalizeTitle(windowTitle);
+        const osTitle = osRoot.title;
+        const namesIt =
+          rawHint !== "" &&
+          (osTitle.toLowerCase().includes(rawHint) ||
+            (normalizedHint !== "" && normalizeTitle(osTitle).includes(normalizedHint)));
+        if (namesIt) {
+          warnings.push(
+            `point (${x},${y}) is covered by "${cached.title}" (hwnd ${hwnd}) but the OS hit ` +
+            `test passes through to "${osTitle}" (hwnd ${osRoot.hwnd}) — proceeding`
+          );
+          return buildWindowLensResult(
+            String(osRoot.hwnd),
+            osTitle,
+            normalizeTitle(windowTitle),
+            actionKind,
+            1,
+            warnings,
+          );
+        }
+      }
       warnings.push(
         `windowTitle "${windowTitle}" does not match containing window "${cached.title}"`
       );

@@ -202,6 +202,8 @@ export interface NativeWin32 {
   // ADR-007 P4 owner / ancestor / enabled / popup / DWM utilities
   win32GetWindow?(hwnd: bigint, uCmd: number): bigint | null;
   win32GetAncestor?(hwnd: bigint, gaFlags: number): bigint | null;
+  /** ADR-039 spike: ask the OS which window a click at (x, y) would hit. */
+  win32WindowFromPoint?(x: number, y: number): bigint | null;
   win32IsWindowEnabled?(hwnd: bigint): boolean;
   win32GetLastActivePopup?(hwnd: bigint): bigint | null;
   win32IsWindowCloaked?(hwnd: bigint): boolean;

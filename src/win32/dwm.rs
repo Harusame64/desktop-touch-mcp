@@ -13,11 +13,12 @@
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetLastActivePopup, GetWindow, GET_ANCESTOR_FLAGS, GET_WINDOW_CMD,
+    GetAncestor, GetLastActivePopup, GetWindow, WindowFromPoint, GET_ANCESTOR_FLAGS,
+    GET_WINDOW_CMD,
 };
 
 use super::safety::napi_safe_call;
@@ -59,6 +60,27 @@ pub fn win32_get_ancestor(hwnd: BigInt, ga_flags: u32) -> napi::Result<Option<Bi
             None
         } else {
             Some(hwnd_to_bigint(ancestor))
+        })
+    })
+}
+
+/// `WindowFromPoint(x, y)` — ask the OS which window would receive a click at
+/// a screen point. This is the hit test the input stack itself performs, so it
+/// honours per-window transparency that rectangle containment cannot see: a
+/// layered window with alpha 0 covers the rectangle but the OS looks straight
+/// through it (ADR-039 §12.0 M-10).
+///
+/// Returns the deepest window at the point; callers that want a top-level
+/// window pass the result through `win32_get_ancestor(_, GA_ROOT)`. A NULL
+/// return (the point is on no window at all) is normalised to `None`.
+#[napi]
+pub fn win32_window_from_point(x: i32, y: i32) -> napi::Result<Option<BigInt>> {
+    napi_safe_call("win32_window_from_point", || {
+        let hit = unsafe { WindowFromPoint(POINT { x, y }) };
+        Ok(if hit.0.is_null() {
+            None
+        } else {
+            Some(hwnd_to_bigint(hit))
         })
     })
 }

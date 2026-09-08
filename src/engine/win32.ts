@@ -27,6 +27,7 @@ const GWL_EXSTYLE   = -20;
 const WS_EX_TOPMOST = 0x00000008;
 const GW_OWNER      = 4;
 const GA_ROOTOWNER  = 3;
+const GA_ROOT       = 2;   // ADR-039 spike — GetAncestor root traversal
 
 /**
  * Return the hwnd of the last active popup owned by `hwnd`.
@@ -716,6 +717,41 @@ export function getWindowRootOwner(hwnd: unknown): bigint | null {
   if (typeof hwnd !== "bigint") return null;
   try {
     return requireNativeWin32().win32GetAncestor!(hwnd, GA_ROOTOWNER);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ADR-039 spike — ask the OS which TOP-LEVEL window would receive a click at a
+ * screen point.
+ *
+ * `findContainingWindow` decides containment from cached rectangles alone. A
+ * layered window with alpha 0 covers every rectangle on screen while the input
+ * stack looks straight through it, so the rectangle answer and the OS answer
+ * disagree and the guard refuses coordinates that would in fact land (ADR-039
+ * §1, §12.0 M-10).
+ *
+ * `WindowFromPoint` is the hit test the input stack itself performs, so it is
+ * the authority for that question. Its result is the DEEPEST window at the
+ * point (a child control, a menu); `GetAncestor(GA_ROOT)` lifts it to the
+ * top-level window the caller reasons about.
+ *
+ * Returns null when the point is on no window, when the native surface is
+ * missing, or on any failure — each of which the caller must read as "the OS
+ * did not answer", never as "nothing is there".
+ */
+export function hitTestTopLevelWindowAt(
+  x: number,
+  y: number,
+): { hwnd: bigint; title: string } | null {
+  try {
+    const native = requireNativeWin32();
+    const hit = native.win32WindowFromPoint!(x, y);
+    if (hit === null) return null;
+    const root = native.win32GetAncestor!(hit, GA_ROOT);
+    if (root === null) return null;
+    return { hwnd: root, title: getWindowTitleW(root) };
   } catch {
     return null;
   }
