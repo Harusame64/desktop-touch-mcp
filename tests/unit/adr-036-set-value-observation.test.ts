@@ -8,6 +8,13 @@
  * observation away from the paths that report no hints (channel 3, and every
  * failure). This file pins both halves: never twice (a second call would record
  * one window under two handles and invent a drift), and never zero.
+ *
+ * Round 5 found the half no branch can reach: a channel that REJECTS — the
+ * PowerShell runner timing out, or handing back malformed JSON — leaves through
+ * the handler's outer catch, past every branch. `ok:false` was covered; a
+ * thrown failure still walked off with the observation. The second describe
+ * below is that path, and the two ordering tests in it are what stop the debt
+ * and the observation from drifting apart again.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -50,6 +57,7 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
 });
 
 const { setElementValueHandler } = await import("../../src/tools/ui-elements.js");
+const { resolveWindowTarget } = await import("../../src/tools/_resolve-window.js");
 
 const call = () => setElementValueHandler({
   windowTitle: TITLE, hwnd: String(LIVE), value: "x", name: "Field",
@@ -104,5 +112,72 @@ describe("ADR-036 — set_element_value observes its window exactly once, whiche
     const r = await call();
     expect(JSON.parse(r.content![0]!.text).ok).toBe(false);
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ADR-036 — a channel that REJECTS still leaves exactly one observation behind", () => {
+  const failed = (r: Awaited<ReturnType<typeof call>>) => JSON.parse(r.content![0]!.text) as { ok: boolean; error?: string };
+
+  it("channel 1 rejects, chain disabled", async () => {
+    mockSetValue.mockRejectedValue(new Error("PowerShellTimeout") as never);
+    const r = await call();
+    expect(failed(r).ok).toBe(false);
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+    // Unpinned: the handle follows a write that reached the window through it,
+    // and a rejection is not one.
+    expect(mockBuildHints.mock.calls[0]![1]).toBeUndefined();
+  });
+
+  it("channel 1 rejects with the chain armed — the later channels never run, the observation still happens", async () => {
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockRejectedValue(new Error("PowerShellTimeout") as never);
+    mockInsertText.mockClear();   // the earlier cases in this file left calls on it
+    const r = await call();
+    expect(failed(r).ok).toBe(false);
+    expect(mockInsertText).not.toHaveBeenCalled();
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("channel 2 rejects", async () => {
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
+    mockInsertText.mockRejectedValue(new Error("MalformedRunnerJson") as never);
+    const r = await call();
+    expect(failed(r).ok).toBe(false);
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("channel 3 rejects", async () => {
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
+    mockKeyboardType.mockRejectedValueOnce(new Error("KeyboardThrew") as never);
+    const r = await call();
+    expect(failed(r).ok).toBe(false);
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("a branch that already observed is not made to observe again by throwing afterwards", async () => {
+    // The observation succeeds and what follows it in the same branch throws.
+    // The debt has to be settled by the act of observing, not after it: clear
+    // it later and this call observes twice — the drift that never happened.
+    mockBuildHints.mockImplementationOnce(() => { throw new Error("HintsThrew"); });
+    const r = await call();
+    expect(failed(r).ok).toBe(false);
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("an observation that cannot be taken does not become the reported error", async () => {
+    mockSetValue.mockRejectedValue(new Error("PowerShellTimeout") as never);
+    mockBuildHints.mockImplementationOnce(() => { throw new Error("EnumWindowsThrew"); });
+    const r = await call();
+    expect(failed(r).error).toContain("PowerShellTimeout");
+    expect(failed(r).error).not.toContain("EnumWindowsThrew");
+  });
+
+  it("a failure BEFORE any channel runs owes nothing — the pre-Round-3 code did not observe there either", async () => {
+    vi.mocked(resolveWindowTarget).mockRejectedValueOnce(new Error("EnumFailed") as never);
+    const r = await call();
+    expect(failed(r).ok).toBe(false);
+    expect(mockBuildHints).not.toHaveBeenCalled();
   });
 });

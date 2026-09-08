@@ -214,6 +214,11 @@ function allSetValueChannelsAreHandleAddressed(): boolean {
 export const setElementValueHandler = async ({
   windowTitle, hwnd: hwndParam, value, name, automationId, lensId,
 }: { windowTitle: string; hwnd?: string; value: string; name?: string; automationId?: string; lensId?: string }): Promise<ToolResult> => {
+  // ADR-036 — the observation this call still owes, held outside the try so the
+  // catch can see it (the `click_element` prologue above hoists for the same
+  // reason). Null until a channel is about to run, and null again the moment
+  // one of the branches below takes it.
+  let observationOwedFor: string | null = null;
   try {
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
@@ -292,10 +297,22 @@ export const setElementValueHandler = async ({
     // Built once per call and never twice: `buildHintsForTitle` OBSERVES the
     // window it resolves, so calling it for both forms would record the same
     // window under two handles and report a drift that never happened.
+    //
+    // `observe` is the only place this handler observes from, so a branch
+    // taking the observation is the same act as clearing the debt — they
+    // cannot drift apart the way a separate flag would.
+    const observe = (title: string, pinnedHwnd?: bigint) => {
+      observationOwedFor = null;
+      return buildHintsForTitle(title, pinnedHwnd);
+    };
+
     const attempts: Array<{ channel: string; error: string }> = [];
 
     // Channel 1: ValuePattern (always tried first)
     // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
+    // Owed from here: from this line on, some window has been written to (or an
+    // attempt was made on it) and the drift baseline is stale until observed.
+    observationOwedFor = effectiveTitle;
     const r1 = await setElementValue(
       effectiveTitle, value, name, automationId,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
@@ -303,7 +320,7 @@ export const setElementValueHandler = async ({
     if (r1.ok) {
       // Channel 1 is handle-addressed (the `hwnd` passed above), so the report
       // may name that handle.
-      const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
+      const hintsBlock = observe(effectiveTitle, resolvedWin?.hwnd);
       const hints = {
         ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
         ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
@@ -319,7 +336,7 @@ export const setElementValueHandler = async ({
       if (r2.ok) {
         // Channel 2 resolved by title, so its report does too — the hints
         // follow the write, they do not lead it.
-        const hintsBlock = buildHintsForTitle(effectiveTitle);
+        const hintsBlock = observe(effectiveTitle);
         const hints = {
           ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
           ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
@@ -349,7 +366,7 @@ export const setElementValueHandler = async ({
         try {
           const parsed = JSON.parse(r3.content[0].text);
           if (parsed.ok) {
-            buildHintsForTitle(effectiveTitle);   // observation only — see above
+            observe(effectiveTitle);   // observation only — see above
             return ok({ ok: true, channel: "keyboard", ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
           }
           attempts.push({ channel: "keyboard", error: parsed.error ?? "KeyboardFailed" });
@@ -361,7 +378,7 @@ export const setElementValueHandler = async ({
       }
 
       // All channels failed — suggest comes from _errors.ts SUGGESTS.SetValueAllChannelsFailed
-      buildHintsForTitle(effectiveTitle);   // observation only — see above
+      observe(effectiveTitle);   // observation only — see above
       return failWith(
         new Error("SetValueAllChannelsFailed"),
         "set_element_value",
@@ -370,9 +387,27 @@ export const setElementValueHandler = async ({
     }
 
     // Chain disabled: report ValuePattern failure
-    buildHintsForTitle(effectiveTitle);   // observation only — see above
+    observe(effectiveTitle);   // observation only — see above
     return failWith(r1.error ?? "Unknown error", "set_element_value", { windowTitle: effectiveTitle, name, automationId });
   } catch (err) {
+    // ADR-036 — a channel that REJECTS instead of returning `ok:false` (the
+    // PowerShell runner times out, or hands back malformed JSON) leaves through
+    // here, past every branch that would have observed. Round 3 opened that
+    // hole by moving the one top-of-handler observation down into the branches;
+    // before it the observation was taken ahead of the channels and no failure
+    // could lose it. Paid here exactly when no branch paid it — observing twice
+    // files one window under two handles and reports a drift that never
+    // happened. Unpinned, like every other failure path in this handler: the
+    // handle follows a write that reached the window through it, and a
+    // rejection is not that.
+    if (observationOwedFor !== null) {
+      try {
+        buildHintsForTitle(observationOwedFor);
+      } catch {
+        // The channel's failure is what the caller needs; an observation that
+        // cannot be taken must not take its place as the reported error.
+      }
+    }
     return failWith(err, "set_element_value", { windowTitle, name, automationId });
   }
 };
