@@ -354,6 +354,49 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockPin).not.toHaveBeenCalled();
   });
 
+  it("counts the string the SNAPSHOTS search with, not the window's live title", async () => {
+    // The two are the same until the window is renamed between the wrapper's
+    // two resolutions. Then `again.title` is what the window is called now and
+    // `windowTitle` is what both `snapElements` calls will search for — and only
+    // the second one can say whether those searches are ambiguous. Counting the
+    // live title answers a question nobody asked, and a mutation to it survived
+    // the suite until this was measured.
+    windows = [{ hwnd: 0x2222n, title: "Alpha" }];
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    const first = resolver.getMockImplementation()!;
+    let calls = 0;
+    resolver.mockImplementation(async () => {
+      calls += 1;
+      // Same HANDLE both times — so this is not `target_changed` — renamed in
+      // between, which is what pulls the two strings apart.
+      return calls >= 2
+        ? { hwnd: 0x2222n, title: "Beta", warnings: [], className: "X" } as never
+        : { hwnd: 0x2222n, title: "Alpha", warnings: [], className: "X" } as never;
+    });
+    // Two more windows called "Alpha" arrive while the before-snapshot is read,
+    // so the argument's title is shared and the live one is not.
+    mockGetUiElements.mockImplementationOnce(async () => {
+      windows = [
+        { hwnd: 0x2222n, title: "Beta" },
+        { hwnd: 0x9999n, title: "Alpha" },
+        { hwnd: 0xAAAAn, title: "Alpha" },
+      ];
+      return { ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never;
+    });
+    // …and they close again while the action runs, so the count AFTER the action
+    // sees nothing wrong. Without that the third count masks this one and the
+    // mutation survives — which it did, until the fixture was built to separate
+    // them. The before-snapshot was taken while the title was ambiguous, so it
+    // may describe the wrong window whatever the desktop looks like afterwards.
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [{ hwnd: 0x2222n, title: "Beta" }];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "Alpha", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    resolver.mockImplementation(first);
+    expect(richOf(r).diffDegraded).toBe("ambiguous_title");
+  });
+
   it("says in the shipped description that the diff can be withheld, and in which cases", () => {
     // That description is what decides whether the model takes a verification
     // screenshot instead. It promised the diff removes the need for one; this
@@ -371,6 +414,14 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(said).toContain("target_changed");
     expect(said).toContain("fix_target_unknown");
     expect(said).toContain("@active");
+    // …and WHERE each guarantee holds. This is one string registered on all
+    // nineteen narrated tools, and it promised a withhold "whether you named the
+    // hwnd or the server did" — which three of them implement. `mouse_click`,
+    // `mouse_drag` and `scroll` take an `hwnd` and narrate by title anyway, so a
+    // flat promise sent exactly those callers away without a screenshot.
+    expect(said).toMatch(/click_element, keyboard and set_element_value/);
+    expect(said).toMatch(/Other tools resolve nothing here/);
+    expect(said).toMatch(/verify with a screenshot/);
   });
 
   it("leaves title-only tools alone when the enumeration fails", async () => {
@@ -605,6 +656,37 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     const r = await titleOnly({ windowTitle: "Ledger", fixId: "fix-1", narrate: "rich" } as never);
     expect(richOf(r).diffDegraded).toBe("fix_target_unknown");
     expect(richOf(r).diffSource).toBe("none");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+  });
+
+  it("narrates a fixId call the handler will never see", async () => {
+    // `keyboard` registers a FLATTENED union, so the wire accepts `fixId` for
+    // `action:"press"`, which declares none — and the handler's re-parse strips
+    // it. Nothing retargets, the one-shot fix is never consumed, and withholding
+    // there took a CORRECT diff away under a reason untrue of the call: the same
+    // wrapper-and-handler disagreement as `fixId: ""`, moved to a dispatcher
+    // variant. The registration answers it per call now.
+    const { keyboardFixRetargets } = await import("../../src/tools/keyboard.js");
+    expect(keyboardFixRetargets({ action: "press" })).toBe(false);
+    expect(keyboardFixRetargets({ action: "type" })).toBe(true);
+    expect(keyboardFixRetargets({ action: "sequence" })).toBe(true);
+
+    const dispatcher = withRichNarration("keyboard", innerHandler as never, {
+      ...UIA_WRITE_NARRATION, fixRetargets: keyboardFixRetargets,
+    });
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const press = await dispatcher({
+      action: "press", windowTitle: "Ledger", hwnd: LIVE, fixId: "fix-1", narrate: "rich",
+    } as never);
+    expect(richOf(press).diffDegraded).toBeUndefined();
+    expect(richOf(press).diffSource).toBe("uia");
+
+    // The pairing: the variants that DO adopt the fix keep the withhold.
+    mockGetUiElements.mockClear();
+    const typed = await dispatcher({
+      action: "type", windowTitle: "Ledger", hwnd: LIVE, fixId: "fix-1", narrate: "rich",
+    } as never);
+    expect(richOf(typed).diffDegraded).toBe("fix_target_unknown");
     expect(mockGetUiElements).not.toHaveBeenCalled();
   });
 

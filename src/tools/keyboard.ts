@@ -3492,11 +3492,28 @@ export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_ty
 const keyboardUnionWithInclude = withEnvelopeIncludeForUnion(keyboardSchema);
 export const keyboardRegistrationSchema = flattenUnionToObjectSchema(keyboardUnionWithInclude);
 
+/**
+ * ADR-036 — does a `fixId` on this call retarget the handler?
+ *
+ * `action:"press"` declares no `fixId`, and this tool registers a FLATTENED
+ * union, so the wire schema accepts one anyway and the handler's re-parse
+ * against the real union strips it. Nothing retargets, the one-shot fix is never
+ * consumed, and withholding the diff there costs a correct one under a reason
+ * that is untrue of the call. `type` and `sequence` do adopt the fix's
+ * `windowTitle` and must keep withholding.
+ *
+ * Exported so the rule can be tested as itself: it is one expression deciding
+ * which of three dispatcher variants gets a diff, and inlining it put that
+ * decision somewhere no test could reach.
+ */
+export const keyboardFixRetargets = (args: Record<string, unknown>): boolean =>
+  args["action"] !== "press";
+
 export const keyboardRegistrationHandler = makeCommitWrapper(
   withRichNarration(
     "keyboard",
     keyboardHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
-    UIA_WRITE_NARRATION,
+    { ...UIA_WRITE_NARRATION, fixRetargets: keyboardFixRetargets },
   ) as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
   "keyboard",
   {

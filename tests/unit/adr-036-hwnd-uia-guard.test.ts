@@ -119,7 +119,7 @@ function guardDescriptor(): Record<string, unknown> | null {
 }
 
 beforeEach(() => {
-  winsRef.list = [win(SIBLING, SHARED_TITLE, 0), win(LIVE, SHARED_TITLE, 1)];
+  winsRef.list = [win(SIBLING, SHARED_TITLE, 0), win(LIVE, SHARED_TITLE, 1), win(WSTITLED, "   ", 2)];
   resetHotCache();
   mockRunActionGuard.mockClear();
   mockClickElement.mockClear();
@@ -470,7 +470,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(next).not.toContain("click_element and keyboard take hwnd here");
-    expect(next).toMatch(/keyboard[^.]*foreground/i);
+    // Anchored on the clause this branch alone produces. `/keyboard[^.]*
+    // foreground/` is satisfied by the TITLELESS text too ("keyboard does reach
+    // it while it stays in the foreground"), so it could not tell the two
+    // branches apart — the same blindness that let the last two versions of
+    // these tests pass on the wrong fixture.
+    expect(next).toContain("click_element takes hwnd here");
+    expect(next).toMatch(/keyboard reaches this window by handle only while it is in the foreground/i);
     // …and the suggest list, which is what the server instructions tell the
     // model to read, says the same thing rather than the flat promise.
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);

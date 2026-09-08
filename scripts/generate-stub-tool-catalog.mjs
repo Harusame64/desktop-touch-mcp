@@ -343,7 +343,7 @@ const commonParams = {
   tabIdParam: { type: 'string', description: 'Tab ID from browser_open. Omit to use the first page tab.', __optional: true },
   selectorParam: { type: 'string', description: "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')." },
   includeContextParam: { type: 'boolean', default: true, description: 'When true, append activeTab and readyState context to the response.', __optional: true },
-  narrateParam: { type: 'string', enum: ['minimal', 'rich'], default: 'minimal', description: 'Narration level. rich includes UIA or browser state diff when supported.', __optional: true },
+  narrateParam: { type: 'string', enum: ['minimal', 'rich'], default: 'minimal', description: 'Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on.', __optional: true },
   speedParam: { type: 'integer', minimum: 0, description: 'Cursor movement speed in px/sec. 0 = instant.', __optional: true },
   homingParam: { type: 'boolean', default: true, description: 'Enable homing correction if the target window moved.', __optional: true },
   windowTitleParam: { type: 'string', description: 'Partial title of the target window.', __optional: true },

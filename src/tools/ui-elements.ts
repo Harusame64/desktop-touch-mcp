@@ -503,17 +503,27 @@ export const setElementValueHandler = async ({
       try {
         return buildHintsForTitle(title, pinnedHwnd);
       } catch (e) {
-        // A REFUSAL is not a failed description. `buildHintsForTitle` cannot
-        // raise one today — it reaches win32 through `observeTarget` only
-        // (`getWindowProcessId` / `getProcessIdentityByPid`), never through
-        // `resolveWindowTarget`, `isExcludedTitle` or `refuseIfExcludedTarget`,
-        // and its own resolution block already swallows everything else — so
-        // this line is a guard against the next caller rather than a live case.
-        // A blanket `catch` under a fixed warning string is how a policy stop
-        // would come back as `ok:true` with a note.
-        if (e instanceof WindowExcludedError) throw e;
+        // A refusal is SAID differently and still does not travel as a
+        // failure. Re-throwing it — which is what the previous round did — put
+        // back the exact defect the commit before it is titled after: the
+        // channel had already returned, the value was in the field, and the
+        // response came back `ok:false` for a write that landed. Measured, all
+        // three shapes: channel 1 succeeded and was reported failed; the
+        // all-channels-failed path lost `SetValueAllChannelsFailed` and its
+        // `attempts`; channel 3 typed the text and reported failure. Refusing
+        // after the fact does not un-write anything, and the refusal that
+        // MATTERS runs in `resolveWindowTarget` before any channel.
+        //
+        // So it is a warning like the others, worded so the two cannot be
+        // mistaken for each other. `buildHintsForTitle` cannot raise one today
+        // in any case — it reaches win32 through `observeTarget` only, never
+        // through `resolveWindowTarget`, `isExcludedTitle` or
+        // `refuseIfExcludedTarget` — which is why this is about what the next
+        // caller would get, not about a live path.
         uiWarnings.push(
-          `identity hints unavailable: ${e instanceof Error ? e.message : String(e)}`,
+          e instanceof WindowExcludedError
+            ? `identity hints refused: ${e.message}`
+            : `identity hints unavailable: ${e instanceof Error ? e.message : String(e)}`,
         );
         return null;
       } finally {

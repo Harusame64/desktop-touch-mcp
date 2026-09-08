@@ -216,21 +216,26 @@ describe("ADR-036 — a channel that REJECTS still leaves exactly one observatio
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
   });
 
-  it("a REFUSAL is not a failed description — it still comes out as a refusal", async () => {
-    // The other edge of swallowing. `buildHintsForTitle` reaches win32 only
-    // through `observeTarget` and cannot raise a policy stop today, so this is
-    // a guard against the next caller — and an untested guard is a claim, which
-    // is the thing this PR keeps getting caught on. A `WindowExcludedError`
-    // arriving here must not become `ok:true` with a note about hints.
+  it("a REFUSAL is said differently and still does not un-report a write that landed", async () => {
+    // The previous round re-threw this, and that put back the defect the commit
+    // before it is titled after: the channel had already returned `ok:true`, so
+    // the response said `ok:false` for a field that HAD been written. Refusing
+    // after the fact does not un-write anything, and the refusal that matters
+    // runs in `resolveWindowTarget` before any channel. It is a warning — worded
+    // so it cannot be read as an ordinary hints failure.
     const { WindowExcludedError } = await import("../../src/engine/tool-exclusion.js");
     mockBuildHints.mockImplementationOnce(() => {
       throw new WindowExcludedError("WindowExcluded: the key locker is not addressable");
     });
     const r = await call();
-    const said = r.content![0]!.text;
-    expect(said).toContain("WindowExcluded");
-    expect(said).not.toContain("identity hints unavailable");
-    expect(JSON.parse(said).ok).toBe(false);
+    const said = JSON.parse(r.content![0]!.text) as {
+      ok?: boolean; channel?: string; hints?: { warnings?: string[] };
+    };
+    expect(said.ok).toBe(true);
+    expect(said.channel).toBe("value");
+    const warns = JSON.stringify(said.hints?.warnings ?? []);
+    expect(warns).toMatch(/identity hints refused.*WindowExcluded/);
+    expect(warns).not.toMatch(/identity hints unavailable/);
   });
 
   it("an observation that throws does not replace the channel's own error either", async () => {

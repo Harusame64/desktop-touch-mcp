@@ -40,12 +40,16 @@ export const narrateParam = z
     'Narration level. "rich": include UIA diff in post.rich (appeared/disappeared/valueDeltas) — ' +
     "usually removes the need for a verification screenshot. It is withheld, with " +
     "post.rich.diffDegraded saying why, when the diff cannot be shown to describe the " +
-    "window that was acted on: another open window's title contains the text this call " +
-    "resolved to, whether you named the handle or the server did — \"@active\" and the " +
-    "dialog rescue both resolve one (\"ambiguous_title\"); the target moved between the " +
-    "snapshot and the action (\"target_changed\"); or you retried with a fixId, whose " +
-    "stored window this cannot see (\"fix_target_unknown\"). The action itself is " +
-    "unaffected in every case — only the diff is withheld. Default: \"minimal\"."
+    "window that was acted on. On click_element, keyboard and set_element_value, which " +
+    "resolve the target window before acting: another open window's title contains the " +
+    "text this call resolved to, whether you named the hwnd or the server did — " +
+    "\"@active\" and the dialog rescue both resolve one (\"ambiguous_title\"); or the " +
+    "target moved between the snapshot and the action (\"target_changed\"). On any tool " +
+    "here, retrying with a fixId withholds it, because the stored fix names the window " +
+    "and this cannot see it (\"fix_target_unknown\"). Other tools resolve nothing here, " +
+    "so their diff describes whatever their windowTitle matched — if you pass an hwnd " +
+    "to one of those, verify with a screenshot. The action itself is unaffected in " +
+    "every case; only the diff is. Default: \"minimal\"."
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,6 +156,25 @@ export interface RichNarrationOptions {
    * the check in the rich path.
    */
   hwndKey?: string;
+
+  /**
+   * ADR-036 — does a `fixId` on THIS call retarget the handler?
+   *
+   * The wrapper withholds the diff for a fix retry, because the handler acts on
+   * the stored fix's `windowTitle` and these snapshots follow the argument. That
+   * is true of every handler that adopts a fix — until a tool is a dispatcher.
+   * `keyboard` registers a FLATTENED union, so the wire schema accepts `fixId`
+   * for `action:"press"`, which declares none; the handler re-parses against the
+   * real union and Zod strips it. Measured: the press retry lost a correct diff
+   * under `fix_target_unknown`, and the one-shot fix was never consumed because
+   * the handler never saw it.
+   *
+   * So the question is answered per CALL, at the registration that knows which
+   * variants adopt — not inferred from a key. Default: a tool that snapshots by
+   * title and receives a `fixId` is assumed to retarget, because withholding a
+   * diff is recoverable and a confident wrong one is not.
+   */
+  fixRetargets?: (args: Record<string, unknown>) => boolean;
 
   /**
    * When true, `narrate:"rich"` is silently ignored for non-state-transitioning
@@ -303,7 +326,8 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // Testing for presence here withheld a diff that was correct and named a
     // reason that was not true — a wrapper and its handler disagreeing about
     // what the same argument means, which is the shape this ADR is about.
-    if (options.windowTitleKey && Boolean(args["fixId"])) {
+    if (options.windowTitleKey && Boolean(args["fixId"]) &&
+        (options.fixRetargets ?? (() => true))(args)) {
       const result = await wrappedWithPost(args);
       spliceRich(result, degradedRichBlock("fix_target_unknown"));
       return result;
@@ -418,14 +442,16 @@ export function withRichNarration<T extends Record<string, unknown>>(
       return result;
     }
 
-    // Cost, named rather than hidden, and named at its real size: a plain-title
-    // miss enumerates TWICE inside `resolveWindowTarget` alone
-    // (`findPlainTopLevelWindowsByTitle`, then the Case 4 dialog sweep) before
-    // `titleIsSharedByMoreThanOneWindow` takes a third, and the re-check below
-    // repeats the first pair. Not folded into one, because the alternative is
-    // reimplementing the resolver here — which is the defect this replaced. Only
-    // the `narrate: "rich"` path pays it, and only on the three tools that
-    // declare a handle key.
+    // Cost, named rather than hidden, and counted rather than estimated: a
+    // plain-title miss enumerates TWICE inside `resolveWindowTarget` alone
+    // (`findPlainTopLevelWindowsByTitle`, then the Case 4 dialog sweep),
+    // `titleIsSharedByMoreThanOneWindow` takes a third, the re-check repeats the
+    // first pair, and the two counts after it take one each — nine on that path,
+    // six on the handle path (measured: 2 enumerations for a rich hwnd call
+    // against 0 for the same call at `minimal`). Not folded into one, because
+    // the alternative is reimplementing the resolver here, which is the defect
+    // this replaced. Only `narrate: "rich"` pays it, and only on the three tools
+    // that declare a handle key.
     const snapBefore = await snapElements(windowTitle, true);  // try cache first
 
     // The handler resolves again, and the desktop can move in between — a modal
