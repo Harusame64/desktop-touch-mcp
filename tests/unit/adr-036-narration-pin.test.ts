@@ -558,6 +558,30 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(innerHandler).toHaveBeenCalled();
   });
 
+  it("withholds when the ACTION itself creates the sibling", async () => {
+    // Both earlier counts run before the action, so neither can see a window the
+    // action opened — a state-changing shortcut doing exactly that is the
+    // ordinary case. The after-snapshot is title-only and would read the new
+    // window, and the diff would be built across two of them.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [
+        { hwnd: 0x2222n, title: "Ledger" },
+        { hwnd: 0x8888n, title: "Ledger" },
+      ];
+      // The same shape the default handler returns: `spliceRich` writes into
+      // `post`, and a result without one silently keeps no rich block at all.
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({
+      windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBe("ambiguous_title");
+    // The before-snapshot was taken (the target was unique then); the after one
+    // is what must not be read across two windows.
+    expect(mockGetUiElements).toHaveBeenCalledTimes(1);
+  });
+
   it("narrates the same call when no sibling appears", async () => {
     // The pairing: the second count is not simply refusing everything.
     windows = [{ hwnd: 0x2222n, title: "Ledger" }];

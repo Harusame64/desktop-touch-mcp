@@ -329,7 +329,23 @@ export function buildHintsForTitle(
     }
   } catch { /* ignore */ }
   if (!resolved) return null;
-  const obs = observeTarget(partialTitle, resolved.hwnd, resolved.title);
+  // The observation key follows how the window was NAMED, not what the caller
+  // typed. `lastByKey`'s whole question is "the window I knew by this name is a
+  // different handle now — did it restart, or is there a second instance?",
+  // and that question only exists for a title. A caller who named a HANDLE
+  // named one window; keyed by the query instead, alternating between two
+  // same-titled windows filed both under one slot, and observing A after B
+  // closed reported A as `process_restarted` — an invalidation that never
+  // happened, which then leaks into the next screenshot's cache state.
+  //
+  // `lastByHwnd` still answers the question that does apply to a handle
+  // (`hwnd_reused`), and it is untouched. NUL-separated because a window title
+  // can contain anything except that.
+  const obs = observeTarget(
+    pinnedHwnd !== undefined ? `\u0000hwnd\u0000${resolved.hwnd}` : partialTitle,
+    resolved.hwnd,
+    resolved.title,
+  );
   return {
     target: toTargetHints(obs.identity),
     caches: buildCacheStateHints(

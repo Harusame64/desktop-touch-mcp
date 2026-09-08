@@ -504,6 +504,23 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // Settle delay (only when we have a before-snapshot to diff against)
     await new Promise<void>((r) => setTimeout(r, UI_SETTLE_MS));
 
+    // Third count, and the last one that can matter: the two above ran BEFORE
+    // the action, so neither can see a sibling the action itself created — a
+    // shortcut that opens a second window of the same app is the ordinary case.
+    // The after-snapshot below is title-only, so it would read that sibling and
+    // the diff would be built across two windows. Counted here rather than
+    // earlier because this is the only side of the action that knows what the
+    // action did.
+    //
+    // Scoped to the pinned population, like the other two: extending a new
+    // withhold to the sixteen tools that never had one is how the last two
+    // spills happened, and it would be a behaviour change with no acceptance
+    // behind it.
+    if (pinnedHwnd !== undefined && titleIsSharedByMoreThanOneWindow(windowTitle)) {
+      spliceRich(result, degradedRichBlock("ambiguous_title"));
+      return result;
+    }
+
     try {
       const snapAfterElements = await snapElements(windowTitle, false);
       if (!snapAfterElements) {

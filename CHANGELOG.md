@@ -76,10 +76,15 @@
     fix exists because the guard found a narrower window than your argument did,
     so the two normally differ. The action itself is unaffected in every case —
     only the diff is
-    withheld. Withholding applies to the three tools this ADR covers
-    (`set_element_value`, `click_element`, `keyboard`); tools that narrate by
-    title alone and take no handle key — `mouse_click`, `scroll`, `focus_window`
-    and the browser set — are unchanged by this release.
+    withheld. `ambiguous_title` and `target_changed` apply to the three tools
+    this ADR covers (`set_element_value`, `click_element`, `keyboard`).
+    `fix_target_unknown` is wider on purpose, because its reason is wider: it
+    applies to every tool whose snapshots follow the `windowTitle` argument while
+    its handler adopts the fix's, which includes `mouse_click` and `mouse_drag` —
+    a rich `fixId` retry there now returns the marker instead of a diff.
+    `scroll`, `terminal`, `window_dock` and `focus_window` accept no `fixId`; the
+    browser set accepts one but never snapshots by title. None of those five
+    changes.
   - A window that **is open and has no title** — reached by handle, or by
     `windowTitle: "@active"` while it is in front — now gets its own answer from
     `set_element_value`, on the default configuration as well as with the chain
