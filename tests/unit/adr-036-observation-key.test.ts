@@ -53,12 +53,12 @@ describe("ADR-036 — a handle-named observation is keyed by the handle", () => 
     // observation saw "the window called Report used to be B, B is gone, and
     // the pid differs" and called it `process_restarted` — for a window that
     // never went anywhere, and which the caller had named by handle both times.
-    expect(buildHintsForTitle(TITLE, A)).not.toBeNull();
-    expect(buildHintsForTitle(TITLE, B)).not.toBeNull();
+    expect(buildHintsForTitle(TITLE, A, true)).not.toBeNull();
+    expect(buildHintsForTitle(TITLE, B, true)).not.toBeNull();
     windows = [{ hwnd: A, title: TITLE }];
     takeLastInvalidation();
 
-    const again = buildHintsForTitle(TITLE, A);
+    const again = buildHintsForTitle(TITLE, A, true);
     expect(again).not.toBeNull();
     expect(again!.hwnd).toBe(A);
     // The invalidation is global state that the next screenshot reads, so a
@@ -79,16 +79,51 @@ describe("ADR-036 — a handle-named observation is keyed by the handle", () => 
     expect(takeLastInvalidation()?.reason).toBe("process_restarted");
   });
 
+  it("keeps the title's question for @active and the dialog rescue", () => {
+    // The half the first version of this got wrong. `resolveWindowTarget` hands
+    // back a handle for `windowTitle:"@active"` and for a title only a dialog
+    // matches, so `pinnedHwnd` being set is NOT "the caller named a handle" —
+    // those callers named a title, and the drift question is live for them.
+    // Keying on the resolved handle took `process_restarted` away from
+    // `@active`, which is the shape the tool's own examples teach.
+    windows = [{ hwnd: A, title: TITLE }];
+    // Resolved by us, named by title: pass the handle, do NOT key by it.
+    expect(buildHintsForTitle(TITLE, A, false)).not.toBeNull();
+    takeLastInvalidation();
+
+    windows = [{ hwnd: B, title: TITLE }];
+    expect(buildHintsForTitle(TITLE, B, false)).not.toBeNull();
+    expect(takeLastInvalidation()?.reason).toBe("process_restarted");
+  });
+
+  it("a title that looks like the handle key cannot take its slot", () => {
+    // The key is NUL-separated because a window title can contain anything else
+    // — including `hwnd:4369`. Nothing exercised that, and a mutant using a
+    // printable prefix survived the suite.
+    const collide = `hwnd:${A}`;
+    windows = [{ hwnd: A, title: collide }];
+    expect(buildHintsForTitle(collide, A, true)).not.toBeNull();   // handle slot
+    takeLastInvalidation();
+
+    // Same string as a plain title query, on a DIFFERENT handle. If the two
+    // shared a slot this would read the handle-keyed record and call it a
+    // restart.
+    windows = [{ hwnd: B, title: collide }];
+    pidOf = { [String(B)]: 22 };
+    expect(buildHintsForTitle(collide, undefined, false)).not.toBeNull();
+    expect(takeLastInvalidation()).toBeNull();
+  });
+
   it("keeps the handle's own history: hwnd_reused is not affected", () => {
     // `lastByHwnd` answers the question that DOES apply to a handle, and the
     // new key does not go near it: the same handle coming back under a
     // different process is still a reuse.
     windows = [{ hwnd: A, title: TITLE }];
-    expect(buildHintsForTitle(TITLE, A)).not.toBeNull();
+    expect(buildHintsForTitle(TITLE, A, true)).not.toBeNull();
     takeLastInvalidation();
 
     pidOf = { [String(A)]: 99 };
-    expect(buildHintsForTitle(TITLE, A)).not.toBeNull();
+    expect(buildHintsForTitle(TITLE, A, true)).not.toBeNull();
     expect(takeLastInvalidation()?.reason).toBe("hwnd_reused");
   });
 });

@@ -46,6 +46,10 @@ vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
     ...actual,
     setElementValue: (...a: unknown[]) => mockSetValue(...(a as [])),
     insertTextViaTextPattern2: (...a: unknown[]) => mockInsertText(...(a as [])),
+    // `click_element` shares the predicate under test and is checked here too:
+    // a mutation to ITS call site survived while only `set_element_value` drove
+    // it, which is the "covered by reading" gap this test closes.
+    clickElement: vi.fn(async () => ({ ok: true })),
   };
 });
 
@@ -62,12 +66,23 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return {
     ...actual,
-    resolveWindowTarget: vi.fn(async (p: { hwnd?: string }) =>
-      p.hwnd !== undefined ? { hwnd: BigInt(p.hwnd), title: RESOLVED, warnings: [], className: "Chrome_WidgetWin_1" } : null),
+    resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) => {
+      if (p.hwnd !== undefined) {
+        return { hwnd: BigInt(p.hwnd), title: RESOLVED, warnings: [], className: "Chrome_WidgetWin_1" };
+      }
+      // `@active` resolves a HANDLE for a caller who named a title — the case
+      // that separates "we resolved one" from "they named one", and the reason
+      // a fixture where only `hwnd` resolves cannot tell the two predicates
+      // apart.
+      if (p.windowTitle === "@active") {
+        return { hwnd: LIVE, title: RESOLVED, warnings: [], className: "Chrome_WidgetWin_1" };
+      }
+      return null;
+    }),
   };
 });
 
-const { setElementValueHandler } = await import("../../src/tools/ui-elements.js");
+const { setElementValueHandler, clickElementHandler } = await import("../../src/tools/ui-elements.js");
 const { resolveWindowTarget } = await import("../../src/tools/_resolve-window.js");
 
 const call = () => setElementValueHandler({
@@ -192,6 +207,39 @@ describe("ADR-036 — a channel that REJECTS still leaves exactly one observatio
     const r = await call();
     expect(failed(r).ok).toBe(false);
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells the tracker WHO named the handle, not merely that one was resolved", async () => {
+    // The key `buildHintsForTitle` files the observation under follows the
+    // caller, not the resolution: `@active` and the dialog rescue hand back a
+    // handle for someone who named a TITLE, and keying those by handle took
+    // `process_restarted` away from them. The predicate is the PUBLIC argument,
+    // the same one the guard descriptor uses — and the wiring between the two is
+    // what a direct test of the tracker cannot see.
+    await call();                                   // passes `hwnd`
+    expect(mockBuildHints.mock.calls[0]![2]).toBe(true);
+
+    mockBuildHints.mockClear();
+    await setElementValueHandler({
+      windowTitle: TITLE, value: "x", name: "Field",
+    } as never);                                    // no `hwnd`, nothing resolved
+    expect(mockBuildHints.mock.calls[0]![2]).toBe(false);
+
+    // The discriminator: a handle IS resolved and the caller named none.
+    mockBuildHints.mockClear();
+    await setElementValueHandler({
+      windowTitle: "@active", value: "x", name: "Field",
+    } as never);
+    expect(mockBuildHints.mock.calls[0]![1]).toBe(LIVE);     // resolved by us…
+    expect(mockBuildHints.mock.calls[0]![2]).toBe(false);    // …named by title
+
+    // …and `click_element`, which has its own call to the same helper.
+    mockBuildHints.mockClear();
+    await clickElementHandler({ windowTitle: "@active", name: "Field" } as never);
+    expect(mockBuildHints.mock.calls[0]![2]).toBe(false);
+    mockBuildHints.mockClear();
+    await clickElementHandler({ windowTitle: TITLE, hwnd: String(LIVE), name: "Field" } as never);
+    expect(mockBuildHints.mock.calls[0]![2]).toBe(true);
   });
 
   it("an observation that throws does not turn a write that happened into a failure", async () => {

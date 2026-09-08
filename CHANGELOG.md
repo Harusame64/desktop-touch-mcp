@@ -80,8 +80,10 @@
     this ADR covers (`set_element_value`, `click_element`, `keyboard`).
     `fix_target_unknown` is wider on purpose, because its reason is wider: it
     applies to every tool whose snapshots follow the `windowTitle` argument while
-    its handler adopts the fix's, which includes `mouse_click` and `mouse_drag` —
-    a rich `fixId` retry there now returns the marker instead of a diff.
+    its handler adopts the fix's — which, counted, is `mouse_click`
+    alone outside the three: a rich `fixId` retry there now returns the marker
+    instead of a diff. (`mouse_drag` declares no `fixId`, so it cannot reach
+    this and does not change.)
     `scroll`, `terminal`, `window_dock` and `focus_window` accept no `fixId`; the
     browser set accepts one but never snapshots by title. None of those five
     changes.

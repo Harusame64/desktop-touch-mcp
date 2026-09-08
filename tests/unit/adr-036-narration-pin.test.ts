@@ -11,7 +11,7 @@
  * assertion can pass for a reason other than the handle being what changed it.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const SHARED_TITLE = "pictkura — Chrome";
 const LIVE = "0x2222";
@@ -127,6 +127,23 @@ beforeEach(() => {
     { hwnd: 0x1111n, title: SHARED_TITLE },
     { hwnd: 0x2222n, title: SHARED_TITLE },
   ];
+});
+
+/**
+ * Several cases here swap `resolveWindowTarget`'s implementation to model a
+ * desktop that moves mid-call, and restored it inline at the end of the test —
+ * which is skipped if the awaited call throws, leaking the stub into every later
+ * test in the file. Restored here instead, where nothing can skip it.
+ */
+let pristineResolver: ((p: never) => Promise<unknown>) | undefined;
+beforeEach(async () => {
+  const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+  pristineResolver ??= resolver.getMockImplementation() as never;
+  resolver.mockImplementation(pristineResolver as never);
+});
+afterEach(async () => {
+  const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+  if (pristineResolver) resolver.mockImplementation(pristineResolver as never);
 });
 
 describe("ADR-036 — rich narration does not describe a window it cannot address", () => {
@@ -420,8 +437,15 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     // `mouse_drag` and `scroll` take an `hwnd` and narrate by title anyway, so a
     // flat promise sent exactly those callers away without a screenshot.
     expect(said).toMatch(/click_element, keyboard and set_element_value/);
-    expect(said).toMatch(/Other tools resolve nothing here/);
-    expect(said).toMatch(/verify with a screenshot/);
+    // Named, because the string ships on SIX registered tools and not the
+    // nineteen `withRichNarration` wraps — and two of the six (browser_click,
+    // browser_navigate) have neither `windowTitle` nor `hwnd`, so a sentence
+    // telling "other tools" to check theirs was addressed to arguments they do
+    // not have. The tools it is actually about are the two that take a handle
+    // and snapshot by title anyway.
+    expect(said).toMatch(/mouse_click and mouse_drag accept an hwnd/);
+    expect(said).toMatch(/verify those with a screenshot/);
+    expect(said).not.toMatch(/Other tools resolve nothing here/);
   });
 
   it("leaves title-only tools alone when the enumeration fails", async () => {
@@ -628,9 +652,36 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
       windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich",
     } as never);
     expect(richOf(r).diffDegraded).toBe("ambiguous_title");
-    // The before-snapshot was taken (the target was unique then); the after one
-    // is what must not be read across two windows.
-    expect(mockGetUiElements).toHaveBeenCalledTimes(1);
+    // BOTH snapshots were taken. The check sits after the after-snapshot on
+    // purpose — that read is the longest await on the path and the one that
+    // actually picks the window, so asking before it left the largest interval
+    // open. The snapshot is paid for and discarded; the action has already run,
+    // so there is nothing to save by asking earlier. The first version of this
+    // test asserted ONE snapshot, and that assertion forbade the placement that
+    // closes the interval.
+    expect(mockGetUiElements).toHaveBeenCalledTimes(2);
+  });
+
+  it("withholds when the sibling arrives during the AFTER-snapshot itself", async () => {
+    // The interval the earlier placement left open: `snapElements` is an
+    // uncached UIA read with a 4 s budget, and a window opening inside it is
+    // read by that very search.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    mockGetUiElements
+      .mockImplementationOnce(async () => ({
+        ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }],
+      } as never))
+      .mockImplementationOnce(async () => {
+        windows = [
+          { hwnd: 0x2222n, title: "Ledger" },
+          { hwnd: 0x8888n, title: "Ledger" },
+        ];
+        return { ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never;
+      });
+    const r = await narrated({
+      windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBe("ambiguous_title");
   });
 
   it("withholds when the action swaps the window for a same-titled replacement", async () => {

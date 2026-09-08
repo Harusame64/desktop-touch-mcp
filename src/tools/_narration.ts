@@ -46,10 +46,10 @@ export const narrateParam = z
     "\"@active\" and the dialog rescue both resolve one (\"ambiguous_title\"); or the " +
     "target moved between the snapshot and the action (\"target_changed\"). On any tool " +
     "here, retrying with a fixId withholds it, because the stored fix names the window " +
-    "and this cannot see it (\"fix_target_unknown\"). Other tools resolve nothing here, " +
-    "so their diff describes whatever their windowTitle matched — if you pass an hwnd " +
-    "to one of those, verify with a screenshot. The action itself is unaffected in " +
-    "every case; only the diff is. Default: \"minimal\"."
+    "and this cannot see it (\"fix_target_unknown\"). mouse_click and mouse_drag accept " +
+    "an hwnd and still take their snapshots by windowTitle, so nothing is withheld for " +
+    "them — verify those with a screenshot. The action itself is unaffected in every " +
+    "case; only the diff is. Default: \"minimal\"."
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,14 +313,18 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // (`mouse.ts`: "Apply fix args (override user-supplied x/y/windowTitle)").
     //
     // `windowTitleKey` is the safe side of that question rather than a second
-    // guess at it: exactly four handlers adopt a fix's title — `click_element`,
-    // `keyboard` twice, and `mouse`'s shared prologue — and every narrated tool
-    // that can receive a `fixId` AND snapshots by title is one of them.
-    // `scroll`, `terminal`, `window_dock` and `focus_window` declare no `fixId`;
-    // the browser set declares one but narrates with no title key, so it never
-    // snapshots by title and returns above. A tool that adds `fixId` later gets
-    // the withhold by default and has to prove it does not retarget to lose it,
-    // which is the direction this PR keeps wishing it had gone.
+    // guess at it. Counted, not assumed: four handlers adopt a fix's title —
+    // `click_element`, `keyboard`'s `type` and `sequence`, and `mouse_click` —
+    // and every narrated tool that can receive a `fixId` AND snapshots by title
+    // is one of them. `mouse_drag` is NOT: `fixId` is declared on
+    // `mouseClickSchema` alone, so the registered schema strips it and this
+    // condition can never fire there. `scroll`, `terminal`, `window_dock` and
+    // `focus_window` declare no `fixId` either — and cannot receive `narrate` at
+    // all, each file's own header says so. The browser set declares one and
+    // narrates with no title key, so it never snapshots by title and returns
+    // above. A tool that adds `fixId` later gets the withhold by default and has
+    // to prove it does not retarget to lose it, which is the direction this PR
+    // keeps wishing it had gone.
     // Truthy, not `!== undefined`: both schemas accept `fixId: ""` and the
     // handlers test `if (fixId)`, so an empty one is an ORDINARY call to them.
     // Testing for presence here withheld a diff that was correct and named a
@@ -442,16 +446,19 @@ export function withRichNarration<T extends Record<string, unknown>>(
       return result;
     }
 
-    // Cost, named rather than hidden, and counted rather than estimated: a
-    // plain-title miss enumerates TWICE inside `resolveWindowTarget` alone
-    // (`findPlainTopLevelWindowsByTitle`, then the Case 4 dialog sweep),
-    // `titleIsSharedByMoreThanOneWindow` takes a third, the re-check repeats the
-    // first pair, and the two counts after it take one each — nine on that path,
-    // six on the handle path (measured: 2 enumerations for a rich hwnd call
-    // against 0 for the same call at `minimal`). Not folded into one, because
-    // the alternative is reimplementing the resolver here, which is the defect
-    // this replaced. Only `narrate: "rich"` pays it, and only on the three tools
-    // that declare a handle key.
+    // Cost, named rather than hidden — and the last two attempts to state it
+    // were both wrong, so this one is per path and was measured with
+    // `enumWindowsInZOrder` counted:
+    //
+    //   hwnd or `@active`   3   resolver 0 (Cases 1 and 2 enumerate nothing)
+    //                           + this gate + the gate after the re-check
+    //                           + the identity check after the after-snapshot
+    //   plain title, hit    1   resolver only: it returns `null`, so `pinnedHwnd`
+    //                           stays unset and every gate below is skipped
+    //   Case 4 dialog       7   resolver 2, twice (probe and re-check), + 3
+    //
+    // `minimal` pays none of it. Not folded into one, because the alternative is
+    // reimplementing the resolver here, which is the defect this replaced.
     const snapBefore = await snapElements(windowTitle, true);  // try cache first
 
     // The handler resolves again, and the desktop can move in between — a modal
@@ -530,71 +537,74 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // Settle delay (only when we have a before-snapshot to diff against)
     await new Promise<void>((r) => setTimeout(r, UI_SETTLE_MS));
 
-    // Third count, and the last one that can matter: the two above ran BEFORE
-    // the action, so neither can see a sibling the action itself created — a
-    // shortcut that opens a second window of the same app is the ordinary case.
-    // The after-snapshot below is title-only, so it would read that sibling and
-    // the diff would be built across two windows. Counted here rather than
-    // earlier because this is the only side of the action that knows what the
-    // action did.
-    //
-    // Scoped to the pinned population, like the other two: extending a new
-    // withhold to the sixteen tools that never had one is how the last two
-    // spills happened, and it would be a behaviour change with no acceptance
-    // behind it.
-    if (pinnedHwnd !== undefined) {
-      // Both questions off ONE enumeration, because they are the same question
-      // asked twice: will the after-snapshot's title search find the window the
-      // before-snapshot described?
-      //
-      // Counting alone is not enough here. A dialog that advances by DESTROYING
-      // its window and creating the next one keeps the count at exactly one and
-      // the title identical, so a count passes and the title search below reads
-      // the REPLACEMENT's tree against the original's snapshot — every
-      // appeared/disappeared in that diff an artefact of the swap. The
-      // pre-action re-check compares handles for this reason; this is that check
-      // on the far side, where only it can see what the action did to the
-      // window's identity.
-      //
-      // Asked of the HANDLE rather than by re-resolving the query, because the
-      // query can be `@active` and the foreground moving is not a problem for a
-      // snapshot that searches the resolved title. Re-resolving would have
-      // withheld every rich `@active` call whose action changed focus.
-      let wins;
-      try {
-        wins = enumWindowsInZOrder();
-      } catch {
-        // Same rule as the counter above: withhold rather than guess.
-        spliceRich(result, degradedRichBlock("ambiguous_title"));
-        return result;
-      }
-      const q = windowTitle.toLowerCase();
-      const matches = wins.filter((w) => w.title.toLowerCase().includes(q));
-      if (matches.length > 1) {
-        spliceRich(result, degradedRichBlock("ambiguous_title"));
-        return result;
-      }
-      const still = wins.find((w) => w.hwnd === pinnedHwnd);
-      if (!still) {
-        // Gone, and something else answers to its title: a caller told
-        // `window_closed` would give up on a window that is on the screen.
-        spliceRich(result, degradedRichBlock(matches.length === 1 ? "target_changed" : "window_closed"));
-        return result;
-      }
-      if (!still.title.toLowerCase().includes(q)) {
-        // Renamed under the snapshot: the search will find something else, or
-        // nothing.
-        spliceRich(result, degradedRichBlock("target_changed"));
-        return result;
-      }
-    }
-
     try {
       const snapAfterElements = await snapElements(windowTitle, false);
       if (!snapAfterElements) {
         spliceRich(result, degradedRichBlock("timeout"));
         return result;
       }
+      // Third check, and now genuinely the last one that can matter: the two
+      // before the action cannot see a window the action itself opened, and
+      // placing this between the settle and the after-snapshot still left the
+      // LONGEST await open — `snapElements` is an uncached UIA read with a
+      // 4 s budget, and it is the read that actually picks the window. Asked
+      // after that read returns, so the interval it covers ends where the
+      // snapshot does. The snapshot is paid for and then discarded when this
+      // fires; the action has already run, so there is nothing to save by
+      // asking earlier.
+      //
+      // Scoped to the pinned population, like the other two: extending a new
+      // withhold to the sixteen tools that never had one is how the last two
+      // spills happened, and it would be a behaviour change with no acceptance
+      // behind it.
+      if (pinnedHwnd !== undefined) {
+        // Both questions off ONE enumeration, because they are the same question
+        // asked twice: will the after-snapshot's title search find the window the
+        // before-snapshot described?
+        //
+        // Counting alone is not enough here. A dialog that advances by DESTROYING
+        // its window and creating the next one keeps the count at exactly one and
+        // the title identical, so a count passes and the title search below reads
+        // the REPLACEMENT's tree against the original's snapshot — every
+        // appeared/disappeared in that diff an artefact of the swap. The
+        // pre-action re-check compares handles for this reason; this is that check
+        // on the far side, where only it can see what the action did to the
+        // window's identity.
+        //
+        // Asked of the HANDLE rather than by re-resolving the query, because the
+        // query can be `@active` and the foreground moving is not a problem for a
+        // snapshot that searches the resolved title. Re-resolving would have
+        // withheld every rich `@active` call whose action changed focus.
+        let wins;
+        try {
+          wins = enumWindowsInZOrder();
+        } catch {
+          // Same rule as the counter above: withhold rather than guess.
+          spliceRich(result, degradedRichBlock("ambiguous_title"));
+          return result;
+        }
+        const q = windowTitle.toLowerCase();
+        const matches = wins.filter((w) => w.title.toLowerCase().includes(q));
+        if (matches.length > 1) {
+          spliceRich(result, degradedRichBlock("ambiguous_title"));
+          return result;
+        }
+        const still = wins.find((w) => w.hwnd === pinnedHwnd);
+        if (!still) {
+          // Gone, and something else answers to its title: a caller told
+          // `window_closed` would give up on a window that is on the screen.
+          spliceRich(result, degradedRichBlock(matches.length === 1 ? "target_changed" : "window_closed"));
+          return result;
+        }
+        if (!still.title.toLowerCase().includes(q)) {
+          // Renamed under the snapshot: the search will find something else, or
+          // nothing.
+          spliceRich(result, degradedRichBlock("target_changed"));
+          return result;
+        }
+      }
+
+
       const diff = computeUiaDiff(snapBefore, snapAfterElements);
       const richBlock: RichBlock = { ...diff, diffSource: "uia" };
       spliceRich(result, richBlock);

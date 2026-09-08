@@ -168,7 +168,13 @@ export const clickElementHandler = async ({
     // title they named the first same-titled window instead, so a pinned call
     // could operate on one window and hand the caller the other one's handle
     // and cache state to reuse.
-    const hintsBlock = buildHintsForTitle(effectiveWindowTitle, resolvedWin?.hwnd);
+    // The third argument is the PUBLIC `hwnd`, not `resolvedWin` being set —
+    // `@active` and the dialog rescue resolve a handle for a caller who named a
+    // title, and keying their observation by handle takes `process_restarted`
+    // away from them. Same predicate the guard descriptor above uses.
+    const hintsBlock = buildHintsForTitle(
+      effectiveWindowTitle, resolvedWin?.hwnd, hwndParam !== undefined,
+    );
     // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
     const result = await clickElement(
       effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType,
@@ -501,7 +507,10 @@ export const setElementValueHandler = async ({
     // the thing that decides their next call.
     const observe = (title: string, pinnedHwnd?: bigint) => {
       try {
-        return buildHintsForTitle(title, pinnedHwnd);
+        // `hwndParam !== undefined`, not `pinnedHwnd !== undefined`: see the
+        // note at `click_element`'s call above. A `@active` caller named a
+        // title and keeps the title's drift question.
+        return buildHintsForTitle(title, pinnedHwnd, hwndParam !== undefined);
       } catch (e) {
         // A refusal is SAID differently and still does not travel as a
         // failure. Re-throwing it — which is what the previous round did — put
@@ -672,7 +681,7 @@ export const setElementValueHandler = async ({
     const owed = observationOwedFor;
     if (owed !== null) {
       try {
-        buildHintsForTitle(owed.title, owed.hwnd);
+        buildHintsForTitle(owed.title, owed.hwnd, hwndParam !== undefined);
       } catch {
         // The channel's failure is what the caller needs; an observation that
         // cannot be taken must not take its place as the reported error.

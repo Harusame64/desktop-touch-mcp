@@ -1341,8 +1341,10 @@ export async function evaluateKeyboardGuards(opts: {
       // ADR-036 — derived HERE rather than passed in, so a caller cannot wire
       // the handle through and forget the hint that goes with it. See the note
       // at the foreground site in keyboardTypeHandler for why a pinned call
-      // must not be offered a `fixId`.
-      ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
+      // must not be offered a `fixId`, and the press site below for why that
+      // variant never is: it declares no `fixId` and its handler drops the one
+      // the flattened wire schema lets through.
+      ...((explicitHwnd !== undefined || toolName === "keyboard:press") && { suppressSuggestedFix: true }),
     });
     if (ag.block) {
       return {
@@ -2883,8 +2885,12 @@ export const keyboardPressHandler = async ({
       const ag = await runActionGuard({
         toolName: "keyboard:press", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
-        // ADR-036 — see keyboard:type above.
-        ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
+        // ADR-036 — see keyboard:type above. `keyboard:press` declares no
+        // `fixId`: the registered schema is a FLATTENED union so one arrives on
+        // the wire anyway, and the handler's re-parse strips it — measured,
+        // `validateAndPrepareFix` and `consumeFix` are never called here. So the
+        // hint is advice the caller cannot take, whatever they passed.
+        suppressSuggestedFix: true,
       });
       if (ag.block) {
         return failWith(
