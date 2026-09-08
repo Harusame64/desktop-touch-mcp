@@ -40,6 +40,14 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     // Kept deterministic so the identity hints below describe the fixture and
     // not whatever process happens to own pid 7 on the machine running this.
     getProcessIdentityByPid: vi.fn(() => ({ pid: 7, processName: "chrome.exe", processStartTimeMs: 0 })),
+    // The pair that tells an UNTITLED window from a dead handle. `UNTITLED` is
+    // a real window the enumeration refuses to list; `0xDEAD` is nothing.
+    // A DEAD handle also reports `""` — that is why the rect is what separates
+    // them, and a fixture where only the live one is blank cannot test it.
+    getWindowTitleW: vi.fn((h: bigint) =>
+      (h === UNTITLED || h === 0xDEADn ? "" : h === WSTITLED ? "   " : SHARED_TITLE)),
+    getWindowRectByHwnd: vi.fn((h: bigint) =>
+      h === 0xDEADn ? null : { x: 0, y: 0, width: 800, height: 600 }),
   };
 });
 
@@ -378,6 +386,42 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // The generic catalogue, whose ambiguous_target line is the dead half, is
     // replaced rather than appended to.
     expect(suggests).not.toMatch(/pass hwnd to name one window exactly/);
+  });
+
+  it("does not send a titleless-handle caller to a listing that cannot show it", async () => {
+    // Both gates found this from opposite ends. `enumWindowsInZOrder` drops a
+    // window on `!title`, and BOTH the guard's by-handle lookup and
+    // `desktop_discover` read it — so a caller who named an untitled window by
+    // handle got `target_not_found` with "call desktop_discover", which cannot
+    // contain it, and whose own recovery is to pass the handle they had just
+    // passed. Two steps, closed loop, on the shipping default configuration.
+    delete process.env.DTM_SET_VALUE_CHAIN;
+    // The window is REAL — it just is not in the enumeration, which is exactly
+    // the state the message has to describe.
+    winsRef.list = [win(SIBLING, SHARED_TITLE, 0)];
+    const r = parse(await clickElementHandler({
+      windowTitle: "anything", hwnd: String(UNTITLED), name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(JSON.stringify(r)).toContain("target_not_found");
+    expect(next).not.toMatch(/Call desktop_discover to verify the window title/);
+    expect(next).toMatch(/no title/i);
+    expect(next).toMatch(/keyboard[^.]*foreground/i);
+    expect(next).toMatch(/@active/);
+  });
+
+  it("still says to check the title when the handle names nothing at all", async () => {
+    // The pairing, and the reason the predicate reads the RECT: a dead handle
+    // reports an empty title too, so a check on the title alone would tell a
+    // caller whose window is gone that it merely has no name.
+    delete process.env.DTM_SET_VALUE_CHAIN;
+    winsRef.list = [win(SIBLING, SHARED_TITLE, 0)];
+    const r = parse(await clickElementHandler({
+      windowTitle: "anything", hwnd: "0xDEAD", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).not.toMatch(/no title/i);
+    expect(next).toMatch(/Call desktop_discover to verify the window title/);
   });
 
   it("an EMPTY windowTitle is not a titleless window — that caller keeps the generic advice", async () => {

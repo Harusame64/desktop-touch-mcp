@@ -13,7 +13,7 @@
 import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
 import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 import { logDiagnostic } from "../engine/diagnostic-log.js";
-import { getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
+import { getWindowProcessId, getProcessIdentityByPid, getWindowTitleW, getWindowRectByHwnd } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
 import { resolveActionTarget, deriveTargetKey } from "../engine/perception/action-target.js";
 import type {
@@ -164,6 +164,22 @@ export function logAutoGuardStartup(): void {
 // ─────────────────────────────────────────────────────────────────────────────
 // Next-step messages per status
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ADR-036 — is this handle a live window that the enumeration refuses to show?
+ *
+ * `getWindowTitleW` returns `""` both for an untitled window and for a dead
+ * handle, so the rect is what tells them apart — the same pair
+ * `resolveWindowTarget` Case 1 uses to decide a handle is real. Never throws:
+ * this runs on a path that is already reporting a failure.
+ */
+function handleNamesATitlelessWindow(hwnd: bigint): boolean {
+  try {
+    return getWindowTitleW(hwnd) === "" && getWindowRectByHwnd(hwnd) !== null;
+  } catch {
+    return false;
+  }
+}
 
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
@@ -749,6 +765,20 @@ export async function runActionGuard(
   // No candidates → target not found
   if (resolved.candidates === 0 || !resolved.lens || !resolved.localStore) {
     const status: AutoGuardEnvelope["status"] = "target_not_found";
+    // ADR-036 — a valid handle the enumeration cannot show. `enumWindowsInZOrder`
+    // drops a window on `!title`, and BOTH this resolution and `desktop_discover`
+    // read it, so a caller who named an untitled window by handle was told to
+    // call the listing that cannot contain it — and passing the handle again is
+    // what they had just done. Two steps, closed loop, and it is the shape this
+    // ADR exists to remove: advice addressed to the caller it does not work for.
+    // Both review gates found it independently, from opposite ends.
+    //
+    // The refusal itself does not move. `buildWindowLensResult` keys a lens on
+    // the title, and giving it an empty one is a behaviour change on every tool
+    // that reaches here, with no real-machine acceptance behind it. What changes
+    // is that the answer stops naming two things that cannot work.
+    const titlelessHandle = descriptor?.kind === "window" && descriptor.hwnd !== undefined
+      && handleNamesATitlelessWindow(descriptor.hwnd);
     // descriptor is non-null at this point (null-checked above)
     const closedKey = deriveTargetKey(descriptor);
     if (closedKey) {
@@ -759,7 +789,14 @@ export async function runActionGuard(
         kind: "auto",
         status,
         canContinue: false,
-        next: nextStepFor(status),
+        next: titlelessHandle
+          ? "That hwnd names a window with no title. The enumeration this guard " +
+            "and desktop_discover both read drops untitled windows, so neither " +
+            "can name it and passing the handle again returns here. keyboard " +
+            "reaches it while it is in the foreground (windowTitle:\"@active\"), " +
+            "typing into whatever holds focus inside it, which is not the same as " +
+            "writing to a named element. Otherwise give the window a title."
+          : nextStepFor(status),
       },
       block: true,
     };

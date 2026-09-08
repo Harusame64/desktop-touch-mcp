@@ -633,6 +633,62 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockGetUiElements).toHaveBeenCalledTimes(1);
   });
 
+  it("withholds when the action swaps the window for a same-titled replacement", async () => {
+    // The count cannot see this: a dialog that advances by DESTROYING its window
+    // and creating the next one leaves exactly one window with exactly that
+    // title. The title search that takes the after-snapshot would then read the
+    // replacement's tree against the original's, and every appeared/disappeared
+    // in the diff would be an artefact of the swap.
+    windows = [{ hwnd: 0x2222n, title: "Wizard" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [{ hwnd: 0x5555n, title: "Wizard" }];   // same title, new handle
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({
+      windowTitle: "Wizard", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    // `target_changed`, not `window_closed`: a window answering to that title is
+    // on the screen, and a caller told it had closed would give up on it.
+    expect(richOf(r).diffDegraded).toBe("target_changed");
+  });
+
+  it("says window_closed when nothing answers to the title any more", async () => {
+    // The other half of the same check, and the reason it is two answers: here
+    // there is nothing left to reacquire.
+    windows = [{ hwnd: 0x2222n, title: "Wizard" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [{ hwnd: 0x5555n, title: "Something else" }];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({
+      windowTitle: "Wizard", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBe("window_closed");
+  });
+
+  it("does not withhold merely because the foreground moved under @active", async () => {
+    // The reason this asks the HANDLE rather than re-resolving the query. Under
+    // `@active` the snapshots search the RESOLVED title, so the foreground
+    // moving away — which a state-changing action does routinely — breaks
+    // nothing. Re-resolving `@active` here would have withheld every one of
+    // those.
+    windows = [
+      { hwnd: 0x2222n, title: "Editor" },
+      { hwnd: 0x3333n, title: "Console" },
+    ];
+    innerHandler.mockImplementationOnce(async () => {
+      // The action brings the OTHER window to the front; the target is intact.
+      windows = [
+        { hwnd: 0x3333n, title: "Console" },
+        { hwnd: 0x2222n, title: "Editor" },
+      ];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "@active", name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(richOf(r).diffSource).toBe("uia");
+  });
+
   it("narrates the same call when no sibling appears", async () => {
     // The pairing: the second count is not simply refusing everything.
     windows = [{ hwnd: 0x2222n, title: "Ledger" }];

@@ -542,9 +542,51 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // withhold to the sixteen tools that never had one is how the last two
     // spills happened, and it would be a behaviour change with no acceptance
     // behind it.
-    if (pinnedHwnd !== undefined && titleIsSharedByMoreThanOneWindow(windowTitle)) {
-      spliceRich(result, degradedRichBlock("ambiguous_title"));
-      return result;
+    if (pinnedHwnd !== undefined) {
+      // Both questions off ONE enumeration, because they are the same question
+      // asked twice: will the after-snapshot's title search find the window the
+      // before-snapshot described?
+      //
+      // Counting alone is not enough here. A dialog that advances by DESTROYING
+      // its window and creating the next one keeps the count at exactly one and
+      // the title identical, so a count passes and the title search below reads
+      // the REPLACEMENT's tree against the original's snapshot — every
+      // appeared/disappeared in that diff an artefact of the swap. The
+      // pre-action re-check compares handles for this reason; this is that check
+      // on the far side, where only it can see what the action did to the
+      // window's identity.
+      //
+      // Asked of the HANDLE rather than by re-resolving the query, because the
+      // query can be `@active` and the foreground moving is not a problem for a
+      // snapshot that searches the resolved title. Re-resolving would have
+      // withheld every rich `@active` call whose action changed focus.
+      let wins;
+      try {
+        wins = enumWindowsInZOrder();
+      } catch {
+        // Same rule as the counter above: withhold rather than guess.
+        spliceRich(result, degradedRichBlock("ambiguous_title"));
+        return result;
+      }
+      const q = windowTitle.toLowerCase();
+      const matches = wins.filter((w) => w.title.toLowerCase().includes(q));
+      if (matches.length > 1) {
+        spliceRich(result, degradedRichBlock("ambiguous_title"));
+        return result;
+      }
+      const still = wins.find((w) => w.hwnd === pinnedHwnd);
+      if (!still) {
+        // Gone, and something else answers to its title: a caller told
+        // `window_closed` would give up on a window that is on the screen.
+        spliceRich(result, degradedRichBlock(matches.length === 1 ? "target_changed" : "window_closed"));
+        return result;
+      }
+      if (!still.title.toLowerCase().includes(q)) {
+        // Renamed under the snapshot: the search will find something else, or
+        // nothing.
+        spliceRich(result, degradedRichBlock("target_changed"));
+        return result;
+      }
     }
 
     try {
