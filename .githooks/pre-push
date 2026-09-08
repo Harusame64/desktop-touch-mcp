@@ -1,16 +1,26 @@
 #!/bin/sh
-# Block direct push to main. Set DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 to bypass
-# (release flow only — see docs/release-process.md and CLAUDE.md 強制命令 8).
+# Two refusals before anything reaches the server:
+#   1. Direct push to main. Set DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 to bypass
+#      (release flow only — see docs/release-process.md and CLAUDE.md 強制命令 8).
+#   2. A Claude session id in a commit message (repo policy, user decision
+#      2026-09-08: no session IDs in the public repo).
+#      `.githooks/commit-msg` strips those at commit time; reaching here means
+#      that hook was skipped, so this one refuses instead of rewriting — the
+#      message is already in a commit by now, and rewriting it under the
+#      author's feet would change history they did not ask to change.
 
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
+session_pattern='^[[:space:]]*(Claude-Session:|https://claude[.]ai/code/session_)'
 
 while read local_ref local_oid remote_ref remote_oid
 do
+    # Deleting a ref pushes no commits.
+    if [ "$local_oid" = "$zero" ]; then
+        continue
+    fi
+
     if [ "$remote_ref" = "$protected_branch" ]; then
-        if [ "$local_oid" = "$zero" ]; then
-            continue
-        fi
         if [ "${DESKTOP_TOUCH_ALLOW_MAIN_PUSH:-0}" != "1" ]; then
             echo "" >&2
             echo "ERROR: direct push to main is forbidden." >&2
@@ -22,6 +32,29 @@ do
         else
             echo "WARNING: DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 — bypassing main protection." >&2
         fi
+    fi
+
+    # Only the commits this push would add. A brand-new branch has no remote
+    # counterpart, so everything already published anywhere on origin is
+    # excluded instead — the 28 commits that carry the trailer from before this
+    # hook existed must not block every future push.
+    if [ "$remote_oid" = "$zero" ]; then
+        range="$local_oid --not --remotes=origin"
+    else
+        range="$remote_oid..$local_oid"
+    fi
+
+    leaked=$(git log $range --format=%B 2>/dev/null | grep -c -E "$session_pattern") || leaked=0
+    if [ "${leaked:-0}" -gt 0 ]; then
+        echo "" >&2
+        echo "ERROR: $leaked commit message line(s) in this push carry a Claude session id." >&2
+        echo "  Repo policy: no session IDs in the public repo." >&2
+        echo "  This is what .githooks/commit-msg strips — it was skipped (--no-verify?)." >&2
+        echo "  Reword them before pushing — 'git commit --amend' for the tip," >&2
+        echo "  'git rebase' for anything older. To list what is in this push:" >&2
+        echo "    git log $range --format='%h %s'" >&2
+        echo "" >&2
+        exit 1
     fi
 done
 

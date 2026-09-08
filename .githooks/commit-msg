@@ -1,0 +1,69 @@
+#!/bin/sh
+# Strip `Claude-Session:` trailers from the commit message, and say so.
+#
+# Repo policy (user decision, 2026-09-08): no Claude session IDs in the public
+# repo.
+# The Claude Code harness adds this trailer on its own, so REJECTING the commit
+# would make every correctly-authored commit be typed twice — friction larger
+# than the leak it prevents. Removing it silently is the other failure: the
+# author never learns that what landed differs from what they wrote. So this
+# removes the line and prints what it removed.
+#
+# `Co-Authored-By:` is deliberately left alone — attribution stays.
+#
+# Escape hatch: `git commit --no-verify` skips this. `.githooks/pre-push` is the
+# second net, and it does not strip — it refuses, because by then the message is
+# already in a commit that someone would otherwise publish.
+
+msg_file="$1"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+# Both shapes carry a session id: the trailer the harness writes, and a bare
+# session URL on its own line (the shape used in PR descriptions).
+#
+# Held as an argument, never as a `sed` address: the pattern contains `/`, and
+# `sed -E "/$pattern/d"` ends its address at `https:/` — the first version of
+# this hook did exactly that, `sed` died mid-pipeline where `||` could not see
+# it, and the empty output was moved over the message. `awk -v` and `grep -E`
+# both take the pattern as an argument, so no delimiter can collide with it.
+# `[.]` rather than `\.`: awk's dynamic regex reads `\.` as a plain `.` and says
+# so on stderr, while `grep -E` reads it as an escaped dot. A bracket expression
+# means the same literal dot to both, so the count and the rewrite agree.
+pattern='^[[:space:]]*(Claude-Session:|https://claude[.]ai/code/session_)'
+
+removed=$(grep -c -E "$pattern" "$msg_file" 2>/dev/null) || removed=0
+[ "${removed:-0}" -gt 0 ] || exit 0
+
+# What must survive the rewrite. If it does not, the rewrite is wrong and the
+# message is left as the author wrote it.
+survivors=$(grep -v -E "$pattern" "$msg_file" 2>/dev/null | grep -c -E '[^[:space:]]') || survivors=0
+
+tmp="$msg_file.strip.$$"
+
+# One command, not a pipeline, so a failure is visible to `||`. Drops the
+# matching lines, then the blank lines they leave at the end — git's own
+# cleanup has already run by the time this hook is called.
+awk -v pat="$pattern" '
+    $0 ~ pat { next }
+    { lines[++n] = $0 }
+    END {
+        while (n > 0 && lines[n] ~ /^[[:space:]]*$/) n--
+        for (i = 1; i <= n; i++) print lines[i]
+    }
+' "$msg_file" > "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 0; }
+
+if [ "${survivors:-0}" -gt 0 ] && [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    echo "[commit-msg] rewrite would have emptied the message — left unchanged" >&2
+    exit 0
+fi
+
+mv "$tmp" "$msg_file" 2>/dev/null || { rm -f "$tmp"; exit 0; }
+
+if [ "$removed" -eq 1 ]; then
+    echo "[commit-msg] removed 1 Claude-Session line (repo policy: no session IDs in the public repo)" >&2
+else
+    echo "[commit-msg] removed $removed Claude-Session lines (repo policy: no session IDs in the public repo)" >&2
+fi
+
+exit 0
