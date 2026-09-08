@@ -76,6 +76,7 @@ const call = () => setElementValueHandler({
 
 beforeEach(() => {
   mockBuildHints.mockClear();
+  mockEvalGuards.mockClear();
   mockSetValue.mockResolvedValue({ ok: true } as never);
   mockInsertText.mockResolvedValue({ ok: false, code: "TextPattern2NotSupported" } as never);
   process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";   // the channels, not the guard, are the subject
@@ -138,7 +139,8 @@ describe("ADR-036 — set_element_value observes its window exactly once, whiche
     expect(mockBuildHints.mock.calls[0]![1]).toBe(LIVE);
   });
 
-  it("channel 1 writes to the resolved window, and reports under the resolved title", async () => {
+  // The write only. What the response says is pinned by the test above.
+  it("channel 1 writes to the resolved window, through the handle", async () => {
     await call();
     expect(mockSetValue.mock.calls[0]![0]).toBe(RESOLVED);
     expect(mockSetValue.mock.calls[0]![4]).toEqual({ hwnd: LIVE });
