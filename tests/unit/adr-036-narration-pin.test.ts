@@ -36,6 +36,30 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   };
 });
 
+/**
+ * The handler's own resolver, which the wrapper now goes through. Production
+ * semantics that matter here: a handle resolves to that window's live title; a
+ * handle with no window throws; a window blocked by its own modal resolves to
+ * the POPUP (`preferActivePopupIfBlocked`); a plain title returns null, because
+ * the handler then uses the argument as-is.
+ */
+let popupFor: Record<string, { hwnd: bigint; title: string }> = {};
+
+vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
+  return {
+    ...actual,
+    resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) => {
+      if (p.hwnd === undefined) return null;
+      const popup = popupFor[p.hwnd];
+      if (popup) return { hwnd: popup.hwnd, title: popup.title, warnings: [], className: "#32770" };
+      const w = windows.find((x) => x.hwnd === BigInt(p.hwnd!));
+      if (!w) throw new Error(`WindowNotFound: no visible window with hwnd "${p.hwnd}"`);
+      return { hwnd: w.hwnd, title: w.title, warnings: [], className: "Chrome_WidgetWin_1" };
+    }),
+  };
+});
+
 const { mockGetUiElements } = vi.hoisted(() => ({
   mockGetUiElements: vi.fn(async () => ({
     ok: true,
@@ -72,6 +96,7 @@ beforeEach(() => {
   mockGetUiElements.mockClear();
   innerHandler.mockClear();
   enumThrows = false;
+  popupFor = {};
   windows = [
     { hwnd: 0x1111n, title: SHARED_TITLE },
     { hwnd: 0x2222n, title: SHARED_TITLE },
@@ -168,6 +193,56 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(richOf(r).diffDegraded).toBe("no_target");
     expect(mockGetUiElements).not.toHaveBeenCalled();
     expect(innerHandler).toHaveBeenCalled();
+  });
+
+  it("narrates the POPUP when the handler is redirected to it, not the window that was named", async () => {
+    // `resolveWindowTarget` prefers the active popup when the named window is
+    // blocked by its own modal — `click_element(hwnd=<Notepad>)` with Save As
+    // open acts on the dialog. Resolving the handle by itself narrated the
+    // disabled parent and returned an empty diff for a click that changed
+    // something.
+    windows = [
+      { hwnd: 0x2222n, title: "Untitled - Notepad" },
+      { hwnd: 0x4444n, title: "Save As" },
+    ];
+    popupFor[LIVE] = { hwnd: 0x4444n, title: "Save As" };
+    const r = await narrated({
+      windowTitle: "Untitled - Notepad", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    for (const call of mockGetUiElements.mock.calls) {
+      expect(call[0]).toBe("Save As");
+    }
+  });
+
+  it("withholds when the handle cannot be resolved at all", async () => {
+    // A handle the resolver rejects (not a valid integer, or no window): there
+    // is nothing to describe, and the caller's title names a different window.
+    windows = [{ hwnd: 0x1111n, title: "Notes" }];
+    const r = await narrated({
+      windowTitle: "Notes", hwnd: "not-a-number", name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBe("no_target");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+    expect(innerHandler).toHaveBeenCalled();
+  });
+
+  it("the SHARED-TITLE check reads the resolved title too, not the argument", async () => {
+    // Both halves have to move together. With the check on the argument, a
+    // handle on a unique window plus a title matching three windows withheld a
+    // diff that was perfectly safe — and the mirror case emitted one that was not.
+    windows = [
+      { hwnd: 0x2222n, title: "Ledger" },
+      { hwnd: 0x1111n, title: "Chrome" },
+      { hwnd: 0x3333n, title: "Chrome" },
+    ];
+    const r = await narrated({
+      windowTitle: "Chrome", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    for (const call of mockGetUiElements.mock.calls) {
+      expect(call[0]).toBe("Ledger");
+    }
   });
 
   it("says in the shipped description that the diff can be withheld", () => {

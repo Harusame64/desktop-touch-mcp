@@ -202,12 +202,17 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // and never looks at the second directive — the comma-joined regression
     // this check exists for, walking in behind a correct phrasing.
     for (const clause of strings.flatMap((t) => t.split(/[.;]/))) {
-      for (const m of clause.matchAll(/pass\s+hwnd\s+to\s+(\S+)/gi)) {
+      for (const m of clause.matchAll(/\bpass(?:ing|es)?\s+(?:the\s+|an?\s+)?hwnd\s+to\s+(\S+)/gi)) {
         expect(m[1]).toMatch(/^(?:click_element|keyboard)\b/);
       }
-      // And a bare "pass hwnd" with no object at all names nothing that works.
-      const bare = clause.replace(/pass\s+hwnd\s+to\s+\S+/gi, "");
-      expect(bare).not.toMatch(/pass\s+hwnd/i);
+      // And a bare "pass hwnd" with no object names nothing that works. The
+      // stem carries the inflections: "pass the hwnd to this tool" and
+      // "Passing hwnd to this tool also works" both slipped past `pass\s+hwnd`.
+      // Not "passed": that is how the message DESCRIBES what the caller did
+      // ("if you passed hwnd, windowTitle was ignored"), which is the opposite
+      // of telling them to do it.
+      const bare = clause.replace(/\bpass(?:ing|es)?\s+(?:the\s+|an?\s+)?hwnd\s+to\s+\S+/gi, "");
+      expect(bare).not.toMatch(/\bpass(?:ing|es)?\s+(?:the\s+|an?\s+)?hwnd/i);
     }
 
     // Read the field the guard fills, not the serialised envelope.
@@ -309,8 +314,31 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(JSON.stringify(r)).toContain("ambiguous_target");
     expect(next).toMatch(/no title/i);
     expect(next).not.toMatch(/click_element and keyboard take hwnd here/);
-    // And it says what actually happens instead of naming a recovery.
+    // It says what actually happens…
     expect(next).toMatch(/target_not_found/);
+    // …and names the one recovery that does work, with its limit. `keyboard`
+    // passes a titleless handle while the window is in the foreground
+    // (`keyboardDestinationMiss` — "the legitimate @active case"), so leaving it
+    // out was this PR's own defect with the sign flipped: denying a recovery
+    // that works.
+    expect(next).toMatch(/keyboard[^.]*foreground/i);
+    expect(next).toMatch(/@active/);
+  });
+
+  it("a whitespace title is NOT titleless — the enumeration keeps it, so the handle reaches it", async () => {
+    // `enumWindowsInZOrder` drops a window on `!title`, UNTRIMMED, so "   "
+    // survives and stays addressable by handle. `normalizeTitle` does trim, so
+    // it still matches everything and is still refused — but with the ordinary
+    // message, whose "unsetting lets this tool take hwnd" is true here. Testing
+    // the predicate with `.trim()` told that caller the opposite.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    const r = parse(await setElementValueHandler({
+      windowTitle: "   ", value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(JSON.stringify(r)).toContain("ambiguous_target");
+    expect(next).not.toMatch(/no title/i);
+    expect(next).toContain("click_element and keyboard take hwnd here");
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {

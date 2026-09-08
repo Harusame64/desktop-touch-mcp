@@ -325,19 +325,33 @@ export const setElementValueHandler = async ({
           // purpose: there `hwnd` is offered first and works, so the title line
           // is a second option rather than the only one left.
           // A titleless target is refused for a different reason and has a
-          // different (non-)recovery. `@active` on an untitled foreground window
+          // different recovery. `@active` on an untitled foreground window
           // resolves to an empty `effectiveTitle`, which matches every window,
           // so the count is ambiguous — and unsetting the variable does NOT
           // rescue it: `enumWindowsInZOrder` drops untitled windows
-          // (`win32.ts`), so the by-handle guard comes back `target_not_found`.
-          // `click_element` resolves the same way, and so does the keyboard
-          // focus path. Promising the handle here would be the loop again.
-          ag.summary.next = effectiveTitle.trim() === ""
-            ? "This window has no title, so it cannot be addressed by title or by " +
-              "handle: the enumeration these tools resolve handles through drops " +
-              "untitled windows, and unsetting DTM_SET_VALUE_CHAIN returns " +
-              "target_not_found rather than reaching it. Give the window a title, or " +
-              "act on a titled window of the same application."
+          // (`win32.ts`, on `!title` — UNTRIMMED, which is why the test here is
+          // `=== ""` and not `.trim()`: a whitespace title survives the
+          // enumeration and IS reachable by handle, and telling that caller
+          // otherwise was the mirror defect). `click_element` resolves the same
+          // way.
+          //
+          // `keyboard` does not. `keyboardDestinationMiss` (`_action-guard.ts`)
+          // passes a titleless resolved handle when `isForeground()` is true —
+          // "the legitimate `@active` case" in its own words — the focus step is
+          // skipped, the descriptor is null, and SendInput lands on the
+          // foreground. Measured by the second gate, both directions. Omitting
+          // it would be this PR's defect with the sign flipped: denying a
+          // recovery that works. It is named with its limit, because it types
+          // into whatever holds focus inside the window rather than into a
+          // named element.
+          ag.summary.next = effectiveTitle === ""
+            ? "This window has no title, so it cannot be addressed by title, and the " +
+              "enumeration that resolves handles drops untitled windows — unsetting " +
+              "DTM_SET_VALUE_CHAIN returns target_not_found rather than reaching it, " +
+              "and click_element resolves the same way. keyboard does reach it while " +
+              "it stays in the foreground (windowTitle:\"@active\"), typing into " +
+              "whatever holds focus inside it, which is not the same as writing to a " +
+              "named element. Otherwise give the window a title."
             :
             "This tool cannot be narrowed by hwnd while DTM_SET_VALUE_CHAIN=1: " +
             "its fallback channels still find the window by title. click_element and " +
