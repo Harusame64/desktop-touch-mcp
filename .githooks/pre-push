@@ -39,6 +39,19 @@ unset IFS
 GIT_TERMINAL_PROMPT=0
 export GIT_TERMINAL_PROMPT
 
+# Read the objects that will actually be TRANSFERRED, not the ones this clone
+# has been told to show instead. With `refs/replace/<oid>` pointing at a commit
+# whose message is clean, every object-reading command below — the scan, the
+# range count, the ancestry test, the report — reads the replacement while
+# `git push` sends the original. The scan finds nothing and the trailer lands on
+# the destination: a check that ran, on the wrong objects.
+#
+# Set once and exported rather than passed to each of the four commands, for the
+# same reason `$remote_display` exists: a fifth command added below is covered
+# without anyone remembering to cover it.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+
 # Strip the userinfo out of a URL, so a destination can be NAMED in a message
 # without its credentials being named with it. `https://user:token@host/repo` is
 # a form git accepts and CI hands out, and git passes this hook the destination

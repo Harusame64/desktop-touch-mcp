@@ -516,6 +516,32 @@ describe("pre-push refuses what it should", () => {
     expect(r.stderr).toContain("https://example.invalid/repo.git");
   });
 
+  it.skipIf(!hasSh)("reads the objects that will be pushed, not their replacements", () => {
+    // `refs/replace/<oid>` makes every object-reading command show a stand-in,
+    // while `git push` sends the original. Point one at a commit with a clean
+    // message and the scan finds nothing, so the trailer reaches the
+    // destination on a push the hook approved: a check that ran, on the wrong
+    // objects.
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    const tree = world.git(["rev-parse", `${world.leaking}^{tree}`]).stdout.trim();
+    const clean = world
+      .git(["commit-tree", tree, "-p", world.clean, "-m", "chore: nothing to see here"])
+      .stdout.trim();
+    expect(clean).toMatch(/^[0-9a-f]{40}$/);
+    world.git(["update-ref", `refs/replace/${world.leaking}`, clean]);
+    // The replacement is in effect for ordinary reads — without this the case
+    // would pass whether or not the hook disables it.
+    expect(
+      world.git(["log", "-1", "--format=%B", world.leaking]).stdout,
+      "the replacement is not in effect, so this proves nothing"
+    ).not.toContain("Claude-Session");
+
+    const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest);
+    expect(r.status, "the push was approved while the original still carries the trailer").toBe(1);
+    expect(r.stderr).toContain("would publish commit(s)");
+  });
+
   it.skipIf(!hasSh)("keeps credentials out of the fetch suggestion too", () => {
     // Git's pre-push docs: with no named remote, BOTH parameters are the
     // location. So `$1` is as sensitive as `$2`, and the refusal that suggests
