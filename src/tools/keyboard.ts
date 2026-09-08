@@ -40,7 +40,7 @@ import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narrati
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss, failBlockedByGuard } from "./_action-guard.js";
 import { logResolve, logDispatchSink, appendTopologyWarnings } from "./_resolve-log.js";
 import type { ResolvedDestination } from "./_action-guard.js";
 
@@ -1349,11 +1349,10 @@ export async function evaluateKeyboardGuards(opts: {
     if (ag.block) {
       return {
         ok: false,
-        errorResult: failWith(
-          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+        errorResult: failBlockedByGuard(
           toolName,
+          ag,
           {
-            _perceptionForPost: ag.summary,
             ...(warnings.length > 0 && { hints: { warnings } }),
           }
         ),
@@ -2328,11 +2327,10 @@ export const keyboardTypeHandler = async ({
         ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
-        return failWith(
-          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+        return failBlockedByGuard(
           "keyboard:type",
+          ag,
           {
-            _perceptionForPost: ag.summary,
             ...(warnings.length > 0 && { hints: { warnings } }),
           }
         );
@@ -2893,11 +2891,10 @@ export const keyboardPressHandler = async ({
         suppressSuggestedFix: true,
       });
       if (ag.block) {
-        return failWith(
-          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+        return failBlockedByGuard(
           "keyboard:press",
+          ag,
           {
-            _perceptionForPost: ag.summary,
             ...(warnings.length > 0 && { hints: { warnings } }),
           }
         );
@@ -3119,11 +3116,10 @@ export const keyboardSequenceHandler = async ({
           ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
         });
         if (ag.block) {
-          return failWith(
-            new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+          return failBlockedByGuard(
             "keyboard:sequence",
+            ag,
             {
-              _perceptionForPost: ag.summary,
               ...(warnings.length > 0 && { hints: { warnings } }),
             }
           );

@@ -159,7 +159,7 @@ export const clickElementHandler = async ({
         ...(hwndParam !== undefined && resolvedWin && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
-        return failBlockedByGuard("click_element", ag.summary);
+        return failBlockedByGuard("click_element", ag);
       }
       perceptionEnv = ag.summary;
     }
@@ -275,6 +275,12 @@ export const setElementValueHandler = async ({
           ...(hwndParam !== undefined && resolvedWin && mayPinHandle && { hwnd: resolvedWin.hwnd }),
         },
         ...(hwndParam !== undefined && resolvedWin && mayPinHandle && { suppressSuggestedFix: true }),
+        // Diagnosis only. With the chain armed the descriptor above withholds
+        // the handle on purpose, and that made the enumeration-missing refusal
+        // invisible on exactly the configuration this tool's tailoring exists
+        // for: a caller who DID pass `hwnd` was told to run `desktop_discover`
+        // for a window it cannot list. Read to word a refusal, never to target.
+        ...(resolvedWin && { callerHwnd: resolvedWin.hwnd }),
       });
       if (ag.block) {
         // ADR-036 — the generic `ambiguous_target` advice is "pass hwnd", and
@@ -466,7 +472,7 @@ export const setElementValueHandler = async ({
         // Through the shared presenter: this branch was still rebuilding the
         // catalogue, so a titleless-handle refusal here carried the tailored
         // recovery in `next` and its contradiction in `suggest`.
-        return failBlockedByGuard("set_element_value", ag.summary);
+        return failBlockedByGuard("set_element_value", ag);
       }
       perceptionEnv = ag.summary;
     }

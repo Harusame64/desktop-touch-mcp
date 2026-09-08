@@ -40,12 +40,13 @@ export const narrateParam = z
     'Narration level. "rich": include UIA diff in post.rich (appeared/disappeared/valueDeltas) — ' +
     "usually removes the need for a verification screenshot. It is withheld, with " +
     "post.rich.diffDegraded saying why, when the diff cannot be shown to describe the " +
-    "window that was acted on. On click_element and keyboard, which resolve the target " +
+    "window that was acted on. On click_element and keyboard (and set_element_value " +
+    "where the server registers it), which resolve the target " +
     "window before acting: another open window's title contains the " +
     "text this call resolved to, whether you named the hwnd or the server did — " +
     "\"@active\" and the dialog rescue both resolve one (\"ambiguous_title\"); or the " +
     "target moved between the snapshot and the action (\"target_changed\"). On those " +
-    "two and on mouse_click, retrying with a fixId also withholds it, because the " +
+    "and on mouse_click, retrying with a fixId also withholds it, because the " +
     "stored fix names a window this cannot see (\"fix_target_unknown\") — browser tools " +
     "keep their diff on a fixId retry, because theirs is a tab diff and does not depend " +
     "on a window title. mouse_click and mouse_drag accept an hwnd and still take their " +

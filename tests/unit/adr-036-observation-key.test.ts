@@ -163,6 +163,22 @@ describe("ADR-036 — a handle-named observation is keyed by the handle", () => 
     expect(takeLastInvalidation()?.reason).toBe("process_restarted");
   });
 
+  it("two different titles are two different slots", () => {
+    // The sensor's `observationKey` defaults to the title, and the whole point
+    // of that default is "every existing caller keeps the title's question".
+    // Nothing exercised it: a mutation collapsing every title into one shared
+    // slot survived the suite, because every test used a single title. With one
+    // slot, observing a SECOND title after the first window died reports that
+    // second window as a restart of the first.
+    windows = [{ hwnd: A, title: TITLE }];
+    void resolveActionTarget({ kind: "window", titleIncludes: TITLE }, { actionKind: "uiaInvoke" });
+    takeLastInvalidation();
+
+    windows = [{ hwnd: B, title: "Something else" }];
+    void resolveActionTarget({ kind: "window", titleIncludes: "Something else" }, { actionKind: "uiaInvoke" });
+    expect(takeLastInvalidation()).toBeNull();
+  });
+
   it("keeps the handle's own history: hwnd_reused is not affected", () => {
     // `lastByHwnd` answers the question that DOES apply to a handle, and the
     // new key does not go near it: the same handle coming back under a

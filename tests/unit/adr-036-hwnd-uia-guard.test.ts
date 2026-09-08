@@ -23,7 +23,10 @@ const WSTITLED = 0x4444n;
 // The enumeration the guard counts. Mutable so the separability cases below can
 // put two DIFFERENT titles on the desktop; `beforeEach` puts the shared-title
 // pair back, which is what every other test in this file expects.
-const { winsRef } = vi.hoisted(() => ({ winsRef: { list: [] as unknown[] } }));
+const { winsRef, mockIsExcluded } = vi.hoisted(() => ({
+  winsRef: { list: [] as unknown[] },
+  mockIsExcluded: vi.fn(() => false),
+}));
 const win = (hwnd: bigint, title: string, zOrder: number) => ({
   hwnd, title, zOrder, isActive: zOrder === 0,
   region: { x: 0, y: 0, width: 800, height: 600 },
@@ -48,6 +51,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
       (h === UNTITLED || h === 0xDEADn ? "" : h === WSTITLED ? "   " : SHARED_TITLE)),
     getWindowRectByHwnd: vi.fn((h: bigint) =>
       h === 0xDEADn ? null : { x: 0, y: 0, width: 800, height: 600 }),
+    isExcludedWindowHandle: mockIsExcluded,
   };
 });
 
@@ -446,18 +450,63 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
   });
 
   it("catches a window the enumeration drops for a reason OTHER than the title", async () => {
-    // The enumeration drops on five conditions and the first version of this
-    // asked about one. A titled window hidden to the tray, or under 50x50,
-    // produces the identical dead loop — discover it, let it go to the tray,
-    // retry, and the answer is "run desktop_discover", which cannot list it.
-    delete process.env.DTM_SET_VALUE_CHAIN;
+    // The enumeration drops on several conditions and the first version of this
+    // asked about one — the empty title. A window that HAS a title and is
+    // dropped for any of the others produces the identical dead loop, so the
+    // predicate asks the enumeration rather than guessing which rule bit.
+    //
+    // The fixture models the predicate's own definition ("live, and not in the
+    // list"), which is all it can: the drop happens inside the native
+    // enumeration and this suite mocks that enumeration wholesale. What it does
+    // discriminate is the change — with the title-only predicate this call gets
+    // the generic catalogue instead.
     winsRef.list = [win(SIBLING, SHARED_TITLE, 0)];   // LIVE is titled but absent
     const r = parse(await clickElementHandler({
       windowTitle: "anything", hwnd: String(LIVE), name: "Field",
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
-    expect(next).toMatch(/does not list/i);
-    expect(next).toMatch(/tray or smaller than 50x50/i);
+    expect(next).toMatch(/does not list it/i);
+    // The message states the rule rather than asserting which clause failed —
+    // it cannot know, and its previous wording told a titled window it had no
+    // title.
+    expect(next).toMatch(/visible, titled, have a\s+rectangle/i);
+    expect(next).not.toMatch(/usually an untitled one/i);
+  });
+
+  it("reaches the caller whose handle the descriptor deliberately withholds", async () => {
+    // With `DTM_SET_VALUE_CHAIN=1` the descriptor drops the handle on purpose —
+    // the fallback channels resolve by title, so pinning the guard to a handle
+    // the write will not use is worse than refusing. That also hid this refusal
+    // on exactly the configuration the tool's tailoring exists for: a caller who
+    // DID pass `hwnd` was told to run `desktop_discover` for a window it cannot
+    // list. The handle now reaches the guard for wording only.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    winsRef.list = [win(SIBLING, "Nothing matches this", 0)];
+    const r = parse(await setElementValueHandler({
+      windowTitle: "anything", hwnd: String(LIVE), value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).toMatch(/does not list it/i);
+    expect(next).not.toMatch(/Call desktop_discover to verify the window title/);
+  });
+
+  it("says nothing to a caller holding the key locker's handle", async () => {
+    // The enumeration drops that window ON PURPOSE, so "not in the list" is true
+    // of it — and this refusal would then explain how to reach it. Unreachable
+    // today because every descriptor builder resolves first and
+    // `resolveWindowTarget` throws `WindowExcluded`; it fails closed here so it
+    // stays unreachable when a seventh builder appears.
+    // `mockReturnValue`, not `…Once`: something upstream of the predicate asks
+    // the same question, and a one-shot answer was consumed before it got there.
+    mockIsExcluded.mockReturnValue(true);
+    winsRef.list = [win(SIBLING, SHARED_TITLE, 0)];
+    const r = parse(await clickElementHandler({
+      windowTitle: "anything", hwnd: String(LIVE), name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).not.toMatch(/does not list it/i);
+    expect(next).toMatch(/Call desktop_discover to verify the window title/);
+    mockIsExcluded.mockReturnValue(false);
   });
 
   it("still says to check the title when the handle names nothing at all", async () => {
