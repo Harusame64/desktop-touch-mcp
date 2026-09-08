@@ -296,7 +296,22 @@ export function toTargetHints(ident: TargetIdentity): TargetHints {
  *
  * Returns null when no window matches — caller should leave hints empty in that case.
  */
-export function buildHintsForTitle(partialTitle: string): {
+export function buildHintsForTitle(
+  partialTitle: string,
+  /**
+   * ADR-036 — the handle the caller named, when they named one. These hints
+   * report which window was acted on and hand back a handle for the caller to
+   * reuse, so resolving them by title while the action went to a named handle
+   * described the wrong window: with two same-titled windows the caller was
+   * told the sibling's identity and cache state. In `get_ui_elements` the
+   * returned handle also SCOPES the read, so there the mismatch changed what
+   * was read, not just what was reported.
+   *
+   * A handle that is not in the enumeration yields no hints rather than
+   * falling back to a title match — no answer beats the wrong window's answer.
+   */
+  pinnedHwnd?: bigint,
+): {
   target: TargetHints;
   caches: CacheStateHints;
   hwnd: bigint;
@@ -304,9 +319,14 @@ export function buildHintsForTitle(partialTitle: string): {
   let resolved: { hwnd: bigint; title: string } | null = null;
   try {
     const wins = enumWindowsInZOrder();
-    const q = partialTitle.toLowerCase();
-    const found = wins.find((w) => w.title.toLowerCase().includes(q));
-    if (found) resolved = { hwnd: found.hwnd, title: found.title };
+    if (pinnedHwnd !== undefined) {
+      const pinned = wins.find((w) => w.hwnd === pinnedHwnd);
+      if (pinned) resolved = { hwnd: pinned.hwnd, title: pinned.title };
+    } else {
+      const q = partialTitle.toLowerCase();
+      const found = wins.find((w) => w.title.toLowerCase().includes(q));
+      if (found) resolved = { hwnd: found.hwnd, title: found.title };
+    }
   } catch { /* ignore */ }
   if (!resolved) return null;
   const obs = observeTarget(partialTitle, resolved.hwnd, resolved.title);

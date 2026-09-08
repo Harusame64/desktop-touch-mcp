@@ -74,7 +74,10 @@ export const getUiElementsHandler = async ({
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
-    const hintsBlock = buildHintsForTitle(effectiveTitle);
+    // ADR-036 — the hints' handle is what scopes the read below, so building
+    // them from the title would read the first same-titled window even when the
+    // caller named a different one.
+    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
     const result = await getUiElements(effectiveTitle, maxDepth, maxElements, 10000, {
       hwnd: hintsBlock?.hwnd, cached: false,
     });
@@ -143,6 +146,11 @@ export const clickElementHandler = async ({
           ...(hwndParam !== undefined && resolvedWin && { hwnd: resolvedWin.hwnd }),
         },
         fixCarryingArgs: { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId, controlType },
+        // ADR-036 — a handle-pinned call gets no `fixId` hint: the stored args
+        // carry only the title and the replay prologue skips resolution, so
+        // following the hint returns to the guard with the handle gone. The
+        // hint returns when the replay carries the handle (ADR-036 I-5).
+        ...(hwndParam !== undefined && resolvedWin && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "click_element", { _perceptionForPost: ag.summary });
@@ -150,7 +158,11 @@ export const clickElementHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    const hintsBlock = buildHintsForTitle(effectiveWindowTitle);
+    // ADR-036 — hints describe the window that was ACTED ON. Built from the
+    // title they named the first same-titled window instead, so a pinned call
+    // could operate on one window and hand the caller the other one's handle
+    // and cache state to reuse.
+    const hintsBlock = buildHintsForTitle(effectiveWindowTitle, resolvedWin?.hwnd);
     // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
     const result = await clickElement(
       effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType,
@@ -175,6 +187,25 @@ function isSetValueChainEnabled(): boolean {
   return process.env["DTM_SET_VALUE_CHAIN"] === "1";
 }
 
+/**
+ * ADR-036 — can `set_element_value` be pinned to the caller's handle?
+ *
+ * Only when EVERY channel the call can still take is addressed by that handle.
+ * Channel 1 (ValuePattern) is. Channels 2 and 3 are not: the TextPattern2
+ * insert resolves by title, and the keyboard fallback does a foreground
+ * select-all-and-replace on a title-resolved window with the guard skipped. So
+ * while the chain is armed the multi-match refusal has to stand — it is the
+ * wrong answer, but overwriting the wrong window's field is a worse one.
+ *
+ * This function is the ONE place that has to change when those channels take a
+ * handle (ADR-036 I-6): it becomes unconditionally true and then disappears,
+ * along with the refusal it keeps alive. Named for the condition rather than
+ * for the env flag so that is findable from the fix, not only from the ADR.
+ */
+function allSetValueChannelsAreHandleAddressed(): boolean {
+  return !isSetValueChainEnabled();
+}
+
 export const setElementValueHandler = async ({
   windowTitle, hwnd: hwndParam, value, name, automationId, lensId,
 }: { windowTitle: string; hwnd?: string; value: string; name?: string; automationId?: string; lensId?: string }): Promise<ToolResult> => {
@@ -185,6 +216,11 @@ export const setElementValueHandler = async ({
     if (!name && !automationId) {
       return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle: effectiveTitle });
     }
+
+    // Hoisted above the guard: whether the fallback chain is armed decides
+    // whether this call may be handle-pinned at all (see the descriptor below).
+    const chainEnabled = isSetValueChainEnabled();
+    const mayPinHandle = allSetValueChannelsAreHandleAddressed();
 
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
@@ -204,9 +240,12 @@ export const setElementValueHandler = async ({
         descriptor: {
           kind: "window",
           titleIncludes: effectiveTitle,
-          // ADR-036 I-1 — see click_element above.
-          ...(hwndParam !== undefined && resolvedWin && { hwnd: resolvedWin.hwnd }),
+          // ADR-036 I-1 — see click_element above, plus the condition in
+          // `allSetValueChannelsAreHandleAddressed`: the pin follows the write
+          // channels, it does not lead them.
+          ...(hwndParam !== undefined && resolvedWin && mayPinHandle && { hwnd: resolvedWin.hwnd }),
         },
+        ...(hwndParam !== undefined && resolvedWin && mayPinHandle && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "set_element_value", { _perceptionForPost: ag.summary });
@@ -214,8 +253,8 @@ export const setElementValueHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    const hintsBlock = buildHintsForTitle(effectiveTitle);
-    const chainEnabled = isSetValueChainEnabled();
+    // ADR-036 — hints describe the window that was acted on (see click_element).
+    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
     const attempts: Array<{ channel: string; error: string }> = [];
 
     // Channel 1: ValuePattern (always tried first)
@@ -312,7 +351,8 @@ export const scopeElementHandler = async ({
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
-    const hintsBlock = buildHintsForTitle(effectiveTitle);
+    // ADR-036 — see get_ui_elements.
+    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
     const bounds = await getElementBounds(effectiveTitle, name, automationId, controlType);
     if (!bounds) {
       return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });

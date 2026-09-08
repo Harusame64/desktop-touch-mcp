@@ -103,6 +103,23 @@ vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
   };
 });
 
+// The background delivery verification reads the target back through UIA. Left
+// real it would reach the live desktop from a unit test; mocked, it also makes
+// "did the read-back run at all?" observable, which is what the pinned case
+// turns on.
+const { mockGetText, mockGetValue } = vi.hoisted(() => ({
+  mockGetText: vi.fn(async () => "abcdefgh"),
+  mockGetValue: vi.fn(async () => "abcdefgh"),
+}));
+vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/uia-bridge.js")>();
+  return {
+    ...actual,
+    getTextViaTextPattern: (...a: unknown[]) => mockGetText(...(a as [])),
+    getTextViaValuePattern: (...a: unknown[]) => mockGetValue(...(a as [])),
+  };
+});
+
 // The flash path's channel choice is not what this file is about; pinning it to
 // WM_CHAR keeps the delivery handle observable without a clipboard round-trip.
 vi.mock("../../src/engine/background-channel-resolver.js", () => ({
@@ -195,6 +212,8 @@ beforeEach(() => {
   mockPostChars.mockClear();
   mockPostCombo.mockClear();
   mockPostEnter.mockClear();
+  mockGetText.mockClear();
+  mockGetValue.mockClear();
 });
 
 // ─── I-1: the descriptor carries the handle on every dispatch method ─────────
@@ -305,6 +324,83 @@ describe("ADR-036 I-1 — the guard descriptor carries the caller's handle", () 
     } as never));
     expect(r.ok).toBe(true);
     expect(guardDescriptor()).toBeNull();
+  });
+});
+
+/** What the handler asked the guard to do about on-block `fixId` hints. */
+function guardSuppressedFixHint(): unknown {
+  expect(mockRunActionGuard).toHaveBeenCalled();
+  return (mockRunActionGuard.mock.calls.at(-1)![0] as { suppressSuggestedFix?: unknown })
+    .suppressSuggestedFix;
+}
+
+describe("ADR-036 — a handle-pinned call is not offered a fixId it cannot use", () => {
+  // The stored fix carries the TITLE and the replay prologue skips window
+  // resolution, so following the hint comes back to the guard with the handle
+  // gone — landing on the very refusal `hwnd` was passed to get past. Before
+  // this change the hint could not reach a caller in that state at all, because
+  // the ambiguity refusal returns before a fix is minted.
+  it("suppresses the hint on every dispatch method when a handle is named", async () => {
+    for (const method of ["foreground", "background"] as const) {
+      mockRunActionGuard.mockClear();
+      await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method } as never);
+      expect(guardSuppressedFixHint()).toBe(true);
+    }
+    mockRunActionGuard.mockClear();
+    await keyboardTypeHandler({
+      ...TYPE_BASE, hwnd: String(LIVE), windowTitle: SHARED_TITLE, method: "foreground_flash",
+    } as never);
+    expect(guardSuppressedFixHint()).toBe(true);
+  });
+
+  it("covers press and sequence", async () => {
+    await keyboardPressHandler({
+      keys: "a", hwnd: String(LIVE), method: "foreground", trackFocus: false, settleMs: 0,
+    } as never);
+    expect(guardSuppressedFixHint()).toBe(true);
+
+    mockRunActionGuard.mockClear();
+    await keyboardSequenceHandler({
+      steps: [{ keys: "ctrl+a" }], hwnd: String(LIVE), trackFocus: false, settleMs: 0,
+    } as never);
+    expect(guardSuppressedFixHint()).toBe(true);
+  });
+
+  it("leaves the hint alone for a title-only call, which can honour it", async () => {
+    // A unique title, so the guard actually runs (a title-only call against the
+    // shared title is refused before the question arises) and the replay it
+    // would offer really can resolve the same window again.
+    mockEnum.mockImplementation(() => [
+      win(ELSEWHERE, "Some other app", 0),
+      win(LIVE, SHARED_TITLE, 1),
+    ]);
+    await keyboardTypeHandler({
+      ...TYPE_BASE, windowTitle: SHARED_TITLE, method: "foreground",
+    } as never);
+    expect(guardSuppressedFixHint()).toBeUndefined();
+  });
+});
+
+describe("ADR-036 — the delivery check does not judge a pinned write by a sibling's contents", () => {
+  // The background read-back asks UIA for a window BY TITLE. Pinned delivery
+  // plus a shared title means it can read the wrong window, so it is skipped
+  // and the result stays unverifiable rather than confidently wrong.
+  it("skips the read-back when the pinned window's title is shared", async () => {
+    await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method: "background" } as never);
+    expect(mockPostChars.mock.calls[0]![0]).toBe(LIVE);   // delivery still happened
+    expect(mockGetText).not.toHaveBeenCalled();
+    expect(mockGetValue).not.toHaveBeenCalled();
+  });
+
+  it("still reads back when the pinned window's title is unique", async () => {
+    // The control: nothing about pinning suppresses verification by itself —
+    // only the inability to address the pinned window does.
+    mockEnum.mockImplementation(() => [
+      win(ELSEWHERE, "Some other app", 0),
+      win(LIVE, SHARED_TITLE, 1),
+    ]);
+    await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method: "background" } as never);
+    expect(mockGetText).toHaveBeenCalled();
   });
 });
 

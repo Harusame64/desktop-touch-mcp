@@ -175,7 +175,11 @@ function nextStepFor(
     case "unguarded":
       return "Pass windowTitle for guarded action";
     case "ambiguous_target":
-      return `Call desktop_discover or pass a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
+      // Naming the handle is the recovery that ends this, so it goes first.
+      // It only became one when the guard learned to resolve a handle instead
+      // of counting titles; until then this line offered the one thing that
+      // could not help, and callers who did pass `hwnd` were told to pass it.
+      return `Pass hwnd to name one window exactly (desktop_discover returns it), or use a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
     case "target_not_found":
       return "Call desktop_discover to verify the window title, then retry";
     case "identity_changed":
@@ -236,8 +240,9 @@ export type DestinationVerdict =
  */
 export const TITLELESS_FOREGROUND_WARNING =
   "Target window has no title and is addressed by hwnd while in the foreground — " +
-  "delivered unguarded (no identity guard; keyboard focus/guard cannot yet target " +
-  "titleless windows, see ADR-036)";
+  "delivered unguarded (no identity guard). A window with no title cannot be " +
+  "focused or guarded by name, so this pass rests on it being the foreground " +
+  "window at the moment the keys go out";
 
 /**
  * Does this title actually name a window?
@@ -271,8 +276,15 @@ function namesAWindow(title: string | undefined): boolean {
  * window is ALREADY the foreground — then delivery lands exactly where the
  * caller pointed, which is the legitimate `@active` case. That pass is reported
  * back as `note: "titleless_foreground"` so the caller can warn about what it
- * did not get (no focus, no identity guard). Making focus and the guard
- * hwnd-aware, so titled-ness stops mattering, is ADR-036.
+ * did not get (no focus, no identity guard).
+ *
+ * Whether to pull these calls into the guard instead was left open and is now
+ * settled: they stay out of it. Measured over the whole retained diagnostic
+ * log, no call has ever addressed a titleless window by handle — not one
+ * refusal, not one accepted foreground pass — so guarding them would add a
+ * pass-to-block behaviour change for a population of zero. The window
+ * enumeration every guard and focus mechanism is built on drops titleless
+ * windows anyway, so this is where the rule stays (ADR-036 OQ-36-1 = beta).
  */
 export function keyboardDestinationMiss(p: {
   effectiveWindowTitle: string | undefined;
@@ -307,8 +319,8 @@ function destinationBlockMessage(toolName: string, reason: DestinationMissReason
     ? `${toolName} requires a destination window: pass windowTitle or hwnd ` +
       "(an empty or whitespace-only windowTitle does not name one)"
     : `${toolName}: the window addressed by hwnd has no title and is not in the foreground — ` +
-      "keyboard delivery cannot yet target titleless windows (ADR-036); bring it to the " +
-      "foreground first (focus_window) or target a titled window";
+      "a window with no title can only receive input while it is the foreground window; " +
+      "bring it to the front (focus_window) or target a titled window";
 }
 
 export type DestinationCheck =

@@ -724,7 +724,7 @@ When auto guard is enabled (default), `post.perception.status` will be one of:
 |---|---|
 | `ok` | Guard passed — target verified |
 | `unguarded` | `windowTitle` not provided; action ran without guard |
-| `ambiguous_target` | Multiple windows matched; use a more specific title |
+| `ambiguous_target` | Multiple windows matched; pass `hwnd` to name one exactly, or use a more specific title |
 | `target_not_found` | No window matched the given title |
 | `identity_changed` | Window was replaced (process restart / HWND change) |
 | `blocked_by_modal` | A modal dialog is in the way — dismiss it, then retry |

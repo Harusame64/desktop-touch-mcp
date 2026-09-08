@@ -1338,6 +1338,11 @@ export async function evaluateKeyboardGuards(opts: {
     const ag = await runActionGuard({
       toolName, actionKind: "keyboard", descriptor,
       ...(foregroundVerified && { foregroundVerified: true }),
+      // ADR-036 — derived HERE rather than passed in, so a caller cannot wire
+      // the handle through and forget the hint that goes with it. See the note
+      // at the foreground site in keyboardTypeHandler for why a pinned call
+      // must not be offered a `fixId`.
+      ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
     });
     if (ag.block) {
       return {
@@ -1380,8 +1385,12 @@ export function resolveEffectiveInputMethod(
         return "background-auto";
       }
     } catch {
-      // best-effort — fall through to "auto" so downstream still works
+      // best-effort — an unreadable class is not a reason to refuse; fall to
+      // the return below, which is `auto`.
     }
+    // Deliberately NOT falling through to the title probe: the caller named a
+    // window, and answering from a different one is the defect this argument
+    // exists to close.
     return inputMethod;
   }
   if (effectiveWindowTitle) {
@@ -1584,7 +1593,7 @@ export const keyboardTypeHandler = async ({
       // pastes into it, so this is a delivery decision, not a lookup. With a
       // pinned handle it is made on the handle.
       const ffMatches = explicitHwnd !== undefined
-        ? wins.filter((w) => String(w.hwnd) === String(explicitHwnd))
+        ? wins.filter((w) => w.hwnd === explicitHwnd)
         : wins.filter((w) =>
             w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())
           );
@@ -1771,8 +1780,20 @@ export const keyboardTypeHandler = async ({
       // window in z-order is what made `hwnd` steer focus and the guard and
       // then lose the delivery itself: the keys went to the sibling.
       const bgMatches = explicitHwnd !== undefined
-        ? wins.filter(w => String(w.hwnd) === String(explicitHwnd))
+        ? wins.filter(w => w.hwnd === explicitHwnd)
         : wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      // ADR-036 — the delivery below is addressed to a HANDLE, but the UIA
+      // read-back that judges it asks for a window BY TITLE. With two windows
+      // carrying that title the read can land on the sibling, and a verdict
+      // built from the wrong window's contents is worse than no verdict: it can
+      // report a delivery that did not happen, or deny one that did. So when
+      // the handle is pinned and the title is not unique, the read-back is
+      // skipped and the result stays `unverifiable`. The delivery itself is
+      // unaffected — it goes to the named window either way. This narrows again
+      // when the readers learn to take a handle (ADR-036 I-6).
+      const readBackCanAddressTarget =
+        explicitHwnd === undefined ||
+        wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())).length <= 1;
       const target = bgMatches[0];
       logResolve({
         resolver: "keyboardBackgroundType",
@@ -1864,7 +1885,8 @@ export const keyboardTypeHandler = async ({
           //     path PS cost. Future work: native ValuePattern binding to
           //     close the gap.
           const shouldReadBaselines =
-            verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline;
+            verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline &&
+            readBackCanAddressTarget;
           // ADR-019 Stage 4 — capture pre-action reference frame BEFORE the
           // WM_CHAR loop (sub-plan §2.4.2 + OQ #5 option (a)). Gated on
           // verification being needed AND env opt-in
@@ -2291,6 +2313,17 @@ export const keyboardTypeHandler = async ({
         toolName: "keyboard:type", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
         ...(fixId && { fixCarryingArgs: { text: effectiveText, windowTitle: effectiveWindowTitle } }),
+      // ADR-036 — a handle-pinned call gets no `fixId` hint. The one-shot fix
+      // stores the TITLE and the replay prologue deliberately skips window
+      // resolution, so following that hint would come back to the guard with
+      // the handle gone and stop at `ambiguous_target` — the very refusal the
+      // caller passed `hwnd` to get past. Before this ADR the hint could not
+      // reach a caller in that state (ambiguity refused first, and the refusal
+      // returns before a fix is minted), so suppressing it takes nothing away.
+      // Recovery is a plain re-call with the same arguments, which is
+      // idempotent here. The hint comes back when the replay learns to carry
+      // the handle (ADR-036 I-5), not before.
+        ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
         return failWith(
@@ -2558,8 +2591,20 @@ export const keyboardPressHandler = async ({
       const wins = enumWindowsInZOrder();
       // ADR-036 I-4 — same handle pin as keyboard:type's background path.
       const bgPressMatches = explicitHwnd !== undefined
-        ? wins.filter(w => String(w.hwnd) === String(explicitHwnd))
+        ? wins.filter(w => w.hwnd === explicitHwnd)
         : wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      // ADR-036 — the delivery below is addressed to a HANDLE, but the UIA
+      // read-back that judges it asks for a window BY TITLE. With two windows
+      // carrying that title the read can land on the sibling, and a verdict
+      // built from the wrong window's contents is worse than no verdict: it can
+      // report a delivery that did not happen, or deny one that did. So when
+      // the handle is pinned and the title is not unique, the read-back is
+      // skipped and the result stays `unverifiable`. The delivery itself is
+      // unaffected — it goes to the named window either way. This narrows again
+      // when the readers learn to take a handle (ADR-036 I-6).
+      const readBackCanAddressTarget =
+        explicitHwnd === undefined ||
+        wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())).length <= 1;
       const target = bgPressMatches[0];
       logResolve({
         resolver: "keyboardBackgroundPress",
@@ -2607,7 +2652,8 @@ export const keyboardPressHandler = async ({
           const verificationNeeded =
             inputMethod === "background" || (isBgAutoEnabled() && !isTerminalTarget);
           const readBackVerifiable =
-            verificationNeeded && isTerminalTarget && isReadBackVerifiableCombo(keys);
+            verificationNeeded && isTerminalTarget && isReadBackVerifiableCombo(keys) &&
+            readBackCanAddressTarget;
 
         const isEnter = keys.toLowerCase() === "enter";
 
@@ -2825,6 +2871,8 @@ export const keyboardPressHandler = async ({
       const ag = await runActionGuard({
         toolName: "keyboard:press", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
+        // ADR-036 — see keyboard:type above.
+        ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
         return failWith(
@@ -3045,6 +3093,8 @@ export const keyboardSequenceHandler = async ({
         const ag = await runActionGuard({
           toolName: "keyboard:sequence", actionKind: "keyboard", descriptor,
           ...(foregroundVerified && { foregroundVerified: true }),
+          // ADR-036 — see keyboard:type above.
+          ...(explicitHwnd !== undefined && { suppressSuggestedFix: true }),
         });
         if (ag.block) {
           return failWith(

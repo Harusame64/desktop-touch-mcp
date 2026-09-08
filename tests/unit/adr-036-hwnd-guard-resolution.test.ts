@@ -147,6 +147,10 @@ describe("ADR-036 I-1 — runActionGuard stops counting once a handle is named",
     });
     expect(ag.block).toBe(true);
     expect(ag.summary.status).toBe("ambiguous_target");
+    // The refusal has to name the recovery that works. It used to offer only
+    // "a more specific windowTitle" — which cannot help when both windows carry
+    // the same one — and said nothing about the handle that now lifts it.
+    expect(ag.summary.next).toContain("hwnd");
   });
 
   it("lets the same write through when it names the handle", async () => {
@@ -194,7 +198,7 @@ describe("ADR-036 I-1 — runActionGuard stops counting once a handle is named",
 describe("ADR-036 I-2 — a handle-pinned destination keeps its own state slot", () => {
   it("keys on the handle, and on the title when there is no handle", () => {
     expect(deriveTargetKey({ kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE }))
-      .toBe(`window#hwnd:${LIVE}`);
+      .toBe(`window#hwnd:${String(LIVE)}`);
     expect(deriveTargetKey({ kind: "window", titleIncludes: "Notepad" }))
       .toBe("window:notepad");
   });
@@ -203,7 +207,7 @@ describe("ADR-036 I-2 — a handle-pinned destination keeps its own state slot",
     // The reason the separator is `#`: with `window:hwnd:<n>` a window actually
     // called "hwnd:4369" would have produced the same key as the pinned slot for
     // handle 4369, and the two would have shared identity state.
-    const forged = deriveTargetKey({ kind: "window", titleIncludes: `hwnd:${LIVE}` });
+    const forged = deriveTargetKey({ kind: "window", titleIncludes: `hwnd:${String(LIVE)}` });
     const pinned = deriveTargetKey({ kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE });
     expect(forged).not.toBe(pinned);
   });
@@ -226,20 +230,52 @@ describe("ADR-036 I-2 — a handle-pinned destination keeps its own state slot",
   it("shares one slot — and misreports — when the same two windows are addressed by title", async () => {
     // The control for the case above. Without it, "no identity change" could
     // mean the hot cache simply never fires here, and the separate-slot claim
-    // would be vacuous. Addressing by title puts both windows in the same slot,
-    // and the second resolution reports the first one's handle as replaced.
-    mockEnumWindows.mockReturnValue([win(SIBLING, SHARED_TITLE, true, 0)]);
+    // would be vacuous.
+    //
+    // BOTH windows stay open across both calls — the alternation the pinned
+    // case describes, not one window being replaced by another. What moves is
+    // which of them is in the foreground, because that is the title rule's
+    // tie-break, so the same title resolves to a different handle each time.
+    // One key, two windows: the second resolution reports the first one's
+    // handle as replaced.
+    mockEnumWindows.mockReturnValue([
+      win(SIBLING, SHARED_TITLE, true, 0), win(LIVE, SHARED_TITLE, false, 1),
+    ]);
     const first = await resolveActionTarget(
       { kind: "window", titleIncludes: SHARED_TITLE },
       { actionKind: "keyboard" }
     );
+    expect(first.lens?.binding.hwnd).toBe(String(SIBLING));
     expect(first.changed).toBeUndefined();
 
-    mockEnumWindows.mockReturnValue([win(LIVE, SHARED_TITLE, true, 0)]);
+    mockEnumWindows.mockReturnValue([
+      win(SIBLING, SHARED_TITLE, false, 1), win(LIVE, SHARED_TITLE, true, 0),
+    ]);
     const second = await resolveActionTarget(
       { kind: "window", titleIncludes: SHARED_TITLE },
       { actionKind: "keyboard" }
     );
+    expect(second.lens?.binding.hwnd).toBe(String(LIVE));
     expect(second.changed ?? []).toContain("identity");
+  });
+
+  it("keeps the pinned slots apart while both windows stay open and swap places", async () => {
+    // The positive twin of the control: same alternation, addressed by handle.
+    mockEnumWindows.mockReturnValue([
+      win(SIBLING, SHARED_TITLE, true, 0), win(LIVE, SHARED_TITLE, false, 1),
+    ]);
+    await resolveActionTarget(
+      { kind: "window", titleIncludes: SHARED_TITLE, hwnd: SIBLING },
+      { actionKind: "keyboard" }
+    );
+    mockEnumWindows.mockReturnValue([
+      win(SIBLING, SHARED_TITLE, false, 1), win(LIVE, SHARED_TITLE, true, 0),
+    ]);
+    const second = await resolveActionTarget(
+      { kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE },
+      { actionKind: "keyboard" }
+    );
+    expect(second.lens?.binding.hwnd).toBe(String(LIVE));
+    expect(second.changed ?? []).not.toContain("identity");
   });
 });

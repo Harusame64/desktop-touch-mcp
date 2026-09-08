@@ -440,11 +440,12 @@ async function resolveWindowTargetByHwnd(
 ): Promise<ResolveActionTargetResult> {
   const warnings: string[] = [];
 
-  // Compared as strings for the reason `refreshWin32Fluents` gives for doing
-  // the same: the enumerator's hwnd field has been a JS number in one binding
-  // and a BigInt in another, and `===` between those is silently false.
-  const key = String(hwnd);
-  const target = enumWindowsInZOrder().find((w) => String(w.hwnd) === key);
+  // Compared as handles. `win32EnumTopLevelWindows` declares `bigint[]`
+  // (`index.d.ts`) and `WindowZInfo.hwnd` is `bigint`, so this is the same
+  // comparison `focusWindowForKeyboard` already makes for its own handle pin —
+  // one rule for one question. (`refreshWin32Fluents` compares as strings
+  // because its input really is a string, not to tolerate a mixed shape.)
+  const target = enumWindowsInZOrder().find((w) => w.hwnd === hwnd);
 
   // ADR-035 observation: the query recorded is the title the caller carried,
   // but the match was decided on the handle — `pinnedByHwnd` is what keeps a

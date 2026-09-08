@@ -23,6 +23,11 @@
   `set_element_value` were refused by the same guard and are fixed with it —
   their actual UI calls already went through the handle.
 
+  The refusal itself now names the way out. `ambiguous_target` used to say only
+  to use a more specific title, which is no help when both windows carry the
+  same one; the message, the suggestions attached to it and the README table now
+  point at `hwnd` first.
+
   Nothing else about the guard changes. A handle that no longer names a visible
   top-level window still stops with `target_not_found` rather than falling back
   to a title match, and the rest of the checks — the window having been replaced
@@ -30,6 +35,33 @@
   against the window you named. Calls that pass only `windowTitle` behave
   exactly as before, `ambiguous_target` included: naming a handle is what turns
   that refusal off, and only for the call that names one.
+
+  Responses now describe the window that was acted on. `hints.target` and
+  `hints.caches` were built from the first window whose title matched, so a call
+  could operate on the window you named and hand you the other one's handle and
+  cache state to reuse. `get_ui_elements` passes that handle on to scope its
+  read, so there it decided what was read, not only what was reported.
+
+  Two limits are worth knowing, both about what gets reported rather than about
+  where the keys go:
+
+  - When a `method: "background"` write is addressed by handle and more than one
+    window carries its title, the delivery check is skipped and the result comes
+    back `unverifiable`. That check reads the target back through UIA *by title*,
+    so it could otherwise report a delivery that never happened, or deny one that
+    did, from the other window's contents. The keys still go to the window you
+    named; only the verdict is withheld.
+  - `set_element_value` still stops with `ambiguous_target` while
+    `DTM_SET_VALUE_CHAIN=1` is set. With that chain enabled a failed first
+    attempt continues into two fallbacks that find their window by title — one of
+    them a foreground select-all-and-replace — so lifting the refusal there would
+    trade a stop for a write into the wrong field. Unset (the default), it takes
+    the handle like everything else.
+
+  A call that names a handle is also no longer offered a `fixId` retry when the
+  guard stops it: the stored retry carries the title only, so following it came
+  straight back to the same refusal. Re-issue the call with the same arguments
+  instead — it is idempotent here.
 
   One consequence worth knowing: a window addressed by handle now keeps its own
   drift-detection state, so alternating between two same-titled windows by

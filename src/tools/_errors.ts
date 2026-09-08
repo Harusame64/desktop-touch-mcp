@@ -155,7 +155,7 @@ const SUGGESTS: Record<string, string[]> = {
   // the guard runs and carries its own `DestinationRequired` code below.
   AutoGuardBlocked: [
     "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
-    "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle / name / automationId until a single target resolves.",
+    "If the descriptor matched multiple targets (ambiguous_target), pass hwnd to name one window exactly (desktop_discover returns it), or narrow windowTitle / name / automationId until a single target resolves.",
     "If the target was not found (target_not_found), run desktop_discover — the window or element no longer matches the current desktop state.",
     "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
