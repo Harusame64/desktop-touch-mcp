@@ -423,6 +423,28 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(suggests).not.toMatch(/pass hwnd to name one window exactly/);
   });
 
+  it("set_element_value gets the same tailored suggest, not the catalogue", async () => {
+    // The first version honoured the per-refusal `suggest` in `click_element`
+    // and left `set_element_value` rebuilding the catalogue — so the same
+    // response carried the tailored recovery in `next` and its contradiction in
+    // `suggest`, one TOOL over from where the defect was found one FIELD over.
+    // Rendered centrally now.
+    delete process.env.DTM_SET_VALUE_CHAIN;
+    winsRef.list = [win(SIBLING, SHARED_TITLE, 0)];
+    const r = parse(await setElementValueHandler({
+      windowTitle: "anything", hwnd: String(UNTITLED), value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).toMatch(/does not list/i);
+    const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
+    expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    expect(suggests).not.toMatch(/run desktop_discover — the window or element/);
+    // …and the perception object handed to `_post` is the summary WITHOUT the
+    // presentation field.
+    expect((r as { _perceptionForPost?: Record<string, unknown> })._perceptionForPost)
+      .not.toHaveProperty("suggest");
+  });
+
   it("catches a window the enumeration drops for a reason OTHER than the title", async () => {
     // The enumeration drops on five conditions and the first version of this
     // asked about one. A titled window hidden to the tray, or under 50x50,

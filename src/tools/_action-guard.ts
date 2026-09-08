@@ -187,6 +187,38 @@ function handleIsMissingFromEnumeration(hwnd: bigint): boolean {
   }
 }
 
+/**
+ * ADR-036 — one place that turns a blocking guard summary into a failure.
+ *
+ * A refusal that carries its own `suggest` replaces the status catalogue;
+ * without it, `failWith` reconstructs `SUGGESTS.AutoGuardBlocked`, whose
+ * `ambiguous_target` and `target_not_found` lines name recoveries such a refusal
+ * has just finished ruling out. Rendered here rather than at each presenter
+ * because the first version honoured it in `click_element` and not in
+ * `set_element_value`, so the same response carried both halves of the
+ * contradiction one tool over — which is how this defect was found in the first
+ * place, one FIELD over.
+ *
+ * `_perceptionForPost` keeps the summary minus `suggest`: the field is a
+ * presentation instruction, not perception, and `_post` reads that object.
+ */
+export function failBlockedByGuard(
+  toolName: string,
+  summary: AutoGuardEnvelope,
+  extras: Record<string, unknown> = {},
+): ToolResult {
+  const { suggest, ...forPost } = summary;
+  if (suggest) {
+    return failCode("AutoGuardBlocked", summary.next, {
+      suggest,
+      rootExtras: { _perceptionForPost: forPost, ...extras },
+    });
+  }
+  return failWith(new Error(`AutoGuardBlocked: ${summary.next}`), toolName, {
+    _perceptionForPost: summary, ...extras,
+  });
+}
+
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
   target?: string

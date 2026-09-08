@@ -10,7 +10,7 @@ import { failWith, failArgs, failCode } from "./_errors.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, namesAWindow } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, namesAWindow, failBlockedByGuard } from "./_action-guard.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
@@ -159,19 +159,7 @@ export const clickElementHandler = async ({
         ...(hwndParam !== undefined && resolvedWin && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
-        // A refusal that carries its own `suggest` replaces the status
-        // catalogue rather than travelling beside it: the catalogue's lines for
-        // this status name recoveries the message has just ruled out, and the
-        // structured field is the one the server instructions tell the model to
-        // read. `failCode` is the shape that can carry it (`failWith` always
-        // appends the catalogue).
-        const { suggest, ...forPost } = ag.summary;
-        return suggest
-          ? failCode("AutoGuardBlocked", ag.summary.next, {
-              suggest,
-              rootExtras: { _perceptionForPost: forPost },
-            })
-          : failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "click_element", { _perceptionForPost: ag.summary });
+        return failBlockedByGuard("click_element", ag.summary);
       }
       perceptionEnv = ag.summary;
     }
@@ -475,7 +463,10 @@ export const setElementValueHandler = async ({
             rootExtras: { _perceptionForPost: ag.summary },
           });
         }
-        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "set_element_value", { _perceptionForPost: ag.summary });
+        // Through the shared presenter: this branch was still rebuilding the
+        // catalogue, so a titleless-handle refusal here carried the tailored
+        // recovery in `next` and its contradiction in `suggest`.
+        return failBlockedByGuard("set_element_value", ag.summary);
       }
       perceptionEnv = ag.summary;
     }
