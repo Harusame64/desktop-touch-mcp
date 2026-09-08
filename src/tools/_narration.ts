@@ -22,7 +22,7 @@ import { withPostState } from "./_post.js";
 import { getUiElements } from "../engine/uia-bridge.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { computeUiaDiff, degradedRichBlock } from "../engine/uia-diff.js";
-import type { RichBlock } from "../engine/uia-diff.js";
+import type { RichBlock, DiffDegraded } from "../engine/uia-diff.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import type { ToolResult } from "./_types.js";
 
@@ -204,6 +204,35 @@ export const UIA_WRITE_NARRATION: RichNarrationOptions = {
  * nothing in this file establishes that they cannot fail. The safe branch is
  * kept for what is not known, not as decoration for a case that cannot happen.
  */
+/**
+ * ADR-036 — the title the HANDLE currently carries, or null when the handle is
+ * not in the enumeration. Same source as the check below, so the two agree on
+ * what exists; `enumWindowsInZOrder` drops untitled windows, which is why an
+ * untitled target reads as "not found" here rather than as an empty title.
+ */
+function liveTitleForHandle(hwnd: string): { title: string } | { degrade: DiffDegraded } {
+  let wins;
+  try {
+    wins = enumWindowsInZOrder();
+  } catch {
+    // Same answer the shared-title check gives when it cannot count: withhold.
+    // Keeping the reason it already used means an enumeration failure reads the
+    // same whether it happens here or one check later.
+    return { degrade: "ambiguous_title" };
+  }
+  let wanted: bigint;
+  try {
+    wanted = BigInt(hwnd);
+  } catch {
+    return { degrade: "no_target" };
+  }
+  const found = wins.find((w) => w.hwnd === wanted);
+  // Not in the enumeration: closed, or untitled — `enumWindowsInZOrder` drops
+  // untitled windows, so the two cannot be told apart from here. Either way
+  // there is no window this layer can name.
+  return found ? { title: found.title } : { degrade: "no_target" };
+}
+
 function titleIsSharedByMoreThanOneWindow(windowTitle: string): boolean {
   try {
     const q = windowTitle.toLowerCase();
@@ -234,9 +263,29 @@ export function withRichNarration<T extends Record<string, unknown>>(
     }
 
     // ── Rich path ────────────────────────────────────────────────────────────
-    const windowTitle = options.windowTitleKey
+    // ADR-036 — when the call names a handle, the HANDLER ignores this argument
+    // ("takes precedence over windowTitle", per the schemas), so narrating the
+    // argument narrates whatever window that string happens to pick. With a
+    // handle on one window and a title naming a different, perfectly
+    // unambiguous one, the shared-title check below sees no ambiguity, both
+    // snapshots resolve the unrelated window, and `post.rich` describes a
+    // window nobody touched — with nothing in it to say so. Take the live title
+    // from the handle instead, and withhold the diff when the handle is not in
+    // the enumeration rather than falling back to the caller's string.
+    const argTitle = options.windowTitleKey
       ? String(args[options.windowTitleKey] ?? "")
       : "";
+    const hwndArg = options.hwndKey ? args[options.hwndKey] : undefined;
+    let windowTitle = argTitle;
+    if (hwndArg !== undefined) {
+      const live = liveTitleForHandle(String(hwndArg));
+      if ("degrade" in live) {
+        const result = await wrappedWithPost(args);
+        spliceRich(result, degradedRichBlock(live.degrade));
+        return result;
+      }
+      windowTitle = live.title;
+    }
 
     // No window target: run action normally.
     // Only splice no_target when the tool supports windowTitle but none was provided.

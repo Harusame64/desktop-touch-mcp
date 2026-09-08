@@ -324,7 +324,21 @@ export const setElementValueHandler = async ({
           // The generic advice in `_action-guard.ts` keeps the flat form on
           // purpose: there `hwnd` is offered first and works, so the title line
           // is a second option rather than the only one left.
-          ag.summary.next =
+          // A titleless target is refused for a different reason and has a
+          // different (non-)recovery. `@active` on an untitled foreground window
+          // resolves to an empty `effectiveTitle`, which matches every window,
+          // so the count is ambiguous — and unsetting the variable does NOT
+          // rescue it: `enumWindowsInZOrder` drops untitled windows
+          // (`win32.ts`), so the by-handle guard comes back `target_not_found`.
+          // `click_element` resolves the same way, and so does the keyboard
+          // focus path. Promising the handle here would be the loop again.
+          ag.summary.next = effectiveTitle.trim() === ""
+            ? "This window has no title, so it cannot be addressed by title or by " +
+              "handle: the enumeration these tools resolve handles through drops " +
+              "untitled windows, and unsetting DTM_SET_VALUE_CHAIN returns " +
+              "target_not_found rather than reaching it. Give the window a title, or " +
+              "act on a titled window of the same application."
+            :
             "This tool cannot be narrowed by hwnd while DTM_SET_VALUE_CHAIN=1: " +
             "its fallback channels still find the window by title. click_element and " +
             "keyboard take hwnd here. If you passed hwnd, windowTitle was ignored: " +
@@ -335,7 +349,7 @@ export const setElementValueHandler = async ({
             "matching lowercases, trims and strips a Chrome, Edge or Firefox suffix " +
             "from both sides, then asks which titles contain your query. So the " +
             "shorter of \"Report\" and \"Report archive\" can never be named this way " +
-            "(the longer one still can), and \"Report\" beside \"REPORT\", or one page " +
+            "(the longer one still can be named), and \"Report\" beside \"REPORT\", or one page " +
             "open in Chrome and in Edge, can never be told apart at all. Unsetting " +
             "DTM_SET_VALUE_CHAIN lets this tool take hwnd too, but that is a server " +
             "setting, not a call argument.";

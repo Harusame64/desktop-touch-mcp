@@ -197,9 +197,17 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
       ...((r.suggest ?? []) as string[]),
       String((r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? ""),
     ];
+    // EVERY occurrence, not the first acceptable one: `toMatch` succeeds on a
+    // clause like "Pass hwnd to click_element, and also pass hwnd to this tool"
+    // and never looks at the second directive — the comma-joined regression
+    // this check exists for, walking in behind a correct phrasing.
     for (const clause of strings.flatMap((t) => t.split(/[.;]/))) {
-      if (!/pass\s+hwnd/i.test(clause)) continue;
-      expect(clause).toMatch(/pass\s+hwnd\s+to\s+(?:click_element|keyboard)/i);
+      for (const m of clause.matchAll(/pass\s+hwnd\s+to\s+(\S+)/gi)) {
+        expect(m[1]).toMatch(/^(?:click_element|keyboard)\b/);
+      }
+      // And a bare "pass hwnd" with no object at all names nothing that works.
+      const bare = clause.replace(/pass\s+hwnd\s+to\s+\S+/gi, "");
+      expect(bare).not.toMatch(/pass\s+hwnd/i);
     }
 
     // Read the field the guard fills, not the serialised envelope.
@@ -256,11 +264,11 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // the clause after it. Tight, and knowingly so; the direction is a fact
     // about the matcher, measured in the pair below.
     expect(next).toMatch(/shorter of[^.]*can never/i);
-    // Affirmative, and required to be: "the longer one still can" is a prefix
-    // of "the longer one still can never be named", so a check for the phrase
-    // accepted the negated claim — the pair-wide flattening again, wearing the
-    // words of its own fix.
-    expect(next).toMatch(/longer one still can(?!\s*(?:not|never))/i);
+    // Affirmative by construction, not by excluding negators: "still can" is a
+    // prefix of "still can never be named" AND of "still can no longer be
+    // named", and a lookahead listing the negations it knows about is a race
+    // with the language. The clause has to complete the verb.
+    expect(next).toMatch(/longer one still can be named/i);
     // These three are prose checks and cannot be more than that: a rewrite can
     // keep every word and weaken the meaning. What holds the meaning is the
     // describe below, which puts each of those cases on the desktop and asks
@@ -285,6 +293,24 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // shape stays what the twelve `AutoGuardBlocked` producers hand back.
     expect(Object.keys(r).sort()).toEqual(["_perceptionForPost", "code", "error", "ok", "suggest"]);
     expect(r.code).toBe("AutoGuardBlocked");
+  });
+
+  it("does not promise the handle to a titleless target — nothing can reach it", async () => {
+    // `@active` on an untitled foreground window resolves to an empty title,
+    // which matches every window, so the count is ambiguous. Unsetting the
+    // variable does NOT rescue that caller: `enumWindowsInZOrder` drops
+    // untitled windows, so the by-handle guard comes back `target_not_found`.
+    // Promising the handle here would be the same loop one shape over.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    const r = parse(await setElementValueHandler({
+      windowTitle: "", value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(JSON.stringify(r)).toContain("ambiguous_target");
+    expect(next).toMatch(/no title/i);
+    expect(next).not.toMatch(/click_element and keyboard take hwnd here/);
+    // And it says what actually happens instead of naming a recovery.
+    expect(next).toMatch(/target_not_found/);
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {

@@ -124,6 +124,52 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockGetUiElements).not.toHaveBeenCalled();
   });
 
+  it("narrates the window the HANDLE names, not the title the caller typed", async () => {
+    // The schemas say hwnd takes precedence, so the handler ignores this title
+    // entirely. Both windows here are unique, so the shared-title check sees
+    // nothing wrong — and the snapshots would have described a window the
+    // action never touched, with nothing in the report to say so.
+    windows = [
+      { hwnd: 0x1111n, title: "Notes" },
+      { hwnd: 0x2222n, title: "Ledger" },
+    ];
+    const r = await narrated({
+      windowTitle: "Notes", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(mockGetUiElements).toHaveBeenCalledTimes(2);
+    for (const call of mockGetUiElements.mock.calls) {
+      expect(call[0]).toBe("Ledger");
+    }
+  });
+
+  it("narrates the caller's title when no handle was named", async () => {
+    // The pairing: same two unique windows, no `hwnd`, and the argument is the
+    // right thing to narrate because it is also what the handler will use.
+    windows = [
+      { hwnd: 0x1111n, title: "Notes" },
+      { hwnd: 0x2222n, title: "Ledger" },
+    ];
+    const r = await narrated({ windowTitle: "Notes", name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    for (const call of mockGetUiElements.mock.calls) {
+      expect(call[0]).toBe("Notes");
+    }
+  });
+
+  it("withholds when the handle is not in the enumeration — closed, or untitled", async () => {
+    // `enumWindowsInZOrder` drops untitled windows, so those two cases are one
+    // from here. Either way there is no window this layer can name, and the
+    // caller's title is not a fallback: it names a different window.
+    windows = [{ hwnd: 0x1111n, title: "Notes" }];
+    const r = await narrated({
+      windowTitle: "Notes", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBe("no_target");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+    expect(innerHandler).toHaveBeenCalled();
+  });
+
   it("says in the shipped description that the diff can be withheld", () => {
     // That description is what decides whether the model takes a verification
     // screenshot instead. It promised the diff removes the need for one; this
