@@ -44,12 +44,14 @@ export const narrateParam = z
     "resolve the target window before acting: another open window's title contains the " +
     "text this call resolved to, whether you named the hwnd or the server did — " +
     "\"@active\" and the dialog rescue both resolve one (\"ambiguous_title\"); or the " +
-    "target moved between the snapshot and the action (\"target_changed\"). On any tool " +
-    "here, retrying with a fixId withholds it, because the stored fix names the window " +
-    "and this cannot see it (\"fix_target_unknown\"). mouse_click and mouse_drag accept " +
-    "an hwnd and still take their snapshots by windowTitle, so nothing is withheld for " +
-    "them — verify those with a screenshot. The action itself is unaffected in every " +
-    "case; only the diff is. Default: \"minimal\"."
+    "target moved between the snapshot and the action (\"target_changed\"). On those " +
+    "three and on mouse_click, retrying with a fixId also withholds it, because the " +
+    "stored fix names a window this cannot see (\"fix_target_unknown\") — browser tools " +
+    "keep their diff on a fixId retry, because theirs is a tab diff and does not depend " +
+    "on a window title. mouse_click and mouse_drag accept an hwnd and still take their " +
+    "snapshots by windowTitle, so nothing else is withheld for them: verify those with " +
+    "a screenshot. The action itself is unaffected in every case; only the diff is. " +
+    "Default: \"minimal\"."
   );
 
 // ─────────────────────────────────────────────────────────────────────────────

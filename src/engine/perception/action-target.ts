@@ -28,6 +28,7 @@ import { enumWindowsInZOrder, type WindowZInfo } from "../win32.js";
 // enumerator degrades to the fail-closed branch instead of failing at the call.
 import * as win32 from "../win32.js";
 import { refreshWin32Fluents, buildWindowIdentity } from "./sensors-win32.js";
+import { handleObservationKey } from "../identity-tracker.js";
 import { findContainingWindowFresh } from "../window-cache.js";
 import { getOrCreateSlot, updateSlot } from "./hot-target-cache.js";
 import { logResolve } from "../../tools/_resolve-log.js";
@@ -472,7 +473,16 @@ async function resolveWindowTargetByHwnd(
     normalizeTitle(descriptor.titleIncludes),
     actionKind,
     1,
-    warnings
+    warnings,
+    // The caller named this handle — that is what this whole function is for —
+    // so the drift observation is filed under the handle. Keyed by the title,
+    // alternating guarded calls between two same-titled windows from different
+    // processes reported the surviving one as `process_restarted` once the other
+    // closed, and that invalidation is global: the next screenshot reads it.
+    // The same defect was fixed in `buildHintsForTitle` one commit earlier and
+    // left standing here, which is the second time this branch has fixed one of
+    // a pair.
+    handleObservationKey(target.hwnd),
   );
   applyHotCacheWindow(descriptor, result);
   return result;
@@ -715,7 +725,13 @@ function buildWindowLensResult(
   specTitle: string,
   actionKind: ActionKind,
   candidates: number,
-  warnings: string[]
+  warnings: string[],
+  /**
+   * ADR-036 — the identity-tracker key, when the caller named a HANDLE rather
+   * than a title. `specTitle` still builds the lens spec; only the drift
+   * observation moves. See `handleObservationKey`.
+   */
+  observationKey?: string,
 ): ResolveActionTargetResult {
   const spec = buildEphemeralSpec(specTitle, actionKind);
   const binding = { hwnd, windowTitle: resolvedTitle };
@@ -725,7 +741,7 @@ function buildWindowLensResult(
   const localStore = new FluentStore();
 
   // Refresh Win32 fluents into local (ephemeral) store only
-  const obs = refreshWin32Fluents(hwnd, specTitle);
+  const obs = refreshWin32Fluents(hwnd, specTitle, observationKey ?? specTitle);
   localStore.apply(obs);
 
   return { lens, localStore, identity, candidates, warnings };

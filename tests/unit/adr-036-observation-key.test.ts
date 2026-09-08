@@ -39,6 +39,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
 
 const { buildHintsForTitle, clearIdentities, takeLastInvalidation } =
   await import("../../src/engine/identity-tracker.js");
+const { resolveActionTarget } = await import("../../src/engine/perception/action-target.js");
 
 beforeEach(() => {
   clearIdentities();
@@ -112,6 +113,38 @@ describe("ADR-036 — a handle-named observation is keyed by the handle", () => 
     pidOf = { [String(B)]: 22 };
     expect(buildHintsForTitle(collide, undefined, false)).not.toBeNull();
     expect(takeLastInvalidation()).toBeNull();
+  });
+
+  it("the GUARD's by-handle resolution files under the handle too", async () => {
+    // The other half of the same defect, found one commit after the first was
+    // fixed. `resolveWindowTargetByHwnd` passes the normalized TITLE into
+    // `buildWindowLensResult`, which forwards it to `observeTarget` through
+    // `refreshWin32Fluents` — so guarded calls alternating between two
+    // same-titled windows still shared one slot, and the survivor was reported
+    // as `process_restarted` once the other closed. That invalidation is
+    // global: the next screenshot reads it.
+    const byHandle = (hwnd: bigint) =>
+      resolveActionTarget({ kind: "window", titleIncludes: TITLE, hwnd }, { actionKind: "uiaInvoke" });
+
+    await byHandle(A);
+    await byHandle(B);
+    windows = [{ hwnd: A, title: TITLE }];
+    takeLastInvalidation();
+
+    await byHandle(A);
+    expect(takeLastInvalidation()).toBeNull();
+  });
+
+  it("…and a title-named guard call still asks the title's question", async () => {
+    // The pairing: the guard's TITLE path is untouched and still detects a real
+    // restart.
+    windows = [{ hwnd: A, title: TITLE }];
+    await resolveActionTarget({ kind: "window", titleIncludes: TITLE }, { actionKind: "uiaInvoke" });
+    takeLastInvalidation();
+
+    windows = [{ hwnd: B, title: TITLE }];
+    await resolveActionTarget({ kind: "window", titleIncludes: TITLE }, { actionKind: "uiaInvoke" });
+    expect(takeLastInvalidation()?.reason).toBe("process_restarted");
   });
 
   it("keeps the handle's own history: hwnd_reused is not affected", () => {

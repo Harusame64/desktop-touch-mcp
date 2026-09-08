@@ -446,6 +446,13 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(said).toMatch(/mouse_click and mouse_drag accept an hwnd/);
     expect(said).toMatch(/verify those with a screenshot/);
     expect(said).not.toMatch(/Other tools resolve nothing here/);
+    // "On any tool here, retrying with a fixId withholds it" was false for
+    // `browser_click`, which carries this same string, accepts a `fixId`, and
+    // keeps its diff — its wrapper has no `windowTitleKey`, so there is nothing
+    // to withhold and its CDP tab diff does not depend on a title. A
+    // model reading the flat claim would have thrown away a valid verification.
+    expect(said).not.toMatch(/On any tool here/);
+    expect(said).toMatch(/browser tools\s+keep their diff on a fixId retry/);
   });
 
   it("leaves title-only tools alone when the enumeration fails", async () => {

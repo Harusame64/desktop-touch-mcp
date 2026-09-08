@@ -112,6 +112,22 @@ function boundedSet<K>(map: Map<K, TargetIdentity>, key: K, value: TargetIdentit
  * @param hwnd      bigint HWND
  * @param resolved  fully resolved window title
  */
+/**
+ * ADR-036 — the observation key for a window the CALLER named by handle.
+ *
+ * One function because it is one rule with two call sites now: this module's own
+ * `buildHintsForTitle`, and the guard's by-handle resolution, which reaches
+ * `observeTarget` through `refreshWin32Fluents`. Both were keying by title and
+ * both invented `process_restarted` for a caller alternating between
+ * same-titled windows; fixing one and leaving the other is how this branch has
+ * been finding the same defect twice.
+ *
+ * NUL-separated: a window title can contain anything else, `hwnd:4369` included.
+ */
+export function handleObservationKey(hwnd: bigint): string {
+  return `\u0000hwnd\u0000${hwnd}`;
+}
+
 export function observeTarget(
   keyTitle: string,
   hwnd: bigint,
@@ -361,7 +377,7 @@ export function buildHintsForTitle(
   // (`hwnd_reused`), and it is untouched. NUL-separated because a window title
   // can contain anything except that.
   const obs = observeTarget(
-    callerNamedHandle ? `\u0000hwnd\u0000${resolved.hwnd}` : partialTitle,
+    callerNamedHandle ? handleObservationKey(resolved.hwnd) : partialTitle,
     resolved.hwnd,
     resolved.title,
   );
