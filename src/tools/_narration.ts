@@ -282,16 +282,28 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // Report. A confident diff of a window nobody touched, on this ADR's own
     // recovery path.
     //
-    // Withheld rather than guessed. Scoped to the tools that declare a handle
-    // key, because that is what says this ADR owns their targeting: `mouse_click`
-    // also declares `fixId`, and reading the key on all nineteen changed a tool
-    // this release says it does not change — the same spill, one commit later.
+    // Withheld rather than guessed, and scoped by the property that makes it
+    // wrong: the handler adopts the fix's `windowTitle` while these snapshots
+    // follow the argument. `hwndKey` was the wrong scope — it is about who owns
+    // the targeting, not about who retargets — and it let `mouse_click` back to
+    // a confident diff for the same reason `click_element` is refused one
+    // (`mouse.ts`: "Apply fix args (override user-supplied x/y/windowTitle)").
+    //
+    // `windowTitleKey` is the safe side of that question rather than a second
+    // guess at it: exactly four handlers adopt a fix's title — `click_element`,
+    // `keyboard` twice, and `mouse`'s shared prologue — and every narrated tool
+    // that can receive a `fixId` AND snapshots by title is one of them.
+    // `scroll`, `terminal`, `window_dock` and `focus_window` declare no `fixId`;
+    // the browser set declares one but narrates with no title key, so it never
+    // snapshots by title and returns above. A tool that adds `fixId` later gets
+    // the withhold by default and has to prove it does not retarget to lose it,
+    // which is the direction this PR keeps wishing it had gone.
     // Truthy, not `!== undefined`: both schemas accept `fixId: ""` and the
     // handlers test `if (fixId)`, so an empty one is an ORDINARY call to them.
     // Testing for presence here withheld a diff that was correct and named a
     // reason that was not true — a wrapper and its handler disagreeing about
     // what the same argument means, which is the shape this ADR is about.
-    if (options.hwndKey && Boolean(args["fixId"])) {
+    if (options.windowTitleKey && Boolean(args["fixId"])) {
       const result = await wrappedWithPost(args);
       spliceRich(result, degradedRichBlock("fix_target_unknown"));
       return result;

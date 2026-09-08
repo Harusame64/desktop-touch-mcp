@@ -367,7 +367,12 @@ export async function resolveWindowTarget(params: {
   deferLog?: (emit: () => void) => void;
 } = {}): Promise<ResolvedWindow | null> {
   const store = pinnedResolution.getStore();
-  if (store && store.value && store.key === resolutionKey(params)) {
+  // A probe does not take the pin AT ALL — not its event, and not its answer.
+  // Consuming it and then declining to log left the more serious half in place:
+  // the probe walks away with the resolution and the handler behind it resolves
+  // afresh, so the snapshots and the action can part company. The pin belongs to
+  // whoever dispatches.
+  if (options.logAs !== "off" && store && store.value && store.key === resolutionKey(params)) {
     const pinned = store.value;
     store.value = null;   // single use, within this invocation only
     // The ADR-035 event for the resolution being handed over, written HERE
@@ -386,8 +391,7 @@ export async function resolveWindowTarget(params: {
     const emit = store.emitLog;
     store.emitLog = undefined;
     if (emit) {
-      if (options.logAs === "off") { /* nothing dispatches on a probe */ }
-      else if (options.deferLog) options.deferLog(emit);
+      if (options.deferLog) options.deferLog(emit);
       else emit();
     }
     return pinned;

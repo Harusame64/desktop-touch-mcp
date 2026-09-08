@@ -216,6 +216,23 @@ describe("ADR-036 — a channel that REJECTS still leaves exactly one observatio
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
   });
 
+  it("a REFUSAL is not a failed description — it still comes out as a refusal", async () => {
+    // The other edge of swallowing. `buildHintsForTitle` reaches win32 only
+    // through `observeTarget` and cannot raise a policy stop today, so this is
+    // a guard against the next caller — and an untested guard is a claim, which
+    // is the thing this PR keeps getting caught on. A `WindowExcludedError`
+    // arriving here must not become `ok:true` with a note about hints.
+    const { WindowExcludedError } = await import("../../src/engine/tool-exclusion.js");
+    mockBuildHints.mockImplementationOnce(() => {
+      throw new WindowExcludedError("WindowExcluded: the key locker is not addressable");
+    });
+    const r = await call();
+    const said = r.content![0]!.text;
+    expect(said).toContain("WindowExcluded");
+    expect(said).not.toContain("identity hints unavailable");
+    expect(JSON.parse(said).ok).toBe(false);
+  });
+
   it("an observation that throws does not replace the channel's own error either", async () => {
     // The mirror. All channels failed, and the observation on the way out
     // threw: the caller needs `SetValueAllChannelsFailed`, which is what

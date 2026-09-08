@@ -11,6 +11,7 @@ import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narrati
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, namesAWindow } from "./_action-guard.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
@@ -384,7 +385,23 @@ export const setElementValueHandler = async ({
           // only true while it matches the one the destination check runs, and
           // a local `.trim()` one file away from the rule it mirrors is how the
           // last two mirrors got in.
-          const keyboardTakesHwndHere = namesAWindow(effectiveTitle);
+          //
+          // `resolvedWin === null ||` is the same half `titlelessTarget` was
+          // missing, and this predicate is 85 lines below the fix for that one.
+          // `effectiveTitle` is the caller's QUERY when nothing resolved, and
+          // `keyboard` never sees that string: its prologue adopts the resolved
+          // title (`keyboard.ts`, `if (resolvedWin) effectiveWindowTitle =
+          // resolvedWin.title`). Measured — `keyboardDestinationMiss` on a
+          // TITLED window retried with `{hwnd, windowTitle:""}` returns
+          // `{miss:null}`, no foreground limit — so a caller who passed a blank
+          // query on a desktop of titled windows was told `keyboard` was
+          // foreground-only here, in the same sentence as `click_element`, and
+          // both channels take the handle outright. Fifth statement this branch
+          // has got wrong, and the second from reading a query as if it were a
+          // window. Safe because `ambiguous_target` means the enumeration
+          // matched two or more windows, and it drops untitled ones — so when
+          // nothing resolved, the candidates are named.
+          const keyboardTakesHwndHere = resolvedWin === null || namesAWindow(effectiveTitle);
           const handleRecovery = keyboardTakesHwndHere
             ? "click_element and keyboard take hwnd here. "
             : "click_element takes hwnd here. keyboard reaches this window by " +
@@ -483,14 +500,29 @@ export const setElementValueHandler = async ({
     // have read; the failure paths report the channel's error alone, which is
     // the thing that decides their next call.
     const observe = (title: string, pinnedHwnd?: bigint) => {
-      observationOwedFor = null;
       try {
         return buildHintsForTitle(title, pinnedHwnd);
       } catch (e) {
+        // A REFUSAL is not a failed description. `buildHintsForTitle` cannot
+        // raise one today — it reaches win32 through `observeTarget` only
+        // (`getWindowProcessId` / `getProcessIdentityByPid`), never through
+        // `resolveWindowTarget`, `isExcludedTitle` or `refuseIfExcludedTarget`,
+        // and its own resolution block already swallows everything else — so
+        // this line is a guard against the next caller rather than a live case.
+        // A blanket `catch` under a fixed warning string is how a policy stop
+        // would come back as `ok:true` with a note.
+        if (e instanceof WindowExcludedError) throw e;
         uiWarnings.push(
           `identity hints unavailable: ${e instanceof Error ? e.message : String(e)}`,
         );
         return null;
+      } finally {
+        // In `finally`, not first: the debt is settled by the ATTEMPT, and
+        // writing that as a statement before the call left the ordering as a
+        // fact about line numbers. Every `observe` here is the last thing before
+        // a `return`, so the two orderings cannot be told apart from outside
+        // today — which is exactly why it should not be spelled as an order.
+        observationOwedFor = null;
       }
     };
 

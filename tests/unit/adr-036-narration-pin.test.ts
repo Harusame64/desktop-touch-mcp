@@ -568,19 +568,32 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockPin).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves a fixId call on a title-only tool exactly where it was", async () => {
-    // `fixId` is declared by tools far outside this ADR — `mouse_click` is one —
-    // so reading the key on all nineteen changed a tool this release says it
-    // does not change. That is the same spill as the `argTitle` widening, one
-    // commit later, and the scope is `hwndKey` again.
+  it("withholds on a title-only tool too, because its handler retargets the same way", async () => {
+    // Scoping this to `hwndKey` was a second wrong guess at the same question.
+    // `hwndKey` says who owns the targeting; what makes the diff wrong is that
+    // the handler ADOPTS the fix's `windowTitle` while these snapshots follow
+    // the argument — and `mouse.ts` does exactly that ("Apply fix args (override
+    // user-supplied x/y/windowTitle)"). So `mouse_click` went back to a
+    // confident diff of a window nobody touched: the sentence this ADR is about,
+    // reintroduced by the fix for it.
     const titleOnly = withRichNarration("mouse_click", innerHandler as never, { windowTitleKey: "windowTitle" });
-    windows = [
-      { hwnd: 0x1111n, title: SHARED_TITLE },
-      { hwnd: 0x2222n, title: SHARED_TITLE },
-    ];
-    const r = await titleOnly({ windowTitle: SHARED_TITLE, fixId: "fix-1", narrate: "rich" } as never);
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const r = await titleOnly({ windowTitle: "Ledger", fixId: "fix-1", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("fix_target_unknown");
+    expect(richOf(r).diffSource).toBe("none");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+  });
+
+  it("leaves a tool that snapshots no window at all untouched", async () => {
+    // The other side of the scope. The browser set declares `fixId` and is
+    // narrated with no title key, so it never takes a snapshot by title and has
+    // nothing to withhold — it returns above this, at `no_target`, exactly as
+    // before.
+    const noTitle = withRichNarration("browser_click", innerHandler as never, {});
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const r = await noTitle({ fixId: "fix-1", narrate: "rich" } as never);
     expect(richOf(r).diffDegraded).toBeUndefined();
-    expect(richOf(r).diffSource).toBe("uia");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
   });
 
   it("withholds rather than falling back to the argument if a handle ever resolves to nothing", async () => {

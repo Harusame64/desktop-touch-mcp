@@ -282,10 +282,25 @@ describe("resolveWindowTarget — logAs:\"off\" (ADR-035 event count)", () => {
     // dialog rescue twice. The consumer's intent decides here too.
     const pinned = { title: "Ledger", hwnd: 0x2222n, warnings: [], className: "X" };
 
+    // A probe takes neither half. Declining only the EVENT left the more
+    // serious one in place: the probe walked away with the resolution and the
+    // handler behind it resolved afresh, so the snapshots and the action could
+    // part company — which is the thing the pin exists to prevent.
+    mockEnumWindowsInZOrder.mockReturnValue([]);
     const silenced = vi.fn();
-    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+    const probeSaw = await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
       resolveWindowTarget({ windowTitle: "Ledger" }, { logAs: "off" }), silenced);
     expect(silenced).not.toHaveBeenCalled();
+    expect(probeSaw).not.toBe(pinned);
+
+    // …and the pin is still there for the call that dispatches.
+    const afterProbe = vi.fn();
+    const handlerSaw = await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () => {
+      await resolveWindowTarget({ windowTitle: "Ledger" }, { logAs: "off" });
+      return resolveWindowTarget({ windowTitle: "Ledger" });
+    }, afterProbe);
+    expect(handlerSaw).toBe(pinned);
+    expect(afterProbe).toHaveBeenCalledTimes(1);
 
     // …and a consumer that defers passes it on rather than writing it.
     const inherited = vi.fn();

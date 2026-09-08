@@ -16,6 +16,9 @@ const LIVE = 0x2222n;
 /** A window that IS on the desktop and has no title — the population the
  *  titleless refusal is for, as distinct from a caller who passed `""`. */
 const UNTITLED = 0x3333n;
+/** A window whose title is whitespace: the enumeration keeps it (`!title` is
+ *  untrimmed) but `namesAWindow` trims, so the two rules disagree about it. */
+const WSTITLED = 0x4444n;
 
 // The enumeration the guard counts. Mutable so the separability cases below can
 // put two DIFFERENT titles on the desktop; `beforeEach` puts the shared-title
@@ -85,7 +88,7 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
       const h = BigInt(p.hwnd);
       return {
         hwnd: h,
-        title: h === UNTITLED ? "" : SHARED_TITLE,
+        title: h === UNTITLED ? "" : h === WSTITLED ? "   " : SHARED_TITLE,
         warnings: [], className: "Chrome_WidgetWin_1",
       };
     }),
@@ -406,7 +409,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(next).not.toMatch(/no title/i);
-    expect(next).toContain("click_element");
+    // The FLAT promise, named exactly: `toContain("click_element")` was
+    // satisfied by both arms of the recovery sentence, so it was blind to the
+    // one clause that was wrong here. Nothing resolved, so `keyboard` never
+    // sees this query — it adopts a resolved title — and both channels take the
+    // handle outright.
+    expect(next).toContain("click_element and keyboard take hwnd here");
+    expect(next).not.toMatch(/keyboard[^.]*only while it is in the foreground/i);
   });
 
   it("still names the variable when it IS the thing standing in the way", async () => {
@@ -428,8 +437,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // message, whose "unsetting lets this tool take hwnd" is true here. Testing
     // the predicate with `.trim()` told that caller the opposite.
     process.env.DTM_SET_VALUE_CHAIN = "1";
+    // The RESOLVED window's title is whitespace — not the caller's query. The
+    // first version of both these tests passed `"   "` with no handle on a
+    // desktop of titled windows, so `effectiveTitle` was the query and no
+    // window in the fixture had a blank title at all: the same two populations
+    // the titleless predicate confused, in the tests written to separate them.
     const r = parse(await setElementValueHandler({
-      windowTitle: "   ", value: "x", name: "Field",
+      windowTitle: "anything", hwnd: String(WSTITLED), value: "x", name: "Field",
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(JSON.stringify(r)).toContain("ambiguous_target");
@@ -446,8 +460,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // half and moved the false promise to `keyboard`: the third sign-flipped
     // mirror this branch has produced.
     process.env.DTM_SET_VALUE_CHAIN = "1";
+    // The RESOLVED window's title is whitespace — not the caller's query. The
+    // first version of both these tests passed `"   "` with no handle on a
+    // desktop of titled windows, so `effectiveTitle` was the query and no
+    // window in the fixture had a blank title at all: the same two populations
+    // the titleless predicate confused, in the tests written to separate them.
     const r = parse(await setElementValueHandler({
-      windowTitle: "   ", value: "x", name: "Field",
+      windowTitle: "anything", hwnd: String(WSTITLED), value: "x", name: "Field",
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(next).not.toContain("click_element and keyboard take hwnd here");
