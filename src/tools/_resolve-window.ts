@@ -296,13 +296,14 @@ function getDockTitleLiteral(): string | undefined {
  * The obvious fix — put the resolved handle into the handler's `args` — is not
  * available, because a handler that sees `hwnd` believes the CALLER named one,
  * and that belief decides the guard descriptor, the pinning rules and the
- * wording of the refusal. So the resolution travels beside the args instead:
- * set before the handler runs, consumed by the first matching resolution, and
- * cleared by the setter whatever happens.
+ * wording of the refusal. So the resolution travels beside the args instead,
+ * inside the invocation that resolved it: see `withPinnedResolution` below for
+ * why the scope is the invocation and not the process.
  *
- * Single use and key-matched on purpose. A concurrent call asking a DIFFERENT
- * question cannot eat it, and one asking the same question would have received
- * the same answer.
+ * Single use and key-matched, which narrows what a NESTED call inside the same
+ * invocation can take — `macro` dispatches wrapped handlers, so scopes nest.
+ * The key alone was never enough on its own, for the reason `withPinnedResolution`
+ * gives: the same question has different answers at different times.
  */
 const pinnedResolution = new AsyncLocalStorage<{ key: string; value: ResolvedWindow | null }>();
 
@@ -331,10 +332,24 @@ export function withPinnedResolution<T>(
   return pinnedResolution.run({ key: resolutionKey(p), value }, fn);
 }
 
+/**
+ * `logAs: "off"` silences this resolution's ADR-035 `resolve` event.
+ *
+ * Same rule as the intermediate probe inside Case 3: an event is worth writing
+ * when the resolution it records is the one an action was dispatched on, and a
+ * duplicate makes the H1/H2 histogram count one window twice. `withRichNarration`
+ * resolves BEFORE the action purely to know what to snapshot, so that first
+ * resolution is a probe and passes `"off"`; the re-check it hands to the handler
+ * is the resolution the action uses, so that one logs and the handler's
+ * consumption of the pin adds nothing. Without this, `narrate: "rich"` wrote two
+ * identical events per plain-title call and `minimal` wrote one — a bias
+ * correlated with a parameter, in a measurement that is still choosing a
+ * predicate.
+ */
 export async function resolveWindowTarget(params: {
   hwnd?: string;
   windowTitle?: string;
-}): Promise<ResolvedWindow | null> {
+}, options: { logAs?: "off" } = {}): Promise<ResolvedWindow | null> {
   const store = pinnedResolution.getStore();
   if (store && store.value && store.key === resolutionKey(params)) {
     const pinned = store.value;
@@ -433,11 +448,13 @@ export async function resolveWindowTarget(params: {
         logAs: "off",
       });
       if (plainMatches.length > 0) {
-        logResolve({
-          resolver: "pickPlainTopLevelWindowByTitle",
-          query: params.windowTitle,
-          matches: plainMatches,
-        });
+        if (options.logAs !== "off") {
+          logResolve({
+            resolver: "pickPlainTopLevelWindowByTitle",
+            query: params.windowTitle,
+            matches: plainMatches,
+          });
+        }
         return null;
       }
 
@@ -450,13 +467,15 @@ export async function resolveWindowTarget(params: {
         // just not as plain top-level windows); `fallback:"owner-chain"` is
         // what says the window came from the dialog rescue rather than the
         // primary rule, so the two events are not confused for one another.
-        logResolve({
-          resolver: "resolveWindowTargetDialog",
-          query: params.windowTitle,
-          matches: [dialog, ...runnersUp],
-          chosen: dialog,
-          fallback: "owner-chain",
-        });
+        if (options.logAs !== "off") {
+          logResolve({
+            resolver: "resolveWindowTargetDialog",
+            query: params.windowTitle,
+            matches: [dialog, ...runnersUp],
+            chosen: dialog,
+            fallback: "owner-chain",
+          });
+        }
         warnings.push("dialog_resolved_via_owner_chain");
         return {
           title: dialog.title,
@@ -466,11 +485,13 @@ export async function resolveWindowTarget(params: {
         };
       }
       // Neither route matched — a true miss, and the H2 case worth counting.
-      logResolve({
-        resolver: "pickPlainTopLevelWindowByTitle",
-        query: params.windowTitle,
-        matches: [],
-      });
+      if (options.logAs !== "off") {
+        logResolve({
+          resolver: "pickPlainTopLevelWindowByTitle",
+          query: params.windowTitle,
+          matches: [],
+        });
+      }
     } catch { /* enumWindowsInZOrder unavailable → fall through */ }
   }
 

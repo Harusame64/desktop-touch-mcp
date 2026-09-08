@@ -343,15 +343,22 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockPin).not.toHaveBeenCalled();
   });
 
-  it("says in the shipped description that the diff can be withheld", () => {
+  it("says in the shipped description that the diff can be withheld, and in which cases", () => {
     // That description is what decides whether the model takes a verification
     // screenshot instead. It promised the diff removes the need for one; this
     // ADR made cases where it returns nothing, so the promise has to carry the
     // exception with it. Shipped wording drifting from shipped behaviour is the
-    // failure this repo has had before.
+    // failure this repo has had before — and the first version of this test
+    // asserted only `diffDegraded` and `hwnd`, so it survived TWO rounds of
+    // behaviour change underneath it: `@active` (no handle named at all) and a
+    // brand-new `target_changed` value that appeared in no shipped text.
+    // Naming the cases is what makes it a drift detector rather than a spell
+    // check.
     const said = narrateParam.description ?? "";
     expect(said).toContain("diffDegraded");
-    expect(said).toContain("hwnd");
+    expect(said).toContain("ambiguous_title");
+    expect(said).toContain("target_changed");
+    expect(said).toContain("@active");
   });
 
   it("leaves title-only tools alone when the enumeration fails", async () => {
@@ -362,5 +369,78 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     const r = await titleOnly({ windowTitle: SHARED_TITLE, narrate: "rich" } as never);
     expect(richOf(r).diffDegraded).toBeUndefined();
     expect(richOf(r).diffSource).toBe("uia");
+  });
+
+  it("does not resolve — or pin — for a tool that declares no handle key", async () => {
+    // The blast radius nobody had looked at. `withRichNarration` wraps nineteen
+    // tools; only three declare `hwndKey`. Resolving on the TITLE argument alone
+    // reached `mouse_click`, `scroll`, `focus_window` and the browser set, whose
+    // schemas do take `hwnd` while this wrapper reads it through `hwndKey` and
+    // therefore cannot see it — so the wrapper narrated the window the title
+    // resolved to while the handler acted on the caller's handle, with no
+    // degrade marker. `@active` is the sharpest form: it resolves to the
+    // FOREGROUND, which is a different window from the one a handle names.
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    const titleOnly = withRichNarration("mouse_click", innerHandler as never, { windowTitleKey: "windowTitle" });
+    windows = [
+      { hwnd: 0x1111n, title: "Foreground app" },
+      { hwnd: 0x2222n, title: "The clicked one" },
+    ];
+    resolver.mockClear();
+    const r = await titleOnly({ windowTitle: "@active", hwnd: LIVE, narrate: "rich" } as never);
+    expect(resolver).not.toHaveBeenCalled();
+    expect(mockPin).not.toHaveBeenCalled();
+    // The snapshots stay on the argument, which is what this tool did before
+    // this ADR and what it will keep doing until the handle rules are extended
+    // to it deliberately.
+    expect(mockGetUiElements.mock.calls.map((c) => c[0])).toEqual(["@active", "@active"]);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+  });
+
+  it("still resolves for the same fixture on a tool that DOES declare one", async () => {
+    // The pairing: identical arguments, `UIA_WRITE_NARRATION` instead. Without
+    // it the test above passes for any wrapper that resolves nothing at all.
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    windows = [
+      { hwnd: 0x1111n, title: "Foreground app" },
+      { hwnd: 0x2222n, title: "The clicked one" },
+    ];
+    resolver.mockClear();
+    await narrated({ windowTitle: "@active", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(resolver).toHaveBeenCalled();
+    expect(mockPin).toHaveBeenCalledTimes(1);
+  });
+
+  it("silences the ADR-035 event on the probe and not on the re-check", async () => {
+    // One dispatch, one `resolve` event. The wrapper's first resolution exists
+    // to choose what to snapshot and dispatches nothing; the re-check is the
+    // answer the handler is given. Logging both made a rich call write two
+    // identical events where a minimal call writes one — a bias correlated with
+    // a narration parameter, inside the histogram ADR-035 is using to choose a
+    // predicate. The counting half of this lives in `resolve-window.test.ts`;
+    // here it is which call site asks for which.
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    resolver.mockClear();
+    await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(resolver.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(resolver.mock.calls[0]![1]).toEqual({ logAs: "off" });
+    expect(resolver.mock.calls[1]![1]).toBeUndefined();
+  });
+
+  it("withholds rather than falling back to the argument if a handle ever resolves to nothing", async () => {
+    // Case 1 of the resolver returns or throws today, never `null`, so this is
+    // the fail-safe for a Case 1 that can — and an untested fail-safe is a
+    // comment. Falling through to the caller's title here would narrate a
+    // window chosen by a string while the handler acted on a handle.
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    const first = resolver.getMockImplementation()!;
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    resolver.mockImplementation(async () => null as never);
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    resolver.mockImplementation(first);
+    expect(richOf(r).diffDegraded).toBe("no_target");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+    expect(innerHandler).toHaveBeenCalled();
   });
 });

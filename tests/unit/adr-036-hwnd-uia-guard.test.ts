@@ -338,7 +338,43 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(JSON.stringify(r)).toContain("ambiguous_target");
     expect(next).not.toMatch(/no title/i);
+    expect(next).toContain("click_element takes hwnd here");
+  });
+
+  it("…but keyboard carries the titleless limit here, because its check trims", async () => {
+    // The half the ordinary message got wrong. `namesAWindow` trims, so for
+    // "   " the destination check sees no window named and `keyboard` falls
+    // back to the foreground-only path — the same limit the `""` branch spells
+    // out, reached by a caller who was told the opposite in the same sentence.
+    // Moving the predicate from `.trim()` to `=== ""` fixed the `click_element`
+    // half and moved the false promise to `keyboard`: the third sign-flipped
+    // mirror this branch has produced.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    const r = parse(await setElementValueHandler({
+      windowTitle: "   ", value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).not.toContain("click_element and keyboard take hwnd here");
+    expect(next).toMatch(/keyboard[^.]*foreground/i);
+    // …and the suggest list, which is what the server instructions tell the
+    // model to read, says the same thing rather than the flat promise.
+    const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
+    expect(suggests).toMatch(/keyboard only while this window is in the foreground/);
+  });
+
+  it("keeps the flat promise when the title really does name a window", async () => {
+    // The pairing. With an ordinary title `namesAWindow` is true, the
+    // destination check has a window to guard, and both channels take the
+    // handle without a limit — so the conditional above cannot be passing by
+    // simply deleting the promise everywhere.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    const r = parse(await setElementValueHandler({
+      windowTitle: SHARED_TITLE, hwnd: String(LIVE), value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(next).toContain("click_element and keyboard take hwnd here");
+    const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
+    expect(suggests).toMatch(/click_element and keyboard accept it on this window/);
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {

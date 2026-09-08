@@ -61,11 +61,21 @@
     cannot read its target for any reason. On the machine where this was
     measured the skip was confirmed by timing instead — the skipped call costs
     about 400 ms less, which is the read-back it did not perform.
-  - `narrate: "rich"` returns no before/after diff for a call that names a
-    handle while another open window's title contains the text you passed, and
-    marks it `diffDegraded: "ambiguous_title"`. That diff is built from UIA snapshots
-    taken *by title*, so it would otherwise describe the window you did not
-    write to. The action itself is unaffected — only the diff is withheld.
+  - `narrate: "rich"` returns no before/after diff when the diff cannot be shown
+    to describe the window that was acted on, and says which case in
+    `diffDegraded`. That diff is built from UIA snapshots taken *by title*, so it
+    would otherwise describe the window you did not write to.
+    `ambiguous_title`: another open window's title contains the text this call
+    resolved to. That covers a handle you named, and equally one the server
+    resolved for you — `windowTitle: "@active"`, or the rescue that prefers a
+    modal dialog over the window it blocks — because a resolved handle does not
+    make the *snapshots* handle-based. `target_changed`: the window moved
+    between the snapshot and the action (a modal closing, the foreground
+    changing). The action itself is unaffected in both cases — only the diff is
+    withheld. Withholding applies to the three tools this ADR covers
+    (`set_element_value`, `click_element`, `keyboard`); tools that narrate by
+    title alone and take no handle key — `mouse_click`, `scroll`, `focus_window`
+    and the browser set — are unchanged by this release.
   - `set_element_value` still stops with `ambiguous_target` while
     `DTM_SET_VALUE_CHAIN=1` is set. With that chain enabled a failed first
     attempt continues into two fallbacks that find their window by title — one of

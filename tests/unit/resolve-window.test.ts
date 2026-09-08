@@ -48,6 +48,17 @@ vi.mock("../../src/engine/win32.js", () => ({
   isExcludedTitle:      mockIsExcludedTitle,
 }));
 
+/**
+ * ADR-035 observation. Mocked so a test can COUNT `resolve` events: the
+ * invariant the log is built on is "one resolution = one event", and
+ * `narrate: "rich"` broke it by resolving twice for one dispatch.
+ */
+const { mockLogResolve } = vi.hoisted(() => ({ mockLogResolve: vi.fn() }));
+vi.mock("../../src/tools/_resolve-log.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/tools/_resolve-log.js")>();
+  return { ...actual, logResolve: mockLogResolve };
+});
+
 // tool-exclusion.js is NOT mocked — WindowExcludedError is the real class refuseIfExcludedTarget throws.
 import { resolveWindowTarget, withPinnedResolution } from "../../src/tools/_resolve-window.js";
 
@@ -68,6 +79,7 @@ beforeEach(() => {
   mockIsExcludedWindowHandle.mockReturnValue(false);
   mockIsExcludedTitle.mockReset();
   mockIsExcludedTitle.mockReturnValue(false);
+  mockLogResolve.mockReset();
   delete process.env.DESKTOP_TOUCH_DOCK_TITLE;
 });
 
@@ -155,6 +167,87 @@ describe("resolveWindowTarget — no-op path", () => {
   it("returns null when no params provided", async () => {
     const result = await resolveWindowTarget({});
     expect(result).toBeNull();
+  });
+});
+
+
+// ─── ADR-035: one resolution, one event ──────────────────────────────────────
+
+describe("resolveWindowTarget — logAs:\"off\" (ADR-035 event count)", () => {
+  /**
+   * `withRichNarration` resolves the target BEFORE the action to know what to
+   * snapshot, and again after, and hands the second answer to the handler. Every
+   * one of those went through the same logging path, so one dispatch wrote two
+   * identical events on a rich call and one on a minimal call — a bias
+   * correlated with a narration parameter, in the histogram ADR-035 Phase C is
+   * still using to choose a predicate. The probe is silenced; the resolution the
+   * handler is given is not.
+   *
+   * Each case is paired with the same fixture at the default, so the assertion
+   * cannot pass because the path stopped logging altogether.
+   */
+
+  it("a plain-title miss logs once by default and not at all when silenced", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 500n, title: "Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    expect(await resolveWindowTarget({ windowTitle: "Does Not Exist" })).toBeNull();
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+
+    mockLogResolve.mockReset();
+    expect(await resolveWindowTarget({ windowTitle: "Does Not Exist" }, { logAs: "off" })).toBeNull();
+    expect(mockLogResolve).not.toHaveBeenCalled();
+  });
+
+  it("a plain top-level match logs once by default and not at all when silenced", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 400n, title: "名前を付けて保存 - App", className: "AppClass", ownerHwnd: null, isMinimized: false },
+    ]);
+    expect(await resolveWindowTarget({ windowTitle: "名前を付けて保存" })).toBeNull();
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+    expect(mockLogResolve.mock.calls[0][0]).toMatchObject({ resolver: "pickPlainTopLevelWindowByTitle" });
+
+    mockLogResolve.mockReset();
+    expect(await resolveWindowTarget({ windowTitle: "名前を付けて保存" }, { logAs: "off" })).toBeNull();
+    expect(mockLogResolve).not.toHaveBeenCalled();
+  });
+
+  it("the dialog rescue logs once by default and not at all when silenced", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 100n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 200n, title: "名前を付けて保存",    className: "#32770",  ownerHwnd: 100n, isMinimized: false },
+    ]);
+    const first = await resolveWindowTarget({ windowTitle: "名前を付けて保存" });
+    expect(first!.hwnd).toBe(200n);
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+    expect(mockLogResolve.mock.calls[0][0]).toMatchObject({ resolver: "resolveWindowTargetDialog" });
+
+    mockLogResolve.mockReset();
+    const again = await resolveWindowTarget({ windowTitle: "名前を付けて保存" }, { logAs: "off" });
+    // Silencing changes the RECORD, never the answer.
+    expect(again!.hwnd).toBe(200n);
+    expect(again!.warnings).toContain("dialog_resolved_via_owner_chain");
+    expect(mockLogResolve).not.toHaveBeenCalled();
+  });
+
+  it("consuming a handed-forward resolution adds no event of its own", async () => {
+    // The handler's `resolveWindowTarget` takes the pin and returns before any
+    // resolver runs, so the event belongs to the wrapper's re-check that put it
+    // there. Counting it here as well would restore the double-count from the
+    // other side.
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 100n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 200n, title: "名前を付けて保存",    className: "#32770",  ownerHwnd: 100n, isMinimized: false },
+    ]);
+    const pinned = { title: "名前を付けて保存", hwnd: 200n, warnings: [], className: "#32770" };
+    mockLogResolve.mockReset();
+    const seen = await withPinnedResolution(
+      { windowTitle: "名前を付けて保存" },
+      pinned,
+      async () => resolveWindowTarget({ windowTitle: "名前を付けて保存" }),
+    );
+    expect(seen).toBe(pinned);
+    expect(mockLogResolve).not.toHaveBeenCalled();
   });
 });
 

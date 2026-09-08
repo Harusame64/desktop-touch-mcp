@@ -40,8 +40,11 @@ export const narrateParam = z
     'Narration level. "rich": include UIA diff in post.rich (appeared/disappeared/valueDeltas) — ' +
     "usually removes the need for a verification screenshot. It is withheld, with " +
     "post.rich.diffDegraded saying why, when the diff cannot be shown to describe the " +
-    "window that was acted on — including any call that names an hwnd while another open " +
-    "window's title contains the same text. Default: \"minimal\"."
+    "window that was acted on: another open window's title contains the text this call " +
+    "resolved to, whether you named the handle or the server did — \"@active\" and the " +
+    "dialog rescue both resolve one (\"ambiguous_title\"); or the target moved between the " +
+    "snapshot and the action (\"target_changed\"). The action itself is unaffected either " +
+    "way — only the diff is withheld. Default: \"minimal\"."
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,10 +275,34 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // entirely and acts on the stored fix's own title, which is not visible from
     // here. The argument is the closest thing available, and a handle-passing
     // caller is never offered a fixId in the first place (`suppressSuggestedFix`).
-    if (args["fixId"] === undefined && (hwndArg !== undefined || argTitle)) {
+    //
+    // `options.hwndKey` is the OTHER limit, and leaving it out was this PR's own
+    // defect one file over. `withRichNarration` wraps nineteen tools; only the
+    // three this ADR is about declare a handle key. Resolving on `argTitle`
+    // alone therefore reached `mouse_click`, `mouse_drag`, `scroll`,
+    // `focus_window` and the browser set — tools whose schemas DO take `hwnd`
+    // ("takes precedence over windowTitle", `mouse.ts`) while this wrapper is
+    // structurally blind to it, because `hwndArg` is read through `hwndKey`. So
+    // the wrapper resolved the TITLE, narrated that window with no degrade
+    // marker, and the handler acted on the caller's handle: a confident diff of
+    // a window the action never touched, which is the exact thing this ADR
+    // exists to remove, newly created on tools it never claimed. It also armed
+    // the ambiguity gate and handed the pin to `scroll_read` / `scroll_capture`,
+    // so `narrate: "rich"` alone changed which window a title-only handler
+    // resolved `@active` to.
+    //
+    // Those tools narrating by title while accepting a handle is OLDER than this
+    // PR and stays for a follow-up: extending the handle rules to them is three
+    // more tools' worth of behaviour with no real-machine acceptance behind it.
+    // What is fixed here is that this PR made it worse.
+    if (options.hwndKey && args["fixId"] === undefined && (hwndArg !== undefined || argTitle)) {
       let resolved;
       try {
-        resolved = await resolveWindowTarget(resolveArgs);
+        // `logAs: "off"`: this resolution exists to choose what to snapshot, not
+        // to dispatch anything. The re-check below is the one handed to the
+        // handler, and that one logs — so a rich call writes the same number of
+        // ADR-035 `resolve` events as a minimal one.
+        resolved = await resolveWindowTarget(resolveArgs, { logAs: "off" });
       } catch {
         const result = await wrappedWithPost(args);
         spliceRich(result, degradedRichBlock("no_target"));
@@ -286,7 +313,10 @@ export function withRichNarration<T extends Record<string, unknown>>(
         pinnedHwnd = resolved.hwnd;
       } else if (hwndArg !== undefined) {
         // A handle that resolves to nothing: there is no window to describe, and
-        // the caller's title names a different one.
+        // the caller's title names a different one. Case 1 of the resolver
+        // returns or throws today, never `null`, so this is the fail-safe for a
+        // Case 1 that can — withholding rather than silently falling back to the
+        // argument. Pinned by a test that makes the resolver do it.
         const result = await wrappedWithPost(args);
         spliceRich(result, degradedRichBlock("no_target"));
         return result;
@@ -343,11 +373,14 @@ export function withRichNarration<T extends Record<string, unknown>>(
       return result;
     }
 
-    // Cost, named rather than hidden: the rich path now resolves the window
-    // (one enumeration inside `resolveWindowTarget`) and then counts same-titled
-    // windows (another), on top of the handler's own resolution. Not folded into
-    // one, because the alternative is reimplementing the resolver here — which
-    // is the defect this replaced. Only the `narrate: "rich"` path pays it.
+    // Cost, named rather than hidden, and named at its real size: a plain-title
+    // miss enumerates TWICE inside `resolveWindowTarget` alone
+    // (`findPlainTopLevelWindowsByTitle`, then the Case 4 dialog sweep) before
+    // `titleIsSharedByMoreThanOneWindow` takes a third, and the re-check below
+    // repeats the first pair. Not folded into one, because the alternative is
+    // reimplementing the resolver here — which is the defect this replaced. Only
+    // the `narrate: "rich"` path pays it, and only on the three tools that
+    // declare a handle key.
     const snapBefore = await snapElements(windowTitle, true);  // try cache first
 
     // The handler resolves again, and the desktop can move in between — a modal
@@ -363,7 +396,7 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // withheld when it moved. The remaining gap is NOT small (`_post.ts` takes a
     // full focus enumeration before the handler runs), so the checked resolution
     // is handed forward to the handler rather than left to be redone: see
-    // `pinResolutionForNextCall`.
+    // `withPinnedResolution`.
     if (pinnedHwnd !== undefined) {
       let again;
       try {

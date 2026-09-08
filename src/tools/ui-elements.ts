@@ -344,6 +344,23 @@ export const setElementValueHandler = async ({
           // recovery that works. It is named with its limit, because it types
           // into whatever holds focus inside the window rather than into a
           // named element.
+          // `namesAWindow` TRIMS (`_action-guard.ts`), so a whitespace-only
+          // title reaches `keyboard`'s destination check as "no window named"
+          // and carries the same foreground-only limit the titleless branch
+          // spells out — measured both directions by the second gate
+          // (`titleless_hwnd_not_foreground` when it is not in front,
+          // `titleless_foreground` when it is). `click_element` is unaffected:
+          // it passes the handle itself. So naming the two channels flatly was
+          // true for one and a promise the other refuses — this branch's third
+          // sign-flipped mirror, moved from `""` to `"   "` by the predicate
+          // fix that made `"   "` take the ordinary message.
+          const keyboardTakesHwndHere = effectiveTitle.trim() !== "";
+          const handleRecovery = keyboardTakesHwndHere
+            ? "click_element and keyboard take hwnd here. "
+            : "click_element takes hwnd here. keyboard reaches this window by " +
+              "handle only while it is in the foreground (windowTitle:\"@active\"), " +
+              "because its destination check trims the title and a blank one " +
+              "names no window. ";
           ag.summary.next = effectiveTitle === ""
             ? "This window has no title, so it cannot be addressed by title, and the " +
               "enumeration that resolves handles drops untitled windows — unsetting " +
@@ -354,8 +371,8 @@ export const setElementValueHandler = async ({
               "named element. Otherwise give the window a title."
             :
             "This tool cannot be narrowed by hwnd while DTM_SET_VALUE_CHAIN=1: " +
-            "its fallback channels still find the window by title. click_element and " +
-            "keyboard take hwnd here. If you passed hwnd, windowTitle was ignored: " +
+            "its fallback channels still find the window by title. " + handleRecovery +
+            "If you passed hwnd, windowTitle was ignored: " +
             "this refusal already used the named window's own full title, so narrowing " +
             "it changes nothing. Calling by title alone, a more specific windowTitle " +
             "works only if this " +
@@ -377,7 +394,16 @@ export const setElementValueHandler = async ({
           return failCode("AutoGuardBlocked", ag.summary.next, {
             suggest: [
               "Read the error message — for this refusal it is the whole recovery.",
-              "desktop_discover returns each open window's hwnd; click_element and keyboard accept it on this window.",
+              // Answers for the branch that actually fired. Flat, this line
+              // offered a titleless caller a listing that drops their window
+              // (`enumWindowsInZOrder` skips `!title`) and two channels of
+              // which one cannot reach it — the catalogue's contradiction one
+              // level down, inside the list written to replace it.
+              effectiveTitle === ""
+                ? "desktop_discover cannot list this window — the enumeration drops untitled ones. keyboard reaches it while it is in the foreground; nothing addresses it by handle."
+                : keyboardTakesHwndHere
+                  ? "desktop_discover returns each open window's hwnd; click_element and keyboard accept it on this window."
+                  : "desktop_discover returns each open window's hwnd; click_element accepts it on this window, and keyboard only while this window is in the foreground.",
             ],
             rootExtras: { _perceptionForPost: ag.summary },
           });
