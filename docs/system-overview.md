@@ -676,7 +676,9 @@ engine loaded, which fallbacks are active, and version / capability flags. Use i
 confirm the native path is live (vs the PowerShell fallback) when latency looks off.
 
 #### Diagnostic log — resolution and dispatch trail
-`%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (JSONL, on by default) carries a `resolve`
+`%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (JSONL, on by default; rolls to
+`diagnostic.log.1` above 64 MiB with two generations kept — grep `diagnostic.log*` for older
+records) carries a `resolve`
 record for every title→window lookup — match count, chosen window, runners-up, and a
 `fallback:"process-name"` flag when `terminal` fell back to matching by image name — and a
 `dispatch_sink` record immediately before every `keyboard` / `terminal` / `scroll` write and

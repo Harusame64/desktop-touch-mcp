@@ -12,13 +12,26 @@
  *     are not lost in Node's writable-stream buffer
  *   - best-effort: every write is wrapped in try/catch and never throws to the
  *     caller — diagnostic logging must not become a new crash source
+ *   - size-triggered rotation with a bounded number of generations, so the
+ *     file cannot grow without limit (see `DEFAULT_MAX_BYTES`)
  *   - env overrides:
- *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH    — override default path
- *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE — set to "1" to disable entirely
+ *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH      — override default path
+ *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE   — set to "1" to disable entirely
+ *       DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES — rotate the live file above this
+ *                                                size (default 64 MiB)
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  utimesSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { performance } from "node:perf_hooks";
 
@@ -35,6 +48,124 @@ const DEFAULT_DIR = ".desktop-touch-mcp/logs";
 const STACK_TRUNCATE_CHARS = 4096;
 
 /**
+ * Rotation ceiling for the live file.
+ *
+ * Before this the log was append-only with **no ceiling at all**: measured on
+ * the maintainer's machine 2026-09-07 at **18,548,383,199 bytes / 34,811,118
+ * lines**, accumulated since 2026-05-19. Sampling the tail showed ordinary
+ * steady-state traffic (`resolve` / `exit` / `uncaught` / `dispatch_sink` /
+ * `cpu_spike` / …), not a runaway producer — the growth is inherent to the
+ * event rate, so throttling any one event kind would not have closed it.
+ *
+ * **What the ceiling actually bounds.** One writer: the live file stays at or
+ * under `maxBytes`, so the directory stays under `(KEPT_GENERATIONS + 1) *
+ * maxBytes`. That holds only because no single record can exceed it either —
+ * see `MAX_RECORD_BYTES`, without which one oversized event walks straight
+ * through a rotation. Concurrent writers are the honest caveat — the default path is one
+ * file per user (`DEFAULT_DIR`) and every MCP client spawns its own server, so
+ * N of them can share it. Each counts only its own bytes, so without help the
+ * live file would reach roughly `N * maxBytes` before anyone noticed. That is
+ * why the estimate is re-checked against the file's real size every
+ * `STAT_REFRESH_DIVISOR`-th of the ceiling: the overshoot with N writers is
+ * bounded by one refresh interval each, not by `N * maxBytes`.
+ */
+const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+const KEPT_GENERATIONS = 2;
+
+/**
+ * Floor for `maxBytes`.
+ *
+ * Without it, `1` is a "positive integer" and is accepted — and a reader who
+ * takes the variable for MiB and writes `64` gets 64 BYTES: a rename per
+ * record, every generation holding a single line, three syscalls per event on
+ * the synchronous exit path, and the log destroyed rather than bounded. The
+ * same "a typo must not break this" reasoning that rejects `0` and negatives
+ * rejects an unusably small ceiling.
+ */
+const MIN_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Ceiling for `maxBytes`, and the mirror image of the floor.
+ *
+ * The floor catches a reader who takes the variable for MiB and writes `64`.
+ * Nothing caught the same confusion in the other direction: `640000` meant as
+ * MiB is 640 GB of bytes, accepted verbatim, and rotation never fires again —
+ * exactly the behaviour the variable's own documentation promises a typo cannot
+ * produce. `Number` also accepts `1e21`, which is a finite integer by
+ * `Number.isInteger` and past `MAX_SAFE_INTEGER`, so the arithmetic that
+ * follows stops being exact.
+ *
+ * 1 GiB is well past any diagnostic need (three generations is 3 GiB) and far
+ * enough under the misread values to catch them.
+ */
+const MAX_MAX_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * Ceiling for a single serialized record.
+ *
+ * The rotation ceiling only bounds the file if every record fits under it.
+ * `uncaught.msg` and `exit.extra` are free-form, so one event can serialize to
+ * any size at all - and a record larger than `maxBytes` defeats rotation
+ * rather than triggering it: the roll happens, the fresh live file is empty,
+ * and the oversized line is appended anyway. Later rolls only carry it into
+ * `.1` and `.2`, so one event could put the directory past the stated bound by
+ * an arbitrary amount. (`stack` was already capped by `STACK_TRUNCATE_CHARS`;
+ * that bounded one field, not the record.)
+ *
+ * Derived from `MIN_MAX_BYTES` rather than written as its own number so the
+ * two cannot drift apart. Every ceiling `parseMaxLogBytes` accepts is at least
+ * `MIN_MAX_BYTES`, so a capped record is at most an eighth of it and the append
+ * that follows a rotation always fits.
+ */
+const MAX_RECORD_BYTES = MIN_MAX_BYTES / 8;
+
+/**
+ * How much of an oversized record is kept, as a readable prefix of its JSON.
+ *
+ * Counted in UTF-16 code units, so the bound is a byte bound only after
+ * re-encoding. The slice is taken from text that is ALREADY `JSON.stringify`
+ * output, so it holds no raw control characters and re-escaping costs almost
+ * nothing; what actually sets the worst case is `JSON.stringify` passing
+ * non-ASCII through unescaped, at 3 UTF-8 bytes per BMP unit. 4096 units is
+ * therefore ~12 KiB at worst, an order of magnitude inside
+ * `MAX_RECORD_BYTES`. Pinned by test with a multi-byte payload rather than
+ * argued: see "worst-case byte expansion" in tests/unit/diagnostic-log.test.ts.
+ */
+const OVERSIZE_HEAD_CHARS = 4096;
+
+/** Bound on the `kind` echoed into a truncated record. See `truncatedRecordLine`. */
+const KIND_TRUNCATE_CHARS = 64;
+
+/**
+ * How often the in-process estimate is reconciled with the file's real size,
+ * as a fraction of the ceiling. 16 means one `statSync` per ~4 MiB written at
+ * the default ceiling — negligible next to the writes themselves, and the only
+ * thing standing between the stated bound and N concurrent writers.
+ */
+const STAT_REFRESH_DIVISOR = 16;
+
+/**
+ * Pure parser, kept separate from the `process.env` read so the parsing rules
+ * are testable without mutating the environment.
+ *
+ * Anything that is not a positive integer — empty, non-numeric, zero,
+ * negative, fractional, non-finite — falls back to the default rather than
+ * disabling rotation. A typo in this variable must not restore the unbounded
+ * behaviour this function exists to prevent, so `"0"` is NOT a disable switch
+ * (`DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1` turns the log off entirely).
+ */
+export function parseMaxLogBytes(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_MAX_BYTES;
+  const trimmed = raw.trim();
+  if (trimmed === "") return DEFAULT_MAX_BYTES;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return DEFAULT_MAX_BYTES;
+  if (n < MIN_MAX_BYTES) return MIN_MAX_BYTES;
+  if (n > MAX_MAX_BYTES) return MAX_MAX_BYTES;
+  return n;
+}
+
+/**
  * `_disabled`, `_resolvedPath`, and `_dirEnsured` are memoized on first read.
  *
  * **Runtime mutation contract**: the `DESKTOP_TOUCH_DIAGNOSTIC_LOG_*` env vars
@@ -47,6 +178,501 @@ const STACK_TRUNCATE_CHARS = 4096;
 let _resolvedPath: string | null = null;
 let _disabled: boolean | null = null;
 let _dirEnsured = false;
+let _maxBytes: number | null = null;
+
+/**
+ * Bytes this process believes the live file holds, seeded once from its size.
+ *
+ * Deliberately **not** a `statSync` per write: the append is synchronous and
+ * sits on the `process.exit` path, so a syscall on every record would be paid
+ * by every event to detect a condition that fires once per `maxBytes`.
+ *
+ * The estimate drifts in **both** directions, and they are not symmetric:
+ *
+ *   - **Too high** — another process rotated under this one. Harmless: this
+ *     process rotates early, on a file smaller than the ceiling. Costs a
+ *     generation.
+ *   - **Too low** — another process is also appending and this one never saw
+ *     those bytes. **This is the direction that breaks the bound**: with N
+ *     writers each waiting for its own `maxBytes`, the live file would pass
+ *     `N * maxBytes` before any of them acted. The first version of this
+ *     comment documented only the harmless direction and concluded the bound
+ *     held; it did not.
+ *
+ * So the estimate is reconciled with the real size every
+ * `maxBytes / STAT_REFRESH_DIVISOR` bytes this process writes
+ * (`_bytesSinceStat`) — one `statSync` per ~4 MiB at the default ceiling.
+ */
+let _bytesOnDisk: number | null = null;
+let _bytesSinceStat = 0;
+
+/**
+ * A rotation failed and the fact has not yet reached the log. Recorded on the
+ * next successful append rather than from inside `rotateIfNeeded`, so the
+ * failure path cannot re-enter itself.
+ *
+ * `_rotationFailureRecorded` is per **episode**, not per process: it stops a
+ * persistent failure writing one notice per record, and is cleared again by
+ * the next successful rotation. Latching it for the process lifetime would
+ * silence every later episode — and worse, the notice that justified the latch
+ * does not even survive: the successful rotations in between carry it into
+ * `.1`, then `.2`, then off the end. A viewer that starts holding the live file
+ * open hours later would leave a log growing past its limit with nothing in it
+ * to say why, which is the one thing this notice exists to prevent.
+ */
+let _rotationFailurePending = false;
+let _rotationFailureRecorded = false;
+
+/**
+ * The previous roll threw. Used only to skip the reclaim sweep, which is the
+ * one part of a roll that costs a directory listing: a file that cannot be
+ * rolled retries once per back-off, and at the smallest allowed ceiling that
+ * is a `readdir` every few hundred records — synchronously, on the
+ * `uncaughtException` path, in a directory the operator chose and which may
+ * hold thousands of unrelated entries.
+ */
+let _lastRollFailed = false;
+
+/**
+ * True only for a plain file. Used at the staging path, where `existsSync`
+ * would answer yes to a directory sitting there and send it into the generation
+ * chain as if it were a staged log.
+ */
+function isPlainFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function statSizeOrZero(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0; // no file yet, or its size is unreadable — treat as empty
+  }
+}
+
+function getMaxBytes(): number {
+  if (_maxBytes === null) {
+    _maxBytes = parseMaxLogBytes(process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES);
+  }
+  return _maxBytes;
+}
+
+/**
+ * Suffix for the live file while it is between names. The **pid** goes in front
+ * of it — see `stagingPathFor`.
+ *
+ * Chosen to still match a `diagnostic.log*` glob, so a roll interrupted by a
+ * crash leaves its records findable rather than hidden. The next roll files it
+ * back into the numbered generations — by that pid if it is still running, and
+ * by any other server once it is not (see `staleStagingFiles`) — so the extra
+ * files last until the next roll rather than forever.
+ */
+const STAGING_SUFFIX = ".rotating";
+
+/**
+ * Where this process parks the live file mid-roll.
+ *
+ * The pid is not decoration. Every MCP client starts its own server and they
+ * share one log by default, so a single fixed name turns the "is anything
+ * staged?" check and the rename that follows into a race with a destructive
+ * ending: A sees no staged file, B moves the whole live log to the shared name,
+ * C recreates the live path by appending, and A's rename then replaces B's
+ * staged log — up to `maxBytes` of the newest history gone. A name only this
+ * process ever writes cannot be taken from under another one.
+ *
+ * It does not make concurrent rotation *correct* — two servers can still shift
+ * generations over each other, which is recorded as a known limitation — but it
+ * stops this change from making that worse than it already was.
+ */
+function stagingPathFor(target: string): string {
+  return `${target}.${process.pid}${STAGING_SUFFIX}`;
+}
+
+/**
+ * Move a file to `staging` and stamp it with the time it arrived there.
+ *
+ * `renameSync` keeps a file's mtime — and its birthtime; both measured to
+ * survive a rename unchanged on NTFS, 2026-09-08 — so an unstamped staging
+ * file's mtime says when the LOG was last written, while the only thing
+ * `staleStagingFiles` asks of it is how long the file has been staged. Those
+ * differ by exactly the log's idle time: a live file untouched for over
+ * `STALE_STAGING_AGE_MS` and then rolled became a staging file that was stale
+ * the instant it existed — its owner alive and mid-roll, and any other server
+ * sharing the path free to claim it. The stamp makes the field measure what
+ * its use assumes.
+ *
+ * Both callers come through here. An orphan being claimed carries its crashed
+ * owner's timestamp, older still, and it sits at THIS process's staging name
+ * if the shift after the claim throws — so without the stamp it would be
+ * reclaimable by another server the moment it became ours.
+ *
+ * Not guarded. A file this process could rename is one it can set times on
+ * (the read-only attribute refuses neither — measured), and the one failure
+ * that can be named, an ACL granting DELETE but not FILE_WRITE_ATTRIBUTES, is
+ * not a case this module has been asked to survive; a guard no test can reach
+ * is declined here as everywhere else in this file. If it does throw, the roll
+ * fails the way any other does and the caller's recovery puts the live file
+ * back.
+ *
+ * The cost: the generation this file becomes carries the roll time, not the
+ * time of its last record. A log idle three hours and then rolled gets a `.1`
+ * whose mtime says "now" while its newest record is three hours old — a
+ * departure from rename-based rotators, which keep the write time. Accepted:
+ * nothing in this module reads a generation's mtime, every record carries its
+ * own `ts`, and in the ordinary case — a roll on a file that is being written
+ * — stamp and last record are milliseconds apart. Reading the mtime before
+ * staging and restoring it after the install would put two more syscalls on
+ * the exit path to preserve a figure nothing consumes.
+ *
+ * `ctimeMs` was the write-free alternative — a rename does move it (measured,
+ * NTFS; POSIX specifies the same) — and was rejected because nothing can move
+ * it BACK: `utimes` itself sets it to now, so no test could age a staging
+ * file, and the age rule could then be deleted without a pin going red.
+ */
+function stageFile(from: string, staging: string): void {
+  renameSync(from, staging);
+  const now = new Date();
+  utimesSync(staging, now, now);
+}
+
+/**
+ * The file a path actually names, or `null` when it must not be rolled yet.
+ *
+ * `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` may point at a symbolic link — a log
+ * collected centrally, say. `statSync` measures the target, but `renameSync`
+ * moves the LINK, and the next append then creates a plain file where the link
+ * used to be: after one roll the configured destination silently stops
+ * receiving anything. Rotating the resolved target instead leaves the link in
+ * place, pointing at the file the next append recreates, and files the
+ * generations beside the real log rather than beside the link.
+ *
+ * A link whose target is momentarily gone — another writer sharing it is
+ * mid-roll — never reaches here: `existsSync` follows links, so the caller's
+ * "the live file is gone" check catches it first and re-seeds without moving
+ * anything, which is the outcome wanted. An earlier round guarded that case
+ * here as well; the guard could not be reached in any deterministic case and
+ * no test could exercise it, so it is gone rather than kept as ballast.
+ *
+ * What remains is the narrow race where the target vanishes between that check
+ * and this call. It is declined for the same reason as the other unreachable
+ * guards in this module: a branch no test can demonstrate is not a safeguard.
+ *
+ * Falls back to the path itself on any error, which is what every ordinary
+ * non-link path already did.
+ */
+function rotationTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * How old a staging file has to be before its pid stops being believed.
+ *
+ * The window between staging a file and filing it is two adjacent synchronous
+ * renames, so a staging file that has existed for an hour belongs to nobody,
+ * whatever the process table says. Without this a crashed server's pid handed
+ * to an unrelated process makes its leftover permanently unreclaimable — one
+ * ceiling of disk per occurrence, contradicting what this module and the README
+ * both promise.
+ *
+ * "Existed" is measured from the stamp `stageFile` puts on the file, not from
+ * the log's last write. The two differ by however long the log sat idle before
+ * it was rolled, and the first version of this rule used the wrong one.
+ */
+const STALE_STAGING_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Whether a pid still belongs to a running process.
+ *
+ * Signal 0 performs the permission check without delivering anything. Only
+ * `ESRCH` means gone — `EPERM` means it exists and belongs to someone else,
+ * which is still alive, and the safe answer either way is "alive": leaving a
+ * staging file alone costs disk, taking one from a running server costs its
+ * newest history.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | null)?.code !== "ESRCH";
+  }
+}
+
+/**
+ * Staging files left behind by servers that are no longer running.
+ *
+ * A crash between staging the live file and filing it leaves one behind, and
+ * the pid in the name means the server that restarts — with a new pid — never
+ * looks at it. One up-to-`maxBytes` file per crashed pid, kept forever, is
+ * growth without a limit, which is the single thing this module exists to
+ * prevent; the ceiling would be describing only the files it happens to know
+ * the names of.
+ *
+ * They are filed into the generation chain rather than deleted. A staged file
+ * IS a generation — it is what the live log held when its server died — and
+ * deleting up to a ceiling's worth of crash-time diagnostics to save a readdir
+ * is the wrong trade for a diagnostic log.
+ *
+ * Returned oldest first, by when they were staged — the mtime is the stamp
+ * `stageFile` put on them (for a file left by a build before the stamp it is
+ * the last write, the nearest thing there is). `readdirSync` order is whatever
+ * the filesystem feels like, and each one filed pushes the previous one down a
+ * generation — so with two crashed servers an arbitrary order means an OLDER
+ * crash log can be the one retained while a newer one is evicted, which is
+ * backwards from how every other generation here is kept.
+ */
+function staleStagingFiles(target: string): string[] {
+  const dir = dirname(target);
+  const prefix = `${basename(target)}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const stale: { path: string; mtimeMs: number }[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(STAGING_SUFFIX)) continue;
+    const pid = Number(entry.slice(prefix.length, entry.length - STAGING_SUFFIX.length));
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    const path = join(dir, entry);
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(path).mtimeMs;
+    } catch {
+      continue; // vanished between the listing and the stat — nothing to file
+    }
+    // Age overrides the process table. A pid alone is not enough: pids are
+    // reused, and a reused one would keep this file out of reach for good.
+    // `mtimeMs` is the staging stamp, not the log's last write: see `stageFile`
+    // for why the difference is the whole rule.
+    if (Date.now() - mtimeMs < STALE_STAGING_AGE_MS && isProcessAlive(pid)) continue;
+    stale.push({ path, mtimeMs });
+  }
+  return stale.sort((a, b) => a.mtimeMs - b.mtimeMs).map((entry) => entry.path);
+}
+
+/**
+ * Move `.N-1` up to `.N` for every kept generation, dropping the oldest.
+ *
+ * Destructive, and deliberately separated from the live file's own move so the
+ * caller can order the two correctly: see `rotateIfNeeded`.
+ */
+function shiftGenerations(path: string): void {
+  // No unlink of the oldest generation first. `renameSync` replaces an existing
+  // destination on both POSIX and Windows (Node uses MoveFileExW with
+  // MOVEFILE_REPLACE_EXISTING), so the promotion below destroys the oldest by
+  // itself — and only once it has actually succeeded.
+  //
+  // Deleting first looked harmless and was not: with `.1` locked against
+  // renaming but `.2` deletable — a Windows viewer that omits delete sharing
+  // for `.1` — the unlink succeeded and the promotion then threw, so a roll
+  // that never happened had still destroyed the oldest generation, and the
+  // restore in the caller cannot bring it back.
+  //
+  // The cost is a filesystem that cannot replace in place: the promotion fails
+  // there and the roll is reported as failed rather than silently dropping a
+  // generation, which is the safer of the two.
+  for (let gen = KEPT_GENERATIONS; gen >= 2; gen--) {
+    try {
+      renameSync(`${path}.${gen - 1}`, `${path}.${gen}`);
+    } catch (err) {
+      // "The source is not there" is ordinary: fewer generations exist than
+      // the ceiling allows. Anything else is not. If `.1` could not be moved
+      // because `.2` is locked or is a directory, `.1` is STILL ON DISK - and
+      // falling through would let the live file's rename replace it, throwing
+      // away the newest retained generation while recording nothing. Rethrow
+      // so the rotation aborts and the outer handler reports it.
+      if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw err;
+    }
+  }
+}
+
+/**
+ * Move an already-staged file into `.1`, shifting the generations to make room.
+ *
+ * The shift is destructive, so the staged file is proved movable BEFORE it
+ * runs. The earlier contract left that proof to the caller — "you claimed it a
+ * moment ago" — and one caller had not: our own leftover from a roll that
+ * failed earlier was never claimed by anyone, and it had been sitting on disk
+ * since that failure, which is exactly when a viewer may have opened it. With
+ * the file held open without delete sharing, the shift replaced `.2` with `.1`
+ * and emptied `.1`, THEN the install threw; the outer recovery declined,
+ * because the live file was still there. One generation destroyed by a roll
+ * that never happened — bounded to one per episode, since the retry finds
+ * `.1` absent, but destroyed on the strength of nothing.
+ *
+ * The proof is a rename onto its own name. On Windows a file held open without
+ * `FILE_SHARE_DELETE` refuses it with `EBUSY` — the same refusal the real
+ * rename gets — and otherwise it is a no-op: inode, content and mtime all
+ * unchanged (measured 2026-09-08 on NTFS, the file held from .NET at
+ * `FileShare.Read`, which is how a viewer holds it). POSIX specifies the
+ * same-file rename as a successful no-op and has no share modes to refuse it
+ * with. No second filename, no state, nothing new to reclaim: the names this
+ * module has to reason about are the ones it already had.
+ *
+ * Done here for every caller rather than at the one call site that needed it,
+ * so the guarantee stops depending on call-site ordering — the orphan loop
+ * re-introduced this exact defect that way in Round 11.
+ */
+function fileStagedInto(target: string, staging: string): void {
+  renameSync(staging, staging);
+  shiftGenerations(target);
+  renameSync(staging, `${target}.1`);
+}
+
+/**
+ * Roll `path` -> `path.1` -> … -> `path.KEPT_GENERATIONS` when the next record
+ * would push the live file past the ceiling. Best-effort like every other write
+ * in this module: a rotation that cannot happen must not stop the append.
+ */
+function rotateIfNeeded(path: string, incomingBytes: number): void {
+  const maxBytes = getMaxBytes();
+  const refreshInterval = Math.max(1, Math.floor(maxBytes / STAT_REFRESH_DIVISOR));
+  if (_bytesOnDisk === null || _bytesSinceStat >= refreshInterval) {
+    // Reconcile with the file itself, not with what this process remembers
+    // writing. Without this the ceiling is per process, not per file.
+    _bytesOnDisk = statSizeOrZero(path);
+    _bytesSinceStat = 0;
+  }
+  if (_bytesOnDisk + incomingBytes <= maxBytes) return;
+  if (!existsSync(path)) {
+    // Checked BEFORE the shift below, not after it fails. The shift is
+    // destructive - it unlinks the oldest generation and promotes the rest -
+    // and it must not run on the strength of an estimate that turns out to
+    // describe a file that is not there. Getting here means the live file was
+    // deleted by hand, or rolled by another process sharing the path: in the
+    // concurrent case the shift would discard that writer's fresh `.1`
+    // and destroy history faster than `KEPT_GENERATIONS` advertises. Nothing
+    // has failed; re-seed from the empty state and let the append recreate it.
+    _bytesOnDisk = 0;
+    _bytesSinceStat = 0;
+    return;
+  }
+  // Everything below moves files, so it works on what `path` resolves to, not
+  // on `path` itself. Appends keep using `path`: through a link, that is how the
+  // target gets recreated after a roll.
+  const backOff = Math.max(refreshInterval, MAX_RECORD_BYTES);
+  const target = rotationTarget(path);
+  const staging = stagingPathFor(target);
+  try {
+    // OUR OWN leftover first, because the claim below REPLACES whatever is at
+    // the staging name. `renameSync` overwrites its destination — this module
+    // relies on exactly that two lines further down — so claiming an orphan
+    // while a leftover of ours is still sitting there destroys a full live
+    // file's worth of the newest history there is.
+    //
+    // The previous round unified shift-vs-install and called the class closed.
+    // It was not: the destructive act here is the CLAIM, and its destination
+    // was the thing nobody had looked at. Ordering is the fix, not another
+    // helper.
+    //
+    // Nothing has claimed THIS file: it is one an earlier roll of ours could
+    // not put back, on disk ever since. `fileStagedInto` proves it can still be
+    // moved before it shifts anything.
+    if (isPlainFile(staging)) fileStagedInto(target, staging);
+    // Then crashed servers' leftovers, oldest first, each CLAIMED before any
+    // generation moves. Shifting and then renaming — the first version of this
+    // loop — is the same defect the live file's own ordering exists to avoid: a
+    // viewer holding a crash-left file open makes the rename throw with `.2`
+    // already replaced and `.1` empty, and the restore below does not cover it
+    // because nothing of ours was staged.
+    //
+    // The staging name is free on entry to every iteration: the line above
+    // emptied it, and each `fileStagedInto` empties it again — or throws, which
+    // leaves the loop entirely.
+    for (const orphan of _lastRollFailed ? [] : staleStagingFiles(target)) {
+      if (!isPlainFile(orphan)) continue;
+      stageFile(orphan, staging);
+      fileStagedInto(target, staging);
+    }
+    // The live file moves FIRST, before any generation is touched.
+    //
+    // The other order looks natural - make room, then fill it - and it quietly
+    // destroys the archive it is meant to protect. When the live file cannot be
+    // renamed at all (a viewer holding it open with write but not delete
+    // permission, the case this module documents), the shift has already run:
+    // `.2` unlinked, `.1` promoted into it. The append continues, the ceiling
+    // is passed again, and the next attempt eats that generation too. A
+    // persistent failure ends with an oversized log and NO retained history,
+    // which is worse than the unbounded growth this module was written to stop.
+    //
+    // Staged first, a live file that can never be renamed costs nothing at all:
+    // this rename fails, and every generation is exactly where it was.
+    stageFile(target, staging);
+    fileStagedInto(target, staging);
+    _bytesOnDisk = 0;
+    _bytesSinceStat = 0;
+    _lastRollFailed = false;
+    // Rotation works again, so the next failure is a new episode and gets its
+    // own notice. See `_rotationFailureRecorded`.
+    //
+    // BOTH flags, not just the latch. A notice can still be pending here: its
+    // own append failed earlier, which is exactly the case the write path was
+    // reordered to keep retriable. Left set, it would be written after this
+    // recovery - describing a failure that is over - and, worse, latch the
+    // state this line just cleared, so the NEXT episode is suppressed and the
+    // re-arm accomplishes nothing. A notice explains why a log is oversized;
+    // the log just rotated, so there is nothing left to explain.
+    _rotationFailurePending = false;
+    _rotationFailureRecorded = false;
+  } catch {
+    // FIRST, undo a half-done roll. Staging the live file succeeds and the
+    // shift after it throws — a viewer holding `.1` open is enough — and
+    // without this the whole live file is left under the staging name while
+    // the append starts a fresh, empty one. The newest generation is then
+    // outside the `.1`/`.2` chain entirely: only a later roll BY THIS SAME PID
+    // reclaims it, so another server never will, and each occurrence adds a
+    // full ceiling to the directory permanently. Measured, one server, one
+    // record: a 1 MiB live file stranded at `.rotating`, `diagnostic.log`
+    // restarted empty, and every doc guarantee about "the newest records are
+    // in diagnostic.log" false.
+    //
+    // Putting it back makes a failed roll cost nothing again, which is the
+    // property the staging order was introduced for in the first place.
+    if (isPlainFile(staging) && !existsSync(target)) {
+      try {
+        renameSync(staging, target);
+      } catch {
+        // Could not put it back either. It keeps a `diagnostic.log*` name and
+        // the leftover branch files it on this pid's next roll.
+      }
+    }
+    // Deliberately NOT re-checking existence of the live file here. The check
+    // above covers every case that can be reached deterministically; what would
+    // be left is a race so narrow no test can demonstrate it, on a branch that
+    // could turn a real, permanent rotation failure into silence - which is the
+    // one outcome this module exists to prevent. If the race does happen the
+    // cost is a single misleading record, and the next write rotates normally.
+    //
+    // The roll could not complete (a file held open without FILE_SHARE_DELETE,
+    // permission denied, a filesystem that refuses it). Keep appending rather
+    // than dropping events — an oversized log is a smaller failure than a blind
+    // server — and back the estimate off so the retry costs one attempt per
+    // back-off rather than one per record. Measured from the file rather than
+    // from the estimate, because the restore above may have changed which file
+    // is live. The back-off is at least one whole record: at ceilings under
+    // 2 MiB `refreshInterval` (`maxBytes`/16) is SMALLER than `MAX_RECORD_BYTES`,
+    // so backing off by the interval alone would still leave the next record
+    // over the ceiling and re-attempt the roll immediately.
+    //
+    // This outcome is NOT bounded: a file that can never be rolled grows at
+    // full speed, which is the state this module exists to prevent. So it is
+    // recorded once rather than swallowed, and the log can explain its own size.
+    _lastRollFailed = true;
+    _bytesOnDisk = Math.max(0, statSizeOrZero(target) - backOff);
+    _bytesSinceStat = 0;
+    if (!_rotationFailureRecorded) _rotationFailurePending = true;
+  }
+}
 
 function isDisabled(): boolean {
   if (_disabled === null) {
@@ -617,6 +1243,31 @@ export type DispatchSink =
   | "postmessage";
 
 /**
+ * Stand-in for a record that would not fit under `MAX_RECORD_BYTES`.
+ *
+ * Keeps `kind` so existing greps still find the event, says plainly that it was
+ * truncated and how large it really was, and carries a bounded prefix of the
+ * original JSON so the offending field is still readable.
+ */
+function truncatedRecordLine(line: string, lineBytes: number, kind: string): string {
+  return (
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      uptime_ms: Math.round(process.uptime() * 1000),
+      // Bounded here rather than trusted to the `DiagnosticEvent` union. Every
+      // call site in this repo passes a literal, but a compile-time union is
+      // not a runtime guarantee, and this is the one record whose whole job is
+      // to be provably small. The longest real kind is ~20 characters.
+      kind: kind.slice(0, KIND_TRUNCATE_CHARS),
+      record_truncated: true,
+      original_bytes: lineBytes,
+      head: line.slice(0, OVERSIZE_HEAD_CHARS),
+    }) + "\n"
+  );
+}
+
+/**
  * Append one diagnostic event as a JSONL line. Best-effort: never throws.
  * Synchronous so events written just before `process.exit` reach disk.
  *
@@ -627,22 +1278,68 @@ export type DispatchSink =
  */
 export function logDiagnostic(event: DiagnosticEvent): void {
   if (isDisabled()) return;
-  const path = getDiagnosticLogPath();
-  ensureDir(path);
-  const safeEvent =
-    "stack" in event && typeof event.stack === "string" && event.stack.length > STACK_TRUNCATE_CHARS
-      ? { ...event, stack: event.stack.slice(0, STACK_TRUNCATE_CHARS) + "…[truncated]" }
-      : event;
-  const record = {
-    ts: new Date().toISOString(),
-    pid: process.pid,
-    uptime_ms: Math.round(process.uptime() * 1000),
-    ...safeEvent,
-  };
+  // Path resolution and serialization are both INSIDE the guard. `exit.extra` is `Record<string,
+  // unknown>`, so a circular reference, a BigInt or a throwing `toJSON` reaches
+  // `JSON.stringify` from a caller this module cannot see — and this function
+  // runs from the uncaughtException and shutdown handlers, where a thrown
+  // exception is exactly the failure the never-throw contract exists to
+  // prevent. Rotation needs the serialized length, which is what moved the
+  // stringify out of the guard; it moves back in together with it. Path
+  // resolution joins them because `homedir()` can throw `ERR_SYSTEM_ERROR` on
+  // a machine with no resolvable home - rare, but the header promises this
+  // function never throws, and it was outside the guard before this change.
   try {
-    appendFileSync(path, JSON.stringify(record) + "\n");
+    const path = getDiagnosticLogPath();
+    ensureDir(path);
+    const safeEvent =
+      "stack" in event &&
+      typeof event.stack === "string" &&
+      event.stack.length > STACK_TRUNCATE_CHARS
+        ? { ...event, stack: event.stack.slice(0, STACK_TRUNCATE_CHARS) + "…[truncated]" }
+        : event;
+    const record = {
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      uptime_ms: Math.round(process.uptime() * 1000),
+      ...safeEvent,
+    };
+    let line = JSON.stringify(record) + "\n";
+    let lineBytes = Buffer.byteLength(line, "utf8");
+    if (lineBytes > MAX_RECORD_BYTES) {
+      // Rotation cannot shrink a record that is itself over the ceiling, so
+      // the record is what has to give. See `MAX_RECORD_BYTES`.
+      line = truncatedRecordLine(line, lineBytes, event.kind);
+      lineBytes = Buffer.byteLength(line, "utf8");
+    }
+    rotateIfNeeded(path, lineBytes);
+    appendFileSync(path, line);
+    if (_bytesOnDisk !== null) _bytesOnDisk += lineBytes;
+    _bytesSinceStat += lineBytes;
+    if (_rotationFailurePending) {
+      const note =
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          pid: process.pid,
+          uptime_ms: Math.round(process.uptime() * 1000),
+          kind: "log_rotation_failed",
+          maxBytes: getMaxBytes(),
+        }) + "\n";
+      appendFileSync(path, note);
+      // Flags cleared only after the notice is actually on disk. Clearing them
+      // first meant that if this second append failed - the event line having
+      // just consumed the last of the disk, say - the pending state was gone
+      // for good: later events would resume once space freed up, and the
+      // rotation failure that explains the log's size would never be reported.
+      _rotationFailurePending = false;
+      _rotationFailureRecorded = true;
+      const noteBytes = Buffer.byteLength(note, "utf8");
+      if (_bytesOnDisk !== null) _bytesOnDisk += noteBytes;
+      _bytesSinceStat += noteBytes; // counted like any other append, so the
+      // periodic reconciliation stays in step with what was actually written
+    }
   } catch {
-    // Disk full / permission denied / path invalid — silently drop.
+    // Disk full / permission denied / path invalid / an event that cannot be
+    // serialized — silently drop.
     // We deliberately do NOT log to stderr here because uncaughtException
     // handler also writes diagnostics and a stderr write that itself throws
     // could re-enter the handler.
@@ -650,9 +1347,14 @@ export function logDiagnostic(event: DiagnosticEvent): void {
 }
 
 /**
- * Estimate the serialized size of tool arguments without doing a full
- * JSON.stringify (which can be expensive for large screenshot payloads).
- * Returns a rough byte count.
+ * Serialized size of tool arguments, in UTF-16 code units, or -1 when they
+ * cannot be serialized at all.
+ *
+ * The name and the old comment both promised an estimate that avoided a full
+ * `JSON.stringify`; the body has always done exactly that stringify, and
+ * `.length` counts code units rather than bytes. Only the description was
+ * wrong — this is the size recorded in `slow_tool`, where a figure that tracks
+ * payload size is what matters, not an exact byte count.
  */
 export function estimateArgsSize(args: unknown[]): number {
   try {
@@ -745,4 +1447,10 @@ export function _resetDiagnosticLogForTest(): void {
   _resolvedPath = null;
   _disabled = null;
   _dirEnsured = false;
+  _maxBytes = null;
+  _bytesOnDisk = null;
+  _bytesSinceStat = 0;
+  _rotationFailurePending = false;
+  _rotationFailureRecorded = false;
+  _lastRollFailed = false;
 }

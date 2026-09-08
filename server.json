@@ -59,6 +59,13 @@
           "isSecret": false
         },
         {
+          "name": "DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES",
+          "description": "Size in bytes at which the diagnostic event log rolls over to diagnostic.log.1 (default 67108864 = 64 MiB). Two rolled generations are kept. Values below 1 MiB are raised to 1 MiB and values above 1 GiB are lowered to 1 GiB; anything that is not a positive whole number falls back to the default, so a typo cannot disable rotation in either direction.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
           "name": "DESKTOP_TOUCH_RESOLVE_LOG_RAW",
           "description": "Set to '1' to record window titles and title queries in clear in the diagnostic event log. Off by default: titles are recorded as a short hash plus their length, because a title can contain a file name, a mail subject, or a browser page title.",
           "isRequired": false,

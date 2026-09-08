@@ -1,5 +1,49 @@
 # Changelog
 
+## [Unreleased]
+
+- **The diagnostic log no longer grows without limit.** `~/.desktop-touch-mcp/logs/diagnostic.log`
+  is append-only and had no ceiling of any kind — no size cap, no rotation, no
+  age cutoff. On one long-running install it had reached **18.5 GB across 34.8
+  million lines** before anyone noticed, from ordinary day-to-day traffic rather
+  than any single runaway event. Nothing warned about it, and the only ways to
+  stop it required knowing the log existed.
+
+  The live file is now rolled to `diagnostic.log.1` when it passes 64 MiB, and
+  at most two rolled generations are kept, so the log directory ordinarily holds
+  roughly 192 MiB however long the server runs. If several MCP clients are
+  running at once they share one log, and each checks the file's real size
+  periodically rather than on every line, so the live file can overshoot before
+  one of them rolls it — the overshoot grows with the number of servers, not
+  without limit. And if the live file cannot be renamed at all (another program
+  holding it open, or permission denied) rotation cannot happen and the log does
+  keep growing; that case is no longer silent, because a
+  `log_rotation_failed` record is written into the log itself — once per
+  stretch of failed rolls, not once per line. Nothing about the
+  events themselves changed, and with one server running the newest records are
+  always in `diagnostic.log`; search `diagnostic.log*` when you are looking
+  further back, or when several clients share the file.
+
+  The ceiling is a size, not an age. Every record is measured against the limit
+  before it is written, so a server left running for days rolls the file as it
+  goes and never needs restarting or tidying up — but 192 MiB buys as much
+  history as your traffic allows, which on the busy install that prompted this
+  is a little over a day. Copy the file out if you need to keep a particular
+  incident.
+
+  Set `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` to a positive byte count if you
+  want a different ceiling; it is held between 1 MiB and 1 GiB, and an unusable
+  value falls back to the default rather than turning rotation off, so a typo
+  cannot bring the old behaviour back — whether you mean bytes and write MiB or
+  the other way round. To
+  turn the log off entirely, `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1` still
+  does that.
+
+  **If you have been running this server for a while, check that file** — this
+  release bounds future growth but does not delete what has already
+  accumulated. Deleting `diagnostic.log` (and any `.1` / `.2` beside it) is
+  safe; it is a diagnostic aid, not state the server needs.
+
 ## [1.16.0] - 2026-08-29 — Scrolling works on Tauri, Electron and other WebView apps, and one `amount` unit now means one wheel notch everywhere
 
 - **BREAKING: `scroll(action='raw')` now moves 40x further for the same
