@@ -76,7 +76,7 @@
   "samples": [
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 924,
+      "line": 931,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
@@ -223,21 +223,21 @@
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 882,
+      "line": 906,
       "tool": "desktop_state",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 897,
+      "line": 921,
       "tool": "get_history",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 922,
+      "line": 946,
       "tool": "get_document_state",
       "errKind": "identifier",
       "contextShape": "none"
@@ -580,21 +580,21 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 325,
+      "line": 343,
       "tool": "set_element_value",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 367,
+      "line": 385,
       "tool": "scope_element",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 412,
+      "line": 430,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"

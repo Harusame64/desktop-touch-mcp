@@ -30,7 +30,18 @@ export interface ValueDeltaItem {
 }
 
 export type DiffSource = "uia" | "cdp" | "none";
-export type DiffDegraded = "chromium_sparse" | "timeout" | "window_closed" | "process_restarted" | "no_target";
+export type DiffDegraded =
+  | "chromium_sparse"
+  | "timeout"
+  | "window_closed"
+  | "process_restarted"
+  | "no_target"
+  /**
+   * ADR-036 — the call named a window by handle and more than one open window
+   * carries its title, so the before/after snapshots (which find their window
+   * BY TITLE) cannot be shown to describe the window that was acted on.
+   */
+  | "ambiguous_title";
 
 export interface UiaDiffResult {
   appeared: AppearedItem[];

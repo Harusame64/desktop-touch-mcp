@@ -36,7 +36,7 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
-import { withRichNarration, narrateParam } from "./_narration.js";
+import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
@@ -3496,7 +3496,7 @@ export const keyboardRegistrationHandler = makeCommitWrapper(
   withRichNarration(
     "keyboard",
     keyboardHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
-    { windowTitleKey: "windowTitle" },
+    UIA_WRITE_NARRATION,
   ) as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
   "keyboard",
   {

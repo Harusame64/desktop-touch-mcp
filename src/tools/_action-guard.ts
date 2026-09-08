@@ -814,7 +814,14 @@ export async function runActionGuard(
 
   const targetLabel =
     descriptor.kind === "window"
-      ? `window:${descriptor.titleIncludes}`
+      // ADR-036 — a handle-resolved guard says so. The label goes out as
+      // `summary.target`, and `window:<title>` names BOTH windows on exactly
+      // the calls whose point is to tell them apart. Same separator as the
+      // state key (`deriveTargetKey`), for the same reason: a window can be
+      // called "hwnd:12345".
+      ? descriptor.hwnd !== undefined
+        ? `window#hwnd:${String(descriptor.hwnd)}`
+        : `window:${descriptor.titleIncludes}`
       : descriptor.kind === "browserTab"
         ? `browserTab:${descriptor.urlIncludes ?? descriptor.titleIncludes ?? descriptor.tabId ?? "?"}`
         : `coordinate:${descriptor.x},${descriptor.y}`;

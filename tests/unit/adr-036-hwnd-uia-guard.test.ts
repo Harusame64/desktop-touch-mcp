@@ -43,10 +43,11 @@ vi.mock("../../src/engine/perception/guards.js", () => ({
   })),
 }));
 
-const { mockClickElement, mockSetElementValue, mockGetUiElements } = vi.hoisted(() => ({
+const { mockClickElement, mockSetElementValue, mockGetUiElements, mockInsertText } = vi.hoisted(() => ({
   mockClickElement: vi.fn(async () => ({ ok: true })),
   mockSetElementValue: vi.fn(async () => ({ ok: true })),
   mockGetUiElements: vi.fn(async () => ({ ok: true, elements: [] })),
+  mockInsertText: vi.fn(async () => ({ ok: true })),
 }));
 
 vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
@@ -56,6 +57,7 @@ vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
     clickElement: (...a: unknown[]) => mockClickElement(...(a as [])),
     setElementValue: (...a: unknown[]) => mockSetElementValue(...(a as [])),
     getUiElements: (...a: unknown[]) => mockGetUiElements(...(a as [])),
+    insertTextViaTextPattern2: (...a: unknown[]) => mockInsertText(...(a as [])),
   };
 });
 
@@ -100,7 +102,10 @@ beforeEach(() => {
   mockClickElement.mockClear();
   mockSetElementValue.mockClear();
   mockGetUiElements.mockClear();
+  mockInsertText.mockClear();
+  mockSetElementValue.mockResolvedValue({ ok: true });
   delete process.env.DTM_SET_VALUE_CHAIN;
+  delete process.env.DESKTOP_TOUCH_AUTO_GUARD;
 });
 
 describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", () => {
@@ -198,5 +203,35 @@ describe("ADR-036 — hints report the named window, not the first title match",
     // Asserted positively, not as "!== sibling": an absent hints block would
     // satisfy the negative form while telling the caller nothing.
     expect(r.hints?.target?.hwnd).toBe(String(LIVE));
+  });
+});
+
+// ─── The report follows the channel that actually wrote ──────────────────────
+
+describe("ADR-036 — set_element_value's hints name the channel's window, not the caller's handle", () => {
+  it("reports the handle when the write went through it (channel 1)", async () => {
+    const r = parse(await setElementValueHandler({
+      windowTitle: SHARED_TITLE, hwnd: String(LIVE), value: "x", name: "Field",
+    } as never));
+    expect(r.channel).toBe("value");
+    expect(r.hints?.target?.hwnd).toBe(String(LIVE));
+  });
+
+  it("does NOT report the handle when the write fell through to a title-resolved channel", async () => {
+    // The guard's own gate (`mayPinHandle`) cannot cover this: `lensId` and
+    // `DESKTOP_TOUCH_AUTO_GUARD=0` both skip `runActionGuard`, so with the chain
+    // armed the fallbacks stay reachable and the refusal is never consulted.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";
+    mockSetElementValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
+    const r = parse(await setElementValueHandler({
+      windowTitle: SHARED_TITLE, hwnd: String(LIVE), value: "x", name: "Field",
+    } as never));
+    // Channel 2 ran, and it resolved its window by title — so the report says
+    // the window a title resolves to, not the one the caller named.
+    expect(r.channel).toBe("text2");
+    expect(mockInsertText).toHaveBeenCalled();
+    expect(mockInsertText.mock.calls[0]![0]).toBe(SHARED_TITLE);
+    expect(r.hints?.target?.hwnd).toBe(String(SIBLING));
   });
 });

@@ -32,9 +32,12 @@
   top-level window still stops with `target_not_found` rather than falling back
   to a title match, and the rest of the checks — the window having been replaced
   by a new process, a modal dialog on top, click coordinates — still run,
-  against the window you named. Calls that pass only `windowTitle` behave
+  against the window you named. Calls that pass only `windowTitle` are guarded
   exactly as before, `ambiguous_target` included: naming a handle is what turns
-  that refusal off, and only for the call that names one.
+  that refusal off, and only for the call that names one. When a call does name
+  a handle, the guard labels its `target` as `window#hwnd:<handle>` rather than
+  `window:<title>` — the title names both windows on precisely the calls whose
+  point is to tell them apart.
 
   `click_element` and `set_element_value` responses now describe the window that
   was acted on. `hints.target` and `hints.caches` were built from the first
@@ -45,8 +48,8 @@
   their window by title, and labelling a response with one window while its
   contents come from another would be worse than labelling it consistently.
 
-  Two limits are worth knowing, both about what gets reported rather than about
-  where the keys go:
+  Three limits are worth knowing, all about what gets reported rather than
+  about where the keys go:
 
   - When a `method: "background"` write is addressed by handle and more than one
     window carries its title, the delivery check is skipped and the result comes
@@ -54,12 +57,20 @@
     so it could otherwise report a delivery that never happened, or deny one that
     did, from the other window's contents. The keys still go to the window you
     named; only the verdict is withheld.
+  - `narrate: "rich"` returns no before/after diff for a call that names a
+    handle while another window shares its title, and marks it
+    `diffDegraded: "ambiguous_title"`. That diff is built from UIA snapshots
+    taken *by title*, so it would otherwise describe the window you did not
+    write to. The action itself is unaffected — only the diff is withheld.
   - `set_element_value` still stops with `ambiguous_target` while
     `DTM_SET_VALUE_CHAIN=1` is set. With that chain enabled a failed first
     attempt continues into two fallbacks that find their window by title — one of
     them a foreground select-all-and-replace — so lifting the refusal there would
     trade a stop for a write into the wrong field. Unset (the default), it takes
-    the handle like everything else.
+    the handle like everything else. With the chain enabled and the guard turned
+    off, a call that falls through to one of those fallbacks reports the window
+    the fallback resolved rather than the handle you named — the response
+    follows the channel that actually wrote.
 
   A call that names a handle is also no longer offered a `fixId` retry when the
   guard stops it: the stored retry carries the title only, so following it came
@@ -70,8 +81,14 @@
   drift-detection state, so alternating between two same-titled windows by
   handle no longer reports the second one as the first one having been replaced.
   Addressing one window by `windowTitle` on one call and by `hwnd` on the next
-  tracks it under two separate states — harmless, but drift detection restarts
-  each time you switch. Pick one form per window if that matters to you.
+  tracks it under two separate states, so drift detection restarts each time you
+  switch; `desktop_state` reports the attention signal from whichever of the two
+  was updated most recently. Pick one form per window if that matters to you.
+
+  One more reporting change: for `keyboard` writes that name a handle, the
+  focus-loss check now compares that exact window rather than a title
+  substring. A dialog the write itself opens is no longer counted as the same
+  window, so such a call can report `focusLost` where it previously did not.
 
 - **The diagnostic log no longer grows without limit.** `~/.desktop-touch-mcp/logs/diagnostic.log`
   is append-only and had no ceiling of any kind — no size cap, no rotation, no

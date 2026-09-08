@@ -20,6 +20,7 @@
 
 import { withPostState } from "./_post.js";
 import { getUiElements } from "../engine/uia-bridge.js";
+import { enumWindowsInZOrder } from "../engine/win32.js";
 import { computeUiaDiff, degradedRichBlock } from "../engine/uia-diff.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
@@ -137,6 +138,14 @@ export interface RichNarrationOptions {
   windowTitleKey?: string;
 
   /**
+   * ADR-036 — key in the args object that holds the target window HANDLE, when
+   * the tool takes one. The snapshots below resolve their window by title, so a
+   * call that named a handle is narrated only while that title is unique; see
+   * the check in the rich path.
+   */
+  hwndKey?: string;
+
+  /**
    * When true, `narrate:"rich"` is silently ignored for non-state-transitioning
    * keyboard combos (see isStateTransitioningKey).  Set on keyboard_press.
    */
@@ -162,6 +171,39 @@ export interface RichNarrationOptions {
  * The narrate param is consumed here. It remains in args but inner handlers
  * are expected to ignore it (they don't declare it in their param types).
  */
+/**
+ * ADR-036 — narration options for the three UIA/keyboard write tools whose
+ * `ambiguous_target` refusal this ADR lifts (`click_element`,
+ * `set_element_value`, `keyboard`).
+ *
+ * One constant rather than three inline objects: the defect this ADR is about
+ * is four layers losing the same handle independently, and a per-site option
+ * object is a fourth place to forget it. All three tools name the argument
+ * `hwnd` and the title `windowTitle`.
+ */
+export const UIA_WRITE_NARRATION: RichNarrationOptions = {
+  windowTitleKey: "windowTitle",
+  hwndKey: "hwnd",
+};
+
+/**
+ * ADR-036 — does more than one open window carry this title?
+ *
+ * Counted the way `keyboard`'s delivery check counts it (Win32 enumeration,
+ * case-insensitive substring) so the two skips agree on what "shared" means.
+ * An enumeration that throws counts as SHARED: the caller named a handle, and
+ * a report that cannot be shown to describe that window is withheld rather
+ * than guessed at — the same trade the delivery check makes.
+ */
+function titleIsSharedByMoreThanOneWindow(windowTitle: string): boolean {
+  try {
+    const q = windowTitle.toLowerCase();
+    return enumWindowsInZOrder().filter((w) => w.title.toLowerCase().includes(q)).length > 1;
+  } catch {
+    return true;
+  }
+}
+
 export function withRichNarration<T extends Record<string, unknown>>(
   toolName: string,
   handler: (args: T) => Promise<ToolResult>,
@@ -201,6 +243,22 @@ export function withRichNarration<T extends Record<string, unknown>>(
     if (CHROMIUM_TITLE_RE.test(windowTitle)) {
       const result = await wrappedWithPost(args);
       spliceRich(result, degradedRichBlock("chromium_sparse"));
+      return result;
+    }
+
+    // ADR-036 — a handle-named call whose title is shared is not narrated.
+    // `snapElements` finds its window BY TITLE, so with two same-titled windows
+    // the action goes to the handle while the diff describes the sibling: a
+    // report about a window nobody touched, with nothing in it to say so. This
+    // wrapper sits on the three tools whose `ambiguous_target` refusal this ADR
+    // lifts, so the case only became reachable when that refusal did. Same
+    // treatment as the background delivery check — withhold the verdict rather
+    // than compute it from the wrong window. It narrows again when the reads
+    // take a handle (ADR-036 I-6), which is also what retires this check.
+    if (options.hwndKey && args[options.hwndKey] !== undefined &&
+        titleIsSharedByMoreThanOneWindow(windowTitle)) {
+      const result = await wrappedWithPost(args);
+      spliceRich(result, degradedRichBlock("ambiguous_title"));
       return result;
     }
 

@@ -47,7 +47,13 @@ vi.mock("../../src/engine/perception/guards.js", () => ({
 
 import { resolveActionTarget, deriveTargetKey } from "../../src/engine/perception/action-target.js";
 import { runActionGuard } from "../../src/tools/_action-guard.js";
-import { _resetForTest as resetHotCache } from "../../src/engine/perception/hot-target-cache.js";
+import {
+  _resetForTest as resetHotCache,
+  getOrCreateSlot,
+  updateSlot,
+  getSlotSnapshot,
+} from "../../src/engine/perception/hot-target-cache.js";
+import { selectFreshestWindowSlot } from "../../src/tools/desktop-state.js";
 
 // Two windows the title rule cannot tell apart — the shape the whole ADR is
 // about. `pictkura` is the real one from the 2026-09-07 report: a minimised
@@ -164,6 +170,29 @@ describe("ADR-036 I-1 — runActionGuard stops counting once a handle is named",
     expect(ag.summary.status).not.toBe("ambiguous_target");
   });
 
+  it("labels the summary with the handle it resolved, not the shared title", async () => {
+    // `summary.target` is what the caller reads back. `window:<title>` named
+    // both windows on the one call whose purpose is to separate them.
+    mockEnumWindows.mockReturnValue(twoSiblings());
+    const pinned = await runActionGuard({
+      toolName: "keyboard:type",
+      actionKind: "keyboard",
+      descriptor: { kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE },
+    });
+    expect(pinned.summary.target).toBe(`window#hwnd:${String(LIVE)}`);
+
+    // The pairing: a title that resolves on its own keeps the title label, so
+    // the assertion above is about the handle and not about the label changing
+    // for every window descriptor.
+    mockEnumWindows.mockReturnValue([win(0x3333n, "notepad", true, 0)]);
+    const byTitle = await runActionGuard({
+      toolName: "keyboard:type",
+      actionKind: "keyboard",
+      descriptor: { kind: "window", titleIncludes: "notepad" },
+    });
+    expect(byTitle.summary.target).toBe("window:notepad");
+  });
+
   it("still refuses a dead handle with target_not_found", async () => {
     mockEnumWindows.mockReturnValue([win(SIBLING, SHARED_TITLE, true, 0)]);
     const ag = await runActionGuard({
@@ -277,5 +306,48 @@ describe("ADR-036 I-2 — a handle-pinned destination keeps its own state slot",
     );
     expect(second.lens?.binding.hwnd).toBe(String(LIVE));
     expect(second.changed ?? []).not.toContain("identity");
+  });
+});
+
+// ─── The reader side of the split slot ───────────────────────────────────────
+
+describe("ADR-036 I-2 — the attention signal comes from the freshest slot, not the first", () => {
+  /** Both slots describe the SAME window; only the name it was reached by differs. */
+  function twoSlotsForOneWindow(staleFirst: boolean) {
+    const identity = { hwnd: String(LIVE), pid: 7, processName: "chrome.exe", processStartTimeMs: 0, titleResolved: SHARED_TITLE };
+    const byTitle = { kind: "window" as const, titleIncludes: SHARED_TITLE };
+    const byHandle = { kind: "window" as const, titleIncludes: SHARED_TITLE, hwnd: LIVE };
+    // Insertion order decides what `find` would have returned, so the stale one
+    // is created first in the case that must not answer.
+    const first = staleFirst ? byTitle : byHandle;
+    const second = staleFirst ? byHandle : byTitle;
+    const s1 = getOrCreateSlot(first, 1_000)!;
+    updateSlot(s1.key, { identity, attention: "ok" }, 1_000);
+    const s2 = getOrCreateSlot(second, 2_000)!;
+    updateSlot(s2.key, { identity, attention: "identity_changed" }, 2_000);
+    return { staleKey: s1.key, freshKey: s2.key };
+  }
+
+  it("answers from the handle slot when that is the one last touched", () => {
+    const { freshKey } = twoSlotsForOneWindow(true);
+    const picked = selectFreshestWindowSlot(getSlotSnapshot(), String(LIVE));
+    // `find` would have returned the title slot here — it was created first and
+    // still says `ok`, which is exactly the answer that hides a drift.
+    expect(picked?.key).toBe(freshKey);
+    expect(picked?.attention).toBe("identity_changed");
+  });
+
+  it("answers from the title slot when THAT is the one last touched", () => {
+    // The mirror image, so the rule cannot be satisfied by preferring one key
+    // shape over the other.
+    const { freshKey } = twoSlotsForOneWindow(false);
+    const picked = selectFreshestWindowSlot(getSlotSnapshot(), String(LIVE));
+    expect(picked?.key).toBe(freshKey);
+    expect(picked?.key.startsWith("window:")).toBe(true);
+  });
+
+  it("ignores slots describing a different window", () => {
+    twoSlotsForOneWindow(true);
+    expect(selectFreshestWindowSlot(getSlotSnapshot(), String(SIBLING))).toBeUndefined();
   });
 });

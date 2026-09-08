@@ -7,7 +7,7 @@ import { padCaptureRegion, resolveCaptureRegionAsync } from "../engine/reachable
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
-import { withRichNarration, narrateParam } from "./_narration.js";
+import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
@@ -258,8 +258,20 @@ export const setElementValueHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    // ADR-036 — hints describe the window that was acted on (see click_element).
-    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
+    // ADR-036 — the hints are built INSIDE the branch of the channel that
+    // succeeded, because this is the one handler that can change channel
+    // mid-call. Channel 1 goes through the handle, so its report may name it;
+    // channels 2 and 3 still find their window by title (R-36-5), so a pinned
+    // label there would name the requested window for a write that may have
+    // landed on its same-titled sibling — the defect Round 2 removed from
+    // `get_ui_elements`, reappearing one layer down. The guard's own gate
+    // (`mayPinHandle`) does not cover this: the `lensId` branch above and
+    // `DESKTOP_TOUCH_AUTO_GUARD=0` both skip `runActionGuard` entirely, so the
+    // chain stays reachable with the refusal never consulted.
+    //
+    // Built once per call and never twice: `buildHintsForTitle` OBSERVES the
+    // window it resolves, so calling it for both forms would record the same
+    // window under two handles and report a drift that never happened.
     const attempts: Array<{ channel: string; error: string }> = [];
 
     // Channel 1: ValuePattern (always tried first)
@@ -269,6 +281,9 @@ export const setElementValueHandler = async ({
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
     );
     if (r1.ok) {
+      // Channel 1 is handle-addressed (the `hwnd` passed above), so the report
+      // may name that handle.
+      const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
       const hints = {
         ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
         ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
@@ -282,6 +297,9 @@ export const setElementValueHandler = async ({
       // Channel 2: TextPattern2.InsertTextAtSelection (foreground-free)
       const r2 = await insertTextViaTextPattern2(effectiveTitle, value, name, automationId);
       if (r2.ok) {
+        // Channel 2 resolved by title, so its report does too — the hints
+        // follow the write, they do not lead it.
+        const hintsBlock = buildHintsForTitle(effectiveTitle);
         const hints = {
           ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
           ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
@@ -435,7 +453,7 @@ export const scopeElementHandler = async ({
  * layer change required, just a wrap at the registration site.
  */
 export const clickElementRegistrationHandler = makeCommitWrapper(
-  withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  withRichNarration("click_element", clickElementHandler, UIA_WRITE_NARRATION) as (args: Record<string, unknown>) => Promise<ToolResult>,
   "click_element",
   {
     // leaseValidator omitted = lease-less commit variant
