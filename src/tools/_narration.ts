@@ -417,10 +417,19 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // the action goes to the handle while the diff describes the sibling: a
     // report about a window nobody touched, with nothing in it to say so. This
     // wrapper sits on the three tools whose `ambiguous_target` refusal this ADR
-    // lifts, so the case only became reachable when that refusal did. Same
-    // treatment as the background delivery check — withhold the verdict rather
-    // than compute it from the wrong window. It narrows again when the reads
-    // take a handle (ADR-036 I-6), which is also what retires this check.
+    // lifts, so the case only became reachable when that refusal did. It narrows
+    // again when the reads take a handle (ADR-036 I-6), which is also what
+    // retires this check.
+    //
+    // This used to say "same treatment as the background delivery check", and
+    // that was false — measured, not argued. That check counts same-titled
+    // windows at GUARD time and reads back by title afterwards, so a sibling the
+    // action itself opens is not counted and IS read: 8 of 8 such calls returned
+    // `BackgroundInputNotDelivered` for a write that landed
+    // (`desktop-touch-mcp-internal@064fde7`). The sentence below is the reason
+    // that check is not enough, written here before anyone had measured it —
+    // which is the whole argument for not believing a comment that says two
+    // mechanisms agree.
     //
     // NOT narrowed to "the title happens to pick the named window right now",
     // even though `getUiElements` does report which window it read. Two reasons,
