@@ -181,6 +181,25 @@ describe("the hook and the pre-push net stay in step", () => {
     expect(code).toMatch(/scripts\/strip-session-line\.mjs"/);
   });
 
+  it("the shell hooks are pinned to LF, whatever the checkout's autocrlf says", () => {
+    // With `core.autocrlf=true` and no attribute, a Windows checkout writes
+    // these with CRLF and the shebang becomes `#!/bin/sh\r`. Some `sh` cannot
+    // run that, and `scripts/install-hooks.mjs` points `core.hooksPath` here on
+    // every `npm install` — so the hooks would fail before either net ran.
+    //
+    // NOT reproduced on the machine this was written on: Git Bash executes a
+    // CRLF shebang there, and the CRLF hook refused correctly. The attribute is
+    // here because the answer is per-machine, not because a break was seen.
+    for (const hook of ["pre-push", "commit-msg"]) {
+      const r = spawnSync("git", ["check-attr", "eol", "--", `.githooks/${hook}`], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(r.status, `git check-attr unusable: ${r.error?.message ?? r.stderr}`).toBe(0);
+      expect(r.stdout.trim(), `.githooks/${hook} is not pinned to LF`).toContain("eol: lf");
+    }
+  });
+
   it("pre-push carries the POSIX spelling of the same pattern", () => {
     // `pre-push` cannot import the module — it must run without node — so the
     // ERE is duplicated there on purpose. This pins the copy to the original
@@ -494,6 +513,29 @@ describe("pre-push refuses what it should", () => {
     expect(r.stderr, "the push token reached stderr").not.toContain("TOPSECRET");
     // Named, not merely redacted to nothing: the message still has to say WHERE
     // it could not reach, or it stops being actionable.
+    expect(r.stderr).toContain("https://example.invalid/repo.git");
+  });
+
+  it.skipIf(!hasSh)("keeps credentials out of the fetch suggestion too", () => {
+    // Git's pre-push docs: with no named remote, BOTH parameters are the
+    // location. So `$1` is as sensitive as `$2`, and the refusal that suggests
+    // `git fetch <remote>` was handing the token back by the other hand while
+    // `$2` was being redacted — the guard reproducing its own defect one
+    // message over. Reached by naming a remote_oid this clone does not have,
+    // which is what makes `rev-list` fail.
+    const dest = "https://user:TOPSECRET@example.invalid/repo.git";
+    const unknown = "1".repeat(40);
+    const r = world.push(
+      `refs/heads/x ${world.leaking} refs/heads/x ${unknown}\n`,
+      dest,
+      {},
+      dest // no named remote: git passes the URL as BOTH arguments
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("could not verify");
+    expect(r.stderr, "the push token reached stderr via the fetch suggestion").not.toContain(
+      "TOPSECRET"
+    );
     expect(r.stderr).toContain("https://example.invalid/repo.git");
   });
 

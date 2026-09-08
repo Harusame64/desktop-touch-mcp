@@ -65,7 +65,16 @@ redact_url() {
     esac
 }
 
-remote_name="$1"
+# `$1` is the remote's NAME when the push names a configured one, and the URL
+# ITSELF when it does not — git's pre-push documentation says both parameters
+# equal the location in that case. So it is exactly as sensitive as `$2`, and
+# the two refusals below that suggest `git fetch $remote_name` were handing a
+# push token to stderr by the other hand while `$2` was being redacted.
+#
+# Redacted at the assignment rather than at those two sites, because nothing
+# here passes this to git: it is only ever printed. Keeping no raw form is what
+# stops a third message from reaching for one.
+remote_name=$(redact_url "$1")
 remote_location="$2"
 # Two names for one destination, on purpose. `$remote_location` is what git is
 # handed; `$remote_display` is the only one that may be PRINTED. Keeping them
