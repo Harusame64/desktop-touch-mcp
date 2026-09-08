@@ -78,6 +78,16 @@ describe("stripSessionLines — what comes out", () => {
     expect(text).toBe(input);
   });
 
+  it("returns odd line endings and a missing final newline exactly as they came", () => {
+    // "byte-identical" has to mean every message, not the ones that happen to
+    // end in a newline. Rebuilding the text appended one to both of these.
+    for (const input of ["a\rb\r", "no trailing newline", "", "\n\n"]) {
+      const { text, removed } = stripSessionLines(input);
+      expect(removed, JSON.stringify(input)).toBe(0);
+      expect(text, JSON.stringify(input)).toBe(input);
+    }
+  });
+
   it("removes every occurrence, not just the first", () => {
     const { text, removed } = stripSessionLines(
       `fix: w\n\nClaude-Session: https://claude.ai/code/session_AAA\n${COAUTHOR}\nClaude-Session: https://claude.ai/code/session_BBB\n`
@@ -336,6 +346,15 @@ describe("pre-push refuses what it should", () => {
   const sh = spawnSync("sh", ["-c", "exit 0"]);
   const hasSh = sh.status === 0;
 
+  it("sh is available, so the cases below actually ran", () => {
+    // `spawnSync` on a missing `sh` returns status null, and every case here is
+    // `skipIf(!hasSh)` — so without this the whole enforcing half could vanish
+    // into a green run and no one would be told. CI does not execute this suite
+    // at all (`.github/workflows/ci.yml` leaves TypeScript tests to the local
+    // pre-merge run), which makes the local run the only place they happen.
+    expect(hasSh).toBe(true);
+  });
+
   let repo: string;
   let clean = "";
   let leaking = "";
@@ -409,6 +428,49 @@ describe("pre-push refuses what it should", () => {
     const r = push(`refs/heads/x ${clean} refs/heads/x ${"d".repeat(40)}\n`);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("could not inspect");
+  });
+
+  it.skipIf(!hasSh)("refuses when grep produces no count at all", () => {
+    // `grep -c` exits 1 both when it finds nothing (fine) and when its input
+    // redirect failed (not fine) — the temp file vanishing under a tmp reaper,
+    // say. The count is what separates them: a successful `grep -c` always
+    // prints a number. Simulated with a grep that prints nothing and exits 1,
+    // which is exactly what the shell reports in that case.
+    const bin = mkdtempSync(join(tmpdir(), "pre-push-bin-"));
+    try {
+      writeFileSync(join(bin, "grep"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      const r = push(`refs/heads/x ${clean} refs/heads/x ${clean}\n`, {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("could not read back");
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!hasSh)("lets a new branch through when its commits are already on THIS remote", () => {
+    // The other half of the same rule, and the half three rounds of edits kept
+    // breaking: what is already published on the remote being pushed to must be
+    // excluded, or every new branch is refused over history the remote already
+    // has. The case above pins the false-pass direction; without this one, a
+    // hook that excludes nothing at all passes the whole suite.
+    const origin = mkdtempSync(join(tmpdir(), "pre-push-origin-"));
+    try {
+      spawnSync("git", ["init", "-q", "--bare", origin], { encoding: "utf8" });
+      git(["remote", "add", "origin", origin]);
+      git(["push", "-q", "origin", "main"]);
+      git(["fetch", "-q", "origin"]);
+      expect(git(["rev-parse", "--verify", "-q", "refs/remotes/origin/main"]).status).toBe(0);
+
+      // A new branch whose tip is the leaking commit — but that commit is on
+      // origin/main already, so this push adds nothing and must be allowed.
+      const r = push(`refs/heads/topic ${leaking} refs/heads/topic ${"0".repeat(40)}\n`);
+      expect(r.stderr).not.toContain("carry a Claude session id");
+      expect(r.status).toBe(0);
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(!hasSh)("does not treat another remote's history as published on this one", () => {

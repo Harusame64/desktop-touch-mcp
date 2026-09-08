@@ -58,14 +58,22 @@ export function stripSessionLines(message) {
   let removed = 0;
 
   for (const line of lines) {
-    // Matched with any CR stripped, kept with it intact: a CRLF message must
-    // come back CRLF. `BLANK_LINE_RE` accepts the CR for the same reason.
-    if (SESSION_LINE_RE.test(line.replace(/\r$/, ""))) {
+    // Tested as-is. A trailing CR cannot change a start-anchored match, and
+    // stripping it here would diverge from `grep`, which does not, the moment
+    // this pattern gained an end anchor. `BLANK_LINE_RE` accepts the CR so a
+    // CRLF blank line still counts as blank.
+    if (SESSION_LINE_RE.test(line)) {
       removed++;
       continue;
     }
     kept.push(line);
   }
+
+  // Nothing to do means nothing done: returning early is what makes "a clean
+  // message comes back byte-identical" true for every message, not just the
+  // ones ending in a newline. Rebuilding the text appended one to a CR-only
+  // message that had none.
+  if (removed === 0) return { text: message, removed: 0 };
 
   // Blank lines stranded at the end by the removal. Tested against the pattern
   // rather than `String.trim()`, which is Unicode-aware: on a latin1 byte

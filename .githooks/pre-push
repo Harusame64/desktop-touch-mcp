@@ -74,7 +74,11 @@ do
     # read as "nothing found" and let the push through. `remote_oid` comes from
     # the remote's live advertisement and can name an object this clone does not
     # have, so a stale fetch was enough to reach it.
-    subjects=$(mktemp 2>/dev/null) || subjects="${TMPDIR:-/tmp}/pre-push-$$"
+    # Inside the repository's own git dir rather than a world-writable /tmp:
+    # the fallback name was predictable, so on a shared host another local user
+    # could pre-create it as a symlink and the redirect below would follow it.
+    subjects=$(mktemp 2>/dev/null) ||
+        subjects="$(git rev-parse --git-dir)/pre-push-session-scan.$$"
     if ! git log $range --format=%B >"$subjects" 2>/dev/null; then
         rm -f "$subjects"
         echo "" >&2
@@ -86,9 +90,23 @@ do
         exit 1
     fi
 
-    leaked=$(grep -c -E "$session_pattern" <"$subjects")
+    # LC_ALL=C pins what `[[:space:]]` means. Under a UTF-8 locale glibc grep
+    # also accepts U+3000 there, which the JS side does not — the two engines
+    # have to read the pattern the same way for the tests to mean anything.
+    leaked=$(LC_ALL=C grep -c -E "$session_pattern" <"$subjects")
     grep_status=$?
     rm -f "$subjects"
+
+    # A successful `grep -c` always prints a number. An empty result means the
+    # redirect itself failed — which the shell reports as status 1, the same
+    # status as "found nothing", so the count is what tells them apart.
+    if [ -z "$leaked" ]; then
+        echo "" >&2
+        echo "ERROR: could not read back the commit messages to scan them." >&2
+        echo "  Refusing rather than pushing unchecked." >&2
+        echo "" >&2
+        exit 1
+    fi
 
     # 0 = found some, 1 = found none, anything else = grep itself failed.
     if [ "$grep_status" -gt 1 ]; then
