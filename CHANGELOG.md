@@ -56,7 +56,11 @@
     back `unverifiable`. That check reads the target back through UIA *by title*,
     so it could otherwise report a delivery that never happened, or deny one that
     did, from the other window's contents. The keys still go to the window you
-    named; only the verdict is withheld.
+    named; only the verdict is withheld. Note that `unverifiable` is not proof
+    that this skip happened: the same verdict is returned whenever the read-back
+    cannot read its target for any reason. On the machine where this was
+    measured the skip was confirmed by timing instead — the skipped call costs
+    about 400 ms less, which is the read-back it did not perform.
   - `narrate: "rich"` returns no before/after diff for a call that names a
     handle while another open window's title contains the text you passed, and
     marks it `diffDegraded: "ambiguous_title"`. That diff is built from UIA snapshots
