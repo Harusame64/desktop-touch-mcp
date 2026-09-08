@@ -64,9 +64,13 @@
     taken before the action, so this does not cover a same-titled window that the
     action itself opens** — measured on a real desktop, 8 of 8 such calls read
     the sibling back and reported a delivery that had happened as
-    `BackgroundInputNotDelivered`, with or without a handle. Closing that needs
-    the read-back pinned to the handle, which changes what the verdict means and
-    is not in this release.
+    `BackgroundInputNotDelivered`, with or without a handle. Two things would close it, and
+    they cost differently: counting again after the action and withholding the
+    verdict when the desktop moved — which is what the narration path in this
+    same release does for the identical shape — removes the false denial but
+    returns no verdict; pinning the read-back to the handle removes it and keeps
+    one. Both change what a delivery verdict means on a shipping path, so neither
+    is in this release.
   - `narrate: "rich"` returns no before/after diff when the diff cannot be shown
     to describe the window that was acted on, and says which case in
     `diffDegraded`. That diff is built from UIA snapshots taken *by title*, so it
