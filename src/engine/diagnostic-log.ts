@@ -377,6 +377,15 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     _bytesSinceStat = 0;
     // Rotation works again, so the next failure is a new episode and gets its
     // own notice. See `_rotationFailureRecorded`.
+    //
+    // BOTH flags, not just the latch. A notice can still be pending here: its
+    // own append failed earlier, which is exactly the case the write path was
+    // reordered to keep retriable. Left set, it would be written after this
+    // recovery - describing a failure that is over - and, worse, latch the
+    // state this line just cleared, so the NEXT episode is suppressed and the
+    // re-arm accomplishes nothing. A notice explains why a log is oversized;
+    // the log just rotated, so there is nothing left to explain.
+    _rotationFailurePending = false;
     _rotationFailureRecorded = false;
   } catch {
     // Deliberately NOT re-checking existence here. The check above covers every

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -710,6 +710,52 @@ describe("diagnostic-log rotation", () => {
 
     expect(readFileSync(atSharedName, "utf8")).toBe("ANOTHER-SERVERS-STAGED-LOG");
     expect(readFileSync(atOtherPid, "utf8")).toBe("AND-ANOTHERS");
+  });
+
+  it("MUTATION: a notice whose own write failed does not survive a recovery and re-latch the reset", () => {
+    // The reordering that keeps a failed notice retriable and the reset that
+    // re-arms reporting after a recovery interact: a notice can still be
+    // pending when rotation starts working again. Written then, it describes a
+    // failure that is over AND sets the latch the reset just cleared, so the
+    // next episode is suppressed and the re-arm accomplishes nothing.
+    //
+    // Reaching that state needs the EVENT append to fail while the file stays
+    // measurable and movable, because a successful append consumes the notice
+    // immediately. The read-only attribute does exactly that: `appendFileSync`
+    // gives EPERM, `statSync` still reports the real size, and `renameSync`
+    // still works (measured on this machine, 2026-09-08).
+    const blockStaging = (): void => {
+      mkdirSync(staging(), { recursive: true });
+      writeFileSync(join(staging(), "blocker"), "no", "utf8");
+    };
+    const REC = 100 * 1000; // must exceed the re-stat interval (ceiling/16 = 64 KiB)
+    const rec = (tag: string): void => {
+      logDiagnostic({ kind: "slow_tool", tool: tag + "z".repeat(REC), elapsed_ms: 1, args_size: 0 });
+    };
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.1`, "GEN1", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    blockStaging();
+    chmodSync(logPath, 0o444);
+    _resetDiagnosticLogForTest();
+
+    // Episode 1: the roll is blocked, and the append that would carry its
+    // notice fails too, so the notice stays pending across the call.
+    rec("blocked");
+    expect(statSync(logPath).size).toBe(MIN_CEILING); // nothing was appended
+
+    // Recovery IN ONE CALL: the staging name is free, so this call rotates
+    // successfully first and only then appends - into a file the roll just
+    // created, which is where a stale notice would land.
+    rmSync(staging(), { recursive: true, force: true });
+    rec("recovered");
+
+    const live = readFileSync(logPath, "utf8");
+    expect(live).toContain('"tool":"recovered');
+    expect(live).not.toContain("log_rotation_failed");
+
+    chmodSync(`${logPath}.1`, 0o666); // the rolled file kept the attribute
   });
 
   it("MUTATION: a second failure episode is reported even though an earlier one already was", () => {
