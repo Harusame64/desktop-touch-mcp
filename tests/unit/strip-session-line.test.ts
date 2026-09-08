@@ -69,6 +69,12 @@ describe("stripSessionLines — what comes out", () => {
   it("removes a session URL behind a list marker — that is not prose", () => {
     expect(stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x\n`).removed).toBe(1);
     expect(stripSessionLines(`fix: a\n\n  * ${TRAILER}\n`).removed).toBe(1);
+    // All three markers, asserted as BEHAVIOUR. The corpus block below only
+    // checks that the two engines agree with each other, so dropping a marker
+    // from both patterns at once would keep it green — which is exactly how `+`
+    // stayed missing while `-` and `*` were blocked.
+    expect(stripSessionLines(`fix: a\n\n+ https://claude.ai/code/session_x\n`).removed).toBe(1);
+    expect(stripSessionLines(`fix: a\n\n  + ${TRAILER}\n`).removed).toBe(1);
   });
 
   it("leaves a clean message byte-identical and reports nothing removed", () => {
@@ -221,8 +227,12 @@ describe("the two patterns accept the same lines, not merely the same string", (
     `\f${TRAILER}`,
     `- ${TRAILER}`,
     `  * ${TRAILER}`,
+    `+ ${TRAILER}`,
     "https://claude.ai/code/session_x",
     "- https://claude.ai/code/session_x",
+    // `+` is a list marker too. It was the one missing from the class while the
+    // other two were blocked, so this exact line went through both nets.
+    "+ https://claude.ai/code/session_x",
     COAUTHOR,
     "fix: a subject line",
     "prose mentioning Claude-Session: mid-sentence",
@@ -232,6 +242,7 @@ describe("the two patterns accept the same lines, not merely the same string", (
     "",
     "   ",
     "-not-a-list-marker Claude-Session: x",
+    "+not-a-list-marker Claude-Session: x",
   ];
 
   it("classifies every corpus line identically", () => {
@@ -466,6 +477,56 @@ describe("pre-push refuses what it should", () => {
     const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("names an unreachable destination without naming its credentials", () => {
+    // The hook is the thing that keeps secrets out of the public record, and it
+    // was putting one into stderr itself: git hands it the destination URL
+    // verbatim, `https://user:token@host/repo` is a form CI hands out, and an
+    // unreachable destination interpolated the whole thing into the refusal —
+    // terminal and CI log alike. Reaching step 3 needs a hit first, so this
+    // pushes the leaking commit at a destination that cannot answer.
+    const dest = "https://user:TOPSECRET@example.invalid/repo.git";
+    world.git(["remote", "add", "origin", dest]);
+    const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("could not verify");
+    expect(r.stderr, "the push token reached stderr").not.toContain("TOPSECRET");
+    // Named, not merely redacted to nothing: the message still has to say WHERE
+    // it could not reach, or it stops being actionable.
+    expect(r.stderr).toContain("https://example.invalid/repo.git");
+  });
+
+  it.skipIf(!hasSh)("redacts the userinfo and only the userinfo", () => {
+    // Runs the function as it is written in the hook, rather than a copy of it
+    // here — a copy would keep passing after the shipped one changed.
+    const text = readFileSync(HOOK, "utf8");
+    const start = text.indexOf("redact_url() {");
+    expect(start, "redact_url is gone from the hook").toBeGreaterThan(-1);
+    const end = text.indexOf("\n}\n", start);
+    expect(end).toBeGreaterThan(start);
+    const fn = text.slice(start, end + 3);
+
+    const redact = (url: string) =>
+      spawnSync("sh", ["-c", `${fn}\nredact_url "$1"`, "sh", url], { encoding: "utf8" })
+        .stdout.trim();
+
+    expect(redact("https://user:TOPSECRET@example.invalid/repo.git")).toBe(
+      "https://example.invalid/repo.git"
+    );
+    // A password containing `@` — cut at the LAST one in the authority, not the
+    // first, or half the secret survives.
+    expect(redact("https://user:to@ken@example.invalid/repo.git")).toBe(
+      "https://example.invalid/repo.git"
+    );
+    // No userinfo: nothing to cut, and nothing may be lost either.
+    expect(redact("https://example.invalid/repo.git")).toBe("https://example.invalid/repo.git");
+    // An `@` in the PATH is not userinfo.
+    expect(redact("https://example.invalid/a@b.git")).toBe("https://example.invalid/a@b.git");
+    // scp-like: no `://`, so no userinfo field. Left alone rather than mangled.
+    expect(redact("git@example.invalid:owner/repo.git")).toBe("git@example.invalid:owner/repo.git");
+    // Authority with no path at all.
+    expect(redact("https://user:TOPSECRET@example.invalid")).toBe("https://example.invalid");
   });
 
   it.skipIf(!hasSh)("allows a push that adds none", () => {

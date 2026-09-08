@@ -39,11 +39,45 @@ unset IFS
 GIT_TERMINAL_PROMPT=0
 export GIT_TERMINAL_PROMPT
 
+# Strip the userinfo out of a URL, so a destination can be NAMED in a message
+# without its credentials being named with it. `https://user:token@host/repo` is
+# a form git accepts and CI hands out, and git passes this hook the destination
+# URL verbatim as `$2`.
+#
+# Cuts at the last `@` before the first `/` of the authority and nowhere else: a
+# path containing `@` survives, and a password containing one is still removed.
+# An `scp`-like address (`git@host:path`, no `://`) has no userinfo field to cut
+# and is left as it is.
+redact_url() {
+    case "$1" in
+        *://*)
+            _ru_scheme=${1%%://*}
+            _ru_rest=${1#*://}
+            _ru_auth=${_ru_rest%%/*}
+            case "$_ru_auth" in
+                *@*) _ru_rest="${_ru_auth##*@}${_ru_rest#"$_ru_auth"}" ;;
+            esac
+            printf '%s://%s\n' "$_ru_scheme" "$_ru_rest"
+            ;;
+        *)
+            printf '%s\n' "$1"
+            ;;
+    esac
+}
+
 remote_name="$1"
 remote_location="$2"
+# Two names for one destination, on purpose. `$remote_location` is what git is
+# handed; `$remote_display` is the only one that may be PRINTED. Keeping them
+# apart is what makes the safe one the easy one to reach for: this hook exists
+# to keep secrets out of the public record, and it was itself putting a push
+# token into stderr — and into CI logs — whenever the destination was
+# unreachable. A single redaction at the call site would have left the next
+# message added below to remember on its own.
+remote_display=$(redact_url "$2")
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
-session_pattern='^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
+session_pattern='^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
 
 # Commits in $1 (a rev range) whose message carries a session id, one sha per
 # line, followed by a "@@SCANNED@@<n>" line saying how many commits were walked.
@@ -153,7 +187,7 @@ do
     # (`refs/pull/*` on GitHub); those are publicly fetchable, so counting them
     # as published is deliberate.
     if ! dest_refs=$(git ls-remote "$remote_location" 2>/dev/null); then
-        refuse_unverifiable "could not list refs on $remote_location"
+        refuse_unverifiable "could not list refs on $remote_display"
     fi
     dest_oids=$(printf '%s\n' "$dest_refs" | awk '{ print $1 }')
 

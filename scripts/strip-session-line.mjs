@@ -23,6 +23,11 @@ import { pathToFileURL } from "node:url";
  * behind a list marker — `- https://claude.ai/code/session_x` is not prose and
  * used to survive both nets.
  *
+ * All three of Markdown's unordered markers, not two: `+` was missing while `-`
+ * and `*` were blocked, so the identical link written `+ https://…/session_x`
+ * went through untouched. A list of accepted markers is only as good as its
+ * shortest member.
+ *
  * Anchored at line start so prose that MENTIONS the trailer mid-sentence
  * survives — this repo's own commit messages discuss it.
  *
@@ -34,11 +39,11 @@ import { pathToFileURL } from "node:url";
  * the ERE spelling of this same rule, since it must run without node.
  */
 export const SESSION_LINE_RE =
-  /^[ \t\v\f\r]*(?:[-*][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
+  /^[ \t\v\f\r]*(?:[-*+][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
 
 /** The POSIX ERE that `.githooks/pre-push` must be using for the same job. */
 export const SESSION_LINE_ERE =
-  "^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)";
+  "^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)";
 
 /** A line with nothing on it. Deliberately the same class as the pattern. */
 const BLANK_LINE_RE = /^[ \t\v\f\r]*$/;
