@@ -286,7 +286,12 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // key, because that is what says this ADR owns their targeting: `mouse_click`
     // also declares `fixId`, and reading the key on all nineteen changed a tool
     // this release says it does not change — the same spill, one commit later.
-    if (options.hwndKey && args["fixId"] !== undefined) {
+    // Truthy, not `!== undefined`: both schemas accept `fixId: ""` and the
+    // handlers test `if (fixId)`, so an empty one is an ORDINARY call to them.
+    // Testing for presence here withheld a diff that was correct and named a
+    // reason that was not true — a wrapper and its handler disagreeing about
+    // what the same argument means, which is the shape this ADR is about.
+    if (options.hwndKey && Boolean(args["fixId"])) {
       const result = await wrappedWithPost(args);
       spliceRich(result, degradedRichBlock("fix_target_unknown"));
       return result;
@@ -452,9 +457,25 @@ export function withRichNarration<T extends Record<string, unknown>>(
         spliceRich(moved, degradedRichBlock("target_changed"));
         return moved;
       }
-      // Still the same window. Hand that answer forward so the handler acts on
-      // the window these snapshots describe, instead of resolving a third time
-      // across the focus enumeration the post-state wrapper takes in between.
+      // Same window — and that is not the whole question. The ambiguity gate
+      // above counted same-titled windows BEFORE `snapElements`, which is an
+      // await long enough for a sibling to open. The handle comparison cannot
+      // see that: the resolution did not move, the TITLE became shared. And a
+      // shared title is what breaks `keyboard`, whose `explicitHwnd` comes from
+      // the public argument, so its focus leash and delivery stay title-based
+      // while these snapshots read whichever window the title matched. Counted
+      // again on the far side of the snapshot, which is the side the action is
+      // on.
+      if (titleIsSharedByMoreThanOneWindow(windowTitle)) {
+        const shared = await wrappedWithPost(args);
+        spliceRich(shared, degradedRichBlock("ambiguous_title"));
+        return shared;
+      }
+
+      // Still the same window, still the only one wearing that title. Hand that
+      // answer forward so the handler acts on the window these snapshots
+      // describe, instead of resolving a third time across the focus
+      // enumeration the post-state wrapper takes in between.
       // Scoped to this invocation: a handler that never resolves — the IME
       // fast-fail, a refused key combo — must not leave an answer lying around
       // for a concurrent call to pick up.

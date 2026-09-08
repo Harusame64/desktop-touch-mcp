@@ -521,6 +521,53 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(richOf(r).diffSource).toBe("uia");
   });
 
+  it("an EMPTY fixId is not a fixId — the handlers read it that way and so does this", async () => {
+    // Both schemas accept `fixId: ""`, and the handlers test `if (fixId)`. A
+    // wrapper testing for PRESENCE withheld a correct diff from an ordinary
+    // call and told it `fix_target_unknown`, which was not true of it. A
+    // wrapper and its handler disagreeing about what one argument means is the
+    // shape this ADR is about.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const r = await narrated({
+      windowTitle: "Ledger", hwnd: LIVE, fixId: "", name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(richOf(r).diffSource).toBe("uia");
+  });
+
+  it("withholds when a sibling takes the title DURING the snapshot", async () => {
+    // The ambiguity gate ran once, before `snapElements` — an await long enough
+    // for another window to open. The handle re-check cannot see that: the
+    // resolution did not move, the title became shared. And a shared title is
+    // exactly what `keyboard` cannot survive, because its `explicitHwnd` comes
+    // from the public argument, so its focus and delivery stay title-based
+    // while these snapshots read whichever window the title matched.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    mockGetUiElements.mockImplementationOnce(async () => {
+      windows = [
+        { hwnd: 0x2222n, title: "Ledger" },
+        { hwnd: 0x7777n, title: "Ledger" },
+      ];
+      return { ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never;
+    });
+    const r = await narrated({
+      windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBe("ambiguous_title");
+    expect(mockPin).not.toHaveBeenCalled();
+    expect(innerHandler).toHaveBeenCalled();
+  });
+
+  it("narrates the same call when no sibling appears", async () => {
+    // The pairing: the second count is not simply refusing everything.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const r = await narrated({
+      windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(mockPin).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves a fixId call on a title-only tool exactly where it was", async () => {
     // `fixId` is declared by tools far outside this ADR — `mouse_click` is one —
     // so reading the key on all nineteen changed a tool this release says it
