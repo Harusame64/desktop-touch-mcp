@@ -224,9 +224,16 @@ export const setElementValueHandler = async ({
   // one leaves the named window exactly as stale as it was, in the one case
   // this whole change is about.
   let observationOwedFor: { title: string; hwnd?: bigint } | null = null;
+  // What a failure reported from the catch calls the window. Separate from the
+  // debt on purpose: the debt is settled by whichever branch observes, and a
+  // throw after that point would otherwise send the report back to the caller's
+  // raw partial title — worse than what it replaced, on the one path where the
+  // resolved title is certainly known.
+  let reportTitle = windowTitle;
   try {
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    reportTitle = effectiveTitle;
     const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
     if (!name && !automationId) {
       return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle: effectiveTitle });
@@ -405,6 +412,9 @@ export const setElementValueHandler = async ({
       }
 
       // All channels failed — suggest comes from _errors.ts SUGGESTS.SetValueAllChannelsFailed
+      // Unpinned on purpose: channels 2 and 3 both ran, and both found their
+      // window by title. Pinning here would name a handle for writes that were
+      // never addressed to it.
       observe(effectiveTitle);   // observation only — see above
       return failWith(
         new Error("SetValueAllChannelsFailed"),
@@ -413,8 +423,13 @@ export const setElementValueHandler = async ({
       );
     }
 
-    // Chain disabled: report ValuePattern failure
-    observe(effectiveTitle);   // observation only — see above
+    // Chain disabled: report ValuePattern failure. Channel 1 is the only channel
+    // that ran and it went through the handle, so the observation follows it —
+    // the same rule the rejection path obeys one screen down. Observing by
+    // title here refreshed the FIRST same-titled window and left the named one
+    // stale, which made the window that got observed depend on the SHAPE of the
+    // failure rather than on where the write went.
+    observe(effectiveTitle, resolvedWin?.hwnd);   // observation only — see above
     return failWith(r1.error ?? "Unknown error", "set_element_value", { windowTitle: effectiveTitle, name, automationId });
   } catch (err) {
     // ADR-036 — a channel that REJECTS instead of returning `ok:false` (the
@@ -436,7 +451,7 @@ export const setElementValueHandler = async ({
     }
     // The resolved title, when there is one — the two failure reports inside
     // the try already use it, and a call that named a handle knows it here.
-    return failWith(err, "set_element_value", { windowTitle: owed?.title ?? windowTitle, name, automationId });
+    return failWith(err, "set_element_value", { windowTitle: reportTitle, name, automationId });
   }
 };
 
