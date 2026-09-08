@@ -10,46 +10,57 @@
 #          forward as they are, so a trailer written before the hook existed, or
 #          on a branch where it was skipped, reaches a public branch untouched.
 #        - `git commit --no-verify` skips commit-msg outright.
+#        - a machine with no node, where commit-msg steps aside on purpose.
 #      (`git commit --amend` DOES re-run it, so that path is already covered.)
 #      This one refuses rather than rewrites: the line is inside a commit by
 #      now, and rewriting history under the author's feet is not a hook's job.
-#      It also runs without node, which the commit-msg hook needs.
+#
+# THE RULE THAT KEPT BEING GOT WRONG, written down so the next edit does not
+# have to rediscover it: `refs/remotes/*` is NOT evidence that a commit is on
+# the push target. It drifts from the destination in at least three ways — a
+# second remote you have fetched, `remote.<name>.pushurl` sending pushes
+# elsewhere, and `git remote set-url` leaving the old tracking refs behind — and
+# each of those was a separate leak until the rule was stated. Nothing here
+# decides from the tracking namespace. What decides is the destination's own
+# live refs, asked for once, and only when something was found worth asking
+# about.
+#
+# The other rule, learned the same number of times: a check that could not run
+# is not a check that passed. Every step below either produces an answer or
+# refuses the push.
 
 remote_name="$1"
+remote_location="$2"
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
 session_pattern='^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
 
-# What counts as "already published" for the push in front of us. git passes the
-# remote's name as $1 (or its URL, when pushing to one directly).
+# Commits in $1 (a rev range) whose message carries a session id, one sha per
+# line, followed by a "@@SCANNED@@ <n>" line saying how many commits were
+# walked. The caller checks that count: without it, a scan that produced nothing
+# because `tr` or `awk` was missing looks exactly like a clean push.
 #
-# This must name ONE remote. `--remotes` with no value excludes everything
-# reachable from ANY remote-tracking ref, so a commit carrying a trailer that
-# exists only on some other remote — a fork you have fetched — is excluded from
-# the range and lands on this one unchecked. Pinning it to `origin` had the
-# opposite fault: in a clone whose remote is named otherwise it excluded
-# nothing, and every new-branch push was refused over the old commits.
-fetch_url=$(git config --get "remote.$remote_name.url" 2>/dev/null)
-push_url=$(git config --get "remote.$remote_name.pushurl" 2>/dev/null)
+# `tr` comes first because a message written with lone CR line endings is a
+# single line to both grep and awk, so the anchored pattern never saw the
+# trailer — such a commit went through both hooks. Rewriting CR to LF is safe
+# here because nothing is written back; this half only looks.
+leaking_commits() {
+    git log $1 --format="%x01%H%n%B" 2>/dev/null |
+        tr '\r' '\n' |
+        awk -v pat="$session_pattern" '
+            /^\001/ { sha = substr($0, 2); walked++; next }
+            sha != "" && $0 ~ pat && !(sha in seen) { seen[sha] = 1; print sha }
+            END { print "@@SCANNED@@" walked + 0 }
+        '
+}
 
-if [ -n "$remote_name" ] && [ -n "$fetch_url" ] &&
-   { [ -z "$push_url" ] || [ "$push_url" = "$fetch_url" ]; }; then
-    published="--remotes=$remote_name"
-elif [ -n "$push_url" ] && [ "$push_url" != "$fetch_url" ]; then
-    # `remote.<name>.pushurl` sends pushes somewhere other than where fetches
-    # come from, and `refs/remotes/<name>/*` follows the FETCH url. Treating
-    # those refs as published would count a private repository's history as
-    # already public — measured: a new branch carrying a session id passed.
-    # Asking the push target directly (`git ls-remote "$2"`) is the other
-    # option; it puts a network round trip and an auth prompt inside a hook, so
-    # this refuses instead and says which fetch would fix it.
-    published=""
-else
-    # Pushed to a URL, or a remote this clone does not have configured. There
-    # are no remote-tracking refs to trust, so nothing is excluded and old
-    # commits may trip the check below — the message there says what to do.
-    published=""
-fi
+refuse_unverifiable() {
+    echo "" >&2
+    echo "ERROR: could not verify what this push would add — $1" >&2
+    echo "  Refusing rather than pushing unchecked." >&2
+    echo "" >&2
+    exit 1
+}
 
 while read local_ref local_oid remote_ref remote_oid
 do
@@ -72,74 +83,92 @@ do
         fi
     fi
 
-    # Only the commits this push would add. A brand-new branch has no remote
-    # counterpart, so what is already on this remote is excluded instead.
+    # Step 1 — what to look at. For an existing ref the remote told us its own
+    # tip, so `remote_oid..local_oid` is exactly what this push adds.
+    #
+    # For a NEW ref there is no tip, and the whole branch is scanned. Excluding
+    # `--remotes=<name>` here would be cheaper and was tried; it is wrong in the
+    # one direction that matters. Tracking refs OVER-state what is published, so
+    # a leaking commit they wrongly cover is dropped before the live-ref check
+    # can see it — measured: with `git remote set-url` pointing origin at a
+    # public repo while its tracking refs still described a private one, the
+    # leak was filtered out here and the push went through. A pre-filter may be
+    # cheap; it may not be the thing that decides.
     if [ "$remote_oid" = "$zero" ]; then
-        range="$local_oid --not $published"
+        range="$local_oid"
     else
         range="$remote_oid..$local_oid"
     fi
 
-    # One `git log`, into a file, so that its failure and grep's are told apart.
-    # `grep -c` exits 1 when it finds nothing, which is the good case; in a
-    # single pipeline `|| leaked=0` could not distinguish that from git failing,
-    # from grep being absent, or from a locale error — every one of which then
-    # read as "nothing found" and let the push through. `remote_oid` comes from
-    # the remote's live advertisement and can name an object this clone does not
-    # have, so a stale fetch was enough to reach it.
-    # Inside the repository's own git dir rather than a world-writable /tmp:
-    # the fallback name was predictable, so on a shared host another local user
-    # could pre-create it as a symlink and the redirect below would follow it.
-    subjects=$(mktemp 2>/dev/null) ||
-        subjects="$(git rev-parse --git-dir)/pre-push-session-scan.$$"
-    if ! git log $range --format=%B >"$subjects" 2>/dev/null; then
-        rm -f "$subjects"
-        echo "" >&2
-        echo "ERROR: could not inspect the commits being pushed." >&2
-        echo "  This failed: git log $range" >&2
-        echo "  The range names an object this clone may not have yet." >&2
-        echo "  Refusing rather than pushing unchecked — run 'git fetch' and retry." >&2
-        echo "" >&2
-        exit 1
+    # `git log` is proved able to read the range before anything is concluded
+    # from its output: it exits non-zero when the range names an object this
+    # clone does not have, which `remote_oid` can, and reading that as "found
+    # nothing" is what let a force-push publish a trailer.
+    if ! git log $range --format=%H >/dev/null 2>&1; then
+        refuse_unverifiable "git log $range failed (try 'git fetch $remote_name' first)"
     fi
 
-    # LC_ALL=C pins what `[[:space:]]` means. Under a UTF-8 locale glibc grep
-    # also accepts U+3000 there, which the JS side does not — the two engines
-    # have to read the pattern the same way for the tests to mean anything.
-    leaked=$(LC_ALL=C grep -c -E "$session_pattern" <"$subjects")
-    grep_status=$?
-    rm -f "$subjects"
-
-    # A successful `grep -c` always prints a number. An empty result means the
-    # redirect itself failed — which the shell reports as status 1, the same
-    # status as "found nothing", so the count is what tells them apart.
-    if [ -z "$leaked" ]; then
-        echo "" >&2
-        echo "ERROR: could not read back the commit messages to scan them." >&2
-        echo "  Refusing rather than pushing unchecked." >&2
-        echo "" >&2
-        exit 1
+    if ! scan=$(leaking_commits "$range"); then
+        refuse_unverifiable "the commit-message scan failed to run"
     fi
 
-    # 0 = found some, 1 = found none, anything else = grep itself failed.
-    if [ "$grep_status" -gt 1 ]; then
-        echo "" >&2
-        echo "ERROR: could not scan the commit messages (grep exited $grep_status)." >&2
-        echo "  Refusing rather than pushing unchecked." >&2
-        echo "" >&2
-        exit 1
+    hits=""
+    scanned=""
+    for line in $scan; do
+        case "$line" in
+            @@SCANNED@@*) scanned=${line#@@SCANNED@@} ;;
+            *) hits="$hits $line" ;;
+        esac
+    done
+
+    if ! expected=$(git rev-list --count $range 2>/dev/null); then
+        refuse_unverifiable "could not count the commits in $range"
+    fi
+    if [ "$scanned" != "$expected" ]; then
+        refuse_unverifiable "the scan covered $scanned of $expected commits"
     fi
 
-    if [ "${leaked:-0}" -gt 0 ]; then
+    # Step 2 — nothing matched, so there is nobody to ask. This is where almost
+    # every push ends, and it touches the network zero times.
+    if [ -z "$hits" ]; then
+        continue
+    fi
+
+    # Step 3 — something matched, so now one round trip is worth it. This is the
+    # only thing that actually knows what the destination has.
+    if ! dest_refs=$(git ls-remote "$remote_location" 2>/dev/null); then
+        refuse_unverifiable "could not list refs on $remote_location"
+    fi
+
+    # Step 4 — a hit already reachable from something the destination has is
+    # already published there, and this push does not add it. That is what lets
+    # this repo's own historical trailers through with no special case, and it
+    # is decided per commit rather than per range.
+    unpublished=""
+    for hit in $hits; do
+        hit_published=no
+        for dest in $(printf '%s\n' "$dest_refs" | awk '{ print $1 }'); do
+            if git merge-base --is-ancestor "$hit" "$dest" 2>/dev/null; then
+                hit_published=yes
+                break
+            fi
+        done
+        if [ "$hit_published" = "no" ]; then
+            unpublished="$unpublished $hit"
+        fi
+    done
+
+    if [ -n "$unpublished" ]; then
         echo "" >&2
-        echo "ERROR: $leaked commit message line(s) in this push carry a Claude session id." >&2
+        echo "ERROR: this push would publish commit(s) whose message carries a Claude session id." >&2
         echo "  Repo policy: no session IDs in the public repo." >&2
-        echo "  This is what .githooks/commit-msg strips — it was skipped (--no-verify?)." >&2
+        echo "  .githooks/commit-msg removes these at commit time — it was skipped," >&2
+        echo "  or these commits predate it and a rebase is carrying them forward." >&2
+        for hit in $unpublished; do
+            git log -1 --format='    %h %s' "$hit" >&2 2>/dev/null || echo "    $hit" >&2
+        done
         echo "  Reword them before pushing — 'git commit --amend' for the tip," >&2
-        echo "  'git rebase' for anything older. To list what is in this push:" >&2
-        echo "    git log $range --format='%h %s'" >&2
-        echo "  If these are old commits already on the remote, 'git fetch' first:" >&2
-        echo "  without its remote-tracking refs this cannot tell them from new ones." >&2
+        echo "  'git rebase' for anything older." >&2
         echo "" >&2
         exit 1
     fi

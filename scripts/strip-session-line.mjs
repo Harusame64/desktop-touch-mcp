@@ -27,10 +27,10 @@ import { pathToFileURL } from "node:url";
  * survives — this repo's own commit messages discuss it.
  *
  * The whitespace class is `[ \t\v\f\r]`, matching what POSIX `[[:space:]]`
- * means to `grep` on a single line. It is spelled out rather than written `\s`
- * because `\s` would also take Unicode spaces, which `grep` would not, and the
- * two engines have to agree — `.githooks/pre-push` carries the ERE spelling of
- * this same rule, since it must run without node.
+ * means to `grep` on a single line under `LC_ALL=C`. It is spelled out rather
+ * than written `\s` because `\s` would also take Unicode spaces, which `grep`
+ * would not, and the two engines have to agree — `.githooks/pre-push` carries
+ * the ERE spelling of this same rule, since it must run without node.
  */
 export const SESSION_LINE_RE =
   /^[ \t\v\f\r]*(?:[-*][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
@@ -43,6 +43,15 @@ export const SESSION_LINE_ERE =
 const BLANK_LINE_RE = /^[ \t\v\f\r]*$/;
 
 /**
+ * Every line ending git can hand us. A message written with lone CR — old-Mac
+ * endings, or `git commit-tree` fed one — was a SINGLE line to a `\n` split, so
+ * the anchored pattern never saw the trailer and the whole hook was a no-op on
+ * it. Splitting on all three, with the separators captured so the bytes can be
+ * put back exactly as they came, is what closes that.
+ */
+const LINE_SPLIT_RE = /(\r\n|\n|\r)/;
+
+/**
  * @param {string} message the message as a string of BYTES (latin1) when it
  *   comes from a file — see `stripSessionLinesInFile`. The pattern is pure
  *   ASCII, so byte-wise matching gives the same answer as character-wise
@@ -53,40 +62,43 @@ const BLANK_LINE_RE = /^[ \t\v\f\r]*$/;
  *   go with it.
  */
 export function stripSessionLines(message) {
-  const lines = message.split("\n");
+  // [text, sep, text, sep, …, text] — the separators are kept so a CRLF message
+  // comes back CRLF and a CR-only one comes back CR-only.
+  const parts = message.split(LINE_SPLIT_RE);
   const kept = [];
   let removed = 0;
 
-  for (const line of lines) {
-    // Tested as-is. A trailing CR cannot change a start-anchored match, and
-    // stripping it here would diverge from `grep`, which does not, the moment
-    // this pattern gained an end anchor. `BLANK_LINE_RE` accepts the CR so a
-    // CRLF blank line still counts as blank.
-    if (SESSION_LINE_RE.test(line)) {
+  for (let i = 0; i < parts.length; i += 2) {
+    const text = parts[i];
+    const sep = parts[i + 1] ?? "";
+    if (SESSION_LINE_RE.test(text)) {
       removed++;
       continue;
     }
-    kept.push(line);
+    kept.push({ text, sep });
   }
 
-  // Nothing to do means nothing done: returning early is what makes "a clean
-  // message comes back byte-identical" true for every message, not just the
-  // ones ending in a newline. Rebuilding the text appended one to a CR-only
-  // message that had none.
+  // Nothing to do means nothing done. Returning the original is what makes "a
+  // clean message comes back byte-identical" true for every message rather than
+  // only the ones ending in a newline.
   if (removed === 0) return { text: message, removed: 0 };
 
   // Blank lines stranded at the end by the removal. Tested against the pattern
-  // rather than `String.trim()`, which is Unicode-aware: on a latin1 byte
-  // string a trailing line holding the single byte 0xA0 counted as blank and
-  // was deleted, which is a byte this function promises to keep.
-  while (kept.length > 0 && BLANK_LINE_RE.test(kept[kept.length - 1])) kept.pop();
+  // rather than `String.trim()`, which is Unicode-aware: on a latin1 byte string
+  // a trailing line holding the single byte 0xA0 counted as blank and was
+  // deleted, which is a byte this function promises to keep.
+  while (kept.length > 0 && BLANK_LINE_RE.test(kept[kept.length - 1].text)) kept.pop();
 
   if (kept.length === 0) return { text: "", removed };
 
-  // Only ever `\n` here: the split was on `\n`, so a CRLF line kept its own CR
-  // and rejoining supplies the LF that follows it. A message with no trailing
-  // newline gains one, which git would add anyway.
-  return { text: `${kept.join("\n")}\n`, removed };
+  // The last surviving line keeps its own ending, or gains the one its
+  // neighbours use if it had none.
+  const last = kept[kept.length - 1];
+  if (last.sep === "") {
+    const neighbour = kept.find((k) => k.sep !== "");
+    last.sep = neighbour ? neighbour.sep : "\n";
+  }
+  return { text: kept.map((k) => k.text + k.sep).join(""), removed };
 }
 
 /**

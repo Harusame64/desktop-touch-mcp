@@ -111,6 +111,26 @@ describe("stripSessionLines — what comes out", () => {
     expect(text).toBe(`fix: crlf\r\n\r\n${COAUTHOR}\r\n`);
   });
 
+  it("finds the trailer in a message written with lone CR endings", () => {
+    // Splitting on "\n" alone made this ONE line, so the anchored pattern never
+    // saw the trailer and the hook was a no-op on it — a session id published
+    // by writing the message with old-Mac endings. `git commit-tree` produces
+    // exactly this, and the pre-push net missed it too for the same reason.
+    const { text, removed } = stripSessionLines(
+      "feat: x\rClaude-Session: https://claude.ai/code/session_X\r"
+    );
+    expect(removed).toBe(1);
+    expect(text).toBe("feat: x\r");
+  });
+
+  it("keeps each line's own ending when they are mixed", () => {
+    const { text, removed } = stripSessionLines(
+      `a\r\nb\nClaude-Session: https://claude.ai/code/session_X\n`
+    );
+    expect(removed).toBe(1);
+    expect(text).toBe("a\r\nb\n");
+  });
+
   it("empties a message that was ONLY a trailer — git then refuses the commit", () => {
     const { text, removed } = stripSessionLines(`${TRAILER}\n`);
     expect(removed).toBe(1);
@@ -336,15 +356,21 @@ describe("the file rewrite and the CLI — the part that can actually eat a mess
 });
 
 /**
- * `.githooks/pre-push` is the half that refuses, and it was pinned only by a
- * `toContain` on its text: deleting its entire leak block, or flipping the
+ * `.githooks/pre-push` is the half that refuses, and it was once pinned only by
+ * a `toContain` on its text: deleting its entire leak block, or flipping the
  * comparison, left every other test in this file green. It is `sh`, so it is
- * driven as a subprocess — against a repository built here, not this one, so
+ * driven as a subprocess — against repositories built here, not this one, so
  * the cases do not depend on what happens to be in our history.
+ *
+ * The rule under test, which four separate leaks came from getting wrong:
+ * `refs/remotes/*` is not evidence that a commit is on the push target. Only
+ * the destination's own live refs are.
  */
 describe("pre-push refuses what it should", () => {
   const sh = spawnSync("sh", ["-c", "exit 0"]);
   const hasSh = sh.status === 0;
+  const HOOK = join(repoRoot, ".githooks", "pre-push");
+  const ZERO = "0".repeat(40);
 
   it("sh is available, so the cases below actually ran", () => {
     // Every case here is `skipIf(!hasSh)`, so without this one the whole
@@ -362,62 +388,82 @@ describe("pre-push refuses what it should", () => {
     );
   });
 
-  let repo: string;
-  let clean = "";
-  let leaking = "";
+  /** A working tree plus whatever bare repositories a case needs. */
+  function makeWorld() {
+    const root = mkdtempSync(join(tmpdir(), "pre-push-"));
+    const work = join(root, "work");
+    const git = (args: string[], cwd = work) => spawnSync("git", args, { cwd, encoding: "utf8" });
 
-  const git = (args: string[], cwd = repo) =>
-    spawnSync("git", args, { cwd, encoding: "utf8" });
+    const bare = (name: string) => {
+      const p = join(root, name);
+      spawnSync("git", ["init", "-q", "--bare", "-b", "main", p], { encoding: "utf8" });
+      return p;
+    };
 
-  beforeEach(() => {
-    if (!hasSh) return;
-    repo = mkdtempSync(join(tmpdir(), "pre-push-"));
-    git(["init", "-q", "-b", "main"]);
+    spawnSync("git", ["init", "-q", "-b", "main", work], { encoding: "utf8" });
     git(["config", "user.email", "t@example.com"]);
     git(["config", "user.name", "T"]);
     git(["config", "commit.gpgsign", "false"]);
-    writeFileSync(join(repo, "a.txt"), "a");
+    writeFileSync(join(work, "a.txt"), "a");
     git(["add", "-A"]);
     git(["commit", "-q", "--no-verify", "-m", "chore: clean commit"]);
-    clean = git(["rev-parse", "HEAD"]).stdout.trim();
-    writeFileSync(join(repo, "a.txt"), "b");
+    const clean = git(["rev-parse", "HEAD"]).stdout.trim();
+    writeFileSync(join(work, "a.txt"), "b");
     git(["add", "-A"]);
     git(["commit", "-q", "--no-verify", "-m", `chore: leaking commit\n\n${TRAILER}`]);
-    leaking = git(["rev-parse", "HEAD"]).stdout.trim();
-  });
+    const leaking = git(["rev-parse", "HEAD"]).stdout.trim();
 
+    const push = (
+      stdin: string,
+      destination: string,
+      env: NodeJS.ProcessEnv = {},
+      remoteName = "origin"
+    ) =>
+      spawnSync("sh", [HOOK, remoteName, destination], {
+        cwd: work,
+        input: stdin,
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+      });
+
+    return { root, work, git, bare, clean, leaking, push };
+  }
+
+  let world: ReturnType<typeof makeWorld>;
+  beforeEach(() => {
+    if (hasSh) world = makeWorld();
+  });
   afterEach(() => {
-    if (repo) rmSync(repo, { recursive: true, force: true });
+    if (world?.root) rmSync(world.root, { recursive: true, force: true });
   });
 
-  const push = (stdin: string, env: NodeJS.ProcessEnv = {}) =>
-    spawnSync("sh", [join(repoRoot, ".githooks", "pre-push"), "origin", "https://example/x.git"], {
-      cwd: repo,
-      input: stdin,
-      encoding: "utf8",
-      env: { ...process.env, ...env },
-    });
-
-  it.skipIf(!hasSh)("refuses a range containing a session id", () => {
-    const r = push(`refs/heads/x ${leaking} refs/heads/x ${clean}\n`);
+  it.skipIf(!hasSh)("refuses a push that would add a session id", () => {
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest);
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("carry a Claude session id");
+    expect(r.stderr).toContain("would publish commit(s)");
   });
 
-  it.skipIf(!hasSh)("allows a range that carries none", () => {
-    const r = push(`refs/heads/x ${clean} refs/heads/x ${clean}\n`);
+  it.skipIf(!hasSh)("allows a push that adds none", () => {
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    const r = world.push(`refs/heads/x ${world.clean} refs/heads/x ${world.clean}\n`, dest);
     expect(r.status).toBe(0);
     expect(r.stderr).toBe("");
   });
 
   it.skipIf(!hasSh)("refuses a direct push to main", () => {
-    const r = push(`refs/heads/main ${clean} refs/heads/main ${clean}\n`);
+    const dest = world.bare("origin.git");
+    const r = world.push(`refs/heads/main ${world.clean} refs/heads/main ${world.clean}\n`, dest);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("direct push to main is forbidden");
   });
 
   it.skipIf(!hasSh)("lets the release flow through with the documented bypass", () => {
-    const r = push(`refs/heads/main ${clean} refs/heads/main ${clean}\n`, {
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    const r = world.push(`refs/heads/main ${world.clean} refs/heads/main ${world.clean}\n`, dest, {
       DESKTOP_TOUCH_ALLOW_MAIN_PUSH: "1",
     });
     expect(r.status).toBe(0);
@@ -425,108 +471,141 @@ describe("pre-push refuses what it should", () => {
   });
 
   it.skipIf(!hasSh)("allows a branch deletion", () => {
-    const zero = "0".repeat(40);
-    expect(push(`refs/heads/main ${zero} refs/heads/main ${clean}\n`).status).toBe(0);
+    const dest = world.bare("origin.git");
+    expect(world.push(`refs/heads/main ${ZERO} refs/heads/main ${world.clean}\n`, dest).status).toBe(
+      0
+    );
   });
 
   it.skipIf(!hasSh)("refuses rather than passing when the range cannot be read", () => {
-    // A remote_oid this clone does not have. In one pipeline with `grep -c`
-    // this returned 0 and the push went through unchecked.
-    const r = push(`refs/heads/x ${clean} refs/heads/x ${"d".repeat(40)}\n`);
+    // A remote_oid this clone does not have — what a force-push to an unfetched
+    // remote looks like. In one pipeline with `grep -c` this returned 0 and the
+    // push went through unchecked.
+    const dest = world.bare("origin.git");
+    const r = world.push(`refs/heads/x ${world.clean} refs/heads/x ${"d".repeat(40)}\n`, dest);
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("could not inspect");
+    expect(r.stderr).toContain("could not verify");
   });
 
-  it.skipIf(!hasSh)("refuses when grep produces no count at all", () => {
-    // `grep -c` exits 1 both when it finds nothing (fine) and when its input
-    // redirect failed (not fine) — the temp file vanishing under a tmp reaper,
-    // say. The count is what separates them: a successful `grep -c` always
-    // prints a number. Simulated with a grep that prints nothing and exits 1,
-    // which is exactly what the shell reports in that case.
-    const bin = mkdtempSync(join(tmpdir(), "pre-push-bin-"));
-    try {
-      writeFileSync(join(bin, "grep"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-      const r = push(`refs/heads/x ${clean} refs/heads/x ${clean}\n`, {
-        PATH: `${bin}:${process.env.PATH ?? ""}`,
-      });
-      expect(r.status).toBe(1);
-      expect(r.stderr).toContain("could not read back");
-    } finally {
-      rmSync(bin, { recursive: true, force: true });
+  it.skipIf(!hasSh)("refuses when the scan itself could not run", () => {
+    // A scan that produced nothing because its tools were missing looks exactly
+    // like a clean push. The hook counts the commits it walked and compares.
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    for (const tool of ["awk", "tr"]) {
+      const bin = mkdtempSync(join(tmpdir(), `pre-push-${tool}-`));
+      try {
+        writeFileSync(join(bin, tool), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+        const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest, {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+        });
+        expect(r.status, tool).toBe(1);
+        expect(r.stderr, tool).toContain("could not verify");
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
     }
   });
 
-  it.skipIf(!hasSh)("lets a new branch through when its commits are already on THIS remote", () => {
-    // The other half of the same rule, and the half three rounds of edits kept
-    // breaking: what is already published on the remote being pushed to must be
-    // excluded, or every new branch is refused over history the remote already
-    // has. The case above pins the false-pass direction; without this one, a
-    // hook that excludes nothing at all passes the whole suite.
-    const origin = mkdtempSync(join(tmpdir(), "pre-push-origin-"));
-    try {
-      spawnSync("git", ["init", "-q", "--bare", origin], { encoding: "utf8" });
-      git(["remote", "add", "origin", origin]);
-      git(["push", "-q", "origin", "main"]);
-      git(["fetch", "-q", "origin"]);
-      expect(git(["rev-parse", "--verify", "-q", "refs/remotes/origin/main"]).status).toBe(0);
-
-      // A new branch whose tip is the leaking commit — but that commit is on
-      // origin/main already, so this push adds nothing and must be allowed.
-      const r = push(`refs/heads/topic ${leaking} refs/heads/topic ${"0".repeat(40)}\n`);
-      expect(r.stderr).not.toContain("carry a Claude session id");
-      expect(r.status).toBe(0);
-    } finally {
-      rmSync(origin, { recursive: true, force: true });
-    }
+  it.skipIf(!hasSh)("finds a trailer written with lone CR endings", () => {
+    // `grep` and `awk` both treat only LF as a record separator, so such a
+    // commit was one long line and the anchored pattern never matched. It went
+    // through both hooks.
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    const tree = world.git(["write-tree"]).stdout.trim();
+    const cr = spawnSync("git", ["commit-tree", tree, "-p", world.clean], {
+      cwd: world.work,
+      encoding: "utf8",
+      input: `feat: x\rClaude-Session: https://claude.ai/code/session_X\r`,
+    }).stdout.trim();
+    const r = world.push(`refs/heads/x ${cr} refs/heads/x ${ZERO}\n`, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("would publish commit(s)");
   });
 
-  it.skipIf(!hasSh)("does not trust tracking refs when pushes go somewhere else than fetches", () => {
-    // `remote.<name>.pushurl` sends pushes to one repository while
-    // `refs/remotes/<name>/*` follows the fetch url. Counting those refs as
-    // published then reads a PRIVATE repository's history as already public —
-    // measured: a new branch carrying a session id went through.
-    const priv = mkdtempSync(join(tmpdir(), "pre-push-priv-"));
-    const pub = mkdtempSync(join(tmpdir(), "pre-push-pub-"));
-    try {
-      spawnSync("git", ["init", "-q", "--bare", priv], { encoding: "utf8" });
-      spawnSync("git", ["init", "-q", "--bare", pub], { encoding: "utf8" });
-      git(["remote", "add", "origin", priv]);
-      git(["push", "-q", "origin", "main"]);
-      git(["fetch", "-q", "origin"]);
-      // Only now does the remote start pushing elsewhere.
-      git(["config", "remote.origin.pushurl", pub]);
-      expect(git(["merge-base", "--is-ancestor", leaking, "refs/remotes/origin/main"]).status).toBe(0);
-
-      const r = push(`refs/heads/topic ${leaking} refs/heads/topic ${"0".repeat(40)}\n`);
-      expect(r.status).toBe(1);
-      expect(r.stderr).toContain("carry a Claude session id");
-    } finally {
-      rmSync(priv, { recursive: true, force: true });
-      rmSync(pub, { recursive: true, force: true });
-    }
+  it.skipIf(!hasSh)("lets through a commit the destination already has", () => {
+    // The repo's own historical trailers are exactly this case, and they must
+    // not block every push. Decided per commit against the destination's live
+    // refs, so no special case is needed for them.
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    world.git(["push", "-q", "origin", "main"]);
+    world.git(["fetch", "-q", "origin"]);
+    const r = world.push(`refs/heads/topic ${world.leaking} refs/heads/topic ${ZERO}\n`, dest);
+    expect(r.stderr).not.toContain("would publish");
+    expect(r.status).toBe(0);
   });
 
-  it.skipIf(!hasSh)("does not treat another remote's history as published on this one", () => {
-    // A new branch has no counterpart on the remote, so the hook excludes what
-    // is already published — and it must mean published ON THIS REMOTE. With a
-    // bare `--remotes`, a commit that exists only on a fork you have fetched is
-    // excluded from the range and its trailer lands on the public repo.
-    const fork = mkdtempSync(join(tmpdir(), "pre-push-fork-"));
-    try {
-      spawnSync("git", ["init", "-q", "--bare", fork], { encoding: "utf8" });
-      git(["remote", "add", "origin", "https://example/x.git"]);
-      git(["remote", "add", "fork", fork]);
-      git(["push", "-q", "fork", "main"]);
-      git(["fetch", "-q", "fork"]);
-      // The leaking commit is now reachable from refs/remotes/fork/main and
-      // from nothing under refs/remotes/origin/.
-      expect(git(["rev-parse", "--verify", "-q", "refs/remotes/fork/main"]).status).toBe(0);
+  it.skipIf(!hasSh)("does not count another remote's history as published here", () => {
+    // Fetch a fork, branch off a commit that exists only there, push here.
+    const dest = world.bare("origin.git");
+    const fork = world.bare("fork.git");
+    world.git(["remote", "add", "origin", dest]);
+    world.git(["remote", "add", "fork", fork]);
+    // The destination is NOT empty — it has the clean commit but not the
+    // leaking one. Without this the refusal would come from "the destination
+    // advertises no refs at all" and the ancestry check would never run: a
+    // mutant that answers "already published" to every question passed the
+    // whole suite, because every refusal case had an empty destination.
+    world.git(["push", "-q", "origin", `${world.clean}:refs/heads/base`]);
+    world.git(["push", "-q", "fork", "main"]);
+    world.git(["fetch", "-q", "fork"]);
+    const r = world.push(`refs/heads/topic ${world.leaking} refs/heads/topic ${ZERO}\n`, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("would publish commit(s)");
+  });
 
-      const r = push(`refs/heads/x ${leaking} refs/heads/x ${"0".repeat(40)}\n`);
-      expect(r.status).toBe(1);
-      expect(r.stderr).toContain("carry a Claude session id");
-    } finally {
-      rmSync(fork, { recursive: true, force: true });
-    }
+  it.skipIf(!hasSh)("asks whether the hit itself is on the destination, not whether anything is", () => {
+    // The destination has history, and the leaking commit is not part of it.
+    // "Something is there" must not be read as "this is there".
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    world.git(["push", "-q", "origin", `${world.clean}:refs/heads/main`]);
+    world.git(["fetch", "-q", "origin"]);
+    const r = world.push(`refs/heads/topic ${world.leaking} refs/heads/topic ${ZERO}\n`, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("does not trust tracking refs after the remote's url is changed", () => {
+    // `git remote set-url` leaves `refs/remotes/<name>/*` describing the OLD
+    // repository, with nothing in the config or the hook's arguments to say so.
+    // Trusting them published a private repo's history to a public one.
+    const priv = world.bare("priv.git");
+    const pub = world.bare("pub.git");
+    world.git(["remote", "add", "origin", priv]);
+    world.git(["push", "-q", "origin", "main"]);
+    world.git(["fetch", "-q", "origin"]);
+    world.git(["remote", "set-url", "origin", pub]);
+    const r = world.push(`refs/heads/topic ${world.leaking} refs/heads/topic ${ZERO}\n`, pub);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("does not trust tracking refs when pushes go elsewhere than fetches", () => {
+    // `remote.<name>.pushurl` sends pushes to one repository while the tracking
+    // refs keep following the fetch url.
+    const priv = world.bare("priv.git");
+    const pub = world.bare("pub.git");
+    world.git(["remote", "add", "origin", priv]);
+    world.git(["push", "-q", "origin", "main"]);
+    world.git(["fetch", "-q", "origin"]);
+    world.git(["config", "remote.origin.pushurl", pub]);
+    const r = world.push(`refs/heads/topic ${world.leaking} refs/heads/topic ${ZERO}\n`, pub);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("refuses when the destination cannot be asked", () => {
+    // A hit was found and the live refs are the only thing that could clear it.
+    // Not reachable means not cleared.
+    world.git(["remote", "add", "origin", "https://example.invalid/x.git"]);
+    const r = world.push(
+      `refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`,
+      "https://example.invalid/x.git"
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("could not verify");
   });
 });
