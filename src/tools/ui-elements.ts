@@ -74,10 +74,15 @@ export const getUiElementsHandler = async ({
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
-    // ADR-036 — the hints' handle is what scopes the read below, so building
-    // them from the title would read the first same-titled window even when the
-    // caller named a different one.
-    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
+    // ADR-036 — NOT pinned, deliberately. `getUiElements` passes only the TITLE
+    // to both its native and PowerShell paths; the handle it takes is used as a
+    // cache key and nothing else. Pinning the hints here would report the named
+    // window while the elements came from the first same-titled one, and would
+    // then file that sibling's elements in the cache under the named window's
+    // handle — a wrong answer stored under the right key, which is worse than
+    // the uniformly title-based answer it replaces. The hints follow the read;
+    // they do not lead it. Pin both together when the read takes a handle.
+    const hintsBlock = buildHintsForTitle(effectiveTitle);
     const result = await getUiElements(effectiveTitle, maxDepth, maxElements, 10000, {
       hwnd: hintsBlock?.hwnd, cached: false,
     });
@@ -351,8 +356,12 @@ export const scopeElementHandler = async ({
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
-    // ADR-036 — see get_ui_elements.
-    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
+    // ADR-036 — NOT pinned, for the reason given in get_ui_elements:
+    // `getElementBounds` and `getElementChildren` below both resolve by title,
+    // so pinned hints would label the response with one window while the
+    // element metadata and the screenshot came from another. Being uniformly
+    // wrong is recoverable; being inconsistent with yourself is not.
+    const hintsBlock = buildHintsForTitle(effectiveTitle);
     const bounds = await getElementBounds(effectiveTitle, name, automationId, controlType);
     if (!bounds) {
       return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });

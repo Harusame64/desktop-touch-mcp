@@ -126,9 +126,19 @@ vi.mock("../../src/engine/background-channel-resolver.js", () => ({
   resolveBackgroundInputChannel: vi.fn(() => ({ kind: "wm_char" })),
 }));
 
+// The focus checks are observed, not just silenced: the leash decides whether
+// to keep sending, so WHAT IT ASKS ABOUT is behaviour, not bookkeeping.
+const { mockCheckForeground, mockDetectFocusLoss } = vi.hoisted(() => ({
+  mockCheckForeground: vi.fn(async () => null),
+  mockDetectFocusLoss: vi.fn(async () => null),
+}));
 vi.mock("../../src/tools/_focus.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_focus.js")>();
-  return { ...actual, detectFocusLoss: vi.fn(async () => null), checkForegroundOnce: vi.fn(async () => null) };
+  return {
+    ...actual,
+    detectFocusLoss: (...a: unknown[]) => mockDetectFocusLoss(...(a as [])),
+    checkForegroundOnce: (...a: unknown[]) => mockCheckForeground(...(a as [])),
+  };
 });
 
 // ─── The window resolver, in the two shapes the handlers actually see ────────
@@ -214,6 +224,8 @@ beforeEach(() => {
   mockPostEnter.mockClear();
   mockGetText.mockClear();
   mockGetValue.mockClear();
+  mockCheckForeground.mockClear();
+  mockDetectFocusLoss.mockClear();
 });
 
 // ─── I-1: the descriptor carries the handle on every dispatch method ─────────
@@ -432,6 +444,50 @@ describe("ADR-036 I-3 — focus is taken by the named window, not by a same-titl
       keys: "a", hwnd: String(LIVE), method: "foreground", trackFocus: false, settleMs: 0,
     } as never);
     expect(mockRestoreAndFocus.mock.calls[0]![0]).toBe(LIVE);
+  });
+});
+
+describe("ADR-036 — the focus leash asks about the named window, not its title", () => {
+  it("passes the handle to the mid-stream check that decides whether to keep sending", async () => {
+    // Chunked sending re-checks the foreground between chunks. Asked by title,
+    // it answered "still focused" when a same-titled SIBLING had taken the
+    // foreground mid-stream, and the rest of the text went there — after the
+    // guard and the focus step had both been pinned correctly.
+    await keyboardTypeHandler({
+      ...TYPE_BASE, hwnd: String(LIVE), method: "foreground", abortOnFocusLoss: true,
+    } as never);
+    expect(mockCheckForeground).toHaveBeenCalled();
+    expect((mockCheckForeground.mock.calls[0]![0] as { hwnd?: bigint }).hwnd).toBe(LIVE);
+  });
+
+  it("passes the handle to the post-action check too", async () => {
+    await keyboardTypeHandler({
+      ...TYPE_BASE, hwnd: String(LIVE), method: "foreground", trackFocus: true,
+    } as never);
+    expect(mockDetectFocusLoss).toHaveBeenCalled();
+    expect((mockDetectFocusLoss.mock.calls[0]![0] as { hwnd?: bigint }).hwnd).toBe(LIVE);
+  });
+
+  it("covers keyboard:press, whose post-action check is a separate site", async () => {
+    await keyboardPressHandler({
+      keys: "a", hwnd: String(LIVE), method: "foreground", trackFocus: true, settleMs: 0,
+    } as never);
+    expect(mockDetectFocusLoss).toHaveBeenCalled();
+    expect((mockDetectFocusLoss.mock.calls[0]![0] as { hwnd?: bigint }).hwnd).toBe(LIVE);
+  });
+
+  it("asks by title alone when no handle was named — the control", async () => {
+    mockEnum.mockImplementation(() => [
+      win(ELSEWHERE, "Some other app", 0),
+      win(LIVE, SHARED_TITLE, 1),
+    ]);
+    await keyboardTypeHandler({
+      ...TYPE_BASE, windowTitle: SHARED_TITLE, method: "foreground", trackFocus: true,
+    } as never);
+    expect(mockDetectFocusLoss).toHaveBeenCalled();
+    const arg = mockDetectFocusLoss.mock.calls[0]![0] as { hwnd?: bigint; target?: string };
+    expect(arg.hwnd).toBeUndefined();
+    expect(arg.target).toBe(SHARED_TITLE);
   });
 });
 

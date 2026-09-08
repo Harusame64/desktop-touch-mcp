@@ -2406,8 +2406,16 @@ export const keyboardTypeHandler = async ({
         let typed = 0;
         try {
           for (let i = 0; i < codePoints.length; i += chunkSize) {
+            // ADR-036 — the leash decides whether to keep sending, so it has to
+            // ask about the window the keys are aimed at. By title it answered
+            // "still focused" when a same-titled SIBLING had taken the
+            // foreground mid-stream, and the remaining chunks went there.
+            // `detectFocusLoss` gives the handle precedence when both are
+            // present (issue #257), which is what the sequence loop already
+            // relies on.
             const fl = await checkForegroundOnce({
               target: effectiveWindowTitle,
+              ...(explicitHwnd !== undefined && { hwnd: explicitHwnd }),
               homingNotes,
             });
             if (fl) {
@@ -2462,6 +2470,10 @@ export const keyboardTypeHandler = async ({
     if (trackFocus) {
       const fl = await detectFocusLoss({
         target: effectiveWindowTitle,
+        // ADR-036 — same reason as the leash above: reporting "focus held"
+        // because a same-titled sibling is in front is a false negative in a
+        // safety signal, even where nothing is routed on it.
+        ...(explicitHwnd !== undefined && { hwnd: explicitHwnd }),
         homingNotes,
         settleMs,
       });
@@ -2896,6 +2908,10 @@ export const keyboardPressHandler = async ({
     if (trackFocus) {
       const fl = await detectFocusLoss({
         target: effectiveWindowTitle,
+        // ADR-036 — same reason as the leash above: reporting "focus held"
+        // because a same-titled sibling is in front is a false negative in a
+        // safety signal, even where nothing is routed on it.
+        ...(explicitHwnd !== undefined && { hwnd: explicitHwnd }),
         homingNotes,
         settleMs,
       });

@@ -36,11 +36,14 @@
   exactly as before, `ambiguous_target` included: naming a handle is what turns
   that refusal off, and only for the call that names one.
 
-  Responses now describe the window that was acted on. `hints.target` and
-  `hints.caches` were built from the first window whose title matched, so a call
-  could operate on the window you named and hand you the other one's handle and
-  cache state to reuse. `get_ui_elements` passes that handle on to scope its
-  read, so there it decided what was read, not only what was reported.
+  `click_element` and `set_element_value` responses now describe the window that
+  was acted on. `hints.target` and `hints.caches` were built from the first
+  window whose title matched, so a call could operate on the window you named
+  and hand you the other one's handle and cache state to reuse. This applies to
+  those two only, because their actual UI call goes through the handle.
+  `get_ui_elements` and `scope_element` are unchanged: their reads still find
+  their window by title, and labelling a response with one window while its
+  contents come from another would be worse than labelling it consistently.
 
   Two limits are worth knowing, both about what gets reported rather than about
   where the keys go:

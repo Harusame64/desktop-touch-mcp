@@ -170,13 +170,25 @@ describe("ADR-036 — hints report the named window, not the first title match",
     expect(buildHintsForTitle(SHARED_TITLE, 0x9999n)).toBeNull();
   });
 
-  it("get_ui_elements reads the named window — its hints handle SCOPES the read", () => {
-    return getUiElementsHandler({
+  it("does NOT pin get_ui_elements' hints, because its read is still by title", async () => {
+    // The first cut of this pinned them and asserted the handle reached
+    // `getUiElements`. It did — as a CACHE KEY. The read itself passes only the
+    // title to both backends, so pinned hints would have labelled the response
+    // with the named window while the elements came from its sibling, and then
+    // filed those elements under the named window's handle. A wrong answer
+    // stored under the right key is worse than a uniformly wrong one, and the
+    // mock in that first version is what made it look right.
+    const r = parse(await getUiElementsHandler({
       windowTitle: SHARED_TITLE, hwnd: String(LIVE), maxDepth: 2, maxElements: 30,
-    } as never).then(() => {
-      expect(mockGetUiElements).toHaveBeenCalled();
-      expect((mockGetUiElements.mock.calls[0]![4] as { hwnd?: bigint }).hwnd).toBe(LIVE);
-    });
+    } as never));
+    expect(mockGetUiElements).toHaveBeenCalled();
+    // The read got a title and no handle-scoped path.
+    expect(mockGetUiElements.mock.calls[0]![0]).toBe(SHARED_TITLE);
+    // And the response says so: the hints name the window the read actually
+    // went to. Asserted on the RESPONSE, not on the helper, so re-pinning the
+    // hints without pinning the read breaks this test — which is the whole
+    // point, since that combination is what shipped and had to be undone.
+    expect(r.hints?.target?.hwnd).toBe(String(SIBLING));
   });
 
   it("click_element reports the handle it clicked", async () => {

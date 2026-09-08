@@ -328,28 +328,28 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2804,
+      "line": 2816,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2878,
+      "line": 2890,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2967,
+      "line": 2983,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3193,
+      "line": 3209,
       "tool": "keyboard:sequence",
       "errKind": "expression",
       "contextShape": "object-plain"
@@ -552,49 +552,49 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 91,
+      "line": 96,
       "tool": "get_ui_elements",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 108,
+      "line": 113,
       "tool": "click_element",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 130,
+      "line": 135,
       "tool": "click_element",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 251,
+      "line": 256,
       "tool": "set_element_value",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 320,
+      "line": 325,
       "tool": "set_element_value",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 358,
+      "line": 367,
       "tool": "scope_element",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 403,
+      "line": 412,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"
