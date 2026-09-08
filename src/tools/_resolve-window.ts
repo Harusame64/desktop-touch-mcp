@@ -305,7 +305,11 @@ function getDockTitleLiteral(): string | undefined {
  * The key alone was never enough on its own, for the reason `withPinnedResolution`
  * gives: the same question has different answers at different times.
  */
-const pinnedResolution = new AsyncLocalStorage<{ key: string; value: ResolvedWindow | null }>();
+const pinnedResolution = new AsyncLocalStorage<{
+  key: string;
+  value: ResolvedWindow | null;
+  emitLog?: () => void;
+}>();
 
 function resolutionKey(p: { hwnd?: string; windowTitle?: string }): string {
   return `${p.hwnd ?? ""}\u0000${p.windowTitle ?? ""}`;
@@ -327,36 +331,61 @@ function resolutionKey(p: { hwnd?: string; windowTitle?: string }): string {
 export function withPinnedResolution<T>(
   p: { hwnd?: string; windowTitle?: string },
   value: ResolvedWindow,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
+  emitLog?: () => void
 ): Promise<T> {
-  return pinnedResolution.run({ key: resolutionKey(p), value }, fn);
+  return pinnedResolution.run({ key: resolutionKey(p), value, emitLog }, fn);
 }
 
 /**
- * `logAs: "off"` silences this resolution's ADR-035 `resolve` event.
+ * ADR-035: an event is worth writing when a dispatch happened on the resolution
+ * it records. `logAs` and `deferLog` are how a caller that resolves WITHOUT
+ * dispatching says so.
  *
- * Same rule as the intermediate probe inside Case 3: an event is worth writing
- * when the resolution it records is the one an action was dispatched on, and a
- * duplicate makes the H1/H2 histogram count one window twice. `withRichNarration`
- * resolves BEFORE the action purely to know what to snapshot, so that first
- * resolution is a probe and passes `"off"`; the re-check it hands to the handler
- * is the resolution the action uses, so that one logs and the handler's
- * consumption of the pin adds nothing. Without this, `narrate: "rich"` wrote two
- * identical events per plain-title call and `minimal` wrote one — a bias
- * correlated with a parameter, in a measurement that is still choosing a
- * predicate.
+ * Same rule as the intermediate probe inside Case 3, and `withRichNarration`
+ * resolves twice under it. The first is a probe — it exists to choose what to
+ * snapshot — and passes `logAs: "off"`. The second is a re-check, and whether it
+ * is worth an event is not known when it runs: it becomes the resolution the
+ * action uses only if it AGREES with the first and is handed to the handler. So
+ * it passes `deferLog`, which hands the event back instead of writing it, and
+ * `withPinnedResolution` carries it to the moment the handler takes the pin. If
+ * the handler never resolves — the IME fast-fail, a refused combo — or the
+ * re-check disagreed and the diff was withheld as `target_changed`, the event is
+ * dropped and the handler's own resolution is the only one counted.
+ *
+ * Silencing the probe alone was not enough, and the first version of this shipped
+ * with the gap: `narrate: "rich"` still wrote one more event than `minimal` on
+ * the Case 4 dialog rescue whenever the desktop moved or the handler bailed —
+ * rarer than the double count it replaced, and correlated with the same
+ * parameter, in the histogram Phase C is still using to choose a predicate.
  */
 export async function resolveWindowTarget(params: {
   hwnd?: string;
   windowTitle?: string;
-}, options: { logAs?: "off" } = {}): Promise<ResolvedWindow | null> {
+}, options: {
+  logAs?: "off";
+  deferLog?: (emit: () => void) => void;
+} = {}): Promise<ResolvedWindow | null> {
   const store = pinnedResolution.getStore();
   if (store && store.value && store.key === resolutionKey(params)) {
     const pinned = store.value;
     store.value = null;   // single use, within this invocation only
+    // The ADR-035 event for the resolution being handed over, written HERE
+    // because this is the moment it acquired a dispatch. `deferLog` held it
+    // back at the wrapper precisely so a resolution nothing acted on would not
+    // be counted.
+    const emit = store.emitLog;
+    store.emitLog = undefined;
+    emit?.();
     return pinned;
   }
   const warnings: string[] = [];
+  /** `logAs`/`deferLog` in one place, so the three outcomes cannot drift apart. */
+  const emitResolve = (record: Parameters<typeof logResolve>[0]): void => {
+    if (options.logAs === "off") return;
+    if (options.deferLog) { options.deferLog(() => logResolve(record)); return; }
+    logResolve(record);
+  };
 
   // ── Case 1: explicit hwnd ─────────────────────────────────────────────────
   if (params.hwnd !== undefined) {
@@ -448,13 +477,11 @@ export async function resolveWindowTarget(params: {
         logAs: "off",
       });
       if (plainMatches.length > 0) {
-        if (options.logAs !== "off") {
-          logResolve({
-            resolver: "pickPlainTopLevelWindowByTitle",
-            query: params.windowTitle,
-            matches: plainMatches,
-          });
-        }
+        emitResolve({
+          resolver: "pickPlainTopLevelWindowByTitle",
+          query: params.windowTitle,
+          matches: plainMatches,
+        });
         return null;
       }
 
@@ -467,15 +494,13 @@ export async function resolveWindowTarget(params: {
         // just not as plain top-level windows); `fallback:"owner-chain"` is
         // what says the window came from the dialog rescue rather than the
         // primary rule, so the two events are not confused for one another.
-        if (options.logAs !== "off") {
-          logResolve({
-            resolver: "resolveWindowTargetDialog",
-            query: params.windowTitle,
-            matches: [dialog, ...runnersUp],
-            chosen: dialog,
-            fallback: "owner-chain",
-          });
-        }
+        emitResolve({
+          resolver: "resolveWindowTargetDialog",
+          query: params.windowTitle,
+          matches: [dialog, ...runnersUp],
+          chosen: dialog,
+          fallback: "owner-chain",
+        });
         warnings.push("dialog_resolved_via_owner_chain");
         return {
           title: dialog.title,
@@ -485,13 +510,11 @@ export async function resolveWindowTarget(params: {
         };
       }
       // Neither route matched — a true miss, and the H2 case worth counting.
-      if (options.logAs !== "off") {
-        logResolve({
-          resolver: "pickPlainTopLevelWindowByTitle",
-          query: params.windowTitle,
-          matches: [],
-        });
-      }
+      emitResolve({
+        resolver: "pickPlainTopLevelWindowByTitle",
+        query: params.windowTitle,
+        matches: [],
+      });
     } catch { /* enumWindowsInZOrder unavailable → fall through */ }
   }
 

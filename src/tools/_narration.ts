@@ -279,29 +279,36 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // `options.hwndKey` is the OTHER limit, and leaving it out was this PR's own
     // defect one file over. `withRichNarration` wraps nineteen tools; only the
     // three this ADR is about declare a handle key. Resolving on `argTitle`
-    // alone therefore reached `mouse_click`, `mouse_drag`, `scroll`,
-    // `focus_window` and the browser set — tools whose schemas DO take `hwnd`
-    // ("takes precedence over windowTitle", `mouse.ts`) while this wrapper is
-    // structurally blind to it, because `hwndArg` is read through `hwndKey`. So
-    // the wrapper resolved the TITLE, narrated that window with no degrade
-    // marker, and the handler acted on the caller's handle: a confident diff of
-    // a window the action never touched, which is the exact thing this ADR
-    // exists to remove, newly created on tools it never claimed. It also armed
-    // the ambiguity gate and handed the pin to `scroll_read` / `scroll_capture`,
-    // so `narrate: "rich"` alone changed which window a title-only handler
-    // resolved `@active` to.
+    // alone let the other sixteen in, and it hurt them two ways:
     //
-    // Those tools narrating by title while accepting a handle is OLDER than this
-    // PR and stays for a follow-up: extending the handle rules to them is three
-    // more tools' worth of behaviour with no real-machine acceptance behind it.
-    // What is fixed here is that this PR made it worse.
+    //   • all of them — the snapshots moved off the caller's argument onto a
+    //     server-resolved title, the ambiguity gate armed, and the pin went to
+    //     handlers that never asked for it (`scroll_read`, `scroll_capture`), so
+    //     `narrate: "rich"` alone changed which window a title-only handler
+    //     resolved `@active` to;
+    //   • three of them — `mouse_click`, `mouse_drag`, `scroll`, and ONLY those
+    //     three, whose schemas take `hwnd` while this wrapper reads it through
+    //     `hwndKey` and so cannot see it. There the wrapper narrated the window
+    //     the TITLE found while the handler acted on the caller's handle: a
+    //     confident diff of a window the action never touched, which is the
+    //     exact thing this ADR exists to remove, newly created on tools it never
+    //     claimed. (Counted, not assumed: `focus_window`, `window_dock`,
+    //     `terminal` and the six browser tools declare no `hwnd` at all.)
+    //
+    // Cost of putting the limit back, named because it is a real one: `@active`
+    // on those sixteen returned a diff for one commit and now degrades again,
+    // which is what it did before this PR. Making it work there means giving
+    // them the handle rules deliberately — three more tools' worth of behaviour
+    // with no real-machine acceptance behind it, and a follow-up. What is fixed
+    // here is that this PR made those tools worse than it found them.
     if (options.hwndKey && args["fixId"] === undefined && (hwndArg !== undefined || argTitle)) {
       let resolved;
       try {
         // `logAs: "off"`: this resolution exists to choose what to snapshot, not
-        // to dispatch anything. The re-check below is the one handed to the
-        // handler, and that one logs — so a rich call writes the same number of
-        // ADR-035 `resolve` events as a minimal one.
+        // to dispatch anything. The re-check below defers its event to whoever
+        // takes the pin, so a rich call writes the same number of ADR-035
+        // `resolve` events as a minimal one on every path — including the two
+        // where the re-check's answer is thrown away.
         resolved = await resolveWindowTarget(resolveArgs, { logAs: "off" });
       } catch {
         const result = await wrappedWithPost(args);
@@ -366,7 +373,16 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // keys can land on a sibling while these snapshots describe the window that
     // was in front a moment ago, and the `target_changed` check below does not
     // see it: that compares resolutions, not deliveries.
-    if ((args[options.hwndKey ?? ""] !== undefined || pinnedHwnd !== undefined) &&
+    //
+    // The second disjunct is `fixId`, not the caller's handle. Keying it on the
+    // handle was reachable only as `fixId` + `hwnd` — everywhere else
+    // `pinnedHwnd` is already set or the block above returned — and under
+    // `fixId` the handler discards the handle and acts on the stored fix's own
+    // title. So the diff was withheld on the strength of a parameter with no
+    // effect, while `fixId` on a shared title with NO handle got the confident
+    // diff: the same pair the wrong way round. Under `fixId` the title is all
+    // there is, so a shared one is exactly when the snapshots cannot be trusted.
+    if ((pinnedHwnd !== undefined || args["fixId"] !== undefined) &&
         titleIsSharedByMoreThanOneWindow(windowTitle)) {
       const result = await wrappedWithPost(args);
       spliceRich(result, degradedRichBlock("ambiguous_title"));
@@ -399,18 +415,27 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // `withPinnedResolution`.
     if (pinnedHwnd !== undefined) {
       let again;
+      // Held back rather than written: this resolution earns an ADR-035 event
+      // only if it is the one the handler acts on, which is decided below.
+      let againLog: (() => void) | undefined;
       try {
-        again = await resolveWindowTarget(resolveArgs);
+        again = await resolveWindowTarget(resolveArgs, {
+          deferLog: (emit) => { againLog = emit; },
+        });
       } catch {
         again = null;
       }
-      // On the handle, not the title. Comparing titles is EQUIVALENT today —
-      // a flip between two windows sharing a title never reaches here, because
-      // the ambiguity check above has already withheld it, so any flip that
-      // does reach here changes the title as well. Equivalent by way of a check
-      // one screen up is not the same as equivalent: the handle is what the
-      // window is, and this line should not depend on that one staying put.
+      // On the handle, not the title, and the two are NOT equivalent — the
+      // earlier note claiming they were was wrong, and a mutation to the title
+      // survived the suite until this was measured. The ambiguity check one
+      // screen up counted windows BEFORE the UIA snapshot; the flip this line
+      // catches happens after it. So a second window can take the title in
+      // between, and comparing titles then sees nothing, hands the STALE
+      // resolution forward and forces the action onto the window that moved —
+      // worse than the missing marker. The handle is what the window is.
       if (!again || again.hwnd !== pinnedHwnd) {
+        // `againLog` is dropped with it: nothing was dispatched on this
+        // resolution, and the handler is about to make its own.
         const moved = await wrappedWithPost(args);
         spliceRich(moved, degradedRichBlock("target_changed"));
         return moved;
@@ -421,7 +446,7 @@ export function withRichNarration<T extends Record<string, unknown>>(
       // Scoped to this invocation: a handler that never resolves — the IME
       // fast-fail, a refused key combo — must not leave an answer lying around
       // for a concurrent call to pick up.
-      handoff = (fn) => withPinnedResolution(resolveArgs, again, fn);
+      handoff = (fn) => withPinnedResolution(resolveArgs, again, fn, againLog);
     }
 
     const result = await handoff(() => wrappedWithPost(args));

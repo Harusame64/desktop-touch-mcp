@@ -323,6 +323,58 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // that works.
     expect(next).toMatch(/keyboard[^.]*foreground/i);
     expect(next).toMatch(/@active/);
+
+    // The `suggest` list, which is what the server instructions tell the model
+    // to read, and which had no assertion at all until a mutant that deleted
+    // this whole arm survived the suite. It said "nothing addresses it by
+    // handle" — denying the one recovery the message two lines up offers.
+    const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
+    expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    expect(suggests).toMatch(/keyboard does accept its hwnd, but only while this window is in the foreground/);
+    expect(suggests).not.toMatch(/nothing addresses it by handle/);
+    // And it must not offer the whitespace arm's wording, which promises
+    // `click_element` a handle it cannot use here.
+    expect(suggests).not.toMatch(/click_element accepts it on this window/);
+  });
+
+  it("answers the titleless caller on the DEFAULT path too, not only with the chain armed", async () => {
+    // `allSetValueChannelsAreHandleAddressed` is `!chain`, so all of the text
+    // above was reachable only with a flag set. With the chain OFF — the
+    // default — the handle IS accepted and the generic catalogue answers "pass
+    // hwnd (desktop_discover returns it)". For a titleless window both halves
+    // are dead: the enumeration drops it on `!title`, so `desktop_discover`
+    // cannot list it and the by-handle guard comes back `target_not_found`.
+    // Measured: pass hwnd → run desktop_discover → pass hwnd. A two-step loop,
+    // on the path nobody has to configure.
+    delete process.env.DTM_SET_VALUE_CHAIN;
+    const r = parse(await setElementValueHandler({
+      windowTitle: "", value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(JSON.stringify(r)).toContain("ambiguous_target");
+    expect(next).toMatch(/no title/i);
+    // Chain-aware: with the chain off there is nothing to unset, so naming the
+    // variable here would send an operator after a flag that is already unset.
+    expect(next).toMatch(/passing hwnd to this tool returns target_not_found/);
+    expect(next).not.toMatch(/unsetting DTM_SET_VALUE_CHAIN/);
+    expect(next).toMatch(/keyboard[^.]*foreground/i);
+    const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
+    expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    // The generic catalogue, whose ambiguous_target line is the dead half, is
+    // replaced rather than appended to.
+    expect(suggests).not.toMatch(/pass hwnd to name one window exactly/);
+  });
+
+  it("still names the variable when it IS the thing standing in the way", async () => {
+    // The pairing for the sentence above: with the chain armed, unsetting it is
+    // a real (operator-level) recovery and the text has to keep saying so.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    const r = parse(await setElementValueHandler({
+      windowTitle: "", value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).toMatch(/unsetting DTM_SET_VALUE_CHAIN/);
+    expect(next).not.toMatch(/passing hwnd to this tool returns target_not_found/);
   });
 
   it("a whitespace title is NOT titleless — the enumeration keeps it, so the handle reaches it", async () => {

@@ -76,6 +76,15 @@
     (`set_element_value`, `click_element`, `keyboard`); tools that narrate by
     title alone and take no handle key — `mouse_click`, `scroll`, `focus_window`
     and the browser set — are unchanged by this release.
+  - A window with **no title** now gets its own answer from `set_element_value`,
+    on the default configuration as well as with the chain armed. Passing `hwnd`
+    does not reach it — the enumeration that resolves handles drops untitled
+    windows — so the general advice ("pass hwnd, `desktop_discover` returns it")
+    named two things that do not work, and following it returned
+    `target_not_found`, whose advice is to run `desktop_discover` again. The
+    refusal now says that, and names the one channel that does reach such a
+    window: `keyboard` with `windowTitle: "@active"`, while the window is in the
+    foreground, typing into whatever holds focus inside it.
   - `set_element_value` still stops with `ambiguous_target` while
     `DTM_SET_VALUE_CHAIN=1` is set. With that chain enabled a failed first
     attempt continues into two fallbacks that find their window by title — one of

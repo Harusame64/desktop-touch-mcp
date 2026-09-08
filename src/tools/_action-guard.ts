@@ -265,7 +265,7 @@ export const TITLELESS_FOREGROUND_WARNING =
  * `" Notepad "` still matches exactly what it matched before — deciding whether
  * a caller named something is a separate question from what they named.
  */
-function namesAWindow(title: string | undefined): boolean {
+export function namesAWindow(title: string | undefined): boolean {
   return typeof title === "string" && title.trim() !== "";
 }
 

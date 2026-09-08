@@ -45,17 +45,27 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
  */
 let popupFor: Record<string, { hwnd: bigint; title: string }> = {};
 
-const { mockPin } = vi.hoisted(() => ({ mockPin: vi.fn() }));
+const { mockPin, mockDeferredEmit } = vi.hoisted(() => ({
+  mockPin: vi.fn(),
+  /** Stands in for the ADR-035 event a real resolution would hand back. */
+  mockDeferredEmit: vi.fn(),
+}));
 
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return {
     ...actual,
-    withPinnedResolution: (<T>(p: unknown, value: unknown, fn: () => Promise<T>) => {
-      mockPin(p, value);
+    withPinnedResolution: (<T>(p: unknown, value: unknown, fn: () => Promise<T>, emitLog?: () => void) => {
+      mockPin(p, value, emitLog);
       return fn();
     }),
-    resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) => {
+    resolveWindowTarget: vi.fn(async (
+      p: { hwnd?: string; windowTitle?: string },
+      opts?: { logAs?: "off"; deferLog?: (emit: () => void) => void },
+    ) => {
+      // Production hands the event back through `deferLog` rather than writing
+      // it; modelled here so the wrapper's handling of it is observable.
+      opts?.deferLog?.(() => mockDeferredEmit());
       // Case 2 — `@active` resolves to the foreground window (first in z-order
       // here), which is what makes it a self-resolved handle rather than a
       // plain title.
@@ -111,6 +121,7 @@ beforeEach(() => {
   innerHandler.mockClear();
   enumThrows = false;
   mockPin.mockClear();
+  mockDeferredEmit.mockClear();
   popupFor = {};
   windows = [
     { hwnd: 0x1111n, title: SHARED_TITLE },
@@ -411,21 +422,106 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockPin).toHaveBeenCalledTimes(1);
   });
 
-  it("silences the ADR-035 event on the probe and not on the re-check", async () => {
-    // One dispatch, one `resolve` event. The wrapper's first resolution exists
-    // to choose what to snapshot and dispatches nothing; the re-check is the
-    // answer the handler is given. Logging both made a rich call write two
-    // identical events where a minimal call writes one — a bias correlated with
-    // a narration parameter, inside the histogram ADR-035 is using to choose a
-    // predicate. The counting half of this lives in `resolve-window.test.ts`;
-    // here it is which call site asks for which.
+  it("defers the re-check's ADR-035 event to the pin instead of writing it", async () => {
+    // Silencing the probe was half the fix. The re-check earns an event only if
+    // it becomes the resolution the handler acts on, and that is decided AFTER
+    // it runs — so it hands the event over and `withPinnedResolution` carries it
+    // to the moment the handler takes the pin.
     const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
     windows = [{ hwnd: 0x2222n, title: "Ledger" }];
     resolver.mockClear();
     await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
     expect(resolver.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // The probe is silenced outright; the re-check hands its event over.
     expect(resolver.mock.calls[0]![1]).toEqual({ logAs: "off" });
-    expect(resolver.mock.calls[1]![1]).toBeUndefined();
+    expect(typeof (resolver.mock.calls[1]![1] as { deferLog?: unknown } | undefined)?.deferLog)
+      .toBe("function");
+    // …and the event reaches `withPinnedResolution`, the only place it can be
+    // written or dropped. Nothing has written it yet.
+    expect(mockPin.mock.calls[0]![2]).toBeTypeOf("function");
+    expect(mockDeferredEmit).not.toHaveBeenCalled();
+  });
+
+  it("drops that event when the target moved — nothing was dispatched on it", async () => {
+    // The path the first version of this fix got wrong: on `target_changed` the
+    // re-check's answer is thrown away, the handler resolves for itself, and a
+    // rich call wrote one event more than a minimal one. Not pinning is what
+    // drops it.
+    windows = [
+      { hwnd: 0x2222n, title: "Untitled - Notepad" },
+      { hwnd: 0x4444n, title: "Save As" },
+    ];
+    popupFor[LIVE] = { hwnd: 0x4444n, title: "Save As" };
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    const first = resolver.getMockImplementation()!;
+    let calls = 0;
+    resolver.mockImplementation(async (p: never) => {
+      calls += 1;
+      if (calls >= 2) return { hwnd: 0x2222n, title: "Untitled - Notepad", warnings: [], className: "Notepad" } as never;
+      return first(p);
+    });
+    const r = await narrated({
+      windowTitle: "Untitled - Notepad", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    resolver.mockImplementation(first);
+    expect(richOf(r).diffDegraded).toBe("target_changed");
+    expect(mockPin).not.toHaveBeenCalled();
+  });
+
+  it("catches a flip to a window that took the same title after the count", async () => {
+    // The comment here used to call comparing titles "equivalent today", on the
+    // grounds that the ambiguity check one screen up has already withheld any
+    // shared title. It counted windows BEFORE the UIA snapshot; this flip
+    // happens after it. Measured both ways: on the handle the diff is withheld,
+    // on the title it is emitted AND the stale resolution is handed forward,
+    // forcing the action onto the window that moved.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    const first = resolver.getMockImplementation()!;
+    let calls = 0;
+    resolver.mockImplementation(async (p: never) => {
+      calls += 1;
+      return calls >= 2
+        ? { hwnd: 0x9999n, title: "Ledger", warnings: [], className: "X" } as never
+        : first(p);
+    });
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    resolver.mockImplementation(first);
+    expect(richOf(r).diffDegraded).toBe("target_changed");
+    expect(mockPin).not.toHaveBeenCalled();
+  });
+
+  it("withholds under fixId when the title is shared, with or without a handle", async () => {
+    // The gate keyed its first half on the caller's handle, which under `fixId`
+    // the handler discards — it acts on the stored fix's own title. So the diff
+    // was withheld on the strength of an inert parameter, and the case that
+    // needs it (a shared title and no handle, where the argument is all the
+    // snapshots have) got the confident diff. Both directions, one gate.
+    windows = [
+      { hwnd: 0x1111n, title: SHARED_TITLE },
+      { hwnd: 0x2222n, title: SHARED_TITLE },
+    ];
+    const withHandle = await narrated({
+      windowTitle: SHARED_TITLE, hwnd: LIVE, fixId: "fix-1", name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(withHandle).diffDegraded).toBe("ambiguous_title");
+
+    mockGetUiElements.mockClear();
+    const withoutHandle = await narrated({
+      windowTitle: SHARED_TITLE, fixId: "fix-1", name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(withoutHandle).diffDegraded).toBe("ambiguous_title");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+  });
+
+  it("still narrates a fixId call when the title names one window", async () => {
+    // The pairing: `fixId` is not itself a reason to withhold.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const r = await narrated({
+      windowTitle: "Ledger", fixId: "fix-1", name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(richOf(r).diffSource).toBe("uia");
   });
 
   it("withholds rather than falling back to the argument if a handle ever resolves to nothing", async () => {

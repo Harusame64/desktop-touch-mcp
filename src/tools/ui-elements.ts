@@ -10,7 +10,7 @@ import { failWith, failArgs, failCode } from "./_errors.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, namesAWindow } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
@@ -275,7 +275,18 @@ export const setElementValueHandler = async ({
         // above withholds the handle on purpose, so the suggested retry returns
         // to the same refusal. Naming a recovery that does not work is the exact
         // defect this PR started from — one tool over. Say what does work here.
-        if (!mayPinHandle && ag.summary.status === "ambiguous_target") {
+        // The titleless target joins this branch whatever the chain is doing.
+        // With the chain OFF — the DEFAULT — the handle IS accepted, so the
+        // generic catalogue answers "pass hwnd (desktop_discover returns it)",
+        // and both halves are dead for this caller: `enumWindowsInZOrder` drops
+        // a window on `!title`, so `desktop_discover` cannot list it and the
+        // by-handle guard comes back `target_not_found`. Measured: the caller
+        // gets "pass hwnd", passes it, gets "run desktop_discover", and the two
+        // steps close a loop. That is the shape this PR exists to remove, and it
+        // was sitting on the path nobody has to configure — the tailoring was
+        // reachable only with a flag set.
+        const titlelessTarget = effectiveTitle === "";
+        if (ag.summary.status === "ambiguous_target" && (!mayPinHandle || titlelessTarget)) {
           // Does not name this tool: it is privatised, and the naming audit
           // keeps its name out of anything the model reads. "This tool" is
           // unambiguous where this text is delivered — attached to the call
@@ -344,8 +355,8 @@ export const setElementValueHandler = async ({
           // recovery that works. It is named with its limit, because it types
           // into whatever holds focus inside the window rather than into a
           // named element.
-          // `namesAWindow` TRIMS (`_action-guard.ts`), so a whitespace-only
-          // title reaches `keyboard`'s destination check as "no window named"
+          // `namesAWindow` TRIMS, so a whitespace-only title reaches
+          // `keyboard`'s destination check as "no window named"
           // and carries the same foreground-only limit the titleless branch
           // spells out — measured both directions by the second gate
           // (`titleless_hwnd_not_foreground` when it is not in front,
@@ -354,17 +365,24 @@ export const setElementValueHandler = async ({
           // true for one and a promise the other refuses — this branch's third
           // sign-flipped mirror, moved from `""` to `"   "` by the predicate
           // fix that made `"   "` take the ordinary message.
-          const keyboardTakesHwndHere = effectiveTitle.trim() !== "";
+          //
+          // The predicate is IMPORTED rather than re-derived: this sentence is
+          // only true while it matches the one the destination check runs, and
+          // a local `.trim()` one file away from the rule it mirrors is how the
+          // last two mirrors got in.
+          const keyboardTakesHwndHere = namesAWindow(effectiveTitle);
           const handleRecovery = keyboardTakesHwndHere
             ? "click_element and keyboard take hwnd here. "
             : "click_element takes hwnd here. keyboard reaches this window by " +
               "handle only while it is in the foreground (windowTitle:\"@active\"), " +
               "because its destination check trims the title and a blank one " +
               "names no window. ";
-          ag.summary.next = effectiveTitle === ""
+          ag.summary.next = titlelessTarget
             ? "This window has no title, so it cannot be addressed by title, and the " +
-              "enumeration that resolves handles drops untitled windows — unsetting " +
-              "DTM_SET_VALUE_CHAIN returns target_not_found rather than reaching it, " +
+              "enumeration that resolves handles drops untitled windows — " +
+              (chainEnabled
+                ? "unsetting DTM_SET_VALUE_CHAIN returns target_not_found rather than reaching it, "
+                : "passing hwnd to this tool returns target_not_found rather than reaching it, ") +
               "and click_element resolves the same way. keyboard does reach it while " +
               "it stays in the foreground (windowTitle:\"@active\"), typing into " +
               "whatever holds focus inside it, which is not the same as writing to a " +
@@ -399,8 +417,8 @@ export const setElementValueHandler = async ({
               // (`enumWindowsInZOrder` skips `!title`) and two channels of
               // which one cannot reach it — the catalogue's contradiction one
               // level down, inside the list written to replace it.
-              effectiveTitle === ""
-                ? "desktop_discover cannot list this window — the enumeration drops untitled ones. keyboard reaches it while it is in the foreground; nothing addresses it by handle."
+              titlelessTarget
+                ? "desktop_discover cannot list this window — the enumeration drops untitled ones. keyboard does accept its hwnd, but only while this window is in the foreground; click_element resolves handles through that same enumeration and cannot reach it."
                 : keyboardTakesHwndHere
                   ? "desktop_discover returns each open window's hwnd; click_element and keyboard accept it on this window."
                   : "desktop_discover returns each open window's hwnd; click_element accepts it on this window, and keyboard only while this window is in the foreground.",

@@ -230,6 +230,71 @@ describe("resolveWindowTarget — logAs:\"off\" (ADR-035 event count)", () => {
     expect(mockLogResolve).not.toHaveBeenCalled();
   });
 
+  it("deferLog hands the event to the caller instead of writing it", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 100n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 200n, title: "名前を付けて保存",    className: "#32770",  ownerHwnd: 100n, isMinimized: false },
+    ]);
+    let held: (() => void) | undefined;
+    const r = await resolveWindowTarget({ windowTitle: "名前を付けて保存" }, {
+      deferLog: (emit) => { held = emit; },
+    });
+    expect(r!.hwnd).toBe(200n);
+    expect(mockLogResolve).not.toHaveBeenCalled();
+    held!();
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+    expect(mockLogResolve.mock.calls[0][0]).toMatchObject({ resolver: "resolveWindowTargetDialog" });
+  });
+
+  it("a deferred event is written when the pin is taken and dropped when it is not", async () => {
+    // Silencing the probe alone left a residue: on the Case 4 dialog rescue a
+    // rich call still wrote one event more than a minimal one whenever the
+    // desktop moved under the re-check (`target_changed`) or the handler bailed
+    // before resolving (the IME fast-fail) — a resolution nothing dispatched on.
+    // The event now travels with the pin and is written only where it acquires
+    // a dispatch.
+    const pinned = { title: "Ledger", hwnd: 0x2222n, warnings: [], className: "X" };
+
+    const taken = vi.fn();
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger" }), taken);
+    expect(taken).toHaveBeenCalledTimes(1);
+
+    const untaken = vi.fn();
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () => "handler bailed", untaken);
+    expect(untaken).not.toHaveBeenCalled();
+
+    // Single use on the event as well as on the answer: a handler that resolves
+    // twice must not double-count the one resolution it was handed.
+    const once = vi.fn();
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () => {
+      await resolveWindowTarget({ windowTitle: "Ledger" });
+      await resolveWindowTarget({ windowTitle: "Ledger" });
+    }, once);
+    expect(once).toHaveBeenCalledTimes(1);
+  });
+
+  it("the wrapper's key matches the shape a handler actually asks with", async () => {
+    // Load-bearing and, until this, untested: the wrapper builds `resolveArgs`
+    // by OMITTING absent keys, and the handlers pass their optional params
+    // through PRESENT-BUT-UNDEFINED. `resolutionKey` coalesces, so the two
+    // agree — but that agreement holds last round's whole handoff up and rests
+    // on four call sites staying in step.
+    const pinned = { title: "Ledger", hwnd: 0x2222n, warnings: [], className: "X" };
+
+    expect(await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ hwnd: undefined, windowTitle: "Ledger" }))).toBe(pinned);
+
+    expect(await withPinnedResolution({ hwnd: "8738", windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ hwnd: "8738", windowTitle: "Ledger" }))).toBe(pinned);
+
+    // And a different question does not take it. `@active` is the reason the
+    // key is not enough on its own, but it is still the first line.
+    mockEnumWindowsInZOrder.mockReturnValue([]);
+    expect(await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger II" }))).toBeNull();
+  });
+
   it("consuming a handed-forward resolution adds no event of its own", async () => {
     // The handler's `resolveWindowTarget` takes the pin and returns before any
     // resolver runs, so the event belongs to the wrapper's re-check that put it
