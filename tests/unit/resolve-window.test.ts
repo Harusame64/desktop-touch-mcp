@@ -49,7 +49,7 @@ vi.mock("../../src/engine/win32.js", () => ({
 }));
 
 // tool-exclusion.js is NOT mocked — WindowExcludedError is the real class refuseIfExcludedTarget throws.
-import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
+import { resolveWindowTarget, pinResolutionForNextCall, clearPinnedResolution } from "../../src/tools/_resolve-window.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -269,6 +269,42 @@ describe("resolveWindowTarget — disabled-owner popup prefer (H3 case 5)", () =
 });
 
 // ─── R3 tool-exclusion refusal (Cases 1/2 bypass the enumerator) ─────────────
+
+describe("ADR-036 — a resolution handed forward to the handler", () => {
+  // `withRichNarration` resolves before the action so it knows what to snapshot,
+  // and the handler resolves again afterwards. Between the two the desktop can
+  // move — and `_post` takes a whole focus enumeration in there. The answer
+  // travels beside the args, because putting the handle INTO the args would
+  // make the handler believe the caller named one, which decides the guard
+  // descriptor, the pinning rules and the wording of the refusal.
+
+  it("is consumed by a matching call, once, without touching the desktop", async () => {
+    const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
+    pinResolutionForNextCall({ hwnd: "1", windowTitle: "whatever" }, pinned as never);
+    await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
+    // Second ask goes to the real resolver — the pin is single use, so a later
+    // call cannot inherit an answer about a moment that has passed. (`hwnd: 1`
+    // is not a window in this file's fixture, so the real path refuses, which is
+    // exactly the evidence that the pin was not reused.)
+    await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
+  });
+
+  it("is not eaten by a call asking a different question", async () => {
+    const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
+    pinResolutionForNextCall({ hwnd: "1", windowTitle: "whatever" }, pinned as never);
+    await expect(resolveWindowTarget({ hwnd: "2", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
+    // …and is still there for the call it was meant for.
+    await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
+    clearPinnedResolution();
+  });
+
+  it("does not outlive the call that set it", async () => {
+    const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
+    pinResolutionForNextCall({ hwnd: "1" }, pinned as never);
+    clearPinnedResolution();
+    await expect(resolveWindowTarget({ hwnd: "1" })).rejects.toThrow(/WindowNotFound/);
+  });
+});
 
 describe("resolveWindowTarget — R3 key-locker exclusion", () => {
   it("refuses an explicit hwnd that resolves to an excluded window (Case 1)", async () => {

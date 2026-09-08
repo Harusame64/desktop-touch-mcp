@@ -282,10 +282,55 @@ function getDockTitleLiteral(): string | undefined {
  * Returns `null` when neither special case applies (plain windowTitle → no-op).
  * Throws `WindowNotFound` when explicit hwnd is invalid or foreground cannot be determined.
  */
+/**
+ * ADR-036 — a resolution handed forward, once, to the next caller that asks the
+ * same question.
+ *
+ * `withRichNarration` has to resolve the target before the action, to know which
+ * window to snapshot. The handler then resolves again, and between the two the
+ * desktop can move — a modal closing, the foreground changing — which puts the
+ * snapshots on one window and the write on another. That gap is not a hair: the
+ * post-state wrapper takes a full focus enumeration in between (`_post.ts`).
+ *
+ * The obvious fix — put the resolved handle into the handler's `args` — is not
+ * available, because a handler that sees `hwnd` believes the CALLER named one,
+ * and that belief decides the guard descriptor, the pinning rules and the
+ * wording of the refusal. So the resolution travels beside the args instead:
+ * set before the handler runs, consumed by the first matching resolution, and
+ * cleared by the setter whatever happens.
+ *
+ * Single use and key-matched on purpose. A concurrent call asking a DIFFERENT
+ * question cannot eat it, and one asking the same question would have received
+ * the same answer.
+ */
+let pinnedResolution: { key: string; value: ResolvedWindow } | null = null;
+
+function resolutionKey(p: { hwnd?: string; windowTitle?: string }): string {
+  return `${p.hwnd ?? ""}\u0000${p.windowTitle ?? ""}`;
+}
+
+/** Hand the next matching `resolveWindowTarget` this answer. Clears any previous pin. */
+export function pinResolutionForNextCall(
+  p: { hwnd?: string; windowTitle?: string },
+  value: ResolvedWindow
+): void {
+  pinnedResolution = { key: resolutionKey(p), value };
+}
+
+/** Drop an unconsumed pin. Always call this in a `finally`. */
+export function clearPinnedResolution(): void {
+  pinnedResolution = null;
+}
+
 export async function resolveWindowTarget(params: {
   hwnd?: string;
   windowTitle?: string;
 }): Promise<ResolvedWindow | null> {
+  if (pinnedResolution && pinnedResolution.key === resolutionKey(params)) {
+    const pinned = pinnedResolution.value;
+    pinnedResolution = null;
+    return pinned;
+  }
   const warnings: string[] = [];
 
   // ── Case 1: explicit hwnd ─────────────────────────────────────────────────

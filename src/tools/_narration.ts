@@ -19,7 +19,7 @@
  */
 
 import { withPostState } from "./_post.js";
-import { resolveWindowTarget } from "./_resolve-window.js";
+import { resolveWindowTarget, pinResolutionForNextCall, clearPinnedResolution } from "./_resolve-window.js";
 import { getUiElements } from "../engine/uia-bridge.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { computeUiaDiff, degradedRichBlock } from "../engine/uia-diff.js";
@@ -349,11 +349,11 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // resolved handle into `args` would make the handler believe the caller
     // named one, and that belief decides the guard descriptor, the pinning
     // rules and the text of the refusal. So the resolution is re-checked
-    // instead — after the UIA snapshot, which is the slow part and therefore
-    // the whole of the window in practice — and the diff is withheld when it
-    // moved. What is left is the gap between this check and the handler's own
-    // call, which cannot be closed from out here; it is microseconds of
-    // bookkeeping rather than a UIA round trip.
+    // instead — after the UIA snapshot, which is the slow part — and the diff is
+    // withheld when it moved. The remaining gap is NOT small (`_post.ts` takes a
+    // full focus enumeration before the handler runs), so the checked resolution
+    // is handed forward to the handler rather than left to be redone: see
+    // `pinResolutionForNextCall`.
     if (pinnedHwnd !== undefined) {
       let again;
       try {
@@ -369,12 +369,23 @@ export function withRichNarration<T extends Record<string, unknown>>(
       // window is, and this line should not depend on that one staying put.
       if (!again || again.hwnd !== pinnedHwnd) {
         const moved = await wrappedWithPost(args);
-        spliceRich(moved, degradedRichBlock("window_closed"));
+        spliceRich(moved, degradedRichBlock("target_changed"));
         return moved;
       }
+      // Still the same window. Hand that answer forward so the handler acts on
+      // the window these snapshots describe, instead of resolving a third time
+      // across the focus enumeration the post-state wrapper takes in between.
+      pinResolutionForNextCall(resolveArgs, again);
     }
 
-    const result = await wrappedWithPost(args);
+    let result;
+    try {
+      result = await wrappedWithPost(args);
+    } finally {
+      // Whatever happened — the handler never resolved, it threw, it took the
+      // `fixId` path — the pin does not outlive this call.
+      clearPinnedResolution();
+    }
 
     if (!snapBefore) {
       spliceRich(result, degradedRichBlock("timeout"));

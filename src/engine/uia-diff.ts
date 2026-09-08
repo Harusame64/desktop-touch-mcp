@@ -41,7 +41,14 @@ export type DiffDegraded =
    * carries its title, so the before/after snapshots (which find their window
    * BY TITLE) cannot be shown to describe the window that was acted on.
    */
-  | "ambiguous_title";
+  | "ambiguous_title"
+  /**
+   * ADR-036 — the target moved between the pre-action snapshot and the action:
+   * a modal closed, or the foreground changed. NOT `window_closed`, which says
+   * the window the caller named is gone — a caller reading that would give up
+   * on a window that is still there and merely needs reacquiring.
+   */
+  | "target_changed";
 
 export interface UiaDiffResult {
   appeared: AppearedItem[];

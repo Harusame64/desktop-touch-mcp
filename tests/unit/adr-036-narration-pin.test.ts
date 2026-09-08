@@ -45,10 +45,17 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
  */
 let popupFor: Record<string, { hwnd: bigint; title: string }> = {};
 
+const { mockPin, mockClearPin } = vi.hoisted(() => ({
+  mockPin: vi.fn(),
+  mockClearPin: vi.fn(),
+}));
+
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return {
     ...actual,
+    pinResolutionForNextCall: (...a: unknown[]) => mockPin(...(a as [])),
+    clearPinnedResolution: (...a: unknown[]) => mockClearPin(...(a as [])),
     resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) => {
       if (p.hwnd === undefined) return null;
       const popup = popupFor[p.hwnd];
@@ -96,6 +103,8 @@ beforeEach(() => {
   mockGetUiElements.mockClear();
   innerHandler.mockClear();
   enumThrows = false;
+  mockPin.mockClear();
+  mockClearPin.mockClear();
   popupFor = {};
   windows = [
     { hwnd: 0x1111n, title: SHARED_TITLE },
@@ -268,9 +277,52 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
       windowTitle: "Untitled - Notepad", hwnd: LIVE, name: "OK", narrate: "rich",
     } as never);
     resolver.mockImplementation(first);
-    expect(richOf(r).diffDegraded).toBe("window_closed");
+    expect(richOf(r).diffDegraded).toBe("target_changed");
+    // Not `window_closed`: neither window closed, and a caller reading that
+    // would give up on a window that is still there.
+    expect(richOf(r).diffDegraded).not.toBe("window_closed");
     // The action still ran: this withholds a report, not a write.
     expect(innerHandler).toHaveBeenCalled();
+  });
+
+  it("catches a same-titled flip under @active, where the ambiguity gate does not run", async () => {
+    // The gate above only fires when the caller supplied `hwnd`. `@active`
+    // resolves to a window and pins it without passing that gate, so a
+    // foreground change between two windows SHARING a title reaches the
+    // comparison below — and a comparison on titles would see nothing.
+    windows = [
+      { hwnd: 0x1111n, title: "PKDRIFT" },
+      { hwnd: 0x2222n, title: "PKDRIFT" },
+    ];
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    const first = resolver.getMockImplementation()!;
+    let calls = 0;
+    resolver.mockImplementation(async (p: never) => {
+      calls += 1;
+      // The foreground moves to the sibling between the snapshot and the action.
+      return { hwnd: calls >= 2 ? 0x1111n : 0x2222n, title: "PKDRIFT", warnings: [], className: "X" } as never;
+    });
+    const r = await narrated({ windowTitle: "@active", name: "OK", narrate: "rich" } as never);
+    resolver.mockImplementation(first);
+    expect(richOf(r).diffDegraded).toBe("target_changed");
+  });
+
+  it("hands the checked resolution to the handler instead of leaving it to resolve again", async () => {
+    // Between this wrapper's resolution and the handler's, `_post` takes a full
+    // focus enumeration — so "they will agree, it is only microseconds" was not
+    // true. The answer travels beside the args, and is dropped afterwards
+    // whatever happened, so it cannot be inherited by a later call.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(mockPin).toHaveBeenCalledTimes(1);
+    expect(mockPin.mock.calls[0]![1]).toMatchObject({ hwnd: 0x2222n, title: "Ledger" });
+    expect(mockClearPin).toHaveBeenCalled();
+  });
+
+  it("drops the handed-forward resolution even when the diff is withheld", async () => {
+    windows = [{ hwnd: 0x1111n, title: "Notes" }];
+    await narrated({ windowTitle: "Notes", hwnd: "not-a-number", name: "OK", narrate: "rich" } as never);
+    expect(mockPin).not.toHaveBeenCalled();
   });
 
   it("says in the shipped description that the diff can be withheld", () => {
