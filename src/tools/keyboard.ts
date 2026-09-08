@@ -1287,12 +1287,20 @@ export async function evaluateKeyboardGuards(opts: {
   effectiveWindowTitle: string | undefined;
   foregroundVerified: boolean;
   warnings: string[];
+  /**
+   * ADR-036 I-1 — the handle the caller named, when they named one. Every
+   * `method` other than the default foreground one builds its guard descriptor
+   * HERE rather than inline in the handler, so a passthrough that stopped at
+   * the inline sites would have left `background` and `foreground_flash`
+   * refusing exactly the calls `hwnd` exists to rescue.
+   */
+  explicitHwnd?: bigint;
 }): Promise<
   | { ok: true; perceptionEnv?: import("../engine/perception/types.js").PostPerception }
   | { ok: false; errorResult: ToolResult }
 > {
   const {
-    toolName, lensId, skipAutoGuard, effectiveWindowTitle, foregroundVerified, warnings,
+    toolName, lensId, skipAutoGuard, effectiveWindowTitle, foregroundVerified, warnings, explicitHwnd,
   } = opts;
 
   if (lensId) {
@@ -1321,7 +1329,11 @@ export async function evaluateKeyboardGuards(opts: {
 
   if (!skipAutoGuard && isAutoGuardEnabled()) {
     const descriptor = effectiveWindowTitle
-      ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
+      ? {
+          kind: "window" as const,
+          titleIncludes: effectiveWindowTitle,
+          ...(explicitHwnd !== undefined && { hwnd: explicitHwnd }),
+        }
       : null;
     const ag = await runActionGuard({
       toolName, actionKind: "keyboard", descriptor,
@@ -1349,11 +1361,29 @@ export async function evaluateKeyboardGuards(opts: {
 export function resolveEffectiveInputMethod(
   inputMethod: "auto" | "background" | "foreground" | "foreground_flash",
   effectiveWindowTitle: string | undefined,
+  /**
+   * ADR-036 I-4 — the pinned handle, when the caller named one. The class this
+   * function reads decides whether the write is routed through the background
+   * channel at all, and reading it off the first same-titled window meant a
+   * handle-pinned call could be routed by a SIBLING's window class.
+   */
+  explicitHwnd?: bigint,
 ): "auto" | "background" | "foreground" | "foreground_flash" | "background-auto" {
   // 'foreground_flash' は明示 opt-in、auto-resolve せずそのまま返す。
   if (inputMethod === "foreground_flash") return inputMethod;
   if (inputMethod !== "auto") return inputMethod;
   if (isBgAutoEnabled()) return "background-auto";
+  if (explicitHwnd !== undefined) {
+    try {
+      const cls = getWindowClassName(explicitHwnd);
+      if (cls && TERMINAL_WINDOW_CLASSES.has(cls)) {
+        return "background-auto";
+      }
+    } catch {
+      // best-effort — fall through to "auto" so downstream still works
+    }
+    return inputMethod;
+  }
   if (effectiveWindowTitle) {
     try {
       const wins = enumWindowsInZOrder();
@@ -1479,6 +1509,20 @@ export const keyboardTypeHandler = async ({
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
+    // ADR-036 — the one handle this call is pinned to: focus matches it, the
+    // background path delivers to it, and the guard resolves it.
+    //
+    // The test is on the PUBLIC `hwnd` argument, not on `resolvedWin` being
+    // non-null: a plain `windowTitle` that only matches a common dialog also
+    // resolves (`_resolve-window.ts` Case 4), and pinning the handle a title
+    // search happened to land on would make the guard's multi-match count
+    // vacuous — it would see one candidate every time, for every caller.
+    //
+    // The pinned handle can differ from the argument: when the named window is
+    // blocked by its own modal, the resolver hands back the active popup. That
+    // is the handle the keys will reach, so that is the one to pin.
+    const explicitHwnd = (hwnd !== undefined && resolvedWin) ? resolvedWin.hwnd : undefined;
+
     const resolvedDestination = toResolvedDestination(resolvedWin);
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
@@ -1536,14 +1580,20 @@ export const keyboardTypeHandler = async ({
         );
       }
       const wins = enumWindowsInZOrder();
-      const ffMatches = wins.filter((w) =>
-        w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())
-      );
+      // ADR-036 I-4 — the flash path steals the foreground for one handle and
+      // pastes into it, so this is a delivery decision, not a lookup. With a
+      // pinned handle it is made on the handle.
+      const ffMatches = explicitHwnd !== undefined
+        ? wins.filter((w) => String(w.hwnd) === String(explicitHwnd))
+        : wins.filter((w) =>
+            w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())
+          );
       const target = ffMatches[0];
       logResolve({
         resolver: "keyboardForegroundFlash",
         query: effectiveWindowTitle!,
         matches: ffMatches,
+        ...(explicitHwnd !== undefined && { pinnedByHwnd: true }),
         identity: "lookup",
         intent: "write",
       });
@@ -1569,6 +1619,7 @@ export const keyboardTypeHandler = async ({
         effectiveWindowTitle,
         foregroundVerified: false,
         warnings,
+        ...(explicitHwnd !== undefined && { explicitHwnd }),
       });
       if (!ffGuard.ok) return ffGuard.errorResult;
       const ffPerception = ffGuard.perceptionEnv;
@@ -1711,16 +1762,23 @@ export const keyboardTypeHandler = async ({
     // ── Background input path ──────────────────────────────────────────────
     // Resolve effective method: "auto" + (DTM_BG_AUTO=1 OR target is a known
     // terminal class) → try BG first. See resolveEffectiveInputMethod.
-    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
+    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle, explicitHwnd);
 
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
-      const bgMatches = wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      // ADR-036 I-4 — the background channel posts WM_CHAR to a handle, and
+      // this is where that handle is chosen. Picking the first same-titled
+      // window in z-order is what made `hwnd` steer focus and the guard and
+      // then lose the delivery itself: the keys went to the sibling.
+      const bgMatches = explicitHwnd !== undefined
+        ? wins.filter(w => String(w.hwnd) === String(explicitHwnd))
+        : wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
       const target = bgMatches[0];
       logResolve({
         resolver: "keyboardBackgroundType",
         query: effectiveWindowTitle!,
         matches: bgMatches,
+        ...(explicitHwnd !== undefined && { pinnedByHwnd: true }),
         identity: "lookup",
         intent: "write",
       });
@@ -1743,6 +1801,7 @@ export const keyboardTypeHandler = async ({
             effectiveWindowTitle,
             foregroundVerified: true,
             warnings,
+            ...(explicitHwnd !== undefined && { explicitHwnd }),
           });
           if (!bgGuard.ok) return bgGuard.errorResult;
           const bgPerception = bgGuard.perceptionEnv;
@@ -2159,7 +2218,11 @@ export const keyboardTypeHandler = async ({
 
     // Step 1: Focus first (guard needs foreground state to be correct).
     if (effectiveWindowTitle) {
-      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force);
+      // ADR-036 I-3: focus matches on the pinned handle when there is one.
+      // Without it this step brought a same-titled SIBLING to the front, and
+      // the keys landed there no matter how carefully the guard then verified
+      // the window the caller actually named.
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwnd);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
@@ -2218,7 +2281,11 @@ export const keyboardTypeHandler = async ({
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:type" }) ?? undefined;
     } else if (!_skipAutoGuard && isAutoGuardEnabled()) {
       const descriptor = effectiveWindowTitle
-        ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
+        ? {
+            kind: "window" as const,
+            titleIncludes: effectiveWindowTitle,
+            ...(explicitHwnd !== undefined && { hwnd: explicitHwnd }),
+          }
         : null;
       const ag = await runActionGuard({
         toolName: "keyboard:type", actionKind: "keyboard", descriptor,
@@ -2466,6 +2533,10 @@ export const keyboardPressHandler = async ({
     const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
     const effectiveWindowTitle = resolvedWin?.title ?? windowTitle;
 
+    // ADR-036 — the pinned handle. See the derivation in keyboard:type for why
+    // this reads the public `hwnd` argument rather than `resolvedWin` alone.
+    const explicitHwnd = (hwnd !== undefined && resolvedWin) ? resolvedWin.hwnd : undefined;
+
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
@@ -2482,15 +2553,19 @@ export const keyboardPressHandler = async ({
     if (!destCheck.ok) return destCheck.errorResult;
 
     // ── Background input path ──────────────────────────────────────────────
-    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
+    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle, explicitHwnd);
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
-      const bgPressMatches = wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      // ADR-036 I-4 — same handle pin as keyboard:type's background path.
+      const bgPressMatches = explicitHwnd !== undefined
+        ? wins.filter(w => String(w.hwnd) === String(explicitHwnd))
+        : wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
       const target = bgPressMatches[0];
       logResolve({
         resolver: "keyboardBackgroundPress",
         query: effectiveWindowTitle!,
         matches: bgPressMatches,
+        ...(explicitHwnd !== undefined && { pinnedByHwnd: true }),
         identity: "lookup",
         intent: "write",
       });
@@ -2508,6 +2583,7 @@ export const keyboardPressHandler = async ({
           effectiveWindowTitle,
           foregroundVerified: true,
           warnings,
+          ...(explicitHwnd !== undefined && { explicitHwnd }),
         });
         if (!bgGuard.ok) return bgGuard.errorResult;
         const bgPerception = bgGuard.perceptionEnv;
@@ -2689,7 +2765,8 @@ export const keyboardPressHandler = async ({
 
     // Step 1: Focus first (guard needs foreground state to be correct).
     if (effectiveWindowTitle) {
-      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force);
+      // ADR-036 I-3 — same handle pin as keyboard:type above.
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwnd);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
@@ -2739,7 +2816,11 @@ export const keyboardPressHandler = async ({
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:press" }) ?? undefined;
     } else if (isAutoGuardEnabled()) {
       const descriptor = effectiveWindowTitle
-        ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
+        ? {
+            kind: "window" as const,
+            titleIncludes: effectiveWindowTitle,
+            ...(explicitHwnd !== undefined && { hwnd: explicitHwnd }),
+          }
         : null;
       const ag = await runActionGuard({
         toolName: "keyboard:press", actionKind: "keyboard", descriptor,
@@ -2858,6 +2939,13 @@ export const keyboardSequenceHandler = async ({
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
+    // ADR-036 — the pinned handle, hoisted out of the focus block below so the
+    // guard descriptor can read it too. Codex PR #270 P2 introduced this
+    // derivation for focus only; the guard then re-resolved by title and
+    // refused the very calls the focus pin had just aimed correctly.
+    // See keyboard:type for why the test is on the public `hwnd` argument.
+    const explicitHwnd = (hwnd !== undefined && resolvedWin) ? resolvedWin.hwnd : undefined;
+
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
@@ -2882,10 +2970,7 @@ export const keyboardSequenceHandler = async ({
       // resolveWindowTarget already pinned it. Pass that hwnd through so
       // focusWindowForKeyboard matches by handle instead of title substring
       // (duplicate-title siblings can no longer win the focus race).
-      const explicitHwndForFocus = (hwnd !== undefined && resolvedWin)
-        ? resolvedWin.hwnd
-        : undefined;
-      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwndForFocus);
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwnd);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
@@ -2951,7 +3036,11 @@ export const keyboardSequenceHandler = async ({
         perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" }) ?? undefined;
       } else if (isAutoGuardEnabled()) {
         const descriptor = effectiveWindowTitle
-          ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
+          ? {
+              kind: "window" as const,
+              titleIncludes: effectiveWindowTitle,
+              ...(explicitHwnd !== undefined && { hwnd: explicitHwnd }),
+            }
           : null;
         const ag = await runActionGuard({
           toolName: "keyboard:sequence", actionKind: "keyboard", descriptor,

@@ -45,7 +45,26 @@ export type ActionKind =
   | "browserCdp";
 
 export type ActionTargetDescriptor =
-  | { kind: "window"; titleIncludes: string }
+  | {
+      kind: "window";
+      titleIncludes: string;
+      /**
+       * ADR-036 I-1 — the handle the CALLER named, carried through to the guard
+       * so the guard resolves the same window the dispatch is already pinned to.
+       *
+       * Set ONLY when the public `hwnd` argument was passed. Pinning the handle
+       * a title lookup happened to settle on would make the multi-match count
+       * below vacuous: every resolution would come back with exactly one
+       * candidate and `ambiguous_target` could never fire again.
+       *
+       * `titleIncludes` stays REQUIRED (OQ-36-1 = beta). A window with no title
+       * is not addressable here — ADR-038 refuses it upstream unless it is
+       * already the foreground, and that case is deliberately left unguarded
+       * rather than routed through a `titleIncludes: ""` descriptor, which
+       * `String.includes` would match against every window on the desktop.
+       */
+      hwnd?: bigint;
+    }
   | {
       kind: "browserTab";
       tabId?: string;
@@ -162,6 +181,22 @@ export function normalizeTitle(raw: string): string {
  */
 export function deriveTargetKey(descriptor: ActionTargetDescriptor): string | null {
   if (descriptor.kind === "window") {
+    // ADR-036 I-2 — a handle-pinned destination gets its OWN slot. Two windows
+    // that share a title are one key under the title rule, so switching between
+    // them by handle made the second one look like the first one's identity had
+    // changed: the hot-cache slot still held the sibling's identity, and the
+    // timeline recorded both windows as one target.
+    //
+    // The separator is `#`, not `:`, because the title rule's output is
+    // `window:` + a title and a window CAN be called `hwnd:12345`. `window#`
+    // is unreachable from the title rule, so the two key spaces cannot meet.
+    //
+    // Addressing the same window by title on one call and by handle on the next
+    // splits its state into two slots and rebuilds the identity baseline. That
+    // is deliberate: a split slot re-verifies, a shared one misreports. Callers
+    // that need drift detection to stay continuous should address a window the
+    // same way every time.
+    if (descriptor.hwnd !== undefined) return `window#hwnd:${descriptor.hwnd}`;
     return `window:${normalizeTitle(descriptor.titleIncludes)}`;
   }
   if (descriptor.kind === "browserTab") {
@@ -293,7 +328,15 @@ export async function resolveActionTarget(
   const { actionKind } = options;
 
   if (descriptor.kind === "window") {
-    return resolveWindowTarget(descriptor.titleIncludes, actionKind);
+    // ADR-036 I-1 — a descriptor that names a handle is resolved BY that
+    // handle. The title branch below counts every window whose title contains
+    // the needle and refuses a keyboard write when there is more than one; a
+    // caller who already said which handle they mean has answered that
+    // question, and counting again is what made `hwnd` unable to recover from
+    // the very refusal that tells callers to pass it.
+    return descriptor.hwnd !== undefined
+      ? resolveWindowTargetByHwnd(descriptor, descriptor.hwnd, actionKind)
+      : resolveWindowTarget(descriptor.titleIncludes, actionKind);
   }
 
   if (descriptor.kind === "coordinate") {
@@ -367,6 +410,66 @@ async function resolveWindowTarget(
 
   const result = buildWindowLensResult(best.hwnd, best.title, normalized, actionKind, candidates.length, warnings);
   applyHotCacheWindow({ kind: "window", titleIncludes: titleIncludes }, result);
+  return result;
+}
+
+/**
+ * ADR-036 I-1 — resolve a window descriptor that carries an explicit handle.
+ *
+ * The handle is looked up in the SAME enumeration the title branch filters, on
+ * purpose. `refreshWin32Fluents` answers `target.exists` / `target.identity`
+ * from that enumeration too, so a handle it does not list cannot be guarded
+ * whatever this function says about it: resolving such a handle here would only
+ * move the refusal from `target_not_found` to a failed identity guard one step
+ * later. Same source, same answer, one refusal.
+ *
+ * Consequences worth naming, because they are the enumerator's rules and not
+ * this function's: a child-control handle is never listed (the enumeration is
+ * top-level only), and neither is a Key Locker window — so both resolve to
+ * "not found" rather than being guarded, which is the safe side of each.
+ *
+ * `candidates` is 1 or 0 and never more, which is the whole point: the caller
+ * named one window, so the multi-match refusal in `runActionGuard` has nothing
+ * to count. Everything downstream of resolution — identity drift, modal,
+ * coordinate checks — still runs against the window that was named.
+ */
+async function resolveWindowTargetByHwnd(
+  descriptor: Extract<ActionTargetDescriptor, { kind: "window" }>,
+  hwnd: bigint,
+  actionKind: ActionKind
+): Promise<ResolveActionTargetResult> {
+  const warnings: string[] = [];
+
+  // Compared as strings for the reason `refreshWin32Fluents` gives for doing
+  // the same: the enumerator's hwnd field has been a JS number in one binding
+  // and a BigInt in another, and `===` between those is silently false.
+  const key = String(hwnd);
+  const target = enumWindowsInZOrder().find((w) => String(w.hwnd) === key);
+
+  // ADR-035 observation: the query recorded is the title the caller carried,
+  // but the match was decided on the handle — `pinnedByHwnd` is what keeps a
+  // reader from reading `matchCount: 1` here as "the title was unambiguous".
+  logResolve({
+    resolver: "actionTarget",
+    query: descriptor.titleIncludes,
+    matches: target ? [target] : [],
+    chosen: target ?? null,
+    pinnedByHwnd: true,
+  });
+
+  if (!target) {
+    return { lens: null, localStore: null, identity: null, candidates: 0, warnings };
+  }
+
+  const result = buildWindowLensResult(
+    String(target.hwnd),
+    target.title,
+    normalizeTitle(descriptor.titleIncludes),
+    actionKind,
+    1,
+    warnings
+  );
+  applyHotCacheWindow(descriptor, result);
   return result;
 }
 

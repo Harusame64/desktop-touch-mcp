@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+- **Passing `hwnd` now really reaches that window when several share a title.**
+  When two open windows have matching titles, the safety guard stops a keyboard
+  or UI-element write with `ambiguous_target` and tells you to name the window
+  by its handle instead. Passing `hwnd` did not lift that refusal. The handle
+  was resolved and then dropped, and every layer after it went back to matching
+  on the title — so the guard counted the same two windows again and refused the
+  recovery call too. The case that surfaced this was an ordinary one: a
+  minimised browser window whose page title happened to contain a project name
+  made every `keyboard` write to that project's own window impossible to
+  complete, with no way out from the tool arguments.
+
+  Four separate layers were losing the handle, and all four now keep it. The
+  safety guard resolves the window by handle instead of counting title matches.
+  The focus step brings that exact window to the front instead of the first
+  same-titled one. `method: "background"` and `method: "foreground_flash"` send
+  their keystrokes to that window rather than to the frontmost title match. And
+  `method: "auto"` reads the window class off that window when it decides
+  whether the background channel applies at all. `click_element` and
+  `set_element_value` were refused by the same guard and are fixed with it —
+  their actual UI calls already went through the handle.
+
+  Nothing else about the guard changes. A handle that no longer names a visible
+  top-level window still stops with `target_not_found` rather than falling back
+  to a title match, and the rest of the checks — the window having been replaced
+  by a new process, a modal dialog on top, click coordinates — still run,
+  against the window you named. Calls that pass only `windowTitle` behave
+  exactly as before, `ambiguous_target` included: naming a handle is what turns
+  that refusal off, and only for the call that names one.
+
+  One consequence worth knowing: a window addressed by handle now keeps its own
+  drift-detection state, so alternating between two same-titled windows by
+  handle no longer reports the second one as the first one having been replaced.
+  Addressing one window by `windowTitle` on one call and by `hwnd` on the next
+  tracks it under two separate states — harmless, but drift detection restarts
+  each time you switch. Pick one form per window if that matters to you.
+
 - **The diagnostic log no longer grows without limit.** `~/.desktop-touch-mcp/logs/diagnostic.log`
   is append-only and had no ceiling of any kind — no size cap, no rotation, no
   age cutoff. On one long-running install it had reached **18.5 GB across 34.8

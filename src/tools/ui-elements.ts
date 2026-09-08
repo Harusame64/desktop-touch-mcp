@@ -134,7 +134,14 @@ export const clickElementHandler = async ({
     } else if (isAutoGuardEnabled()) {
       const ag = await runActionGuard({
         toolName: "click_element", actionKind: "uiaInvoke",
-        descriptor: { kind: "window", titleIncludes: effectiveWindowTitle },
+        descriptor: {
+          kind: "window",
+          titleIncludes: effectiveWindowTitle,
+          // ADR-036 I-1 — the UIA write already routes through the resolved
+          // handle (`FromHandle` below); without this the guard was the one
+          // layer still counting same-titled windows and refusing the call.
+          ...(hwndParam !== undefined && resolvedWin && { hwnd: resolvedWin.hwnd }),
+        },
         fixCarryingArgs: { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId, controlType },
       });
       if (ag.block) {
@@ -194,7 +201,12 @@ export const setElementValueHandler = async ({
     } else if (isAutoGuardEnabled()) {
       const ag = await runActionGuard({
         toolName: "set_element_value", actionKind: "uiaSetValue",
-        descriptor: { kind: "window", titleIncludes: effectiveTitle },
+        descriptor: {
+          kind: "window",
+          titleIncludes: effectiveTitle,
+          // ADR-036 I-1 — see click_element above.
+          ...(hwndParam !== undefined && resolvedWin && { hwnd: resolvedWin.hwnd }),
+        },
       });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "set_element_value", { _perceptionForPost: ag.summary });
