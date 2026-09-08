@@ -147,6 +147,22 @@ describe("ADR-036 — a handle-named observation is keyed by the handle", () => 
     expect(takeLastInvalidation()?.reason).toBe("process_restarted");
   });
 
+  it("a handle-passing caller on a title-resolved branch keeps the title's question", () => {
+    // `callerNamedHandle` is a fact about the CALL; the key is a fact about this
+    // OBSERVATION. They part company on every branch that resolves by title
+    // anyway while the caller did pass a handle — `set_element_value`'s
+    // fallback channels, its all-failed path, the outer catch's debt payment,
+    // and `click_element` under `fixId`. Filed under a handle slot there, the
+    // drift question disappears for a handle nobody named.
+    windows = [{ hwnd: A, title: TITLE }];
+    expect(buildHintsForTitle(TITLE, undefined, true)).not.toBeNull();
+    takeLastInvalidation();
+
+    windows = [{ hwnd: B, title: TITLE }];
+    expect(buildHintsForTitle(TITLE, undefined, true)).not.toBeNull();
+    expect(takeLastInvalidation()?.reason).toBe("process_restarted");
+  });
+
   it("keeps the handle's own history: hwnd_reused is not affected", () => {
     // `lastByHwnd` answers the question that DOES apply to a handle, and the
     // new key does not go near it: the same handle coming back under a

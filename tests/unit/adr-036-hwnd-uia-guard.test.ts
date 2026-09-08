@@ -403,11 +403,39 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
       windowTitle: "anything", hwnd: String(UNTITLED), name: "Field",
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
-    expect(JSON.stringify(r)).toContain("target_not_found");
+    // The STATUS field, not the serialised blob: `suggest` carries the literal
+    // "(target_not_found)" on every AutoGuardBlocked, so `toContain` on the JSON
+    // was satisfied by the catalogue and would have passed for the ambiguous
+    // case too.
+    expect((r as { _perceptionForPost?: { status?: string } })._perceptionForPost?.status)
+      .toBe("target_not_found");
     expect(next).not.toMatch(/Call desktop_discover to verify the window title/);
-    expect(next).toMatch(/no title/i);
+    expect(next).toMatch(/does not list/i);
     expect(next).toMatch(/keyboard[^.]*foreground/i);
     expect(next).toMatch(/@active/);
+
+    // And the array beside it. Twenty-five rounds audited `next`; nobody opened
+    // `suggest`, which said "run desktop_discover" and "pass hwnd" — the two
+    // things the message had just ruled out — in the same payload.
+    const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
+    expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    expect(suggests).not.toMatch(/run desktop_discover — the window or element/);
+    expect(suggests).not.toMatch(/pass hwnd to name one window exactly/);
+  });
+
+  it("catches a window the enumeration drops for a reason OTHER than the title", async () => {
+    // The enumeration drops on five conditions and the first version of this
+    // asked about one. A titled window hidden to the tray, or under 50x50,
+    // produces the identical dead loop — discover it, let it go to the tray,
+    // retry, and the answer is "run desktop_discover", which cannot list it.
+    delete process.env.DTM_SET_VALUE_CHAIN;
+    winsRef.list = [win(SIBLING, SHARED_TITLE, 0)];   // LIVE is titled but absent
+    const r = parse(await clickElementHandler({
+      windowTitle: "anything", hwnd: String(LIVE), name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).toMatch(/does not list/i);
+    expect(next).toMatch(/tray or smaller than 50x50/i);
   });
 
   it("still says to check the title when the handle names nothing at all", async () => {

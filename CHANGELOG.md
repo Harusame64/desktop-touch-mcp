@@ -76,8 +76,10 @@
     fix exists because the guard found a narrower window than your argument did,
     so the two normally differ. The action itself is unaffected in every case —
     only the diff is
-    withheld. `ambiguous_title` and `target_changed` apply to the three tools
-    this ADR covers (`set_element_value`, `click_element`, `keyboard`).
+    withheld. `ambiguous_title` and `target_changed` apply to the tools this ADR
+    covers that a caller can reach: `click_element` and `keyboard` (and
+    `set_element_value`, which is registered only under
+    `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1`).
     `fix_target_unknown` is wider on purpose, because its reason is wider: it
     applies to every tool whose snapshots follow the `windowTitle` argument while
     its handler adopts the fix's — which, counted, is `mouse_click`

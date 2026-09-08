@@ -95,6 +95,19 @@ export interface AutoGuardEnvelope {
   canContinue: boolean;
   target?: string;    // "window:Notepad" / "browserTab:<url>"
   next: string;       // LLM-facing 1-sentence next step
+  /**
+   * ADR-036 — replaces the status catalogue for THIS refusal.
+   *
+   * `SUGGESTS.AutoGuardBlocked` is a seven-line constant appended to every guard
+   * refusal from every tool, and it is the structured field a model acts on. Its
+   * `ambiguous_target` line says "pass hwnd (desktop_discover returns it)" and
+   * its `target_not_found` line says "run desktop_discover" — both of which a
+   * refusal can have just finished explaining are impossible for this caller.
+   * `set_element_value` overrode it once, for one status, inside this same ADR;
+   * twenty-five review rounds audited `next` and none opened the array beside
+   * it. A refusal that knows the catalogue is wrong for it says so here.
+   */
+  suggest?: string[];
   changed?: Array<"title" | "rect" | "foreground" | "identity" | "navigation" | "modal">;
 }
 

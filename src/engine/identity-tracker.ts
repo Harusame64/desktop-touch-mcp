@@ -376,8 +376,20 @@ export function buildHintsForTitle(
   // `lastByHwnd` still answers the question that does apply to a handle
   // (`hwnd_reused`), and it is untouched. NUL-separated because a window title
   // can contain anything except that.
+  // BOTH halves, and derived here rather than trusted from the caller.
+  // `callerNamedHandle` is a fact about the CALL; the key is a fact about this
+  // OBSERVATION, and they come apart wherever a handle-passing caller reaches a
+  // branch that resolved by title anyway — `set_element_value`'s channels 2 and
+  // 3, its all-channels-failed path, the outer catch's debt payment (whose own
+  // comment says the debt stops naming the handle there), and `click_element`
+  // under `fixId`. Measured on all five: `pinnedHwnd` undefined,
+  // `callerNamedHandle` true, and the observation filed under a handle slot for
+  // a handle nobody named — which is the subtraction the commit above this one
+  // is titled after, put back by it.
   const obs = observeTarget(
-    callerNamedHandle ? handleObservationKey(resolved.hwnd) : partialTitle,
+    callerNamedHandle && pinnedHwnd !== undefined
+      ? handleObservationKey(resolved.hwnd)
+      : partialTitle,
     resolved.hwnd,
     resolved.title,
   );

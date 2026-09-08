@@ -159,7 +159,19 @@ export const clickElementHandler = async ({
         ...(hwndParam !== undefined && resolvedWin && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
-        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "click_element", { _perceptionForPost: ag.summary });
+        // A refusal that carries its own `suggest` replaces the status
+        // catalogue rather than travelling beside it: the catalogue's lines for
+        // this status name recoveries the message has just ruled out, and the
+        // structured field is the one the server instructions tell the model to
+        // read. `failCode` is the shape that can carry it (`failWith` always
+        // appends the catalogue).
+        const { suggest, ...forPost } = ag.summary;
+        return suggest
+          ? failCode("AutoGuardBlocked", ag.summary.next, {
+              suggest,
+              rootExtras: { _perceptionForPost: forPost },
+            })
+          : failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "click_element", { _perceptionForPost: ag.summary });
       }
       perceptionEnv = ag.summary;
     }

@@ -436,7 +436,13 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     // hwnd or the server did" — which three of them implement. `mouse_click`,
     // `mouse_drag` and `scroll` take an `hwnd` and narrate by title anyway, so a
     // flat promise sent exactly those callers away without a screenshot.
-    expect(said).toMatch(/click_element, keyboard and set_element_value/);
+    // Only the tools a caller can actually reach. `set_element_value` is
+    // registered ONLY under `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` and this
+    // ADR's own naming audit keeps its name out of anything the model reads —
+    // and this string ships on six default-registered tools. The first version
+    // of this assertion pinned the name.
+    expect(said).toMatch(/click_element and keyboard, which resolve/);
+    expect(said).not.toMatch(/set_element_value/);
     // Named, because the string ships on SIX registered tools and not the
     // nineteen `withRichNarration` wraps — and two of the six (browser_click,
     // browser_navigate) have neither `windowTitle` nor `hwnd`, so a sentence

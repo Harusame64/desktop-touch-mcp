@@ -13,7 +13,7 @@
 import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
 import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 import { logDiagnostic } from "../engine/diagnostic-log.js";
-import { getWindowProcessId, getProcessIdentityByPid, getWindowTitleW, getWindowRectByHwnd } from "../engine/win32.js";
+import { getWindowProcessId, getProcessIdentityByPid, getWindowRectByHwnd, enumWindowsInZOrder } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
 import { resolveActionTarget, deriveTargetKey } from "../engine/perception/action-target.js";
 import type {
@@ -166,16 +166,22 @@ export function logAutoGuardStartup(): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * ADR-036 — is this handle a live window that the enumeration refuses to show?
+ * ADR-036 — is this handle a live window the ENUMERATION does not list?
  *
- * `getWindowTitleW` returns `""` both for an untitled window and for a dead
- * handle, so the rect is what tells them apart — the same pair
- * `resolveWindowTarget` Case 1 uses to decide a handle is real. Never throws:
- * this runs on a path that is already reporting a failure.
+ * `enumWindowsInZOrder` drops on five conditions — excluded, not visible, no
+ * title, no rect, and smaller than 50×50 while not minimised — and the first
+ * version of this asked about one of them. The other four produce the identical
+ * dead loop for a window that does have a title: discover it, let it go to the
+ * tray or shrink below 50px, retry, and the answer is "run desktop_discover",
+ * which cannot list it either. Asking the enumeration directly covers all five
+ * without this file having to know them.
+ *
+ * Never throws: it runs on a path that is already reporting a failure.
  */
-function handleNamesATitlelessWindow(hwnd: bigint): boolean {
+function handleIsMissingFromEnumeration(hwnd: bigint): boolean {
   try {
-    return getWindowTitleW(hwnd) === "" && getWindowRectByHwnd(hwnd) !== null;
+    if (getWindowRectByHwnd(hwnd) === null) return false;   // genuinely gone
+    return !enumWindowsInZOrder().some((w) => w.hwnd === hwnd);
   } catch {
     return false;
   }
@@ -778,7 +784,7 @@ export async function runActionGuard(
     // that reaches here, with no real-machine acceptance behind it. What changes
     // is that the answer stops naming two things that cannot work.
     const titlelessHandle = descriptor?.kind === "window" && descriptor.hwnd !== undefined
-      && handleNamesATitlelessWindow(descriptor.hwnd);
+      && handleIsMissingFromEnumeration(descriptor.hwnd);
     // descriptor is non-null at this point (null-checked above)
     const closedKey = deriveTargetKey(descriptor);
     if (closedKey) {
@@ -790,13 +796,28 @@ export async function runActionGuard(
         status,
         canContinue: false,
         next: titlelessHandle
-          ? "That hwnd names a window with no title. The enumeration this guard " +
-            "and desktop_discover both read drops untitled windows, so neither " +
-            "can name it and passing the handle again returns here. keyboard " +
-            "reaches it while it is in the foreground (windowTitle:\"@active\"), " +
-            "typing into whatever holds focus inside it, which is not the same as " +
-            "writing to a named element. Otherwise give the window a title."
+          ? "That hwnd names a live window the enumeration does not list — usually " +
+            "an untitled one, but a window hidden to the tray or smaller than " +
+            "50x50 is dropped too. Both this " +
+            "guard and desktop_discover read that enumeration, so neither can name " +
+            "it and passing the handle again returns here. keyboard reaches it " +
+            "with windowTitle:\"@active\" IF it can hold the foreground, typing " +
+            "into whatever has focus inside it, which is not the same as writing " +
+            "to a named element — a child control, a message-only window or a " +
+            "hidden one never can. Otherwise give the window a title and make it " +
+            "visible."
           : nextStepFor(status),
+        // The catalogue's two lines for this status name `desktop_discover` and
+        // `hwnd`, which the sentence above has just finished ruling out. Left
+        // alone, the same response carried both halves of the contradiction —
+        // and the structured half is the one the server instructions tell the
+        // model to read.
+        ...(titlelessHandle && {
+          suggest: [
+            "Read the error message — for this refusal it is the whole recovery.",
+            "desktop_discover cannot list this window; passing its hwnd returns here. keyboard with windowTitle:\"@active\" is the one channel that reaches it, and only while it holds the foreground.",
+          ],
+        }),
       },
       block: true,
     };
