@@ -84,6 +84,22 @@ const KEPT_GENERATIONS = 2;
 const MIN_MAX_BYTES = 1024 * 1024;
 
 /**
+ * Ceiling for `maxBytes`, and the mirror image of the floor.
+ *
+ * The floor catches a reader who takes the variable for MiB and writes `64`.
+ * Nothing caught the same confusion in the other direction: `640000` meant as
+ * MiB is 640 GB of bytes, accepted verbatim, and rotation never fires again —
+ * exactly the behaviour the variable's own documentation promises a typo cannot
+ * produce. `Number` also accepts `1e21`, which is a finite integer by
+ * `Number.isInteger` and past `MAX_SAFE_INTEGER`, so the arithmetic that
+ * follows stops being exact.
+ *
+ * 1 GiB is well past any diagnostic need (three generations is 3 GiB) and far
+ * enough under the misread values to catch them.
+ */
+const MAX_MAX_BYTES = 1024 * 1024 * 1024;
+
+/**
  * Ceiling for a single serialized record.
  *
  * The rotation ceiling only bounds the file if every record fits under it.
@@ -144,6 +160,7 @@ export function parseMaxLogBytes(raw: string | undefined): number {
   const n = Number(trimmed);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return DEFAULT_MAX_BYTES;
   if (n < MIN_MAX_BYTES) return MIN_MAX_BYTES;
+  if (n > MAX_MAX_BYTES) return MAX_MAX_BYTES;
   return n;
 }
 
@@ -388,23 +405,50 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     _rotationFailurePending = false;
     _rotationFailureRecorded = false;
   } catch {
-    // Deliberately NOT re-checking existence here. The check above covers every
-    // case that can be reached deterministically; what would be left is a race
-    // so narrow no test can demonstrate it, on a branch that could turn a real,
-    // permanent rotation failure into silence - which is the one outcome this
-    // module exists to prevent. If the race does happen the cost is a single
-    // misleading record, and the next write rotates normally.
+    // FIRST, undo a half-done roll. Staging the live file succeeds and the
+    // shift after it throws — a viewer holding `.1` open is enough — and
+    // without this the whole live file is left under the staging name while
+    // the append starts a fresh, empty one. The newest generation is then
+    // outside the `.1`/`.2` chain entirely: only a later roll BY THIS SAME PID
+    // reclaims it, so another server never will, and each occurrence adds a
+    // full ceiling to the directory permanently. Measured, one server, one
+    // record: a 1 MiB live file stranded at `.rotating`, `diagnostic.log`
+    // restarted empty, and every doc guarantee about "the newest records are
+    // in diagnostic.log" false.
     //
-    // The live file could not be renamed (held open without FILE_SHARE_DELETE,
+    // Putting it back makes a failed roll cost nothing again, which is the
+    // property the staging order was introduced for in the first place.
+    if (isPlainFile(staging) && !existsSync(target)) {
+      try {
+        renameSync(staging, target);
+      } catch {
+        // Could not put it back either. It keeps a `diagnostic.log*` name and
+        // the leftover branch files it on this pid's next roll.
+      }
+    }
+    // Deliberately NOT re-checking existence of the live file here. The check
+    // above covers every case that can be reached deterministically; what would
+    // be left is a race so narrow no test can demonstrate it, on a branch that
+    // could turn a real, permanent rotation failure into silence - which is the
+    // one outcome this module exists to prevent. If the race does happen the
+    // cost is a single misleading record, and the next write rotates normally.
+    //
+    // The roll could not complete (a file held open without FILE_SHARE_DELETE,
     // permission denied, a filesystem that refuses it). Keep appending rather
     // than dropping events — an oversized log is a smaller failure than a blind
-    // server — and back the estimate off by one interval so the retry costs one
-    // rename per interval instead of one per record.
+    // server — and back the estimate off so the retry costs one attempt per
+    // back-off rather than one per record. Measured from the file rather than
+    // from the estimate, because the restore above may have changed which file
+    // is live. The back-off is at least one whole record: at ceilings under
+    // 2 MiB `refreshInterval` (`maxBytes`/16) is SMALLER than `MAX_RECORD_BYTES`,
+    // so backing off by the interval alone would still leave the next record
+    // over the ceiling and re-attempt the roll immediately.
     //
-    // This outcome is NOT bounded: a file that can never be renamed grows at
+    // This outcome is NOT bounded: a file that can never be rolled grows at
     // full speed, which is the state this module exists to prevent. So it is
     // recorded once rather than swallowed, and the log can explain its own size.
-    _bytesOnDisk = Math.max(0, _bytesOnDisk - refreshInterval);
+    const backOff = Math.max(refreshInterval, MAX_RECORD_BYTES);
+    _bytesOnDisk = Math.max(0, statSizeOrZero(target) - backOff);
     _bytesSinceStat = 0;
     if (!_rotationFailureRecorded) _rotationFailurePending = true;
   }
@@ -1083,9 +1127,14 @@ export function logDiagnostic(event: DiagnosticEvent): void {
 }
 
 /**
- * Estimate the serialized size of tool arguments without doing a full
- * JSON.stringify (which can be expensive for large screenshot payloads).
- * Returns a rough byte count.
+ * Serialized size of tool arguments, in UTF-16 code units, or -1 when they
+ * cannot be serialized at all.
+ *
+ * The name and the old comment both promised an estimate that avoided a full
+ * `JSON.stringify`; the body has always done exactly that stringify, and
+ * `.length` counts code units rather than bytes. Only the description was
+ * wrong — this is the size recorded in `slow_tool`, where a figure that tracks
+ * payload size is what matters, not an exact byte count.
  */
 export function estimateArgsSize(args: unknown[]): number {
   try {

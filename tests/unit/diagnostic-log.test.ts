@@ -5,12 +5,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   logDiagnostic,
   getDiagnosticLogPath,
+  isDiagnosticLogEnabled,
   estimateArgsSize,
   safeStringify,
   normalizeThrown,
@@ -160,6 +161,21 @@ describe("diagnostic-log", () => {
     // And the log is still usable afterwards.
     logDiagnostic({ kind: "exit", trigger: "after", exitCode: 0, inflight: 0, shutdownPending: false });
     expect(readLines()).toHaveLength(1);
+  });
+
+  it("isDiagnosticLogEnabled tracks the disable switch", () => {
+    // Nine suites mock this export and none tested it. Producers use it to skip
+    // hashing and Win32 reads entirely, so a wrong answer here is silent work
+    // on a disabled log, or a silently empty one.
+    expect(isDiagnosticLogEnabled()).toBe(true);
+
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE = "1";
+    _resetDiagnosticLogForTest();
+    expect(isDiagnosticLogEnabled()).toBe(false);
+
+    process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE = "0"; // only "1" disables
+    _resetDiagnosticLogForTest();
+    expect(isDiagnosticLogEnabled()).toBe(true);
   });
 
   it("getDiagnosticLogPath defaults to homedir-based path when env unset", () => {
@@ -386,6 +402,8 @@ describe("diagnostic-log rotation", () => {
   const REC_BYTES = 64 * 1024;
   /** `MAX_RECORD_BYTES` = the floor / 8; every record must fit under it. */
   const MAX_RECORD = MIN_CEILING / 8;
+  /** `KEPT_GENERATIONS + 1` — the live file plus what it keeps behind it. */
+  const KEPT_GENERATIONS_PLUS_ONE = 3;
   /** Where this process parks the live file mid-roll. The pid is load-bearing. */
   const staging = (): string => `${logPath}.${process.pid}.rotating`;
 
@@ -434,6 +452,19 @@ describe("diagnostic-log rotation", () => {
       expect(parseMaxLogBytes("0")).toBe(DEFAULT);
     });
 
+    it("clamps an absurdly large ceiling to the roof — the same MiB confusion in the other direction", () => {
+      // The floor catches `64` meant as MiB. Nothing caught `640000` meant as
+      // MiB, which is 640 GB of bytes: accepted verbatim, rotation never fires
+      // again, and the variable's own documentation says a typo cannot do that.
+      const ROOF = 1024 * 1024 * 1024;
+      expect(parseMaxLogBytes("640000000000")).toBe(ROOF);
+      // `Number.isInteger(1e21)` is true and it is past MAX_SAFE_INTEGER, so
+      // the arithmetic downstream would stop being exact as well.
+      expect(parseMaxLogBytes("1e21")).toBe(ROOF);
+      expect(parseMaxLogBytes(String(ROOF))).toBe(ROOF);
+      expect(parseMaxLogBytes(String(ROOF - 1))).toBe(ROOF - 1);
+    });
+
     it("clamps an unusably small ceiling to the floor — 64 read as MiB must not become 64 bytes", () => {
       // Otherwise a reader who takes the variable for MiB gets one rename per
       // record on the synchronous exit path, every generation holding a single
@@ -454,6 +485,14 @@ describe("diagnostic-log rotation", () => {
     expect(statSync(logPath).size).toBeLessThanOrEqual(MIN_CEILING);
   });
 
+  /** Every file the log owns, found by listing rather than by guessing names. */
+  function logFiles(): string[] {
+    const dir = join(tmp, "sub");
+    return readdirSync(dir)
+      .filter((f) => f.startsWith("diag.log"))
+      .map((f) => join(dir, f));
+  }
+
   it("keeps at most KEPT_GENERATIONS rotated files — total disk stays bounded", () => {
     write(80);
 
@@ -462,9 +501,13 @@ describe("diagnostic-log rotation", () => {
     // The third generation is the one that must never appear.
     expect(existsSync(`${logPath}.3`)).toBe(false);
 
-    for (const f of [logPath, `${logPath}.1`, `${logPath}.2`]) {
-      expect(statSync(f).size).toBeLessThanOrEqual(MIN_CEILING + REC_BYTES * 2);
-    }
+    // Listed, not enumerated by name. The earlier version checked three
+    // hardcoded paths, so a file the rotation left under any OTHER name — a
+    // staged one stranded by a half-done roll, say — was invisible to it, and
+    // that is exactly the defect it failed to catch.
+    const total = logFiles().reduce((n, f) => n + statSync(f).size, 0);
+    expect(logFiles().length).toBeLessThanOrEqual(3);
+    expect(total).toBeLessThanOrEqual((KEPT_GENERATIONS_PLUS_ONE * MIN_CEILING) + REC_BYTES * 2);
   });
 
   it("seeds its byte estimate from a file that already exists, so a restart does not start the count over", () => {
@@ -735,7 +778,12 @@ describe("diagnostic-log rotation", () => {
 
     mkdirSync(join(tmp, "sub"), { recursive: true });
     writeFileSync(`${logPath}.1`, "GEN1", "utf8");
-    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    // TWICE the ceiling on purpose: the back-off after a failed roll is now at
+    // least one whole record, so a live file merely AT the ceiling can never
+    // re-attempt a roll without a successful append in between - and that
+    // append is exactly what consumes the notice. Starting well over the
+    // ceiling is the only way the retry happens with the notice still pending.
+    writeFileSync(logPath, "x".repeat(2 * MIN_CEILING), "utf8");
     blockStaging();
     chmodSync(logPath, 0o444);
     _resetDiagnosticLogForTest();
@@ -743,7 +791,7 @@ describe("diagnostic-log rotation", () => {
     // Episode 1: the roll is blocked, and the append that would carry its
     // notice fails too, so the notice stays pending across the call.
     rec("blocked");
-    expect(statSync(logPath).size).toBe(MIN_CEILING); // nothing was appended
+    expect(statSync(logPath).size).toBe(2 * MIN_CEILING); // nothing was appended
 
     // Recovery IN ONE CALL: the staging name is free, so this call rotates
     // successfully first and only then appends - into a file the roll just
@@ -791,6 +839,34 @@ describe("diagnostic-log rotation", () => {
     block();
     write(20, "c"); // episode 2 must be reported on its own
     expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
+  });
+
+  it("MUTATION: a roll that fails AFTER staging puts the live file back instead of stranding it", () => {
+    // Staging succeeds and the shift after it throws — a viewer holding `.1`
+    // open is enough. Without the restore, the whole live file is left under
+    // the staging name and the append starts a fresh empty one: the newest
+    // generation ends up outside the `.1`/`.2` chain, reclaimed only by a later
+    // roll from this same pid and never by another server, so every occurrence
+    // adds a full ceiling to the directory for good.
+    //
+    // The blocker is on `.2` rather than on the staging name, which is the
+    // whole point: the earlier pin blocked staging, the one path where this
+    // state cannot arise.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.1`, "GEN1-KEEP-ME", "utf8");
+    mkdirSync(`${logPath}.2`, { recursive: true });
+    writeFileSync(join(`${logPath}.2`, "blocker"), "no", "utf8");
+    writeFileSync(logPath, "OLD-HISTORY" + "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    logDiagnostic({ kind: "slow_tool", tool: "after", elapsed_ms: 1, args_size: 0 });
+
+    const live = readFileSync(logPath, "utf8");
+    expect(live).toContain("OLD-HISTORY"); // the live file kept its content
+    expect(live).toContain('"tool":"after"'); // and is still being written to
+    expect(readFileSync(`${logPath}.1`, "utf8")).toBe("GEN1-KEEP-ME");
+    // Nothing stranded under any other name.
+    expect(existsSync(staging())).toBe(false);
   });
 
   it("MUTATION: a promotion that fails for any reason but absence aborts the roll instead of overwriting .1", () => {

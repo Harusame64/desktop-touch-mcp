@@ -771,8 +771,10 @@ two rolled generations are kept. **With one server running, the newest records a
 `diagnostic.log`**, but when you are searching for something that happened a while ago, search
 `diagnostic.log*` rather than the one file. That glob also catches
 `diagnostic.log.<pid>.rotating`, which is where a server parks the live file for the moment it is
-being rolled; one left behind means a roll was interrupted, and the next roll by that server files
-it.
+being rolled. A roll that cannot finish puts the file straight back, so one of these left behind
+means the server was killed mid-roll. It is filed by the next roll of **that** server — the pid in
+the name says which — and another server will not adopt it, so if the server it belonged to is gone
+for good, the file is yours to move or delete.
 
 Every record is measured against the limit before it is written, so a server left running for days
 rolls the file as it goes — there is no scheduled job, nothing to restart, and nothing to clean up by
@@ -795,9 +797,9 @@ Two situations go past that figure, and both are worth knowing about:
   record in `diagnostic.log.1` instead of the live file. Grepping `diagnostic.log*` rather than the
   one file covers both.
 - **A live file that cannot be renamed** — held open by another program, or permission denied.
-  Rotation then cannot happen and the log keeps growing at full speed. This is the one case the
-  limit does not cover, so it is not silent: a single `log_rotation_failed` record is written into
-  the log itself. It is the first thing to grep for if you find an oversized `diagnostic.log` after
+  Rotation then cannot happen and the log keeps growing at full speed. Nothing is lost — a roll that
+  fails puts the live file back where it was — but this is the one case the limit does not cover, so
+  it is not silent: a single `log_rotation_failed` record is written into the log itself. It is the first thing to grep for if you find an oversized `diagnostic.log` after
   updating.
 
 One record is never allowed to be larger than the file it lives in, so an event carrying an
@@ -809,7 +811,7 @@ the original size, and a `head` field holding the first few KB of what it would 
 | `DESKTOP_TOUCH_RESOLVE_LOG_RAW` | *(unset = off)* | Window titles and the titles you search for are recorded as a short hash plus their length, because a title can contain a file name, a mail subject, or a browser page title. Set to `1` to also record the text in clear (the hash stays, so a log with both is still readable end to end). |
 | `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE` | *(unset = on)* | Set to `1` to stop writing the log entirely. |
 | `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` | *(per-user log dir)* | Write the log somewhere else. A symbolic link works: the roll follows it, so the link keeps pointing at the live log and the rolled generations appear beside the real file rather than beside the link. |
-| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` | `67108864` (64 MiB) | Roll the live log to `diagnostic.log.1` once it passes this size. Two rolled generations are kept, so the log directory ordinarily holds about three times this value — see above for the two situations that go past it. A value below 1 MiB is raised to 1 MiB, and anything that is not a positive whole number falls back to the default — a typo here cannot switch rotation off. To stop logging entirely, use `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE`. |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` | `67108864` (64 MiB) | Roll the live log to `diagnostic.log.1` once it passes this size. Two rolled generations are kept, so the log directory ordinarily holds about three times this value — see above for the two situations that go past it. A value below 1 MiB is raised to 1 MiB and one above 1 GiB is lowered to 1 GiB, and anything that is not a positive whole number falls back to the default — a typo here cannot switch rotation off in either direction, whether you mean bytes and write MiB or the other way round. To stop logging entirely, use `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE`. |
 
 ---
 

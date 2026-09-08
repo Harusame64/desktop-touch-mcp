@@ -31,8 +31,10 @@
   incident.
 
   Set `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` to a positive byte count if you
-  want a different ceiling; an unusable value falls back to the default rather
-  than turning rotation off, so a typo cannot bring the old behaviour back. To
+  want a different ceiling; it is held between 1 MiB and 1 GiB, and an unusable
+  value falls back to the default rather than turning rotation off, so a typo
+  cannot bring the old behaviour back — whether you mean bytes and write MiB or
+  the other way round. To
   turn the log off entirely, `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1` still
   does that.
 
