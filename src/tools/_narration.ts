@@ -195,11 +195,14 @@ export const UIA_WRITE_NARRATION: RichNarrationOptions = {
  * Counted the way `keyboard`'s delivery check counts it (Win32 enumeration,
  * case-insensitive substring) so the two skips agree on what "shared" means.
  *
- * The `catch` is not a trade-off with a case behind it: `enumWindowsInZOrder`
- * throws only when the native Win32 module is missing, and a build without it
- * has no `desktop_state` and no `screenshot` either — so nothing that reaches
- * here can be running. It withholds rather than guesses because that is the
- * cheaper way to be wrong, not because the branch has ever been taken.
+ * The `catch` withholds rather than guesses, because a rich diff built from a
+ * title that may name two windows is worse than no diff at all. What can make
+ * `enumWindowsInZOrder` throw is NOT settled here: a missing native module is
+ * the certain case, and a build without it has neither `desktop_state` nor
+ * `screenshot`, so that one cannot reach this line — but the two native calls
+ * it makes before its own per-window `try` are outside any catch of ours, and
+ * nothing in this file establishes that they cannot fail. The safe branch is
+ * kept for what is not known, not as decoration for a case that cannot happen.
  */
 function titleIsSharedByMoreThanOneWindow(windowTitle: string): boolean {
   try {

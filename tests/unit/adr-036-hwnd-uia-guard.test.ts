@@ -175,6 +175,22 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(said).toContain("click_element");
     expect(said).toContain("keyboard");
     expect(said).not.toContain("Pass hwnd to name one window exactly");
+
+    const next = r.context?._perceptionForPost?.next ?? said;
+    // The title advice must not be offered flat. `ambiguous_target` fires on a
+    // shared title substring: narrowing works when the full titles differ and
+    // is useless when they are identical, which is the case this refusal is
+    // about. Unconditional, it points straight back into the loop.
+    expect(next).not.toMatch(/or use a more specific windowTitle/);
+    expect(next).toMatch(/more specific windowTitle works only if/);
+    // And the limit is stated as the matcher actually behaves. `normalizeTitle`
+    // strips the browser suffix from the candidates AND from the query, so two
+    // browsers showing one page collapse to the same string: "the full titles
+    // differ" is true there and the advice still cannot work.
+    expect(next).toMatch(/browser suffix/);
+    // And the recoveries the caller can perform come before the one only an
+    // operator can: this text is read by whoever made the call.
+    expect(next.indexOf("click_element")).toBeLessThan(next.indexOf("Unsetting"));
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {
