@@ -20,6 +20,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const TITLE = "pictkura — Chrome";
+// What the resolver hands back. Deliberately NOT equal to `TITLE`: while the two
+// matched, observing under the caller's raw partial title instead of the
+// resolved one passed every test in this file, and that files one window under
+// two keys (`observeTarget` keys on the string it is handed).
+const RESOLVED = "pictkura — Profile 1 — Chrome";
 const LIVE = 0x2222n;
 
 const { mockBuildHints, mockSetValue, mockInsertText, mockKeyboardType } = vi.hoisted(() => ({
@@ -52,7 +57,7 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   return {
     ...actual,
     resolveWindowTarget: vi.fn(async (p: { hwnd?: string }) =>
-      p.hwnd !== undefined ? { hwnd: BigInt(p.hwnd), title: TITLE, warnings: [], className: "Chrome_WidgetWin_1" } : null),
+      p.hwnd !== undefined ? { hwnd: BigInt(p.hwnd), title: RESOLVED, warnings: [], className: "Chrome_WidgetWin_1" } : null),
   };
 });
 
@@ -75,7 +80,9 @@ describe("ADR-036 — set_element_value observes its window exactly once, whiche
   it("channel 1 success", async () => {
     await call();
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
-    // Pinned: the write went through the handle.
+    // Pinned: the write went through the handle. Under the resolved title, not
+    // the caller's partial one.
+    expect(mockBuildHints.mock.calls[0]![0]).toBe(RESOLVED);
     expect(mockBuildHints.mock.calls[0]![1]).toBe(LIVE);
   });
 
@@ -123,9 +130,13 @@ describe("ADR-036 — a channel that REJECTS still leaves exactly one observatio
     const r = await call();
     expect(failed(r).ok).toBe(false);
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
-    // Unpinned: the handle follows a write that reached the window through it,
-    // and a rejection is not one.
-    expect(mockBuildHints.mock.calls[0]![1]).toBeUndefined();
+    // Pinned. Nothing reads the block this returns, so the only question is
+    // which window's baseline gets refreshed, and channel 1 was addressed to
+    // this handle. Observing by title would refresh the FIRST same-titled
+    // window — leaving the named one exactly as stale as the bug left it, in
+    // the one case this PR is about.
+    expect(mockBuildHints.mock.calls[0]![0]).toBe(RESOLVED);
+    expect(mockBuildHints.mock.calls[0]![1]).toBe(LIVE);
   });
 
   it("channel 1 rejects with the chain armed — the later channels never run, the observation still happens", async () => {
@@ -147,6 +158,8 @@ describe("ADR-036 — a channel that REJECTS still leaves exactly one observatio
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
   });
 
+  // `keyboardTypeHandler` wraps its whole body, so this cannot happen today.
+  // The test pins the contract for the day that changes.
   it("channel 3 rejects", async () => {
     process.env.DTM_SET_VALUE_CHAIN = "1";
     mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
@@ -179,5 +192,72 @@ describe("ADR-036 — a channel that REJECTS still leaves exactly one observatio
     const r = await call();
     expect(failed(r).ok).toBe(false);
     expect(mockBuildHints).not.toHaveBeenCalled();
+  });
+});
+
+describe("ADR-036 — the keyboard channel's parse catch does not swallow the observation (Codex R6)", () => {
+  const body = (r: Awaited<ReturnType<typeof call>>) => r.content![0]!.text;
+
+  beforeEach(() => {
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
+  });
+
+  it("channel 3 wrote, and its observation threw: filed as neither a parse error nor a second observation", async () => {
+    mockBuildHints.mockImplementationOnce(() => { throw new Error("HintsThrew"); });
+    const r = await call();
+    // The debt was settled by the act of observing, so the all-channels-failed
+    // path must not observe again on the way out.
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+    expect(body(r)).not.toContain("KeyboardResponseParseError");
+    expect(body(r)).not.toContain("SetValueAllChannelsFailed");
+  });
+
+  it("a real parse failure is still a parse failure, observed once", async () => {
+    mockKeyboardType.mockResolvedValueOnce({ content: [{ type: "text", text: "not json" }] } as never);
+    const r = await call();
+    expect(body(r)).toContain("KeyboardResponseParseError");
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("a null body is a parse failure too — it was one when it was a null dereference", async () => {
+    mockKeyboardType.mockResolvedValueOnce({ content: [{ type: "text", text: "null" }] } as never);
+    const r = await call();
+    expect(body(r)).toContain("KeyboardResponseParseError");
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("a primitive body is not a parse failure — it was not one before either", async () => {
+    mockKeyboardType.mockResolvedValueOnce({ content: [{ type: "text", text: "5" }] } as never);
+    const r = await call();
+    expect(body(r)).toContain("KeyboardFailed");
+    expect(body(r)).not.toContain("KeyboardResponseParseError");
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ADR-036 — the owed observation follows the channel that was about to run", () => {
+  it("channel 2 rejects — unpinned, because channels 2 and 3 find their window by title", async () => {
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
+    mockInsertText.mockRejectedValue(new Error("MalformedRunnerJson") as never);
+    await call();
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+    expect(mockBuildHints.mock.calls[0]![0]).toBe(RESOLVED);
+    expect(mockBuildHints.mock.calls[0]![1]).toBeUndefined();
+  });
+
+  it("the failure the catch reports names the resolved window, like the ones inside the try", async () => {
+    mockSetValue.mockRejectedValue(new Error("PowerShellTimeout") as never);
+    const r = await call();
+    expect(r.content![0]!.text).toContain(RESOLVED);
+  });
+
+  it("nothing is owed, and nothing is named, when resolution itself fails", async () => {
+    vi.mocked(resolveWindowTarget).mockRejectedValueOnce(new Error("EnumFailed") as never);
+    const r = await call();
+    expect(mockBuildHints).not.toHaveBeenCalled();
+    expect(r.content![0]!.text).toContain(TITLE);      // the caller's own words
+    expect(r.content![0]!.text).not.toContain(RESOLVED);
   });
 });

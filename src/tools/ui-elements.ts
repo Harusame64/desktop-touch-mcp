@@ -214,11 +214,16 @@ function allSetValueChannelsAreHandleAddressed(): boolean {
 export const setElementValueHandler = async ({
   windowTitle, hwnd: hwndParam, value, name, automationId, lensId,
 }: { windowTitle: string; hwnd?: string; value: string; name?: string; automationId?: string; lensId?: string }): Promise<ToolResult> => {
-  // ADR-036 — the observation this call still owes, held outside the try so the
-  // catch can see it (the `click_element` prologue above hoists for the same
-  // reason). Null until a channel is about to run, and null again the moment
-  // one of the branches below takes it.
-  let observationOwedFor: string | null = null;
+  // ADR-036 — the observation this call still owes, and the window it owes it
+  // ON, held outside the try so the catch can see it (the `click_element`
+  // prologue above hoists for the same reason). Null until a channel is about
+  // to run, and null again the moment one of the branches below takes it. The
+  // handle rides along because the observation is not a report: nothing reads
+  // the block it returns on this path, so the only question left is WHICH
+  // window gets its baseline refreshed — and refreshing the first same-titled
+  // one leaves the named window exactly as stale as it was, in the one case
+  // this whole change is about.
+  let observationOwedFor: { title: string; hwnd?: bigint } | null = null;
   try {
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
@@ -312,7 +317,8 @@ export const setElementValueHandler = async ({
     // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
     // Owed from here: from this line on, some window has been written to (or an
     // attempt was made on it) and the drift baseline is stale until observed.
-    observationOwedFor = effectiveTitle;
+    // Channel 1 goes through the handle, so the debt names the handle.
+    observationOwedFor = { title: effectiveTitle, ...(resolvedWin && { hwnd: resolvedWin.hwnd }) };
     const r1 = await setElementValue(
       effectiveTitle, value, name, automationId,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
@@ -331,6 +337,11 @@ export const setElementValueHandler = async ({
     attempts.push({ channel: "value", error: r1.error ?? "ValuePatternFailed" });
 
     if (chainEnabled) {
+      // The debt follows the channel about to run: from here on the write is
+      // addressed by title (R-36-5), so a failure owes the title's window and
+      // not the handle's — the same rule the success branches report under.
+      observationOwedFor = { title: effectiveTitle };
+
       // Channel 2: TextPattern2.InsertTextAtSelection (foreground-free)
       const r2 = await insertTextViaTextPattern2(effectiveTitle, value, name, automationId);
       if (r2.ok) {
@@ -363,15 +374,31 @@ export const setElementValueHandler = async ({
         _skipAutoGuard: true,
       });
       if (r3.content?.[0]?.type === "text") {
+        let parsed: { ok?: boolean; error?: string } | undefined;
         try {
-          const parsed = JSON.parse(r3.content[0].text);
+          // The parse, and nothing else — see the catch.
+          const raw = JSON.parse(r3.content[0].text) as { ok?: boolean; error?: string } | null;
+          // `raw.ok` on a null body threw where this stands and was reported as
+          // a parse error, so it still is one. A primitive body did not throw
+          // there (`(5).ok` is undefined) and does not throw here either.
+          if (raw === null) throw new TypeError("NullKeyboardResponse");
+          parsed = raw;
+        } catch {
+          // ADR-036 — this catch belongs to the PARSE alone. It used to wrap the
+          // success branch as well, so an observation that threw was filed as a
+          // parse error, the keyboard write that had actually succeeded was
+          // reported as a failure, and the all-channels-failed path below
+          // observed a second time — the debt already settled, the drift never
+          // real. The narrower catch leaves an observation failure to the outer
+          // one, where channels 1 and 2 already send theirs.
+          attempts.push({ channel: "keyboard", error: "KeyboardResponseParseError" });
+        }
+        if (parsed !== undefined) {
           if (parsed.ok) {
             observe(effectiveTitle);   // observation only — see above
             return ok({ ok: true, channel: "keyboard", ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
           }
           attempts.push({ channel: "keyboard", error: parsed.error ?? "KeyboardFailed" });
-        } catch {
-          attempts.push({ channel: "keyboard", error: "KeyboardResponseParseError" });
         }
       } else {
         attempts.push({ channel: "keyboard", error: "KeyboardFailed" });
@@ -397,18 +424,19 @@ export const setElementValueHandler = async ({
     // before it the observation was taken ahead of the channels and no failure
     // could lose it. Paid here exactly when no branch paid it — observing twice
     // files one window under two handles and reports a drift that never
-    // happened. Unpinned, like every other failure path in this handler: the
-    // handle follows a write that reached the window through it, and a
-    // rejection is not that.
-    if (observationOwedFor !== null) {
+    // happened.
+    const owed = observationOwedFor;
+    if (owed !== null) {
       try {
-        buildHintsForTitle(observationOwedFor);
+        buildHintsForTitle(owed.title, owed.hwnd);
       } catch {
         // The channel's failure is what the caller needs; an observation that
         // cannot be taken must not take its place as the reported error.
       }
     }
-    return failWith(err, "set_element_value", { windowTitle, name, automationId });
+    // The resolved title, when there is one — the two failure reports inside
+    // the try already use it, and a call that named a handle knows it here.
+    return failWith(err, "set_element_value", { windowTitle: owed?.title ?? windowTitle, name, automationId });
   }
 };
 
