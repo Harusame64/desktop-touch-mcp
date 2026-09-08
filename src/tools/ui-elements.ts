@@ -286,15 +286,24 @@ export const setElementValueHandler = async ({
           // carries its own limit, because here it is load-bearing — this is the
           // one refusal that cannot offer the handle instead.
           //
-          // The limit is not "identical titles". `resolveActionTarget` counts
-          // candidates with `normalizeTitle`, which strips the browser suffix
-          // (`action-target.ts` BROWSER_SUFFIXES) from the window titles AND
-          // from the query. So one page open in Chrome and in Edge normalizes to
-          // the SAME string from two different full titles, and no windowTitle
-          // the caller can write will separate them — naming the browser is
-          // stripped before it is compared. Told only that the titles must
-          // differ, a caller in exactly the case this PR starts from (a browser
-          // window) walks back into the loop.
+          // The limit is not "identical titles", and it is not "differ ahead of
+          // the browser suffix" either. `resolveActionTarget` keeps every
+          // candidate whose normalized title CONTAINS the normalized query, so
+          // the question is not whether the titles differ but whether this
+          // window's title holds text no other one does. Two ways it does not,
+          // both reachable:
+          //
+          //   "Report" beside "Report archive" — the titles differ, and every
+          //   query that matches the first matches the second, because the
+          //   first is a substring of it. Nothing the caller writes escapes.
+          //
+          //   one page open in Chrome and in Edge — `normalizeTitle` strips the
+          //   browser suffix (`action-target.ts` BROWSER_SUFFIXES) from the
+          //   titles AND from the query, so both arrive as one string and naming
+          //   the browser is deleted before it is compared.
+          //
+          // The second is the case this PR starts from (a browser window), which
+          // is why the text keeps naming it after stating the general rule.
           //
           // The generic advice in `_action-guard.ts` keeps the flat form on
           // purpose: there `hwnd` is offered first and works, so the title line
@@ -302,11 +311,13 @@ export const setElementValueHandler = async ({
           ag.summary.next =
             "This tool cannot be narrowed by hwnd while DTM_SET_VALUE_CHAIN=1: " +
             "its fallback channels still find the window by title. click_element and " +
-            "keyboard take hwnd here. A more specific windowTitle works only if the " +
-            "titles differ ahead of the browser suffix — that suffix is stripped from " +
-            "the query too, so one page open in two browsers cannot be separated by " +
-            "title at all. Unsetting DTM_SET_VALUE_CHAIN lets this tool take hwnd too, " +
-            "but that is a server setting, not a call argument.";
+            "keyboard take hwnd here. A more specific windowTitle works only if this " +
+            "window's title holds text no other open window's title holds: matching is " +
+            "substring-based, and the browser suffix is stripped from your query as " +
+            "well, so \"Report\" beside \"Report archive\", or one page open in two " +
+            "browsers, can never be separated by title. Unsetting DTM_SET_VALUE_CHAIN " +
+            "lets this tool take hwnd too, but that is a server setting, not a call " +
+            "argument.";
         }
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "set_element_value", { _perceptionForPost: ag.summary });
       }

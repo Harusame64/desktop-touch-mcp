@@ -183,10 +183,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // about. Unconditional, it points straight back into the loop.
     expect(next).not.toMatch(/or use a more specific windowTitle/);
     expect(next).toMatch(/more specific windowTitle works only if/);
-    // And the limit is stated as the matcher actually behaves. `normalizeTitle`
-    // strips the browser suffix from the candidates AND from the query, so two
-    // browsers showing one page collapse to the same string: "the full titles
-    // differ" is true there and the advice still cannot work.
+    // And the limit is stated as the matcher actually behaves. Candidates are
+    // kept by SUBSTRING, so the question is not whether the titles differ but
+    // whether this one holds text no other holds — "Report" beside "Report
+    // archive" differs and still cannot be narrowed, and the browser suffix is
+    // stripped from the query as well, so two browsers showing one page arrive
+    // as a single string. Both wordings this replaced were true and useless.
+    expect(next).toMatch(/no other open window/);
     expect(next).toMatch(/browser suffix/);
     // And the recoveries the caller can perform come before the one only an
     // operator can: this text is read by whoever made the call.
