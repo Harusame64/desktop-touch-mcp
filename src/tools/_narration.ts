@@ -19,7 +19,7 @@
  */
 
 import { withPostState } from "./_post.js";
-import { resolveWindowTarget, pinResolutionForNextCall, clearPinnedResolution } from "./_resolve-window.js";
+import { resolveWindowTarget, withPinnedResolution } from "./_resolve-window.js";
 import { getUiElements } from "../engine/uia-bridge.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { computeUiaDiff, degradedRichBlock } from "../engine/uia-diff.js";
@@ -262,6 +262,8 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // The window this wrapper resolved, so the resolution can be re-checked
     // after the slow part and before the handler runs its own.
     let pinnedHwnd: bigint | undefined;
+    // How the handler gets called: bare, or inside the resolution handed to it.
+    let handoff: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn();
     const resolveArgs = {
       ...(hwndArg !== undefined ? { hwnd: String(hwndArg) } : {}),
       ...(argTitle ? { windowTitle: argTitle } : {}),
@@ -326,7 +328,15 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // `method:"foreground"` and `set_element_value`'s channel 3 both do — so a
     // check made before the action would license a diff computed across two
     // DIFFERENT windows, which is worse than either window's own.
-    if (options.hwndKey && args[options.hwndKey] !== undefined &&
+    // Also when the handle is one WE resolved rather than one the caller named:
+    // `@active`, or a dialog rescue. Consuming the pin fixes the handler's
+    // `resolveWindowTarget`, and that is not the whole of targeting —
+    // `keyboard` derives its `explicitHwnd` from the PUBLIC argument only, so
+    // its focus, guard and delivery stay title-based. With the title shared, the
+    // keys can land on a sibling while these snapshots describe the window that
+    // was in front a moment ago, and the `target_changed` check below does not
+    // see it: that compares resolutions, not deliveries.
+    if ((args[options.hwndKey ?? ""] !== undefined || pinnedHwnd !== undefined) &&
         titleIsSharedByMoreThanOneWindow(windowTitle)) {
       const result = await wrappedWithPost(args);
       spliceRich(result, degradedRichBlock("ambiguous_title"));
@@ -375,17 +385,13 @@ export function withRichNarration<T extends Record<string, unknown>>(
       // Still the same window. Hand that answer forward so the handler acts on
       // the window these snapshots describe, instead of resolving a third time
       // across the focus enumeration the post-state wrapper takes in between.
-      pinResolutionForNextCall(resolveArgs, again);
+      // Scoped to this invocation: a handler that never resolves — the IME
+      // fast-fail, a refused key combo — must not leave an answer lying around
+      // for a concurrent call to pick up.
+      handoff = (fn) => withPinnedResolution(resolveArgs, again, fn);
     }
 
-    let result;
-    try {
-      result = await wrappedWithPost(args);
-    } finally {
-      // Whatever happened — the handler never resolved, it threw, it took the
-      // `fixId` path — the pin does not outlive this call.
-      clearPinnedResolution();
-    }
+    const result = await handoff(() => wrappedWithPost(args));
 
     if (!snapBefore) {
       spliceRich(result, degradedRichBlock("timeout"));

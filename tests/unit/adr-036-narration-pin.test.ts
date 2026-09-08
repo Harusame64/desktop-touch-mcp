@@ -45,18 +45,25 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
  */
 let popupFor: Record<string, { hwnd: bigint; title: string }> = {};
 
-const { mockPin, mockClearPin } = vi.hoisted(() => ({
-  mockPin: vi.fn(),
-  mockClearPin: vi.fn(),
-}));
+const { mockPin } = vi.hoisted(() => ({ mockPin: vi.fn() }));
 
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return {
     ...actual,
-    pinResolutionForNextCall: (...a: unknown[]) => mockPin(...(a as [])),
-    clearPinnedResolution: (...a: unknown[]) => mockClearPin(...(a as [])),
+    withPinnedResolution: (<T>(p: unknown, value: unknown, fn: () => Promise<T>) => {
+      mockPin(p, value);
+      return fn();
+    }),
     resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) => {
+      // Case 2 — `@active` resolves to the foreground window (first in z-order
+      // here), which is what makes it a self-resolved handle rather than a
+      // plain title.
+      if (p.hwnd === undefined && p.windowTitle === "@active") {
+        const fg = windows[0];
+        if (!fg) return null;
+        return { hwnd: fg.hwnd, title: fg.title, warnings: [], className: "X" };
+      }
       if (p.hwnd === undefined) return null;
       const popup = popupFor[p.hwnd];
       if (popup) return { hwnd: popup.hwnd, title: popup.title, warnings: [], className: "#32770" };
@@ -104,7 +111,6 @@ beforeEach(() => {
   innerHandler.mockClear();
   enumThrows = false;
   mockPin.mockClear();
-  mockClearPin.mockClear();
   popupFor = {};
   windows = [
     { hwnd: 0x1111n, title: SHARED_TITLE },
@@ -285,22 +291,35 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(innerHandler).toHaveBeenCalled();
   });
 
-  it("catches a same-titled flip under @active, where the ambiguity gate does not run", async () => {
-    // The gate above only fires when the caller supplied `hwnd`. `@active`
-    // resolves to a window and pins it without passing that gate, so a
-    // foreground change between two windows SHARING a title reaches the
-    // comparison below — and a comparison on titles would see nothing.
+  it("withholds under @active when the resolved title is shared", async () => {
+    // Consuming the pin fixes the handler's `resolveWindowTarget` and not the
+    // whole of targeting: `keyboard` takes its `explicitHwnd` from the PUBLIC
+    // argument, so with `@active` its focus and delivery stay title-based. With
+    // the title shared the keys can land on a sibling while these snapshots
+    // describe the window that was in front a moment ago.
     windows = [
       { hwnd: 0x1111n, title: "PKDRIFT" },
       { hwnd: 0x2222n, title: "PKDRIFT" },
+    ];
+    const r0 = await narrated({ windowTitle: "@active", name: "OK", narrate: "rich" } as never);
+    expect(richOf(r0).diffDegraded).toBe("ambiguous_title");
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+  });
+
+  it("catches a flip under @active when the title is unique", async () => {
+    windows = [
+      { hwnd: 0x1111n, title: "PKDRIFT-A" },
+      { hwnd: 0x2222n, title: "PKDRIFT-B" },
     ];
     const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
     const first = resolver.getMockImplementation()!;
     let calls = 0;
     resolver.mockImplementation(async (p: never) => {
       calls += 1;
-      // The foreground moves to the sibling between the snapshot and the action.
-      return { hwnd: calls >= 2 ? 0x1111n : 0x2222n, title: "PKDRIFT", warnings: [], className: "X" } as never;
+      // The foreground moves to the other window between the snapshot and the action.
+      return calls >= 2
+        ? { hwnd: 0x1111n, title: "PKDRIFT-A", warnings: [], className: "X" } as never
+        : { hwnd: 0x2222n, title: "PKDRIFT-B", warnings: [], className: "X" } as never;
     });
     const r = await narrated({ windowTitle: "@active", name: "OK", narrate: "rich" } as never);
     resolver.mockImplementation(first);
@@ -316,7 +335,6 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
     expect(mockPin).toHaveBeenCalledTimes(1);
     expect(mockPin.mock.calls[0]![1]).toMatchObject({ hwnd: 0x2222n, title: "Ledger" });
-    expect(mockClearPin).toHaveBeenCalled();
   });
 
   it("drops the handed-forward resolution even when the diff is withheld", async () => {

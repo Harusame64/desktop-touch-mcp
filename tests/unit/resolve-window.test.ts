@@ -49,7 +49,7 @@ vi.mock("../../src/engine/win32.js", () => ({
 }));
 
 // tool-exclusion.js is NOT mocked — WindowExcludedError is the real class refuseIfExcludedTarget throws.
-import { resolveWindowTarget, pinResolutionForNextCall, clearPinnedResolution } from "../../src/tools/_resolve-window.js";
+import { resolveWindowTarget, withPinnedResolution } from "../../src/tools/_resolve-window.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -277,32 +277,51 @@ describe("ADR-036 — a resolution handed forward to the handler", () => {
   // travels beside the args, because putting the handle INTO the args would
   // make the handler believe the caller named one, which decides the guard
   // descriptor, the pinning rules and the wording of the refusal.
+  //
+  // Scoped to the invocation rather than the module: a call that never reaches
+  // its resolver must not leave an answer where a concurrent one can take it.
+  const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
 
-  it("is consumed by a matching call, once, without touching the desktop", async () => {
-    const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
-    pinResolutionForNextCall({ hwnd: "1", windowTitle: "whatever" }, pinned as never);
-    await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
-    // Second ask goes to the real resolver — the pin is single use, so a later
-    // call cannot inherit an answer about a moment that has passed. (`hwnd: 1`
-    // is not a window in this file's fixture, so the real path refuses, which is
-    // exactly the evidence that the pin was not reused.)
-    await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
+  it("is consumed by a matching call, once, inside the scope", async () => {
+    await withPinnedResolution({ hwnd: "1", windowTitle: "whatever" }, pinned as never, async () => {
+      await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
+      // Single use: a second ask inside the same scope goes to the real
+      // resolver, which refuses this fixture's non-window — the evidence that
+      // the answer was not handed out twice.
+      await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
+    });
   });
 
   it("is not eaten by a call asking a different question", async () => {
-    const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
-    pinResolutionForNextCall({ hwnd: "1", windowTitle: "whatever" }, pinned as never);
-    await expect(resolveWindowTarget({ hwnd: "2", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
-    // …and is still there for the call it was meant for.
-    await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
-    clearPinnedResolution();
+    await withPinnedResolution({ hwnd: "1", windowTitle: "whatever" }, pinned as never, async () => {
+      await expect(resolveWindowTarget({ hwnd: "2", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
+      await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
+    });
   });
 
-  it("does not outlive the call that set it", async () => {
-    const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
-    pinResolutionForNextCall({ hwnd: "1" }, pinned as never);
-    clearPinnedResolution();
+  it("does not leak outside its own invocation", async () => {
+    // The shape that made the module-global a P1: a call that exits before its
+    // resolver, while something else asks the same question.
+    await withPinnedResolution({ hwnd: "1" }, pinned as never, async () => {
+      // …exits without resolving.
+    });
     await expect(resolveWindowTarget({ hwnd: "1" })).rejects.toThrow(/WindowNotFound/);
+  });
+
+  it("does not leak into a concurrent invocation asking the same question", async () => {
+    let sawPinned: unknown;
+    await Promise.all([
+      withPinnedResolution({ hwnd: "1" }, pinned as never, async () => {
+        // Yield, so the other call runs while this pin is armed.
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }),
+      (async () => {
+        await new Promise<void>((r) => setTimeout(r, 0));
+        sawPinned = await resolveWindowTarget({ hwnd: "1" }).catch((e: Error) => e);
+      })(),
+    ]);
+    expect(sawPinned).toBeInstanceOf(Error);
+    expect(String(sawPinned)).toMatch(/WindowNotFound/);
   });
 });
 

@@ -14,6 +14,7 @@
  *   parent_disabled_prefer_popup    — parent window blocked by modal; popup preferred (case 1)
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd, isExcludedWindowHandle, isExcludedTitle,
   // H3: hierarchy-aware dialog resolution
@@ -303,32 +304,41 @@ function getDockTitleLiteral(): string | undefined {
  * question cannot eat it, and one asking the same question would have received
  * the same answer.
  */
-let pinnedResolution: { key: string; value: ResolvedWindow } | null = null;
+const pinnedResolution = new AsyncLocalStorage<{ key: string; value: ResolvedWindow | null }>();
 
 function resolutionKey(p: { hwnd?: string; windowTitle?: string }): string {
   return `${p.hwnd ?? ""}\u0000${p.windowTitle ?? ""}`;
 }
 
-/** Hand the next matching `resolveWindowTarget` this answer. Clears any previous pin. */
-export function pinResolutionForNextCall(
+/**
+ * Run `fn` with this answer available to the first matching `resolveWindowTarget`
+ * inside it.
+ *
+ * Scoped to the invocation, not to the process. A module-global pin looked
+ * enough while it was key-matched and single-use, and it was not: a rich call
+ * that exits before its resolver — `keyboard:type` taking the IME fast-fail,
+ * `keyboard:press` refusing an unsafe combo — leaves the pin armed while the
+ * post-state wrapper awaits its focused-element snapshot, and a CONCURRENT call
+ * asking the same question eats it. The key does not save that, because the
+ * same question has different answers at different times: `@active` is the
+ * whole point.
+ */
+export function withPinnedResolution<T>(
   p: { hwnd?: string; windowTitle?: string },
-  value: ResolvedWindow
-): void {
-  pinnedResolution = { key: resolutionKey(p), value };
-}
-
-/** Drop an unconsumed pin. Always call this in a `finally`. */
-export function clearPinnedResolution(): void {
-  pinnedResolution = null;
+  value: ResolvedWindow,
+  fn: () => Promise<T>
+): Promise<T> {
+  return pinnedResolution.run({ key: resolutionKey(p), value }, fn);
 }
 
 export async function resolveWindowTarget(params: {
   hwnd?: string;
   windowTitle?: string;
 }): Promise<ResolvedWindow | null> {
-  if (pinnedResolution && pinnedResolution.key === resolutionKey(params)) {
-    const pinned = pinnedResolution.value;
-    pinnedResolution = null;
+  const store = pinnedResolution.getStore();
+  if (store && store.value && store.key === resolutionKey(params)) {
+    const pinned = store.value;
+    store.value = null;   // single use, within this invocation only
     return pinned;
   }
   const warnings: string[] = [];
