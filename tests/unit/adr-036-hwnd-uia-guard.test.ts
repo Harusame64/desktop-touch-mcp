@@ -180,14 +180,18 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     const said = JSON.stringify(r);
     expect(said).toContain("DTM_SET_VALUE_CHAIN");
 
-    // NOTHING in the whole response may tell this caller to pass hwnd: the
-    // descriptor withholds it on purpose while the chain is armed, so that
-    // advice comes straight back to this refusal. Case-insensitive, because the
-    // two producers differ only in capitalisation — the `suggest` catalogue's
-    // lower-case "pass hwnd to name one window exactly" sat in this same
-    // response, contradicting its own error message, and an assertion written
-    // against the capitalised form did not see it.
-    expect(said).not.toMatch(/pass\s+hwnd/i);
+    // Nothing in the whole response may tell this caller to pass hwnd TO THIS
+    // TOOL: the descriptor withholds it on purpose while the chain is armed, so
+    // that advice comes straight back to this refusal. Sentence-scoped rather
+    // than a ban on the two words — "pass hwnd to click_element or keyboard" is
+    // the correct advice and has to stay sayable. Case-insensitive because the
+    // catalogue's lower-case "pass hwnd to name one window exactly" sat in this
+    // same response, contradicting its own error text, while an assertion
+    // written against the capitalised form did not see it.
+    for (const sentence of said.split(/(?<=[.;])\s+/)) {
+      if (!/pass\s+hwnd/i.test(sentence)) continue;
+      expect(sentence).toMatch(/click_element|keyboard/);
+    }
 
     // Read the field the guard fills, not the serialised envelope.
     // `_perceptionForPost` is spread onto the ROOT of a failure, not into
@@ -217,11 +221,36 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(next).toMatch(/windowTitle[^.]*only/i);
     expect(next).toMatch(/not contained in any other/i);
     expect(next).toMatch(/suffix/i);
+    // The containment example is asymmetric and has been flattened once: for
+    // "Report" beside "Report archive" the SHORTER one cannot be named and the
+    // longer one still can, so a text that calls the pair inseparable takes a
+    // working recovery away from half the callers. Whatever words carry that,
+    // one of them survives here.
+    expect(next).toMatch(/Report archive[^.]*(?:longer|still can)|(?:shorter|longer)[^.]*Report archive/i);
     // These three are prose checks and cannot be more than that: a rewrite can
     // keep every word and weaken the meaning. What holds the meaning is the
     // describe below, which puts each of those cases on the desktop and asks
     // the matcher — so a text that promises narrowing where narrowing does not
     // work is contradicted by a test rather than by a reviewer.
+
+    // The tailored `suggest` replaces a catalogue keyed on guard status, and
+    // nothing had pinned it: deleting it outright, or appending the catalogue's
+    // other statuses back into it, both left this file green.
+    expect(r.suggest).toEqual([
+      expect.stringMatching(/error message/i),
+      expect.stringMatching(/desktop_discover/),
+    ]);
+    // The other statuses' advice must not come back with it — those lines are
+    // about target_not_found, modals, elevation, and none of them is what
+    // happened here.
+    expect(JSON.stringify(r.suggest)).not.toMatch(/target_not_found|blocked_by_modal|needs_escalation/);
+
+    // This is the first production use of `failCode`'s `rootExtras`, which —
+    // unlike `failWith`'s `context` — is spread onto the root unfiltered. Pin
+    // the key set so a second key cannot arrive there unnoticed, and so the
+    // shape stays what the twelve `AutoGuardBlocked` producers hand back.
+    expect(Object.keys(r).sort()).toEqual(["_perceptionForPost", "code", "error", "ok", "suggest"]);
+    expect(r.code).toBe("AutoGuardBlocked");
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {
@@ -239,7 +268,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // WINDOWS — `resolveActionTarget` sees `titleIncludes` and nothing else —
     // so neither can change the count, in this tool or in any other that shares
     // the catalogue.
-    expect(JSON.stringify(r)).not.toMatch(/narrow windowTitle \/ name \/ automationId/);
+    // Keyed on the axes rather than on the slashes: the wrong advice reads the
+    // same written "windowTitle, name or automationId". What must not appear is
+    // either of them standing as something to narrow UNTIL the count changes.
+    expect(JSON.stringify(r)).not.toMatch(/narrow[^.]*\b(?:name|automationId)\b[^.]*until/i);
+    // And the correction itself has to survive: the line says outright that the
+    // two cannot move the count, which is the fact a reader needs.
+    expect(JSON.stringify(r)).toMatch(/name \/ automationId do not change the count/);
   });
 });
 

@@ -295,8 +295,13 @@ export const setElementValueHandler = async ({
           // the predicate is: this window's normalized title must not be
           // contained in any other window's. Three ways it is, all reachable:
           //
-          //   "Report" beside "Report archive" — every query matching the first
-          //   matches the second, because the first is a substring of it.
+          //   "Report" beside "Report archive" — the SHORTER one cannot be
+          //   named: every query matching it matches the longer one too. The
+          //   longer one still can ("archive" reaches it alone), so the pair is
+          //   separable from one side and not the other. Saying "this pair
+          //   cannot be separated" takes a working recovery away from the
+          //   caller who wanted "Report archive" — the same defect as offering
+          //   one that does not work, with the sign flipped.
           //
           //   "Report" beside "REPORT" — the raw titles differ; the normalized
           //   ones are the same string.
@@ -317,9 +322,10 @@ export const setElementValueHandler = async ({
             "keyboard take hwnd here. A more specific windowTitle works only if this " +
             "window's normalized title is not contained in any other open window's: " +
             "matching lowercases, trims and strips a Chrome, Edge or Firefox suffix " +
-            "from both sides, then asks which titles contain your query. So \"Report\" " +
-            "beside \"Report archive\", \"Report\" beside \"REPORT\", and one page open " +
-            "in Chrome and in Edge can never be separated by title. Unsetting " +
+            "from both sides, then asks which titles contain your query. So the " +
+            "shorter of \"Report\" and \"Report archive\" can never be named this way " +
+            "(the longer one still can), and \"Report\" beside \"REPORT\", or one page " +
+            "open in Chrome and in Edge, can never be told apart at all. Unsetting " +
             "DTM_SET_VALUE_CHAIN lets this tool take hwnd too, but that is a server " +
             "setting, not a call argument.";
           // The `suggest` catalogue answers by guard STATUS, and its
