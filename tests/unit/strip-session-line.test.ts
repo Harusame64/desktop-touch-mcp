@@ -1,16 +1,17 @@
 /**
- * strip-session-line.test.ts — the commit-msg hook's removal, exercised.
+ * strip-session-line.test.ts — the two hooks that keep session ids out of this
+ * repo, exercised rather than read.
  *
- * Repo policy is that no Claude session id lands in the public repo, and
- * `.githooks/commit-msg` enforces it by REWRITING the commit message. A rewrite
- * that can empty a message is not something to verify by reading it: the first
- * version of that hook did the removal in `sed -E "/$pattern/d"`, whose address
- * ended at the `/` inside `https:/`. `sed` died inside a pipeline where `||`
- * could not see it, `awk` read the empty stream, and a zero-byte file was moved
- * over the message — a hook that destroyed the thing it was added to protect.
+ * `.githooks/commit-msg` enforces the policy by REWRITING the commit message. A
+ * rewrite that can empty a message is not something to verify by reading it:
+ * the first version of that hook did the removal in `sed -E "/$pattern/d"`,
+ * whose address ended at the `/` inside `https:/`. `sed` died inside a pipeline
+ * where `||` could not see it, `awk` read the empty stream, and a zero-byte
+ * file was moved over the message — a hook that destroyed the thing it was
+ * added to protect. The second case below is that exact input.
  *
- * The removal now lives in `scripts/strip-session-line.mjs` so these cases can
- * call it directly. The first case below is the one that version fails.
+ * `.githooks/pre-push` is the enforcing half and cannot be imported, so it is
+ * driven as a subprocess against a throwaway repository built here.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -65,6 +66,11 @@ describe("stripSessionLines — what comes out", () => {
     expect(text).toBe("chore: y\n");
   });
 
+  it("removes a session URL behind a list marker — that is not prose", () => {
+    expect(stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x\n`).removed).toBe(1);
+    expect(stripSessionLines(`fix: a\n\n  * ${TRAILER}\n`).removed).toBe(1);
+  });
+
   it("leaves a clean message byte-identical and reports nothing removed", () => {
     const input = `feat: z\n\n${COAUTHOR}\n`;
     const { text, removed } = stripSessionLines(input);
@@ -81,17 +87,18 @@ describe("stripSessionLines — what comes out", () => {
   });
 
   it("removes an indented trailer", () => {
-    const { removed } = stripSessionLines(`fix: v\n\n   ${TRAILER}\n`);
-    expect(removed).toBe(1);
+    expect(stripSessionLines(`fix: v\n\n   ${TRAILER}\n`).removed).toBe(1);
   });
 
-  it("handles CRLF input and returns LF", () => {
+  it("keeps CRLF as CRLF — the message is returned in the bytes it arrived in", () => {
+    // An earlier version stripped every CR, silently converting a CRLF-authored
+    // message to LF whenever anything was removed. That contradicted the
+    // byte-for-byte promise the file-level function makes.
     const { text, removed } = stripSessionLines(
       `fix: crlf\r\n\r\n${COAUTHOR}\r\n${TRAILER}\r\n`
     );
     expect(removed).toBe(1);
-    expect(text).toBe(`fix: crlf\n\n${COAUTHOR}\n`);
-    expect(text).not.toContain("\r");
+    expect(text).toBe(`fix: crlf\r\n\r\n${COAUTHOR}\r\n`);
   });
 
   it("empties a message that was ONLY a trailer — git then refuses the commit", () => {
@@ -110,32 +117,39 @@ describe("stripSessionLines — what comes out", () => {
   });
 
   it("keeps a claude.ai URL that is not a session link", () => {
-    const input = "docs: link\n\nhttps://claude.ai/code/artifacts/abc\n";
-    expect(stripSessionLines(input).removed).toBe(0);
+    expect(stripSessionLines("docs: link\n\nhttps://claude.ai/code/artifacts/abc\n").removed).toBe(0);
   });
 
   it("drops only the blank lines the removal stranded at the end", () => {
     const { text } = stripSessionLines(`fix: b\n\nbody\n\n${TRAILER}\n\n\n`);
     expect(text).toBe("fix: b\n\nbody\n");
   });
+
+  it("keeps a trailing 0xA0 line — 'blank' is the pattern's idea of blank, not Unicode's", () => {
+    // On a latin1 byte string 0xA0 is NBSP to `String.trim()` and an ordinary
+    // byte to the hook. Trimming deleted it, which is a byte this function
+    // promises to keep.
+    const { text } = stripSessionLines(`fix: c\n\n \n${TRAILER}\n`);
+    expect(text).toBe("fix: c\n\n \n");
+  });
 });
 
 describe("the hook and the pre-push net stay in step", () => {
-  it("commit-msg still calls the script — a shim that stops calling it is silent otherwise", () => {
-    // Comment lines are dropped first. The hook explains itself by naming the
+  it("commit-msg invokes the script by its real path", () => {
+    // Comment lines are dropped first: the hook explains itself by naming the
     // script in prose, so asserting on the whole file passed even when the
-    // invocation was repointed at a path that does not exist — the pin matched
-    // the explanation instead of the code (caught by mutation, not by reading).
+    // invocation was repointed elsewhere. The path is then matched to its end,
+    // because `…strip-session-line.mjs.bak` contains the same substring.
     const hook = readFileSync(join(repoRoot, ".githooks", "commit-msg"), "utf8");
     const code = hook.replace(/^[ \t]*#.*$/gm, "");
-    expect(code).toContain("scripts/strip-session-line.mjs");
+    expect(code).toMatch(/scripts\/strip-session-line\.mjs"/);
   });
 
   it("pre-push carries the POSIX spelling of the same pattern", () => {
-    // Two engines, one rule. `pre-push` cannot import this module (it must run
-    // without node), so the ERE is duplicated there on purpose. This pins the
-    // copy to the original STRING; the describe below is what checks the two
-    // actually accept the same lines, which a matching string does not prove.
+    // `pre-push` cannot import the module — it must run without node — so the
+    // ERE is duplicated there on purpose. This pins the copy to the original
+    // STRING; the describe below is what checks the two accept the same lines,
+    // which a matching string does not prove.
     const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
     expect(hook).toContain(`session_pattern='${SESSION_LINE_ERE}'`);
   });
@@ -143,27 +157,38 @@ describe("the hook and the pre-push net stay in step", () => {
 
 describe("the two patterns accept the same lines, not merely the same string", () => {
   /**
-   * The ERE cannot be executed as a JS regex, and asserting that `pre-push`
-   * contains the same string only proves the two were edited together — drop
-   * the URL alternative from BOTH and that assertion still passes. So the ERE
-   * is translated here and run against the same corpus as the module's own
-   * regex. The translation is the only thing taken on trust, and it is three
-   * substitutions long.
+   * Translate the POSIX ERE into a JS RegExp so it can actually be run against
+   * the same corpus as the module's own pattern.
+   *
+   * It THROWS on anything it does not know how to translate. A translator that
+   * quietly produced a regex matching nothing would make this whole block pass
+   * vacuously the moment someone put `[[:alnum:]]` in the ERE — the failure
+   * mode is silent and looks like success, which is the shape this file exists
+   * to catch.
    */
   function ereToRegExp(ere: string): RegExp {
-    return new RegExp(
-      ere
-        // POSIX `[[:space:]]` inside a bracket expression, as ERE spells it.
-        .replace(/\[\[:space:\]\]/g, "[ \t\v\f\r]")
-        // ERE has no non-capturing groups; JS treats `(` the same way here.
-        .replace(/\(/g, "(?:")
-    );
+    // `[[:space:]]` is line-oriented here, so `\n` is deliberately absent: grep
+    // never sees one inside a line.
+    let js = ere.replace(/\[\[:space:\]\]/g, "[ \\t\\v\\f\\r]");
+    const unknownClass = js.match(/\[\[:[a-z]+:\]\]/);
+    if (unknownClass) {
+      throw new Error(`ereToRegExp cannot translate ${unknownClass[0]}`);
+    }
+    if (/\\[(){}|]/.test(js)) {
+      throw new Error("ereToRegExp cannot translate an escaped ERE metacharacter");
+    }
+    // ERE has no non-capturing groups; every `(` here is a plain group.
+    js = js.replace(/\(/g, "(?:");
+    return new RegExp(js);
   }
 
   const corpus = [
     TRAILER,
     `  ${TRAILER}`,
     `\t${TRAILER}`,
+    `\r${TRAILER}`,
+    `\v${TRAILER}`,
+    `\f${TRAILER}`,
     `- ${TRAILER}`,
     `  * ${TRAILER}`,
     "https://claude.ai/code/session_x",
@@ -190,8 +215,13 @@ describe("the two patterns accept the same lines, not merely the same string", (
 
   it("the corpus is not vacuous — it contains lines of both kinds", () => {
     const matched = corpus.filter((l) => SESSION_LINE_RE.test(l));
-    expect(matched.length).toBeGreaterThan(3);
-    expect(corpus.length - matched.length).toBeGreaterThan(3);
+    expect(matched.length).toBeGreaterThan(5);
+    expect(corpus.length - matched.length).toBeGreaterThan(5);
+  });
+
+  it("the translator refuses what it cannot translate, rather than matching nothing", () => {
+    expect(() => ereToRegExp("^[[:alnum:]]+$")).toThrow(/cannot translate/);
+    expect(() => ereToRegExp("^a\\(b\\)$")).toThrow(/cannot translate/);
   });
 });
 
@@ -227,18 +257,24 @@ describe("the file rewrite and the CLI — the part that can actually eat a mess
     // A CP932 subject (テスト) — what an editor writes on a Japanese Windows
     // box, or `git config i18n.commitEncoding`. Read as utf8 this came back as
     // U+FFFD for every non-ASCII byte, and the hook reported success.
-    const cp932Subject = Buffer.from([0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+    const cp932 = Buffer.from([0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
     const p = write(
       "msg",
-      Buffer.concat([
-        Buffer.from("fix: "),
-        cp932Subject,
-        Buffer.from(`\n\n${TRAILER}\n`),
-      ])
+      Buffer.concat([Buffer.from("fix: "), cp932, Buffer.from(`\n\n${TRAILER}\n`)])
     );
     expect(stripSessionLinesInFile(p)).toBe(1);
-    const after = readFileSync(p);
-    expect(after.equals(Buffer.concat([Buffer.from("fix: "), cp932Subject, Buffer.from("\n")]))).toBe(true);
+    const want = Buffer.concat([Buffer.from("fix: "), cp932, Buffer.from("\n")]);
+    expect(readFileSync(p).equals(want)).toBe(true);
+  });
+
+  it("preserves a trailing high byte that String.trim() would have eaten", () => {
+    const p = write(
+      "msg",
+      Buffer.concat([Buffer.from("fix: c\n\n"), Buffer.from([0xa0]), Buffer.from(`\n${TRAILER}\n`)])
+    );
+    expect(stripSessionLinesInFile(p)).toBe(1);
+    const want = Buffer.concat([Buffer.from("fix: c\n\n"), Buffer.from([0xa0]), Buffer.from("\n")]);
+    expect(readFileSync(p).equals(want)).toBe(true);
   });
 
   it("leaves no temp file behind", () => {
@@ -274,6 +310,9 @@ describe("the file rewrite and the CLI — the part that can actually eat a mess
   });
 
   it("exits 2 with a usage line when given no file", () => {
+    // Reachable by running the script directly. `.githooks/commit-msg` always
+    // passes the file and swallows a non-zero exit on purpose, so this code is
+    // the CLI's contract rather than the hook's.
     const { status, stderr } = cli([]);
     expect(status).toBe(2);
     expect(stderr).toContain("usage:");
@@ -283,5 +322,116 @@ describe("the file rewrite and the CLI — the part that can actually eat a mess
     const { status, stderr } = cli([join(dir, "does-not-exist")]);
     expect(status).toBe(0);
     expect(stderr).toContain("message left as written");
+  });
+});
+
+/**
+ * `.githooks/pre-push` is the half that refuses, and it was pinned only by a
+ * `toContain` on its text: deleting its entire leak block, or flipping the
+ * comparison, left every other test in this file green. It is `sh`, so it is
+ * driven as a subprocess — against a repository built here, not this one, so
+ * the cases do not depend on what happens to be in our history.
+ */
+describe("pre-push refuses what it should", () => {
+  const sh = spawnSync("sh", ["-c", "exit 0"]);
+  const hasSh = sh.status === 0;
+
+  let repo: string;
+  let clean = "";
+  let leaking = "";
+
+  const git = (args: string[], cwd = repo) =>
+    spawnSync("git", args, { cwd, encoding: "utf8" });
+
+  beforeEach(() => {
+    if (!hasSh) return;
+    repo = mkdtempSync(join(tmpdir(), "pre-push-"));
+    git(["init", "-q", "-b", "main"]);
+    git(["config", "user.email", "t@example.com"]);
+    git(["config", "user.name", "T"]);
+    git(["config", "commit.gpgsign", "false"]);
+    writeFileSync(join(repo, "a.txt"), "a");
+    git(["add", "-A"]);
+    git(["commit", "-q", "--no-verify", "-m", "chore: clean commit"]);
+    clean = git(["rev-parse", "HEAD"]).stdout.trim();
+    writeFileSync(join(repo, "a.txt"), "b");
+    git(["add", "-A"]);
+    git(["commit", "-q", "--no-verify", "-m", `chore: leaking commit\n\n${TRAILER}`]);
+    leaking = git(["rev-parse", "HEAD"]).stdout.trim();
+  });
+
+  afterEach(() => {
+    if (repo) rmSync(repo, { recursive: true, force: true });
+  });
+
+  const push = (stdin: string, env: NodeJS.ProcessEnv = {}) =>
+    spawnSync("sh", [join(repoRoot, ".githooks", "pre-push"), "origin", "https://example/x.git"], {
+      cwd: repo,
+      input: stdin,
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+
+  it.skipIf(!hasSh)("refuses a range containing a session id", () => {
+    const r = push(`refs/heads/x ${leaking} refs/heads/x ${clean}\n`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("carry a Claude session id");
+  });
+
+  it.skipIf(!hasSh)("allows a range that carries none", () => {
+    const r = push(`refs/heads/x ${clean} refs/heads/x ${clean}\n`);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  it.skipIf(!hasSh)("refuses a direct push to main", () => {
+    const r = push(`refs/heads/main ${clean} refs/heads/main ${clean}\n`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("direct push to main is forbidden");
+  });
+
+  it.skipIf(!hasSh)("lets the release flow through with the documented bypass", () => {
+    const r = push(`refs/heads/main ${clean} refs/heads/main ${clean}\n`, {
+      DESKTOP_TOUCH_ALLOW_MAIN_PUSH: "1",
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain("bypassing main protection");
+  });
+
+  it.skipIf(!hasSh)("allows a branch deletion", () => {
+    const zero = "0".repeat(40);
+    expect(push(`refs/heads/main ${zero} refs/heads/main ${clean}\n`).status).toBe(0);
+  });
+
+  it.skipIf(!hasSh)("refuses rather than passing when the range cannot be read", () => {
+    // A remote_oid this clone does not have. In one pipeline with `grep -c`
+    // this returned 0 and the push went through unchecked.
+    const r = push(`refs/heads/x ${clean} refs/heads/x ${"d".repeat(40)}\n`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("could not inspect");
+  });
+
+  it.skipIf(!hasSh)("does not treat another remote's history as published on this one", () => {
+    // A new branch has no counterpart on the remote, so the hook excludes what
+    // is already published — and it must mean published ON THIS REMOTE. With a
+    // bare `--remotes`, a commit that exists only on a fork you have fetched is
+    // excluded from the range and its trailer lands on the public repo.
+    const fork = mkdtempSync(join(tmpdir(), "pre-push-fork-"));
+    try {
+      spawnSync("git", ["init", "-q", "--bare", fork], { encoding: "utf8" });
+      git(["remote", "add", "origin", "https://example/x.git"]);
+      git(["remote", "add", "fork", fork]);
+      git(["push", "-q", "fork", "main"]);
+      git(["fetch", "-q", "fork"]);
+      // The leaking commit is now reachable from refs/remotes/fork/main and
+      // from nothing under refs/remotes/origin/.
+      expect(git(["rev-parse", "--verify", "-q", "refs/remotes/fork/main"]).status).toBe(0);
+
+      const r = push(`refs/heads/x ${leaking} refs/heads/x ${"0".repeat(40)}\n`);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("carry a Claude session id");
+    } finally {
+      rmSync(fork, { recursive: true, force: true });
+    }
   });
 });

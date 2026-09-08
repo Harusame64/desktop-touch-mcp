@@ -15,9 +15,28 @@
 #      now, and rewriting history under the author's feet is not a hook's job.
 #      It also runs without node, which the commit-msg hook needs.
 
+remote_name="$1"
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
 session_pattern='^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
+
+# What counts as "already published" for the push in front of us. git passes the
+# remote's name as $1 (or its URL, when pushing to one directly).
+#
+# This must name ONE remote. `--remotes` with no value excludes everything
+# reachable from ANY remote-tracking ref, so a commit carrying a trailer that
+# exists only on some other remote — a fork you have fetched — is excluded from
+# the range and lands on this one unchecked. Pinning it to `origin` had the
+# opposite fault: in a clone whose remote is named otherwise it excluded
+# nothing, and every new-branch push was refused over the old commits.
+if [ -n "$remote_name" ] && git config --get "remote.$remote_name.url" >/dev/null 2>&1; then
+    published="--remotes=$remote_name"
+else
+    # Pushed to a URL, or a remote this clone does not have configured. There
+    # are no remote-tracking refs to trust, so nothing is excluded and old
+    # commits may trip the check below — the message there says what to do.
+    published=""
+fi
 
 while read local_ref local_oid remote_ref remote_oid
 do
@@ -41,28 +60,23 @@ do
     fi
 
     # Only the commits this push would add. A brand-new branch has no remote
-    # counterpart, so everything already published on ANY remote is excluded
-    # instead — the 2 commits on main that carry the trailer from before this
-    # hook existed must not block every future push. `--remotes` without a
-    # value covers every remote: pinning it to `origin` excluded nothing in a
-    # clone whose remote is named otherwise, and refused the push on those
-    # same old commits.
+    # counterpart, so what is already on this remote is excluded instead.
     if [ "$remote_oid" = "$zero" ]; then
-        range="$local_oid --not --remotes"
+        range="$local_oid --not $published"
     else
         range="$remote_oid..$local_oid"
     fi
 
-    # `git log` is proved readable BEFORE its output is scanned, because the
-    # two failures mean opposite things. `grep -c` exits 1 when it finds
-    # nothing, which is the good case; `git log` exits non-zero when it could
-    # not read the range, which must NOT be read as 'nothing found'. In one
-    # pipeline `|| leaked=0` swallowed both. `remote_oid` comes from the
-    # remote's live advertisement and can name an object this clone does not
-    # have, so that failure is reachable with nothing wrong locally.
-    # (Two invocations rather than a captured string: passing commit messages
-    # back through the shell is how a backslash in a message becomes a bug.)
-    if ! git log $range --format=%B >/dev/null 2>&1; then
+    # One `git log`, into a file, so that its failure and grep's are told apart.
+    # `grep -c` exits 1 when it finds nothing, which is the good case; in a
+    # single pipeline `|| leaked=0` could not distinguish that from git failing,
+    # from grep being absent, or from a locale error — every one of which then
+    # read as "nothing found" and let the push through. `remote_oid` comes from
+    # the remote's live advertisement and can name an object this clone does not
+    # have, so a stale fetch was enough to reach it.
+    subjects=$(mktemp 2>/dev/null) || subjects="${TMPDIR:-/tmp}/pre-push-$$"
+    if ! git log $range --format=%B >"$subjects" 2>/dev/null; then
+        rm -f "$subjects"
         echo "" >&2
         echo "ERROR: could not inspect the commits being pushed." >&2
         echo "  This failed: git log $range" >&2
@@ -72,7 +86,19 @@ do
         exit 1
     fi
 
-    leaked=$(git log $range --format=%B 2>/dev/null | grep -c -E "$session_pattern") || leaked=0
+    leaked=$(grep -c -E "$session_pattern" <"$subjects")
+    grep_status=$?
+    rm -f "$subjects"
+
+    # 0 = found some, 1 = found none, anything else = grep itself failed.
+    if [ "$grep_status" -gt 1 ]; then
+        echo "" >&2
+        echo "ERROR: could not scan the commit messages (grep exited $grep_status)." >&2
+        echo "  Refusing rather than pushing unchecked." >&2
+        echo "" >&2
+        exit 1
+    fi
+
     if [ "${leaked:-0}" -gt 0 ]; then
         echo "" >&2
         echo "ERROR: $leaked commit message line(s) in this push carry a Claude session id." >&2
@@ -81,6 +107,8 @@ do
         echo "  Reword them before pushing — 'git commit --amend' for the tip," >&2
         echo "  'git rebase' for anything older. To list what is in this push:" >&2
         echo "    git log $range --format='%h %s'" >&2
+        echo "  If these are old commits already on the remote, 'git fetch' first:" >&2
+        echo "  without its remote-tracking refs this cannot tell them from new ones." >&2
         echo "" >&2
         exit 1
     fi

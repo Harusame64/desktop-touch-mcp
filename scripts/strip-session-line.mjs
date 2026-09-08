@@ -26,50 +26,59 @@ import { pathToFileURL } from "node:url";
  * Anchored at line start so prose that MENTIONS the trailer mid-sentence
  * survives — this repo's own commit messages discuss it.
  *
- * `.githooks/pre-push` carries the POSIX ERE spelling of the same rule, because
- * it must run without node. The two are checked against each other in the tests
- * over a shared corpus, not merely pinned as equal strings.
+ * The whitespace class is `[ \t\v\f\r]`, matching what POSIX `[[:space:]]`
+ * means to `grep` on a single line. It is spelled out rather than written `\s`
+ * because `\s` would also take Unicode spaces, which `grep` would not, and the
+ * two engines have to agree — `.githooks/pre-push` carries the ERE spelling of
+ * this same rule, since it must run without node.
  */
 export const SESSION_LINE_RE =
-  /^[ \t\v\f]*(?:[-*][ \t\v\f]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
+  /^[ \t\v\f\r]*(?:[-*][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
 
 /** The POSIX ERE that `.githooks/pre-push` must be using for the same job. */
 export const SESSION_LINE_ERE =
   "^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)";
 
+/** A line with nothing on it. Deliberately the same class as the pattern. */
+const BLANK_LINE_RE = /^[ \t\v\f\r]*$/;
+
 /**
- * Split a message into lines the way both engines see them.
- *
- * Works on a string of BYTES (latin1), never on decoded text — see
- * `stripSessionLinesInFile`. The pattern is pure ASCII, so byte-wise matching
- * gives the same answer as character-wise matching for every encoding, and
- * nothing has to be decoded to be preserved.
- *
- * @param {string} message
+ * @param {string} message the message as a string of BYTES (latin1) when it
+ *   comes from a file — see `stripSessionLinesInFile`. The pattern is pure
+ *   ASCII, so byte-wise matching gives the same answer as character-wise
+ *   matching for every encoding, and nothing has to be decoded to be preserved.
  * @returns {{ text: string, removed: number }} the message without its session
- *   lines, and how many were taken out. Trailing blank lines the removal leaves
- *   behind go too.
+ *   lines, and how many were taken out. Every surviving byte is kept as it was,
+ *   line endings included; only the blank lines the removal strands at the end
+ *   go with it.
  */
 export function stripSessionLines(message) {
-  const lines = message.split("\n").map((line) => line.replace(/\r$/, ""));
+  const lines = message.split("\n");
   const kept = [];
   let removed = 0;
 
   for (const line of lines) {
-    if (SESSION_LINE_RE.test(line)) {
+    // Matched with any CR stripped, kept with it intact: a CRLF message must
+    // come back CRLF. `BLANK_LINE_RE` accepts the CR for the same reason.
+    if (SESSION_LINE_RE.test(line.replace(/\r$/, ""))) {
       removed++;
       continue;
     }
     kept.push(line);
   }
 
-  // Blank lines stranded at the end by the removal. `git commit` cleans the
-  // message up around this hook, so this is tidiness rather than correctness —
-  // and on the editor path the message still carries git's `#` comment block
-  // here, in which case nothing is stranded and this loop does nothing.
-  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
+  // Blank lines stranded at the end by the removal. Tested against the pattern
+  // rather than `String.trim()`, which is Unicode-aware: on a latin1 byte
+  // string a trailing line holding the single byte 0xA0 counted as blank and
+  // was deleted, which is a byte this function promises to keep.
+  while (kept.length > 0 && BLANK_LINE_RE.test(kept[kept.length - 1])) kept.pop();
 
-  return { text: kept.length === 0 ? "" : `${kept.join("\n")}\n`, removed };
+  if (kept.length === 0) return { text: "", removed };
+
+  // Only ever `\n` here: the split was on `\n`, so a CRLF line kept its own CR
+  // and rejoining supplies the LF that follows it. A message with no trailing
+  // newline gains one, which git would add anyway.
+  return { text: `${kept.join("\n")}\n`, removed };
 }
 
 /**
