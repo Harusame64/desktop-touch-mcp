@@ -13,6 +13,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const SHARED_TITLE = "pictkura — Chrome";
 const SIBLING = 0x1111n;
 const LIVE = 0x2222n;
+/** A window that IS on the desktop and has no title — the population the
+ *  titleless refusal is for, as distinct from a caller who passed `""`. */
+const UNTITLED = 0x3333n;
 
 // The enumeration the guard counts. Mutable so the separability cases below can
 // put two DIFFERENT titles on the desktop; `beforeEach` puts the shared-title
@@ -72,11 +75,20 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return {
     ...actual,
-    resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) =>
-      p.hwnd !== undefined
-        ? { hwnd: BigInt(p.hwnd), title: SHARED_TITLE, warnings: [], className: "Chrome_WidgetWin_1" }
-        : null
-    ),
+    resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) => {
+      // `@active` resolves to the foreground, which is how an UNTITLED window is
+      // named at all — the enumeration that answers a plain title drops it.
+      if (p.hwnd === undefined && p.windowTitle === "@active") {
+        return { hwnd: UNTITLED, title: "", warnings: [], className: "X" };
+      }
+      if (p.hwnd === undefined) return null;
+      const h = BigInt(p.hwnd);
+      return {
+        hwnd: h,
+        title: h === UNTITLED ? "" : SHARED_TITLE,
+        warnings: [], className: "Chrome_WidgetWin_1",
+      };
+    }),
   };
 });
 
@@ -308,7 +320,7 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // Promising the handle here would be the same loop one shape over.
     process.env.DTM_SET_VALUE_CHAIN = "1";
     const r = parse(await setElementValueHandler({
-      windowTitle: "", value: "x", name: "Field",
+      windowTitle: "@active", value: "x", name: "Field",
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(JSON.stringify(r)).toContain("ambiguous_target");
@@ -348,7 +360,7 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // on the path nobody has to configure.
     delete process.env.DTM_SET_VALUE_CHAIN;
     const r = parse(await setElementValueHandler({
-      windowTitle: "", value: "x", name: "Field",
+      windowTitle: "@active", value: "x", name: "Field",
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(JSON.stringify(r)).toContain("ambiguous_target");
@@ -365,12 +377,44 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(suggests).not.toMatch(/pass hwnd to name one window exactly/);
   });
 
+  it("an EMPTY windowTitle is not a titleless window — that caller keeps the generic advice", async () => {
+    // The two populations `effectiveTitle === ""` collapsed together. Nothing on
+    // this desktop is untitled; the caller passed an empty query, which the
+    // schema allows and which matches every window. Both recoveries the
+    // titleless text calls broken work here: `desktop_discover` lists these
+    // windows and the handle reaches them. Every test written for this branch
+    // across three rounds used THIS fixture and read it as the other one.
+    delete process.env.DTM_SET_VALUE_CHAIN;
+    const r = parse(await setElementValueHandler({
+      windowTitle: "", value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(JSON.stringify(r)).toContain("ambiguous_target");
+    expect(next).not.toMatch(/no title/i);
+    expect(next).not.toMatch(/desktop_discover cannot list/);
+    // The catalogue's own advice, which is right for this caller.
+    expect(next).toMatch(/pass hwnd/i);
+  });
+
+  it("and the same empty query with the chain armed takes the ordinary refusal", async () => {
+    // The chain-on half of the same separation: `!mayPinHandle` still routes
+    // this caller into the tailored block, and inside it the ORDINARY message is
+    // the true one — the window it names does have a title.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    const r = parse(await setElementValueHandler({
+      windowTitle: "", value: "x", name: "Field",
+    } as never));
+    const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
+    expect(next).not.toMatch(/no title/i);
+    expect(next).toContain("click_element");
+  });
+
   it("still names the variable when it IS the thing standing in the way", async () => {
     // The pairing for the sentence above: with the chain armed, unsetting it is
     // a real (operator-level) recovery and the text has to keep saying so.
     process.env.DTM_SET_VALUE_CHAIN = "1";
     const r = parse(await setElementValueHandler({
-      windowTitle: "", value: "x", name: "Field",
+      windowTitle: "@active", value: "x", name: "Field",
     } as never));
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(next).toMatch(/unsetting DTM_SET_VALUE_CHAIN/);

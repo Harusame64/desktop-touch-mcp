@@ -374,9 +374,22 @@ export async function resolveWindowTarget(params: {
     // because this is the moment it acquired a dispatch. `deferLog` held it
     // back at the wrapper precisely so a resolution nothing acted on would not
     // be counted.
+    //
+    // The CONSUMER's intent decides, the same as it does for a resolution this
+    // function computes. A consumer that is itself a probe (`logAs: "off"`)
+    // dispatches nothing, so the event it inherits is dropped rather than
+    // written; one that defers passes it on. Writing unconditionally here made
+    // a silenced probe emit the outer call's event, and a nested narrated
+    // handler count the rescue twice — not reachable today, because the only
+    // cross-tool call from inside a narrated handler goes to a RAW handler and
+    // macro steps are sequential, and one `if` away from being reachable.
     const emit = store.emitLog;
     store.emitLog = undefined;
-    emit?.();
+    if (emit) {
+      if (options.logAs === "off") { /* nothing dispatches on a probe */ }
+      else if (options.deferLog) options.deferLog(emit);
+      else emit();
+    }
     return pinned;
   }
   const warnings: string[] = [];

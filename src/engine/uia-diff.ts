@@ -48,7 +48,15 @@ export type DiffDegraded =
    * the window the caller named is gone — a caller reading that would give up
    * on a window that is still there and merely needs reacquiring.
    */
-  | "target_changed";
+  | "target_changed"
+  /**
+   * ADR-036 — the call retried with a `fixId`. The handler then acts on the
+   * window the STORED FIX names, and a fix exists because the guard found a
+   * narrower one than the argument did, so the two normally differ. The
+   * narration wrapper cannot see the fix, so its snapshots would describe the
+   * window the caller asked for while the action went somewhere else.
+   */
+  | "fix_target_unknown";
 
 export interface UiaDiffResult {
   appeared: AppearedItem[];

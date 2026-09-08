@@ -71,14 +71,22 @@
     modal dialog over the window it blocks — because a resolved handle does not
     make the *snapshots* handle-based. `target_changed`: the window moved
     between the snapshot and the action (a modal closing, the foreground
-    changing). The action itself is unaffected in both cases — only the diff is
+    changing). `fix_target_unknown`: you retried with a `fixId`, and the window
+    the stored fix names is not visible to the part that takes the snapshots — a
+    fix exists because the guard found a narrower window than your argument did,
+    so the two normally differ. The action itself is unaffected in every case —
+    only the diff is
     withheld. Withholding applies to the three tools this ADR covers
     (`set_element_value`, `click_element`, `keyboard`); tools that narrate by
     title alone and take no handle key — `mouse_click`, `scroll`, `focus_window`
     and the browser set — are unchanged by this release.
-  - A window with **no title** now gets its own answer from `set_element_value`,
-    on the default configuration as well as with the chain armed. Passing `hwnd`
-    does not reach it — the enumeration that resolves handles drops untitled
+  - A window that **is open and has no title** — reached by handle, or by
+    `windowTitle: "@active"` while it is in front — now gets its own answer from
+    `set_element_value`, on the default configuration as well as with the chain
+    armed. (Passing an EMPTY `windowTitle` is a different thing and keeps the
+    ordinary advice: that query matches every window, and every window it
+    matches can still be named and still takes a handle.) Passing `hwnd`
+    does not reach a titleless window — the enumeration that resolves handles drops untitled
     windows — so the general advice ("pass hwnd, `desktop_discover` returns it")
     named two things that do not work, and following it returned
     `target_not_found`, whose advice is to run `desktop_discover` again. The

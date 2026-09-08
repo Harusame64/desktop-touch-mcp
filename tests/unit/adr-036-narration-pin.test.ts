@@ -369,6 +369,7 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(said).toContain("diffDegraded");
     expect(said).toContain("ambiguous_title");
     expect(said).toContain("target_changed");
+    expect(said).toContain("fix_target_unknown");
     expect(said).toContain("@active");
   });
 
@@ -491,35 +492,46 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockPin).not.toHaveBeenCalled();
   });
 
-  it("withholds under fixId when the title is shared, with or without a handle", async () => {
-    // The gate keyed its first half on the caller's handle, which under `fixId`
-    // the handler discards — it acts on the stored fix's own title. So the diff
-    // was withheld on the strength of an inert parameter, and the case that
-    // needs it (a shared title and no handle, where the argument is all the
-    // snapshots have) got the confident diff. Both directions, one gate.
-    windows = [
-      { hwnd: 0x1111n, title: SHARED_TITLE },
-      { hwnd: 0x2222n, title: SHARED_TITLE },
-    ];
-    const withHandle = await narrated({
-      windowTitle: SHARED_TITLE, hwnd: LIVE, fixId: "fix-1", name: "OK", narrate: "rich",
-    } as never);
-    expect(richOf(withHandle).diffDegraded).toBe("ambiguous_title");
-
-    mockGetUiElements.mockClear();
-    const withoutHandle = await narrated({
-      windowTitle: SHARED_TITLE, fixId: "fix-1", name: "OK", narrate: "rich",
-    } as never);
-    expect(richOf(withoutHandle).diffDegraded).toBe("ambiguous_title");
-    expect(mockGetUiElements).not.toHaveBeenCalled();
-  });
-
-  it("still narrates a fixId call when the title names one window", async () => {
-    // The pairing: `fixId` is not itself a reason to withhold.
+  it("withholds under fixId even when the argument names exactly one window", async () => {
+    // A shared argument title was never what is wrong with `fixId`. The handler
+    // acts on the STORED FIX's `windowTitle`, and a fix exists because the guard
+    // found a narrower window than the argument named — so the two normally
+    // differ, and the argument being unique makes the snapshots MORE confident
+    // about the wrong window rather than less.
     windows = [{ hwnd: 0x2222n, title: "Ledger" }];
     const r = await narrated({
       windowTitle: "Ledger", fixId: "fix-1", name: "OK", narrate: "rich",
     } as never);
+    expect(richOf(r).diffDegraded).toBe("fix_target_unknown");
+    expect(richOf(r).diffSource).toBe("none");
+    // The snapshots that would have described the argument's window were never
+    // taken, and the action still ran.
+    expect(mockGetUiElements).not.toHaveBeenCalled();
+    expect(innerHandler).toHaveBeenCalled();
+  });
+
+  it("narrates the same call without the fixId", async () => {
+    // The pairing that makes the case above about `fixId` and not about the
+    // fixture.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    const r = await narrated({
+      windowTitle: "Ledger", name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(richOf(r).diffSource).toBe("uia");
+  });
+
+  it("leaves a fixId call on a title-only tool exactly where it was", async () => {
+    // `fixId` is declared by tools far outside this ADR — `mouse_click` is one —
+    // so reading the key on all nineteen changed a tool this release says it
+    // does not change. That is the same spill as the `argTitle` widening, one
+    // commit later, and the scope is `hwndKey` again.
+    const titleOnly = withRichNarration("mouse_click", innerHandler as never, { windowTitleKey: "windowTitle" });
+    windows = [
+      { hwnd: 0x1111n, title: SHARED_TITLE },
+      { hwnd: 0x2222n, title: SHARED_TITLE },
+    ];
+    const r = await titleOnly({ windowTitle: SHARED_TITLE, fixId: "fix-1", narrate: "rich" } as never);
     expect(richOf(r).diffDegraded).toBeUndefined();
     expect(richOf(r).diffSource).toBe("uia");
   });

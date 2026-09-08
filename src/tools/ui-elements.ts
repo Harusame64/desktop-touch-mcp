@@ -285,7 +285,21 @@ export const setElementValueHandler = async ({
         // steps close a loop. That is the shape this PR exists to remove, and it
         // was sitting on the path nobody has to configure — the tailoring was
         // reachable only with a flag set.
-        const titlelessTarget = effectiveTitle === "";
+        //
+        // `resolvedWin !== null` is load-bearing and was missing. `effectiveTitle`
+        // is `resolvedWin?.title ?? windowTitle`, so an empty string arrives two
+        // ways: a window we RESOLVED that has no title (`@active` on an untitled
+        // foreground, or a handle), and a caller who simply passed
+        // `windowTitle: ""` — the schema has no `.min(1)`, and an empty query
+        // matches every window, so that caller is `ambiguous_target` too. They
+        // are different populations with opposite recoveries. Measured on a
+        // desktop of two TITLED windows: `windowTitle: ""` was told "this window
+        // has no title", that passing hwnd returns `target_not_found` and that
+        // `desktop_discover` cannot list the window — four false statements, and
+        // the generic advice it replaced was correct for that caller. Naming as
+        // broken the two recoveries that work is this PR's subject with the sign
+        // flipped, which is the fourth time this branch has produced one.
+        const titlelessTarget = resolvedWin !== null && effectiveTitle === "";
         if (ag.summary.status === "ambiguous_target" && (!mayPinHandle || titlelessTarget)) {
           // Does not name this tool: it is privatised, and the naming audit
           // keeps its name out of anything the model reads. "This tool" is

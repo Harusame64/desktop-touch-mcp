@@ -42,9 +42,10 @@ export const narrateParam = z
     "post.rich.diffDegraded saying why, when the diff cannot be shown to describe the " +
     "window that was acted on: another open window's title contains the text this call " +
     "resolved to, whether you named the handle or the server did — \"@active\" and the " +
-    "dialog rescue both resolve one (\"ambiguous_title\"); or the target moved between the " +
-    "snapshot and the action (\"target_changed\"). The action itself is unaffected either " +
-    "way — only the diff is withheld. Default: \"minimal\"."
+    "dialog rescue both resolve one (\"ambiguous_title\"); the target moved between the " +
+    "snapshot and the action (\"target_changed\"); or you retried with a fixId, whose " +
+    "stored window this cannot see (\"fix_target_unknown\"). The action itself is " +
+    "unaffected in every case — only the diff is withheld. Default: \"minimal\"."
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,10 +272,26 @@ export function withRichNarration<T extends Record<string, unknown>>(
       ...(hwndArg !== undefined ? { hwnd: String(hwndArg) } : {}),
       ...(argTitle ? { windowTitle: argTitle } : {}),
     };
-    // `fixId` is the one shape this cannot follow: the handler skips resolution
-    // entirely and acts on the stored fix's own title, which is not visible from
-    // here. The argument is the closest thing available, and a handle-passing
-    // caller is never offered a fixId in the first place (`suppressSuggestedFix`).
+    // `fixId` is the one shape this cannot follow, and "the argument is the
+    // closest thing available" was not good enough. The handler skips resolution
+    // and acts on the stored fix's own `windowTitle`, which is not visible from
+    // here — and a fix EXISTS because the guard found a narrower window than the
+    // argument named, so the two normally DIFFER. Measured: argument "Notepad"
+    // unique, fix naming "Report - Google Chrome", and the snapshots came back
+    // describing Notepad twice with no degrade marker while the click went to
+    // Report. A confident diff of a window nobody touched, on this ADR's own
+    // recovery path.
+    //
+    // Withheld rather than guessed. Scoped to the tools that declare a handle
+    // key, because that is what says this ADR owns their targeting: `mouse_click`
+    // also declares `fixId`, and reading the key on all nineteen changed a tool
+    // this release says it does not change — the same spill, one commit later.
+    if (options.hwndKey && args["fixId"] !== undefined) {
+      const result = await wrappedWithPost(args);
+      spliceRich(result, degradedRichBlock("fix_target_unknown"));
+      return result;
+    }
+
     //
     // `options.hwndKey` is the OTHER limit, and leaving it out was this PR's own
     // defect one file over. `withRichNarration` wraps nineteen tools; only the
@@ -301,7 +318,7 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // them the handle rules deliberately — three more tools' worth of behaviour
     // with no real-machine acceptance behind it, and a follow-up. What is fixed
     // here is that this PR made those tools worse than it found them.
-    if (options.hwndKey && args["fixId"] === undefined && (hwndArg !== undefined || argTitle)) {
+    if (options.hwndKey && (hwndArg !== undefined || argTitle)) {
       let resolved;
       try {
         // `logAs: "off"`: this resolution exists to choose what to snapshot, not
@@ -374,16 +391,11 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // was in front a moment ago, and the `target_changed` check below does not
     // see it: that compares resolutions, not deliveries.
     //
-    // The second disjunct is `fixId`, not the caller's handle. Keying it on the
-    // handle was reachable only as `fixId` + `hwnd` — everywhere else
-    // `pinnedHwnd` is already set or the block above returned — and under
-    // `fixId` the handler discards the handle and acts on the stored fix's own
-    // title. So the diff was withheld on the strength of a parameter with no
-    // effect, while `fixId` on a shared title with NO handle got the confident
-    // diff: the same pair the wrong way round. Under `fixId` the title is all
-    // there is, so a shared one is exactly when the snapshots cannot be trusted.
-    if ((pinnedHwnd !== undefined || args["fixId"] !== undefined) &&
-        titleIsSharedByMoreThanOneWindow(windowTitle)) {
+    // One condition, not two. Keying anything here on the caller's handle was
+    // reachable only as `fixId` + `hwnd`, and `fixId` no longer reaches this
+    // line at all — it returned above, because a shared title was never what
+    // was wrong with it.
+    if (pinnedHwnd !== undefined && titleIsSharedByMoreThanOneWindow(windowTitle)) {
       const result = await wrappedWithPost(args);
       spliceRich(result, degradedRichBlock("ambiguous_title"));
       return result;

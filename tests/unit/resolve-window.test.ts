@@ -274,6 +274,30 @@ describe("resolveWindowTarget — logAs:\"off\" (ADR-035 event count)", () => {
     expect(once).toHaveBeenCalledTimes(1);
   });
 
+  it("a consumer that dispatches nothing does not write the event it inherits", async () => {
+    // Every round so far policed `logAs` where the event is PRODUCED; the
+    // consuming side wrote unconditionally. So a probe — a call whose whole
+    // purpose is to dispatch nothing — emitted the outer call's event when it
+    // happened to match the pin, and a nested narrated handler counted one
+    // dialog rescue twice. The consumer's intent decides here too.
+    const pinned = { title: "Ledger", hwnd: 0x2222n, warnings: [], className: "X" };
+
+    const silenced = vi.fn();
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger" }, { logAs: "off" }), silenced);
+    expect(silenced).not.toHaveBeenCalled();
+
+    // …and a consumer that defers passes it on rather than writing it.
+    const inherited = vi.fn();
+    let held: (() => void) | undefined;
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger" }, { deferLog: (e) => { held = e; } }), inherited);
+    expect(inherited).not.toHaveBeenCalled();
+    expect(held).toBeTypeOf("function");
+    held!();
+    expect(inherited).toHaveBeenCalledTimes(1);
+  });
+
   it("the wrapper's key matches the shape a handler actually asks with", async () => {
     // Load-bearing and, until this, untested: the wrapper builds `resolveArgs`
     // by OMITTING absent keys, and the handlers pass their optional params
