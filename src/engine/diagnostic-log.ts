@@ -24,13 +24,14 @@
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   renameSync,
   statSync,
-  unlinkSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { performance } from "node:perf_hooks";
 
@@ -281,7 +282,7 @@ function stagingPathFor(target: string): string {
 }
 
 /**
- * The file a path actually names.
+ * The file a path actually names, or `null` when it must not be rolled yet.
  *
  * `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` may point at a symbolic link — a log
  * collected centrally, say. `statSync` measures the target, but `renameSync`
@@ -291,15 +292,78 @@ function stagingPathFor(target: string): string {
  * place, pointing at the file the next append recreates, and files the
  * generations beside the real log rather than beside the link.
  *
- * Falls back to the path itself on any error, which is the behaviour every
- * ordinary (non-link) path already had.
+ * A link whose target is momentarily gone — another writer sharing it is
+ * mid-roll — makes `realpathSync` throw. Falling back to the path itself there
+ * would rename the LINK into the staging name and disconnect the configured
+ * destination permanently, so that case returns `null` and the roll waits. Any
+ * other failure falls back to the path, which is what every ordinary non-link
+ * path already did.
  */
-function realPathOrSelf(path: string): string {
+function rotationTarget(path: string): string | null {
   try {
     return realpathSync(path);
   } catch {
-    return path;
+    // fall through
   }
+  try {
+    if (lstatSync(path).isSymbolicLink()) return null;
+  } catch {
+    // not a link, or the link itself is unreadable
+  }
+  return path;
+}
+
+/**
+ * Whether a pid still belongs to a running process.
+ *
+ * Signal 0 performs the permission check without delivering anything. Only
+ * `ESRCH` means gone — `EPERM` means it exists and belongs to someone else,
+ * which is still alive, and the safe answer either way is "alive": leaving a
+ * staging file alone costs disk, taking one from a running server costs its
+ * newest history.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | null)?.code !== "ESRCH";
+  }
+}
+
+/**
+ * Staging files left behind by servers that are no longer running.
+ *
+ * A crash between staging the live file and filing it leaves one behind, and
+ * the pid in the name means the server that restarts — with a new pid — never
+ * looks at it. One up-to-`maxBytes` file per crashed pid, kept forever, is
+ * growth without a limit, which is the single thing this module exists to
+ * prevent; the ceiling would be describing only the files it happens to know
+ * the names of.
+ *
+ * They are filed into the generation chain rather than deleted. A staged file
+ * IS a generation — it is what the live log held when its server died — and
+ * deleting up to a ceiling's worth of crash-time diagnostics to save a readdir
+ * is the wrong trade for a diagnostic log.
+ */
+function staleStagingFiles(target: string): string[] {
+  const dir = dirname(target);
+  const prefix = `${basename(target)}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const stale: string[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(STAGING_SUFFIX)) continue;
+    const pid = Number(entry.slice(prefix.length, entry.length - STAGING_SUFFIX.length));
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    if (isProcessAlive(pid)) continue;
+    stale.push(join(dir, entry));
+  }
+  return stale;
 }
 
 /**
@@ -309,11 +373,20 @@ function realPathOrSelf(path: string): string {
  * caller can order the two correctly: see `rotateIfNeeded`.
  */
 function shiftGenerations(path: string): void {
-  try {
-    unlinkSync(`${path}.${KEPT_GENERATIONS}`);
-  } catch {
-    // absent — the usual case on the first rotation
-  }
+  // No unlink of the oldest generation first. `renameSync` replaces an existing
+  // destination on both POSIX and Windows (Node uses MoveFileExW with
+  // MOVEFILE_REPLACE_EXISTING), so the promotion below destroys the oldest by
+  // itself — and only once it has actually succeeded.
+  //
+  // Deleting first looked harmless and was not: with `.1` locked against
+  // renaming but `.2` deletable — a Windows viewer that omits delete sharing
+  // for `.1` — the unlink succeeded and the promotion then threw, so a roll
+  // that never happened had still destroyed the oldest generation, and the
+  // restore in the caller cannot bring it back.
+  //
+  // The cost is a filesystem that cannot replace in place: the promotion fails
+  // there and the roll is reported as failed rather than silently dropping a
+  // generation, which is the safer of the two.
   for (let gen = KEPT_GENERATIONS; gen >= 2; gen--) {
     try {
       renameSync(`${path}.${gen - 1}`, `${path}.${gen}`);
@@ -360,19 +433,29 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
   // Everything below moves files, so it works on what `path` resolves to, not
   // on `path` itself. Appends keep using `path`: through a link, that is how the
   // target gets recreated after a roll.
-  const target = realPathOrSelf(path);
+  const backOff = Math.max(refreshInterval, MAX_RECORD_BYTES);
+  const target = rotationTarget(path);
+  if (target === null) {
+    // A link whose target is momentarily gone. Wait for it rather than renaming
+    // the link away from under the configured destination.
+    _bytesOnDisk = Math.max(0, _bytesOnDisk - backOff);
+    _bytesSinceStat = 0;
+    return;
+  }
   const staging = stagingPathFor(target);
   try {
-    if (isPlainFile(staging)) {
-      // A previous roll was interrupted between staging the live file and
-      // filing it. Those records are NEWER than `.1`, so file them before
-      // staging anything else - the rename below would otherwise replace them.
+    // Oldest first: a crashed server's staged file is older than anything this
+    // process is holding, so it goes in behind ours.
+    for (const orphan of [...staleStagingFiles(target), staging]) {
+      if (!isPlainFile(orphan)) continue;
+      // A roll was interrupted between staging a live file and filing it. Those
+      // records are NEWER than `.1`, so they are filed before anything else is
+      // staged - the rename below would otherwise replace them.
       //
-      // Shifting before the move is safe HERE, unlike for the live file: this
-      // file is ours, was created moments ago, and nothing outside this module
-      // knows the name, so it is not the one a viewer can be holding open.
+      // Shifting before the move is safe HERE, unlike for the live file: these
+      // are staging names, not the file a viewer has open.
       shiftGenerations(target);
-      renameSync(staging, `${target}.1`);
+      renameSync(orphan, `${target}.1`);
     }
     // The live file moves FIRST, before any generation is touched.
     //
@@ -447,7 +530,6 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     // This outcome is NOT bounded: a file that can never be rolled grows at
     // full speed, which is the state this module exists to prevent. So it is
     // recorded once rather than swallowed, and the log can explain its own size.
-    const backOff = Math.max(refreshInterval, MAX_RECORD_BYTES);
     _bytesOnDisk = Math.max(0, statSizeOrZero(target) - backOff);
     _bytesSinceStat = 0;
     if (!_rotationFailureRecorded) _rotationFailurePending = true;

@@ -772,9 +772,10 @@ two rolled generations are kept. **With one server running, the newest records a
 `diagnostic.log*` rather than the one file. That glob also catches
 `diagnostic.log.<pid>.rotating`, which is where a server parks the live file for the moment it is
 being rolled. A roll that cannot finish puts the file straight back, so one of these left behind
-means the server was killed mid-roll. It is filed by the next roll of **that** server — the pid in
-the name says which — and another server will not adopt it, so if the server it belonged to is gone
-for good, the file is yours to move or delete.
+means the server was killed mid-roll. The pid in the name says which server it belonged to. It is
+filed back into the numbered generations by the next roll — by that server if it is still running,
+and otherwise by any other server once the original has exited, so a crashed server's log is not
+left sitting on disk forever.
 
 Every record is measured against the limit before it is written, so a server left running for days
 rolls the file as it goes — there is no scheduled job, nothing to restart, and nothing to clean up by

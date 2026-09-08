@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
   logDiagnostic,
@@ -738,24 +739,31 @@ describe("diagnostic-log rotation", () => {
     // Two files, and the FIRST is the one that discriminates: it sits at the
     // name a shared scheme would pick, so a shared name makes this process
     // adopt another server's staged log as its own leftover and file it away.
-    // The second is the same thing under the real naming, kept because it is
-    // what the scenario actually looks like.
-    const atSharedName = `${logPath}.rotating`;
-    const atOtherPid = `${logPath}.999999.rotating`;
+    // The second belongs to a server that is genuinely RUNNING — taking that
+    // one would cost it the history it is mid-roll with.
+    const alive = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+      stdio: "ignore",
+    });
+    try {
+      const atSharedName = `${logPath}.rotating`;
+      const atLivePid = `${logPath}.${alive.pid}.rotating`;
 
-    mkdirSync(join(tmp, "sub"), { recursive: true });
-    writeFileSync(atSharedName, "ANOTHER-SERVERS-STAGED-LOG", "utf8");
-    writeFileSync(atOtherPid, "AND-ANOTHERS", "utf8");
-    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
-    _resetDiagnosticLogForTest();
+      mkdirSync(join(tmp, "sub"), { recursive: true });
+      writeFileSync(atSharedName, "ANOTHER-SERVERS-STAGED-LOG", "utf8");
+      writeFileSync(atLivePid, "A-RUNNING-SERVERS-STAGED-LOG", "utf8");
+      writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+      _resetDiagnosticLogForTest();
 
-    write(1, "z"); // rolls
+      write(1, "z"); // rolls
 
-    expect(readFileSync(atSharedName, "utf8")).toBe("ANOTHER-SERVERS-STAGED-LOG");
-    expect(readFileSync(atOtherPid, "utf8")).toBe("AND-ANOTHERS");
+      expect(readFileSync(atSharedName, "utf8")).toBe("ANOTHER-SERVERS-STAGED-LOG");
+      expect(readFileSync(atLivePid, "utf8")).toBe("A-RUNNING-SERVERS-STAGED-LOG");
+    } finally {
+      alive.kill();
+    }
   });
 
-  it("MUTATION: a notice whose own write failed does not survive a recovery and re-latch the reset", () => {
+  it("MUTATION: a notice whose own write failed does not survive a recovery and re-latch the reset", (ctx) => {
     // The reordering that keeps a failed notice retriable and the reset that
     // re-arms reporting after a recovery interact: a notice can still be
     // pending when rotation starts working again. Written then, it describes a
@@ -767,6 +775,23 @@ describe("diagnostic-log rotation", () => {
     // immediately. The read-only attribute does exactly that: `appendFileSync`
     // gives EPERM, `statSync` still reports the real size, and `renameSync`
     // still works (measured on this machine, 2026-09-08).
+    //
+    // It does NOT hold for a process that ignores discretionary permissions —
+    // root on POSIX, which is how this repo's container runs — so the injector
+    // is verified before it is relied on rather than assumed to work.
+    const probe = join(tmp, "ro-probe");
+    writeFileSync(probe, "x", "utf8");
+    chmodSync(probe, 0o444);
+    let readOnlyBlocksAppend = false;
+    try {
+      appendFileSync(probe, "y");
+    } catch {
+      readOnlyBlocksAppend = true;
+    }
+    chmodSync(probe, 0o666);
+    if (!readOnlyBlocksAppend) {
+      ctx.skip("read-only does not block appends here (root?), so the state cannot be set up");
+    }
     const blockStaging = (): void => {
       mkdirSync(staging(), { recursive: true });
       writeFileSync(join(staging(), "blocker"), "no", "utf8");
@@ -791,7 +816,10 @@ describe("diagnostic-log rotation", () => {
     // Episode 1: the roll is blocked, and the append that would carry its
     // notice fails too, so the notice stays pending across the call.
     rec("blocked");
-    expect(statSync(logPath).size).toBe(2 * MIN_CEILING); // nothing was appended
+    // Read rather than stat: a `statSync` here and a `readFileSync` of the same
+    // path below are a check-then-use pair, which is a real shape even if the
+    // attacker in this temp directory is imaginary. One read answers both.
+    expect(readFileSync(logPath, "utf8").length).toBe(2 * MIN_CEILING); // nothing appended
 
     // Recovery IN ONE CALL: the staging name is free, so this call rotates
     // successfully first and only then appends - into a file the roll just
@@ -839,6 +867,52 @@ describe("diagnostic-log rotation", () => {
     block();
     write(20, "c"); // episode 2 must be reported on its own
     expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
+  });
+
+  it("MUTATION: a roll does not delete the oldest generation it is not going to promote into", () => {
+    // The shift used to unlink `.2` before promoting `.1` into it. With `.1`
+    // absent — nothing to promote — the unlink still ran, so a roll destroyed
+    // an old generation for no reason at all. The same ordering is what loses
+    // `.2` when `.1` exists but cannot be moved, which is the case a Windows
+    // viewer holding `.1` without delete sharing produces and which no test
+    // here can stage; this is the reachable half of it.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.2`, "OLDEST-KEEP-ME", "utf8"); // and no .1
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z"); // rolls
+
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("OLDEST-KEEP-ME");
+    expect(existsSync(`${logPath}.1`)).toBe(true); // the live file took .1
+  });
+
+  it("MUTATION: a staged log from a server that has exited is filed, not left on disk forever", () => {
+    // A crash between staging the live file and filing it leaves one behind,
+    // and the pid in the name means the restarted server — new pid — never
+    // looks at it again. One up-to-a-ceiling file per crashed pid, kept
+    // forever, is growth without a limit: the exact thing this module exists
+    // to stop, hiding under a name the ceiling does not count.
+    //
+    // `spawnSync` returns only once the child has exited, so its pid is a pid
+    // that is definitely gone rather than one guessed to be free.
+    const dead = spawnSync(process.execPath, ["-e", "0"]);
+    expect(dead.pid).toBeGreaterThan(0);
+    const orphan = `${logPath}.${dead.pid}.rotating`;
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(orphan, "CRASHED-SERVERS-LOG", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z"); // rolls
+
+    expect(existsSync(orphan)).toBe(false); // no longer outside the chain
+    // Filed rather than deleted: a staged file IS a generation, and it is older
+    // than the live file this roll is filing, so it ends up behind it.
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("CRASHED-SERVERS-LOG");
+    // And the directory is back to what the ceiling actually counts.
+    expect(logFiles().length).toBeLessThanOrEqual(3);
   });
 
   it("MUTATION: a roll that fails AFTER staging puts the live file back instead of stranding it", () => {
