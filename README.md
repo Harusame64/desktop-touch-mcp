@@ -777,8 +777,8 @@ not if a fresh `diagnostic.log` has been started in the meantime, and the move b
 same reason the roll did. Nothing in it is lost. The pid in the name says which server it belonged
 to, and it is filed back into the numbered generations by the next roll — by that server if it is
 still running, and otherwise by any other server once the original has exited or, because process
-ids are reused, once nothing has been written to the file for an hour — so a crashed server's log is
-not left sitting on disk forever.
+ids are reused, once the file has been parked for an hour — so a crashed server's log is not left
+sitting on disk forever.
 
 Every record is measured against the limit before it is written, so a server left running for days
 rolls the file as it goes — there is no scheduled job, nothing to restart, and nothing to clean up by

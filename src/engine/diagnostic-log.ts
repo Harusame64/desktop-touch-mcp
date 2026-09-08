@@ -29,6 +29,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  utimesSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -292,6 +293,53 @@ function stagingPathFor(target: string): string {
 }
 
 /**
+ * Move a file to `staging` and stamp it with the time it arrived there.
+ *
+ * `renameSync` keeps a file's mtime — and its birthtime; both measured to
+ * survive a rename unchanged on NTFS, 2026-09-08 — so an unstamped staging
+ * file's mtime says when the LOG was last written, while the only thing
+ * `staleStagingFiles` asks of it is how long the file has been staged. Those
+ * differ by exactly the log's idle time: a live file untouched for over
+ * `STALE_STAGING_AGE_MS` and then rolled became a staging file that was stale
+ * the instant it existed — its owner alive and mid-roll, and any other server
+ * sharing the path free to claim it. The stamp makes the field measure what
+ * its use assumes.
+ *
+ * Both callers come through here. An orphan being claimed carries its crashed
+ * owner's timestamp, older still, and it sits at THIS process's staging name
+ * if the shift after the claim throws — so without the stamp it would be
+ * reclaimable by another server the moment it became ours.
+ *
+ * Not guarded. A file this process could rename is one it can set times on
+ * (the read-only attribute refuses neither — measured), and the one failure
+ * that can be named, an ACL granting DELETE but not FILE_WRITE_ATTRIBUTES, is
+ * not a case this module has been asked to survive; a guard no test can reach
+ * is declined here as everywhere else in this file. If it does throw, the roll
+ * fails the way any other does and the caller's recovery puts the live file
+ * back.
+ *
+ * The cost: the generation this file becomes carries the roll time, not the
+ * time of its last record. A log idle three hours and then rolled gets a `.1`
+ * whose mtime says "now" while its newest record is three hours old — a
+ * departure from rename-based rotators, which keep the write time. Accepted:
+ * nothing in this module reads a generation's mtime, every record carries its
+ * own `ts`, and in the ordinary case — a roll on a file that is being written
+ * — stamp and last record are milliseconds apart. Reading the mtime before
+ * staging and restoring it after the install would put two more syscalls on
+ * the exit path to preserve a figure nothing consumes.
+ *
+ * `ctimeMs` was the write-free alternative — a rename does move it (measured,
+ * NTFS; POSIX specifies the same) — and was rejected because nothing can move
+ * it BACK: `utimes` itself sets it to now, so no test could age a staging
+ * file, and the age rule could then be deleted without a pin going red.
+ */
+function stageFile(from: string, staging: string): void {
+  renameSync(from, staging);
+  const now = new Date();
+  utimesSync(staging, now, now);
+}
+
+/**
  * The file a path actually names, or `null` when it must not be rolled yet.
  *
  * `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` may point at a symbolic link — a log
@@ -333,6 +381,10 @@ function rotationTarget(path: string): string {
  * to an unrelated process makes its leftover permanently unreclaimable — one
  * ceiling of disk per occurrence, contradicting what this module and the README
  * both promise.
+ *
+ * "Existed" is measured from the stamp `stageFile` puts on the file, not from
+ * the log's last write. The two differ by however long the log sat idle before
+ * it was rolled, and the first version of this rule used the wrong one.
  */
 const STALE_STAGING_AGE_MS = 60 * 60 * 1000;
 
@@ -369,7 +421,9 @@ function isProcessAlive(pid: number): boolean {
  * deleting up to a ceiling's worth of crash-time diagnostics to save a readdir
  * is the wrong trade for a diagnostic log.
  *
- * Returned oldest first, by modification time. `readdirSync` order is whatever
+ * Returned oldest first, by when they were staged — the mtime is the stamp
+ * `stageFile` put on them (for a file left by a build before the stamp it is
+ * the last write, the nearest thing there is). `readdirSync` order is whatever
  * the filesystem feels like, and each one filed pushes the previous one down a
  * generation — so with two crashed servers an arbitrary order means an OLDER
  * crash log can be the one retained while a newer one is evicted, which is
@@ -398,6 +452,8 @@ function staleStagingFiles(target: string): string[] {
     }
     // Age overrides the process table. A pid alone is not enough: pids are
     // reused, and a reused one would keep this file out of reach for good.
+    // `mtimeMs` is the staging stamp, not the log's last write: see `stageFile`
+    // for why the difference is the whole rule.
     if (Date.now() - mtimeMs < STALE_STAGING_AGE_MS && isProcessAlive(pid)) continue;
     stale.push({ path, mtimeMs });
   }
@@ -535,7 +591,7 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     // leaves the loop entirely.
     for (const orphan of _lastRollFailed ? [] : staleStagingFiles(target)) {
       if (!isPlainFile(orphan)) continue;
-      renameSync(orphan, staging);
+      stageFile(orphan, staging);
       fileStagedInto(target, staging);
     }
     // The live file moves FIRST, before any generation is touched.
@@ -551,7 +607,7 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     //
     // Staged first, a live file that can never be renamed costs nothing at all:
     // this rename fails, and every generation is exactly where it was.
-    renameSync(target, staging);
+    stageFile(target, staging);
     fileStagedInto(target, staging);
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;

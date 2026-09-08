@@ -1017,6 +1017,51 @@ describe("diagnostic-log rotation", () => {
     }
   });
 
+  it("MUTATION: a staging file's age is counted from when it was staged, not from the log's last write", () => {
+    // `renameSync` keeps the mtime. A log idle for longer than the stale window
+    // and then rolled therefore became a staging file that was stale the
+    // instant it existed — its owner alive and mid-roll, and any other server
+    // sharing the path free to claim it. So the file is stamped at staging.
+    //
+    // Observed on `.1`: the staging name exists for two renames, and the move
+    // into `.1` keeps the stamp exactly as it kept the old mtime (measured,
+    // 0 ms delta). Without the stamp `.1` carries the three-hour-old time.
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    utimesSync(logPath, threeHoursAgo, threeHoursAgo);
+    _resetDiagnosticLogForTest();
+
+    write(1, "z"); // rolls
+
+    expect(Date.now() - statSync(`${logPath}.1`).mtimeMs).toBeLessThan(60 * 1000);
+  });
+
+  it("MUTATION: a claimed orphan's age is counted from the claim, not from its crashed owner's last write", () => {
+    // Claiming renames the orphan to THIS process's staging name, and if the
+    // shift after it throws it stays there as our leftover. Unstamped, it keeps
+    // its dead owner's timestamp — past the stale window by construction, that
+    // being why it was still on disk — and another server's sweep may take it
+    // the moment it becomes ours. Stamped at the claim, it gets the hour every
+    // freshly staged file gets.
+    //
+    // Observed where the orphan ends up: filed into `.1`, then shifted to `.2`
+    // by the live file's own roll, both renames keeping the stamp.
+    const dead = spawnSync(process.execPath, ["-e", "0"]);
+    const orphan = `${logPath}.${dead.pid}.rotating`;
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(orphan, "CRASHED-SERVERS-LOG", "utf8");
+    utimesSync(orphan, new Date(1000), new Date(1000));
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z"); // rolls: the orphan is claimed and filed, then the live file
+
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("CRASHED-SERVERS-LOG");
+    expect(Date.now() - statSync(`${logPath}.2`).mtimeMs).toBeLessThan(60 * 1000);
+  });
+
   it("MUTATION: an orphan that cannot be claimed leaves the generations untouched", () => {
     // Filing an orphan shifts generations to make room. Doing that BEFORE
     // proving the orphan can be moved is the same defect the live file's own
