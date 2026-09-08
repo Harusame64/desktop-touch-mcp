@@ -313,13 +313,24 @@ export const setElementValueHandler = async ({
           // The last is the case this PR starts from (a browser window), which
           // is why the text keeps its examples after stating the rule.
           //
+          // And the title advice has to say WHO it is for. Sentence 1 addresses
+          // the caller who passed `hwnd` — and for that caller `windowTitle` is
+          // inert: `effectiveTitle` above is the RESOLVED window's full title,
+          // so the guard already counted with it and narrowing the argument
+          // changes nothing. Unscoped, the longest half of this message sent
+          // exactly the reader it had just addressed back to the same refusal:
+          // the defect this PR exists to remove, one axis over.
+          //
           // The generic advice in `_action-guard.ts` keeps the flat form on
           // purpose: there `hwnd` is offered first and works, so the title line
           // is a second option rather than the only one left.
           ag.summary.next =
             "This tool cannot be narrowed by hwnd while DTM_SET_VALUE_CHAIN=1: " +
             "its fallback channels still find the window by title. click_element and " +
-            "keyboard take hwnd here. A more specific windowTitle works only if this " +
+            "keyboard take hwnd here. If you passed hwnd, windowTitle was ignored: " +
+            "this refusal already used the named window's own full title, so narrowing " +
+            "it changes nothing. Calling by title alone, a more specific windowTitle " +
+            "works only if this " +
             "window's normalized title is not contained in any other open window's: " +
             "matching lowercases, trims and strips a Chrome, Edge or Firefox suffix " +
             "from both sides, then asks which titles contain your query. So the " +

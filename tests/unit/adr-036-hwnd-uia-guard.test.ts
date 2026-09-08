@@ -180,17 +180,26 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     const said = JSON.stringify(r);
     expect(said).toContain("DTM_SET_VALUE_CHAIN");
 
-    // Nothing in the whole response may tell this caller to pass hwnd TO THIS
-    // TOOL: the descriptor withholds it on purpose while the chain is armed, so
-    // that advice comes straight back to this refusal. Sentence-scoped rather
-    // than a ban on the two words — "pass hwnd to click_element or keyboard" is
-    // the correct advice and has to stay sayable. Case-insensitive because the
-    // catalogue's lower-case "pass hwnd to name one window exactly" sat in this
-    // same response, contradicting its own error text, while an assertion
-    // written against the capitalised form did not see it.
-    for (const sentence of said.split(/(?<=[.;])\s+/)) {
-      if (!/pass\s+hwnd/i.test(sentence)) continue;
-      expect(sentence).toMatch(/click_element|keyboard/);
+    // Nothing in the response may tell this caller to pass hwnd TO THIS TOOL:
+    // the descriptor withholds it on purpose while the chain is armed, so that
+    // advice comes straight back to this refusal. "Pass hwnd to click_element
+    // or keyboard" is the correct advice and has to stay sayable, so the rule
+    // is about the OBJECT of the pass, not about the two words co-occurring.
+    //
+    // Over the individual strings rather than `JSON.stringify(r)`: the blob's
+    // `","` separators carry no whitespace, so a split on sentence ends runs
+    // chunks across field boundaries and a mention in one field satisfied a
+    // check reading another. Split unconditionally on [.;] for the same reason
+    // — a comma before "and you can also pass hwnd to this tool" defeated a
+    // splitter that only broke on sentence ends.
+    const strings = [
+      String(r.error ?? ""),
+      ...((r.suggest ?? []) as string[]),
+      String((r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? ""),
+    ];
+    for (const clause of strings.flatMap((t) => t.split(/[.;]/))) {
+      if (!/pass\s+hwnd/i.test(clause)) continue;
+      expect(clause).toMatch(/pass\s+hwnd\s+to\s+(?:click_element|keyboard)/i);
     }
 
     // Read the field the guard fills, not the serialised envelope.
@@ -213,6 +222,14 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(unsetAt).toBeGreaterThan(-1);
     expect(next.indexOf("click_element")).toBeLessThan(unsetAt);
 
+    // The title advice says WHO it is for. Sentence 1 addresses the caller who
+    // passed hwnd, and for that caller windowTitle is inert — the guard counted
+    // with the RESOLVED window's own full title, so narrowing the argument
+    // changes nothing. Unscoped, the longest half of this message sent the
+    // reader it had just addressed back to the same refusal.
+    expect(next).toMatch(/passed hwnd[^.]*ignored/i);
+    expect(next).toMatch(/by title alone/i);
+
     // The title advice is never offered flat, and the condition it carries is
     // the matcher's: this window's NORMALIZED title must not be contained in
     // any other's. Three weaker conditions have been shot in review — identical
@@ -220,7 +237,12 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // uniqueness — each true and each useless.
     expect(next).toMatch(/windowTitle[^.]*only/i);
     expect(next).toMatch(/not contained in any other/i);
-    expect(next).toMatch(/suffix/i);
+    // Each example is pinned, because each answers a different way the advice
+    // was wrong before: containment, case collapse, and the browser suffix —
+    // the last one being Codex's own finding, which "strips a suffix" would
+    // have quietly dropped from the text while this file stayed green.
+    expect(next).toMatch(/Chrome, Edge or Firefox suffix/i);
+    expect(next).toMatch(/REPORT/);
     // The containment example is asymmetric, and the asymmetry has a direction:
     // the SHORTER title cannot be named (every query matching it matches the
     // longer one too) and the LONGER one still can. Flattening it to "this pair
@@ -234,7 +256,11 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // the clause after it. Tight, and knowingly so; the direction is a fact
     // about the matcher, measured in the pair below.
     expect(next).toMatch(/shorter of[^.]*can never/i);
-    expect(next).toMatch(/longer one still can/i);
+    // Affirmative, and required to be: "the longer one still can" is a prefix
+    // of "the longer one still can never be named", so a check for the phrase
+    // accepted the negated claim — the pair-wide flattening again, wearing the
+    // words of its own fix.
+    expect(next).toMatch(/longer one still can(?!\s*(?:not|never))/i);
     // These three are prose checks and cannot be more than that: a rewrite can
     // keep every word and weaken the meaning. What holds the meaning is the
     // describe below, which puts each of those cases on the desktop and asks
@@ -279,10 +305,14 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // Keyed on the axes rather than on the slashes: the wrong advice reads the
     // same written "windowTitle, name or automationId". What must not appear is
     // either of them standing as something to narrow UNTIL the count changes.
+    // In either order: "narrow … name … until" and "keep narrowing until only
+    // one does — name and automationId are the axes" say the same wrong thing.
     expect(JSON.stringify(r)).not.toMatch(/narrow[^.]*\b(?:name|automationId)\b[^.]*until/i);
-    // And the correction itself has to survive: the line says outright that the
-    // two cannot move the count, which is the fact a reader needs.
-    expect(JSON.stringify(r)).toMatch(/name \/ automationId do not change the count/);
+    expect(JSON.stringify(r)).not.toMatch(/narrow[^.]*until[^.]*\b(?:name|automationId)\b(?![^.]*do not change)/i);
+    // And the correction has to survive — keyed on the two axes and the claim,
+    // not on the slash between them, so rewriting it as "name and automationId"
+    // is not a failure.
+    expect(JSON.stringify(r)).toMatch(/\bname\b[^.]*\bautomationId\b[^.]*do not change the count/i);
   });
 });
 
@@ -366,9 +396,13 @@ describe("ADR-036 — set_element_value's hints name the channel's window, not t
 describe("ADR-036 — when a narrower windowTitle can and cannot separate two windows", () => {
   // Title-only calls: `resolveWindowTarget` returns null for these, so the
   // guard counts exactly what `resolveActionTarget` sees.
-  const ask = async (windowTitle: string) =>
-    JSON.stringify(parse(await setElementValueHandler({ windowTitle, value: "x", name: "Field" } as never)));
-  const refused = async (t: string) => (await ask(t)).includes("ambiguous_target");
+  const call = async (windowTitle: string) =>
+    parse(await setElementValueHandler({ windowTitle, value: "x", name: "Field" } as never));
+  const refused = async (t: string) => JSON.stringify(await call(t)).includes("ambiguous_target");
+  // "not refused" is not the same as "resolved": a call that failed for another
+  // reason also carries no `ambiguous_target`, and the positive control is what
+  // the whole promise rests on.
+  const resolved = async (t: string) => (await call(t)).ok === true;
 
   it("cannot separate a title that is a substring of its sibling — no query escapes", async () => {
     winsRef.list = [win(SIBLING, "Report", 0), win(LIVE, "Report archive", 1)];
@@ -377,7 +411,7 @@ describe("ADR-036 — when a narrower windowTitle can and cannot separate two wi
       expect(await refused(q)).toBe(true);
     }
     // The only query that narrows resolves the OTHER window.
-    expect(await refused("Report archive")).toBe(false);
+    expect(await resolved("Report archive")).toBe(true);
   });
 
   it("cannot separate titles that differ only in case or padding — normalization eats it", async () => {
@@ -407,6 +441,6 @@ describe("ADR-036 — when a narrower windowTitle can and cannot separate two wi
       win(LIVE, "pictkura - Brave", 1),
     ];
     expect(await refused("pictkura")).toBe(true);
-    expect(await refused("pictkura - Brave")).toBe(false);
+    expect(await resolved("pictkura - Brave")).toBe(true);
   });
 });
