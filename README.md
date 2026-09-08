@@ -801,7 +801,9 @@ Two situations go past that figure, and both are worth knowing about:
   record in `diagnostic.log.1` instead of the live file. Grepping `diagnostic.log*` rather than the
   one file covers both.
 - **A live file that cannot be renamed** — held open by another program, or permission denied.
-  Rotation then cannot happen and the log keeps growing at full speed. Nothing is lost — a roll that
+  Rotation then cannot happen and the log keeps growing at full speed; a parked `.rotating` file
+  that is held open stops a roll the same way, and is checked before any numbered generation is
+  touched. Nothing is lost — a roll that
   fails leaves the live file where it was, or at worst parked under the `.rotating` name above for a
   later roll to file — but this is the one case the limit does not cover, so it is not silent: a
   `log_rotation_failed` record is written into the log itself, once per stretch of failed rolls

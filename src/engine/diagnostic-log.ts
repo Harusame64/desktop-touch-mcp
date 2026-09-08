@@ -399,7 +399,7 @@ function staleStagingFiles(target: string): string[] {
     // Age overrides the process table. A pid alone is not enough: pids are
     // reused, and a reused one would keep this file out of reach for good.
     if (Date.now() - mtimeMs < STALE_STAGING_AGE_MS && isProcessAlive(pid)) continue;
-    stale.push({ path, mtimeMs })
+    stale.push({ path, mtimeMs });
   }
   return stale.sort((a, b) => a.mtimeMs - b.mtimeMs).map((entry) => entry.path);
 }
@@ -443,12 +443,32 @@ function shiftGenerations(path: string): void {
 /**
  * Move an already-staged file into `.1`, shifting the generations to make room.
  *
- * The caller must have claimed `staging` first — by renaming the live file or
- * an orphan into it — so that by the time this runs, the only way it can fail
- * is a generation that will not move, which `shiftGenerations` reports without
- * having destroyed anything.
+ * The shift is destructive, so the staged file is proved movable BEFORE it
+ * runs. The earlier contract left that proof to the caller — "you claimed it a
+ * moment ago" — and one caller had not: our own leftover from a roll that
+ * failed earlier was never claimed by anyone, and it had been sitting on disk
+ * since that failure, which is exactly when a viewer may have opened it. With
+ * the file held open without delete sharing, the shift replaced `.2` with `.1`
+ * and emptied `.1`, THEN the install threw; the outer recovery declined,
+ * because the live file was still there. One generation destroyed by a roll
+ * that never happened — bounded to one per episode, since the retry finds
+ * `.1` absent, but destroyed on the strength of nothing.
+ *
+ * The proof is a rename onto its own name. On Windows a file held open without
+ * `FILE_SHARE_DELETE` refuses it with `EBUSY` — the same refusal the real
+ * rename gets — and otherwise it is a no-op: inode, content and mtime all
+ * unchanged (measured 2026-09-08 on NTFS, the file held from .NET at
+ * `FileShare.Read`, which is how a viewer holds it). POSIX specifies the
+ * same-file rename as a successful no-op and has no share modes to refuse it
+ * with. No second filename, no state, nothing new to reclaim: the names this
+ * module has to reason about are the ones it already had.
+ *
+ * Done here for every caller rather than at the one call site that needed it,
+ * so the guarantee stops depending on call-site ordering — the orphan loop
+ * re-introduced this exact defect that way in Round 11.
  */
 function fileStagedInto(target: string, staging: string): void {
+  renameSync(staging, staging);
   shiftGenerations(target);
   renameSync(staging, `${target}.1`);
 }
@@ -498,6 +518,10 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     // It was not: the destructive act here is the CLAIM, and its destination
     // was the thing nobody had looked at. Ordering is the fix, not another
     // helper.
+    //
+    // Nothing has claimed THIS file: it is one an earlier roll of ours could
+    // not put back, on disk ever since. `fileStagedInto` proves it can still be
+    // moved before it shifts anything.
     if (isPlainFile(staging)) fileStagedInto(target, staging);
     // Then crashed servers' leftovers, oldest first, each CLAIMED before any
     // generation moves. Shifting and then renaming — the first version of this

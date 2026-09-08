@@ -729,6 +729,92 @@ describe("diagnostic-log rotation", () => {
     expect(existsSync(staging())).toBe(false); // and nothing is left staged
   });
 
+  it("MUTATION: a leftover of our own that a viewer holds open costs no generation — it is proved movable before the shift", async (ctx) => {
+    // The own-leftover branch files a `.rotating` file nobody has claimed: it
+    // has been on disk since a roll of ours failed, which is exactly when a
+    // viewer may have opened it. Shifting first replaced `.2` with `.1` and
+    // emptied `.1`, THEN the install threw, and the outer recovery declined
+    // because the live file was still there. So `fileStagedInto` proves the
+    // file can move before it shifts anything; this pin removes that proof.
+    //
+    // Node cannot hold a file against rename — libuv always opens with delete
+    // sharing — which is why this looked unpinnable. .NET can: `FileShare.Read`
+    // omits it, and renaming the held file then fails with EBUSY (measured
+    // 2026-09-08). So the viewer is a PowerShell process. Windows only, and it
+    // skips, saying so, where the hold cannot be established.
+    if (process.platform !== "win32") ctx.skip("share-mode locks are a Windows thing");
+    const REC = 100 * 1000; // past the back-off (max(ceiling/16, 128 KiB)) in two records
+    const rec = (tag: string): void => {
+      logDiagnostic({ kind: "slow_tool", tool: tag + "z".repeat(REC), elapsed_ms: 1, args_size: 0 });
+    };
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.1`, "GEN1-KEEP-ME", "utf8");
+    writeFileSync(`${logPath}.2`, "GEN2-KEEP-ME", "utf8");
+    writeFileSync(staging(), "OUR-UNFILED-LEFTOVER", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    const psPath = staging().replace(/'/g, "''");
+    const viewer = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$h = [IO.File]::Open('${psPath}', 'Open', 'Read', 'Read'); ` +
+          "[Console]::Out.WriteLine('HELD'); [Console]::Out.Flush(); Start-Sleep -Seconds 60",
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const exited = new Promise<void>((resolve) => viewer.once("exit", () => resolve()));
+    try {
+      const held = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 15_000);
+        viewer.stdout?.on("data", (d: Buffer) => {
+          if (String(d).includes("HELD")) {
+            clearTimeout(timer);
+            resolve(true);
+          }
+        });
+        viewer.once("exit", () => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+      });
+      if (!held) ctx.skip("PowerShell could not be started to hold the file");
+      // Verify the injector rather than assume it: the held file must refuse a
+      // rename to ANOTHER name. (Put back if it did not, so a skip leaves the
+      // directory as it was found.)
+      let refused = false;
+      try {
+        renameSync(staging(), `${staging()}.probe`);
+        renameSync(`${staging()}.probe`, staging());
+      } catch {
+        refused = true;
+      }
+      if (!refused) ctx.skip("a FileShare.Read handle does not block rename here");
+
+      rec("held"); // the roll is attempted and fails before anything has moved
+
+      expect(readFileSync(`${logPath}.1`, "utf8")).toBe("GEN1-KEEP-ME");
+      expect(readFileSync(`${logPath}.2`, "utf8")).toBe("GEN2-KEEP-ME");
+      expect(readFileSync(staging(), "utf8")).toBe("OUR-UNFILED-LEFTOVER");
+      const live = readFileSync(logPath, "utf8");
+      expect(live).toContain('"tool":"held');
+      expect(live).toContain("log_rotation_failed");
+    } finally {
+      viewer.kill();
+      await exited;
+    }
+
+    // Released, the next roll files it: delayed, not lost.
+    rec("released"); // past the back-off — one roll, and it succeeds
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("OUR-UNFILED-LEFTOVER");
+    expect(readFileSync(`${logPath}.1`, "utf8")).toContain("x".repeat(64));
+    expect(existsSync(staging())).toBe(false);
+  });
+
   it("MUTATION: another process's staged log is left alone — the staging name carries the pid", () => {
     // Servers share one log by default. With a single fixed staging name, the
     // "is anything staged?" check and the rename after it are a race that ends

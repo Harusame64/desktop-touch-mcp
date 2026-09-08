@@ -52,6 +52,13 @@ export default [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
       ],
+      // Every statement ends in a semicolon. Nothing enforced that, so a
+      // missing one reached CodeQL ("avoid automated semicolon insertion")
+      // before it reached lint — two sites repo-wide when this was added
+      // (PR #602). The core rule is deprecated in favour of
+      // @stylistic/eslint-plugin and stays available until ESLint 11; move it
+      // there with that upgrade rather than dropping the check.
+      semi: ["error", "always"],
     },
   },
 

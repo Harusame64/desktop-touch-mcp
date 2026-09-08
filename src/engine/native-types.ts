@@ -678,7 +678,7 @@ export interface NativeDirtyRectSubscription {
  * fan-out is exclusively a `DirtyRectBroker.subscribe()` upper-level API
  * responsibility.
  */
-export type { BrokerSubscription } from "./dxgi-broker.js"
+export type { BrokerSubscription } from "./dxgi-broker.js";
 
 // ── Visual GPU Phase 4 (ADR-005) ─────────────────────────────────────────────
 
