@@ -453,9 +453,31 @@ export const setElementValueHandler = async ({
     // `observe` is the only place this handler observes from, so a branch
     // taking the observation is the same act as clearing the debt — they
     // cannot drift apart the way a separate flag would.
+    //
+    // And it cannot throw. Every call site here has ALREADY decided what
+    // happened to the write: the channel returned, the value is in the field or
+    // it is not, and the only thing left is to describe it. Letting the
+    // description's failure out took that decision back — a `buildHintsForTitle`
+    // that threw after channel 1 succeeded reached the outer catch and reported
+    // `set_element_value` as failed for a field it had changed, and on the
+    // failure paths it replaced `SetValueAllChannelsFailed` with an error about
+    // the observation. The previous round narrowed the keyboard channel's parse
+    // catch and moved that same failure here rather than removing it. The debt
+    // is cleared either way: the observation was attempted, and repeating a call
+    // that just threw would only produce the same throw from a worse place. The
+    // caller is told on the success paths, where the hints are what they would
+    // have read; the failure paths report the channel's error alone, which is
+    // the thing that decides their next call.
     const observe = (title: string, pinnedHwnd?: bigint) => {
       observationOwedFor = null;
-      return buildHintsForTitle(title, pinnedHwnd);
+      try {
+        return buildHintsForTitle(title, pinnedHwnd);
+      } catch (e) {
+        uiWarnings.push(
+          `identity hints unavailable: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return null;
+      }
     };
 
     const attempts: Array<{ channel: string; error: string }> = [];
@@ -542,8 +564,19 @@ export const setElementValueHandler = async ({
         }
         if (parsed !== undefined) {
           if (parsed.ok) {
+            // Channel 3 reports no identity hints — it resolves by title and a
+            // pinned label here would name the requested window for a write
+            // that may have landed on its sibling. Warnings are a different
+            // thing and do carry: this is where the resolver's own
+            // (`dialog_resolved_via_owner_chain`) and a failed observation say
+            // so, and dropping them made "the caller is told" false for exactly
+            // one of the three success paths.
             observe(effectiveTitle);   // observation only — see above
-            return ok({ ok: true, channel: "keyboard", ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
+            return ok({
+              ok: true, channel: "keyboard",
+              ...(uiWarnings.length > 0 ? { hints: { warnings: uiWarnings } } : {}),
+              ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+            });
           }
           attempts.push({ channel: "keyboard", error: parsed.error ?? "KeyboardFailed" });
         }

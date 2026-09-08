@@ -194,14 +194,47 @@ describe("ADR-036 — a channel that REJECTS still leaves exactly one observatio
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
   });
 
-  it("a branch that already observed is not made to observe again by throwing afterwards", async () => {
-    // The observation succeeds and what follows it in the same branch throws.
-    // The debt has to be settled by the act of observing, not after it: clear
-    // it later and this call observes twice — the drift that never happened.
+  it("an observation that throws does not turn a write that happened into a failure", async () => {
+    // Channel 1 returned `ok:true` — the field HAS the value — and then the
+    // description of what happened threw. Letting that out reported
+    // `set_element_value` as failed for a write it had just made, which is a
+    // worse lie than missing hints. The result is the channel's; the hints are
+    // replaced by a warning saying why they are not there.
+    //
+    // This test asserted `ok:false` for four rounds. It was pinning the defect.
     mockBuildHints.mockImplementationOnce(() => { throw new Error("HintsThrew"); });
     const r = await call();
-    expect(failed(r).ok).toBe(false);
+    const said = JSON.parse(r.content![0]!.text) as {
+      ok?: boolean; channel?: string; hints?: { warnings?: string[] };
+    };
+    expect(said.ok).toBe(true);
+    expect(said.channel).toBe("value");
+    expect(JSON.stringify(said.hints?.warnings ?? [])).toMatch(/identity hints unavailable.*HintsThrew/);
+    // And the debt is still settled by the act of observing, not by its
+    // success: observing twice files one window under two handles and reports a
+    // drift that never happened.
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
+  });
+
+  it("an observation that throws does not replace the channel's own error either", async () => {
+    // The mirror. All channels failed, and the observation on the way out
+    // threw: the caller needs `SetValueAllChannelsFailed`, which is what
+    // decides their next call, not an error about the bookkeeping.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
+    mockInsertText.mockResolvedValue({ ok: false, code: "TextPattern2NotSupported" } as never);
+    // `…Once` throughout: this file's outer `beforeEach` re-seeds `setValue`
+    // and `insertText` but not `keyboardType`, so a persistent stub here leaks
+    // into the describe below and makes ITS channel-3 case fail — which is how
+    // this test announced itself.
+    mockKeyboardType.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify({ ok: false, error: "KeyboardFailed" }) }],
+    } as never);
+    mockBuildHints.mockImplementationOnce(() => { throw new Error("HintsThrew"); });
+    const r = await call();
+    expect(r.content![0]!.text).toContain("SetValueAllChannelsFailed");
+    expect(r.content![0]!.text).not.toContain("HintsThrew");
+    delete process.env.DTM_SET_VALUE_CHAIN;
   });
 
   it("an observation that cannot be taken does not become the reported error", async () => {
@@ -228,18 +261,24 @@ describe("ADR-036 — the keyboard channel's parse catch does not swallow the ob
     mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
   });
 
-  it("channel 3 wrote, and its observation threw: filed as neither a parse error nor a second observation", async () => {
+  it("channel 3 wrote, and its observation threw: the write still stands", async () => {
     mockBuildHints.mockImplementationOnce(() => { throw new Error("HintsThrew"); });
     const r = await call();
-    // The debt was settled by the act of observing, so the all-channels-failed
-    // path must not observe again on the way out.
+    // The debt was settled by the act of observing, so nothing observes again
+    // on the way out.
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
+    // Not a parse error — that catch belongs to `JSON.parse` alone…
     expect(body(r)).not.toContain("KeyboardResponseParseError");
+    // …and not a failure at all: the keys went to the window. Narrowing the
+    // parse catch moved this failure to the outer one instead of removing it,
+    // and this test asserted the moved version.
     expect(body(r)).not.toContain("SetValueAllChannelsFailed");
-    // The debt is settled by now, so the report cannot take its title from it:
-    // the resolved window is known, and saying the caller's raw partial here
-    // would be worse than what this whole change replaced.
-    expect(body(r)).toContain(RESOLVED);
+    const said = JSON.parse(body(r)) as { ok?: boolean; channel?: string; hints?: { warnings?: string[] } };
+    expect(said.ok).toBe(true);
+    expect(said.channel).toBe("keyboard");
+    // Channel 3 reports no identity hints on purpose, but a warning is not a
+    // hint: it says why they are missing, and it was being dropped here.
+    expect(JSON.stringify(said.hints?.warnings ?? [])).toMatch(/identity hints unavailable.*HintsThrew/);
   });
 
   it("a real parse failure is still a parse failure, observed once", async () => {
