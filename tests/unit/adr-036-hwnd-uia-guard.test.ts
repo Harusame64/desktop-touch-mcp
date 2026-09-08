@@ -221,12 +221,20 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(next).toMatch(/windowTitle[^.]*only/i);
     expect(next).toMatch(/not contained in any other/i);
     expect(next).toMatch(/suffix/i);
-    // The containment example is asymmetric and has been flattened once: for
-    // "Report" beside "Report archive" the SHORTER one cannot be named and the
-    // longer one still can, so a text that calls the pair inseparable takes a
-    // working recovery away from half the callers. Whatever words carry that,
-    // one of them survives here.
-    expect(next).toMatch(/Report archive[^.]*(?:longer|still can)|(?:shorter|longer)[^.]*Report archive/i);
+    // The containment example is asymmetric, and the asymmetry has a direction:
+    // the SHORTER title cannot be named (every query matching it matches the
+    // longer one too) and the LONGER one still can. Flattening it to "this pair
+    // cannot be separated" was one regression; saying it backwards is another,
+    // and a check that only looks for the words accepts both. Each side is
+    // asserted where it belongs, and the pair below measures the same two facts
+    // against the matcher.
+    // Anchored on the phrases rather than the words: `[^.]*` reaches across
+    // clauses, and the inverted sentence — longer unreachable, shorter still
+    // reachable — satisfied a word-level check by borrowing "can never" from
+    // the clause after it. Tight, and knowingly so; the direction is a fact
+    // about the matcher, measured in the pair below.
+    expect(next).toMatch(/shorter of[^.]*can never/i);
+    expect(next).toMatch(/longer one still can/i);
     // These three are prose checks and cannot be more than that: a rewrite can
     // keep every word and weaken the meaning. What holds the meaning is the
     // describe below, which puts each of those cases on the desktop and asks
