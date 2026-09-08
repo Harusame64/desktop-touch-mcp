@@ -17,7 +17,7 @@
 
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
-session_pattern='^[[:space:]]*(Claude-Session:|https://claude[.]ai/code/session_)'
+session_pattern='^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
 
 while read local_ref local_oid remote_ref remote_oid
 do
@@ -41,13 +41,35 @@ do
     fi
 
     # Only the commits this push would add. A brand-new branch has no remote
-    # counterpart, so everything already published anywhere on origin is
-    # excluded instead — the 28 commits that carry the trailer from before this
-    # hook existed must not block every future push.
+    # counterpart, so everything already published on ANY remote is excluded
+    # instead — the 2 commits on main that carry the trailer from before this
+    # hook existed must not block every future push. `--remotes` without a
+    # value covers every remote: pinning it to `origin` excluded nothing in a
+    # clone whose remote is named otherwise, and refused the push on those
+    # same old commits.
     if [ "$remote_oid" = "$zero" ]; then
-        range="$local_oid --not --remotes=origin"
+        range="$local_oid --not --remotes"
     else
         range="$remote_oid..$local_oid"
+    fi
+
+    # `git log` is proved readable BEFORE its output is scanned, because the
+    # two failures mean opposite things. `grep -c` exits 1 when it finds
+    # nothing, which is the good case; `git log` exits non-zero when it could
+    # not read the range, which must NOT be read as 'nothing found'. In one
+    # pipeline `|| leaked=0` swallowed both. `remote_oid` comes from the
+    # remote's live advertisement and can name an object this clone does not
+    # have, so that failure is reachable with nothing wrong locally.
+    # (Two invocations rather than a captured string: passing commit messages
+    # back through the shell is how a backslash in a message becomes a bug.)
+    if ! git log $range --format=%B >/dev/null 2>&1; then
+        echo "" >&2
+        echo "ERROR: could not inspect the commits being pushed." >&2
+        echo "  This failed: git log $range" >&2
+        echo "  The range names an object this clone may not have yet." >&2
+        echo "  Refusing rather than pushing unchecked — run 'git fetch' and retry." >&2
+        echo "" >&2
+        exit 1
     fi
 
     leaked=$(git log $range --format=%B 2>/dev/null | grep -c -E "$session_pattern") || leaked=0

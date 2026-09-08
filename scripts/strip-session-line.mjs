@@ -4,39 +4,51 @@
 // Repo policy (user decision, 2026-09-08): no Claude session IDs in the public
 // repo. The Claude Code harness appends a `Claude-Session:` trailer on its own,
 // so the line is removed rather than refused — see `.githooks/commit-msg`, the
-// two-line shim that calls this.
+// shim that calls this.
 //
 // The removal lives here, in JavaScript, rather than in the hook's shell,
 // because a rewrite that can silently empty a commit message has to be
 // testable. It was not, once: the first hook used `sed -E "/$pattern/d"`, whose
 // address ended at the `/` in `https:/`. `sed` died mid-pipeline where `||`
 // could not see it, `awk` read the empty stream, and a zero-byte file was moved
-// over the message. `tests/unit/strip-session-line.test.ts` calls the function
-// below directly, so that version fails on the first case instead of shipping.
+// over the message. `tests/unit/strip-session-line.test.ts` calls the functions
+// below directly, so that version fails on the second case instead of shipping.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 /**
  * Lines that carry a session id: the trailer the harness writes, and a bare
- * session URL on its own line (the shape used in PR descriptions).
+ * session URL on its own line (the shape used in PR descriptions), optionally
+ * behind a list marker — `- https://claude.ai/code/session_x` is not prose and
+ * used to survive both nets.
  *
- * Anchored at line start, with leading whitespace allowed, so prose that
- * MENTIONS the trailer mid-sentence survives — this repo's own commit messages
- * discuss it. `.githooks/pre-push` carries the POSIX ERE spelling of this same
- * pattern; `patternsAgree` below is what keeps the two from drifting.
+ * Anchored at line start so prose that MENTIONS the trailer mid-sentence
+ * survives — this repo's own commit messages discuss it.
+ *
+ * `.githooks/pre-push` carries the POSIX ERE spelling of the same rule, because
+ * it must run without node. The two are checked against each other in the tests
+ * over a shared corpus, not merely pinned as equal strings.
  */
-export const SESSION_LINE_RE = /^[ \t]*(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
+export const SESSION_LINE_RE =
+  /^[ \t\v\f]*(?:[-*][ \t\v\f]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
 
 /** The POSIX ERE that `.githooks/pre-push` must be using for the same job. */
-export const SESSION_LINE_ERE = "^[[:space:]]*(Claude-Session:|https://claude[.]ai/code/session_)";
+export const SESSION_LINE_ERE =
+  "^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)";
 
 /**
+ * Split a message into lines the way both engines see them.
+ *
+ * Works on a string of BYTES (latin1), never on decoded text — see
+ * `stripSessionLinesInFile`. The pattern is pure ASCII, so byte-wise matching
+ * gives the same answer as character-wise matching for every encoding, and
+ * nothing has to be decoded to be preserved.
+ *
  * @param {string} message
  * @returns {{ text: string, removed: number }} the message without its session
  *   lines, and how many were taken out. Trailing blank lines the removal leaves
- *   behind go too — git's own cleanup has already run by the time the hook is
- *   called, so nothing else will tidy them.
+ *   behind go too.
  */
 export function stripSessionLines(message) {
   const lines = message.split("\n").map((line) => line.replace(/\r$/, ""));
@@ -51,6 +63,10 @@ export function stripSessionLines(message) {
     kept.push(line);
   }
 
+  // Blank lines stranded at the end by the removal. `git commit` cleans the
+  // message up around this hook, so this is tidiness rather than correctness —
+  // and on the editor path the message still carries git's `#` comment block
+  // here, in which case nothing is stranded and this loop does nothing.
   while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
 
   return { text: kept.length === 0 ? "" : `${kept.join("\n")}\n`, removed };
@@ -60,14 +76,34 @@ export function stripSessionLines(message) {
  * Rewrite the message file in place. Returns how many lines were removed; 0
  * means the file was not touched at all.
  *
+ * Reads and writes as `latin1`, which maps every byte to one code unit and
+ * back: a message written in the OS codepage (`i18n.commitEncoding`, or an
+ * editor on a Japanese Windows box) survives byte for byte. Reading it as
+ * `utf8` replaced every non-ASCII byte with U+FFFD and reported success.
+ *
+ * Writes to a sibling and renames, so a failure part-way through leaves the
+ * original message intact rather than a truncated one.
+ *
  * @param {string} file
  * @returns {number}
  */
 export function stripSessionLinesInFile(file) {
-  const original = readFileSync(file, "utf8");
+  const original = readFileSync(file, "latin1");
   const { text, removed } = stripSessionLines(original);
   if (removed === 0) return 0;
-  writeFileSync(file, text, "utf8");
+
+  const tmp = `${file}.strip.${process.pid}`;
+  try {
+    writeFileSync(tmp, text, "latin1");
+    renameSync(tmp, file);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // The temp file may never have been created; its absence is the goal.
+    }
+    throw err;
+  }
   return removed;
 }
 
@@ -81,9 +117,9 @@ if (invokedDirectly) {
     process.stderr.write("usage: strip-session-line.mjs <commit-msg-file>\n");
     process.exit(2);
   }
-  // A commit must not be lost because this could not run. The message is
+  // A commit must not be lost because this could not run. The failure is
   // reported, the commit proceeds, and `.githooks/pre-push` still refuses the
-  // push if a session id survived to a commit.
+  // push if a session id survived into a commit.
   let removed = 0;
   try {
     removed = stripSessionLinesInFile(file);

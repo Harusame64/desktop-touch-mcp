@@ -98,8 +98,13 @@ npm run build
 npm publish --dry-run
 ```
 
-`npm run lint` is here so the guard is local: `.githooks/pre-push` only blocks
-direct pushes to `main`, and lint otherwise runs for the first time in CI.
+`npm run lint` is here so the guard is local: `.githooks/pre-push` blocks only
+direct pushes to `main` and commit messages carrying a Claude session id — it
+does not lint, so lint otherwise runs for the first time in CI.
+
+The release flow's direct pushes to `main` are unaffected by either check:
+`DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1` still bypasses the branch guard, and a release
+push adds no new commits for the session-id check to look at.
 
 ### Dogfood Pass (Required, v1.3 lesson)
 

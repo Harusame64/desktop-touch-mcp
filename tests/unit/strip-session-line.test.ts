@@ -13,12 +13,23 @@
  * call it directly. The first case below is the one that version fails.
  */
 
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import {
+  readFileSync,
+  writeFileSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  readdirSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   stripSessionLines,
+  stripSessionLinesInFile,
+  SESSION_LINE_RE,
   SESSION_LINE_ERE,
 } from "../../scripts/strip-session-line.mjs";
 
@@ -111,37 +122,166 @@ describe("stripSessionLines — what comes out", () => {
 
 describe("the hook and the pre-push net stay in step", () => {
   it("commit-msg still calls the script — a shim that stops calling it is silent otherwise", () => {
+    // Comment lines are dropped first. The hook explains itself by naming the
+    // script in prose, so asserting on the whole file passed even when the
+    // invocation was repointed at a path that does not exist — the pin matched
+    // the explanation instead of the code (caught by mutation, not by reading).
     const hook = readFileSync(join(repoRoot, ".githooks", "commit-msg"), "utf8");
-    expect(hook).toContain("scripts/strip-session-line.mjs");
+    const code = hook.replace(/^[ \t]*#.*$/gm, "");
+    expect(code).toContain("scripts/strip-session-line.mjs");
   });
 
   it("pre-push carries the POSIX spelling of the same pattern", () => {
     // Two engines, one rule. `pre-push` cannot import this module (it must run
-    // without node), so the ERE is duplicated there on purpose — this is the
-    // check that keeps the copy from drifting away from the original.
+    // without node), so the ERE is duplicated there on purpose. This pins the
+    // copy to the original STRING; the describe below is what checks the two
+    // actually accept the same lines, which a matching string does not prove.
     const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
     expect(hook).toContain(`session_pattern='${SESSION_LINE_ERE}'`);
   });
+});
 
-  it("the two patterns agree on every line these tests care about", () => {
-    // The ERE is a string here, so it cannot be executed as one. What can be
-    // checked is that its JS translation — the module's own regex — classifies
-    // the corpus the way the ERE reads. A change to either that breaks the
-    // correspondence has to break one of these expectations.
-    const eatenByBoth = [TRAILER, `  ${TRAILER}`, "https://claude.ai/code/session_x"];
-    const keptByBoth = [
-      COAUTHOR,
-      "fix: a subject line",
-      "prose mentioning Claude-Session: mid-sentence",
-      "https://claude.ai/code/artifacts/abc",
-      "",
-      "   ",
-    ];
-    for (const line of eatenByBoth) {
-      expect(stripSessionLines(`subject\n\n${line}\n`).removed, line).toBe(1);
+describe("the two patterns accept the same lines, not merely the same string", () => {
+  /**
+   * The ERE cannot be executed as a JS regex, and asserting that `pre-push`
+   * contains the same string only proves the two were edited together — drop
+   * the URL alternative from BOTH and that assertion still passes. So the ERE
+   * is translated here and run against the same corpus as the module's own
+   * regex. The translation is the only thing taken on trust, and it is three
+   * substitutions long.
+   */
+  function ereToRegExp(ere: string): RegExp {
+    return new RegExp(
+      ere
+        // POSIX `[[:space:]]` inside a bracket expression, as ERE spells it.
+        .replace(/\[\[:space:\]\]/g, "[ \t\v\f\r]")
+        // ERE has no non-capturing groups; JS treats `(` the same way here.
+        .replace(/\(/g, "(?:")
+    );
+  }
+
+  const corpus = [
+    TRAILER,
+    `  ${TRAILER}`,
+    `\t${TRAILER}`,
+    `- ${TRAILER}`,
+    `  * ${TRAILER}`,
+    "https://claude.ai/code/session_x",
+    "- https://claude.ai/code/session_x",
+    COAUTHOR,
+    "fix: a subject line",
+    "prose mentioning Claude-Session: mid-sentence",
+    "See https://claude.ai/code/session_x for context",
+    "https://claude.ai/code/artifacts/abc",
+    "https://claudeXai/code/session_x",
+    "",
+    "   ",
+    "-not-a-list-marker Claude-Session: x",
+  ];
+
+  it("classifies every corpus line identically", () => {
+    const ere = ereToRegExp(SESSION_LINE_ERE);
+    for (const line of corpus) {
+      expect(ere.test(line), `ERE vs JS disagree on: ${JSON.stringify(line)}`).toBe(
+        SESSION_LINE_RE.test(line)
+      );
     }
-    for (const line of keptByBoth) {
-      expect(stripSessionLines(`subject\n\n${line}\n`).removed, line).toBe(0);
-    }
+  });
+
+  it("the corpus is not vacuous — it contains lines of both kinds", () => {
+    const matched = corpus.filter((l) => SESSION_LINE_RE.test(l));
+    expect(matched.length).toBeGreaterThan(3);
+    expect(corpus.length - matched.length).toBeGreaterThan(3);
+  });
+});
+
+describe("the file rewrite and the CLI — the part that can actually eat a message", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "strip-session-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (name: string, bytes: Buffer | string) => {
+    const p = join(dir, name);
+    writeFileSync(p, bytes);
+    return p;
+  };
+
+  it("rewrites the file and reports the count", () => {
+    const p = write("msg", `fix: a\n\n${COAUTHOR}\n${TRAILER}\n`);
+    expect(stripSessionLinesInFile(p)).toBe(1);
+    expect(readFileSync(p, "utf8")).toBe(`fix: a\n\n${COAUTHOR}\n`);
+  });
+
+  it("does not touch the file at all when there is nothing to remove", () => {
+    const p = write("msg", `feat: z\n\n${COAUTHOR}\n`);
+    const before = statSync(p).mtimeMs;
+    expect(stripSessionLinesInFile(p)).toBe(0);
+    expect(statSync(p).mtimeMs).toBe(before);
+  });
+
+  it("preserves a message that is not UTF-8, byte for byte", () => {
+    // A CP932 subject (テスト) — what an editor writes on a Japanese Windows
+    // box, or `git config i18n.commitEncoding`. Read as utf8 this came back as
+    // U+FFFD for every non-ASCII byte, and the hook reported success.
+    const cp932Subject = Buffer.from([0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+    const p = write(
+      "msg",
+      Buffer.concat([
+        Buffer.from("fix: "),
+        cp932Subject,
+        Buffer.from(`\n\n${TRAILER}\n`),
+      ])
+    );
+    expect(stripSessionLinesInFile(p)).toBe(1);
+    const after = readFileSync(p);
+    expect(after.equals(Buffer.concat([Buffer.from("fix: "), cp932Subject, Buffer.from("\n")]))).toBe(true);
+  });
+
+  it("leaves no temp file behind", () => {
+    const p = write("msg", `fix: a\n\n${TRAILER}\n`);
+    stripSessionLinesInFile(p);
+    expect(readdirSync(dir)).toEqual(["msg"]);
+  });
+
+  const cli = (args: string[]) => {
+    const script = join(repoRoot, "scripts", "strip-session-line.mjs");
+    const r = spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
+    return { status: r.status, stderr: r.stderr };
+  };
+
+  it("announces what it removed — silence would hide half the design", () => {
+    const p = write("msg", `fix: a\n\n${TRAILER}\n`);
+    const { status, stderr } = cli([p]);
+    expect(status).toBe(0);
+    expect(stderr).toContain("removed 1 Claude-Session line");
+    expect(readFileSync(p, "utf8")).toBe("fix: a\n");
+  });
+
+  it("says nothing when it removed nothing", () => {
+    const p = write("msg", `feat: z\n\n${COAUTHOR}\n`);
+    const { status, stderr } = cli([p]);
+    expect(status).toBe(0);
+    expect(stderr).toBe("");
+  });
+
+  it("pluralises the count", () => {
+    const p = write("msg", `fix: a\n\n${TRAILER}\n${TRAILER}\n`);
+    expect(cli([p]).stderr).toContain("removed 2 Claude-Session lines");
+  });
+
+  it("exits 2 with a usage line when given no file", () => {
+    const { status, stderr } = cli([]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("usage:");
+  });
+
+  it("exits 0 and says so when the file cannot be read — a commit must not become impossible", () => {
+    const { status, stderr } = cli([join(dir, "does-not-exist")]);
+    expect(status).toBe(0);
+    expect(stderr).toContain("message left as written");
   });
 });
