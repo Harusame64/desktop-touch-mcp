@@ -347,12 +347,19 @@ describe("pre-push refuses what it should", () => {
   const hasSh = sh.status === 0;
 
   it("sh is available, so the cases below actually ran", () => {
-    // `spawnSync` on a missing `sh` returns status null, and every case here is
-    // `skipIf(!hasSh)` — so without this the whole enforcing half could vanish
-    // into a green run and no one would be told. CI does not execute this suite
-    // at all (`.github/workflows/ci.yml` leaves TypeScript tests to the local
-    // pre-merge run), which makes the local run the only place they happen.
-    expect(hasSh).toBe(true);
+    // Every case here is `skipIf(!hasSh)`, so without this one the whole
+    // enforcing half could vanish into a green run and no one would be told —
+    // "the check did not run" read as "the check passed", which is the same
+    // defect the hook itself was fixed for twice. A missing `sh` reports ENOENT
+    // through `error` with `status: null`, not an exception, so the reason is
+    // included here rather than left as `false !== true`.
+    //
+    // CI does not execute this suite at all — `.github/workflows/ci.yml` leaves
+    // TypeScript tests to the local pre-merge run — so this is the only place
+    // these cases happen.
+    expect(hasSh, `sh unusable: error=${sh.error?.message ?? "none"} status=${sh.status}`).toBe(
+      true
+    );
   });
 
   let repo: string;
