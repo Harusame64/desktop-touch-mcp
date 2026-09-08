@@ -14,14 +14,21 @@ const SHARED_TITLE = "pictkura — Chrome";
 const SIBLING = 0x1111n;
 const LIVE = 0x2222n;
 
+// The enumeration the guard counts. Mutable so the separability cases below can
+// put two DIFFERENT titles on the desktop; `beforeEach` puts the shared-title
+// pair back, which is what every other test in this file expects.
+const { winsRef } = vi.hoisted(() => ({ winsRef: { list: [] as unknown[] } }));
+const win = (hwnd: bigint, title: string, zOrder: number) => ({
+  hwnd, title, zOrder, isActive: zOrder === 0,
+  region: { x: 0, y: 0, width: 800, height: 600 },
+  isMinimized: false, isMaximized: false, className: "Chrome_WidgetWin_1", ownerHwnd: null,
+});
+
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
   return {
     ...actual,
-    enumWindowsInZOrder: vi.fn(() => [
-      { hwnd: SIBLING, title: SHARED_TITLE, zOrder: 0, isActive: true, region: { x: 0, y: 0, width: 800, height: 600 }, isMinimized: false, isMaximized: false, className: "Chrome_WidgetWin_1", ownerHwnd: null },
-      { hwnd: LIVE, title: SHARED_TITLE, zOrder: 1, isActive: false, region: { x: 0, y: 0, width: 800, height: 600 }, isMinimized: false, isMaximized: false, className: "Chrome_WidgetWin_1", ownerHwnd: null },
-    ]),
+    enumWindowsInZOrder: vi.fn(() => winsRef.list),
     getWindowProcessId: vi.fn(() => 7),
     getWindowIdentity: vi.fn(() => ({ pid: 7, processName: "chrome.exe", processStartTimeMs: 0 })),
     // Kept deterministic so the identity hints below describe the fixture and
@@ -97,6 +104,7 @@ function guardDescriptor(): Record<string, unknown> | null {
 }
 
 beforeEach(() => {
+  winsRef.list = [win(SIBLING, SHARED_TITLE, 0), win(LIVE, SHARED_TITLE, 1)];
   resetHotCache();
   mockRunActionGuard.mockClear();
   mockClickElement.mockClear();
@@ -201,16 +209,19 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(unsetAt).toBeGreaterThan(-1);
     expect(next.indexOf("click_element")).toBeLessThan(unsetAt);
 
-    // The title advice is never offered flat: whatever sentence mentions
-    // windowTitle has to carry its condition. Two conditions have already been
-    // shot in review — "identical titles" and "differ ahead of the browser
-    // suffix" — because matching is substring-based, so the real one is whether
-    // this window's title holds text no other window's does.
+    // The title advice is never offered flat, and the condition it carries is
+    // the matcher's: this window's NORMALIZED title must not be contained in
+    // any other's. Three weaker conditions have been shot in review — identical
+    // titles, titles differing ahead of the browser suffix, and raw-title
+    // uniqueness — each true and each useless.
     expect(next).toMatch(/windowTitle[^.]*only/i);
-    expect(next).toMatch(/no other[^.]*window/i);
-    // Prose, and known to be: the browser suffix is the trap a caller cannot
-    // infer from the rule, so the text has to keep naming it.
+    expect(next).toMatch(/not contained in any other/i);
     expect(next).toMatch(/suffix/i);
+    // These three are prose checks and cannot be more than that: a rewrite can
+    // keep every word and weaken the meaning. What holds the meaning is the
+    // describe below, which puts each of those cases on the desktop and asks
+    // the matcher — so a text that promises narrowing where narrowing does not
+    // work is contradicted by a test rather than by a reviewer.
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {
@@ -304,5 +315,55 @@ describe("ADR-036 — set_element_value's hints name the channel's window, not t
     expect(mockInsertText).toHaveBeenCalled();
     expect(mockInsertText.mock.calls[0]![0]).toBe(SHARED_TITLE);
     expect(r.hints?.target?.hwnd).toBe(String(SIBLING));
+  });
+});
+
+// ─── The facts the refusal states about narrowing, asked of the matcher ──────
+
+describe("ADR-036 — when a narrower windowTitle can and cannot separate two windows", () => {
+  // Title-only calls: `resolveWindowTarget` returns null for these, so the
+  // guard counts exactly what `resolveActionTarget` sees.
+  const ask = async (windowTitle: string) =>
+    JSON.stringify(parse(await setElementValueHandler({ windowTitle, value: "x", name: "Field" } as never)));
+  const refused = async (t: string) => (await ask(t)).includes("ambiguous_target");
+
+  it("cannot separate a title that is a substring of its sibling — no query escapes", async () => {
+    winsRef.list = [win(SIBLING, "Report", 0), win(LIVE, "Report archive", 1)];
+    // Every query that names the first window names the second as well.
+    for (const q of ["Report", "report", "Repor", "R", "Report "]) {
+      expect(await refused(q)).toBe(true);
+    }
+    // The only query that narrows resolves the OTHER window.
+    expect(await refused("Report archive")).toBe(false);
+  });
+
+  it("cannot separate titles that differ only in case or padding — normalization eats it", async () => {
+    winsRef.list = [win(SIBLING, "Report", 0), win(LIVE, "  REPORT  ", 1)];
+    for (const q of ["Report", "REPORT", " report "]) {
+      expect(await refused(q)).toBe(true);
+    }
+  });
+
+  it("cannot separate one page open in Chrome and in Edge — the suffix is stripped from the query too", async () => {
+    winsRef.list = [
+      win(SIBLING, "pictkura - Google Chrome", 0),
+      win(LIVE, "pictkura - Microsoft Edge", 1),
+    ];
+    // Including the query that names one of them in full.
+    for (const q of ["pictkura", "pictkura - Google Chrome", "pictkura - Microsoft Edge"]) {
+      expect(await refused(q)).toBe(true);
+    }
+  });
+
+  it("CAN separate them when the suffix is one the matcher does not strip", async () => {
+    // The positive control the refusal's promise rests on: narrowing works when
+    // the normalized title is not contained in the other. Brave is not in
+    // BROWSER_SUFFIXES, so its suffix survives normalization and separates.
+    winsRef.list = [
+      win(SIBLING, "pictkura - Google Chrome", 0),
+      win(LIVE, "pictkura - Brave", 1),
+    ];
+    expect(await refused("pictkura")).toBe(true);
+    expect(await refused("pictkura - Brave")).toBe(false);
   });
 });

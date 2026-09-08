@@ -286,24 +286,27 @@ export const setElementValueHandler = async ({
           // carries its own limit, because here it is load-bearing — this is the
           // one refusal that cannot offer the handle instead.
           //
-          // The limit is not "identical titles", and it is not "differ ahead of
-          // the browser suffix" either. `resolveActionTarget` keeps every
-          // candidate whose normalized title CONTAINS the normalized query, so
-          // the question is not whether the titles differ but whether this
-          // window's title holds text no other one does. Two ways it does not,
-          // both reachable:
+          // The limit has been stated wrongly twice. It is not "identical
+          // titles", and it is not "the titles differ ahead of the browser
+          // suffix" either. `resolveActionTarget` normalizes BOTH sides —
+          // lowercase, trim, NFC, and a Chrome/Edge/Firefox suffix removed
+          // (`action-target.ts` BROWSER_SUFFIXES) — and then keeps every
+          // candidate whose normalized title CONTAINS the normalized query. So
+          // the predicate is: this window's normalized title must not be
+          // contained in any other window's. Three ways it is, all reachable:
           //
-          //   "Report" beside "Report archive" — the titles differ, and every
-          //   query that matches the first matches the second, because the
-          //   first is a substring of it. Nothing the caller writes escapes.
+          //   "Report" beside "Report archive" — every query matching the first
+          //   matches the second, because the first is a substring of it.
           //
-          //   one page open in Chrome and in Edge — `normalizeTitle` strips the
-          //   browser suffix (`action-target.ts` BROWSER_SUFFIXES) from the
-          //   titles AND from the query, so both arrive as one string and naming
-          //   the browser is deleted before it is compared.
+          //   "Report" beside "REPORT" — the raw titles differ; the normalized
+          //   ones are the same string.
           //
-          // The second is the case this PR starts from (a browser window), which
-          // is why the text keeps naming it after stating the general rule.
+          //   one page open in Chrome and in Edge — the suffix is deleted from
+          //   the titles AND from the query, so naming the browser is gone
+          //   before the comparison.
+          //
+          // The last is the case this PR starts from (a browser window), which
+          // is why the text keeps its examples after stating the rule.
           //
           // The generic advice in `_action-guard.ts` keeps the flat form on
           // purpose: there `hwnd` is offered first and works, so the title line
@@ -312,10 +315,11 @@ export const setElementValueHandler = async ({
             "This tool cannot be narrowed by hwnd while DTM_SET_VALUE_CHAIN=1: " +
             "its fallback channels still find the window by title. click_element and " +
             "keyboard take hwnd here. A more specific windowTitle works only if this " +
-            "window's title holds text no other open window's title holds: matching is " +
-            "substring-based, and a Chrome, Edge or Firefox suffix is stripped from " +
-            "your query as well, so \"Report\" beside \"Report archive\", or one page " +
-            "open in Chrome and in Edge, can never be separated by title. Unsetting " +
+            "window's normalized title is not contained in any other open window's: " +
+            "matching lowercases, trims and strips a Chrome, Edge or Firefox suffix " +
+            "from both sides, then asks which titles contain your query. So \"Report\" " +
+            "beside \"Report archive\", \"Report\" beside \"REPORT\", and one page open " +
+            "in Chrome and in Edge can never be separated by title. Unsetting " +
             "DTM_SET_VALUE_CHAIN lets this tool take hwnd too, but that is a server " +
             "setting, not a call argument.";
           // The `suggest` catalogue answers by guard STATUS, and its
