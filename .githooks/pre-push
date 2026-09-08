@@ -29,8 +29,21 @@ session_pattern='^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude
 # the range and lands on this one unchecked. Pinning it to `origin` had the
 # opposite fault: in a clone whose remote is named otherwise it excluded
 # nothing, and every new-branch push was refused over the old commits.
-if [ -n "$remote_name" ] && git config --get "remote.$remote_name.url" >/dev/null 2>&1; then
+fetch_url=$(git config --get "remote.$remote_name.url" 2>/dev/null)
+push_url=$(git config --get "remote.$remote_name.pushurl" 2>/dev/null)
+
+if [ -n "$remote_name" ] && [ -n "$fetch_url" ] &&
+   { [ -z "$push_url" ] || [ "$push_url" = "$fetch_url" ]; }; then
     published="--remotes=$remote_name"
+elif [ -n "$push_url" ] && [ "$push_url" != "$fetch_url" ]; then
+    # `remote.<name>.pushurl` sends pushes somewhere other than where fetches
+    # come from, and `refs/remotes/<name>/*` follows the FETCH url. Treating
+    # those refs as published would count a private repository's history as
+    # already public — measured: a new branch carrying a session id passed.
+    # Asking the push target directly (`git ls-remote "$2"`) is the other
+    # option; it puts a network round trip and an auth prompt inside a hook, so
+    # this refuses instead and says which fetch would fix it.
+    published=""
 else
     # Pushed to a URL, or a remote this clone does not have configured. There
     # are no remote-tracking refs to trust, so nothing is excluded and old

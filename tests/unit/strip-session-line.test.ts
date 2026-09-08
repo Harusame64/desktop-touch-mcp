@@ -473,6 +473,32 @@ describe("pre-push refuses what it should", () => {
     }
   });
 
+  it.skipIf(!hasSh)("does not trust tracking refs when pushes go somewhere else than fetches", () => {
+    // `remote.<name>.pushurl` sends pushes to one repository while
+    // `refs/remotes/<name>/*` follows the fetch url. Counting those refs as
+    // published then reads a PRIVATE repository's history as already public —
+    // measured: a new branch carrying a session id went through.
+    const priv = mkdtempSync(join(tmpdir(), "pre-push-priv-"));
+    const pub = mkdtempSync(join(tmpdir(), "pre-push-pub-"));
+    try {
+      spawnSync("git", ["init", "-q", "--bare", priv], { encoding: "utf8" });
+      spawnSync("git", ["init", "-q", "--bare", pub], { encoding: "utf8" });
+      git(["remote", "add", "origin", priv]);
+      git(["push", "-q", "origin", "main"]);
+      git(["fetch", "-q", "origin"]);
+      // Only now does the remote start pushing elsewhere.
+      git(["config", "remote.origin.pushurl", pub]);
+      expect(git(["merge-base", "--is-ancestor", leaking, "refs/remotes/origin/main"]).status).toBe(0);
+
+      const r = push(`refs/heads/topic ${leaking} refs/heads/topic ${"0".repeat(40)}\n`);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("carry a Claude session id");
+    } finally {
+      rmSync(priv, { recursive: true, force: true });
+      rmSync(pub, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(!hasSh)("does not treat another remote's history as published on this one", () => {
     // A new branch has no counterpart on the remote, so the hook excludes what
     // is already published — and it must mean published ON THIS REMOTE. With a
