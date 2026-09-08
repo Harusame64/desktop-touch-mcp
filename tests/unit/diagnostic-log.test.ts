@@ -778,7 +778,13 @@ describe("diagnostic-log rotation", () => {
     //
     // It does NOT hold for a process that ignores discretionary permissions —
     // root on POSIX, which is how this repo's container runs — so the injector
-    // is verified before it is relied on rather than assumed to work.
+    // is verified before it is relied on rather than assumed to work. No
+    // portable injector exists: every other way to make one append fail also
+    // breaks something the state needs (a directory at the path has no size
+    // to roll on; an immutable file cannot be renamed either; a mode bit is
+    // the very thing root ignores). The pin runs where the suite is run before
+    // a merge — the maintainer's Windows machine; CI does not run the unit
+    // suite (see .github/workflows/ci.yml) — and skips, saying so, elsewhere.
     const probe = join(tmp, "ro-probe");
     writeFileSync(probe, "x", "utf8");
     chmodSync(probe, 0o444);
@@ -869,6 +875,62 @@ describe("diagnostic-log rotation", () => {
     expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
   });
 
+  it("MUTATION: claiming an orphan does not overwrite this process's own staged leftover", () => {
+    // `renameSync` replaces its destination — this module depends on that two
+    // lines later — so claiming an orphan while our own leftover still sits at
+    // the staging name destroys a full live file's worth of the newest history.
+    //
+    // The end state hides it: with one orphan and one live file there are three
+    // candidates for two kept slots, so our leftover is aged out either way.
+    // What discriminates is interrupting the sequence AFTER our leftover has
+    // been filed — `.2` is a non-empty directory, so the orphan's own shift
+    // throws — and asking what is in `.1`. Filed first, it is ours; overwritten,
+    // it is the orphan's.
+    const dead = spawnSync(process.execPath, ["-e", "0"]);
+    const orphan = `${logPath}.${dead.pid}.rotating`;
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    // No `.1`: the first shift then has nothing to promote and does not throw.
+    mkdirSync(`${logPath}.2`, { recursive: true });
+    writeFileSync(join(`${logPath}.2`, "blocker"), "no", "utf8");
+    writeFileSync(staging(), "OUR-OWN-LEFTOVER", "utf8");
+    writeFileSync(orphan, "ANOTHER-SERVERS-CRASH", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z");
+
+    expect(readFileSync(`${logPath}.1`, "utf8")).toBe("OUR-OWN-LEFTOVER");
+  });
+
+  it("MUTATION: a staging file older than any roll is reclaimed even while its pid is in use", () => {
+    // Pids are reused. `isProcessAlive` deliberately answers "alive" for
+    // anything but ESRCH, so a crashed server's pid handed to an unrelated
+    // process would keep its leftover out of reach for good — one ceiling of
+    // disk per occurrence, which is the growth this module exists to stop and
+    // the opposite of what the README promises. Age overrides the pid: the
+    // window between staging a file and filing it is two adjacent renames.
+    const alive = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+      stdio: "ignore",
+    });
+    try {
+      const orphan = `${logPath}.${alive.pid}.rotating`;
+      mkdirSync(join(tmp, "sub"), { recursive: true });
+      writeFileSync(orphan, "FROM-A-PID-SINCE-REUSED", "utf8");
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      utimesSync(orphan, twoHoursAgo, twoHoursAgo);
+      writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+      _resetDiagnosticLogForTest();
+
+      write(1, "z");
+
+      expect(existsSync(orphan)).toBe(false); // reclaimed despite the live pid
+      expect(readFileSync(`${logPath}.2`, "utf8")).toBe("FROM-A-PID-SINCE-REUSED");
+    } finally {
+      alive.kill();
+    }
+  });
+
   it("MUTATION: an orphan that cannot be claimed leaves the generations untouched", () => {
     // Filing an orphan shifts generations to make room. Doing that BEFORE
     // proving the orphan can be moved is the same defect the live file's own
@@ -900,19 +962,33 @@ describe("diagnostic-log rotation", () => {
 
   it("MUTATION: the newest crash log is the one kept when several orphans are filed", () => {
     // Each orphan filed pushes the previous one down a generation, so the LAST
-    // one filed is the one that survives behind the live file. `readdirSync`
-    // hands them back in whatever order the filesystem likes, which with two
-    // crashed servers can retain the older log and evict the newer — backwards
-    // from how every other generation here is kept.
+    // one filed is the one that survives behind the live file. Filed in the
+    // order `readdirSync` hands them back, two crashed servers can retain the
+    // older log and evict the newer — backwards from how every other
+    // generation here is kept.
+    //
+    // The discriminator is built against the LISTING, not against the pids.
+    // `readdirSync` here returns name order (measured: `.11111.` lists before
+    // `.99991.`), and name order agrees with numeric order only while the two
+    // pids have the same number of digits — so a test that hangs the ages on
+    // "the pid spawned second" can, on the strength of two numbers it does not
+    // control, put the newer file first in the listing and pass with the sort
+    // removed. Two earlier versions of this test did exactly that. So: list
+    // the directory, and give the NEWER timestamp to whichever file comes
+    // FIRST. An implementation that files in listing order then retains the
+    // older one, whatever the pids happen to be.
     const a = spawnSync(process.execPath, ["-e", "0"]);
     const b = spawnSync(process.execPath, ["-e", "0"]);
     expect(a.pid).not.toBe(b.pid);
 
-    mkdirSync(join(tmp, "sub"), { recursive: true });
-    // Written in one order with explicitly opposite ages, so a listing that
-    // happens to be alphabetical or inode-ordered cannot accidentally pass.
-    const older = `${logPath}.${a.pid}.rotating`;
-    const newer = `${logPath}.${b.pid}.rotating`;
+    const dir = join(tmp, "sub");
+    mkdirSync(dir, { recursive: true });
+    for (const p of [a, b]) writeFileSync(`${logPath}.${p.pid}.rotating`, "", "utf8");
+    const listed = readdirSync(dir)
+      .filter((f) => f.endsWith(".rotating"))
+      .map((f) => join(dir, f));
+    expect(listed).toHaveLength(2);
+    const [newer, older] = listed; // newer = listed FIRST, on purpose
     writeFileSync(older, "OLDER-CRASH", "utf8");
     writeFileSync(newer, "NEWER-CRASH", "utf8");
     utimesSync(older, new Date(1000), new Date(1000));
@@ -924,6 +1000,46 @@ describe("diagnostic-log rotation", () => {
 
     // Live file in .1, the NEWER crash log behind it, the older one aged out.
     expect(readFileSync(`${logPath}.2`, "utf8")).toBe("NEWER-CRASH");
+    expect(logFiles().length).toBeLessThanOrEqual(3);
+  });
+
+  it("MUTATION: a roll that keeps failing does not list the directory on every retry — the sweep waits for a roll that has succeeded", () => {
+    // The reclaim sweep is the one part of a roll that costs a `readdir`. A
+    // live file that cannot be rolled retries once per back-off — at the
+    // smallest ceiling, every few hundred records — and each retry paid for a
+    // listing of a directory the operator chose, synchronously, on the
+    // `uncaughtException` path. So after a failed roll the sweep is skipped
+    // until a roll succeeds.
+    //
+    // Observable without counting calls: an orphan that appears DURING the
+    // failed episode is not noticed by the roll that recovers (no listing),
+    // and IS noticed by the roll after that (the skip ends with the success).
+    // Both halves are asserted. The first is the skip; the second is the flag
+    // being cleared — skipping forever would be a file the ceiling does not
+    // count, kept for good, which is what the sweep exists to stop.
+    const dead = spawnSync(process.execPath, ["-e", "0"]);
+    const orphan = `${logPath}.${dead.pid}.rotating`;
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    // Block the staging name so the roll fails without having moved anything.
+    mkdirSync(staging(), { recursive: true });
+    writeFileSync(join(staging(), "blocker"), "no", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "a"); // the roll is attempted and fails
+    expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
+
+    // The episode ends, and a crashed server's leftover lands meanwhile.
+    rmSync(staging(), { recursive: true, force: true });
+    writeFileSync(orphan, "CRASHED-DURING-THE-EPISODE", "utf8");
+    write(2, "b"); // past the back-off; exactly one roll, and it succeeds
+    expect(existsSync(`${logPath}.1`)).toBe(true); // it rolled
+    expect(existsSync(orphan)).toBe(true); // without listing the directory
+
+    write(20, "c"); // the roll after it sweeps
+    expect(existsSync(orphan)).toBe(false);
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("CRASHED-DURING-THE-EPISODE");
     expect(logFiles().length).toBeLessThanOrEqual(3);
   });
 

@@ -24,7 +24,6 @@
 import {
   appendFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readdirSync,
   realpathSync,
@@ -224,6 +223,16 @@ let _rotationFailurePending = false;
 let _rotationFailureRecorded = false;
 
 /**
+ * The previous roll threw. Used only to skip the reclaim sweep, which is the
+ * one part of a roll that costs a directory listing: a file that cannot be
+ * rolled retries once per back-off, and at the smallest allowed ceiling that
+ * is a `readdir` every few hundred records — synchronously, on the
+ * `uncaughtException` path, in a directory the operator chose and which may
+ * hold thousands of unrelated entries.
+ */
+let _lastRollFailed = false;
+
+/**
  * True only for a plain file. Used at the staging path, where `existsSync`
  * would answer yes to a directory sitting there and send it into the generation
  * chain as if it were a staged log.
@@ -256,9 +265,10 @@ function getMaxBytes(): number {
  * of it — see `stagingPathFor`.
  *
  * Chosen to still match a `diagnostic.log*` glob, so a roll interrupted by a
- * crash leaves its records findable rather than hidden. The next rotation by
- * that pid files it; until then the directory can hold one file more than the
- * usual three.
+ * crash leaves its records findable rather than hidden. The next roll files it
+ * back into the numbered generations — by that pid if it is still running, and
+ * by any other server once it is not (see `staleStagingFiles`) — so the extra
+ * files last until the next roll rather than forever.
  */
 const STAGING_SUFFIX = ".rotating";
 
@@ -293,25 +303,38 @@ function stagingPathFor(target: string): string {
  * generations beside the real log rather than beside the link.
  *
  * A link whose target is momentarily gone — another writer sharing it is
- * mid-roll — makes `realpathSync` throw. Falling back to the path itself there
- * would rename the LINK into the staging name and disconnect the configured
- * destination permanently, so that case returns `null` and the roll waits. Any
- * other failure falls back to the path, which is what every ordinary non-link
- * path already did.
+ * mid-roll — never reaches here: `existsSync` follows links, so the caller's
+ * "the live file is gone" check catches it first and re-seeds without moving
+ * anything, which is the outcome wanted. An earlier round guarded that case
+ * here as well; the guard could not be reached in any deterministic case and
+ * no test could exercise it, so it is gone rather than kept as ballast.
+ *
+ * What remains is the narrow race where the target vanishes between that check
+ * and this call. It is declined for the same reason as the other unreachable
+ * guards in this module: a branch no test can demonstrate is not a safeguard.
+ *
+ * Falls back to the path itself on any error, which is what every ordinary
+ * non-link path already did.
  */
-function rotationTarget(path: string): string | null {
+function rotationTarget(path: string): string {
   try {
     return realpathSync(path);
   } catch {
-    // fall through
+    return path;
   }
-  try {
-    if (lstatSync(path).isSymbolicLink()) return null;
-  } catch {
-    // not a link, or the link itself is unreadable
-  }
-  return path;
 }
+
+/**
+ * How old a staging file has to be before its pid stops being believed.
+ *
+ * The window between staging a file and filing it is two adjacent synchronous
+ * renames, so a staging file that has existed for an hour belongs to nobody,
+ * whatever the process table says. Without this a crashed server's pid handed
+ * to an unrelated process makes its leftover permanently unreclaimable — one
+ * ceiling of disk per occurrence, contradicting what this module and the README
+ * both promise.
+ */
+const STALE_STAGING_AGE_MS = 60 * 60 * 1000;
 
 /**
  * Whether a pid still belongs to a running process.
@@ -366,13 +389,17 @@ function staleStagingFiles(target: string): string[] {
     if (!entry.startsWith(prefix) || !entry.endsWith(STAGING_SUFFIX)) continue;
     const pid = Number(entry.slice(prefix.length, entry.length - STAGING_SUFFIX.length));
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
-    if (isProcessAlive(pid)) continue;
     const path = join(dir, entry);
+    let mtimeMs: number;
     try {
-      stale.push({ path, mtimeMs: statSync(path).mtimeMs });
+      mtimeMs = statSync(path).mtimeMs;
     } catch {
-      // vanished between the listing and the stat — nothing to file
+      continue; // vanished between the listing and the stat — nothing to file
     }
+    // Age overrides the process table. A pid alone is not enough: pids are
+    // reused, and a reused one would keep this file out of reach for good.
+    if (Date.now() - mtimeMs < STALE_STAGING_AGE_MS && isProcessAlive(pid)) continue;
+    stale.push({ path, mtimeMs })
   }
   return stale.sort((a, b) => a.mtimeMs - b.mtimeMs).map((entry) => entry.path);
 }
@@ -459,33 +486,34 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
   // target gets recreated after a roll.
   const backOff = Math.max(refreshInterval, MAX_RECORD_BYTES);
   const target = rotationTarget(path);
-  if (target === null) {
-    // A link whose target is momentarily gone. Wait for it rather than renaming
-    // the link away from under the configured destination.
-    _bytesOnDisk = Math.max(0, _bytesOnDisk - backOff);
-    _bytesSinceStat = 0;
-    return;
-  }
   const staging = stagingPathFor(target);
   try {
-    // Oldest first: a crashed server's staged file is older than anything this
-    // process is holding, so it goes in behind ours.
+    // OUR OWN leftover first, because the claim below REPLACES whatever is at
+    // the staging name. `renameSync` overwrites its destination — this module
+    // relies on exactly that two lines further down — so claiming an orphan
+    // while a leftover of ours is still sitting there destroys a full live
+    // file's worth of the newest history there is.
     //
-    // Each one is CLAIMED before any generation moves. The first version of
-    // this loop shifted and then renamed, which is the same defect the live
-    // file's own ordering exists to avoid - a viewer holding a crash-left file
-    // open makes the rename throw with `.2` already replaced and `.1` empty,
-    // and the restore below does not cover it because nothing was staged. The
-    // lesson from re-introducing it inside the fix for it: there is one safe
-    // shape here, and every caller has to use it rather than re-derive it.
-    for (const orphan of staleStagingFiles(target)) {
+    // The previous round unified shift-vs-install and called the class closed.
+    // It was not: the destructive act here is the CLAIM, and its destination
+    // was the thing nobody had looked at. Ordering is the fix, not another
+    // helper.
+    if (isPlainFile(staging)) fileStagedInto(target, staging);
+    // Then crashed servers' leftovers, oldest first, each CLAIMED before any
+    // generation moves. Shifting and then renaming — the first version of this
+    // loop — is the same defect the live file's own ordering exists to avoid: a
+    // viewer holding a crash-left file open makes the rename throw with `.2`
+    // already replaced and `.1` empty, and the restore below does not cover it
+    // because nothing of ours was staged.
+    //
+    // The staging name is free on entry to every iteration: the line above
+    // emptied it, and each `fileStagedInto` empties it again — or throws, which
+    // leaves the loop entirely.
+    for (const orphan of _lastRollFailed ? [] : staleStagingFiles(target)) {
       if (!isPlainFile(orphan)) continue;
-      renameSync(orphan, staging); // claim it, or fail having touched nothing
+      renameSync(orphan, staging);
       fileStagedInto(target, staging);
     }
-    // Our own leftover, if a roll of ours was interrupted. Already under our
-    // name, so there is nothing to claim.
-    if (isPlainFile(staging)) fileStagedInto(target, staging);
     // The live file moves FIRST, before any generation is touched.
     //
     // The other order looks natural - make room, then fill it - and it quietly
@@ -503,6 +531,7 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     fileStagedInto(target, staging);
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;
+    _lastRollFailed = false;
     // Rotation works again, so the next failure is a new episode and gets its
     // own notice. See `_rotationFailureRecorded`.
     //
@@ -558,6 +587,7 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     // This outcome is NOT bounded: a file that can never be rolled grows at
     // full speed, which is the state this module exists to prevent. So it is
     // recorded once rather than swallowed, and the log can explain its own size.
+    _lastRollFailed = true;
     _bytesOnDisk = Math.max(0, statSizeOrZero(target) - backOff);
     _bytesSinceStat = 0;
     if (!_rotationFailureRecorded) _rotationFailurePending = true;
@@ -1342,4 +1372,5 @@ export function _resetDiagnosticLogForTest(): void {
   _bytesSinceStat = 0;
   _rotationFailurePending = false;
   _rotationFailureRecorded = false;
+  _lastRollFailed = false;
 }

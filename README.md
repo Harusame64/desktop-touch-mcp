@@ -771,11 +771,14 @@ two rolled generations are kept. **With one server running, the newest records a
 `diagnostic.log`**, but when you are searching for something that happened a while ago, search
 `diagnostic.log*` rather than the one file. That glob also catches
 `diagnostic.log.<pid>.rotating`, which is where a server parks the live file for the moment it is
-being rolled. A roll that cannot finish puts the file straight back, so one of these left behind
-means the server was killed mid-roll. The pid in the name says which server it belonged to. It is
-filed back into the numbered generations by the next roll — by that server if it is still running,
-and otherwise by any other server once the original has exited, so a crashed server's log is not
-left sitting on disk forever.
+being rolled. One of these left behind means a roll did not finish: the server was killed partway
+through, or the roll failed after the file was parked and the server could not put it back — it will
+not if a fresh `diagnostic.log` has been started in the meantime, and the move back can fail for the
+same reason the roll did. Nothing in it is lost. The pid in the name says which server it belonged
+to, and it is filed back into the numbered generations by the next roll — by that server if it is
+still running, and otherwise by any other server once the original has exited or, because process
+ids are reused, once nothing has been written to the file for an hour — so a crashed server's log is
+not left sitting on disk forever.
 
 Every record is measured against the limit before it is written, so a server left running for days
 rolls the file as it goes — there is no scheduled job, nothing to restart, and nothing to clean up by
@@ -799,9 +802,11 @@ Two situations go past that figure, and both are worth knowing about:
   one file covers both.
 - **A live file that cannot be renamed** — held open by another program, or permission denied.
   Rotation then cannot happen and the log keeps growing at full speed. Nothing is lost — a roll that
-  fails puts the live file back where it was — but this is the one case the limit does not cover, so
-  it is not silent: a single `log_rotation_failed` record is written into the log itself. It is the first thing to grep for if you find an oversized `diagnostic.log` after
-  updating.
+  fails leaves the live file where it was, or at worst parked under the `.rotating` name above for a
+  later roll to file — but this is the one case the limit does not cover, so it is not silent: a
+  `log_rotation_failed` record is written into the log itself, once per stretch of failed rolls
+  rather than once per line. It is the first thing to grep for if you find an oversized
+  `diagnostic.log` after updating.
 
 One record is never allowed to be larger than the file it lives in, so an event carrying an
 unusually large payload is written as a shortened stand-in: same `kind`, plus `record_truncated`,

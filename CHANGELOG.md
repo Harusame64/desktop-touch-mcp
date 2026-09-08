@@ -17,8 +17,9 @@
   one of them rolls it — the overshoot grows with the number of servers, not
   without limit. And if the live file cannot be renamed at all (another program
   holding it open, or permission denied) rotation cannot happen and the log does
-  keep growing; that case is no longer silent, because a single
-  `log_rotation_failed` record is written into the log itself. Nothing about the
+  keep growing; that case is no longer silent, because a
+  `log_rotation_failed` record is written into the log itself — once per
+  stretch of failed rolls, not once per line. Nothing about the
   events themselves changed, and with one server running the newest records are
   always in `diagnostic.log`; search `diagnostic.log*` when you are looking
   further back, or when several clients share the file.
