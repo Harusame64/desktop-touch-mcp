@@ -4,10 +4,16 @@
 #      (release flow only — see docs/release-process.md and CLAUDE.md 強制命令 8).
 #   2. A Claude session id in a commit message (repo policy, user decision
 #      2026-09-08: no session IDs in the public repo).
-#      `.githooks/commit-msg` strips those at commit time; reaching here means
-#      that hook was skipped, so this one refuses instead of rewriting — the
-#      message is already in a commit by now, and rewriting it under the
-#      author's feet would change history they did not ask to change.
+#      `.githooks/commit-msg` removes those at commit time, so this is not a
+#      second copy of that check — it covers what that hook cannot see:
+#        - `git rebase` does NOT re-run commit-msg. It carries existing commits
+#          forward as they are, so a trailer written before the hook existed, or
+#          on a branch where it was skipped, reaches a public branch untouched.
+#        - `git commit --no-verify` skips commit-msg outright.
+#      (`git commit --amend` DOES re-run it, so that path is already covered.)
+#      This one refuses rather than rewrites: the line is inside a commit by
+#      now, and rewriting history under the author's feet is not a hook's job.
+#      It also runs without node, which the commit-msg hook needs.
 
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
