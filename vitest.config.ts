@@ -1,14 +1,21 @@
 import { defineConfig } from "vitest/config";
 import type { Plugin } from "vite";
 
-// Strip shebang lines from .js files so vitest can import bin/launcher.js.
+// Strip shebang lines from .js/.cjs/.mjs files so vitest can import them.
 // Node.js handles shebangs natively; Vite's transform pipeline does not.
+//
+// `.mjs` was outside this until a `scripts/*.mjs` with a shebang was imported by
+// a test. It passed for as long as the file had only ever been written locally,
+// and failed the first time it came back through a checkout: `core.autocrlf`
+// turns the shebang into `#!/usr/bin/env node\r`, and the transform reports
+// "SyntaxError: Invalid or unexpected token" with no location. Every clone on
+// Windows would have hit it.
 const stripShebang: Plugin = {
   name: "strip-shebang",
   transform(code, id) {
     // Split on "?" so a cache-busting query (bin/launcher.js?case=1, used by the
     // release-resolution tests to get a fresh module per case) still matches.
-    if (id.split("?")[0].endsWith(".js") && code.startsWith("#!")) {
+    if (/\.[cm]?js$/.test(id.split("?")[0]) && code.startsWith("#!")) {
       return { code: code.slice(code.indexOf("\n") + 1), map: null };
     }
     return null;

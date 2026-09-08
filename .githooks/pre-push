@@ -22,12 +22,22 @@
 # elsewhere, and `git remote set-url` leaving the old tracking refs behind — and
 # each of those was a separate leak until the rule was stated. Nothing here
 # decides from the tracking namespace. What decides is the destination's own
-# live refs, asked for once, and only when something was found worth asking
-# about.
+# live refs, asked for once ($2 is the push URL, so it is the machine actually
+# being written to), and only when something was found worth asking about.
 #
 # The other rule, learned the same number of times: a check that could not run
-# is not a check that passed. Every step below either produces an answer or
-# refuses the push.
+# is not a check that failed, and it is not a check that passed either. Every
+# step below produces an answer or says it could not.
+
+# Default word splitting, whatever the caller exported. Everything split below
+# is hex or a marker, but that is an argument for not depending on it.
+unset IFS
+
+# Never block a push on a credential prompt whose output goes nowhere. With
+# this, an unreachable or unauthenticated destination fails instead of hanging,
+# and the failure is refused explicitly a few lines down.
+GIT_TERMINAL_PROMPT=0
+export GIT_TERMINAL_PROMPT
 
 remote_name="$1"
 remote_location="$2"
@@ -36,19 +46,26 @@ zero="0000000000000000000000000000000000000000"
 session_pattern='^[[:space:]]*([-*][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
 
 # Commits in $1 (a rev range) whose message carries a session id, one sha per
-# line, followed by a "@@SCANNED@@ <n>" line saying how many commits were
-# walked. The caller checks that count: without it, a scan that produced nothing
-# because `tr` or `awk` was missing looks exactly like a clean push.
+# line, followed by a "@@SCANNED@@<n>" line saying how many commits were walked.
+# The caller checks that count: without it, a scan that produced nothing because
+# `tr` or `awk` was missing looks exactly like a clean push.
+#
+# The record marker is `\001` followed by exactly 40 hex — checked, not assumed.
+# A commit message with a line starting with `\001` otherwise counted as a
+# commit header, the walked total overshot, and the branch became unpushable
+# with an internal-error message.
 #
 # `tr` comes first because a message written with lone CR line endings is a
-# single line to both grep and awk, so the anchored pattern never saw the
+# single line to grep and awk alike, so the anchored pattern never saw the
 # trailer — such a commit went through both hooks. Rewriting CR to LF is safe
 # here because nothing is written back; this half only looks.
 leaking_commits() {
     git log $1 --format="%x01%H%n%B" 2>/dev/null |
         tr '\r' '\n' |
         awk -v pat="$session_pattern" '
-            /^\001/ { sha = substr($0, 2); walked++; next }
+            /^\001[0-9a-f][0-9a-f]*$/ && length($0) == 41 {
+                sha = substr($0, 2); walked++; next
+            }
             sha != "" && $0 ~ pat && !(sha in seen) { seen[sha] = 1; print sha }
             END { print "@@SCANNED@@" walked + 0 }
         '
@@ -100,14 +117,6 @@ do
         range="$remote_oid..$local_oid"
     fi
 
-    # `git log` is proved able to read the range before anything is concluded
-    # from its output: it exits non-zero when the range names an object this
-    # clone does not have, which `remote_oid` can, and reading that as "found
-    # nothing" is what let a force-push publish a trailer.
-    if ! git log $range --format=%H >/dev/null 2>&1; then
-        refuse_unverifiable "git log $range failed (try 'git fetch $remote_name' first)"
-    fi
-
     if ! scan=$(leaking_commits "$range"); then
         refuse_unverifiable "the commit-message scan failed to run"
     fi
@@ -121,8 +130,12 @@ do
         esac
     done
 
+    # Also the range check: `rev-list` exits non-zero when the range names an
+    # object this clone does not have, which `remote_oid` can after a force-push
+    # to an unfetched remote. Reading that as "found nothing" is what let a
+    # trailer publish, so it is the one walk that both counts and validates.
     if ! expected=$(git rev-list --count $range 2>/dev/null); then
-        refuse_unverifiable "could not count the commits in $range"
+        refuse_unverifiable "git rev-list $range failed (try 'git fetch $remote_name' first)"
     fi
     if [ "$scanned" != "$expected" ]; then
         refuse_unverifiable "the scan covered $scanned of $expected commits"
@@ -135,23 +148,35 @@ do
     fi
 
     # Step 3 — something matched, so now one round trip is worth it. This is the
-    # only thing that actually knows what the destination has.
+    # only thing that actually knows what the destination has. Note that on a
+    # forge this includes refs the destination serves but nobody pushed by hand
+    # (`refs/pull/*` on GitHub); those are publicly fetchable, so counting them
+    # as published is deliberate.
     if ! dest_refs=$(git ls-remote "$remote_location" 2>/dev/null); then
         refuse_unverifiable "could not list refs on $remote_location"
     fi
+    dest_oids=$(printf '%s\n' "$dest_refs" | awk '{ print $1 }')
 
     # Step 4 — a hit already reachable from something the destination has is
-    # already published there, and this push does not add it. That is what lets
-    # this repo's own historical trailers through with no special case, and it
-    # is decided per commit rather than per range.
+    # already published there, and this push does not add it. Decided per commit
+    # rather than per range, which is what lets this repo's own historical
+    # trailers through with no special case.
+    #
+    # Three outcomes, not two. `--is-ancestor` exits 0 for yes, 1 for no, and
+    # 128 when it cannot tell — the destination advanced past our last fetch, so
+    # `ls-remote` named objects we do not have. Folding 128 into "no" reported
+    # "this push would publish a session id" about a commit nothing had examined:
+    # a check that could not run, announced as a check that failed.
     unpublished=""
     for hit in $hits; do
         hit_published=no
-        for dest in $(printf '%s\n' "$dest_refs" | awk '{ print $1 }'); do
-            if git merge-base --is-ancestor "$hit" "$dest" 2>/dev/null; then
-                hit_published=yes
-                break
-            fi
+        for dest in $dest_oids; do
+            git merge-base --is-ancestor "$hit" "$dest" 2>/dev/null
+            case $? in
+                0) hit_published=yes; break ;;
+                1) ;;
+                *) refuse_unverifiable "could not compare $hit with $dest (try 'git fetch $remote_name' first)" ;;
+            esac
         done
         if [ "$hit_published" = "no" ]; then
             unpublished="$unpublished $hit"

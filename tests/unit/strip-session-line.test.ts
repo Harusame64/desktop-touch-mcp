@@ -253,6 +253,29 @@ describe("the two patterns accept the same lines, not merely the same string", (
     expect(() => ereToRegExp("^[[:alnum:]]+$")).toThrow(/cannot translate/);
     expect(() => ereToRegExp("^a\\(b\\)$")).toThrow(/cannot translate/);
   });
+
+  it("awk — the engine that actually scans — classifies the corpus the same way", () => {
+    // `grep` stopped scanning anything when `pre-push` moved to awk, so the
+    // engine deciding in production was the one nothing tested. awk's dynamic
+    // regex is not the same implementation as `grep -E`, and mawk has no POSIX
+    // bracket classes at all — this is what would say so.
+    const probe = spawnSync(
+      "awk",
+      ["-v", `pat=${SESSION_LINE_ERE}`, "{ print ($0 ~ pat) ? 1 : 0 }"],
+      { input: corpus.join("\n"), encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }
+    );
+    expect(
+      probe.status,
+      `awk unusable: error=${probe.error?.message ?? "none"} stderr=${probe.stderr}`
+    ).toBe(0);
+
+    const fromAwk = probe.stdout.trim().split("\n");
+    const fromJs = corpus.map((line) => (SESSION_LINE_RE.test(line) ? "1" : "0"));
+    expect(fromAwk.length).toBe(corpus.length);
+    for (let i = 0; i < corpus.length; i++) {
+      expect(fromAwk[i], `awk vs JS on ${JSON.stringify(corpus[i])}`).toBe(fromJs[i]);
+    }
+  });
 });
 
 describe("the file rewrite and the CLI — the part that can actually eat a message", () => {
@@ -595,6 +618,55 @@ describe("pre-push refuses what it should", () => {
     const r = world.push(`refs/heads/topic ${world.leaking} refs/heads/topic ${ZERO}\n`, pub);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("does not choke on a commit message containing the record marker", () => {
+    // The scan frames records with \001 in-band. A message line starting with
+    // \001 was counted as a commit header, the walked total overshot the real
+    // count, and the branch became permanently unpushable with what read as an
+    // internal fault — no route forward except the one thing this hook backstops.
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    world.git(["push", "-q", "origin", "main"]);
+    world.git(["fetch", "-q", "origin"]);
+    const tree = world.git(["write-tree"]).stdout.trim();
+    const odd = spawnSync("git", ["commit-tree", tree, "-p", world.leaking], {
+      cwd: world.work,
+      encoding: "utf8",
+      input: "chore: subject\n\ndeadbeef looks like a record header\n",
+    }).stdout.trim();
+    const r = world.push(`refs/heads/x ${odd} refs/heads/x ${world.leaking}\n`, dest);
+    expect(r.stderr).not.toContain("could not verify");
+    expect(r.status).toBe(0);
+  });
+
+  it.skipIf(!hasSh)("refuses when it cannot tell whether the hit is published", () => {
+    // The destination advertises an object this clone does not have — it moved
+    // on since the last fetch. `--is-ancestor` exits 128 there, and folding that
+    // into "not an ancestor" announced "this push would publish a session id"
+    // about a commit nothing had examined: a check that could not run, reported
+    // as a check that failed.
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    // A commit made by somebody else and pushed to the destination. Our clone
+    // has never fetched it, so `ls-remote` names an object we do not have.
+    const other = join(world.root, "other");
+    spawnSync("git", ["init", "-q", "-b", "main", other], { encoding: "utf8" });
+    const og = (args: string[]) => spawnSync("git", args, { cwd: other, encoding: "utf8" });
+    og(["config", "user.email", "t@example.com"]);
+    og(["config", "user.name", "T"]);
+    og(["config", "commit.gpgsign", "false"]);
+    writeFileSync(join(other, "b.txt"), "b");
+    og(["add", "-A"]);
+    og(["commit", "-q", "--no-verify", "-m", "elsewhere"]);
+    og(["push", "-q", dest, "main:refs/heads/other"]);
+    const stranger = og(["rev-parse", "HEAD"]).stdout.trim();
+    expect(world.git(["cat-file", "-e", stranger]).status).not.toBe(0);
+
+    const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("could not verify");
+    expect(r.stderr).not.toContain("would publish commit(s)");
   });
 
   it.skipIf(!hasSh)("refuses when the destination cannot be asked", () => {

@@ -27,7 +27,8 @@ import { pathToFileURL } from "node:url";
  * survives — this repo's own commit messages discuss it.
  *
  * The whitespace class is `[ \t\v\f\r]`, matching what POSIX `[[:space:]]`
- * means to `grep` on a single line under `LC_ALL=C`. It is spelled out rather
+ * means to `grep` and to `awk` on a single line under `LC_ALL=C` — `awk` is what
+ * actually scans in `.githooks/pre-push`, and the tests exercise both. It is spelled out rather
  * than written `\s` because `\s` would also take Unicode spaces, which `grep`
  * would not, and the two engines have to agree — `.githooks/pre-push` carries
  * the ERE spelling of this same rule, since it must run without node.
@@ -67,10 +68,14 @@ export function stripSessionLines(message) {
   const parts = message.split(LINE_SPLIT_RE);
   const kept = [];
   let removed = 0;
+  // The ending the message itself uses, remembered across removed lines too —
+  // the line that carried it may be the one being taken out.
+  let lastSeparator = "\n";
 
   for (let i = 0; i < parts.length; i += 2) {
     const text = parts[i];
     const sep = parts[i + 1] ?? "";
+    if (sep !== "") lastSeparator = sep;
     if (SESSION_LINE_RE.test(text)) {
       removed++;
       continue;
@@ -91,13 +96,13 @@ export function stripSessionLines(message) {
 
   if (kept.length === 0) return { text: "", removed };
 
-  // The last surviving line keeps its own ending, or gains the one its
-  // neighbours use if it had none.
+  // The last surviving line keeps its own ending. If it had none — it was the
+  // unterminated final chunk — it borrows the LAST ending the message used,
+  // looked for across the whole message rather than among the survivors: when
+  // the only line carrying one was the line just removed, there is no surviving
+  // neighbour to ask, and a CRLF message came back with an LF on the end.
   const last = kept[kept.length - 1];
-  if (last.sep === "") {
-    const neighbour = kept.find((k) => k.sep !== "");
-    last.sep = neighbour ? neighbour.sep : "\n";
-  }
+  if (last.sep === "") last.sep = lastSeparator;
   return { text: kept.map((k) => k.text + k.sep).join(""), removed };
 }
 
