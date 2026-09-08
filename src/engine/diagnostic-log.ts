@@ -345,6 +345,12 @@ function isProcessAlive(pid: number): boolean {
  * IS a generation — it is what the live log held when its server died — and
  * deleting up to a ceiling's worth of crash-time diagnostics to save a readdir
  * is the wrong trade for a diagnostic log.
+ *
+ * Returned oldest first, by modification time. `readdirSync` order is whatever
+ * the filesystem feels like, and each one filed pushes the previous one down a
+ * generation — so with two crashed servers an arbitrary order means an OLDER
+ * crash log can be the one retained while a newer one is evicted, which is
+ * backwards from how every other generation here is kept.
  */
 function staleStagingFiles(target: string): string[] {
   const dir = dirname(target);
@@ -355,15 +361,20 @@ function staleStagingFiles(target: string): string[] {
   } catch {
     return [];
   }
-  const stale: string[] = [];
+  const stale: { path: string; mtimeMs: number }[] = [];
   for (const entry of entries) {
     if (!entry.startsWith(prefix) || !entry.endsWith(STAGING_SUFFIX)) continue;
     const pid = Number(entry.slice(prefix.length, entry.length - STAGING_SUFFIX.length));
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
     if (isProcessAlive(pid)) continue;
-    stale.push(join(dir, entry));
+    const path = join(dir, entry);
+    try {
+      stale.push({ path, mtimeMs: statSync(path).mtimeMs });
+    } catch {
+      // vanished between the listing and the stat — nothing to file
+    }
   }
-  return stale;
+  return stale.sort((a, b) => a.mtimeMs - b.mtimeMs).map((entry) => entry.path);
 }
 
 /**
@@ -400,6 +411,19 @@ function shiftGenerations(path: string): void {
       if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw err;
     }
   }
+}
+
+/**
+ * Move an already-staged file into `.1`, shifting the generations to make room.
+ *
+ * The caller must have claimed `staging` first — by renaming the live file or
+ * an orphan into it — so that by the time this runs, the only way it can fail
+ * is a generation that will not move, which `shiftGenerations` reports without
+ * having destroyed anything.
+ */
+function fileStagedInto(target: string, staging: string): void {
+  shiftGenerations(target);
+  renameSync(staging, `${target}.1`);
 }
 
 /**
@@ -446,17 +470,22 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
   try {
     // Oldest first: a crashed server's staged file is older than anything this
     // process is holding, so it goes in behind ours.
-    for (const orphan of [...staleStagingFiles(target), staging]) {
+    //
+    // Each one is CLAIMED before any generation moves. The first version of
+    // this loop shifted and then renamed, which is the same defect the live
+    // file's own ordering exists to avoid - a viewer holding a crash-left file
+    // open makes the rename throw with `.2` already replaced and `.1` empty,
+    // and the restore below does not cover it because nothing was staged. The
+    // lesson from re-introducing it inside the fix for it: there is one safe
+    // shape here, and every caller has to use it rather than re-derive it.
+    for (const orphan of staleStagingFiles(target)) {
       if (!isPlainFile(orphan)) continue;
-      // A roll was interrupted between staging a live file and filing it. Those
-      // records are NEWER than `.1`, so they are filed before anything else is
-      // staged - the rename below would otherwise replace them.
-      //
-      // Shifting before the move is safe HERE, unlike for the live file: these
-      // are staging names, not the file a viewer has open.
-      shiftGenerations(target);
-      renameSync(orphan, `${target}.1`);
+      renameSync(orphan, staging); // claim it, or fail having touched nothing
+      fileStagedInto(target, staging);
     }
+    // Our own leftover, if a roll of ours was interrupted. Already under our
+    // name, so there is nothing to claim.
+    if (isPlainFile(staging)) fileStagedInto(target, staging);
     // The live file moves FIRST, before any generation is touched.
     //
     // The other order looks natural - make room, then fill it - and it quietly
@@ -471,8 +500,7 @@ function rotateIfNeeded(path: string, incomingBytes: number): void {
     // Staged first, a live file that can never be renamed costs nothing at all:
     // this rename fails, and every generation is exactly where it was.
     renameSync(target, staging);
-    shiftGenerations(target);
-    renameSync(staging, `${target}.1`);
+    fileStagedInto(target, staging);
     _bytesOnDisk = 0;
     _bytesSinceStat = 0;
     // Rotation works again, so the next failure is a new episode and gets its

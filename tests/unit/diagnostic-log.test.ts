@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, existsSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -867,6 +867,64 @@ describe("diagnostic-log rotation", () => {
     block();
     write(20, "c"); // episode 2 must be reported on its own
     expect(readFileSync(logPath, "utf8")).toContain("log_rotation_failed");
+  });
+
+  it("MUTATION: an orphan that cannot be claimed leaves the generations untouched", () => {
+    // Filing an orphan shifts generations to make room. Doing that BEFORE
+    // proving the orphan can be moved is the same defect the live file's own
+    // ordering exists to avoid, re-introduced inside the fix for it: a viewer
+    // holding a crash-left file open makes the rename throw with `.2` already
+    // replaced and `.1` emptied, and the outer restore does not cover it
+    // because nothing of ours was staged.
+    //
+    // The orphan is a real file — a directory would be filtered out before the
+    // claim is even attempted. What blocks it is the CLAIM DESTINATION: a
+    // non-empty directory sitting at this process's own staging name.
+    const dead = spawnSync(process.execPath, ["-e", "0"]);
+    const orphan = `${logPath}.${dead.pid}.rotating`;
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    writeFileSync(`${logPath}.1`, "GEN1-KEEP-ME", "utf8");
+    writeFileSync(`${logPath}.2`, "GEN2-KEEP-ME", "utf8");
+    writeFileSync(orphan, "CRASHED-SERVERS-LOG", "utf8");
+    mkdirSync(staging(), { recursive: true });
+    writeFileSync(join(staging(), "blocker"), "no", "utf8");
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z");
+
+    expect(readFileSync(`${logPath}.1`, "utf8")).toBe("GEN1-KEEP-ME");
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("GEN2-KEEP-ME");
+  });
+
+  it("MUTATION: the newest crash log is the one kept when several orphans are filed", () => {
+    // Each orphan filed pushes the previous one down a generation, so the LAST
+    // one filed is the one that survives behind the live file. `readdirSync`
+    // hands them back in whatever order the filesystem likes, which with two
+    // crashed servers can retain the older log and evict the newer — backwards
+    // from how every other generation here is kept.
+    const a = spawnSync(process.execPath, ["-e", "0"]);
+    const b = spawnSync(process.execPath, ["-e", "0"]);
+    expect(a.pid).not.toBe(b.pid);
+
+    mkdirSync(join(tmp, "sub"), { recursive: true });
+    // Written in one order with explicitly opposite ages, so a listing that
+    // happens to be alphabetical or inode-ordered cannot accidentally pass.
+    const older = `${logPath}.${a.pid}.rotating`;
+    const newer = `${logPath}.${b.pid}.rotating`;
+    writeFileSync(older, "OLDER-CRASH", "utf8");
+    writeFileSync(newer, "NEWER-CRASH", "utf8");
+    utimesSync(older, new Date(1000), new Date(1000));
+    utimesSync(newer, new Date(2000), new Date(2000));
+    writeFileSync(logPath, "x".repeat(MIN_CEILING), "utf8");
+    _resetDiagnosticLogForTest();
+
+    write(1, "z"); // rolls: older filed, then newer, then the live file
+
+    // Live file in .1, the NEWER crash log behind it, the older one aged out.
+    expect(readFileSync(`${logPath}.2`, "utf8")).toBe("NEWER-CRASH");
+    expect(logFiles().length).toBeLessThanOrEqual(3);
   });
 
   it("MUTATION: a roll does not delete the oldest generation it is not going to promote into", () => {
