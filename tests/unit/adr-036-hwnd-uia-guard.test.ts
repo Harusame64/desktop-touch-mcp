@@ -159,6 +159,35 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(r.ok).toBe(false);
     expect(mockSetElementValue).not.toHaveBeenCalled();
   });
+
+  it("does not tell that caller to pass the handle it just passed", async () => {
+    // The generic `ambiguous_target` advice is "pass hwnd", and here the
+    // descriptor withholds the handle on purpose — so following that advice
+    // returns to this same refusal. That loop is the shape this whole PR
+    // exists to remove; it must not survive in the one case still refused.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    const r = parse(await setElementValueHandler({
+      windowTitle: SHARED_TITLE, hwnd: String(LIVE), value: "x", name: "Field",
+    } as never));
+    const said = JSON.stringify(r);
+    expect(said).toContain("DTM_SET_VALUE_CHAIN");
+    // Names recoveries the caller can actually perform, not only an env var.
+    expect(said).toContain("click_element");
+    expect(said).toContain("keyboard");
+    expect(said).not.toContain("Pass hwnd to name one window exactly");
+  });
+
+  it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {
+    // The pairing has to be set_element_value itself: with the chain off,
+    // passing hwnd IS the recovery here, so the special case must not reach
+    // this call. Asserting it on another tool would leave "special-case every
+    // ambiguous set_element_value" indistinguishable from the real rule.
+    const r = parse(await setElementValueHandler({
+      windowTitle: SHARED_TITLE, value: "x", name: "Field",
+    } as never));
+    expect(JSON.stringify(r)).toContain("Pass hwnd to name one window exactly");
+    expect(JSON.stringify(r)).not.toContain("DTM_SET_VALUE_CHAIN");
+  });
 });
 
 // ─── The response hints describe the window that was acted on ────────────────

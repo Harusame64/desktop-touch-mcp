@@ -58,16 +58,20 @@
     did, from the other window's contents. The keys still go to the window you
     named; only the verdict is withheld.
   - `narrate: "rich"` returns no before/after diff for a call that names a
-    handle while another window shares its title, and marks it
-    `diffDegraded: "ambiguous_title"`. That diff is built from UIA snapshots
+    handle while another open window's title contains the text you passed, and
+    marks it `diffDegraded: "ambiguous_title"`. That diff is built from UIA snapshots
     taken *by title*, so it would otherwise describe the window you did not
     write to. The action itself is unaffected — only the diff is withheld.
   - `set_element_value` still stops with `ambiguous_target` while
     `DTM_SET_VALUE_CHAIN=1` is set. With that chain enabled a failed first
     attempt continues into two fallbacks that find their window by title — one of
     them a foreground select-all-and-replace — so lifting the refusal there would
-    trade a stop for a write into the wrong field. Unset (the default), it takes
-    the handle like everything else. With the chain enabled and the guard turned
+    trade a stop for a write into the wrong field. **So the handle recovery
+    described above does not reach `set_element_value` while that chain is on**
+    — the refusal says so rather than repeating the general advice to pass
+    `hwnd`, and points at `click_element` and `keyboard`, which do take the
+    handle. Unset (the default), `set_element_value` takes the handle like
+    everything else. With the chain enabled and the guard turned
     off, a call that falls through to one of those fallbacks reports the window
     the fallback resolved rather than the handle you named — the response
     follows the channel that actually wrote.

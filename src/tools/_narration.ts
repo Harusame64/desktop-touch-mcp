@@ -37,7 +37,10 @@ export const narrateParam = z
   .default("minimal")
   .describe(
     'Narration level. "rich": include UIA diff in post.rich (appeared/disappeared/valueDeltas) — ' +
-    "eliminates the need for a verification screenshot. Default: \"minimal\"."
+    "usually removes the need for a verification screenshot. It is withheld, with " +
+    "post.rich.diffDegraded saying why, when the diff cannot be shown to describe the " +
+    "window that was acted on — including any call that names an hwnd while another open " +
+    "window's title contains the same text. Default: \"minimal\"."
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,9 +194,12 @@ export const UIA_WRITE_NARRATION: RichNarrationOptions = {
  *
  * Counted the way `keyboard`'s delivery check counts it (Win32 enumeration,
  * case-insensitive substring) so the two skips agree on what "shared" means.
- * An enumeration that throws counts as SHARED: the caller named a handle, and
- * a report that cannot be shown to describe that window is withheld rather
- * than guessed at — the same trade the delivery check makes.
+ *
+ * The `catch` is not a trade-off with a case behind it: `enumWindowsInZOrder`
+ * throws only when the native Win32 module is missing, and a build without it
+ * has no `desktop_state` and no `screenshot` either — so nothing that reaches
+ * here can be running. It withholds rather than guesses because that is the
+ * cheaper way to be wrong, not because the branch has ever been taken.
  */
 function titleIsSharedByMoreThanOneWindow(windowTitle: string): boolean {
   try {
@@ -255,6 +261,15 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // treatment as the background delivery check — withhold the verdict rather
     // than compute it from the wrong window. It narrows again when the reads
     // take a handle (ADR-036 I-6), which is also what retires this check.
+    //
+    // NOT narrowed to "the title happens to pick the named window right now",
+    // even though `getUiElements` does report which window it read. Two reasons,
+    // and the second is the one that decides it: the reported rect cannot prove
+    // identity (two maximised windows of the same app share one), and the write
+    // itself can raise its target between the two snapshots — `keyboard`
+    // `method:"foreground"` and `set_element_value`'s channel 3 both do — so a
+    // check made before the action would license a diff computed across two
+    // DIFFERENT windows, which is worse than either window's own.
     if (options.hwndKey && args[options.hwndKey] !== undefined &&
         titleIsSharedByMoreThanOneWindow(windowTitle)) {
       const result = await wrappedWithPost(args);

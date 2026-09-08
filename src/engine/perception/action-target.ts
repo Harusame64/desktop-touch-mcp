@@ -425,8 +425,12 @@ async function resolveWindowTarget(
  *
  * Consequences worth naming, because they are the enumerator's rules and not
  * this function's: a child-control handle is never listed (the enumeration is
- * top-level only), and neither is a Key Locker window — so both resolve to
- * "not found" rather than being guarded, which is the safe side of each.
+ * top-level only), and neither is a Key Locker window — so both would resolve
+ * to "not found" here rather than being guarded, which is the safe side of
+ * each. For the Key Locker case that is a property of the enumeration and not
+ * a path anything takes: the tool handlers resolve their handle through
+ * `resolveWindowTarget` first, and that throws `WindowExcluded` before a
+ * descriptor is ever built (ADR-036 R-36-12).
  *
  * `candidates` is 1 or 0 and never more, which is the whole point: the caller
  * named one window, so the multi-match refusal in `runActionGuard` has nothing

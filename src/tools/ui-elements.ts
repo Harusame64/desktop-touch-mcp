@@ -253,6 +253,22 @@ export const setElementValueHandler = async ({
         ...(hwndParam !== undefined && resolvedWin && mayPinHandle && { suppressSuggestedFix: true }),
       });
       if (ag.block) {
+        // ADR-036 — the generic `ambiguous_target` advice is "pass hwnd", and
+        // while the chain is armed this handler CANNOT honour it: the descriptor
+        // above withholds the handle on purpose, so the suggested retry returns
+        // to the same refusal. Naming a recovery that does not work is the exact
+        // defect this PR started from — one tool over. Say what does work here.
+        if (!mayPinHandle && ag.summary.status === "ambiguous_target") {
+          // Does not name this tool: it is privatised, and the naming audit
+          // keeps its name out of anything the model reads. "This tool" is
+          // unambiguous where this text is delivered — attached to the call
+          // that was refused.
+          ag.summary.next =
+            "This tool cannot be narrowed by hwnd while DTM_SET_VALUE_CHAIN=1: " +
+            "its fallback channels still find the window by title. Unset that variable to " +
+            "address this window by hwnd, or use a more specific windowTitle. " +
+            "click_element and keyboard take hwnd here.";
+        }
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "set_element_value", { _perceptionForPost: ag.summary });
       }
       perceptionEnv = ag.summary;
@@ -260,7 +276,11 @@ export const setElementValueHandler = async ({
 
     // ADR-036 — the hints are built INSIDE the branch of the channel that
     // succeeded, because this is the one handler that can change channel
-    // mid-call. Channel 1 goes through the handle, so its report may name it;
+    // mid-call. `buildHintsForTitle` also OBSERVES the window it resolves, and
+    // that observation is what keeps drift detection current — so the branches
+    // that report no hints call it anyway, for the observation alone. The
+    // single call this replaced took it for every path, failures included, and
+    // dropping it there would have been an unannounced change. Channel 1 goes through the handle, so its report may name it;
     // channels 2 and 3 still find their window by title (R-36-5), so a pinned
     // label there would name the requested window for a write that may have
     // landed on its same-titled sibling — the defect Round 2 removed from
@@ -329,6 +349,7 @@ export const setElementValueHandler = async ({
         try {
           const parsed = JSON.parse(r3.content[0].text);
           if (parsed.ok) {
+            buildHintsForTitle(effectiveTitle);   // observation only — see above
             return ok({ ok: true, channel: "keyboard", ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
           }
           attempts.push({ channel: "keyboard", error: parsed.error ?? "KeyboardFailed" });
@@ -340,6 +361,7 @@ export const setElementValueHandler = async ({
       }
 
       // All channels failed — suggest comes from _errors.ts SUGGESTS.SetValueAllChannelsFailed
+      buildHintsForTitle(effectiveTitle);   // observation only — see above
       return failWith(
         new Error("SetValueAllChannelsFailed"),
         "set_element_value",
@@ -348,6 +370,7 @@ export const setElementValueHandler = async ({
     }
 
     // Chain disabled: report ValuePattern failure
+    buildHintsForTitle(effectiveTitle);   // observation only — see above
     return failWith(r1.error ?? "Unknown error", "set_element_value", { windowTitle: effectiveTitle, name, automationId });
   } catch (err) {
     return failWith(err, "set_element_value", { windowTitle, name, automationId });

@@ -346,6 +346,18 @@ describe("ADR-036 I-2 — the attention signal comes from the freshest slot, not
     expect(picked?.key.startsWith("window:")).toBe(true);
   });
 
+  it("prefers the slot carrying a signal when the timestamps tie exactly", () => {
+    // Same millisecond, so freshness cannot separate them. Insertion order
+    // would answer `ok` from the first — which is the rule this replaced,
+    // reappearing in the case hardest to notice.
+    const identity = { hwnd: String(LIVE), pid: 7, processName: "chrome.exe", processStartTimeMs: 0, titleResolved: SHARED_TITLE };
+    const quiet = getOrCreateSlot({ kind: "window", titleIncludes: SHARED_TITLE }, 5_000)!;
+    updateSlot(quiet.key, { identity, attention: "ok" }, 5_000);
+    const loud = getOrCreateSlot({ kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE }, 5_000)!;
+    updateSlot(loud.key, { identity, attention: "identity_changed" }, 5_000);
+    expect(selectFreshestWindowSlot(getSlotSnapshot(), String(LIVE))?.key).toBe(loud.key);
+  });
+
   it("ignores slots describing a different window", () => {
     twoSlotsForOneWindow(true);
     expect(selectFreshestWindowSlot(getSlotSnapshot(), String(SIBLING))).toBeUndefined();

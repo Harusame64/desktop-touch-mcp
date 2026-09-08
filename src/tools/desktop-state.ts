@@ -38,6 +38,11 @@ import type { HotTargetSlot } from "../engine/perception/hot-target-cache.js";
  * The attention signal is about the window, not about the name it was reached
  * by, so the most recently used slot wins.
  *
+ * On an exact tie the timestamps cannot separate them, so the slot carrying a
+ * signal wins over one saying `ok`. Falling back to iteration order there would
+ * be the rule this function exists to replace, reappearing in the one case it
+ * is hardest to notice.
+ *
  * Exported for the test that pins this: the rule is one line, and one line is
  * exactly what gets silently reverted.
  */
@@ -48,7 +53,8 @@ export function selectFreshestWindowSlot(
   let best: HotTargetSlot | undefined;
   for (const s of slots) {
     if (s.kind !== "window" || !s.identity || !("hwnd" in s.identity) || s.identity.hwnd !== hwnd) continue;
-    if (!best || s.lastUsedAtMs > best.lastUsedAtMs) best = s;
+    if (!best || s.lastUsedAtMs > best.lastUsedAtMs) { best = s; continue; }
+    if (s.lastUsedAtMs === best.lastUsedAtMs && best.attention === "ok" && s.attention !== "ok") best = s;
   }
   return best;
 }

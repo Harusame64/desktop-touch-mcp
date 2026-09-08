@@ -54,7 +54,7 @@ vi.mock("../../src/tools/_post.js", () => ({
   withPostState: (_name: string, handler: (a: Record<string, unknown>) => Promise<unknown>) => handler,
 }));
 
-const { withRichNarration, UIA_WRITE_NARRATION } = await import("../../src/tools/_narration.js");
+const { withRichNarration, UIA_WRITE_NARRATION, narrateParam } = await import("../../src/tools/_narration.js");
 
 /** A handler that succeeds and carries the `post` object spliceRich writes into. */
 const innerHandler = vi.fn(async () => ({
@@ -122,6 +122,17 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     } as never);
     expect(richOf(r).diffDegraded).toBe("ambiguous_title");
     expect(mockGetUiElements).not.toHaveBeenCalled();
+  });
+
+  it("says in the shipped description that the diff can be withheld", () => {
+    // That description is what decides whether the model takes a verification
+    // screenshot instead. It promised the diff removes the need for one; this
+    // ADR made cases where it returns nothing, so the promise has to carry the
+    // exception with it. Shipped wording drifting from shipped behaviour is the
+    // failure this repo has had before.
+    const said = narrateParam.description ?? "";
+    expect(said).toContain("diffDegraded");
+    expect(said).toContain("hwnd");
   });
 
   it("leaves title-only tools alone when the enumeration fails", async () => {

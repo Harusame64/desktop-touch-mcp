@@ -177,8 +177,15 @@ function nextStepFor(
     case "ambiguous_target":
       // Naming the handle is the recovery that ends this, so it goes first.
       // It only became one when the guard learned to resolve a handle instead
-      // of counting titles; until then this line offered the one thing that
+      // of counting titles; before that this line offered the one thing that
       // could not help, and callers who did pass `hwnd` were told to pass it.
+      //
+      // One caller can still reach that state: `set_element_value` withholds
+      // the handle from its descriptor while `DTM_SET_VALUE_CHAIN=1`, because
+      // its fallback channels would leave the window the handle names. There
+      // the advice below is again the one thing that cannot help, so that
+      // handler replaces this text with a recovery it can honour rather than
+      // this line trying to know about it (ADR-036 R-36-5).
       return `Pass hwnd to name one window exactly (desktop_discover returns it), or use a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
     case "target_not_found":
       return "Call desktop_discover to verify the window title, then retry";
