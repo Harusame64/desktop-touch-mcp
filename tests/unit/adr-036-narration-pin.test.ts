@@ -245,6 +245,34 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     }
   });
 
+  it("withholds when the window moves between the snapshot and the action", async () => {
+    // The handler resolves again after this wrapper does, and the desktop can
+    // move in between — a modal closing is the ordinary case. Then the
+    // snapshots describe one window and the action lands on another: the defect
+    // this block exists to remove, arriving through the back door.
+    windows = [
+      { hwnd: 0x2222n, title: "Untitled - Notepad" },
+      { hwnd: 0x4444n, title: "Save As" },
+    ];
+    popupFor[LIVE] = { hwnd: 0x4444n, title: "Save As" };
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    const first = resolver.getMockImplementation()!;
+    let calls = 0;
+    resolver.mockImplementation(async (p: never) => {
+      calls += 1;
+      // Second call — after the snapshot — the modal has closed.
+      if (calls >= 2) return { hwnd: 0x2222n, title: "Untitled - Notepad", warnings: [], className: "Notepad" } as never;
+      return first(p);
+    });
+    const r = await narrated({
+      windowTitle: "Untitled - Notepad", hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    resolver.mockImplementation(first);
+    expect(richOf(r).diffDegraded).toBe("window_closed");
+    // The action still ran: this withholds a report, not a write.
+    expect(innerHandler).toHaveBeenCalled();
+  });
+
   it("says in the shipped description that the diff can be withheld", () => {
     // That description is what decides whether the model takes a verification
     // screenshot instead. It promised the diff removes the need for one; this

@@ -259,6 +259,13 @@ export function withRichNarration<T extends Record<string, unknown>>(
       : "";
     const hwndArg = options.hwndKey ? args[options.hwndKey] : undefined;
     let windowTitle = argTitle;
+    // The window this wrapper resolved, so the resolution can be re-checked
+    // after the slow part and before the handler runs its own.
+    let pinnedHwnd: bigint | undefined;
+    const resolveArgs = {
+      ...(hwndArg !== undefined ? { hwnd: String(hwndArg) } : {}),
+      ...(argTitle ? { windowTitle: argTitle } : {}),
+    };
     // `fixId` is the one shape this cannot follow: the handler skips resolution
     // entirely and acts on the stored fix's own title, which is not visible from
     // here. The argument is the closest thing available, and a handle-passing
@@ -266,17 +273,16 @@ export function withRichNarration<T extends Record<string, unknown>>(
     if (args["fixId"] === undefined && (hwndArg !== undefined || argTitle)) {
       let resolved;
       try {
-        resolved = await resolveWindowTarget({
-          ...(hwndArg !== undefined ? { hwnd: String(hwndArg) } : {}),
-          ...(argTitle ? { windowTitle: argTitle } : {}),
-        });
+        resolved = await resolveWindowTarget(resolveArgs);
       } catch {
         const result = await wrappedWithPost(args);
         spliceRich(result, degradedRichBlock("no_target"));
         return result;
       }
-      if (resolved) windowTitle = resolved.title;
-      else if (hwndArg !== undefined) {
+      if (resolved) {
+        windowTitle = resolved.title;
+        pinnedHwnd = resolved.hwnd;
+      } else if (hwndArg !== undefined) {
         // A handle that resolves to nothing: there is no window to describe, and
         // the caller's title names a different one.
         const result = await wrappedWithPost(args);
@@ -333,6 +339,40 @@ export function withRichNarration<T extends Record<string, unknown>>(
     // one, because the alternative is reimplementing the resolver here — which
     // is the defect this replaced. Only the `narrate: "rich"` path pays it.
     const snapBefore = await snapElements(windowTitle, true);  // try cache first
+
+    // The handler resolves again, and the desktop can move in between — a modal
+    // closing, the foreground changing. Then the snapshots describe one window
+    // and the action lands on another, which is the defect this whole block
+    // exists to remove, arriving through the back door.
+    //
+    // Pinning the handler to THIS resolution is not available: injecting the
+    // resolved handle into `args` would make the handler believe the caller
+    // named one, and that belief decides the guard descriptor, the pinning
+    // rules and the text of the refusal. So the resolution is re-checked
+    // instead — after the UIA snapshot, which is the slow part and therefore
+    // the whole of the window in practice — and the diff is withheld when it
+    // moved. What is left is the gap between this check and the handler's own
+    // call, which cannot be closed from out here; it is microseconds of
+    // bookkeeping rather than a UIA round trip.
+    if (pinnedHwnd !== undefined) {
+      let again;
+      try {
+        again = await resolveWindowTarget(resolveArgs);
+      } catch {
+        again = null;
+      }
+      // On the handle, not the title. Comparing titles is EQUIVALENT today —
+      // a flip between two windows sharing a title never reaches here, because
+      // the ambiguity check above has already withheld it, so any flip that
+      // does reach here changes the title as well. Equivalent by way of a check
+      // one screen up is not the same as equivalent: the handle is what the
+      // window is, and this line should not depend on that one staying put.
+      if (!again || again.hwnd !== pinnedHwnd) {
+        const moved = await wrappedWithPost(args);
+        spliceRich(moved, degradedRichBlock("window_closed"));
+        return moved;
+      }
+    }
 
     const result = await wrappedWithPost(args);
 
