@@ -209,6 +209,83 @@ describe("the identity is the one from the read, not from the moment it was file
     expect(result.ok).toBe(true);
   });
 
+  it("keeps the window origin with the candidates, and hands it back on a hit", async () => {
+    // ADR-036 item 5. The origin is what the entities' screen coordinates were measured against,
+    // so it has to travel with them: read at store time instead, a cache hit would pair
+    // coordinates from one moment with an origin from another, and the homing correction built on
+    // the difference would move the press by a delta that never happened.
+    const origin = { kind: "measured" as const, rect: { x: 100, y: 200, width: 600, height: 400 } };
+    const fetchFn = vi.fn(async () => ({
+      candidates: [candidate("2624042")],
+      warnings: [],
+      target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+      origin,
+    }));
+    const ingress = new SnapshotIngress(fetchFn);
+    await ingress.getSnapshot("window:__default__");
+    const cached = await ingress.getSnapshot("window:__default__");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(cached.origin).toEqual(origin);
+  });
+
+  it("puts that origin on the aim the session keeps", async () => {
+    const origin = { kind: "measured" as const, rect: { x: 100, y: 200, width: 600, height: 400 } };
+    const facade = new DesktopFacade(async () => [], {
+      ingress: ingressReturning({
+        candidates: [candidate("2624042")],
+        warnings: [],
+        target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+        identity: undefined,
+        identityRead: true,
+        origin,
+      }),
+      executorDeps: {
+        uiaClick:       vi.fn(async () => {}),
+        uiaSetValue:    vi.fn(async () => {}),
+        cdpClick:       vi.fn(async () => {}),
+        cdpFill:        vi.fn(async () => {}),
+        terminalSend:   vi.fn(async () => {}),
+        keyboardTypeBg: vi.fn(async () => {}),
+        mouseClick:     vi.fn(async () => {}),
+        // The window has moved 71 px up since the read. If the origin did not reach the aim, the
+        // press goes to the remembered point and this assertion is what notices.
+        aimRect:        vi.fn(async () => ({ x: 100, y: 129, width: 600, height: 400 })),
+      },
+    });
+
+    const seen = await facade.see({});
+    await facade.touch({ lease: seen.entities[0]!.lease });
+    const pressed = (facade as unknown as { opts: { executorDeps: { mouseClick: { mock: { calls: number[][] } } } } })
+      .opts.executorDeps.mouseClick.mock.calls[0];
+    expect(pressed).toEqual([458, 220]);   // candidate rect (328,251,260,80) → centre (458,291), minus 71
+  });
+
+  it("moves the verification region with the press", async () => {
+    // ADR-036 item 5, gate 2's second pass: `resolveEntityCenterForViewId` feeds the SSIM focal
+    // point, and it was the one consumer of the remembered coordinate that did not move with the
+    // press. The region would sit where the entity WAS while the repaint happened where the press
+    // went — and past the padding it stops intersecting the window, so the diff dilutes across the
+    // whole window and a correct press is reported as unverified.
+    const origin = { kind: "measured" as const, rect: { x: 100, y: 200, width: 600, height: 400 } };
+    const facade = new DesktopFacade(async () => [], {
+      ingress: ingressReturning({
+        candidates: [candidate("2624042")],
+        warnings: [],
+        target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+        identityRead: true,
+        origin,
+      }),
+    });
+    const seen = await facade.see({});
+    const entityId = seen.entities[0]!.entityId;
+
+    // Candidate rect (328, 251, 260, 80) → centre (458, 291).
+    expect(facade.resolveEntityCenterForViewId(seen.viewId, entityId)).toEqual({ x: 458, y: 291 });
+    // The window has moved 71 px up since the read, so the repaint is 71 px up too.
+    expect(facade.resolveEntityCenterForViewId(seen.viewId, entityId, { x: 100, y: 129, width: 600, height: 400 }))
+      .toEqual({ x: 458, y: 220 });
+  });
+
   it("keeps identity and candidates together in the cache", async () => {
     const identity = { hwnd: 2624042n, pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 };
     const fetchFn = vi.fn(async () => ({

@@ -29,6 +29,8 @@ import {
   toAim,
   compareAimIdentity,
   readWindowIdentityFields,
+  homingCorrection,
+  containsPoint,
   type Aim,
   type WindowIdentity,
   AimIdentityChangedError,
@@ -201,7 +203,21 @@ export function terminalBgExecute(
 // opinions. `"@active"` is still what the title-only backends are told when there is no title.
 
 /**
- * ADR-036 — a coordinate press on a pinned session has to land inside the window it named.
+ * ADR-036 — where a coordinate press on a pinned session actually goes.
+ *
+ * The specification's ladder for `mouse_click(x, y)`, in its order:
+ *
+ * >   -> check cached target rect and z-order
+ * >   -> refresh target rect via Win32 if stale or dirty
+ * >   -> if rect moved, apply homing correction
+ * >   -> if another top-level window covers point, block or refocus
+ * >   -> if target identity changed, invalidate coordinates
+ *
+ * All three rungs are here now — identity one level up, before a route is even chosen, because a
+ * changed identity makes every rectangle in this function meaningless. This RETURNS the point to
+ * press rather than asserting about the one it was handed: the correction and the checks have to
+ * be talking about the same point, and a function that validates one while the caller presses
+ * another validates nothing.
  *
  * The mouse route is not a downgrade: for an entity whose only affordance is visual — an OCR
  * label, a `read`-only control — it is the route, and refusing it outright would take the
@@ -224,36 +240,49 @@ export function terminalBgExecute(
  *     (`CELL BUTTONS` → `BTN1`), and the button's own log line. Nothing in the envelope shows it —
  *     `observation.motion` was `no_change` and `residual.fractionChanged` was 0.
  *
- *     So this check catches the move that takes the point OUT of the window (and minimise, which
- *     parks the rect at -32000, and a window that is gone); it does not catch the move that keeps
- *     the point inside, and that case presses whatever has arrived under the point.
+ *     So containment catches the move that takes the point OUT of the window (and minimise, which
+ *     parks the rect at -32000, and a window that is gone); it never catches the move that keeps
+ *     the point inside, and that case pressed whatever had arrived under the point.
  *
  *     The population is narrower than it looks: only entities that reach the mouse route get here,
  *     which in that fixture meant the `read` / `primaryAction:"read"` class. A button whose
  *     `preferredExecutors` lead with `uia` goes down the UIA road and never asks this question.
  *
- *     Closing it needs the offset carried from discover time, or the entity re-resolved at act
- *     time; that is a different change with its own costs, recorded as an open question rather
- *     than half-done here.
- *   - That the aimed window is the topmost one at that point. Another window can sit over it and
- *     take the click; occlusion needs a hit test and is not claimed here.
+ *     **Closed by the homing correction (item 5).** The aim carries the window origin those
+ *     coordinates were measured against, and a window that moved without resizing moves the point
+ *     with it. What is still NOT closed: a window that RESIZED — the contents may have reflowed,
+ *     and translating a point through a reflow is inventing a layout — and a control that moved
+ *     inside a window that did not. Both leave the point where it was and say so in the row.
+ *   - That the aimed window is the topmost one at that point. **Closed by item 6**
+ *     (`point-owner.ts`), approximately: the z-order enumeration answers who is under the point,
+ *     `WindowFromPoint` is the exact primitive and is not bound, and the three blind spots that
+ *     leaves are named in that file.
  *
  * This paragraph is written twice as long as it wants to be because its first version claimed the
  * middle case ("catches what was measured — moved, minimised, gone") and the measurement above
  * says otherwise. A comment is a claim, not a check.
  */
-async function assertPointIsInsideAim(
+async function resolvePressPoint(
   deps: ExecutorDeps,
-  aimHwnd: bigint,
+  aim: Aim,
   x: number,
   y: number,
   label: string,
-): Promise<void> {
+): Promise<{ x: number; y: number }> {
+  const aimHwnd = aim.hwnd;
+  // Narrowed rather than asserted. The caller only reaches here with a handle, and an assertion
+  // would keep that true by decree: this way a caller that stops checking loses the ladder, which
+  // is what it did before the ladder existed, instead of throwing inside it.
+  if (aimHwnd === undefined) return { x, y };
   if (!deps.aimRect) {
     // A skipped check writes a row saying so. Without it the log shows a press with a handle and
     // no containment row, which reads exactly like a build that never reached this line.
+    // Both rows, because both rungs were skipped. A press with an aim and no `homing` row reads
+    // exactly like a build that never reached the rung — the failure the reasons in that row were
+    // written to prevent, one level up.
+    probeAim("act.route", { route: "homing", checked: false, why: "no_aim_rect_dep", aimHwnd: aimHwnd.toString(), from: { x, y }, label });
     probeAim("act.route", { route: "containment_check", checked: false, why: "no_aim_rect_dep", aimHwnd: aimHwnd.toString(), point: { x, y }, label });
-    return;
+    return { x, y };
   }
   const rect = await deps.aimRect(aimHwnd);
   if (!rect) {
@@ -263,10 +292,56 @@ async function assertPointIsInsideAim(
     if (await deps.aimIsGone?.(aimHwnd)) {
       throw new AimedWindowGoneError(aimHwnd, `no rectangle for the window this press was aimed at`);
     }
+    probeAim("act.route", { route: "homing", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), from: { x, y }, label });
     probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), point: { x, y }, label });
-    return;
+    return { x, y };
   }
-  const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+
+  // ADR-036 item 5 — the specification's FIRST rung, and the one the implementation did not have:
+  // *if rect moved, apply homing correction*. The point came from a rectangle measured against the
+  // window origin at discover time; when the window has moved and kept its size, the point the
+  // caller means is the same offset inside it. Everything below — occlusion, containment, the
+  // press itself — uses the corrected point, because a ladder that checks one point and presses
+  // another is checking nothing.
+  const origin = aim.origin;
+  let homing = homingCorrection(origin, rect, x, y);
+  // ADR-036 item 5 — the correction is about the AIMED window, and a point can belong to a window
+  // merely drawn inside it. A modal dialog, or a dropdown that opens OVER its combo, is a top-level
+  // window of its own whose centre falls inside the owner's rectangle — and it does NOT move when
+  // its owner moves. Applying the owner's delta there moves a point that was already right, and the
+  // ownership test below then runs at the moved point and can see the owner as clear (PR 側 codex
+  // on #609, second round). That is a press the code got right before this rung existed.
+  //
+  // Nothing recorded with the candidates says which window it came from — that is the lane work
+  // ADR-036 item 5 carries — so the question is put to the screen at the REMEMBERED point, and only
+  // when a correction would otherwise be adopted. An owned window sitting there is reason enough to
+  // leave the point alone: the entity plausibly belongs to it, that window has not moved, and the
+  // press then goes out exactly as it did before this rung, where the `owned` allowance below lets
+  // it through. The mistake it risks is a declined correction, which costs the press nothing.
+  if (homing.applied && deps.pointOwner?.(aimHwnd, x, y)?.kind === "owned") {
+    homing = { applied: false, x, y, why: "owned_popup_at_remembered_point" };
+  }
+  probeAim("act.route", {
+    route: "homing",
+    aimHwnd: aimHwnd.toString(),
+    // The origin as the aim holds it, so a row can be read without the run that produced it.
+    // `null` for one that was never taken, and `{kind:"moved_during_read"}` for one that was taken
+    // and says the coordinates are unusable: "nobody looked", "the correction declined to move it"
+    // and "the window would not hold still" are three different facts and only two of them are
+    // about the window.
+    origin: origin ?? null,
+    windowRect: rect,
+    from: { x, y },
+    to: { x: homing.x, y: homing.y },
+    applied: homing.applied,
+    delta: homing.applied ? { dx: homing.dx, dy: homing.dy } : null,
+    why: homing.applied ? null : homing.why,
+    label,
+  });
+  x = homing.x;
+  y = homing.y;
+
+  const inside = containsPoint(rect, x, y);
 
   // ADR-036 item 6 — who would actually take this press. The specification's ladder asks this
   // between the moved-rectangle correction and the identity check, and it answers a different
@@ -277,6 +352,12 @@ async function assertPointIsInsideAim(
   // owner's rectangle, and they are what the caller means to press when they discovered one —
   // refusing those as "the point left the window" is a false refusal the containment check makes
   // today (gate 2).
+  //
+  // Asked before this rung's own refusals are acted on, and the reason is a regression the resize
+  // refusal introduced (gate 2, third pass): a dropdown or a modal drawn OVER its owner has its
+  // centre INSIDE the owner's rectangle, so `homingCorrection` gets past `point_was_outside_origin`
+  // and answers `window_resized` about a window the entity does not live on. The entity is on a
+  // separate top-level window that did not resize, and before this commit `owned` let it through.
   const owner = deps.pointOwner?.(aimHwnd, x, y);
   probeAim("act.route", {
     route: "containment_check",
@@ -288,23 +369,86 @@ async function assertPointIsInsideAim(
     pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title } : {}), ...("why" in owner ? { why: owner.why } : {}) } : null,
     label,
   });
+  if (!homing.applied && homing.why === "window_off_desktop") {
+    // Refused HERE, not left to the containment check below. Between the two sits the occlusion
+    // rung, and `whoIsUnderPoint` filters minimised windows out of its own candidate list — so on
+    // a real desktop something else is almost always over the remembered point, and the caller
+    // would get `aim_occluded` ("bring the intended window forward") about a window that is
+    // minimised, instead of the refusal that names the minimise and says to restore it (gate 2,
+    // second pass). The unit cell for this passed only because its deps carried no `pointOwner`.
+    throw new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": the window this call named (hwnd ${aimHwnd}) is ` +
+      `parked off the desktop at (${rect.x}, ${rect.y}) — that is what Windows reports for a ` +
+      `MINIMISED window, and no point on screen belongs to it. Nothing was clicked. Restore it ` +
+      `(focus_window) and re-run desktop_discover.`,
+      aimHwnd,
+    );
+  }
+  if (!homing.applied && homing.why === "moved_during_read") {
+    // The window would not hold still while it was being read, so the coordinates in this snapshot
+    // were measured across more than one position: an early lane's candidate describes the window
+    // where it was, a late one's where it went, and nothing here can say which is which. Pressing
+    // the remembered point is the stale-coordinate press this rung exists to remove, and no
+    // correction can repair it — there is no single delta (gate 1, third pass, 2026-09-09).
+    throw new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": this call named window ${aimHwnd}, and that ` +
+      `window MOVED while it was being read, so the coordinates in that snapshot were measured ` +
+      `against more than one position — no single correction describes them. Nothing was clicked. ` +
+      `Re-run desktop_discover once the window has settled.`,
+      aimHwnd,
+    );
+  }
+  // Only now the popup allowance. The press is on a window this one owns: allowed, and allowed
+  // even where the aim's own rectangle does not contain the point, because that is where dropdowns
+  // live — and allowed before the verdicts BELOW, which are statements about the AIM's layout and
+  // say nothing about a window that merely hangs off it.
+  //
+  // Deliberately NOT before the two above. Those are statements about the whole SNAPSHOT: a
+  // minimised aim and a smeared read make every coordinate in it unusable, the popup's included.
+  // `owned` says which top-level window is under the point NOW — not that the leased entity came
+  // from it — so letting it past those two reports success after pressing an unrelated dropdown
+  // (PR 側 codex on #609). The previous round moved this line one rung too far up.
+  if (owner?.kind === "owned") return { x, y };
+
+  if (!homing.applied && homing.why === "window_resized" && origin?.kind === "measured") {
+    // The point WAS inside this window, and the window has relaid out since. Nothing here can say
+    // where the control went — that is what the correction declined to guess — and pressing the
+    // remembered coordinate anyway is exactly the silent wrong press this ladder exists to remove
+    // (gate 1, 2026-09-09). Containment cannot catch it: a resized window usually still contains
+    // the point, which is why the press went through before.
+    //
+    // Same refusal as a point that left the window, deliberately: the recovery is identical
+    // (re-discover and act on what comes back), and the published advice for that reason already
+    // names the resize. A second reason with the same advice would be one more thing to keep in
+    // step for no reader's benefit.
+    throw new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": this call named window ${aimHwnd}, which is ` +
+      `still on screen but has been RESIZED since the lease was taken — it was ` +
+      `${origin.rect.width}x${origin.rect.height} and is ${rect.width}x${rect.height} now. A ` +
+      `window that only moved would have been followed; a resize can lay its contents out ` +
+      `differently, and nothing here can say what is under that point now. Re-run desktop_discover.`,
+      aimHwnd,
+    );
+  }
+  // Now the stranger on top — after this rung's verdicts, because "bring the intended window
+  // forward" is not the recovery for a window that resized or is minimised.
   if (owner?.kind === "other") {
     throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y);
   }
-  // The press is on a window this one owns: allowed, and allowed even when the aim's own rectangle
-  // does not contain the point, because that is where dropdowns live.
-  if (owner?.kind === "owned") return;
   if (!inside) {
     // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
     // and that reason's first suggestion is a coordinate click at the entity's rect — this point.
     throw new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": this call named window ${aimHwnd}, and that ` +
       `window is now at (${rect.x}, ${rect.y}) ${rect.width}x${rect.height}. The point comes from a ` +
-      `rectangle remembered at discover time; the window has moved, been minimised, or closed since, ` +
-      `so whatever is under that point now would take the click. Re-run desktop_discover.`,
+      `rectangle remembered at discover time, and it could not be followed: the window was minimised ` +
+      `(a parked window reports ${OFF_DESKTOP_HINT}), or there was no origin to compare it against. ` +
+      `A window that only moved is followed automatically. Whatever is under that point now would ` +
+      `take the click. Re-run desktop_discover.`,
       aimHwnd,
     );
   }
+  return { x, y };
 }
 
 /**
@@ -345,6 +489,9 @@ function identityRow(id: WindowIdentity): Record<string, unknown> {
     titleFingerprint: id.titleFingerprint ?? null,
   };
 }
+
+/** What a minimised window's rectangle looks like, for the message that has to explain one. */
+const OFF_DESKTOP_HINT = "-32000, -32000";
 
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
   return {
@@ -744,22 +891,28 @@ export function createDesktopExecutor(
         `No executor available for entity "${entity.label ?? entity.entityId}": no rect for mouse fallback`
       );
     }
-    const { x, y } = rectCenter(entity.rect);
-    // ADR-029 Phase 1 — see the downgrade path above.
+    const remembered = rectCenter(entity.rect);
+    // ADR-036 — if this call named a window, the specification's ladder runs here and decides
+    // where the press actually goes: homing correction, then who is under the point, then whether
+    // the point is in the window at all. Identity invalidation ran at the top of this closure,
+    // before any route was chosen, because a changed identity makes every rectangle meaningless.
+    const { x, y } = aimHwnd !== undefined
+      ? await resolvePressPoint(d, aim, remembered.x, remembered.y, entity.label ?? entity.entityId)
+      : remembered;
+    // ADR-029 Phase 1 — and the point that gets PRESSED is the one that has to be on a monitor.
+    // Checked here rather than on the remembered point, because those stopped being the same
+    // question: a window discovered on a second monitor that Windows relocated when the monitor was
+    // unplugged leaves the REMEMBERED point on no screen at all, and refusing there would report an
+    // unreachable coordinate about a window the correction had just followed to a perfectly
+    // reachable one (gate 2, 2026-09-09).
     assertCoordinateReachable(x, y);
-    // ADR-036 — and if this call named a window, the point has to still be in it.
-    if (aimHwnd !== undefined) {
-      await assertPointIsInsideAim(d, aimHwnd, x, y, entity.label ?? entity.entityId);
-    }
-    // ADR-036 probe — the press this ADR is about: a coordinate, taken from a rect remembered at
-    // discover time. `aimed` says only that the containment check ran, NOT that the point still
-    // belongs to the entity — a window that moved with the point still inside passes it, and the
-    // press lands on whatever arrived there (measured 2026-09-09). The specification's ladder for
-    // this press is homing correction → occlusion test → identity invalidation; none of the three
-    // is here yet, which is what this row is for.
+    // ADR-036 probe — the press this ADR is about: a coordinate taken from a rect remembered at
+    // discover time. Both points are written: `point` is where it went, `remembered` is where the
+    // snapshot said it was, and a row where they differ is the homing correction doing its work.
     probeRoute("mouse", aimHwnd, entity, {
       why: "visual_or_read_entity",
       point: { x, y },
+      remembered,
       rect: entity.rect,
     });
     await d.mouseClick(x, y);

@@ -31,8 +31,8 @@ import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim }               from "../../engine/aim-probe.js";
-import { toAim, readWindowIdentityFields, type WindowIdentity } from "../../engine/aim.js";
-import { getWindowIdentity, getWindowClassName, getWindowTitleW } from "../../engine/win32.js";
+import { toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
+import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd } from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -280,11 +280,48 @@ export async function composeCandidates(
   // against its new owner (gate 1, 2026-09-09). Taken before the lanes run rather than after, so
   // it describes the window they are about to be pointed at.
   const identity = readIdentityForTarget(normalized.target);
+  // ADR-036 item 5 — and where that window was, so a press taken from these coordinates can be
+  // moved with the window instead of staying where the screen used to be.
+  //
+  // Read TWICE, around the lanes, and kept only when the two agree. The lanes take seconds, and a
+  // window that moves while they run leaves the candidates describing its new position and the
+  // origin describing its old one: the correction would then treat a move that happened BEFORE the
+  // coordinates were measured as one that happened after, and shift an already-correct point a
+  // second time (gate 1, 2026-09-09). That is a wrong press this rung would have introduced, in a
+  // case the code got right before it existed.
+  //
+  // What two samples establish is that the window was in the same place at both ENDS of the read —
+  // not that it held still throughout. A window that moves away and returns to the same rectangle
+  // reads as stable, and candidates captured at the intermediate position are then pressed without
+  // correction: the blind press this rung is narrowing, surviving in a case it cannot see (gate 1,
+  // fifth pass). Closing that needs each observation to carry the origin it was measured against,
+  // which is lane work — recorded in ADR-036 item 5 rather than approximated with a third sample
+  // that would prove no more than these two.
+  //
+  // A disagreement is not a value to repair — there is no single origin those coordinates were all
+  // measured against — so the aim records none and no correction runs. Unlike the identity beside
+  // it, which fails SAFE when it goes stale (the act-time comparison answers "changed" and the act
+  // is refused), a stale origin fails dangerous, which is why only this one is read twice.
+  const originBefore = readOriginRectForTarget(normalized.target);
   const result = await composeCandidatesInner(normalized.target);
+  const originAfter = readOriginRectForTarget(normalized.target);
+  const origin: AimOrigin | undefined =
+    originBefore && originAfter
+      ? (sameRect(originBefore, originAfter)
+          ? { kind: "measured", rect: originBefore }
+          // Positive evidence, not a gap: these coordinates were measured across more than one
+          // window position and no single origin describes them. Recorded as a value so the act
+          // path can refuse on it — an absent rectangle would read as "nobody looked", which costs
+          // the correction and lets the blind press through (gate 1, third pass).
+          : { kind: "moved_during_read" })
+      // Neither read could answer, or the window went away mid-read: no evidence either way, and
+      // no evidence may not become a refusal.
+      : undefined;
   return {
     ...withPrependedWarnings(result, normalized.warnings),
     target: normalized.target,
     identity,
+    origin,
     // Looked for, whether or not it was found. A later read cannot stand in for this one: it would
     // describe whoever owns the handle at that later moment.
     identityRead: true,
@@ -311,6 +348,32 @@ export function readIdentityForTarget(target: TargetSpec): WindowIdentity | unde
     className: getWindowClassName,
     title: getWindowTitleW,
   });
+}
+
+/**
+ * ADR-036 item 5 — the aimed window's rectangle at the moment these candidates are read.
+ *
+ * `null` from the native read is two facts at once — no such window, and this build cannot ask —
+ * and both become nothing here. A missing origin means the homing correction does not run, which
+ * is the behaviour that existed before it did; inventing one from a later read would move a press
+ * by a delta nobody measured.
+ */
+function readOriginRectForTarget(target: TargetSpec): WindowRect | undefined {
+  const hwnd = toAim(target).hwnd;
+  if (hwnd === undefined) return undefined;
+  try {
+    return getWindowRectByHwnd(hwnd) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Two samples of the same window, taken around the lanes. */
+function sameRect(a: WindowRect | undefined, b: WindowRect | undefined): boolean {
+  // Both sides have to be an answer: a read that failed on either end leaves the question open,
+  // and an open question is not agreement.
+  if (!a || !b) return false;
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
 /** The provider fan-out, against a target that is already resolved. */

@@ -16,7 +16,7 @@ import {
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { probeAim } from "../engine/aim-probe.js";
-import { toAim, readWindowIdentityFields, type Aim } from "../engine/aim.js";
+import { toAim, readWindowIdentityFields, homingCorrection, type Aim } from "../engine/aim.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import type { TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
@@ -426,7 +426,10 @@ export class DesktopFacade {
       // here would replace "could not tell who owned it" with "here is who owns it NOW". On a cache
       // hit that is a different window: the one that inherited the handle after the candidates were
       // taken, recorded as though it had been discovered (PR 側 codex, 2026-09-09).
-      ? { ...toAim(session.lastTarget), identity: rawResult.identity }
+      // The origin rectangle rides with it, for the same reason: it is the window position these
+      // candidates' coordinates were measured against, and item 5's correction is the difference
+      // between it and the position at act time.
+      ? { ...toAim(session.lastTarget), identity: rawResult.identity, origin: rawResult.origin }
       // Nothing looked: the direct `candidateProvider` path, which has no cache and therefore no
       // gap between the read and this line.
       : await this._aimFor(session.lastTarget);
@@ -808,16 +811,31 @@ export class DesktopFacade {
    * `indeterminate`. The clicked entity's centre is where the change is expected,
    * so a padded region around it captures the repaint. Returns `null` when the
    * session/entity is gone or the entity carries no rect.
+   *
+   * ADR-036 item 5 — **corrected by the same homing rule as the press**, when the caller has a
+   * current window rectangle to correct against. This was the one consumer of the remembered point
+   * that did not move with the press (gate 2, second pass): in the measured win2 case the window
+   * was dragged 71 px, the press was correctly redirected, and the SSIM region stayed centred
+   * where the repaint no longer was — for a drag past the padding the region stops intersecting
+   * the window at all, the diff falls back to whole-window SSIM, and a correct press is reported
+   * as `indeterminate`. The same decision function, not a second copy of the rule.
    */
-  resolveEntityCenterForViewId(viewId: string, entityId: string): { x: number; y: number } | null {
+  resolveEntityCenterForViewId(
+    viewId: string,
+    entityId: string,
+    windowRect?: { x: number; y: number; width: number; height: number },
+  ): { x: number; y: number } | null {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
     const entity = session.entities.find((e) => e.entityId === entityId);
     if (!entity?.rect) return null;
-    return {
-      x: Math.round(entity.rect.x + entity.rect.width / 2),
-      y: Math.round(entity.rect.y + entity.rect.height / 2),
-    };
+    const x = Math.round(entity.rect.x + entity.rect.width / 2);
+    const y = Math.round(entity.rect.y + entity.rect.height / 2);
+    // No rectangle to compare against means the caller could not read one; every non-applied
+    // branch of the correction hands the point back unchanged, so this is the old behaviour.
+    if (!windowRect) return { x, y };
+    const homed = homingCorrection(session.lastAim?.origin, windowRect, x, y);
+    return { x: homed.x, y: homed.y };
   }
 
   /**
@@ -846,6 +864,14 @@ export class DesktopFacade {
       });
       // Absence is not a value: a build that cannot ask leaves the aim without an identity, and
       // nothing downstream may read that as a changed window.
+      //
+      // NO `origin` here, deliberately. This fallback runs AFTER the candidates were fetched,
+      // so a rectangle read now describes the window at a later moment than the coordinates it
+      // would be compared against — and a homing correction built on that difference shifts an
+      // already-correct point (gate 1, 2026-09-09). The ingress path can bracket its lanes and
+      // check the window did not move; this one has nothing to bracket, so it records no origin
+      // and no correction runs. Production always has the ingress; this is the direct
+      // `candidateProvider` road.
       return identity ? { ...aim, identity } : aim;
     } catch {
       return aim;
