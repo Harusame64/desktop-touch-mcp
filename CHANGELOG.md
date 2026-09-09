@@ -2,6 +2,148 @@
 
 ## [Unreleased]
 
+- **Passing `hwnd` now really reaches that window when several share a title.**
+  When two open windows have matching titles, the safety guard stops a keyboard
+  or UI-element write with `ambiguous_target` and tells you to name the window
+  by its handle instead. Passing `hwnd` did not lift that refusal. The handle
+  was resolved and then dropped, and every layer after it went back to matching
+  on the title — so the guard counted the same two windows again and refused the
+  recovery call too. The case that surfaced this was an ordinary one: a
+  minimised browser window whose page title happened to contain a project name
+  made every `keyboard` write to that project's own window impossible to
+  complete, with no way out from the tool arguments.
+
+  Four separate layers were losing the handle, and all four now keep it. The
+  safety guard resolves the window by handle instead of counting title matches.
+  The focus step brings that exact window to the front instead of the first
+  same-titled one. `method: "background"` and `method: "foreground_flash"` send
+  their keystrokes to that window rather than to the frontmost title match. And
+  `method: "auto"` reads the window class off that window when it decides
+  whether the background channel applies at all. `click_element` and
+  `set_element_value` were refused by the same guard and are fixed with it —
+  their actual UI calls already went through the handle.
+
+  The refusal itself now names the way out. `ambiguous_target` used to say only
+  to use a more specific title, which is no help when both windows carry the
+  same one; the message, the suggestions attached to it and the README table now
+  point at `hwnd` first.
+
+  Nothing else about the guard changes. A handle that no longer names a visible
+  top-level window still stops with `target_not_found` rather than falling back
+  to a title match, and the rest of the checks — the window having been replaced
+  by a new process, a modal dialog on top, click coordinates — still run,
+  against the window you named. Calls that pass only `windowTitle` are guarded
+  exactly as before, `ambiguous_target` included: naming a handle is what turns
+  that refusal off, and only for the call that names one. When a call does name
+  a handle, the guard labels its `target` as `window#hwnd:<handle>` rather than
+  `window:<title>` — the title names both windows on precisely the calls whose
+  point is to tell them apart.
+
+  `click_element` and `set_element_value` responses now describe the window that
+  was acted on. `hints.target` and `hints.caches` were built from the first
+  window whose title matched, so a call could operate on the window you named
+  and hand you the other one's handle and cache state to reuse. This applies to
+  those two only, because their actual UI call goes through the handle.
+  `get_ui_elements` and `scope_element` are unchanged: their reads still find
+  their window by title, and labelling a response with one window while its
+  contents come from another would be worse than labelling it consistently.
+
+  Three limits are worth knowing, all about what gets reported rather than
+  about where the keys go:
+
+  - When a `method: "background"` write is addressed by handle and more than one
+    window carries its title, the delivery check is skipped and the result comes
+    back `unverifiable`. That check reads the target back through UIA *by title*,
+    so it could otherwise report a delivery that never happened, or deny one that
+    did, from the other window's contents. The keys still go to the window you
+    named; only the verdict is withheld. Note that `unverifiable` is not proof
+    that this skip happened: the same verdict is returned whenever the read-back
+    cannot read its target for any reason. On the machine where this was
+    measured the skip was confirmed by timing instead — the skipped call costs
+    about 400 ms less, which is the read-back it did not perform. **The count is
+    taken before the action, so this does not cover a same-titled window that the
+    action itself opens** — measured on a real desktop, 8 of 8 such calls read
+    the sibling back and reported a delivery that had happened as
+    `BackgroundInputNotDelivered`, with or without a handle. Two things would close it, and
+    they cost differently: counting again after the action and withholding the
+    verdict when the desktop moved — which is what the narration path in this
+    same release does for the identical shape — removes the false denial but
+    returns no verdict; pinning the read-back to the handle removes it and keeps
+    one. Both change what a delivery verdict means on a shipping path, so neither
+    is in this release.
+  - `narrate: "rich"` returns no before/after diff when the diff cannot be shown
+    to describe the window that was acted on, and says which case in
+    `diffDegraded`. That diff is built from UIA snapshots taken *by title*, so it
+    would otherwise describe the window you did not write to.
+    `ambiguous_title`: another open window's title contains the text this call
+    resolved to. That covers a handle you named, and equally one the server
+    resolved for you — `windowTitle: "@active"`, or the rescue that prefers a
+    modal dialog over the window it blocks — because a resolved handle does not
+    make the *snapshots* handle-based. `target_changed`: the window moved
+    between the snapshot and the action (a modal closing, the foreground
+    changing). `fix_target_unknown`: you retried with a `fixId`, and the window
+    the stored fix names is not visible to the part that takes the snapshots — a
+    fix exists because the guard found a narrower window than your argument did,
+    so the two normally differ. The action itself is unaffected in every case —
+    only the diff is
+    withheld. `ambiguous_title` and `target_changed` apply to the tools this ADR
+    covers that a caller can reach: `click_element` and `keyboard` (and
+    `set_element_value`, which is registered only under
+    `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1`).
+    `fix_target_unknown` is wider on purpose, because its reason is wider: it
+    applies to every tool whose snapshots follow the `windowTitle` argument while
+    its handler adopts the fix's — which, counted, is `mouse_click`
+    alone outside the three: a rich `fixId` retry there now returns the marker
+    instead of a diff. (`mouse_drag` declares no `fixId`, so it cannot reach
+    this and does not change.)
+    `scroll`, `terminal`, `window_dock` and `focus_window` accept no `fixId`; the
+    browser set accepts one but never snapshots by title. None of those five
+    changes.
+  - A window that **is open and has no title** — reached by handle, or by
+    `windowTitle: "@active"` while it is in front — now gets its own answer from
+    `set_element_value`, on the default configuration as well as with the chain
+    armed. (Passing an EMPTY `windowTitle` is a different thing and keeps the
+    ordinary advice: that query matches every window, and every window it
+    matches can still be named and still takes a handle.) Passing `hwnd`
+    does not reach a titleless window — the enumeration that resolves handles drops untitled
+    windows — so the general advice ("pass hwnd, `desktop_discover` returns it")
+    named two things that do not work, and following it returned
+    `target_not_found`, whose advice is to run `desktop_discover` again. The
+    refusal now says that, and names the one channel that does reach such a
+    window: `keyboard` with `windowTitle: "@active"`, while the window is in the
+    foreground, typing into whatever holds focus inside it.
+  - `set_element_value` still stops with `ambiguous_target` while
+    `DTM_SET_VALUE_CHAIN=1` is set. With that chain enabled a failed first
+    attempt continues into two fallbacks that find their window by title — one of
+    them a foreground select-all-and-replace — so lifting the refusal there would
+    trade a stop for a write into the wrong field. **So the handle recovery
+    described above does not reach `set_element_value` while that chain is on**
+    — the refusal says so rather than repeating the general advice to pass
+    `hwnd`, and points at `click_element` and `keyboard`, which do take the
+    handle. Unset (the default), `set_element_value` takes the handle like
+    everything else. With the chain enabled and the guard turned
+    off, a call that falls through to one of those fallbacks reports the window
+    the fallback resolved rather than the handle you named — the response
+    follows the channel that actually wrote.
+
+  A call that names a handle is also no longer offered a `fixId` retry when the
+  guard stops it: the stored retry carries the title only, so following it came
+  straight back to the same refusal. Re-issue the call with the same arguments
+  instead — it is idempotent here.
+
+  One consequence worth knowing: a window addressed by handle now keeps its own
+  drift-detection state, so alternating between two same-titled windows by
+  handle no longer reports the second one as the first one having been replaced.
+  Addressing one window by `windowTitle` on one call and by `hwnd` on the next
+  tracks it under two separate states, so drift detection restarts each time you
+  switch; `desktop_state` reports the attention signal from whichever of the two
+  was updated most recently. Pick one form per window if that matters to you.
+
+  One more reporting change: for `keyboard` writes that name a handle, the
+  focus-loss check now compares that exact window rather than a title
+  substring. A dialog the write itself opens is no longer counted as the same
+  window, so such a call can report `focusLost` where it previously did not.
+
 - **The diagnostic log no longer grows without limit.** `~/.desktop-touch-mcp/logs/diagnostic.log`
   is append-only and had no ceiling of any kind — no size cap, no rotation, no
   age cutoff. On one long-running install it had reached **18.5 GB across 34.8

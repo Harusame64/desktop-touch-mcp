@@ -238,6 +238,7 @@ post: {
     truncated?:   { appeared?: number; disappeared?: number; valueDeltas?: number },
     diffSource:   "uia" | "cdp" | "none",
     diffDegraded?:"chromium_sparse" | "timeout" | "window_closed" | "process_restarted"
+                | "ambiguous_title" | "target_changed" | "fix_target_unknown"   // ADR-036
   }
 }
 ```

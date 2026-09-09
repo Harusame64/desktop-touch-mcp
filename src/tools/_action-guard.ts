@@ -13,7 +13,7 @@
 import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
 import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 import { logDiagnostic } from "../engine/diagnostic-log.js";
-import { getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
+import { getWindowProcessId, getProcessIdentityByPid, getWindowRectByHwnd, enumWindowsInZOrder, isExcludedWindowHandle } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
 import { resolveActionTarget, deriveTargetKey } from "../engine/perception/action-target.js";
 import type {
@@ -59,6 +59,19 @@ export interface RunActionGuardParams {
   /** Phase F: true when target selector was resolved in-viewport (browser_click). */
   browserSelectorInViewport?: boolean;
   /**
+   * ADR-036 — the handle the CALLER passed, for diagnosis only.
+   *
+   * Normally the descriptor carries it. `set_element_value` deliberately
+   * withholds it while `DTM_SET_VALUE_CHAIN=1` (its fallback channels resolve by
+   * title, so pinning the guard to a handle the write will not use is worse than
+   * refusing) — and that made the enumeration-missing branch below invisible on
+   * exactly the configuration this ADR's tailoring was written for: a
+   * handle-passing caller got "run desktop_discover" for a window
+   * `desktop_discover` cannot list. Read ONLY to word a refusal; it never
+   * reaches a descriptor, a lens or a dispatch.
+   */
+  callerHwnd?: bigint;
+  /**
    * Phase G: caller-supplied args to carry into SuggestedFix (text, selector, name, automationId…).
    * Merged into fix.args so the LLM can re-approve with the original intent.
    */
@@ -77,6 +90,24 @@ export interface ActionGuardResult {
   summary: AutoGuardEnvelope;
   block: boolean;
   suggestedFix?: SuggestedFix;
+  /**
+   * ADR-036 — replaces the status catalogue for THIS refusal.
+   *
+   * `SUGGESTS.AutoGuardBlocked` is a seven-line constant appended to every guard
+   * refusal from every tool, and it is the structured field the server
+   * instructions tell the model to read. Its `ambiguous_target` and
+   * `target_not_found` lines name recoveries a refusal can have just finished
+   * explaining are impossible for this caller.
+   *
+   * Beside `summary`, not inside it, and that is the whole point. `summary` IS
+   * `post.perception` — `_post.ts` hands the object through verbatim — so the
+   * first version of this leaked the tailored array to every producer that did
+   * not honour it, and those producers went on emitting the catalogue as well.
+   * One payload, two arrays, disagreeing. `suggestedFix` already lives out here
+   * for the same reason: advice about the refusal is not perception of the
+   * desktop.
+   */
+  suggest?: string[];
 }
 
 export type { SuggestedFix };
@@ -165,6 +196,65 @@ export function logAutoGuardStartup(): void {
 // Next-step messages per status
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ADR-036 — is this handle a live window the ENUMERATION does not list?
+ *
+ * `enumWindowsInZOrder` drops on five conditions — excluded, not visible, no
+ * title, no rect, and smaller than 50×50 while not minimised — and the first
+ * version of this asked about one of them. The other four produce the identical
+ * dead loop for a window that does have a title: discover it, let it go to the
+ * tray or shrink below 50px, retry, and the answer is "run desktop_discover",
+ * which cannot list it either. Asking the enumeration directly covers all five
+ * without this file having to know them.
+ *
+ * Never throws: it runs on a path that is already reporting a failure.
+ */
+function handleIsMissingFromEnumeration(hwnd: bigint): boolean {
+  try {
+    if (getWindowRectByHwnd(hwnd) === null) return false;   // genuinely gone
+    // The key locker is dropped ON PURPOSE, and this refusal would then explain
+    // how to reach it. Unreachable today — every descriptor builder goes through
+    // `resolveWindowTarget`, which throws `WindowExcluded` first — but "safe
+    // because six call sites agree" is the shape this branch keeps being caught
+    // by, so it fails closed here instead.
+    if (isExcludedWindowHandle(hwnd)) return false;
+    return !enumWindowsInZOrder().some((w) => w.hwnd === hwnd);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ADR-036 — one place that turns a blocking guard summary into a failure.
+ *
+ * A refusal that carries its own `suggest` replaces the status catalogue;
+ * without it, `failWith` reconstructs `SUGGESTS.AutoGuardBlocked`, whose
+ * `ambiguous_target` and `target_not_found` lines name recoveries such a refusal
+ * has just finished ruling out. Rendered here rather than at each presenter
+ * because the first version honoured it in `click_element` and not in
+ * `set_element_value`, so the same response carried both halves of the
+ * contradiction one tool over — which is how this defect was found in the first
+ * place, one FIELD over.
+ *
+ * `_perceptionForPost` is the summary itself: the advice lives beside it on the
+ * result, so there is nothing to strip and nothing to leak.
+ */
+export function failBlockedByGuard(
+  toolName: string,
+  ag: ActionGuardResult,
+  extras: Record<string, unknown> = {},
+): ToolResult {
+  if (ag.suggest) {
+    return failCode("AutoGuardBlocked", ag.summary.next, {
+      suggest: ag.suggest,
+      rootExtras: { _perceptionForPost: ag.summary, ...extras },
+    });
+  }
+  return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), toolName, {
+    _perceptionForPost: ag.summary, ...extras,
+  });
+}
+
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
   target?: string
@@ -175,7 +265,18 @@ function nextStepFor(
     case "unguarded":
       return "Pass windowTitle for guarded action";
     case "ambiguous_target":
-      return `Call desktop_discover or pass a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
+      // Naming the handle is the recovery that ends this, so it goes first.
+      // It only became one when the guard learned to resolve a handle instead
+      // of counting titles; before that this line offered the one thing that
+      // could not help, and callers who did pass `hwnd` were told to pass it.
+      //
+      // One caller can still reach that state: `set_element_value` withholds
+      // the handle from its descriptor while `DTM_SET_VALUE_CHAIN=1`, because
+      // its fallback channels would leave the window the handle names. There
+      // the advice below is again the one thing that cannot help, so that
+      // handler replaces this text with a recovery it can honour rather than
+      // this line trying to know about it (ADR-036 R-36-5).
+      return `Pass hwnd to name one window exactly (desktop_discover returns it), or use a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
     case "target_not_found":
       return "Call desktop_discover to verify the window title, then retry";
     case "identity_changed":
@@ -236,8 +337,9 @@ export type DestinationVerdict =
  */
 export const TITLELESS_FOREGROUND_WARNING =
   "Target window has no title and is addressed by hwnd while in the foreground — " +
-  "delivered unguarded (no identity guard; keyboard focus/guard cannot yet target " +
-  "titleless windows, see ADR-036)";
+  "delivered unguarded (no identity guard). A window with no title cannot be " +
+  "focused or guarded by name, so this pass rests on it being the foreground " +
+  "window at the moment the keys go out";
 
 /**
  * Does this title actually name a window?
@@ -253,7 +355,7 @@ export const TITLELESS_FOREGROUND_WARNING =
  * `" Notepad "` still matches exactly what it matched before — deciding whether
  * a caller named something is a separate question from what they named.
  */
-function namesAWindow(title: string | undefined): boolean {
+export function namesAWindow(title: string | undefined): boolean {
   return typeof title === "string" && title.trim() !== "";
 }
 
@@ -271,8 +373,15 @@ function namesAWindow(title: string | undefined): boolean {
  * window is ALREADY the foreground — then delivery lands exactly where the
  * caller pointed, which is the legitimate `@active` case. That pass is reported
  * back as `note: "titleless_foreground"` so the caller can warn about what it
- * did not get (no focus, no identity guard). Making focus and the guard
- * hwnd-aware, so titled-ness stops mattering, is ADR-036.
+ * did not get (no focus, no identity guard).
+ *
+ * Whether to pull these calls into the guard instead was left open and is now
+ * settled: they stay out of it. Measured over the whole retained diagnostic
+ * log, no call has ever addressed a titleless window by handle — not one
+ * refusal, not one accepted foreground pass — so guarding them would add a
+ * pass-to-block behaviour change for a population of zero. The window
+ * enumeration every guard and focus mechanism is built on drops titleless
+ * windows anyway, so this is where the rule stays (ADR-036 OQ-36-1 = beta).
  */
 export function keyboardDestinationMiss(p: {
   effectiveWindowTitle: string | undefined;
@@ -307,8 +416,8 @@ function destinationBlockMessage(toolName: string, reason: DestinationMissReason
     ? `${toolName} requires a destination window: pass windowTitle or hwnd ` +
       "(an empty or whitespace-only windowTitle does not name one)"
     : `${toolName}: the window addressed by hwnd has no title and is not in the foreground — ` +
-      "keyboard delivery cannot yet target titleless windows (ADR-036); bring it to the " +
-      "foreground first (focus_window) or target a titled window";
+      "a window with no title can only receive input while it is the foreground window; " +
+      "bring it to the front (focus_window) or target a titled window";
 }
 
 export type DestinationCheck =
@@ -634,7 +743,7 @@ function mapGuardResult(
 export async function runActionGuard(
   params: RunActionGuardParams
 ): Promise<ActionGuardResult> {
-  const { toolName, actionKind, descriptor, clickCoordinates, foregroundVerified, browserReadinessPolicy, browserSelectorInViewport, fixCarryingArgs, suppressSuggestedFix } = params;
+  const { toolName, actionKind, descriptor, clickCoordinates, foregroundVerified, browserReadinessPolicy, browserSelectorInViewport, fixCarryingArgs, suppressSuggestedFix, callerHwnd } = params;
 
   // Env flag OFF → unguarded pass-through
   if (!isAutoGuardEnabled()) {
@@ -730,6 +839,21 @@ export async function runActionGuard(
   // No candidates → target not found
   if (resolved.candidates === 0 || !resolved.lens || !resolved.localStore) {
     const status: AutoGuardEnvelope["status"] = "target_not_found";
+    // ADR-036 — a valid handle the enumeration cannot show. `enumWindowsInZOrder`
+    // drops a window on `!title`, and BOTH this resolution and `desktop_discover`
+    // read it, so a caller who named an untitled window by handle was told to
+    // call the listing that cannot contain it — and passing the handle again is
+    // what they had just done. Two steps, closed loop, and it is the shape this
+    // ADR exists to remove: advice addressed to the caller it does not work for.
+    // Both review gates found it independently, from opposite ends.
+    //
+    // The refusal itself does not move. `buildWindowLensResult` keys a lens on
+    // the title, and giving it an empty one is a behaviour change on every tool
+    // that reaches here, with no real-machine acceptance behind it. What changes
+    // is that the answer stops naming two things that cannot work.
+    const namedHandle = (descriptor?.kind === "window" ? descriptor.hwnd : undefined) ?? callerHwnd;
+    const titlelessHandle = namedHandle !== undefined
+      && handleIsMissingFromEnumeration(namedHandle);
     // descriptor is non-null at this point (null-checked above)
     const closedKey = deriveTargetKey(descriptor);
     if (closedKey) {
@@ -740,9 +864,32 @@ export async function runActionGuard(
         kind: "auto",
         status,
         canContinue: false,
-        next: nextStepFor(status),
+        next: titlelessHandle
+          ? "That hwnd is a live window, and the enumeration this guard and " +
+            "desktop_discover both read does not list it — so neither can name it " +
+            "and passing the handle again returns here. That enumeration keeps " +
+            "top-level windows on this desktop that are visible, titled, have a " +
+            "rectangle, and are either at least 50x50 or minimised; a window " +
+            "failing any of those, and a child control or a window on another " +
+            "desktop, is not in it. Where the handle is a top-level window of " +
+            "yours, giving it a title and making it visible puts it back. Where " +
+            "it is not, nothing here addresses it by handle — keyboard with " +
+            "windowTitle:\"@active\" reaches whatever holds the foreground, which " +
+            "is only your window if it can hold it."
+          : nextStepFor(status),
       },
       block: true,
+      // The catalogue's two lines for this status name `desktop_discover` and
+      // `hwnd`, which the sentence above has just finished ruling out. Left
+      // alone, the same response carried both halves of the contradiction — and
+      // the structured half is the one the server instructions tell the model to
+      // read.
+      ...(titlelessHandle && {
+        suggest: [
+          "Read the error message — for this refusal it is the whole recovery.",
+          "desktop_discover cannot list this window; passing its hwnd returns here. keyboard with windowTitle:\"@active\" is the one channel that reaches it, and only while it holds the foreground.",
+        ],
+      }),
     };
   }
 
@@ -802,7 +949,14 @@ export async function runActionGuard(
 
   const targetLabel =
     descriptor.kind === "window"
-      ? `window:${descriptor.titleIncludes}`
+      // ADR-036 — a handle-resolved guard says so. The label goes out as
+      // `summary.target`, and `window:<title>` names BOTH windows on exactly
+      // the calls whose point is to tell them apart. Same separator as the
+      // state key (`deriveTargetKey`), for the same reason: a window can be
+      // called "hwnd:12345".
+      ? descriptor.hwnd !== undefined
+        ? `window#hwnd:${String(descriptor.hwnd)}`
+        : `window:${descriptor.titleIncludes}`
       : descriptor.kind === "browserTab"
         ? `browserTab:${descriptor.urlIncludes ?? descriptor.titleIncludes ?? descriptor.tabId ?? "?"}`
         : `coordinate:${descriptor.x},${descriptor.y}`;

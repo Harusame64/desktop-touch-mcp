@@ -66,7 +66,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "rich"
           ],
           "default": "minimal",
-          "description": "Narration level. rich includes UIA or browser state diff when supported."
+          "description": "Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on."
         },
         "tabId": {
           "type": "string",
@@ -363,7 +363,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "rich"
           ],
           "default": "minimal",
-          "description": "Narration level. rich includes UIA or browser state diff when supported."
+          "description": "Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on."
         },
         "tabId": {
           "type": "string",
@@ -652,7 +652,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "rich"
           ],
           "default": "minimal",
-          "description": "Narration level. rich includes UIA or browser state diff when supported."
+          "description": "Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on."
         },
         "lensId": {
           "description": "Optional perception lens ID. Guards (safe.keyboardTarget, target.identityStable) are evaluated before clicking, and a perception envelope is attached to post.perception on success.",
@@ -851,7 +851,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "rich"
           ],
           "default": "minimal",
-          "description": "Narration level. rich includes UIA or browser state diff when supported."
+          "description": "Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on."
         },
         "use_clipboard": {
           "description": "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — pasted text is not run through IME conversion. Note this does not help while an IME composition is already in progress: the paste keystroke is consumed by the IME and nothing is inserted, so commit or cancel the composition first. Your clipboard is replaced for the duration of the call and put back afterwards; hints.clipboard reports which backend served the paste and whether the restore ran. On builds without the native addon this path is capped at about 12000 characters and fails with code:'ClipboardWriteTooLargeForFallback' above it. Default false.",
@@ -1024,7 +1024,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "rich"
           ],
           "default": "minimal",
-          "description": "Narration level. rich includes UIA or browser state diff when supported."
+          "description": "Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on."
         },
         "speed": {
           "type": "integer",
@@ -1120,7 +1120,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "rich"
           ],
           "default": "minimal",
-          "description": "Narration level. rich includes UIA or browser state diff when supported."
+          "description": "Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on."
         },
         "speed": {
           "type": "integer",

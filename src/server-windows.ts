@@ -17,7 +17,7 @@ import {
   setElementValueHandler,
   setElementValueSchema,
 } from "./tools/ui-elements.js";
-import { withRichNarration } from "./tools/_narration.js";
+import { withRichNarration, UIA_WRITE_NARRATION } from "./tools/_narration.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 import { registerMacroTools } from "./tools/macro.js";
 import { registerBrowserTools } from "./tools/browser.js";
@@ -297,7 +297,7 @@ function createMcpServer(): McpServer {
       "set_element_value",
       "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard(action='type') for programmatic form input.",
       setElementValueSchema,
-      withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
+      withRichNarration("set_element_value", setElementValueHandler, UIA_WRITE_NARRATION)
     );
   }
 

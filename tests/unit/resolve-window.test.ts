@@ -48,8 +48,19 @@ vi.mock("../../src/engine/win32.js", () => ({
   isExcludedTitle:      mockIsExcludedTitle,
 }));
 
+/**
+ * ADR-035 observation. Mocked so a test can COUNT `resolve` events: the
+ * invariant the log is built on is "one resolution = one event", and
+ * `narrate: "rich"` broke it by resolving twice for one dispatch.
+ */
+const { mockLogResolve } = vi.hoisted(() => ({ mockLogResolve: vi.fn() }));
+vi.mock("../../src/tools/_resolve-log.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/tools/_resolve-log.js")>();
+  return { ...actual, logResolve: mockLogResolve };
+});
+
 // tool-exclusion.js is NOT mocked — WindowExcludedError is the real class refuseIfExcludedTarget throws.
-import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
+import { resolveWindowTarget, withPinnedResolution } from "../../src/tools/_resolve-window.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +79,7 @@ beforeEach(() => {
   mockIsExcludedWindowHandle.mockReturnValue(false);
   mockIsExcludedTitle.mockReset();
   mockIsExcludedTitle.mockReturnValue(false);
+  mockLogResolve.mockReset();
   delete process.env.DESKTOP_TOUCH_DOCK_TITLE;
 });
 
@@ -155,6 +167,191 @@ describe("resolveWindowTarget — no-op path", () => {
   it("returns null when no params provided", async () => {
     const result = await resolveWindowTarget({});
     expect(result).toBeNull();
+  });
+});
+
+
+// ─── ADR-035: one resolution, one event ──────────────────────────────────────
+
+describe("resolveWindowTarget — logAs:\"off\" (ADR-035 event count)", () => {
+  /**
+   * `withRichNarration` resolves the target BEFORE the action to know what to
+   * snapshot, and again after, and hands the second answer to the handler. Every
+   * one of those went through the same logging path, so one dispatch wrote two
+   * identical events on a rich call and one on a minimal call — a bias
+   * correlated with a narration parameter, in the histogram ADR-035 Phase C is
+   * still using to choose a predicate. The probe is silenced; the resolution the
+   * handler is given is not.
+   *
+   * Each case is paired with the same fixture at the default, so the assertion
+   * cannot pass because the path stopped logging altogether.
+   */
+
+  it("a plain-title miss logs once by default and not at all when silenced", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 500n, title: "Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    expect(await resolveWindowTarget({ windowTitle: "Does Not Exist" })).toBeNull();
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+
+    mockLogResolve.mockReset();
+    expect(await resolveWindowTarget({ windowTitle: "Does Not Exist" }, { logAs: "off" })).toBeNull();
+    expect(mockLogResolve).not.toHaveBeenCalled();
+  });
+
+  it("a plain top-level match logs once by default and not at all when silenced", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 400n, title: "名前を付けて保存 - App", className: "AppClass", ownerHwnd: null, isMinimized: false },
+    ]);
+    expect(await resolveWindowTarget({ windowTitle: "名前を付けて保存" })).toBeNull();
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+    expect(mockLogResolve.mock.calls[0][0]).toMatchObject({ resolver: "pickPlainTopLevelWindowByTitle" });
+
+    mockLogResolve.mockReset();
+    expect(await resolveWindowTarget({ windowTitle: "名前を付けて保存" }, { logAs: "off" })).toBeNull();
+    expect(mockLogResolve).not.toHaveBeenCalled();
+  });
+
+  it("the dialog rescue logs once by default and not at all when silenced", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 100n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 200n, title: "名前を付けて保存",    className: "#32770",  ownerHwnd: 100n, isMinimized: false },
+    ]);
+    const first = await resolveWindowTarget({ windowTitle: "名前を付けて保存" });
+    expect(first!.hwnd).toBe(200n);
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+    expect(mockLogResolve.mock.calls[0][0]).toMatchObject({ resolver: "resolveWindowTargetDialog" });
+
+    mockLogResolve.mockReset();
+    const again = await resolveWindowTarget({ windowTitle: "名前を付けて保存" }, { logAs: "off" });
+    // Silencing changes the RECORD, never the answer.
+    expect(again!.hwnd).toBe(200n);
+    expect(again!.warnings).toContain("dialog_resolved_via_owner_chain");
+    expect(mockLogResolve).not.toHaveBeenCalled();
+  });
+
+  it("deferLog hands the event to the caller instead of writing it", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 100n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 200n, title: "名前を付けて保存",    className: "#32770",  ownerHwnd: 100n, isMinimized: false },
+    ]);
+    let held: (() => void) | undefined;
+    const r = await resolveWindowTarget({ windowTitle: "名前を付けて保存" }, {
+      deferLog: (emit) => { held = emit; },
+    });
+    expect(r!.hwnd).toBe(200n);
+    expect(mockLogResolve).not.toHaveBeenCalled();
+    held!();
+    expect(mockLogResolve).toHaveBeenCalledTimes(1);
+    expect(mockLogResolve.mock.calls[0][0]).toMatchObject({ resolver: "resolveWindowTargetDialog" });
+  });
+
+  it("a deferred event is written when the pin is taken and dropped when it is not", async () => {
+    // Silencing the probe alone left a residue: on the Case 4 dialog rescue a
+    // rich call still wrote one event more than a minimal one whenever the
+    // desktop moved under the re-check (`target_changed`) or the handler bailed
+    // before resolving (the IME fast-fail) — a resolution nothing dispatched on.
+    // The event now travels with the pin and is written only where it acquires
+    // a dispatch.
+    const pinned = { title: "Ledger", hwnd: 0x2222n, warnings: [], className: "X" };
+
+    const taken = vi.fn();
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger" }), taken);
+    expect(taken).toHaveBeenCalledTimes(1);
+
+    const untaken = vi.fn();
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () => "handler bailed", untaken);
+    expect(untaken).not.toHaveBeenCalled();
+
+    // Single use on the event as well as on the answer: a handler that resolves
+    // twice must not double-count the one resolution it was handed.
+    const once = vi.fn();
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () => {
+      await resolveWindowTarget({ windowTitle: "Ledger" });
+      await resolveWindowTarget({ windowTitle: "Ledger" });
+    }, once);
+    expect(once).toHaveBeenCalledTimes(1);
+  });
+
+  it("a consumer that dispatches nothing does not write the event it inherits", async () => {
+    // Every round so far policed `logAs` where the event is PRODUCED; the
+    // consuming side wrote unconditionally. So a probe — a call whose whole
+    // purpose is to dispatch nothing — emitted the outer call's event when it
+    // happened to match the pin, and a nested narrated handler counted one
+    // dialog rescue twice. The consumer's intent decides here too.
+    const pinned = { title: "Ledger", hwnd: 0x2222n, warnings: [], className: "X" };
+
+    // A probe takes neither half. Declining only the EVENT left the more
+    // serious one in place: the probe walked away with the resolution and the
+    // handler behind it resolved afresh, so the snapshots and the action could
+    // part company — which is the thing the pin exists to prevent.
+    mockEnumWindowsInZOrder.mockReturnValue([]);
+    const silenced = vi.fn();
+    const probeSaw = await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger" }, { logAs: "off" }), silenced);
+    expect(silenced).not.toHaveBeenCalled();
+    expect(probeSaw).not.toBe(pinned);
+
+    // …and the pin is still there for the call that dispatches.
+    const afterProbe = vi.fn();
+    const handlerSaw = await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () => {
+      await resolveWindowTarget({ windowTitle: "Ledger" }, { logAs: "off" });
+      return resolveWindowTarget({ windowTitle: "Ledger" });
+    }, afterProbe);
+    expect(handlerSaw).toBe(pinned);
+    expect(afterProbe).toHaveBeenCalledTimes(1);
+
+    // …and a consumer that defers passes it on rather than writing it.
+    const inherited = vi.fn();
+    let held: (() => void) | undefined;
+    await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger" }, { deferLog: (e) => { held = e; } }), inherited);
+    expect(inherited).not.toHaveBeenCalled();
+    expect(held).toBeTypeOf("function");
+    held!();
+    expect(inherited).toHaveBeenCalledTimes(1);
+  });
+
+  it("the wrapper's key matches the shape a handler actually asks with", async () => {
+    // Load-bearing and, until this, untested: the wrapper builds `resolveArgs`
+    // by OMITTING absent keys, and the handlers pass their optional params
+    // through PRESENT-BUT-UNDEFINED. `resolutionKey` coalesces, so the two
+    // agree — but that agreement holds last round's whole handoff up and rests
+    // on four call sites staying in step.
+    const pinned = { title: "Ledger", hwnd: 0x2222n, warnings: [], className: "X" };
+
+    expect(await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ hwnd: undefined, windowTitle: "Ledger" }))).toBe(pinned);
+
+    expect(await withPinnedResolution({ hwnd: "8738", windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ hwnd: "8738", windowTitle: "Ledger" }))).toBe(pinned);
+
+    // And a different question does not take it. `@active` is the reason the
+    // key is not enough on its own, but it is still the first line.
+    mockEnumWindowsInZOrder.mockReturnValue([]);
+    expect(await withPinnedResolution({ windowTitle: "Ledger" }, pinned, async () =>
+      resolveWindowTarget({ windowTitle: "Ledger II" }))).toBeNull();
+  });
+
+  it("consuming a handed-forward resolution adds no event of its own", async () => {
+    // The handler's `resolveWindowTarget` takes the pin and returns before any
+    // resolver runs, so the event belongs to the wrapper's re-check that put it
+    // there. Counting it here as well would restore the double-count from the
+    // other side.
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 100n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 200n, title: "名前を付けて保存",    className: "#32770",  ownerHwnd: 100n, isMinimized: false },
+    ]);
+    const pinned = { title: "名前を付けて保存", hwnd: 200n, warnings: [], className: "#32770" };
+    mockLogResolve.mockReset();
+    const seen = await withPinnedResolution(
+      { windowTitle: "名前を付けて保存" },
+      pinned,
+      async () => resolveWindowTarget({ windowTitle: "名前を付けて保存" }),
+    );
+    expect(seen).toBe(pinned);
+    expect(mockLogResolve).not.toHaveBeenCalled();
   });
 });
 
@@ -269,6 +466,61 @@ describe("resolveWindowTarget — disabled-owner popup prefer (H3 case 5)", () =
 });
 
 // ─── R3 tool-exclusion refusal (Cases 1/2 bypass the enumerator) ─────────────
+
+describe("ADR-036 — a resolution handed forward to the handler", () => {
+  // `withRichNarration` resolves before the action so it knows what to snapshot,
+  // and the handler resolves again afterwards. Between the two the desktop can
+  // move — and `_post` takes a whole focus enumeration in there. The answer
+  // travels beside the args, because putting the handle INTO the args would
+  // make the handler believe the caller named one, which decides the guard
+  // descriptor, the pinning rules and the wording of the refusal.
+  //
+  // Scoped to the invocation rather than the module: a call that never reaches
+  // its resolver must not leave an answer where a concurrent one can take it.
+  const pinned = { hwnd: 0xbeefn, title: "Pinned", warnings: [], className: "X" };
+
+  it("is consumed by a matching call, once, inside the scope", async () => {
+    await withPinnedResolution({ hwnd: "1", windowTitle: "whatever" }, pinned as never, async () => {
+      await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
+      // Single use: a second ask inside the same scope goes to the real
+      // resolver, which refuses this fixture's non-window — the evidence that
+      // the answer was not handed out twice.
+      await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
+    });
+  });
+
+  it("is not eaten by a call asking a different question", async () => {
+    await withPinnedResolution({ hwnd: "1", windowTitle: "whatever" }, pinned as never, async () => {
+      await expect(resolveWindowTarget({ hwnd: "2", windowTitle: "whatever" })).rejects.toThrow(/WindowNotFound/);
+      await expect(resolveWindowTarget({ hwnd: "1", windowTitle: "whatever" })).resolves.toBe(pinned);
+    });
+  });
+
+  it("does not leak outside its own invocation", async () => {
+    // The shape that made the module-global a P1: a call that exits before its
+    // resolver, while something else asks the same question.
+    await withPinnedResolution({ hwnd: "1" }, pinned as never, async () => {
+      // …exits without resolving.
+    });
+    await expect(resolveWindowTarget({ hwnd: "1" })).rejects.toThrow(/WindowNotFound/);
+  });
+
+  it("does not leak into a concurrent invocation asking the same question", async () => {
+    let sawPinned: unknown;
+    await Promise.all([
+      withPinnedResolution({ hwnd: "1" }, pinned as never, async () => {
+        // Yield, so the other call runs while this pin is armed.
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }),
+      (async () => {
+        await new Promise<void>((r) => setTimeout(r, 0));
+        sawPinned = await resolveWindowTarget({ hwnd: "1" }).catch((e: Error) => e);
+      })(),
+    ]);
+    expect(sawPinned).toBeInstanceOf(Error);
+    expect(String(sawPinned)).toMatch(/WindowNotFound/);
+  });
+});
 
 describe("resolveWindowTarget — R3 key-locker exclusion", () => {
   it("refuses an explicit hwnd that resolves to an excluded window (Case 1)", async () => {

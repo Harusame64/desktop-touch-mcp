@@ -25,6 +25,39 @@ import type {
 } from "../engine/native-types.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
+import type { HotTargetSlot } from "../engine/perception/hot-target-cache.js";
+
+/**
+ * ADR-036 I-2 — pick the slot that describes a window's LATEST state.
+ *
+ * One window can own more than one slot: addressing it by title and by handle
+ * keys `window:<title>` and `window#hwnd:<h>` separately, and both carry the
+ * same identity. Taking the first match (Map insertion order, i.e. whichever
+ * was created first) could answer from the slot the last call never touched —
+ * reporting `ok` from a stale slot while the fresh one held `identity_changed`.
+ * The attention signal is about the window, not about the name it was reached
+ * by, so the most recently used slot wins.
+ *
+ * On an exact tie the timestamps cannot separate them, so the slot carrying a
+ * signal wins over one saying `ok`. Falling back to iteration order there would
+ * be the rule this function exists to replace, reappearing in the one case it
+ * is hardest to notice.
+ *
+ * Exported for the test that pins this: the rule is one line, and one line is
+ * exactly what gets silently reverted.
+ */
+export function selectFreshestWindowSlot(
+  slots: readonly HotTargetSlot[],
+  hwnd: string,
+): HotTargetSlot | undefined {
+  let best: HotTargetSlot | undefined;
+  for (const s of slots) {
+    if (s.kind !== "window" || !s.identity || !("hwnd" in s.identity) || s.identity.hwnd !== hwnd) continue;
+    if (!best || s.lastUsedAtMs > best.lastUsedAtMs) { best = s; continue; }
+    if (s.lastUsedAtMs === best.lastUsedAtMs && best.attention === "ok" && s.attention !== "ok") best = s;
+  }
+  return best;
+}
 import type { AttentionState } from "../engine/perception/types.js";
 import { isUiaCacheStale } from "../engine/identity-tracker.js";
 import {
@@ -580,10 +613,7 @@ export const desktopStateHandler = async (args: {
     let attention: AttentionState = "ok";
     if (fg) {
       const fgHwnd = String(fg.hwnd);
-      const slots = getSlotSnapshot();
-      const matchingSlot = slots.find(
-        (s) => s.kind === "window" && s.identity && "hwnd" in s.identity && s.identity.hwnd === fgHwnd
-      );
+      const matchingSlot = selectFreshestWindowSlot(getSlotSnapshot(), fgHwnd);
       if (matchingSlot) {
         // Map SlotAttention → AttentionState (7 enum values in design §3.1)
         const sa = matchingSlot.attention;
