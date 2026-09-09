@@ -256,6 +256,26 @@ async function assertPointIsInsideAim(
   }
 }
 
+/**
+ * ADR-036 probe — a road that succeeded says so.
+ *
+ * The first version of this probe only wrote at the two mouse presses and the containment check,
+ * so a run that went cleanly through UIA left no row at all and had to be inferred from the gap
+ * between `act.aim` and the next seam. That is the probe breaking its own rule — absence is
+ * recorded, not inferred — and it made the road that works the only one with no evidence (win2,
+ * from the first real-machine sweep, 2026-09-09).
+ */
+function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity, extra: Record<string, unknown> = {}): void {
+  probeAim("act.route", {
+    route,
+    aimed: aimHwnd !== undefined,
+    aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
+    entityId: entity.entityId,
+    entityLabel: entity.label ?? null,
+    ...extra,
+  });
+}
+
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
   return {
     x: Math.round(rect.x + rect.width / 2),
@@ -365,6 +385,7 @@ export function createDesktopExecutor(
       if ((action === "type" || action === "setValue") && text !== undefined) {
         try {
           await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
+          probeRoute("uia", aimHwnd, entity, { why: "uia_set_value" });
           return "uia";
         } catch (uiaErr) {
           // R3 tool-exclusion — as in the click path below: refusals are not rungs.
@@ -377,6 +398,7 @@ export function createDesktopExecutor(
           // is not.
           try {
             await d.keyboardTypeBg(winTitle, text, aimHwnd);
+            probeRoute("keyboard", aimHwnd, entity, { why: "uia_set_value_failed" });
             return "keyboard";
           } catch (kbErr) {
             // Both rungs are spent, so the refusal that was let through above is now the whole
@@ -412,6 +434,7 @@ export function createDesktopExecutor(
       }
       try {
         await d.uiaClick(winTitle, name, automationId, aimHwnd);
+        probeRoute("uia", aimHwnd, entity, { why: "uia_invoke" });
         return "uia";
       } catch (uiaErr) {
         // R3 tool-exclusion — a refusal is not a failure to route around. Every other throw
@@ -473,17 +496,9 @@ export function createDesktopExecutor(
         // ADR-036 probe — the downgrade press. This one is never checked against the aim: it only
         // runs for an UNPINNED call, where there is no window to check it against. Recorded so the
         // two mouse roads can be told apart in the log.
-        probeAim("act.route", {
-          route: "mouse",
-          why: "uia_downgrade",
-          aimed: false,
-          // Always null, and the compiler knows it: the pinned case threw four branches up, so
-          // this road is unreachable with an aim. Written out rather than omitted, so the log's
-          // two mouse rows have the same shape.
-          aimHwnd: null,
-          point: { x, y },
-          entityId: entity.entityId,
-        });
+        // `aimed:false` is not a reading of the value: the pinned case threw four branches up,
+        // so this road is unreachable with an aim.
+        probeRoute("mouse", undefined, entity, { why: "uia_downgrade", point: { x, y } });
         await d.mouseClick(x, y);
         // Issue #327 item C: signal the silent downgrade so the LLM sees
         // `executor: "mouse"` AND `downgrade: { from: "uia", reason: ... }`
@@ -502,9 +517,11 @@ export function createDesktopExecutor(
       // browser_fill for controlled inputs (React/Vue/Svelte).
       if ((action === "type" || action === "setValue") && text !== undefined) {
         await d.cdpFill(cdpSelector, text, cdpTabId);
+        probeRoute("cdp", aimHwnd, entity, { why: "cdp_fill", tabId: cdpTabId ?? null });
         return "cdp";
       }
       await d.cdpClick(cdpSelector, cdpTabId);
+      probeRoute("cdp", aimHwnd, entity, { why: "cdp_click", tabId: cdpTabId ?? null });
       return "cdp";
     }
 
@@ -527,6 +544,7 @@ export function createDesktopExecutor(
       // (gate 1). The title is still passed for the backend that has no handle to use.
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
       await d.terminalSend(termWin, text, aimHwnd);
+      probeRoute("terminal", aimHwnd, entity, { why: "terminal_send", termWin });
       return "terminal";
     }
 
@@ -561,6 +579,7 @@ export function createDesktopExecutor(
       (action === "type" || action === "setValue")
     ) {
       await d.keyboardTypeBg(winTitle, text, aimHwnd);
+      probeRoute("keyboard", aimHwnd, entity, { why: "keyboard_only_entity" });
       return "keyboard";
     }
 
@@ -617,15 +636,10 @@ export function createDesktopExecutor(
     // press lands on whatever arrived there (measured 2026-09-09). The specification's ladder for
     // this press is homing correction → occlusion test → identity invalidation; none of the three
     // is here yet, which is what this row is for.
-    probeAim("act.route", {
-      route: "mouse",
+    probeRoute("mouse", aimHwnd, entity, {
       why: "visual_or_read_entity",
-      aimed: aimHwnd !== undefined,
-      aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
       point: { x, y },
       rect: entity.rect,
-      entityId: entity.entityId,
-      entityLabel: entity.label ?? null,
     });
     await d.mouseClick(x, y);
     return "mouse";
