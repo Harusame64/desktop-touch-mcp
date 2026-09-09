@@ -89,7 +89,9 @@ describe("5th keyboard block (ADR-020 SR-5 PR-SR5-2)", () => {
       );
       expect(result).toBe("keyboard"); // bare ExecutorKind (PR #330 contract、OQ-SR5-1 (1))
       expect(deps.keyboardTypeBg).toHaveBeenCalledOnce();
-      expect(deps.keyboardTypeBg).toHaveBeenCalledWith("h", "hello");
+      // ADR-036: `"h"` is not a handle, so nothing is aimed by handle and the title falls back
+      // to "@active" rather than becoming the string "h".
+      expect(deps.keyboardTypeBg).toHaveBeenCalledWith("@active", "hello", undefined);
       expect(deps.uiaSetValue).not.toHaveBeenCalled();
       expect(deps.mouseClick).not.toHaveBeenCalled();
     });

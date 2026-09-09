@@ -30,6 +30,9 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *
  * Warning codes are stable machine-readable strings (not prose):
  *   uia_provider_failed       — UIA call threw or returned an error
+ *   uia_frame_names_synthesized — the window frame came from the MSAA synthesis, so its labels
+ *                             are that vocabulary (`Close`, not `閉じる`) — ADR-036
+ *   uia_tree_truncated        — the walk ran out of time; the entities are a prefix of the window
  *   cdp_provider_failed       — CDP evaluateInTab failed or timed out
  *   terminal_provider_failed  — getTextViaTextPattern threw
  *   visual_provider_unavailable — visual GPU lane is a Phase 3 stub

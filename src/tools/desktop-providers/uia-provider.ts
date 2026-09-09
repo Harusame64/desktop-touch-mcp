@@ -13,7 +13,7 @@
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
 function uiaRoleFromControlType(ct: string): string {
@@ -61,14 +61,32 @@ export async function fetchUiaCandidates(
     return { candidates: [], warnings: [] };
   }
 
-  const windowTitle = target.windowTitle ?? target.hwnd ?? "@active";
+  // ADR-036 — the handle is not a title. It used to stand in for one here, so a session known
+  // only by handle asked UIA for a window whose *name* contains the handle's digits; and when
+  // both were present the title won, which is how the read half could enumerate one window
+  // while the write half addressed another.
+  const windowTitle = target.windowTitle ?? "@active";
   const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
+  // ADR-036 — the same parse the write half uses, so one malformed handle cannot make the two
+  // halves aim at different windows. `BigInt(target.hwnd)` here used to throw straight out of
+  // the provider.
+  const pinned = parseTargetHwnd(target);
+  // …and the OCR lane says so when a handle cannot be read, while this lane went quiet about the
+  // same value in the same discover. With the handle unread there is no scoping, so this reads
+  // `windowTitle` — the caller's title if it passed one, the FOREGROUND window if it did not —
+  // while every candidate still carries the caller's raw handle string as its target id
+  // (2ゲート目の指摘).
+  const hwndWarnings = pinned === undefined && target.hwnd ? ["target_hwnd_unparseable"] : [];
 
   try {
     const { getUiElements, detectUiaBlind } = await import("../../engine/uia-bridge.js");
 
-    // hwnd invariant: always decimal string (bigint as decimal, per codebase convention)
-    const options = target.hwnd ? { hwnd: BigInt(target.hwnd) } : undefined;
+    // `pinnedHwnd` asks the bridge to SCOPE the read to this window, through `FromHandle`
+    // (ADR-036). It keys the cache too, but only because a scoped read is the one thing that can
+    // vouch for which window it describes — the bridge will not file a title-derived tree under
+    // a handle nobody scoped to. Passing `hwnd` as well was a way to prime the cache back when
+    // the read could still go by title; now it would say nothing the scoped read does not.
+    const options = pinned !== undefined ? { pinnedHwnd: pinned } : undefined;
     const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
 
     const candidates: UiEntityCandidate[] = result.elements
@@ -98,7 +116,25 @@ export async function fetchUiaCandidates(
         provisional: false,
       }));
 
-    const warnings: string[] = candidates.length === 0 ? ["uia_no_elements"] : [];
+    const warnings: string[] = [
+      ...hwndWarnings,
+      // ADR-036 — a pinned read is the PowerShell walk, and that walk stops when the caller's
+      // deadline runs out. Publishing the prefix is right (a partial view is still a view), but
+      // publishing it as though it were the window is not: whatever was still on the stack is
+      // missing, and the caller cannot tell that from a window that simply has fewer elements
+      // (2ゲート目の指摘). `_narration` refuses a truncated tree outright because it DIFFS two of
+      // them; discover only has to say so.
+      ...(result.truncated ? ["uia_tree_truncated"] : []),
+      // ADR-036 — this tree's frame elements were synthesised from MSAA by the clientside
+      // providers, so they carry MSAA's vocabulary: `Close` where the COM road says `閉じる`,
+      // `MenuBar:Application` where it says `MenuBar:アプリケーション`, `Document` where it says
+      // `Edit`. Twenty of Notepad's twenty-six elements differ that way (measured 2026-09-09).
+      // Self-consistent within this road — the act that follows speaks the same vocabulary — but
+      // a caller comparing against a title-derived read, or against a name a human read off the
+      // screen, is looking at two vocabularies for one window.
+      ...(result.clientProviders === "registered" ? ["uia_frame_names_synthesized"] : []),
+      ...(candidates.length === 0 ? ["uia_no_elements"] : []),
+    ];
 
     // H4: detect UIA-blind conditions (single-giant-pane / too-few-elements)
     // so that compose-providers can escalate visual lane explainability.
@@ -111,6 +147,6 @@ export async function fetchUiaCandidates(
     return { candidates, warnings };
   } catch (err) {
     console.error(`[uia-provider] Error for target "${targetId}":`, err);
-    return { candidates: [], warnings: ["uia_provider_failed"] };
+    return { candidates: [], warnings: [...hwndWarnings, "uia_provider_failed"] };
   }
 }

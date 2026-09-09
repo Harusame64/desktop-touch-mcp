@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
+import { AIM_WINDOW_GONE, AimedWindowGoneError } from "./aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
-import { isExcludedTitle } from "./win32.js";
+import { isExcludedTitle, isExcludedWindowHandle, isWindowGone } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
@@ -22,6 +23,27 @@ function refuseUiaTitleIfExcluded(windowTitle: string): void {
       `UIA target window "${windowTitle}" belongs to the desktop-touch key locker and is excluded`,
     );
   }
+}
+
+/**
+ * (R3 tool-exclusion) The by-handle route (`options.pinnedHwnd` on the reads, `options.hwnd` on
+ * the writes) skips the title-based root search, so the title check above no longer stands
+ * between a caller and the window it names. A caller holding
+ * the locker's handle — or one that resolved it before the locker armed — would otherwise reach
+ * the secure dialog with any benign title string attached. The handle registry is the same one
+ * `enumWindowsInZOrder` consults, and it short-circuits to `false` when no locker is alive.
+ */
+function refuseUiaHwndIfExcluded(hwnd: bigint): void {
+  if (!isExcludedWindowHandle(hwnd)) return;
+  // ADR-036 — that predicate fails CLOSED on a PID it cannot read, and a window that has been
+  // destroyed reads as PID 0. So while a locker is armed, an ordinary closed window came back as
+  // a security refusal: the executor rethrows `WindowExcludedError` without trying anything else
+  // and the caller is told it may not touch a window that no longer exists, instead of being
+  // told to discover again (2ゲート目の指摘). Both answers refuse; only one of them is true.
+  if (isWindowGone(hwnd)) throw new AimedWindowGoneError(hwnd);
+  throw new WindowExcludedError(
+    `UIA target window handle ${hwnd} belongs to the desktop-touch key locker and is excluded`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,11 +91,171 @@ export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
 // Scripts
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * How long a PowerShell read may spend before its own work starts: process start plus two
+ * `Add-Type` assembly loads.
+ *
+ * Measured on the Windows machine 2026-09-09 (`dev/ps-startup-20260909/`): **233 ms median** for
+ * `powershell.exe` 5.1 with both loads, 190.9 ms for the bare start, and 814 ms median / 1044 ms
+ * worst with sixteen spawning at once. **A cold machine was not measured**, so this stays the
+ * generous number it always was — but only where being generous is free.
+ *
+ * Where it is free: the WAIT around a read that has no clock of its own (`psReadWaitMs`). A
+ * timeout that is too long costs nothing until something has already failed.
+ *
+ * Where it was not free: the walk's budget, which used to be `deadline - this`. At 4000 against a
+ * real 233 the walk lost seconds it could have used, and `_narration.ts`'s 4000 ms deadline
+ * collapsed to the floor — so its two snapshots truncated at different points and the diff
+ * reported elements appearing and disappearing that never moved (2ゲート目の指摘). The script
+ * measures its own start now (see `makeGetElementsScript`), so no estimate stands between the
+ * caller's deadline and the walk.
+ */
+const PS_STARTUP_HEADROOM_MS = 4000;
+/** Enough to reach a first element and print. Below this the walk is not worth starting. */
+const PS_MIN_TREE_BUDGET_MS = 1000;
+/**
+ * Left at the end of the deadline for `ConvertTo-Json -Depth 6` and the write to stdout.
+ *
+ * Set by which way being wrong hurts. Too small and the serialise overruns the wait that kills
+ * the process: empty stdout, a parse error, **the whole read lost**, which is the failure
+ * `truncated` exists to replace with a partial answer. Too large and the walk gives up time it
+ * could have spent, and says so in `truncated`. One of those is recoverable by the caller and
+ * the other is not, so this is generous rather than tight (2ゲート目の指摘: at 300 ms it was
+ * neither, on a path this branch had just made the primary one).
+ *
+ * Since measured, and generous by more than it needed to be: `ConvertTo-Json -Depth 6 -Compress`
+ * plus the stdout write took **55.4 ms for an empty tree and 56.0 ms for 120 elements**, 75.8 ms
+ * at the worst of a synthetic thousand — it is almost all fixed cost, the first use of the
+ * cmdlet in the process (a second serialise in the same process is under 1 ms). So 1000 is about
+ * thirteen times the worst case, and the reason to leave it there is that nothing is asking for
+ * the difference: what binds this path is the deadline and the process start, not the margin
+ * (win, 2026-09-09, `dev/ps-startup-20260909/`).
+ */
+const PS_PRINT_MARGIN_MS = 1000;
+
+/**
+ * ADR-036 — there used to be a `psTreeBudgetMs(deadline)` here, deriving the walk's budget by
+ * subtracting `PS_STARTUP_HEADROOM_MS` from the caller's deadline. It answered a real defect —
+ * budget and wait were both a fixed 8000, so a walk that used its budget was killed before it
+ * could print — and then the estimate it leaned on turned out to be seventeen times the measured
+ * value, which cost `_narration.ts` most of its walking time. The script measures its own start
+ * instead; see `psBudgetExpression`.
+ */
+
+/**
+ * The PowerShell lines the walk uses to work out its own budget: the caller's deadline, less what
+ * starting up actually took, less room to print.
+ *
+ * `spawnedAtMs` is read here, one statement before the process is created; the script reads the
+ * same clock after its assemblies are loaded and its target window is found. **The same clock is
+ * the whole contract**: both sides read UTC wall time, and swapping either half for a monotonic
+ * one (`process.hrtime.bigint()` here, `Stopwatch::GetTimestamp()` there) breaks it *silently* —
+ * the subtraction would come out as the machine's uptime and the budget would land on the floor
+ * for every call, with nothing thrown to say so (win, 2026-09-09, who checked the pairing on the
+ * real machine and left `dev/ps-startup-20260909/verify-node-clock.mjs` for the next person to
+ * change one side). What the subtraction gives is the startup this machine really had, on this
+ * run, under whatever load it was under — which is what `PS_STARTUP_HEADROOM_MS` was guessing at.
+ *
+ * Both sides read UTC, and both must: `[datetime]::Now` in the script would be out by the
+ * machine's offset from UTC, which is nine hours of budget on the machine this was checked on,
+ * and again nothing would be thrown. The whole expression was run there — JST, `ja-JP` — and
+ * came back at 233 ms median, overlapping the arms measured other ways
+ * (`dev/ps-startup-20260909/verify-wallclock-pair.mjs`, which carries the values that would give
+ * a wrong clock away).
+ *
+ * Resolution does not threaten this. `[datetime]::UtcNow` was measured at 1.001 ms median on
+ * 5.1 and `Date.now()` at 1 ms; the familiar 15.6 ms is the OS's default timer tick and applies
+ * only when nothing has raised it, so even at its worst it is under 7% of a 233 ms startup.
+ *
+ * A clock that steps FORWARDS shortens the budget to nothing, which is safe and is where sleep
+ * and resume land. One that steps BACKWARDS would have lengthened it — past the deadline — until
+ * the inner clamp below; the sentence that used to sit here said the opposite (win, 2026-09-09,
+ * who ran the expression rather than reading it).
+ */
+function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
+  // Epoch milliseconds by subtraction rather than `[DateTimeOffset]::…ToUnixTimeMilliseconds()`,
+  // which needs .NET 4.6. This form works on every framework `powershell.exe` 5.1 can be sitting
+  // on, and a script that throws here would come back as empty stdout and a parse error — the
+  // failure this file has already spent two rounds removing.
+  //
+  // The epoch is CONSTRUCTED, and the point is that nothing here parses a date at all.
+  //
+  // Not because the cast was broken: `[datetime]'1970-01-01'` was measured across eight cultures
+  // including three non-Gregorian calendars, as a literal, through a variable, and through
+  // `Invoke-Expression`, and every one agreed — PowerShell converts strings to `datetime`
+  // invariantly, unlike C#'s `Parse` (win, 2026-09-09, `dev/ps-startup-20260909/`). What was
+  // measured to be dangerous is `[datetime]::Parse($s)`: +543 years in `th-TH`, negative in
+  // `fa-IR`, and an EXCEPTION in `ar-SA` — which arrives here as empty stdout and a JSON parse
+  // error, the same shape as the .NET 4.6 method this expression already avoids.
+  //
+  // So this guards a rewrite rather than a bug: while a date string is sitting in the
+  // expression, someone tidying it can reach for `::Parse` and land on that. There is no string.
+  // The test that asserts the literal is absent is the same guard from the other side.
+  const nowMs = "[int64]([datetime]::UtcNow - [datetime]::new(1970,1,1)).TotalMilliseconds";
+  // Floored at zero, not at a minimum walk. A floor above what is left would put the walk past
+  // the wait that kills the process — `workspace.ts` asks for 2000 ms, and a slow start plus a
+  // 1000 ms floor ends at ~2044 ms against a 2000 ms kill, so the caller gets empty stdout and a
+  // parse error: the whole read lost, which is the failure `truncated` exists to avoid
+  // (2ゲート目の指摘). A walk with no time left prints an empty tree that says it was cut short,
+  // which is a thing a caller can act on.
+  // A clock that steps BACKWARDS between the timestamp taken here and the read inside the script
+  // makes the elapsed term negative, and a negative subtrahend LENGTHENS the budget — past the
+  // deadline, so the walk outlives `runPS`'s kill and the read is lost entirely. Measured by
+  // running the emitted expression rather than reading it: a 2 s backwards step against a
+  // 2000 ms deadline gave a 2909 ms budget and a 4142 ms walk (win, 2026-09-09).
+  //
+  // Clamping that term at zero fixes the sign but throws the startup out of the sum with it: the
+  // script would then believe it started instantly and walk `deadline − margin`, on top of a
+  // start that really happened, overshooting the kill by `startup + print − margin`. Smaller,
+  // same shape. So a nonsense measurement falls back to the estimate instead of to zero —
+  // `PS_STARTUP_HEADROOM_MS` is generous (measured 233 ms against 4000) and generous is the safe
+  // direction here, which is the one place in this file where that constant still earns its keep.
+  return [
+    `$elapsedMs = ${nowMs} - ${spawnedAtMs}`,
+    `if ($elapsedMs -lt 0) { $elapsedMs = ${PS_STARTUP_HEADROOM_MS} }`,
+    `$budgetMs = [Math]::Max(0, ${deadlineMs} - $elapsedMs - ${PS_PRINT_MARGIN_MS})`,
+  ].join("\n");
+}
+
+/**
+ * ADR-036 — how long to wait on a script that has no clock of its own.
+ *
+ * For the other shape of read. The tree walk carries a stopwatch and stops itself inside the
+ * caller's deadline; the TextPattern read is a single `FindAll(Descendants)` followed by
+ * `GetText`, and neither can be interrupted, so nothing inside that script can be shortened.
+ * What moves instead is the wait — and a wait that is too long costs nothing until something has
+ * already failed, which is why the generous constant lives here and nowhere else.
+ *
+ * Without this, `getTextViaTextPattern`'s default 6000 ms had the process start taken out of it
+ * before the script's first statement ran, leaving a fraction of the deadline for the read
+ * itself — and a timeout here returns `null`, which the terminal provider reports as "no buffer"
+ * rather than "not read in time" (2ゲート目の指摘). It bites hardest on the case this ADR is
+ * about: the scoped read exists for the same-titled pair, and that is where the PowerShell path
+ * is taken at all.
+ *
+ * The parameter then means the same thing on both roads: how long the READ may take. The native
+ * path already read it that way — it pays no process start — so the two only agreed by accident
+ * before.
+ */
+export function psReadWaitMs(readBudgetMs: number): number {
+  return readBudgetMs + PS_STARTUP_HEADROOM_MS;
+}
+
 function makeGetElementsScript(
   windowTitle: string,
   maxDepth: number,
   maxElements: number,
-  fetchValues = false
+  fetchValues = false,
+  /**
+   * ADR-036 — when the caller resolved a handle, the read is scoped to that window through
+   * `FromHandle`, the same door `makeClickElementScriptByHwnd` uses. Without it the read half
+   * kept picking the first window whose title matched while the write half addressed the
+   * handle, so `desktop_discover` could enumerate one window and `desktop_act` drive another.
+   */
+  hwnd?: bigint,
+  /** The caller's whole deadline. The script works out how much of it is left — see
+   * `psBudgetExpression`. */
+  deadlineMs: number = PS_MIN_TREE_BUDGET_MS + PS_PRINT_MARGIN_MS,
 ): string {
   const safeTitle = escapeLike(windowTitle);
   const fetchValuesBlock = fetchValues
@@ -92,15 +274,31 @@ Add-Type -AssemblyName UIAutomationTypes
 $root  = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 
-# Find window by partial title (live query — before cache scope)
+${hwnd !== undefined
+  ? `# ADR-036: the caller named a window by handle, so no title search happens here.
+# FromHandle THROWS (ElementNotAvailableException) for a handle whose window has gone, rather
+# than returning null — and on the read path handles are stored and reused across calls, so a
+# window closing between two of them is routine. Without the catch the caller got empty stdout
+# and a JSON parse error instead of this sentence (2ゲート目の指摘).
+$hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"error":"Window not found by hwnd"}'; exit }
+if (-not $target) { Write-Output '{"error":"Window not found by hwnd"}'; exit }`
+  : `# Find window by partial title (live query — before cache scope)
 $target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
 foreach ($w in $allWins) {
     if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
 }
-if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }
-$winTitle     = $target.Current.Name
-$winClassName = $target.Current.ClassName
+if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }`}
+# Guarded for the same reason FromHandle is: a window closing between two calls on the same
+# handle is routine, and reading .Current throws ElementNotAvailableException when it does. Left
+# outside, that ended the script with a PowerShell error record — an exec/parse failure where the
+# catch above was added to print one sentence (2ゲート目の指摘).
+try {
+    $winTitle     = $target.Current.Name
+    $winClassName = $target.Current.ClassName
+} catch { Write-Output '{"error":"Window not found by hwnd"}'; exit }
 
 # Capture window bounding rect for the caller
 $winRect = $null
@@ -111,14 +309,65 @@ try {
     }
 } catch {}
 
-$cvWalker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+# ADR-036 — the same traversal the native walker uses: FindAll(Children) under the ControlView
+# condition, breadth-first, one call per parent, root children at depth 1. The two roads reach
+# the same tree by construction rather than by coincidence, and they mean the same thing by
+# depth.
+#
+# It is NOT the fix for the missing window frame, though it was written as one. A pinned read of
+# Notepad returns 2 elements where the same read by title returns 26 — no title bar, no menu, no
+# close button, not even the text editor — and the first explanation offered was this traversal.
+# Then it was measured properly: from this client, TreeScope Children, Descendants and Subtree
+# all return the same 2, the element FromHandle returns is the same element (identical
+# RuntimeId) the title search finds, and the walk here reports truncated:false because it really
+# has finished. What is left is the CLIENT: everything here goes through the managed
+# System.Windows.Automation, and the Rust engine goes through COM IUIAutomation. Same window,
+# same scope, same condition, 2 against 26.
+#
+# Until that is closed, a read that lands on this road sees a window's contents but not its
+# frame — which inverts the ADR, because it is the read that NAMED its window that lands here.
+$cvCond   = [System.Windows.Automation.Automation]::ControlViewCondition
+$children = [System.Windows.Automation.TreeScope]::Children
+
+# ADR-036 — teach this client to see the window's frame.
+#
+# The managed client (System.Windows.Automation) reaches a legacy window's title bar, menu bar
+# and close button only through the clientside providers, which synthesise them from MSAA — and
+# that assembly is registered per process. A bare powershell.exe has no registration, so a read
+# of Notepad came back with the two client-area panes and nothing else: no title bar, no menu, no
+# close button, not even the text editor. The COM client the Rust engine uses needs none of this,
+# which is why the same window was 2 elements here and 26 there (measured 2026-09-09).
+#
+# ORDER MATTERS, and getting it wrong is silent. Registering straight after Add-Type does
+# nothing at all — measured, four ways: no registration 2 elements, registration alone 2,
+# warm-up alone 2, warm-up THEN registration 26. So the warm-up call below is not a spare RPC;
+# it is what makes the next line take effect. Nothing throws in the case that does not work.
+#
+# So the result reports what happened, because the failure is invisible otherwise: the count
+# before registering is kept, and the walk's own first level is compared against it at the end.
+$preRegisterChildren = -1
+try { $preRegisterChildren = $target.FindAll($children, $cvCond).Count } catch {}
+$clientProviders = 'unavailable'
+try {
+    $regMethod = [System.Windows.Automation.ClientSettings].GetMethod('RegisterClientSideProviderAssembly')
+    if ($null -ne $regMethod) {
+        [System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
+            (New-Object System.Reflection.AssemblyName(
+                'UIAutomationClientsideProviders, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')))
+        $clientProviders = 'registered'
+    }
+} catch { $clientProviders = 'failed' }
 $results  = [System.Collections.Generic.List[object]]::new()
 $count    = 0
+# What is left of the caller's deadline now that starting up and finding the window are paid for.
+${psBudgetExpression(deadlineMs, Date.now())}
 $sw       = [System.Diagnostics.Stopwatch]::StartNew()
 
-$stack = [System.Collections.Generic.Stack[object]]::new()
-$first = $cvWalker.GetFirstChild($target)
-if ($null -ne $first) { $stack.Push(@{ el=$first; depth=0 }) }
+# Queue entries are (parent, depth of its children), and the root's children are depth 1 — the
+# native walker's numbering, so the two roads agree on what depth means as well as on what the
+# tree contains.
+$queue = [System.Collections.Generic.Queue[object]]::new()
+$queue.Enqueue(@{ el=$target; depth=1 })
 
 # Patterns we care about (subset of all UIA patterns)
 $wantedPats = [System.Collections.Generic.HashSet[string]]::new()
@@ -126,17 +375,19 @@ $wantedPats.Add('InvokePattern') > $null; $wantedPats.Add('ValuePattern') > $nul
 $wantedPats.Add('ExpandCollapsePattern') > $null; $wantedPats.Add('SelectionItemPattern') > $null
 $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $null
 
-while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt 8000) {
-    $item  = $stack.Pop()
-    $el    = $item.el
-    $depth = $item.depth
+:bfs while ($queue.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt $budgetMs) {
+    $item   = $queue.Dequeue()
+    $parent = $item.el
+    $depth  = $item.depth
+    if ($depth -gt ${maxDepth}) { continue }
 
-    # Push next sibling first so it waits until children are exhausted (correct DFS pre-order)
-    try {
-        $next = $cvWalker.GetNextSibling($el)
-        if ($null -ne $next) { $stack.Push(@{ el=$next; depth=$depth }) }
-    } catch {}
+    # One call per parent, like the native path. A parent that refuses to enumerate is skipped
+    # rather than ending the walk.
+    $kids = $null
+    try { $kids = $parent.FindAll($children, $cvCond) } catch { continue }
+    if ($null -eq $kids) { continue }
 
+    foreach ($el in $kids) {
     # Skip offscreen elements — prune subtree (children will also be offscreen)
     $offscreen = $false
     try { $offscreen = $el.Current.IsOffscreen } catch {}
@@ -181,19 +432,88 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
     if ($null -ne $elVal) { $elObj['value'] = $elVal }
     $results.Add($elObj)
     $count++
+    if ($count -ge ${maxElements}) { break bfs }
 
-    # Push first child after sibling so child is popped next (depth-first)
-    if ($depth -lt ${maxDepth}) {
-        try {
-            $child = $cvWalker.GetFirstChild($el)
-            if ($null -ne $child) { $stack.Push(@{ el=$child; depth=($depth+1) }) }
-        } catch {}
+    if ($depth -lt ${maxDepth}) { $queue.Enqueue(@{ el=$el; depth=($depth+1) }) }
     }
 }
 
-@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
+# ADR-036 — say when the walk ran out of time. A short deadline can still cut the tree mid-walk,
+# and a truncated tree that does not admit it is worse than none: _narration diffs two snapshots,
+# and two different truncation points read as elements appearing and disappearing that never
+# changed (2ゲート目の指摘). Running out of maxElements is the caller's own limit, and is not this.
+$truncated = ($queue.Count -gt 0) -and ($sw.ElapsedMilliseconds -ge $budgetMs)
+# Did the registration above actually take? Compared by what the tree yields, not by the call
+# returning without error — the case that silently does nothing also returns without error. A
+# walk cut short by maxElements can under-count the first level, so this is advisory.
+$firstLevel = @($results | Where-Object { $_.depth -eq 1 }).Count
+if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firstLevel -le $preRegisterChildren) {
+    $clientProviders = 'noop'
+}
+@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; truncated=$truncated; clientProviders=$clientProviders; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
 }
+
+/**
+ * ADR-036 — why there is no "do we really need to scope this?" predicate here any more.
+ *
+ * There was one. It asked whether the Win32 enumeration showed exactly one window whose caption
+ * matched the query and it was the pinned one, and skipped scoping when it did — because
+ * scoping costs a PowerShell round trip (184 ms against 517 ms on the same window, measured
+ * 2026-09-09) and `normalizeTarget` fills a handle for every call, so the price was paid on
+ * every `desktop_discover`.
+ *
+ * Both gates refused it, one round apart, for the same two reasons:
+ *
+ *   - **it is not atomic.** The enumeration is a photograph; the read happens after it. A
+ *     same-titled window appearing in between turns a checked title into an ambiguous one and
+ *     nothing notices.
+ *   - **the populations differ.** The predicate reads Win32 captions from an enumeration that
+ *     drops invisible, untitled and sub-50 px windows; the search matches UIA `Name` over the
+ *     root children, and the two are not always the same string (measured — a WPF window whose
+ *     `Name` was its content, not its caption).
+ *
+ * Both ways of being wrong land in exactly the case this ADR is about, and the result is a read
+ * of one window feeding actions aimed at another — which is the split the ADR closed. No cheap
+ * verification exists either: two maximized same-titled windows have the same class and the same
+ * rect, so nothing the read returns can tell them apart.
+ *
+ * So a pinned read is scoped, always, and the round trip is the price until the native side
+ * takes a handle — `uiaGetElements` / `uiaGetTextViaTextPattern` take a title and nothing else,
+ * and giving them one removes the cost and the question together.
+ */
+
+/**
+ * ADR-036 — the same warm-up-then-register the read does, for the scripts that WRITE.
+ *
+ * The registration is process-local and every call is a fresh `powershell.exe`, so a discover
+ * that registered and an act that did not are two different views of the window: discover
+ * returned Notepad's `Close` button and the act could not find it. Measured on Windows
+ * 2026-09-09 — and what happened next is the reason this is not cosmetic. The UIA lookup missed,
+ * the executor downgraded to a mouse click at the entity's stale rect, and the response came
+ * back `ok:true` with the truth only in `downgrade`. On `Minimize` the rect was already
+ * `-32000,-32000`. So the frame this branch made VISIBLE was only ever pressable through the
+ * blind fallback this ADR exists to remove.
+ *
+ * The warm-up before the registration is not a spare RPC: registering first does nothing at all,
+ * silently (measured four ways).
+ */
+const PS_REGISTER_CLIENTSIDE_PROVIDERS = `
+# Guarded: this is injected between FromHandle and the walk, inside the stretch a window can
+# vanish in, and a bare FindAll there threw ElementNotAvailableException straight out of the
+# script — so the caller got an exec failure instead of the aim_window_gone code the surrounding
+# try/catch prints (2ゲート目の指摘). A warm-up that could not run is not fatal on its own; the
+# registration below is already best-effort, and the walk that follows raises the real refusal.
+try { $null = $target.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Automation]::ControlViewCondition) } catch {}
+try {
+    $regMethod = [System.Windows.Automation.ClientSettings].GetMethod('RegisterClientSideProviderAssembly')
+    if ($null -ne $regMethod) {
+        [System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
+            (New-Object System.Reflection.AssemblyName(
+                'UIAutomationClientsideProviders, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')))
+    }
+} catch {}
+`;
 
 /**
  * (H3) Click an element by finding the window via HWND directly.
@@ -218,18 +538,32 @@ function makeClickElementScriptByHwnd(
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
+# ADR-036: FromHandle THROWS (ElementNotAvailableException) for a handle whose window has
+# gone, rather than returning null — and the aim is held across calls, so a window closing
+# between two of them is routine. Without the catch the script died with empty stdout, the
+# caller got a JSON parse error, and the executor read that as an ordinary UIA failure and
+# clicked the rect the window used to occupy (2ゲート目の指摘). The read half has had this
+# catch since 505290d; this is its twin.
 $hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
-$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
-
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
+${PS_REGISTER_CLIENTSIDE_PROVIDERS}
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
+# ADR-036 — the window can go between FromHandle and the invoke, and everything in this stretch
+# throws ElementNotAvailableException when it does: FindAll, $el.Current, TryGetCurrentPattern.
+# Only FromHandle was caught, so a window closing here died with a PowerShell exception, reached
+# the caller as a JSON parse error, and the executor read that as an ordinary UIA failure — the
+# route that used to end at a blind press of the remembered rect (PR 側 codex の P1).
+try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
     if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})) { $found = $el; break }
 }
+} catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
 try {
@@ -242,11 +576,21 @@ $ip = $null
 if (-not $found.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$ip)) {
     Write-Output '{"ok":false,"error":"InvokePattern not supported by this element"}'; exit
 }
+# ADR-036 — the name is read BEFORE the invoke and serialised by ConvertTo-Json, not concatenated.
+#
+# Two failures in one line before this. A name containing a quote or a newline produced invalid
+# JSON, so JSON.parse threw AFTER the invoke had already happened, and the caller saw an
+# ordinary failure for an action that had succeeded. And reading $found.Current.Name after
+# $ip.Invoke() throws ElementNotAvailableException for exactly the controls worth invoking —
+# a Close or an OK that destroys itself — turning a success into a failure with no way to tell.
+# Both ended at the same place: the executor treating it as a UIA miss (PR 側 codex の P1/P2).
+$elementName = ''
+try { $elementName = [string]$found.Current.Name } catch {}
 try {
     $ip.Invoke()
-    Write-Output ('{"ok":true,"element":"' + $found.Current.Name + '"}')
+    @{ ok = $true; element = $elementName } | ConvertTo-Json -Compress
 } catch {
-    Write-Output ('{"ok":false,"error":"' + $_.Exception.Message + '"}')
+    @{ ok = $false; error = [string]$_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
 }
@@ -269,18 +613,28 @@ function makeSetValueScriptByHwnd(
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
+# ADR-036: FromHandle THROWS (ElementNotAvailableException) for a handle whose window has
+# gone, rather than returning null — and the aim is held across calls, so a window closing
+# between two of them is routine. Without the catch the script died with empty stdout, the
+# caller got a JSON parse error, and the executor read that as an ordinary UIA failure and
+# clicked the rect the window used to occupy (2ゲート目の指摘). The read half has had this
+# catch since 505290d; this is its twin.
 $hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
-$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
-
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
+${PS_REGISTER_CLIENTSIDE_PROVIDERS}
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
+# The same catch as the click script's — see there.
+try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
     if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
 }
+} catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
 try {
@@ -288,7 +642,10 @@ try {
     $vp.SetValue('${escaped}')
     Write-Output '{"ok":true}'
 } catch {
-    Write-Output ('{"ok":false,"error":"' + $_.Exception.Message + '"}')
+    # Serialised, not concatenated — an exception message can carry a quote (see the click
+    # script), and invalid JSON here reads as an ordinary failure for a write that may have
+    # happened.
+    @{ ok = $false; error = [string]$_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
 }
@@ -593,6 +950,40 @@ export interface UiElementsResult {
   /** Bounding rectangle of the root window in screen coordinates. */
   windowRect?: { x: number; y: number; width: number; height: number } | null;
   elementCount: number;
+  /**
+   * ADR-036 — true when the PowerShell walk stopped because its time ran out, so the tree is a
+   * prefix rather than the window. Absent on the native path, which has no such clock. A caller
+   * that compares two snapshots has to refuse this; one that shows what it found need not.
+   */
+  truncated?: boolean;
+  /**
+   * ADR-036 — whether the PowerShell read could see the window's FRAME (title bar, menu, close
+   * button), which the managed UIA client reaches only through the clientside providers.
+   *
+   * `"registered"` — the assembly was registered and the tree grew, so the frame is in there.
+   * `"noop"` — registered without effect; the tree is the client area only (measured on a WPF
+   * window, which publishes its own UIA and gives the MSAA synthesis nothing to add). `"failed"`
+   * / `"unavailable"` — the registration threw, or this .NET has no such method. Absent on the
+   * native path, which goes through COM and never needed any of it.
+   *
+   * Reported rather than assumed because the failure is silent: registering at the wrong moment
+   * returns without error and changes nothing.
+   *
+   * **`"registered"` also means the names in this tree are the synthesised ones.** The same
+   * Notepad returns 26 elements on both roads and they are not the same 26: through the
+   * clientside providers the frame is `Button:Close` / `Button:Minimize` /
+   * `MenuBar:Application`, through COM it is `Button:閉じる` / `Button:最小化` /
+   * `MenuBar:アプリケーション`, and control types differ too (`Document` against `Edit`,
+   * `Edit` against `Text`). Twenty of the twenty-six differ. A caller that addresses elements by
+   * name — this product does — sees one window under two vocabularies depending on whether it
+   * passed a handle.
+   *
+   * Kept anyway, because the alternative is that a session holding a window's handle cannot
+   * press that window's close button at all, and because the vocabulary is self-consistent
+   * within one road: a pinned discover and the pinned act that follows it both speak MSAA. It
+   * goes away when the native side takes a handle, which is the next change.
+   */
+  clientProviders?: "registered" | "noop" | "failed" | "unavailable";
   elements: UiElement[];
 }
 
@@ -601,13 +992,49 @@ export async function getUiElements(
   maxDepth = 3,
   maxElements = 50,
   timeoutMs = 10000,
-  options?: { cached?: boolean; hwnd?: bigint; fetchValues?: boolean }
+  options?: {
+    cached?: boolean;
+    /**
+     * Cache key only — which window's tree a title-derived result files under. Does not scope
+     * the read, and is the caller's claim that its title names this window.
+     */
+    hwnd?: bigint;
+    /**
+     * ADR-036 — scope the read to this window, through `FromHandle`.
+     *
+     * Separate from `hwnd` because the two are different requests and were briefly the same
+     * parameter: `screenshot` passes a handle to key the cache, and making that scope the read
+     * took the Rust path away from it. Two things that are not the same thing do not share a
+     * name.
+     *
+     * Scoping is not free — it is the PowerShell path, and a deep tree comes back `truncated`
+     * where the native walker would have finished. `get_ui_elements` pays it deliberately
+     * (`ui-elements.ts`): it resolves a window and then reports which one it read, so a read of
+     * a different window would make that report false. `screenshot` does not pin, and keeps the
+     * native path. The cost goes away when the native side takes a handle, not before.
+     */
+    pinnedHwnd?: bigint;
+    fetchValues?: boolean;
+  }
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle);
-  // Cache hit path — only when caller provides hwnd + cached:true
-  // Note: cache is never used when fetchValues:true (values may have changed)
-  if (options?.cached && options.hwnd !== undefined && !options.fetchValues) {
-    const cached = getCachedUia(options.hwnd);
+  if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
+  // Cache hit path — only when the caller provides a handle and asks for `cached`. The refusals
+  // above run first and stay first: a window that may not be touched, or is gone, is not a thing
+  // to answer from a cache. Note: the cache is never used when fetchValues:true (values may have
+  // changed).
+  //
+  // (An earlier version of this comment explained the ordering by a scoping gate that used to sit
+  // below and sweep every top-level window. The gate is gone — see the note above the scripts —
+  // and the sentence outlived it by a round, which is the thing this file keeps catching itself
+  // doing.)
+  // One key for the probe and the write: they had opposite precedence for a while, so a caller
+  // passing both a scoping handle and a different cache key would have written under one and
+  // looked under the other — a permanent miss, and a title-derived tree answering a scoped
+  // request (2ゲート目の指摘).
+  const cacheKey = options?.pinnedHwnd ?? options?.hwnd;
+  if (options?.cached && cacheKey !== undefined && !options.fetchValues) {
+    const cached = getCachedUia(cacheKey);
     if (cached) {
       try {
         const parsed = JSON.parse(cached) as UiElementsResult;
@@ -617,9 +1044,22 @@ export async function getUiElements(
       }
     }
   }
-
+  // A pinned read is scoped to the handle. Always — see the note above the scripts.
+  const scopeHwnd = options?.pinnedHwnd;
+  // The key above says which window this result describes: the scoped handle when there is one,
+  // because a scoped read is the only one that can vouch for the window it read; otherwise the
+  // handle the caller keyed by, which is the caller's own claim that its title names that window.
+  // That claim is as old as the cache and is not what this ADR changed.
   // ★ Rust native path
-  if (nativeUia?.uiaGetElements) {
+  //
+  // ADR-036 — skipped only when the read is SCOPED to a handle, the same way `clickElement`
+  // and `setElementValue` skip it: `uiaGetElements` takes a title and nothing else, so going
+  // through it would read whichever window the title found first while every write on this
+  // session addressed the handle. The two halves disagreeing is worse than the PowerShell
+  // round-trip: a read of window A and a click on window B report `no_change` for an action
+  // that landed. A handle passed merely to key the cache keeps the native path. When the
+  // native side grows a handle parameter this branch goes away.
+  if (nativeUia?.uiaGetElements && scopeHwnd === undefined) {
     try {
       const result = await nativeUia.uiaGetElements({
         windowTitle,
@@ -638,9 +1078,8 @@ export async function getUiElements(
           boundingRect: el.boundingRect ?? null,
         })),
       };
-      // Update cache if we know the hwnd
-      if (options?.hwnd !== undefined) {
-        try { updateUiaCache(options.hwnd, JSON.stringify(normalised)); } catch { /* ignore */ }
+      if (cacheKey !== undefined) {
+        try { updateUiaCache(cacheKey, JSON.stringify(normalised)); } catch { /* ignore */ }
       }
       return normalised;
     } catch (e) {
@@ -650,14 +1089,26 @@ export async function getUiElements(
   }
 
   // PowerShell fallback (existing implementation)
-  const script = makeGetElementsScript(windowTitle, maxDepth, maxElements, options?.fetchValues ?? false);
+  const script = makeGetElementsScript(
+    windowTitle,
+    maxDepth,
+    maxElements,
+    options?.fetchValues ?? false,
+    scopeHwnd,
+    timeoutMs,
+  );
+  // The script ends its walk inside the caller's deadline and then prints, having measured its
+  // own start rather than being told what it cost. Before that it walked to a fixed 8 s while the
+  // wait was also 8 s, so a saturated walk produced nothing at all rather than a truncated
+  // answer (2ゲート目の指摘).
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
 
-  // Update cache if we know the hwnd
-  if (options?.hwnd !== undefined) {
-    try { updateUiaCache(options.hwnd, output); } catch { /* ignore */ }
+  // A prefix of a window is not the window: caching it would serve it to `screenshot` for the
+  // whole TTL as though it were complete.
+  if (cacheKey !== undefined && !result.truncated) {
+    try { updateUiaCache(cacheKey, output); } catch { /* ignore */ }
   }
   return result as UiElementsResult;
 }
@@ -832,11 +1283,27 @@ export async function clickElement(
   controlType?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
-): Promise<{ ok: boolean; element?: string; error?: string }> {
+): Promise<{ ok: boolean; element?: string; error?: string; code?: string }> {
   refuseUiaTitleIfExcluded(windowTitle);
-  // H3: hwnd-based lookup goes directly to PowerShell FromHandle path.
-  // The Rust native path (uiaClickElement) does not accept hwnd, so we skip it
-  // when hwnd is provided to ensure the hwnd-aware PS script is used.
+  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
+  // ADR-036 — on the WRITE path a handle is authoritative and is never traded for a title.
+  //
+  // The read half gates its scoping on "does the title already name only this window?", because
+  // scoping every read costs a PowerShell round trip on every `desktop_discover` (184 ms against
+  // 517 ms, measured) and `normalizeTarget` fills a handle from the foreground even for a bare
+  // call. The same trade was written here and refused, correctly, by gate 1: the check is not
+  // atomic — a same-titled window can appear between the enumeration and the invoke — and it
+  // compares Win32 captions against a search that matches UIA `Name`, which is not always the
+  // caption. Both ways of being wrong land in exactly the case this ADR is about, and here being
+  // wrong means the click happens in the other window. A read that goes to the wrong window
+  // comes back describing it; a write does not come back at all.
+  //
+  // So the cost stays, and it is named rather than negotiated: `uiaClickElement` takes a title
+  // and nothing else, so an aimed action is a PowerShell round trip. The way out is to give the
+  // native side a handle — not to make the aim conditional on an enumeration.
+  //
+  // H3 — this is also what reaches the common dialogs (Save As on Win11 Notepad): they are not
+  // among the UIA root children the title search walks, and `FromHandle` does not walk them.
   if (options?.hwnd === undefined && nativeUia?.uiaClickElement) {
     try {
       const result = await nativeUia.uiaClickElement({
@@ -845,7 +1312,12 @@ export async function clickElement(
         automationId: automationId ?? undefined,
         controlType: controlType ?? undefined,
       });
-      return { ok: result.ok, element: result.element ?? undefined, error: result.error ?? undefined };
+      return {
+        ok: result.ok,
+        element: result.element ?? undefined,
+        error: result.error ?? undefined,
+        code: result.code ?? undefined,
+      };
     } catch (e) {
       console.warn("[uia-bridge] Native uiaClickElement failed, falling back to PowerShell:", e);
     }
@@ -866,9 +1338,11 @@ export async function setElementValue(
   automationId?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: string }> {
   refuseUiaTitleIfExcluded(windowTitle);
-  // H3: hwnd-based lookup skips Rust native (same reason as clickElement above).
+  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
+  // A handle is authoritative here too — see `clickElement` above for why the read half's gate
+  // does not belong on a write.
   if (options?.hwnd === undefined && nativeUia?.uiaSetValue) {
     try {
       const result = await nativeUia.uiaSetValue({
@@ -877,7 +1351,7 @@ export async function setElementValue(
         name: name ?? undefined,
         automationId: automationId ?? undefined,
       });
-      return { ok: result.ok, error: result.error ?? undefined };
+      return { ok: result.ok, error: result.error ?? undefined, code: result.code ?? undefined };
     } catch (e) {
       console.warn("[uia-bridge] Native uiaSetValue failed, falling back to PowerShell:", e);
     }
@@ -1159,10 +1633,20 @@ export async function getElementChildren(
  *
  * Returns the full visible buffer text, or null if TextPattern is unavailable.
  */
-export async function getTextViaTextPattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+export async function getTextViaTextPattern(
+  windowTitle: string,
+  timeoutMs = 6000,
+  /** ADR-036 — scope the read to a resolved window, so the buffer read matches the window written. */
+  options?: { pinnedHwnd?: bigint },
+): Promise<string | null> {
   refuseUiaTitleIfExcluded(windowTitle);
-  // ★ Rust native path (Phase C)
-  if (nativeUia?.uiaGetTextViaTextPattern) {
+  if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
+  // Scoped whenever a handle is in hand, as in `getUiElements`.
+  const scopeHwnd = options?.pinnedHwnd;
+  // ★ Rust native path (Phase C) — skipped while a handle is in hand: it takes a title only,
+  // and a terminal buffer read from one window while the keys go to its same-titled twin is
+  // the same split this ADR closed on the UIA route.
+  if (nativeUia?.uiaGetTextViaTextPattern && scopeHwnd === undefined) {
     try {
       return await nativeUia.uiaGetTextViaTextPattern({ windowTitle, timeoutMs });
     } catch (e) {
@@ -1181,12 +1665,19 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
-$target = $null
+${scopeHwnd !== undefined
+  ? `# ADR-036: named by handle, so no title search happens here. FromHandle throws for a
+# window that has gone; see the twin in makeGetElementsScript.
+$hwndPtr = [System.IntPtr]::new(${scopeHwnd.toString()})
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }`
+  : `$target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
 foreach ($w in $allWins) {
     if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
 }
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }`}
 
 # Collect ALL descendants with TextPattern, score by control-type preference
 # (Document/Custom/Edit favored — these host the real terminal buffer) and
@@ -1272,7 +1763,11 @@ try {
 }
 `;
   try {
-    const out = await runPS(script, timeoutMs);
+    // The deadline is the read's, not the process start's — see `psReadWaitMs`. Only on the
+    // scoped path: every other caller here has been passing a deadline it treats as a hard one
+    // (`terminal.ts` reads a baseline and a post-read around every send), and quietly adding
+    // four seconds to each of them is not this ADR's business (2ゲート目の指摘).
+    const out = await runPS(script, scopeHwnd !== undefined ? psReadWaitMs(timeoutMs) : timeoutMs);
     const parsed = JSON.parse(out) as { ok: boolean; text?: string; error?: string };
     if (!parsed.ok) return null;
     return parsed.text ?? "";
@@ -1773,12 +2268,32 @@ const UIA_BLIND_PANE_AREA_RATIO = 0.9;
  *
  * Pure function — does not perform any async I/O.
  *
+ * BOTH conditions count elements, so a truncated walk cannot answer either of them: the count it
+ * carries describes the prefix that came back before the deadline, not the window. A healthy but
+ * slow tree cut short of five elements was being labelled `too-few-elements`, and the same cut can
+ * leave a top-level Pane with fewer than five actionable siblings, which is `single-giant-pane` —
+ * so the refusal has to sit in front of both branches rather than in front of the sparsity one
+ * (PR 側 codex + win2, 2026-09-09). Downstream that verdict is not cosmetic: `composeProviders`
+ * escalates the OCR lane on it and publishes constraints describing the app as UIA-blind.
+ *
+ * A truncated tree therefore returns "not blind, and not decided" rather than "not blind": the two
+ * are different answers, and a caller that logs the verdict should be able to tell them apart. The
+ * `blind:false` half keeps the shape every existing caller reads.
+ *
  * @returns `{ blind: false }` when the UIA tree looks healthy.
+ *          `{ blind: false, undecided: "truncated_tree" }` when the walk was cut short — no
+ *          evidence either way. Discover publishes `uia_tree_truncated` for the same fact.
  *          `{ blind: true, reason }` when the Sparsity conditions are met.
  */
 export function detectUiaBlind(
   result: UiElementsResult,
-): { blind: false } | { blind: true; reason: UiaBlindReason } {
+): { blind: false; undecided?: "truncated_tree" } | { blind: true; reason: UiaBlindReason } {
+  // Insufficient evidence, not a healthy tree — see the JSDoc. Ahead of both conditions because
+  // both of them are counts, and a prefix's count is a lower bound.
+  if (result.truncated) {
+    return { blind: false, undecided: "truncated_tree" };
+  }
+
   // Condition A: total element count is critically low
   if (result.elementCount < UIA_BLIND_MIN_ELEMENTS) {
     return { blind: true, reason: "too-few-elements" };

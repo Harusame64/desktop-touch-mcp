@@ -133,6 +133,10 @@ function createMcpServer(): McpServer {
         "  origin_window_not_visible → the window the element came from is minimised or hidden: focus_window(windowTitle) to restore it, then re-call desktop_discover;",
         "  coordinate_outside_reachable_bounds → the point is not on any connected monitor: the coordinates are stale (window moved or closed) — re-call desktop_discover and retry. On builds without the native input module, mouse input reaches the primary monitor only; move the window there first. click_element (UIA invoke) never moves the cursor;",
         "  cursor_placement_blocked → the coordinate is fine but the pointer could not be placed there, so nothing was clicked: click_element (UIA invoke) acts without moving the cursor and works meanwhile. Otherwise leave or close the app holding the cursor (common in full-screen games), reconnect the remote-desktop session if it is disconnected, or — if a monitor was just added or removed — re-call desktop_discover for fresh coordinates;",
+        "  aim_window_gone → the window this act was aimed at no longer exists, so nothing was clicked: re-call desktop_discover to see what is there now. Do NOT retry by coordinate — the entity's rect is where that window used to be, and whatever occupies it now would take the click;",
+        "  aim_point_outside_window → the window this act named is still open, but it has moved or been minimised since the lease was taken, so the point would land outside it; nothing was clicked. Re-call desktop_discover. Do NOT retry by coordinate — the refused point is exactly the entity's rect centre;",
+        "  aim_route_failed → the route to the window this act named by handle failed (UIA for a click; UIA setValue and the background write for type/setValue), and the act was NOT finished as a coordinate press; nothing was clicked or typed. Re-call desktop_discover, or try click_element(name=…) which re-resolves the element. Do NOT press the entity's rect — a coordinate is aimed at no window;",
+        "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are, so a secret being typed cannot be driven by the same session); nothing was clicked and nothing here can click it. Act on another window;",
         "  executor_failed → fall back to click_element / mouse_click / browser_click",
         "",
         "## Observation — priority order",
@@ -289,7 +293,7 @@ function createMcpServer(): McpServer {
     );
     s.tool(
       "get_ui_elements",
-      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Prefer screenshot(detail='text') for normal automation; this fallback is here so kill-switch deployments retain access to the unfiltered tree.",
+      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. When a window is resolved, the read is scoped to its handle so a same-titled sibling cannot answer instead; a deep tree can then come back with truncated:true, meaning the walk ran out of time and the tree is a prefix rather than the window. Prefer screenshot(detail='text') for normal automation; this fallback is here so kill-switch deployments retain access to the unfiltered tree.",
       getUiElementsSchema,
       getUiElementsHandler
     );

@@ -96,6 +96,85 @@ export class CursorPlacementBlockedError extends HandlerError {
 }
 
 /**
+ * ADR-036 — the window the action was aimed at is gone.
+ *
+ * Its own envelope because its recovery is the opposite of `executor_failed`'s. That one says
+ * "fall back to mouse_click", and the only coordinates a caller holds are the entity's rect —
+ * which is where the window used to be, so the click lands on whatever moved in behind it. The
+ * recovery here is to look again: the session's target no longer exists, and nothing addressed
+ * to it can succeed until `desktop_discover` says what is there now.
+ *
+ * Distinct from an excluded window too. Both refuse, but "you may not touch that" and "there is
+ * nothing there" send the caller to different places, and they were arriving identical.
+ */
+export class AimWindowGoneError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimWindowGone";
+  }
+}
+
+/**
+ * ADR-036 — the aimed press would land outside the window the call named.
+ *
+ * The window is alive; the coordinate is stale. That is why it is not {@link AimWindowGoneError}:
+ * there, nothing addressed to the old handle can succeed and the caller has to start from a new
+ * window; here, one `desktop_discover` returns a rect that works on the same window.
+ *
+ * Its own envelope because `executor_failed`'s first suggestion is "fall back to mouse_click using
+ * the entity rect center" — the exact press this refusal rejected, named verbatim (PR 側 codex,
+ * 2026-09-09). Thrown as `AimedPointOutsideWindowError` in `engine/aim.ts`; the loop turns that
+ * into `reason:"aim_point_outside_window"` and this class renders it.
+ */
+export class AimPointOutsideWindowError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimPointOutsideWindow";
+  }
+}
+
+/**
+ * ADR-036 — every route to the window the call named has failed, and the blind fallback is refused.
+ *
+ * An unpinned call finishes a failed UIA click on the entity's rect, and that is correct for it: a
+ * title never promised which window. A call that named its window by handle gets a refusal
+ * instead, because a coordinate is aimed at nothing and whatever occupies the point takes the
+ * press. Covers the click path and the type / setValue ladder, which end the same way and were
+ * giving opposite advice about the same aim.
+ *
+ * Separate from {@link AimPointOutsideWindowError}: there the aim went stale, here the aim is
+ * current and the attempt on it failed (element not found, no InvokePattern, a stale tree, the
+ * background write rung refused). The recoveries differ — re-discover in both cases, but this one
+ * also has element-level routes that a stale rect does not.
+ */
+export class AimRouteFailedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimRouteFailed";
+  }
+}
+
+/**
+ * R3 tool exclusion — the window may not be touched by this server at all.
+ *
+ * The engine-side throw is `WindowExcludedError` (`engine/tool-exclusion.ts`), whose module header
+ * has claimed since it was written that "L4 wires it into `_errors.ts`". It never was: the refusal
+ * reached `GuardedTouchLoop` untyped and left as `executor_failed`, whose first suggestion is a
+ * coordinate press at the entity's rect — the rect the excluded window occupies. A comment is a
+ * claim, not a check (PR 側 codex, 2026-09-09).
+ *
+ * Named `…RefusalError` only to keep one class per module identity: the engine class already owns
+ * the name `WindowExcludedError`, and these two are deliberately different objects — one is thrown
+ * by the engine, one renders the envelope. `name` is `"WindowExcluded"`, matching the SUGGESTS key.
+ */
+export class WindowExcludedRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "WindowExcluded";
+  }
+}
+
+/**
  * ADR-031 — a screen rectangle the current capture backend cannot read.
  *
  * Which rectangle counts as capturable is decided by the backend the process

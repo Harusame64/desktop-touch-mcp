@@ -9,6 +9,7 @@ import { computeLeaseTtlMs, computeSoftExpiresAtMs } from "../engine/world-graph
 import { resolveCandidates } from "../engine/world-graph/resolver.js";
 import {
   SessionRegistry,
+  parseTargetHwnd,
   type TargetSpec,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
@@ -274,13 +275,11 @@ function resolveTargetHwnd(
   target: TargetSpec | undefined,
   getFocusedHwnd: (() => bigint | null) | undefined,
 ): bigint | null {
-  if (target?.hwnd) {
-    try {
-      return BigInt(target.hwnd);
-    } catch {
-      return null;
-    }
-  }
+  // ADR-036 — one answer to "is this a handle" (`parseTargetHwnd`); what to do when the answer
+  // is "no" stays this site's own decision, and here it is to fall through to the foreground.
+  const pinned = parseTargetHwnd(target);
+  if (pinned !== undefined) return pinned;
+  if (target?.hwnd) return null;
   if (!getFocusedHwnd) return null;
   try {
     return getFocusedHwnd();
@@ -605,8 +604,15 @@ export class DesktopFacade {
     if (!session) return null;
     const target = session.lastTarget;
     if (target?.hwnd) {
+      // ADR-036 — same parse as everywhere else; the audit line below is this site's own
+      // handling of "not a handle", deliberately different from `resolveTargetHwnd`'s null.
+      const pinned = parseTargetHwnd(target);
+      if (pinned !== undefined) return pinned;
       try {
-        return BigInt(target.hwnd);
+        BigInt(target.hwnd);
+        console.error(
+          `[desktop] Stage 5 — target.hwnd is "${target.hwnd}", which names no window; falling back to foreground resolver`,
+        );
       } catch (err) {
         // Audit trail (PR #325 Round 1 P3-2 — preserves the original
         // stderr surface so a production race where `lastTarget.hwnd`
@@ -648,13 +654,9 @@ export class DesktopFacade {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
     const target = session.lastTarget;
-    if (target?.hwnd) {
-      try {
-        return BigInt(target.hwnd);
-      } catch {
-        // Malformed pinned hwnd — fall through to title / foreground resolution.
-      }
-    }
+    // ADR-036 — one parse; "not a handle" falls through to title / foreground here.
+    const pinned = parseTargetHwnd(target);
+    if (pinned !== undefined) return pinned;
     if (target?.windowTitle) {
       // `resolveWindowTarget` deliberately returns null for a plain top-level
       // window (it only special-cases `@active` + dialogs, _resolve-window.ts

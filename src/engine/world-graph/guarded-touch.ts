@@ -51,6 +51,10 @@ export type TouchFailReason =
   | "origin_window_not_visible"
   | "coordinate_outside_reachable_bounds"
   | "cursor_placement_blocked"
+  | "aim_window_gone"
+  | "aim_point_outside_window"
+  | "aim_route_failed"
+  | "window_excluded"
   | "executor_failed";
 
 /**
@@ -541,6 +545,38 @@ export class GuardedTouchLoop {
       // advice, so it must not be folded into them.
       if (err instanceof Error && err.name === "CursorPlacementBlocked") {
         return { ok: false, reason: "cursor_placement_blocked", diff: [] };
+      }
+      // ADR-036 — the window the action was aimed at is gone, and this is the third refusal that
+      // must not become `executor_failed` for exactly the reason written above: that reason's
+      // advice is "fall back to mouse_click", and the only coordinates the caller has are the
+      // entity's rect — which is where the window USED to be. Whatever occupies it now takes the
+      // click. `aim.ts` says so in its own words; the type was built, thrown and then flattened
+      // here, so the advice arrived unchanged (measured on Windows 2026-09-09: an excluded window
+      // and a closed one produced identical envelopes down to all four `try_next` items).
+      if (err instanceof Error && err.name === "AimedWindowGoneError") {
+        return { ok: false, reason: "aim_window_gone", diff: [] };
+      }
+      // PR 側 codex 2026-09-09 — the three refusals below reached this catch as plain errors, so
+      // all three arrived as `executor_failed`, whose first suggestion names the coordinate click
+      // they refused. The executor closed the door; the envelope handed back the key. Same
+      // `name`-not-`instanceof` matching as above, for the same module-identity reason.
+      //
+      // The point the press would land on is no longer inside the window this call named. Unlike
+      // `aim_window_gone` the window is alive, so re-discovering returns a rect that works.
+      if (err instanceof Error && err.name === "AimedPointOutsideWindowError") {
+        return { ok: false, reason: "aim_point_outside_window", diff: [] };
+      }
+      // Every route to the named window failed and the blind coordinate press is refused —
+      // ADR-036's whole subject arriving as the recovery is what this stops. Click and type end
+      // here alike; they were giving opposite advice about the same aim.
+      if (err instanceof Error && err.name === "AimedRouteFailedError") {
+        return { ok: false, reason: "aim_route_failed", diff: [] };
+      }
+      // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
+      // it told the caller to press the rect the excluded window occupies, which is the one
+      // outcome the exclusion exists to prevent (`tool-exclusion.ts` R3).
+      if (err instanceof Error && err.name === "WindowExcludedError") {
+        return { ok: false, reason: "window_excluded", diff: [] };
       }
       return { ok: false, reason: "executor_failed", diff: [] };
     }

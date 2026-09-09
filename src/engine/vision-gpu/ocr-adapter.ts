@@ -26,7 +26,7 @@
  * know the difference. This is replaced by real per-frame ingestion in Phase 3.
  */
 
-import type { TargetSpec } from "../world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../world-graph/session-registry.js";
 import type { UiEntityCandidate } from "./types.js";
 import { TrackStore } from "./track-store.js";
 import { TemporalFusion } from "./temporal-fusion.js";
@@ -145,14 +145,24 @@ export class OcrVisualAdapter {
     // Only a window-kind candidate has a window rect for the viewport gate to
     // judge. A browser-tab target keeps its virtual-screen path even if a handle
     // happens to be available alongside the tab id.
-    let originHwnd: string | undefined = target.tabId ? undefined : (target.hwnd ?? preFetchedHwnd);
+    // ADR-036 — the PARSED handle, not the raw string. `originHwnd` decides whether the
+    // reachability gate judges a window or the virtual screen (`desktop-register.ts`), so a value
+    // this file has already refused to aim by (`"0"`, `"-1"`, anything unparseable) must not come
+    // back here as the window a candidate came from — the read went to `@active` in that case
+    // (2ゲート目の指摘: two sites of this were fixed, this was the third).
+    const parsedHwnd = parseTargetHwnd(target);
+    let originHwnd: string | undefined = target.tabId
+      ? undefined
+      : (parsedHwnd !== undefined ? parsedHwnd.toString() : preFetchedHwnd);
 
     if (preFetchedElements) {
       elements = preFetchedElements;
     } else {
       try {
         const { runSomPipeline } = await import("../ocr-bridge.js");
-        const hwnd = target.hwnd ? BigInt(target.hwnd) : null;
+        // ADR-036 — shared parse; see `parseTargetHwnd`. Same value as `parsedHwnd` above, so
+        // what the pipeline reads and what the candidates claim cannot disagree.
+        const hwnd = parsedHwnd ?? null;
         const title = target.windowTitle ?? "@active";
         const result = await runSomPipeline(title, hwnd, detectOcrLanguage(), 2, "auto", false, dictionary);
         elements = result.elements;

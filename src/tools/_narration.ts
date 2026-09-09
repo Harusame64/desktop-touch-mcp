@@ -111,6 +111,12 @@ async function snapElements(windowTitle: string, useCache: boolean) {
       cached: useCache,
       fetchValues: true,
     });
+    // ADR-036 — a tree the PowerShell walk cut short is a prefix, and this function's caller
+    // DIFFS two of them. Two prefixes that end in different places read as elements appearing
+    // and disappearing that never moved, so the narration would describe a change the user never
+    // made. `null` is the honest answer here: it suppresses narration, which is what a killed
+    // script used to do by accident (2ゲート目の指摘).
+    if (result.truncated) return null;
     return result.elements;
   } catch {
     return null;

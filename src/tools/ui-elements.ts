@@ -75,17 +75,19 @@ export const getUiElementsHandler = async ({
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
-    // ADR-036 — NOT pinned, deliberately. `getUiElements` passes only the TITLE
-    // to both its native and PowerShell paths; the handle it takes is used as a
-    // cache key and nothing else. Pinning the hints here would report the named
-    // window while the elements came from the first same-titled one, and would
-    // then file that sibling's elements in the cache under the named window's
-    // handle — a wrong answer stored under the right key, which is worse than
-    // the uniformly title-based answer it replaces. The hints follow the read;
-    // they do not lead it. Pin both together when the read takes a handle.
-    const hintsBlock = buildHintsForTitle(effectiveTitle);
+    // ADR-036 — pinned, both together. This used to read "NOT pinned, deliberately", because
+    // `getUiElements` took only a title and pinning the hints alone would have described the
+    // named window while the elements came from the first same-titled one. That comment named
+    // its own condition for changing — "pin both together when the read takes a handle" — and
+    // the read takes one now, so both are pinned to the handle the caller named. Leaving the
+    // hints unpinned would have been worse than before: the read would have been scoped to
+    // whichever window the hints found by title, making the `hwnd` parameter inert (gate 2).
+    // The third argument is the PUBLIC `hwnd` argument, not "did we resolve one" — it is what
+    // keys the observation. Omitting it filed two same-titled windows under one title slot, so
+    // alternating between them reported a cache invalidation that never happened (2ゲート目).
+    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd, hwndParam !== undefined);
     const result = await getUiElements(effectiveTitle, maxDepth, maxElements, 10000, {
-      hwnd: hintsBlock?.hwnd, cached: false,
+      pinnedHwnd: resolvedWin?.hwnd, hwnd: hintsBlock?.hwnd, cached: false,
     });
     const hints = {
       ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
@@ -175,7 +177,9 @@ export const clickElementHandler = async ({
     const hintsBlock = buildHintsForTitle(
       effectiveWindowTitle, resolvedWin?.hwnd, hwndParam !== undefined,
     );
-    // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
+    // H3: pass the resolved hwnd so uia-bridge addresses the window through FromHandle() rather
+    // than searching for its title — which is what reaches the common dialogs, and (ADR-036)
+    // what keeps a same-titled sibling from answering instead.
     const result = await clickElement(
       effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
@@ -560,15 +564,16 @@ export const setElementValueHandler = async ({
     // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
     // Owed from here: from this line on, some window has been written to (or an
     // attempt was made on it) and the drift baseline is stale until observed.
-    // Channel 1 goes through the handle, so the debt names the handle.
+    // Channel 1 is aimed at the handle — the bridge addresses it through `FromHandle` — so the
+    // debt names the handle (ADR-036).
     observationOwedFor = { title: effectiveTitle, ...(resolvedWin && { hwnd: resolvedWin.hwnd }) };
     const r1 = await setElementValue(
       effectiveTitle, value, name, automationId,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
     );
     if (r1.ok) {
-      // Channel 1 is handle-addressed (the `hwnd` passed above), so the report
-      // may name that handle.
+      // Channel 1 is aimed at the handle passed above — see the note on the debt — so the
+      // report may name that handle.
       const hintsBlock = observe(effectiveTitle, resolvedWin?.hwnd);
       const hints = {
         ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),

@@ -39,7 +39,15 @@ import type { ToolResult } from "./_types.js";
 import { persistCapture, REF_URI_PREFIX } from "../engine/screenshot-cache.js";
 import { pngDimensions } from "./screenshot-response.js";
 import { Err } from "../types/result.js";
-import { ExecutorFailedError, CoordinateOutsideReachableBoundsError, CursorPlacementBlockedError } from "../errors/typed-errors.js";
+import {
+  ExecutorFailedError,
+  CoordinateOutsideReachableBoundsError,
+  CursorPlacementBlockedError,
+  AimWindowGoneError,
+  AimPointOutsideWindowError,
+  AimRouteFailedError,
+  WindowExcludedRefusalError,
+} from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
@@ -958,6 +966,76 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // ADR-036: the window this act was aimed at is gone. Its own envelope for the same reason as
+  // the two above, and the sharpest case of it: `executor_failed`'s advice is "fall back to
+  // mouse_click", and the only coordinates the caller has are the entity's rect — where the
+  // window WAS. Measured on Windows 2026-09-09: an excluded window and a closed one came back
+  // identical here, down to all four `try_next` items, both pointing at the rect.
+  if (!result.ok && result.reason === "aim_window_gone") {
+    const failure = toFailureEnvelope(
+      Err(new AimWindowGoneError(
+        "AimWindowGone: the window this action was aimed at no longer exists — nothing was clicked. " +
+        "Re-call desktop_discover to see what is there now; do not click the entity's rect, which is where that window used to be"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // PR 側 codex 2026-09-09 — the three refusals below were reaching the caller as
+  // `executor_failed`, and its first `try_next` line names a coordinate click at the entity's
+  // rect. All three exist to refuse exactly that press, so the envelope was undoing the executor.
+  // Each gets its own entry for the same reason the three above have one.
+  //
+  // The aim went stale: the window is alive but has moved or been minimised, so the remembered
+  // point is no longer inside it. Re-discovering is the fix, not a consolation.
+  if (!result.ok && result.reason === "aim_point_outside_window") {
+    const failure = toFailureEnvelope(
+      Err(new AimPointOutsideWindowError(
+        "AimPointOutsideWindow: the point this act would have pressed is no longer inside the window it named — nothing was clicked. " +
+        "Re-run desktop_discover; the window has moved or been minimised since the lease was taken"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // The aim is current and every route to it failed. The ladder stops rather than finishing the
+  // aimed act as a blind coordinate press — which is ADR-036's subject arriving as its own cure.
+  // Click and write end here alike.
+  if (!result.ok && result.reason === "aim_route_failed") {
+    const failure = toFailureEnvelope(
+      Err(new AimRouteFailedError(
+        "AimRouteFailed: the route to the window this act named failed, and the act was not finished as a coordinate press — nothing was clicked or typed. " +
+        "Re-run desktop_discover, or try click_element on the same entity"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // A security refusal, not a failed route. `tool-exclusion.ts` has claimed since it was written
+  // that this error is wired into `_errors.ts`; it was not, so the one refusal that must never
+  // suggest a coordinate press was the loudest about it.
+  if (!result.ok && result.reason === "window_excluded") {
+    const failure = toFailureEnvelope(
+      Err(new WindowExcludedRefusalError(
+        "WindowExcluded: this window is excluded from every tool surface of this server — nothing was clicked, and no route here can click it. " +
+        "Act on another window"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // ADR-026 §3.6: when the act carried a roiCapture crop, attach its by-ref link
   // as a resource_link content block alongside the JSON result. The crop pixels
   // are NOT inlined in the envelope (roiCapture.somImage is null); the agent
@@ -1430,6 +1508,10 @@ export function registerDesktopTools(server: McpServer): void {
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
       "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",
       "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
+      "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
+      "  aim_point_outside_window → the window is still open but has moved or been minimised, so the remembered point is no longer inside it; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate;",
+      "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. Re-call desktop_discover, or try V1 click_element(name=…) on the same entity;",
+      "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",

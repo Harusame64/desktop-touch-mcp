@@ -45,8 +45,20 @@
  * Thrown when a by-identity window target (explicit `hwnd` / `@active` / an OCR read) resolves to
  * a tool-excluded (key locker) window. A distinct type (not a plain `Error`) so callers that
  * otherwise tolerate resolution misses — e.g. `normalizeTarget` — can single it out and propagate
- * the refusal instead of falling through to a normal-target passthrough. L0-local; L4 wires it
- * into `_errors.ts` (`SUGGESTS` + `classify`).
+ * the refusal instead of falling through to a normal-target passthrough.
+ *
+ * Where the refusal surfaces (this paragraph said "L4 wires it into `_errors.ts`" for a year while
+ * nothing did — a comment is a claim, not a check; PR 側 codex found the consequence, 2026-09-09):
+ *   - `SUGGESTS.WindowExcluded` carries the advice, and the producers that spell
+ *     `WindowExcluded: …` into the message reach it through `classify`'s declared-code arm.
+ *   - `desktop_act` reaches it by reason: `GuardedTouchLoop` maps this error's `name` to
+ *     `window_excluded`, and `desktop-register.ts` renders `WindowExcludedRefusalError`. Until
+ *     that existed the refusal arrived as `executor_failed`, whose first suggestion is a
+ *     coordinate press at the entity's rect — the excluded window's own rectangle.
+ *   - The producers whose message does NOT lead with the code (`uia-bridge.ts`, `ocr-bridge.ts`)
+ *     still fall through `classify`'s cascade to generic advice on the flat `failWith` path. No
+ *     arm was added for them here: the substring would be new behaviour for every tool that
+ *     catches this error, which is its own change.
  */
 export class WindowExcludedError extends Error {
   constructor(message: string) {

@@ -250,6 +250,52 @@ const SUGGESTS: Record<string, string[]> = {
   // re-discovering returns the same (correct) point and fails identically.
   // click_element leads because it is the one route that works while the cursor
   // is held, whichever cause applies.
+  // ADR-036 — the window this act was aimed at is gone. The advice has to do two things, and the
+  // second is why this entry exists at all: say where to go, and CLOSE the road the generic
+  // fallback would have opened. `executor_failed`'s advice is "fall back to mouse_click", and the
+  // only coordinates a caller holds are the entity's rect — which is where that window used to
+  // be, so following it presses whatever moved in behind it. Measured on Windows 2026-09-09: with
+  // no entry here the envelope came back "Inspect the underlying error and retry with adjusted
+  // args", which does not forbid the coordinate retry either — a weaker version of the same road.
+  AimWindowGone: [
+    "Re-run desktop_discover: the window this act was aimed at no longer exists, so the lease and every entity taken from it describe something that is gone.",
+    "Do NOT retry by coordinate. The entity's rect is where that window used to be, and another window may be occupying it now — the click would land on that one.",
+    "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
+    "If the app was NOT expected to close, it may have crashed or restarted: desktop_discover will show the replacement window, which needs a fresh lease — the old handle is not reusable.",
+  ],
+  // ADR-036 — the aimed press would land outside the window the call named. Every line here has
+  // to hold one door shut: `executor_failed` opens with "fall back to mouse_click using the entity
+  // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone
+  // the window is still there, so re-discovering is not a consolation — it is the fix.
+  AimPointOutsideWindow: [
+    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but it has moved or been minimised since the lease was taken, so the remembered rectangle points somewhere else.",
+    "Do NOT retry by coordinate. The point was refused because it is no longer inside that window — whatever is under it now would take the press.",
+    "If the window was minimised, restore it first (focus_window), then re-run desktop_discover: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
+    "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way.",
+  ],
+  // ADR-036 — every route to the named window failed and the coordinate fallback is refused. Same
+  // door as the stale-aim entry above, different cause: the aim is current, the attempt failed. So
+  // this advice may offer element-level routes, which a stale rect must not be given. Covers the
+  // click path and the write ladder — the message names which one, and both refuse the same press.
+  AimRouteFailed: [
+    "Re-run desktop_discover: this act named its window by handle, the attempt on it failed, and the entity may have changed name, moved in the tree, or gone.",
+    "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
+    "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator.",
+    "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
+    "If the control supports no pattern for this action (a custom-drawn button, a canvas), the message says so — act on a different affordance or reach it by keyboard navigation.",
+  ],
+  // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
+  // advice is deliberately short on alternatives — every "try the other tool" line would be an
+  // instruction to walk around a security boundary. Worded for BOTH families: `desktop_act`'s
+  // envelope reaches it through `reason:"window_excluded"`, and the two producers that spell
+  // `WindowExcluded: …` into the message (`_resolve-window.ts`) reach it through the declared-code
+  // arm of `classify`, so it must not claim a click was attempted.
+  WindowExcluded: [
+    "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
+    "Act on another window: desktop_discover (or any by-identity tool) on a different target returns what this server may touch.",
+    "If the excluded window is a prompt waiting for a person — the key locker's own dialog — it is theirs to answer; this session cannot answer it for them.",
+  ],
   CursorPlacementBlocked: [
     "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
     "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",

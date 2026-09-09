@@ -13,25 +13,53 @@
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
 function isPromptLine(line: string): boolean {
   return /[>$#]\s*$/.test(line.trim());
 }
 
+/** How long a SCOPED buffer read may take; the wait around it adds the process start. */
+const TERMINAL_READ_BUDGET_MS = 2000;
+
 export async function fetchTerminalCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
-  // getTextViaTextPattern takes a title string — hwnd-only targets are not supported
-  // until a dedicated hwnd overload is added. Return [] rather than passing hwnd as title.
-  if (!target?.windowTitle) return { candidates: [], warnings: [] };
-  const windowTitle = target.windowTitle;
-  const targetId    = target.hwnd ?? target.windowTitle;
+  // ADR-036 — `getTextViaTextPattern` takes a handle now, so a handle-keyed session reads the
+  // buffer of the window it writes to rather than the first one answering to the title. That
+  // half is live.
+  //
+  // The handle-ONLY half is not, and the door below is open ahead of it: nothing reaches this
+  // provider except through `isTerminalTarget`, which is a regex over `target.windowTitle`
+  // alone (`compose-providers.ts`) — so a session known only by handle is never a terminal, no
+  // matter what class its window is. Deciding that by window class instead changes WHICH
+  // provider runs for a given target, so it moves on its own rather than riding here
+  // (2ゲート目の指摘: this branch is unreachable today, and saying so is cheaper than pretending
+  // it is not there).
+  const pinned = parseTargetHwnd(target);
+  if (!target?.windowTitle && pinned === undefined) return { candidates: [], warnings: [] };
+  const windowTitle = target?.windowTitle ?? "@active";
+  const targetId    = target?.hwnd ?? target?.windowTitle ?? "@active";
 
   try {
     const { getTextViaTextPattern } = await import("../../engine/uia-bridge.js");
-    const raw = await getTextViaTextPattern(windowTitle);
+    // The budget is shortened only on the SCOPED arm. That arm leaves the native engine, and the
+    // wait around it is the budget plus the process start — so the 6000 default became a 10 s
+    // stall in front of a discover. 2000 puts the worst case back where it was before this ADR.
+    //
+    // The unscoped arm keeps the default, because 2000 there is not a stall budget but a hard
+    // cut: it goes to the native reader (or, without one, to PowerShell with no headroom added),
+    // and a conhost buffer that read fine at 6000 would come back `null` — which this provider
+    // reports as `terminal_buffer_empty`, "no buffer", for a read that merely ran out of time
+    // (2ゲート目の指摘). A plain top-level window resolves to no handle at all
+    // (`_resolve-window.ts` Case 3), so that arm is the common one, not the exception.
+    //
+    // Both numbers are stall budgets rather than measurements: if a real conhost buffer needs
+    // more, the acceptance cell that reads one will say so.
+    const raw = pinned !== undefined
+      ? await getTextViaTextPattern(windowTitle, TERMINAL_READ_BUDGET_MS, { pinnedHwnd: pinned })
+      : await getTextViaTextPattern(windowTitle);
 
     const candidates: UiEntityCandidate[] = [];
     const warnings: string[] = [];
