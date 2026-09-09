@@ -838,8 +838,8 @@ export class DesktopFacade {
       // Injectable so a test can tell "the fallback did not run" from "the fallback ran and this
       // machine cannot answer". Without that, the two look identical everywhere except Windows,
       // and a guard that stopped running would pass its own suite (found by mutating it).
-      const read = this.opts.readWindowIdentity
-        ?? (await import("../engine/win32.js")).getWindowIdentity;
+      const win32 = await import("../engine/win32.js");
+      const read = this.opts.readWindowIdentity ?? win32.getWindowIdentity;
       const ident = read(aim.hwnd);
       if (!ident || ident.pid === 0) return aim;   // could not ask — absence, not a value
       return {
@@ -849,6 +849,8 @@ export class DesktopFacade {
           pid: ident.pid,
           processName: ident.processName,
           processStartTimeMs: ident.processStartTimeMs,
+          className: (() => { try { return win32.getWindowClassName(aim.hwnd) || undefined; } catch { return undefined; } })(),
+          titleFingerprint: target?.windowTitle,
         },
       };
     } catch {

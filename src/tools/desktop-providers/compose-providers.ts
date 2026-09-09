@@ -32,7 +32,7 @@ import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim }               from "../../engine/aim-probe.js";
 import { toAim, type WindowIdentity } from "../../engine/aim.js";
-import { getWindowIdentity }       from "../../engine/win32.js";
+import { getWindowIdentity, getWindowClassName } from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -306,7 +306,18 @@ function readIdentityForTarget(target: TargetSpec): WindowIdentity | undefined {
   try {
     const ident = getWindowIdentity(hwnd);
     if (!ident || ident.pid === 0) return undefined;
-    return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs };
+    // The class is read here too: process identity alone cannot see a window replaced inside one
+    // still-running application, and an empty string means "could not read it" rather than "no
+    // class", so it is dropped instead of being compared later.
+    const className = getWindowClassName(hwnd) || undefined;
+    return {
+      hwnd,
+      pid: ident.pid,
+      processName: ident.processName,
+      processStartTimeMs: ident.processStartTimeMs,
+      className,
+      titleFingerprint: target.windowTitle,
+    };
   } catch {
     return undefined;
   }

@@ -166,6 +166,27 @@ export interface WindowIdentity {
   readonly pid: number;
   readonly processName: string;
   readonly processStartTimeMs: number;
+  /**
+   * The window's class, when it could be read.
+   *
+   * Process identity alone answers "did the handle move to another program", and Windows also
+   * reuses handles INSIDE one program: an application that destroys a top-level window and creates
+   * another gets the same pid, the same start time, and can get the same number (PR 側 codex,
+   * 2026-09-09). The specification asks for exactly this discriminator —
+   * `WindowIdentity = { hwnd, pid, processStartTime?, processName, className?, titleFingerprint? }`
+   * — and it was left out when the type was first written to the three fields
+   * `getWindowIdentity` answers.
+   */
+  readonly className?: string;
+  /**
+   * The window's title when the aim was taken.
+   *
+   * Recorded, and deliberately NOT decisive: a document window renames itself on every save, and a
+   * browser tab on every navigation, so a changed title is the ordinary case rather than evidence
+   * of a different window. It is here so a report can say what the window was called, and so a
+   * future rule that wants it does not have to re-take the observation.
+   */
+  readonly titleFingerprint?: string;
 }
 
 /**
@@ -266,5 +287,18 @@ export function compareAimIdentity(
       && then.processStartTimeMs !== now.processStartTimeMs) {
     return "changed";
   }
+  // And the same PROCESS can hand the same handle to a different window. Class is the cheapest
+  // discriminator that is a property of the window rather than of its owner, and it is in the
+  // specification's shape for that reason. Compared only when both sides have one — a missing
+  // class is another unanswered question, not a mismatch.
+  if (then.className !== undefined && now.className !== undefined
+      && then.className !== now.className) {
+    return "changed";
+  }
+  // What is left: one process destroying a window and creating another OF THE SAME CLASS before
+  // the act. Pid, start time and class all match, and nothing readable here separates them —
+  // telling those apart needs a per-window generation the native side does not expose. Recorded in
+  // ADR-036 rather than papered over: the title is not it (documents rename themselves), and
+  // guessing here would trade a silent wrong press for a noisy wrong refusal.
   return "same";
 }

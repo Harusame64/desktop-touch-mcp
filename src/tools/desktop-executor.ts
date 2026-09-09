@@ -958,10 +958,17 @@ function getSharedRealDeps(): ExecutorDeps {
     async aimIdentity(hwnd) {
       // `getWindowIdentity` answers a zeroed identity for both "no such window" and "this build
       // cannot ask", and the two have to arrive as one thing the caller can recognise: nothing.
-      const { getWindowIdentity } = await import("../engine/win32.js");
+      const { getWindowIdentity, getWindowClassName, getWindowTitleW } = await import("../engine/win32.js");
       const ident = getWindowIdentity(hwnd);
       if (!ident || ident.pid === 0) return undefined;
-      return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs };
+      return {
+        hwnd,
+        pid: ident.pid,
+        processName: ident.processName,
+        processStartTimeMs: ident.processStartTimeMs,
+        className: getWindowClassName(hwnd) || undefined,
+        titleFingerprint: (() => { try { return getWindowTitleW(hwnd) || undefined; } catch { return undefined; } })(),
+      };
     },
 
     async aimIsGone(hwnd) {

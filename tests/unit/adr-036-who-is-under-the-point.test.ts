@@ -86,14 +86,26 @@ describe("who would take the press", () => {
 
   it("ignores windows that cannot take a press", () => {
     // Minimised (parked rect), DWM-cloaked (a virtual desktop's leftovers), and click-through
-    // (`WS_EX_TRANSPARENT`) windows are drawn over nothing the user can hit.
+    // (`WS_EX_TRANSPARENT | WS_EX_LAYERED`) windows are drawn over nothing the user can hit.
     const deps = enumerating(
       win({ hwnd: 11n, zOrder: 0, isMinimized: true }),
       win({ hwnd: 12n, zOrder: 1, isCloaked: true }),
-      win({ hwnd: 13n, zOrder: 2, exStyle: 0x00000020 }),
+      win({ hwnd: 13n, zOrder: 2, exStyle: 0x00000020 | 0x00080000 }),
       win({ hwnd: AIM, zOrder: 3 }),
     );
     expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "aim" });
+  });
+
+  it("does not pass over a transparent window that is not layered", () => {
+    // `WS_EX_TRANSPARENT` alone governs painting order among siblings; such a window can still take
+    // the press (PR 側 codex). Skipping it would report the aim as clear and let the click land on
+    // the overlay — so it counts as occluding, and the caller gets a refusal naming it rather than
+    // a silent press into something else.
+    const deps = enumerating(
+      win({ hwnd: OTHER, zOrder: 0, exStyle: 0x00000020, title: "overlay" }),
+      win({ hwnd: AIM, zOrder: 1 }),
+    );
+    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "other", hwnd: OTHER, title: "overlay" });
   });
 
   it("answers unknown rather than clear when it cannot ask", () => {
