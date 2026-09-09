@@ -268,7 +268,7 @@ const SUGGESTS: Record<string, string[]> = {
   // the caller never looked at.
   AimIdentityChanged: [
     "Re-run desktop_discover. The window this act named has gone, and Windows has given its handle to a different window — the lease, the entities and their coordinates all describe a window that is gone.",
-    "Nothing was done. This is a refusal, not a failure: an action addressed to that handle would have reached whatever holds it now, which is not what was discovered. The message says which of the two happened — another process took the handle, the same process was restarted, or the same program put a different KIND of window on it.",
+    "Nothing was done. This is a refusal, not a failure: an action addressed to that handle would have reached whatever holds it now, which is not what was discovered. Any of three things happened — another process took the handle, the same process was restarted, or the same program put a different KIND of window on it — and the recovery is the same for all three.",
     "Do NOT retry with the same handle, and do NOT retry by coordinate: both address whatever occupies that window's place now.",
     "If the application was expected to restart (an update, a crash, a document reopened), the new window is a normal target — discover it and take a fresh lease. Handles are not stable across a restart.",
   ],
