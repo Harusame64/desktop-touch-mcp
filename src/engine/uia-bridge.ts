@@ -116,13 +116,20 @@ const PS_MIN_TREE_BUDGET_MS = 1000;
 /**
  * Left at the end of the deadline for `ConvertTo-Json -Depth 6` and the write to stdout.
  *
- * An estimate — nobody has measured serialising a deep tree — so it is set by which way being
- * wrong hurts. Too small and the serialise overruns the wait that kills the process: empty
- * stdout, a parse error, **the whole read lost**, which is the failure `truncated` exists to
- * replace with a partial answer. Too large and the walk gives up some time it could have spent,
- * and says so in `truncated`. One of those is recoverable by the caller and the other is not, so
- * this is generous rather than tight (2ゲート目の指摘: at 300 ms it was neither, on a path this
- * branch had just made the primary one).
+ * Set by which way being wrong hurts. Too small and the serialise overruns the wait that kills
+ * the process: empty stdout, a parse error, **the whole read lost**, which is the failure
+ * `truncated` exists to replace with a partial answer. Too large and the walk gives up time it
+ * could have spent, and says so in `truncated`. One of those is recoverable by the caller and
+ * the other is not, so this is generous rather than tight (2ゲート目の指摘: at 300 ms it was
+ * neither, on a path this branch had just made the primary one).
+ *
+ * Since measured, and generous by more than it needed to be: `ConvertTo-Json -Depth 6 -Compress`
+ * plus the stdout write took **55.4 ms for an empty tree and 56.0 ms for 120 elements**, 75.8 ms
+ * at the worst of a synthetic thousand — it is almost all fixed cost, the first use of the
+ * cmdlet in the process (a second serialise in the same process is under 1 ms). So 1000 is about
+ * thirteen times the worst case, and the reason to leave it there is that nothing is asking for
+ * the difference: what binds this path is the deadline and the process start, not the margin
+ * (win, 2026-09-09, `dev/ps-startup-20260909/`).
  */
 const PS_PRINT_MARGIN_MS = 1000;
 

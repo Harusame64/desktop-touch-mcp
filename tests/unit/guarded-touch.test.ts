@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { AimedWindowGoneError } from "../../src/engine/aim.js";
 import { GuardedTouchLoop, type TouchEnvironment, type RoiCaptureMaterial } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
@@ -377,15 +378,28 @@ describe("GuardedTouchLoop — pre-touch checks", () => {
     const lease = store.issue(e, "v1");
     const loop = new GuardedTouchLoop(store, makeEnv({
       resolveLiveEntities: () => [e],
-      execute: async () => {
-        const err = new Error("The window this action was aimed at (hwnd 4919) is gone…");
-        err.name = "AimedWindowGoneError";
-        throw err;
-      },
+      // The REAL class, not an Error wearing its name. The catch matches on `name` (a string,
+      // to survive duplicated module identity), so a test that assigns that string itself proves
+      // only that the string matches the string: rename `aim.ts`'s `this.name` and this stays
+      // green while production quietly falls back to `executor_failed` — taking the advice this
+      // reason exists to remove with it (win, 2026-09-09).
+      execute: async () => { throw new AimedWindowGoneError(4919n); },
     }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("aim_window_gone");
+  });
+
+  // The three refusals the catch keeps are matched by NAME. That is deliberate — the error
+  // crosses module boundaries where a duplicated class identity would fail `instanceof` — but it
+  // means the string and the class are joined by nothing except these assertions. Rename either
+  // side without the other and the refusal is silently demoted to `executor_failed`.
+  it("matches names the classes actually carry", async () => {
+    const { CoordinateOutsideReachableBoundsError, CursorPlacementBlockedError } =
+      await import("../../src/errors/typed-errors.js");
+    expect(new AimedWindowGoneError(1n).name).toBe("AimedWindowGoneError");
+    expect(new CoordinateOutsideReachableBoundsError("x").name).toBe("CoordinateOutsideReachableBounds");
+    expect(new CursorPlacementBlockedError("x").name).toBe("CursorPlacementBlocked");
   });
 
   it("safe-fails when executor throws", async () => {
