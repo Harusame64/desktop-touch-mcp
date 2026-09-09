@@ -166,6 +166,24 @@ async function normalizeTarget(
     return { target, warnings: [] };
   }
 
+  // PR 側 codex asked for the opposite of what is here — refuse a `hwnd` this cannot read, rather
+  // than falling through to the title (or, with no title, to the FOREGROUND window) and returning
+  // actionable entities for a window the caller did not name. The diagnosis is right: the session
+  // keeps the unreadable string, `parseTargetHwnd` reads it as `undefined` again at act time, and
+  // the act goes out unpinned, so a discover that NAMED a window can end in a press on whichever
+  // window resolution picks.
+  //
+  // The refusal was written, and it broke six tests across three files (`benchmark-gates`,
+  // `poc-backend`, `dirty-signal`, 2026-09-09): the visual / GPU lanes address targets like
+  // `{ hwnd: "hwnd-game" }`, where the field is an OPAQUE KEY for a snapshot and never a Win32
+  // handle. `TargetSpec.hwnd` is `string` and carries both meanings, so "cannot read it as a
+  // handle" is not the same fact as "the caller mistyped a handle", and refusing on the first
+  // takes the visual lane down.
+  //
+  // Left as it is deliberately, with the hole named instead of half-closed: the fix is to stop one
+  // field meaning two things (ADR-036's "make the aim a value"), not to guess which meaning was
+  // intended. Recorded in `desktop-touch-mcp-internal` ADR-036 under what is left.
+
   if (target?.hwnd && !target.windowTitle) {
     try {
       const resolved = await resolveWindowTarget({ hwnd: target.hwnd });

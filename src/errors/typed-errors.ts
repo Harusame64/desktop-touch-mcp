@@ -134,22 +134,23 @@ export class AimPointOutsideWindowError extends HandlerError {
 }
 
 /**
- * ADR-036 — the UIA route failed on the window the call named, and the blind fallback is refused.
+ * ADR-036 — every route to the window the call named has failed, and the blind fallback is refused.
  *
  * An unpinned call finishes a failed UIA click on the entity's rect, and that is correct for it: a
  * title never promised which window. A call that named its window by handle gets a refusal
  * instead, because a coordinate is aimed at nothing and whatever occupies the point takes the
- * press.
+ * press. Covers the click path and the type / setValue ladder, which end the same way and were
+ * giving opposite advice about the same aim.
  *
  * Separate from {@link AimPointOutsideWindowError}: there the aim went stale, here the aim is
- * current and the UIA attempt failed (element not found, no InvokePattern, a stale tree). The
- * recoveries differ — re-discover in both cases, but this one also has element-level routes
- * (`click_element`, a different action) that a stale rect does not.
+ * current and the attempt on it failed (element not found, no InvokePattern, a stale tree, the
+ * background write rung refused). The recoveries differ — re-discover in both cases, but this one
+ * also has element-level routes that a stale rect does not.
  */
-export class AimedUiaClickFailedError extends HandlerError {
+export class AimRouteFailedError extends HandlerError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
-    this.name = "AimedUiaClickFailed";
+    this.name = "AimRouteFailed";
   }
 }
 

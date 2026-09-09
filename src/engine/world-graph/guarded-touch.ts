@@ -53,7 +53,7 @@ export type TouchFailReason =
   | "cursor_placement_blocked"
   | "aim_window_gone"
   | "aim_point_outside_window"
-  | "aimed_uia_click_failed"
+  | "aim_route_failed"
   | "window_excluded"
   | "executor_failed";
 
@@ -566,10 +566,11 @@ export class GuardedTouchLoop {
       if (err instanceof Error && err.name === "AimedPointOutsideWindowError") {
         return { ok: false, reason: "aim_point_outside_window", diff: [] };
       }
-      // The UIA route failed on the named window and the blind coordinate press is refused —
-      // ADR-036's whole subject arriving as the recovery is what this stops.
-      if (err instanceof Error && err.name === "AimedUiaClickFailedError") {
-        return { ok: false, reason: "aimed_uia_click_failed", diff: [] };
+      // Every route to the named window failed and the blind coordinate press is refused —
+      // ADR-036's whole subject arriving as the recovery is what this stops. Click and type end
+      // here alike; they were giving opposite advice about the same aim.
+      if (err instanceof Error && err.name === "AimedRouteFailedError") {
+        return { ok: false, reason: "aim_route_failed", diff: [] };
       }
       // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
       // it told the caller to press the rect the excluded window occupies, which is the one

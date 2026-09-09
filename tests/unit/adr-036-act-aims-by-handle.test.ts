@@ -21,7 +21,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import { parseTargetHwnd } from "../../src/engine/world-graph/session-registry.js";
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
-import { AimedWindowGoneError } from "../../src/engine/aim.js";
+import { AimedWindowGoneError, AimedRouteFailedError } from "../../src/engine/aim.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 function entity(overrides: Partial<UiEntity> = {}): UiEntity {
@@ -164,12 +164,55 @@ describe("ADR-036 — the handle reaches the backend", () => {
     expect(deps.mouseClick).toHaveBeenCalledWith(140, 215);
   });
 
-  it("says the aim is gone when the window has no rectangle at all", async () => {
-    const deps = mockDeps({ aimRect: vi.fn(async () => null) });
+  it("says the aim is gone when the window has no rectangle AND a source says it is gone", async () => {
+    const deps = mockDeps({ aimRect: vi.fn(async () => null), aimIsGone: vi.fn(() => true) });
     const exec = createDesktopExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
     await expect(exec(entity({ sources: ["visual_gpu"] }), "click"))
       .rejects.toBeInstanceOf(AimedWindowGoneError);
     expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("does not call a window gone when nothing could tell — it presses as it did before the check", async () => {
+    // A null rectangle is also what a build with no native win32 module returns, and this repo
+    // ships those. Reading null as "gone" refused every pinned coordinate press on such a build,
+    // with a message about a window that is on screen — the same conflation `isWindowGone` was
+    // written to avoid, one file over (2ゲート目の指摘, 2026-09-09). "Cannot tell" leaves the press
+    // on the road it took before this ADR: known blind, and better than refusing everything.
+    const deps = mockDeps({ aimRect: vi.fn(async () => null), aimIsGone: vi.fn(() => false) });
+    const exec = createDesktopExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
+    await exec(entity({ sources: ["visual_gpu"] }), "click");
+    expect(deps.mouseClick).toHaveBeenCalled();
+  });
+
+  it("treats a missing gone-check the same way — absent evidence is not evidence", async () => {
+    const deps = mockDeps({ aimRect: vi.fn(async () => null) });
+    const exec = createDesktopExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
+    await exec(entity({ sources: ["visual_gpu"] }), "click");
+    expect(deps.mouseClick).toHaveBeenCalled();
+  });
+
+  it("refuses an exhausted WRITE ladder the way it refuses an exhausted click", async () => {
+    // Both rungs addressed the handle and both are spent. Reported as `executor_failed`, the
+    // caller is told to fall back to click_element / mouse_click at the entity's rect — the blind
+    // press the click path refuses. One aim, two actions, opposite advice (2ゲート目の指摘).
+    const deps = mockDeps({
+      uiaSetValue:    vi.fn(async () => { throw new Error("Element not found"); }),
+      keyboardTypeBg: vi.fn(async () => { throw new Error("Background keyboard type not supported"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
+    await expect(exec(entity({ sources: ["uia"] }), "setValue", "hi"))
+      .rejects.toBeInstanceOf(AimedRouteFailedError);
+  });
+
+  it("leaves the unpinned write ladder on the generic reason — it never named a window", async () => {
+    const deps = mockDeps({
+      uiaSetValue:    vi.fn(async () => { throw new Error("Element not found"); }),
+      keyboardTypeBg: vi.fn(async () => { throw new Error("Background keyboard type not supported"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
+    const err = await exec(entity({ sources: ["uia"] }), "setValue", "hi").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(AimedRouteFailedError);
   });
 
   it("leaves an unpinned press alone — there is no window to check it against", async () => {

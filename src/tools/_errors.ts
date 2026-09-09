@@ -273,14 +273,16 @@ const SUGGESTS: Record<string, string[]> = {
     "If the window was minimised, restore it first (focus_window), then re-run desktop_discover: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
     "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way.",
   ],
-  // ADR-036 — the UIA route failed on the named window and the coordinate fallback is refused.
-  // Same door, different cause: the aim is current, the attempt failed. So the advice may offer
-  // element-level routes, which the stale-aim entry above must not.
-  AimedUiaClickFailed: [
-    "Re-run desktop_discover: this act named its window by handle, the UIA attempt on it failed, and the entity may have changed name, moved in the tree, or gone.",
+  // ADR-036 — every route to the named window failed and the coordinate fallback is refused. Same
+  // door as the stale-aim entry above, different cause: the aim is current, the attempt failed. So
+  // this advice may offer element-level routes, which a stale rect must not be given. Covers the
+  // click path and the write ladder — the message names which one, and both refuse the same press.
+  AimRouteFailed: [
+    "Re-run desktop_discover: this act named its window by handle, the attempt on it failed, and the entity may have changed name, moved in the tree, or gone.",
     "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
-    "click_element(name=…) is worth one try when the entity is still on screen: it re-resolves the element through the accessibility API rather than reusing the lease's locator.",
-    "If the control has no InvokePattern (a custom-drawn button, a canvas), the message says so — act on a different affordance (setValue / select) or use keyboard navigation to reach it.",
+    "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator.",
+    "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
+    "If the control supports no pattern for this action (a custom-drawn button, a canvas), the message says so — act on a different affordance or reach it by keyboard navigation.",
   ],
   // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
   // advice is deliberately short on alternatives — every "try the other tool" line would be an

@@ -26,7 +26,7 @@ import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import {
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
-  AimedUiaClickFailedError,
+  AimedRouteFailedError,
   AIM_WINDOW_GONE,
 } from "../engine/aim.js";
 import { parseTargetHwnd, type TargetSpec } from "../engine/world-graph/session-registry.js";
@@ -79,11 +79,33 @@ export interface ExecutorDeps {
   /**
    * ADR-036 — where the aimed window is NOW, so a coordinate press can be checked against it.
    *
-   * `null` when the handle names no window any more. Optional, and omitting it skips the check
-   * rather than blocking the press: a test double that does not care about coordinates should
-   * not have to grow one. Production passes `getWindowRectByHwnd`.
+   * `null` means "no rectangle came back", which is NOT the same as "the window is gone":
+   * `getWindowRectByHwnd` also answers null when the native win32 binding is missing or the call
+   * throws, and this repo ships builds without that module. Reading null as gone refused every
+   * pinned coordinate press on such a build, with the message "the window you aimed at no longer
+   * exists" about a window on screen (2ゲート目の指摘) — the same conflation `isWindowGone` was
+   * written to avoid, reintroduced one file over. {@link ExecutorDeps.aimIsGone} is what earns the
+   * difference.
+   *
+   * Optional, and omitting it skips the check rather than blocking the press: a test double that
+   * does not care about coordinates should not have to grow one. Production passes
+   * `getWindowRectByHwnd`.
    */
   aimRect?(hwnd: bigint): Promise<{ x: number; y: number; width: number; height: number } | null>;
+  /**
+   * ADR-036 — whether the handle is known NOT to name a window any more.
+   *
+   * Consulted only when {@link ExecutorDeps.aimRect} returned null, to tell "gone" from "cannot
+   * tell". Production passes `isWindowGone`, which answers **false** whenever the binding could
+   * not be asked, so only a successful call is evidence. Absent (or false) means the containment
+   * check is skipped for this press: it goes out the way it did before this ADR existed, which is
+   * a known blind press and strictly better than refusing every press on a build that cannot
+   * answer the question.
+   *
+   * Async so production can reach `win32` through the same dynamic import every other dep uses;
+   * a test double may return a plain boolean.
+   */
+  aimIsGone?(hwnd: bigint): Promise<boolean> | boolean;
 }
 
 // ── G2: Background terminal send — injectable for testing ─────────────────────
@@ -161,10 +183,29 @@ function resolveWindowTitle(target?: TargetSpec): string {
  * rect and returned `ok:true` with no `downgrade` — invisible to the caller and to the guard
  * that ends the ladder after a failed UIA attempt, because there was no failed attempt.
  *
- * What this does NOT prove: that the aimed window is the topmost one at that point. Another
- * window can sit over it and take the click. Containment is one syscall and catches what was
- * measured — moved, minimised (rect at -32000), gone; occlusion needs a hit test and is not
- * claimed here.
+ * What this does NOT prove, in the order the holes were found:
+ *
+ *   - Containment is not position WITHIN the window. Measured on Windows 2026-09-09 (win2):
+ *     Notepad moved 280×140 px with the remembered point still inside its rectangle came back
+ *     `ok:true`, `executor:"mouse"` — the press went ahead, at a screen point that now sits
+ *     280×140 px further into the window than the one the lease described. So this check catches
+ *     the move that takes the point OUT of the window (and minimise, which parks the rect at
+ *     -32000, and a window that is gone); it does not catch the move that keeps it in.
+ *
+ *     What that cell does NOT say is whether a different CONTROL took the press: Notepad's text
+ *     area is one element, so both answers look the same there. A window with several pressable
+ *     things inside the entity's rect is needed to tell them apart, and that measurement is
+ *     pending — the honest statement today is about the position, not about the control.
+ *
+ *     Closing it needs the offset carried from discover time, or the entity re-resolved at act
+ *     time; that is a different change with its own costs, recorded as an open question rather
+ *     than half-done here.
+ *   - That the aimed window is the topmost one at that point. Another window can sit over it and
+ *     take the click; occlusion needs a hit test and is not claimed here.
+ *
+ * This paragraph is written twice as long as it wants to be because its first version claimed the
+ * middle case ("catches what was measured — moved, minimised, gone") and the measurement above
+ * says otherwise. A comment is a claim, not a check.
  */
 async function assertPointIsInsideAim(
   deps: ExecutorDeps,
@@ -176,7 +217,13 @@ async function assertPointIsInsideAim(
   if (!deps.aimRect) return;   // nothing to check with — see the JSDoc on the dep
   const rect = await deps.aimRect(aimHwnd);
   if (!rect) {
-    throw new AimedWindowGoneError(aimHwnd, `no rectangle for the window this press was aimed at`);
+    // No rectangle is two different facts. Only a source that can say so reports the window gone;
+    // everything else is "cannot tell", and a check that cannot be made is skipped rather than
+    // turned into a refusal about a window that may well be on screen (see the deps' JSDoc).
+    if (await deps.aimIsGone?.(aimHwnd)) {
+      throw new AimedWindowGoneError(aimHwnd, `no rectangle for the window this press was aimed at`);
+    }
+    return;
   }
   const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
   if (!inside) {
@@ -294,12 +341,29 @@ export function createDesktopExecutor(
             // click path, instead of an `executor_failed` that reads like a UIA hiccup
             // (2ゲート目の指摘). One condition, one answer, whichever action asked.
             if (uiaErr instanceof AimedWindowGoneError) throw uiaErr;
-            throw new Error(
-              `Type fallback ladder exhausted for "${entity.label ?? entity.entityId}": ` +
+            // ADR-036 — and an aimed WRITE ends the same way an aimed click does. Both rungs
+            // addressed the handle and both are spent; reported as `executor_failed` the caller is
+            // told to fall back to `click_element` / `mouse_click` at the entity's rect, which is
+            // the blind press the click path refuses two branches down. One aim, two actions,
+            // opposite advice (2ゲート目の指摘). Unpinned calls keep the generic reason: they never
+            // promised which window, so the coordinate road is theirs to take.
+            // Wording kept from PR #330 — two suites pin it, and the fact they pin is that the
+            // joint diagnostic survives; renaming it would have been churn wearing a fix's clothes.
+            const ladder =
+              `Type fallback ladder exhausted for "${entity.label ?? entity.entityId}"` +
+              `${aimHwnd !== undefined ? ` on window ${aimHwnd}` : ""}: ` +
               `uia=${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)} / ` +
-              `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`,
-              { cause: kbErr },
-            );
+              `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`;
+            if (aimHwnd !== undefined) {
+              throw new AimedRouteFailedError(
+                `${ladder}. Not falling back to a coordinate press — this call named its window, ` +
+                `and the entity's rect is a screen point that any window can be under. ` +
+                `Re-run desktop_discover.`,
+                aimHwnd,
+                { cause: kbErr },
+              );
+            }
+            throw new Error(ladder, { cause: kbErr });
           }
         }
       }
@@ -340,7 +404,7 @@ export function createDesktopExecutor(
           // `executor_failed`, and that reason's published first suggestion is "fall back to
           // mouse_click using the entity rect center" — the blind press this branch exists to
           // refuse, handed back as the recovery (PR 側 codex, 2026-09-09).
-          throw new AimedUiaClickFailedError(
+          throw new AimedRouteFailedError(
             `UIA click failed for "${entity.label ?? entity.entityId}" on window ${aimHwnd}: ` +
             `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. ` +
             `Not falling back to a coordinate click — this call named its window, and the ` +
@@ -697,6 +761,14 @@ function getSharedRealDeps(): ExecutorDeps {
     async aimRect(hwnd) {
       const { getWindowRectByHwnd } = await import("../engine/win32.js");
       return getWindowRectByHwnd(hwnd);
+    },
+
+    async aimIsGone(hwnd) {
+      // `isWindowGone` says false whenever it could not ask, which is the whole point of pairing
+      // it with `aimRect`: a null rectangle plus "cannot tell" must not become "the window you
+      // aimed at is gone".
+      const { isWindowGone } = await import("../engine/win32.js");
+      return isWindowGone(hwnd);
     },
 
     async mouseClick(x, y) {

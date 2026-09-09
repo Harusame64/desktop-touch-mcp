@@ -45,7 +45,7 @@ import {
   CursorPlacementBlockedError,
   AimWindowGoneError,
   AimPointOutsideWindowError,
-  AimedUiaClickFailedError,
+  AimRouteFailedError,
   WindowExcludedRefusalError,
 } from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
@@ -1004,12 +1004,13 @@ export const desktopActRawHandler = async (
     };
   }
 
-  // The aim is current and the UIA attempt failed. The ladder stops rather than finishing the
+  // The aim is current and every route to it failed. The ladder stops rather than finishing the
   // aimed act as a blind coordinate press — which is ADR-036's subject arriving as its own cure.
-  if (!result.ok && result.reason === "aimed_uia_click_failed") {
+  // Click and write end here alike.
+  if (!result.ok && result.reason === "aim_route_failed") {
     const failure = toFailureEnvelope(
-      Err(new AimedUiaClickFailedError(
-        "AimedUiaClickFailed: the UIA route failed on the window this act named, and it was not finished as a coordinate click — nothing was clicked. " +
+      Err(new AimRouteFailedError(
+        "AimRouteFailed: the route to the window this act named failed, and the act was not finished as a coordinate press — nothing was clicked or typed. " +
         "Re-run desktop_discover, or try click_element on the same entity"
       )),
       { optIn: false },
@@ -1509,7 +1510,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
       "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
       "  aim_point_outside_window → the window is still open but has moved or been minimised, so the remembered point is no longer inside it; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate;",
-      "  aimed_uia_click_failed → the UIA route failed on the window this act named, and it was not finished as a coordinate click; nothing was clicked. Re-call desktop_discover, or try V1 click_element(name=…) on the same entity;",
+      "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. Re-call desktop_discover, or try V1 click_element(name=…) on the same entity;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",

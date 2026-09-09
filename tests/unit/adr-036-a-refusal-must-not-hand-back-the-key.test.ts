@@ -18,12 +18,12 @@
 import { describe, it, expect } from "vitest";
 import {
   AimedPointOutsideWindowError,
-  AimedUiaClickFailedError,
+  AimedRouteFailedError,
 } from "../../src/engine/aim.js";
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
 import {
   AimPointOutsideWindowError,
-  AimedUiaClickFailedError as AimedUiaClickFailedEnvelopeError,
+  AimRouteFailedError,
   WindowExcludedRefusalError,
 } from "../../src/errors/typed-errors.js";
 import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
@@ -76,13 +76,13 @@ describe("the loop keeps each refusal's own name", () => {
     if (!result.ok) expect(result.reason).toBe("aim_point_outside_window");
   });
 
-  it("says an aimed UIA click was not finished blind, not that the executor failed", async () => {
+  it("says an aimed act was not finished blind, not that the executor failed", async () => {
     const { loop, lease } = loopThatThrows(
-      new AimedUiaClickFailedError("UIA click failed on window 4919: Element not found", 4919n),
+      new AimedRouteFailedError("UIA click failed on window 4919: Element not found", 4919n),
     );
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("aimed_uia_click_failed");
+    if (!result.ok) expect(result.reason).toBe("aim_route_failed");
   });
 
   it("says the window is excluded, which is a refusal and not a route that failed", async () => {
@@ -99,7 +99,7 @@ describe("the loop keeps each refusal's own name", () => {
     // classes hold a string, and nothing but this joins them. Rename one side and every refusal
     // above is silently demoted to `executor_failed` — with a green suite.
     expect(new AimedPointOutsideWindowError("x").name).toBe("AimedPointOutsideWindowError");
-    expect(new AimedUiaClickFailedError("x").name).toBe("AimedUiaClickFailedError");
+    expect(new AimedRouteFailedError("x").name).toBe("AimedRouteFailedError");
     expect(new WindowExcludedError("x").name).toBe("WindowExcludedError");
   });
 });
@@ -128,7 +128,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(generic.join(" ")).toMatch(/mouse_click/);
   });
 
-  for (const name of ["AimPointOutsideWindow", "AimedUiaClickFailed", "WindowExcluded"]) {
+  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded"]) {
     it(`${name} never tells the caller to press the coordinate it just refused`, async () => {
       const advice = await adviceFor(name);
       const joined = advice.join(" ");
@@ -149,7 +149,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     // `toFailureEnvelope` looks the advice up by `name`; a class whose name drifts gets the
     // generic entry and no test would notice, because the envelope still has a `try_next`.
     expect(new AimPointOutsideWindowError("x").name).toBe("AimPointOutsideWindow");
-    expect(new AimedUiaClickFailedEnvelopeError("x").name).toBe("AimedUiaClickFailed");
+    expect(new AimRouteFailedError("x").name).toBe("AimRouteFailed");
     expect(new WindowExcludedRefusalError("x").name).toBe("WindowExcluded");
   });
 });

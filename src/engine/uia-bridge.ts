@@ -291,8 +291,14 @@ foreach ($w in $allWins) {
     if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
 }
 if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }`}
-$winTitle     = $target.Current.Name
-$winClassName = $target.Current.ClassName
+# Guarded for the same reason FromHandle is: a window closing between two calls on the same
+# handle is routine, and reading .Current throws ElementNotAvailableException when it does. Left
+# outside, that ended the script with a PowerShell error record — an exec/parse failure where the
+# catch above was added to print one sentence (2ゲート目の指摘).
+try {
+    $winTitle     = $target.Current.Name
+    $winClassName = $target.Current.ClassName
+} catch { Write-Output '{"error":"Window not found by hwnd"}'; exit }
 
 # Capture window bounding rect for the caller
 $winRect = $null
@@ -493,7 +499,12 @@ if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firs
  * silently (measured four ways).
  */
 const PS_REGISTER_CLIENTSIDE_PROVIDERS = `
-$null = $target.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Automation]::ControlViewCondition)
+# Guarded: this is injected between FromHandle and the walk, inside the stretch a window can
+# vanish in, and a bare FindAll there threw ElementNotAvailableException straight out of the
+# script — so the caller got an exec failure instead of the aim_window_gone code the surrounding
+# try/catch prints (2ゲート目の指摘). A warm-up that could not run is not fatal on its own; the
+# registration below is already best-effort, and the walk that follows raises the real refusal.
+try { $null = $target.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Automation]::ControlViewCondition) } catch {}
 try {
     $regMethod = [System.Windows.Automation.ClientSettings].GetMethod('RegisterClientSideProviderAssembly')
     if ($null -ne $regMethod) {

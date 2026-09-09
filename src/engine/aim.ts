@@ -65,22 +65,26 @@ export class AimedPointOutsideWindowError extends Error {
 }
 
 /**
- * The UIA route failed on the window the call named, and the blind fallback is refused.
+ * Every route to the window the call named has failed, and the blind fallback is refused.
  *
  * An unpinned call finishes a failed UIA click by pressing the entity's rect: a title was never a
  * promise about which window, and the rect is all it ever had. A call that named its window by
  * handle is the opposite case — the coordinate is not aimed at anything, and ADR-036 exists to
  * stop exactly that press. So the ladder ends, and this type carries why.
  *
- * It must not arrive as `executor_failed`: that reason's first suggestion is the coordinate
- * click this refusal is about (PR 側 codex, 2026-09-09). Same shape as
- * {@link AimedPointOutsideWindowError}, different cause — the aim is fine, the UIA attempt failed.
+ * Not click-specific: the type / setValue ladder ends the same way after `uiaSetValue` and the
+ * background WM_CHAR rung are both spent, and it was still arriving as `executor_failed` — whose
+ * advice opens with the coordinate press the click path had just been taught to refuse. Two
+ * actions were giving opposite advice about the same aim (2ゲート目の指摘, 2026-09-09).
+ *
+ * Same shape as {@link AimedPointOutsideWindowError}, different cause — there the aim went stale,
+ * here the aim is current and the attempt on it failed.
  */
-export class AimedUiaClickFailedError extends Error {
+export class AimedRouteFailedError extends Error {
   readonly hwnd?: bigint;
   constructor(message: string, hwnd?: bigint, options?: ErrorOptions) {
     super(message, options);
-    this.name = "AimedUiaClickFailedError";
+    this.name = "AimedRouteFailedError";
     this.hwnd = hwnd;
   }
 }
