@@ -88,3 +88,157 @@ export class AimedRouteFailedError extends Error {
     this.hwnd = hwnd;
   }
 }
+
+/**
+ * ADR-036 — the handle now belongs to somebody else.
+ *
+ * The specification's word for this is **invalidation**, and it is deliberately not an ordinary
+ * failure: nothing addressed to this aim can succeed, and no retry helps, because the number in
+ * the lease names a window that has nothing to do with what was discovered. Windows recycles
+ * handles, so this is reachable whenever the aimed window closes between the read and the write.
+ *
+ * Distinct from {@link AimedWindowGoneError}, which says the handle names nothing at all: there,
+ * an action fails and the screen is honest about why; here, an action would have SUCCEEDED against
+ * a stranger.
+ */
+export class AimIdentityChangedError extends Error {
+  readonly hwnd: bigint;
+  constructor(hwnd: bigint, then: WindowIdentity, now: WindowIdentity | undefined) {
+    super(
+      `The window this action was aimed at (hwnd ${hwnd}) now belongs to a different process: it was ` +
+      `${then.processName || "an unnamed process"} (pid ${then.pid}) when the lease was taken and is ` +
+      `${now?.processName || "an unnamed process"} (pid ${now?.pid ?? 0}) now. Windows reuses handles, so ` +
+      `this is a different window wearing the same number — nothing was done to it. Run desktop_discover again.`,
+    );
+    this.name = "AimIdentityChangedError";
+    this.hwnd = hwnd;
+  }
+}
+
+// ── The aim as a value ────────────────────────────────────────────────────────
+
+/**
+ * ADR-036 — who the aimed window is, beyond its handle.
+ *
+ * The specification is explicit about why the handle is not enough:
+ *
+ * > For windows, the runtime row key can be `hwnd`, but **identity must be stronger than `hwnd`**.
+ * > If the same `hwnd` appears with a different process identity, RPG treats it as **identity
+ * > invalidation**, not an ordinary update.
+ *
+ * Windows recycles handles. A window that closes between `desktop_discover` and `desktop_act` can
+ * leave its number to a window that has nothing to do with the lease, and every check that reads
+ * only the handle — including the containment check, which asks the OS for "that window's"
+ * rectangle — passes about the replacement.
+ *
+ * Held as the three fields `win32.getWindowIdentity` can actually answer, rather than the
+ * specification's full shape: a field this cannot fill would be a hole wearing a name.
+ * `className` and `titleFingerprint` are the obvious next two when something needs them.
+ */
+export interface WindowIdentity {
+  readonly hwnd: bigint;
+  readonly pid: number;
+  readonly processName: string;
+  readonly processStartTimeMs: number;
+}
+
+/**
+ * ADR-036 — what an action is aimed at, as one value.
+ *
+ * The handle used to ride as a trailing optional argument on every backend call, which is how a
+ * route added later was not made to carry it: `{ title, hwnd, identity }` in one place cannot be
+ * forgotten by construction. That is item 2 of the restoration, and the disease it treats is the
+ * same one it was diagnosing — identity that is not a first-class thing gets carried by hand,
+ * layer by layer, until a layer drops it.
+ *
+ * `kind` is a brand rather than decoration: the executor still accepts a raw `TargetSpec` from the
+ * many callers (mostly tests) that have not been migrated, and the two shapes are otherwise
+ * structurally close enough to confuse — `hwnd` is a decimal STRING on one and a `bigint` on the
+ * other, which is exactly the kind of near-miss this ADR keeps finding.
+ */
+export interface Aim {
+  readonly kind: "aim";
+  /** The title the read resolved, for the backends that can only search by one. */
+  readonly title?: string;
+  /** The handle the read was scoped to, when it had one. */
+  readonly hwnd?: bigint;
+  /** Browser tab, carried through unchanged. */
+  readonly tabId?: string;
+  /**
+   * Who that handle belonged to when the aim was taken. Absent when the question could not be
+   * answered (no native binding, the process already gone) — and absence is NOT evidence of a
+   * different window, so nothing may refuse on it.
+   */
+  readonly identity?: WindowIdentity;
+}
+
+/** The `TargetSpec` shape, structurally, so this module does not depend on the session registry. */
+interface TargetSpecLike {
+  windowTitle?: string;
+  hwnd?: string;
+  tabId?: string;
+}
+
+/**
+ * Read either shape as an {@link Aim}.
+ *
+ * A raw `TargetSpec` becomes an aim with no identity — which is the truth about it: the caller's
+ * words were never evidence about who owns the window. Migrating a call site means giving it a
+ * real `Aim`; until then it keeps exactly the behaviour it had.
+ */
+export function toAim(input: Aim | TargetSpecLike | undefined): Aim {
+  if (input === undefined) return { kind: "aim" };
+  if ((input as Aim).kind === "aim") return input as Aim;
+  const spec = input as TargetSpecLike;
+  return {
+    kind: "aim",
+    title: spec.windowTitle,
+    hwnd: parseHandle(spec.hwnd),
+    tabId: spec.tabId,
+  };
+}
+
+/**
+ * The one place that decides whether a string names a handle.
+ *
+ * Same rule as `parseTargetHwnd` in `session-registry.ts` — non-positive and unreadable both mean
+ * "no handle" — and deliberately a second implementation rather than an import: this module is
+ * imported by the engine, and the registry imports the engine. The rule is four lines and the
+ * agreement between them is pinned by a test; a cycle to share it would cost more than it saves.
+ */
+function parseHandle(raw: string | undefined): bigint | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  try {
+    const h = BigInt(raw);
+    return h <= 0n ? undefined : h;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * ADR-036 — whether the window behind the aim is still the one the aim was taken on.
+ *
+ * Returns `"same"`, `"changed"`, or `"unknown"`, and the third is not a polite form of the second.
+ * `getWindowIdentity` answers a zeroed identity when it could not ask — no native binding, a
+ * process already gone — and reading that as "changed" would refuse every action on a build that
+ * cannot answer the question, about windows that are on screen. The same rule cost a round when it
+ * was forgotten one file over: a null rectangle is not a gone window.
+ */
+export function compareAimIdentity(
+  aim: Aim,
+  now: WindowIdentity | undefined,
+): "same" | "changed" | "unknown" {
+  const then = aim.identity;
+  if (!then || !now) return "unknown";
+  if (now.pid === 0 || then.pid === 0) return "unknown";
+  if (now.pid !== then.pid) return "changed";
+  // Same pid can still be a different process: Windows reuses those too, and the start time is
+  // what tells one generation of a pid from the next. Compared only when both sides have it,
+  // because a zero there means the same "could not ask".
+  if (then.processStartTimeMs !== 0 && now.processStartTimeMs !== 0
+      && then.processStartTimeMs !== now.processStartTimeMs) {
+    return "changed";
+  }
+  return "same";
+}

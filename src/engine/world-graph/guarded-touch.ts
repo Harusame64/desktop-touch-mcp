@@ -52,6 +52,7 @@ export type TouchFailReason =
   | "coordinate_outside_reachable_bounds"
   | "cursor_placement_blocked"
   | "aim_window_gone"
+  | "aim_identity_changed"
   | "aim_point_outside_window"
   | "aim_route_failed"
   | "window_excluded"
@@ -555,6 +556,12 @@ export class GuardedTouchLoop {
       // and a closed one produced identical envelopes down to all four `try_next` items).
       if (err instanceof Error && err.name === "AimedWindowGoneError") {
         return { ok: false, reason: "aim_window_gone", diff: [] };
+      }
+      // ADR-036 item 2 — the handle now belongs to a different process. The specification calls
+      // this invalidation rather than an ordinary update, and the distinction is the whole point:
+      // an action addressed to this aim would not fail, it would succeed against a stranger.
+      if (err instanceof Error && err.name === "AimIdentityChangedError") {
+        return { ok: false, reason: "aim_identity_changed", diff: [] };
       }
       // PR 側 codex 2026-09-09 — the three refusals below reached this catch as plain errors, so
       // all three arrived as `executor_failed`, whose first suggestion names the coordinate click

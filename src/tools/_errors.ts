@@ -263,6 +263,15 @@ const SUGGESTS: Record<string, string[]> = {
     "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
     "If the app was NOT expected to close, it may have crashed or restarted: desktop_discover will show the replacement window, which needs a fresh lease — the old handle is not reusable.",
   ],
+  // ADR-036 — the handle belongs to somebody else now. The advice has to say the thing that is
+  // easy to miss: nothing failed. The action was refused because it would have worked, on a window
+  // the caller never looked at.
+  AimIdentityChanged: [
+    "Re-run desktop_discover. The window this act named has closed, and Windows has given its handle to a different process — the lease, the entities and their coordinates all describe a window that is gone.",
+    "Nothing was done. This is a refusal, not a failure: an action addressed to that handle would have reached the process holding it now, which is not the one that was discovered.",
+    "Do NOT retry with the same handle, and do NOT retry by coordinate: both address whatever occupies that window's place now.",
+    "If the application was expected to restart (an update, a crash, a document reopened), the new window is a normal target — discover it and take a fresh lease. Handles are not stable across a restart.",
+  ],
   // ADR-036 — the aimed press would land outside the window the call named. Every line here has
   // to hold one door shut: `executor_failed` opens with "fall back to mouse_click using the entity
   // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone

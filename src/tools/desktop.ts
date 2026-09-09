@@ -16,6 +16,7 @@ import {
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { probeAim } from "../engine/aim-probe.js";
+import { toAim, type Aim } from "../engine/aim.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import type { TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
@@ -399,6 +400,19 @@ export class DesktopFacade {
     // the aim and the view describe the same window even when the foreground has moved on.
     if (rawResult.target) session.lastTarget = rawResult.target;
 
+    // ADR-036 item 2 — and the aim, as one value, with who owns the window right now.
+    //
+    // Taken HERE, at the moment of the read, because that is the only moment the identity is
+    // evidence: it says who owned the handle when these entities were seen. Compared at act time
+    // by the executor, and a mismatch is the specification's identity invalidation.
+    //
+    // Failure is silent on purpose: no native binding, a window that has already gone, an
+    // unreadable handle. The aim is still built — the title and the handle are what they were —
+    // and the identity is simply absent, which the comparison reads as "cannot tell" rather than
+    // as "changed". A read that cannot answer must not make every later action refuse.
+    session.lastAim = await this._aimFor(session.lastTarget);
+
+
     // ADR-036 probe — what the session is left holding, next to what the candidates say they
     // describe. `targetIds` is the set the providers stamped: if it disagrees with `lastTarget`,
     // the read and the write are about different windows and nothing downstream can tell.
@@ -407,6 +421,7 @@ export class DesktopFacade {
       viewId: session.viewId,
       lastTarget: session.lastTarget ?? null,
       lastTargetFrom: rawResult.target ? "resolved" : "caller",
+      aimHasIdentity: session.lastAim?.identity !== undefined,
       candidateCount: rawResult.candidates.length,
       targetIds: [...new Set(rawResult.candidates.map((c) => String(c.target?.id ?? "")))].slice(0, 8),
       warnings: rawResult.warnings,
@@ -770,6 +785,34 @@ export class DesktopFacade {
       x: Math.round(entity.rect.x + entity.rect.width / 2),
       y: Math.round(entity.rect.y + entity.rect.height / 2),
     };
+  }
+
+  /**
+   * ADR-036 item 2 — build the aim for a resolved target, reading the window's identity once.
+   *
+   * The identity is read through `win32` directly rather than through `identity-tracker.ts`, whose
+   * entry point (`observeTarget`) RECORDS what it sees: this is the read half of a comparison, and
+   * a read that updates a baseline would compare the world against itself.
+   */
+  private async _aimFor(target: TargetSpec | undefined): Promise<Aim> {
+    const aim = toAim(target);
+    if (aim.hwnd === undefined) return aim;
+    try {
+      const { getWindowIdentity } = await import("../engine/win32.js");
+      const ident = getWindowIdentity(aim.hwnd);
+      if (!ident || ident.pid === 0) return aim;   // could not ask — absence, not a value
+      return {
+        ...aim,
+        identity: {
+          hwnd: aim.hwnd,
+          pid: ident.pid,
+          processName: ident.processName,
+          processStartTimeMs: ident.processStartTimeMs,
+        },
+      };
+    } catch {
+      return aim;
+    }
   }
 
   /**

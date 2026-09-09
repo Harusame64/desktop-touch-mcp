@@ -25,12 +25,17 @@ import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { probeAim, aimProbeEnabled, readWindowIdentity } from "../engine/aim-probe.js";
 import {
+  toAim,
+  compareAimIdentity,
+  type Aim,
+  type WindowIdentity,
+  AimIdentityChangedError,
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
   AIM_WINDOW_GONE,
 } from "../engine/aim.js";
-import { parseTargetHwnd, type TargetSpec } from "../engine/world-graph/session-registry.js";
+import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
@@ -107,6 +112,18 @@ export interface ExecutorDeps {
    * a test double may return a plain boolean.
    */
   aimIsGone?(hwnd: bigint): Promise<boolean> | boolean;
+  /**
+   * ADR-036 — who owns the aimed handle right now.
+   *
+   * `undefined` means the question could not be answered — no native binding, the window already
+   * gone, a build that cannot ask — and that is NOT evidence of a different window: the comparison
+   * treats it as `"unknown"` and lets the action through, because refusing on an unanswered
+   * question would take every aimed action down on such a build.
+   *
+   * Optional, so a test double that does not care about identity need not grow one; absent means
+   * no comparison is made, and the probe records that as its own row rather than as a silent pass.
+   */
+  aimIdentity?(hwnd: bigint): Promise<WindowIdentity | undefined> | WindowIdentity | undefined;
 }
 
 // ── G2: Background terminal send — injectable for testing ─────────────────────
@@ -161,15 +178,12 @@ export function terminalBgExecute(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function resolveWindowTitle(target?: TargetSpec): string {
-  // When only a handle is known there is no title to look up, and the handle's digits are not
-  // one: `parseTargetHwnd` carries it instead, and the backends that take it skip the title
-  // search entirely. `"@active"` is what the title-only backends get told.
-  return target?.windowTitle ?? "@active";
-}
-
-// ADR-036 — the parse lives in `session-registry.ts`, next to `TargetSpec`, because the read
-// half and the write half have to agree on what counts as a handle. See `parseTargetHwnd`.
+// ADR-036 item 2 — the two helpers that used to live here, `resolveWindowTitle(target)` and the
+// call to `parseTargetHwnd(target)`, are gone into the aim itself (`engine/aim.ts`). Both read the
+// same `TargetSpec` and each answered half of "which window is this?", which is precisely how the
+// two halves came to disagree: the title helper answered `windowTitle ?? "@active"` while the
+// registry keyed sessions `hwnd > tabId > windowTitle`. One value with both fields cannot hold two
+// opinions. `"@active"` is still what the title-only backends are told when there is no title.
 
 /**
  * ADR-036 — a coordinate press on a pinned session has to land inside the window it named.
@@ -296,25 +310,54 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
  * UIA click failure gracefully falls through to mouse when entity has a rect.
  */
 export function createDesktopExecutor(
-  target: TargetSpec | undefined,
+  target: Aim | TargetSpec | undefined,
   deps?: ExecutorDeps
 ): (entity: UiEntity, action: TouchAction, text?: string) => Promise<ExecutorKind | ExecutorOutcome> {
   const d = deps ?? getSharedRealDeps();
+  // ADR-036 item 2 — the aim is a value now. A raw `TargetSpec` is still accepted, because most
+  // callers (nearly all of them tests) hand one over, and `toAim` reads it as an aim with no
+  // identity — which is the truth about it: the caller's words were never evidence about who owns
+  // the window. Production passes a real `Aim`, and only that arm can carry identity.
+  const aim = toAim(target);
 
   return async (entity, action, text) => {
-    const winTitle = resolveWindowTitle(target);
-    // ADR-036 — resolved once per touch, next to the title it replaces, so a route added later
-    // has to walk past it rather than reach for `winTitle` alone.
-    const aimHwnd = parseTargetHwnd(target);
+    const winTitle = aim.title ?? "@active";
+    // ADR-036 — read once per touch, next to the title it replaces, so a route added later has to
+    // walk past it rather than reach for `winTitle` alone.
+    const aimHwnd = aim.hwnd;
 
-    // ADR-036 probe — the seam where the read path's work either arrives or does not. `target`
-    // here is the session's `lastTarget`, which is the RAW target the caller sent; a bare
-    // `desktop_discover()` therefore lands here with `aimHwnd: null` even though the providers
-    // read a handle. And the identity is read (never compared, today) so the specification's
-    // "identity must be stronger than hwnd" has a before/after pair to be measured against.
+    // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
+    // checked: after the lease was taken and before anything is done about it.
+    //
+    // > If the same `hwnd` appears with a different process identity, RPG treats it as identity
+    // > invalidation, not an ordinary update.
+    //
+    // Windows recycles handles, so "the handle still names a window" is not "the handle still
+    // names YOUR window" — and every check downstream, the containment one included, asks the OS
+    // about whatever owns the number now. `"unknown"` is not `"changed"`: a build with no native
+    // binding, or a process that has already gone, cannot answer, and refusing on an unanswered
+    // question would take every action down on those builds.
+    if (aim.hwnd !== undefined && aim.identity !== undefined) {
+      const now = await d.aimIdentity?.(aim.hwnd);
+      const verdict = compareAimIdentity(aim, now);
+      probeAim("act.identity", {
+        aimHwnd: aim.hwnd.toString(),
+        then: { pid: aim.identity.pid, processName: aim.identity.processName, processStartTimeMs: aim.identity.processStartTimeMs },
+        now: now ? { pid: now.pid, processName: now.processName, processStartTimeMs: now.processStartTimeMs } : null,
+        verdict,
+        comparedByExecutor: true,
+      });
+      if (verdict === "changed") {
+        throw new AimIdentityChangedError(aim.hwnd, aim.identity, now);
+      }
+    }
+
+    // ADR-036 probe — the seam where the read path's work either arrives or does not.
     if (aimProbeEnabled()) {
       probeAim("act.aim", {
         target: target ?? null,
+        aimFrom: (target as Aim | undefined)?.kind === "aim" ? "aim" : "target_spec",
+        aimHasIdentity: aim.identity !== undefined,
         winTitle,
         aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
         entityId: entity.entityId,
@@ -324,11 +367,16 @@ export function createDesktopExecutor(
         preferredExecutors: entity.preferredExecutors ?? null,
         rect: entity.rect ?? null,
       });
-      if (aimHwnd !== undefined) {
+      if (aimHwnd !== undefined && aim.identity === undefined) {
+        // No identity to compare against — the aim came in as a raw target, or the read could not
+        // answer when it was taken. Recorded anyway: "nothing to compare" and "compared, same" are
+        // different facts, and only one of them is evidence.
         probeAim("act.identity", {
           aimHwnd: aimHwnd.toString(),
-          identity: readWindowIdentity(aimHwnd),
-          comparedByExecutor: false,   // the specification asks for this; nothing does it yet
+          then: null,
+          now: readWindowIdentity(aimHwnd),
+          verdict: "unknown",
+          comparedByExecutor: false,
         });
       }
     }
@@ -512,7 +560,7 @@ export function createDesktopExecutor(
     // ── CDP route ────────────────────────────────────────────────────────────
     const cdpSelector = entity.locator?.cdp?.selector;
     if (cdpSelector && !cdpBlocked && preferredAllows("cdp")) {
-      const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
+      const cdpTabId = entity.locator?.cdp?.tabId ?? aim.tabId;
       // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
       // browser_fill for controlled inputs (React/Vue/Svelte).
       if ((action === "type" || action === "setValue") && text !== undefined) {
@@ -848,6 +896,15 @@ function getSharedRealDeps(): ExecutorDeps {
     async aimRect(hwnd) {
       const { getWindowRectByHwnd } = await import("../engine/win32.js");
       return getWindowRectByHwnd(hwnd);
+    },
+
+    async aimIdentity(hwnd) {
+      // `getWindowIdentity` answers a zeroed identity for both "no such window" and "this build
+      // cannot ask", and the two have to arrive as one thing the caller can recognise: nothing.
+      const { getWindowIdentity } = await import("../engine/win32.js");
+      const ident = getWindowIdentity(hwnd);
+      if (!ident || ident.pid === 0) return undefined;
+      return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs };
     },
 
     async aimIsGone(hwnd) {
