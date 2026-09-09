@@ -304,17 +304,22 @@ try {
 } catch {}
 
 # ADR-036 — the same traversal the native walker uses: FindAll(Children) under the ControlView
-# condition, breadth-first, one call per parent. NOT ControlViewWalker's GetFirstChild /
-# GetNextSibling chain, which was here and which returns a DIFFERENT set on real windows: on
-# Notepad the chain reaches two panes (the edit area and the status bar) while FindAll reaches
-# 26 elements including the title bar, the menu, the close button and the text editor itself
-# (measured on Windows 2026-09-09). Nothing was throwing and nothing was offscreen — the chain
-# simply does not lead to the non-client children.
+# condition, breadth-first, one call per parent, root children at depth 1. The two roads reach
+# the same tree by construction rather than by coincidence, and they mean the same thing by
+# depth.
 #
-# The consequence was the worst kind: a read that named its window by handle saw LESS of it than
-# a read that guessed by title, silently and with no warning, so desktop_act could not press
-# the close button of a window whose handle the caller was holding. The point of this ADR is
-# that naming the window makes the read more precise, not less.
+# It is NOT the fix for the missing window frame, though it was written as one. A pinned read of
+# Notepad returns 2 elements where the same read by title returns 26 — no title bar, no menu, no
+# close button, not even the text editor — and the first explanation offered was this traversal.
+# Then it was measured properly: from this client, TreeScope Children, Descendants and Subtree
+# all return the same 2, the element FromHandle returns is the same element (identical
+# RuntimeId) the title search finds, and the walk here reports truncated:false because it really
+# has finished. What is left is the CLIENT: everything here goes through the managed
+# System.Windows.Automation, and the Rust engine goes through COM IUIAutomation. Same window,
+# same scope, same condition, 2 against 26.
+#
+# Until that is closed, a read that lands on this road sees a window's contents but not its
+# frame — which inverts the ADR, because it is the read that NAMED its window that lands here.
 $cvCond   = [System.Windows.Automation.Automation]::ControlViewCondition
 $children = [System.Windows.Automation.TreeScope]::Children
 $results  = [System.Collections.Generic.List[object]]::new()
