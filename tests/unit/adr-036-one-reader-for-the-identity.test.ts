@@ -60,6 +60,39 @@ describe("one policy for what an identity read records", () => {
     });
   });
 
+  it("throws away a sample the handle moved under, and takes the next one", () => {
+    // PR 側 codex on #608. The reads are not atomic, and the claim that a cross-process tear fails
+    // safe was WRONG: two windows can share a framework class (`Chrome_WidgetWin_1`, `#32770`), and
+    // then the chimera — the OLD process's pid with the NEW window's class — matches the lease on
+    // every compared field, `compareAimIdentity` answers "same", and the act reaches the stranger.
+    const A = { pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 };
+    const B = { pid: 9999, processName: "chrome.exe", processStartTimeMs: 222 };
+    // Reads, in order: A (first sample) → A's class → A's title → B (the handover is seen here);
+    // then the retry reads B consistently.
+    const answers = [A, B, B, B];
+    let n = 0;
+    const got = readWindowIdentityFields(HWND, {
+      identity: () => answers[Math.min(n++, answers.length - 1)]!,
+      className: () => "Chrome_WidgetWin_1",
+      title: () => "shared",
+    });
+    // Not the chimera (pid 1234 with the new window's class): the window that actually holds the
+    // handle. The act-side comparison then sees a different pid and refuses.
+    expect(got).toMatchObject({ pid: 9999, processName: "chrome.exe", className: "Chrome_WidgetWin_1" });
+  });
+
+  it("gives up rather than returning a sample it could never settle", () => {
+    // A handle flipping through both attempts. Absence is the honest answer — and absence reads as
+    // "unknown", which lets the act through, exactly as it does on a build that cannot ask at all.
+    const flip = [
+      { pid: 1, processName: "a.exe", processStartTimeMs: 1 },
+      { pid: 2, processName: "b.exe", processStartTimeMs: 2 },
+    ];
+    let n = 0;
+    expect(readWindowIdentityFields(HWND, { identity: () => flip[n++ % 2]!, className: () => "C" }))
+      .toBeUndefined();
+  });
+
   it("answers nothing at all when it could not ask", () => {
     // A zeroed pid is `getWindowIdentity` saying "no such window" AND "this build cannot ask", and
     // both have to arrive as absence rather than as a value that compares unequal to everything.

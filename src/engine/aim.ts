@@ -332,16 +332,47 @@ function parseHandle(raw: string | undefined): bigint | undefined {
  *   - an empty class or title is "could not read it", not "it has none", so it is dropped;
  *   - a throwing secondary read costs its own field and not the whole identity.
  *
- * Not atomic, and cannot be made so with these primitives: the handle can change hands between the
- * three calls. In the case that matters — a reuse inside ONE process — the fields taken from the
- * earlier call (pid, process name, start time) are identical for both windows by construction, so
- * the mixed sample equals the later window's own identity rather than a chimera. A reuse ACROSS
- * processes does produce a chimera, and it is the safe direction: the pid no longer matches at act
- * time and the act is refused. Recorded rather than closed, because the gap this leaves is
- * microseconds inside the milliseconds-to-seconds gap between the check and the press, which no
- * amount of atomicity here removes (gate 1, 2026-09-09; ADR-036 item 9).
+ * Not atomic — the handle can change hands between the calls — so the identity is read again after
+ * the secondary reads and a sample that moved under us is discarded instead of returned. See the
+ * body for why the earlier reasoning ("a cross-process tear fails safe") was wrong: two windows can
+ * share a framework class, and then the chimera matches the lease on every compared field.
+ *
+ * What this does NOT do is close the gap between the check and the press. Nothing here can: that
+ * gap is milliseconds to seconds wide and this one is microseconds. It only stops the function from
+ * reporting a window that never existed (gate 1 and the PR review, 2026-09-09; ADR-036 item 9).
  */
 export function readWindowIdentityFields(
+  hwnd: bigint,
+  reads: {
+    identity: (hwnd: bigint) => { pid: number; processName: string; processStartTimeMs: number } | undefined;
+    className?: (hwnd: bigint) => string;
+    title?: (hwnd: bigint) => string;
+  },
+): WindowIdentity | undefined {
+  // Two attempts, because a sample assembled from two windows describes neither.
+  //
+  // The reads are not atomic, and the handle can change hands between them. The comment that used
+  // to stand here claimed that only the same-process case mattered, because a cross-process tear
+  // would leave a pid that no longer matches and fail safe. **That was wrong, and the PR review
+  // found the case**: two windows can share a framework class (`Chrome_WidgetWin_1`, `#32770`),
+  // and then the chimera — the OLD process's pid with the NEW window's class — matches the lease
+  // on every compared field. `compareAimIdentity` answers "same" and the act goes to the stranger.
+  //
+  // So the identity is read again after the secondary reads, and a sample that moved under us is
+  // thrown away rather than returned. Retrying once is enough: a handle changing hands twice inside
+  // two microsecond-scale reads is not a case worth a loop, and the second attempt is what makes
+  // the act-side comparison see the NEW process and refuse. This does NOT close the gap between the
+  // check and the press — nothing here can, and that gap is milliseconds to seconds wider — but it
+  // stops this function from inventing a window that never existed.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const sample = readOneSample(hwnd, reads);
+    if (sample) return sample;
+  }
+  return undefined;
+}
+
+/** One internally consistent sample, or nothing when the handle moved under the read. */
+function readOneSample(
   hwnd: bigint,
   reads: {
     identity: (hwnd: bigint) => { pid: number; processName: string; processStartTimeMs: number } | undefined;
@@ -356,14 +387,20 @@ export function readWindowIdentityFields(
     return undefined;
   }
   if (!ident || ident.pid === 0) return undefined;
-  return {
-    hwnd,
-    pid: ident.pid,
-    processName: ident.processName,
-    processStartTimeMs: ident.processStartTimeMs,
-    className: readOrNothing(reads.className, hwnd),
-    titleFingerprint: readOrNothing(reads.title, hwnd),
-  };
+  const className = readOrNothing(reads.className, hwnd);
+  const titleFingerprint = readOrNothing(reads.title, hwnd);
+  // The same question again, after the reads that could have straddled a handover. A pid or start
+  // time that has moved means the class and title just read belong to a different window from the
+  // process identity above them.
+  let after;
+  try {
+    after = reads.identity(hwnd);
+  } catch {
+    return undefined;
+  }
+  if (!after || after.pid === 0) return undefined;
+  if (after.pid !== ident.pid || after.processStartTimeMs !== ident.processStartTimeMs) return undefined;
+  return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs, className, titleFingerprint };
 }
 
 function readOrNothing(read: ((hwnd: bigint) => string) | undefined, hwnd: bigint): string | undefined {
