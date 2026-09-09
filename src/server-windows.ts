@@ -289,7 +289,7 @@ function createMcpServer(): McpServer {
     );
     s.tool(
       "get_ui_elements",
-      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Prefer screenshot(detail='text') for normal automation; this fallback is here so kill-switch deployments retain access to the unfiltered tree.",
+      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. When a window is resolved, the read is scoped to its handle so a same-titled sibling cannot answer instead; a deep tree can then come back with truncated:true, meaning the walk ran out of time and the tree is a prefix rather than the window. Prefer screenshot(detail='text') for normal automation; this fallback is here so kill-switch deployments retain access to the unfiltered tree.",
       getUiElementsSchema,
       getUiElementsHandler
     );
