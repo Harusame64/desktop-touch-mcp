@@ -132,6 +132,62 @@ describe("everything that asks 'which window' asks the aim", () => {
   });
 });
 
+describe("the identity is the one from the read, not from the moment it was filed", () => {
+  // Gate 1, 2026-09-09: the baseline was being read at `see()` time. On a cache hit that is a
+  // different moment from the read, so a window that closed and had its handle recycled in between
+  // would be baselined against its NEW owner — the act-time comparison then answers "same" and
+  // waves through an action against a window nobody discovered. The identity is evidence about the
+  // observation, so it travels with the observation.
+  it("refuses an act when the handle changed hands between the read and the act", async () => {
+    // End to end, which is the only way to see that the identity survives every hop: read →
+    // provider result → session aim → executor factory → comparison. Each of those was a place the
+    // value used to be dropped.
+    const fromTheRead = { hwnd: 2624042n, pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 };
+    const facade = new DesktopFacade(async () => [], {
+      ingress: ingressReturning({
+        candidates: [candidate("2624042")],
+        warnings: [],
+        target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+        identity: fromTheRead,
+      }),
+      executorDeps: {
+        uiaClick:       vi.fn(async () => {}),
+        uiaSetValue:    vi.fn(async () => {}),
+        cdpClick:       vi.fn(async () => {}),
+        cdpFill:        vi.fn(async () => {}),
+        terminalSend:   vi.fn(async () => {}),
+        keyboardTypeBg: vi.fn(async () => {}),
+        mouseClick:     vi.fn(async () => {}),
+        // The window closed and Windows gave the number to something else.
+        aimIdentity:    vi.fn(async () => ({ ...fromTheRead, pid: 9999, processName: "chrome.exe" })),
+      },
+    });
+
+    const seen = await facade.see({});
+    const result = await facade.touch({ lease: seen.entities[0]!.lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("aim_identity_changed");
+  });
+
+  it("keeps identity and candidates together in the cache", async () => {
+    const identity = { hwnd: 2624042n, pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 };
+    const fetchFn = vi.fn(async () => ({
+      candidates: [candidate("2624042")],
+      warnings: [],
+      target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+      identity,
+    }));
+    const ingress = new SnapshotIngress(fetchFn);
+    await ingress.getSnapshot("window:__default__");
+    const cached = await ingress.getSnapshot("window:__default__");
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    // The cache hit hands back the identity read WITH those candidates. Re-reading it here would
+    // describe whatever owns the handle now, which is the window the guard exists to refuse.
+    expect(cached.identity).toEqual(identity);
+  });
+});
+
 describe("the ingress carries the resolved target, including out of its cache", () => {
   it("returns it on the fetch", async () => {
     const ingress = new SnapshotIngress(async () => ({

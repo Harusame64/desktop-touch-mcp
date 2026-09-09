@@ -86,6 +86,41 @@ describe("the probe cannot break what it observes", () => {
     expect(() => probeAim("see.enter", { key: "window:1" })).not.toThrow();
   });
 
+  it("writes handles, which are the values it exists to record", async () => {
+    // Every window handle in the engine is a bigint, and JSON.stringify throws on those. The first
+    // version lost the whole row: measured on the real machine, `act.aim` was missing from exactly
+    // the runs where the aim carried a handle — the rows the probe exists for — and the only
+    // surviving evidence was a gap in the sequence numbers.
+    process.env.DESKTOP_TOUCH_AIM_PROBE = "1";
+    process.env.DESKTOP_TOUCH_AIM_PROBE_PATH = logPath;
+    const { probeAim } = await loadProbe();
+
+    probeAim("act.aim", { aimHwnd: 4919n, aim: { kind: "aim", hwnd: 4919n, title: "App" } });
+
+    const row = JSON.parse(readFileSync(logPath, "utf8").trim());
+    expect(row.aimHwnd).toBe("4919");
+    expect(row.aim).toEqual({ kind: "aim", hwnd: "4919", title: "App" });
+  });
+
+  it("records that it could not write a row, rather than leaving a hole", async () => {
+    // "Could not serialise it" and "never reached this line" must not be the same output — the
+    // header says so about the seams, and it has to be true of the probe's own failures.
+    process.env.DESKTOP_TOUCH_AIM_PROBE = "1";
+    process.env.DESKTOP_TOUCH_AIM_PROBE_PATH = logPath;
+    const { probeAim } = await loadProbe();
+
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    probeAim("see.enter", { key: "window:1" });
+    probeAim("act.aim", circular);
+    probeAim("act.route", { route: "uia" });
+
+    const rows = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(rows.map((r) => r.seq)).toEqual([1, 2, 3]);        // no gap to count
+    expect(rows[1]).toMatchObject({ seam: "act.aim" });
+    expect(typeof rows[1]!.probeError).toBe("string");
+  });
+
   it("swallows a payload that cannot be serialised", async () => {
     process.env.DESKTOP_TOUCH_AIM_PROBE = "1";
     process.env.DESKTOP_TOUCH_AIM_PROBE_PATH = logPath;

@@ -400,17 +400,21 @@ export class DesktopFacade {
     // the aim and the view describe the same window even when the foreground has moved on.
     if (rawResult.target) session.lastTarget = rawResult.target;
 
-    // ADR-036 item 2 — and the aim, as one value, with who owns the window right now.
+    // ADR-036 item 2 — and the aim, as one value, with who owned the window when it was read.
     //
-    // Taken HERE, at the moment of the read, because that is the only moment the identity is
-    // evidence: it says who owned the handle when these entities were seen. Compared at act time
-    // by the executor, and a mismatch is the specification's identity invalidation.
+    // The identity comes from the provider result, not from a read taken here: on a cache hit
+    // those are different moments, and a window that closed and had its handle recycled in between
+    // would be baselined against its new owner — the comparison would then answer "same" and wave
+    // an action through to a window nobody discovered (gate 1, 2026-09-09). The identity belongs to
+    // the observation, so it travels with it.
     //
-    // Failure is silent on purpose: no native binding, a window that has already gone, an
-    // unreadable handle. The aim is still built — the title and the handle are what they were —
-    // and the identity is simply absent, which the comparison reads as "cannot tell" rather than
-    // as "changed". A read that cannot answer must not make every later action refuse.
-    session.lastAim = await this._aimFor(session.lastTarget);
+    // `_aimFor` reads one only when the result carried none — the direct `candidateProvider` path,
+    // which has no cache and so has no gap to fall through. Absence stays absence: no native
+    // binding, a window already gone, an unreadable handle all leave the aim without an identity,
+    // which the comparison reads as "cannot tell" rather than as "changed".
+    session.lastAim = rawResult.identity
+      ? { ...toAim(session.lastTarget), identity: rawResult.identity }
+      : await this._aimFor(session.lastTarget);
 
 
     // ADR-036 probe — what the session is left holding, next to what the candidates say they
@@ -802,6 +806,10 @@ export class DesktopFacade {
 
   /**
    * ADR-036 item 2 — build the aim for a resolved target, reading the window's identity once.
+   *
+   * Only for results that carried no identity of their own: the direct `candidateProvider` path,
+   * and any test double. The ingress path takes its identity with the snapshot instead, because a
+   * cache hit would otherwise baseline against a window that arrived after the read.
    *
    * The identity is read through `win32` directly rather than through `identity-tracker.ts`, whose
    * entry point (`observeTarget`) RECORDS what it sees: this is the read half of a comparison, and

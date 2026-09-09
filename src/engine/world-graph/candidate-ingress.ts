@@ -21,6 +21,7 @@
 
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
 import type { TargetSpec } from "./session-registry.js";
+import type { WindowIdentity } from "../aim.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,17 @@ export interface ProviderResult {
    * "no window".
    */
   target?: TargetSpec;
+  /**
+   * ADR-036 — who owned that window WHEN THESE CANDIDATES WERE READ.
+   *
+   * Read here rather than when the session stores the result, because on a cache hit those are
+   * different moments: a window that closed and had its handle recycled in between would be read
+   * at store time as the baseline, the later comparison would answer "same", and the guard would
+   * wave through an action against a window nobody discovered (gate 1, 2026-09-09). The identity
+   * is evidence about the observation, so it is taken with it and cached with it — the
+   * specification files it as a fluent of the entity for the same reason.
+   */
+  identity?: WindowIdentity;
 }
 
 export interface CandidateIngress {
@@ -95,6 +107,8 @@ interface CacheEntry {
   warnings: string[];
   /** ADR-036 — the resolved target these candidates describe; see `ProviderResult.target`. */
   target?: TargetSpec;
+  /** ADR-036 — the identity read at the same moment; see `ProviderResult.identity`. */
+  identity?: WindowIdentity;
   fetchedAtMs: number;
   dirty: boolean;
 }
@@ -140,7 +154,7 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target };
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
@@ -149,6 +163,7 @@ export class SnapshotIngress implements CandidateIngress {
         candidates: result.candidates,
         warnings: result.warnings,
         target: result.target,
+        identity: result.identity,
         fetchedAtMs: now,
         dirty: false,
       });
@@ -158,7 +173,7 @@ export class SnapshotIngress implements CandidateIngress {
       // Stale cache fallback — mark dirty so next call retries.
       if (entry) {
         entry.dirty = true;
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target };
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity };
       }
       return { candidates: [], warnings: ["ingress_fetch_error"] };
     }

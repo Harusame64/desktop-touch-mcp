@@ -31,6 +31,8 @@ import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim }               from "../../engine/aim-probe.js";
+import { toAim, type WindowIdentity } from "../../engine/aim.js";
+import { getWindowIdentity }       from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -273,11 +275,38 @@ export async function composeCandidates(
   // ADR-036 — the resolution and the warnings it produced are applied HERE, once, rather than at
   // each lane's return. A lane added later inherits both instead of having to remember them,
   // which is the disease this ADR is about: identity that is carried by hand gets dropped by hand.
+  // ADR-036 — the identity is taken HERE, with the read, not later when the session files it. On a
+  // cache hit those are different moments, and a handle recycled in between would be baselined
+  // against its new owner (gate 1, 2026-09-09). Taken before the lanes run rather than after, so
+  // it describes the window they are about to be pointed at.
+  const identity = readIdentityForTarget(normalized.target);
   const result = await composeCandidatesInner(normalized.target);
   return {
     ...withPrependedWarnings(result, normalized.warnings),
     target: normalized.target,
+    identity,
   };
+}
+
+/**
+ * ADR-036 — who owns the target's window right now, or nothing when the question cannot be asked.
+ *
+ * Read through `win32` directly rather than through `identity-tracker.ts`: that module's entry
+ * point RECORDS what it sees, and a read that updates a baseline compares the world against
+ * itself. A zeroed identity (`pid: 0`) means "could not ask" — a missing native binding, a window
+ * already gone — and becomes `undefined` here, because absence has to stay distinguishable from a
+ * value.
+ */
+function readIdentityForTarget(target: TargetSpec): WindowIdentity | undefined {
+  const hwnd = toAim(target).hwnd;
+  if (hwnd === undefined) return undefined;
+  try {
+    const ident = getWindowIdentity(hwnd);
+    if (!ident || ident.pid === 0) return undefined;
+    return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The provider fan-out, against a target that is already resolved. */

@@ -77,12 +77,40 @@ function probePath(): string | null {
 export function probeAim(seam: AimSeam, data: Record<string, unknown>): void {
   const p = probePath();
   if (!p) return;
+  // Taken BEFORE anything that can throw, so a row that cannot be written still owns its number
+  // and the fallback below can name it. The first version incremented it inside the
+  // `JSON.stringify(...)` argument, so a throw consumed the number and left a gap — which is how
+  // this bug was found: by counting the gaps (win2, 2026-09-09).
+  const n = ++seq;
   try {
-    const line = JSON.stringify({ seq: ++seq, tsMs: Date.now(), pid: process.pid, seam, ...data });
-    appendFileSync(p, line + "\n");
-  } catch {
-    // Never let the observation break the observed.
+    appendFileSync(p, JSON.stringify({ seq: n, tsMs: Date.now(), pid: process.pid, seam, ...data }, jsonSafe) + "\n");
+  } catch (err) {
+    // The observation must not break the observed — but it must not vanish either. Every `act.aim`
+    // row disappeared for exactly the runs where the aim carried a handle, because `Aim.hwnd` is a
+    // `bigint` and `JSON.stringify` throws on those, and the silent catch turned "could not write
+    // it" into the same output as "never got here". A probe whose header says *absence is
+    // recorded, not inferred* may not do that to itself.
+    try {
+      appendFileSync(p, JSON.stringify({
+        seq: n, tsMs: Date.now(), pid: process.pid, seam,
+        probeError: err instanceof Error ? err.message : String(err),
+      }) + "\n");
+    } catch {
+      // The path itself is unwritable. Nothing left to do that would not risk the run.
+    }
   }
+}
+
+/**
+ * `JSON.stringify` replacer for the values this codebase actually carries.
+ *
+ * Every window handle in the engine is a `bigint`, and `JSON.stringify` throws on those rather
+ * than skipping them — one handle anywhere in the payload destroys the whole row. Converted to the
+ * decimal string the rest of the log already uses for handles, so a reader does not have to know
+ * which field came from where.
+ */
+function jsonSafe(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? value.toString() : value;
 }
 
 /** True when the probe is on — for call sites whose data costs something to assemble. */
