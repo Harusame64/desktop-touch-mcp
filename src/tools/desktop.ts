@@ -654,9 +654,16 @@ export class DesktopFacade {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
     const target = session.lastTarget;
+    // ADR-036 item 2 — read the aim, not the spec. The aim already answered "which window" once,
+    // at the read, and asking a second time is how two answers appear: this site used to parse the
+    // spec itself while the executor parsed it separately, and for a bare `desktop_discover()`
+    // neither of them found anything the providers had already resolved.
+    const aimed = session.lastAim?.hwnd;
+    if (aimed !== undefined) return aimed;
     if (target?.hwnd) {
-      // ADR-036 — same parse as everywhere else; the audit line below is this site's own
-      // handling of "not a handle", deliberately different from `resolveTargetHwnd`'s null.
+      // The aim did not resolve one, so the spec is inspected here for the audit line only: this
+      // site's own handling of "not a handle", deliberately different from `resolveTargetHwnd`'s
+      // null.
       const pinned = parseTargetHwnd(target);
       if (pinned !== undefined) return pinned;
       try {
@@ -705,7 +712,13 @@ export class DesktopFacade {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
     const target = session.lastTarget;
-    // ADR-036 — one parse; "not a handle" falls through to title / foreground here.
+    // ADR-036 item 2 — the aim answered this at the read, including for the bare flow whose
+    // comment below says "falls back to the foreground": since the session took the resolved
+    // target, that flow HAS a handle, and it is the one discover enumerated rather than whatever
+    // is in front now. The ladder underneath is kept for sessions whose read resolved nothing.
+    const aimed = session.lastAim?.hwnd;
+    if (aimed !== undefined) return aimed;
+    // "Not a handle" falls through to title / foreground here.
     const pinned = parseTargetHwnd(target);
     if (pinned !== undefined) return pinned;
     if (target?.windowTitle) {

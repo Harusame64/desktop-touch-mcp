@@ -89,6 +89,49 @@ describe("the session takes the target the read was made against", () => {
   });
 });
 
+describe("everything that asks 'which window' asks the aim", () => {
+  // The disease this ADR is named for: several sites answered the question separately, from the
+  // same spec, and disagreed. These two both had their own ladder — one falling back to the
+  // foreground window, the other to a title search — and for a bare `desktop_discover()` neither
+  // found what the providers had already resolved.
+  async function facadeAfterBareDiscover() {
+    const facade = new DesktopFacade(async () => [], {
+      ingress: ingressReturning({
+        candidates: [candidate("2624042")],
+        warnings: [],
+        target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+      }),
+      // A foreground that is NOT the discovered window, so a site that falls back to it is visible
+      // rather than accidentally right.
+      getFocusedHwnd: () => 999999n,
+    });
+    const out = await facade.see({});
+    return { facade, viewId: out.viewId };
+  }
+
+  it("Stage 5 resolves the window discover read, not the one in front now", async () => {
+    const { facade, viewId } = await facadeAfterBareDiscover();
+    expect(facade.resolveHwndForViewId(viewId)).toBe(2624042n);
+  });
+
+  it("the frame-diff capture resolves the same window", async () => {
+    // This one matters for a different reason: it captures its PRE frame before the click, so
+    // falling back to the foreground diffs a window the action never touched and reports
+    // `no_change` — which is exactly what a bare discover used to do here.
+    const { facade, viewId } = await facadeAfterBareDiscover();
+    await expect(facade.resolveTargetHwndForFrameDiff(viewId)).resolves.toBe(2624042n);
+  });
+
+  it("still falls back when the read resolved nothing at all", async () => {
+    const facade = new DesktopFacade(async () => [], {
+      ingress: ingressReturning({ candidates: [], warnings: ["no_provider_matched"] }),
+      getFocusedHwnd: () => 999999n,
+    });
+    const out = await facade.see({});
+    expect(facade.resolveHwndForViewId(out.viewId)).toBe(999999n);
+  });
+});
+
 describe("the ingress carries the resolved target, including out of its cache", () => {
   it("returns it on the fetch", async () => {
     const ingress = new SnapshotIngress(async () => ({
