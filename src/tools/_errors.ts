@@ -250,6 +250,19 @@ const SUGGESTS: Record<string, string[]> = {
   // re-discovering returns the same (correct) point and fails identically.
   // click_element leads because it is the one route that works while the cursor
   // is held, whichever cause applies.
+  // ADR-036 — the window this act was aimed at is gone. The advice has to do two things, and the
+  // second is why this entry exists at all: say where to go, and CLOSE the road the generic
+  // fallback would have opened. `executor_failed`'s advice is "fall back to mouse_click", and the
+  // only coordinates a caller holds are the entity's rect — which is where that window used to
+  // be, so following it presses whatever moved in behind it. Measured on Windows 2026-09-09: with
+  // no entry here the envelope came back "Inspect the underlying error and retry with adjusted
+  // args", which does not forbid the coordinate retry either — a weaker version of the same road.
+  AimWindowGone: [
+    "Re-run desktop_discover: the window this act was aimed at no longer exists, so the lease and every entity taken from it describe something that is gone.",
+    "Do NOT retry by coordinate. The entity's rect is where that window used to be, and another window may be occupying it now — the click would land on that one.",
+    "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
+    "If the app was NOT expected to close, it may have crashed or restarted: desktop_discover will show the replacement window, which needs a fresh lease — the old handle is not reusable.",
+  ],
   CursorPlacementBlocked: [
     "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
     "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",
