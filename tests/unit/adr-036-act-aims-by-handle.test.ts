@@ -125,35 +125,24 @@ describe("ADR-036 — the handle reaches the backend", () => {
     expect(deps.mouseClick).not.toHaveBeenCalled();
   });
 
-  it("the terminal route takes the handle only when it is describing that same window", async () => {
-    // The handle names the session's window. An entity that carries a terminal window title of
-    // its own is naming a different window, and aiming at the session's handle would send the
-    // text somewhere the caller did not ask for.
-    const own = mockDeps();
-    await createDesktopExecutor({ windowTitle: "PowerShell", hwnd: "4919" }, own)(
-      entity({ sources: ["terminal"], locator: { terminal: { windowTitle: "Windows Terminal" } } }),
-      "type",
-      "dir\n",
-    );
-    expect(own.terminalSend).toHaveBeenCalledWith("Windows Terminal", "dir\n", undefined);
-
-    const same = mockDeps();
-    await createDesktopExecutor({ windowTitle: "PowerShell", hwnd: "4919" }, same)(
-      entity({ sources: ["terminal"] }),
-      "type",
-      "dir\n",
-    );
-    expect(same.terminalSend).toHaveBeenCalledWith("PowerShell", "dir\n", 4919n);
-
-    // Two windows can share a title — that is why this ADR exists — so an entity that named
-    // its own terminal window is addressing that name even when the strings happen to match.
-    const twin = mockDeps();
-    await createDesktopExecutor({ windowTitle: "PowerShell", hwnd: "4919" }, twin)(
-      entity({ sources: ["terminal"], locator: { terminal: { windowTitle: "PowerShell" } } }),
-      "type",
-      "dir\n",
-    );
-    expect(twin.terminalSend).toHaveBeenCalledWith("PowerShell", "dir\n", undefined);
+  it("the terminal route carries the handle, whatever the entity calls the window", async () => {
+    // The executor belongs to one session, so every entity it sees was read from that
+    // session's own discover. The terminal provider always fills `locator.terminal.windowTitle`
+    // with that same session's title, so a test on that field's presence dropped the handle for
+    // every ordinary terminal entity; a test on string equality passed only by coincidence.
+    for (const locator of [undefined, { terminal: { windowTitle: "Windows Terminal" } }]) {
+      const deps = mockDeps();
+      await createDesktopExecutor({ windowTitle: "PowerShell", hwnd: "4919" }, deps)(
+        entity({ sources: ["terminal"], ...(locator && { locator }) }),
+        "type",
+        "dir\n",
+      );
+      expect(deps.terminalSend).toHaveBeenCalledWith(
+        locator ? "Windows Terminal" : "PowerShell",
+        "dir\n",
+        4919n,
+      );
+    }
   });
 });
 

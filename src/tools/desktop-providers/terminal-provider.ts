@@ -13,7 +13,7 @@
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
 function isPromptLine(line: string): boolean {
@@ -23,15 +23,17 @@ function isPromptLine(line: string): boolean {
 export async function fetchTerminalCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
-  // getTextViaTextPattern takes a title string — hwnd-only targets are not supported
-  // until a dedicated hwnd overload is added. Return [] rather than passing hwnd as title.
-  if (!target?.windowTitle) return { candidates: [], warnings: [] };
-  const windowTitle = target.windowTitle;
-  const targetId    = target.hwnd ?? target.windowTitle;
+  // ADR-036 — `getTextViaTextPattern` takes a handle now, so a handle-only target is readable
+  // and, more to the point, a handle-keyed session reads the buffer of the window it writes to
+  // rather than the first one answering to the title.
+  const pinned = parseTargetHwnd(target);
+  if (!target?.windowTitle && pinned === undefined) return { candidates: [], warnings: [] };
+  const windowTitle = target?.windowTitle ?? "@active";
+  const targetId    = target?.hwnd ?? target?.windowTitle ?? "@active";
 
   try {
     const { getTextViaTextPattern } = await import("../../engine/uia-bridge.js");
-    const raw = await getTextViaTextPattern(windowTitle);
+    const raw = await getTextViaTextPattern(windowTitle, undefined, pinned !== undefined ? { hwnd: pinned } : undefined);
 
     const candidates: UiEntityCandidate[] = [];
     const warnings: string[] = [];

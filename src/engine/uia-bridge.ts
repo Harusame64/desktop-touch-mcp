@@ -1202,10 +1202,18 @@ export async function getElementChildren(
  *
  * Returns the full visible buffer text, or null if TextPattern is unavailable.
  */
-export async function getTextViaTextPattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+export async function getTextViaTextPattern(
+  windowTitle: string,
+  timeoutMs = 6000,
+  /** ADR-036 — scope the read to a resolved window, so the buffer read matches the window written. */
+  options?: { hwnd?: bigint },
+): Promise<string | null> {
   refuseUiaTitleIfExcluded(windowTitle);
-  // ★ Rust native path (Phase C)
-  if (nativeUia?.uiaGetTextViaTextPattern) {
+  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
+  // ★ Rust native path (Phase C) — skipped while a handle is in hand: it takes a title only,
+  // and a terminal buffer read from one window while the keys go to its same-titled twin is
+  // the same split this ADR closed on the UIA route.
+  if (nativeUia?.uiaGetTextViaTextPattern && options?.hwnd === undefined) {
     try {
       return await nativeUia.uiaGetTextViaTextPattern({ windowTitle, timeoutMs });
     } catch (e) {
@@ -1224,12 +1232,17 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
-$target = $null
+${options?.hwnd !== undefined
+  ? `# ADR-036: named by handle, so no title search happens here.
+$hwndPtr = [System.IntPtr]::new(${options.hwnd.toString()})
+$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }`
+  : `$target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
 foreach ($w in $allWins) {
     if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
 }
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }`}
 
 # Collect ALL descendants with TextPattern, score by control-type preference
 # (Document/Custom/Edit favored — these host the real terminal buffer) and

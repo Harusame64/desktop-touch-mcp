@@ -288,16 +288,18 @@ export function createDesktopExecutor(
     // fall through to the mouse fallback so click/invoke on a terminal entity
     // doesn't silently send an empty string.
     if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined && preferredAllows("terminal")) {
-      // The handle names the session's window. When the entity carries a terminal window title
-      // of its own, that title is what is being addressed and the session's handle may name a
-      // different window, so it is dropped. Asked as "did the entity name one?" rather than by
-      // comparing the two strings: equal strings do not make them the same window (two windows
-      // can share a title — the whole reason this ADR exists), and the day the provider stores
-      // the enumerated full title instead of the caller's substring, a string test would
-      // silently stop passing the handle at all (2ゲート目の指摘).
-      const ownTerminalTitle = entity.locator?.terminal?.windowTitle;
-      const termWin = ownTerminalTitle ?? winTitle;
-      await d.terminalSend(termWin, text, ownTerminalTitle === undefined ? aimHwnd : undefined);
+      // The handle goes with it. This executor is built for one session — `target` is that
+      // session's `lastTarget`, and the entities reaching it were read from that session's own
+      // discover — so there is no entity here belonging to another window to protect.
+      //
+      // Two narrower shapes were tried and both were wrong. Comparing the two title strings
+      // passes whenever they happen to match, and equal titles do not make one window, which is
+      // the premise of this ADR. Asking "did the entity name a terminal window?" fails the
+      // other way: the terminal provider always fills that field, so the handle was dropped for
+      // every ordinary terminal entity and `terminalSend` went back to the first z-order match
+      // (gate 1). The title is still passed for the backend that has no handle to use.
+      const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
+      await d.terminalSend(termWin, text, aimHwnd);
       return "terminal";
     }
 
