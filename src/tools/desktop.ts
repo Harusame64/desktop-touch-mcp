@@ -385,6 +385,20 @@ export class DesktopFacade {
         rawResult = { ...rawResult, warnings: [...rawResult.warnings, "visual_not_attempted"] };
       }
     }
+    // ADR-036 — the session remembers the target the PROVIDERS read, not the words the caller
+    // typed. Until this line, `lastTarget` held the raw input: a bare `desktop_discover()` left
+    // the write path with no window while the view it had just returned described one, so the
+    // executor was handed `"@active"` as a title, failed at UIA for nine seconds, and pressed a
+    // remembered coordinate (measured on the real machine, 2026-09-09).
+    //
+    // `??` and not an unconditional assignment: a provider that resolved nothing says nothing, and
+    // "we could not work out which window" must not overwrite what the caller did tell us. The
+    // non-ingress path (`candidateProvider`) returns candidates only, so it also falls back here.
+    //
+    // On a cache hit the target comes from the entry the candidates came from, which is the point:
+    // the aim and the view describe the same window even when the foreground has moved on.
+    if (rawResult.target) session.lastTarget = rawResult.target;
+
     // ADR-036 probe — what the session is left holding, next to what the candidates say they
     // describe. `targetIds` is the set the providers stamped: if it disagrees with `lastTarget`,
     // the read and the write are about different windows and nothing downstream can tell.
@@ -392,6 +406,7 @@ export class DesktopFacade {
       key,
       viewId: session.viewId,
       lastTarget: session.lastTarget ?? null,
+      lastTargetFrom: rawResult.target ? "resolved" : "caller",
       candidateCount: rawResult.candidates.length,
       targetIds: [...new Set(rawResult.candidates.map((c) => String(c.target?.id ?? "")))].slice(0, 8),
       warnings: rawResult.warnings,
@@ -780,14 +795,20 @@ export class DesktopFacade {
    * pre-snapshot — otherwise the touched entity reads as `entity_disappeared`
    * (R1). Returns `null` when the session is gone (handler then skips the fold).
    *
-   * Parity is structural (Codex PR #438 P2 / Opus refute): the discover OCR lane
-   * receives the SAME raw `target` object (`see()` stores `lastTarget = input.target`
-   * at `desktop.ts:351` and `composeCandidates(target)` → `fetchOcrCandidates(target)`
-   * gets it UN-normalized at `compose-providers.ts:289`), so `@active` /
-   * `windowTitle` / `hwnd` all key identically here and there — there is no
-   * normalized-HWND-vs-`@active` divergence. (A `lastTarget` change between
-   * discover and act bumps the generation → the stale lease fails validation
-   * before the fold, so the read here always matches the lease's discover.)
+   * Parity used to be CLAIMED here and was false. The comment said the OCR lane "receives the
+   * SAME raw `target` object", so `@active` / `windowTitle` / `hwnd` keyed identically in both
+   * places. They did not: `composeCandidates` normalized the target before the fan-out, so the
+   * lane computed its id from a resolved handle while this computed one from the raw
+   * `lastTarget` — and a bare `desktop_discover()` therefore keyed `"@active"` here against
+   * `"2624042"` there, which the S5b fold reads as `entity_disappeared` (ADR-036).
+   *
+   * Parity is now REAL, and by construction rather than by argument: `see()` stores the resolved
+   * target the providers were read against, so this and the lane derive their id from the same
+   * object. Left as `hwnd ?? windowTitle ?? "@active"` — the lane's own expression — because the
+   * two have to agree on the shape as well as the value.
+   *
+   * (A `lastTarget` change between discover and act bumps the generation → the stale lease fails
+   * validation before the fold, so the read here always matches the lease's discover.)
    */
   resolveOcrTargetIdForViewId(viewId: string): string | null {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);

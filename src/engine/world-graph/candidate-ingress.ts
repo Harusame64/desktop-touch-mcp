@@ -20,6 +20,7 @@
  */
 
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
+import type { TargetSpec } from "./session-registry.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,25 @@ export interface ProviderResult {
   candidates: UiEntityCandidate[];
   /** Non-fatal diagnostic codes. Empty means all providers succeeded. */
   warnings: string[];
+  /**
+   * ADR-036 — the target these candidates were actually read from, after resolution.
+   *
+   * `composeCandidates` resolves what the caller sent (`@active` and a bare call become a handle
+   * and a title; a handle alone gains the title) and then reads every provider against THAT. The
+   * session used to keep only what the caller sent, so a bare `desktop_discover()` left the write
+   * path with no window at all while the view it had just returned described one — measured on the
+   * real machine 2026-09-09: providers scoped to `2624042`, session stored `null`, the executor was
+   * handed `"@active"` as a title and pressed a remembered coordinate instead.
+   *
+   * Carrying it here keeps the aim and the view the same window BY CONSTRUCTION, including on a
+   * cache hit: a stale entry hands back the target its candidates came from, which is the one the
+   * lease describes, rather than whatever is in the foreground now.
+   *
+   * Optional because a provider that does not resolve anything (a direct `CandidateProvider`, a
+   * test double) has nothing to say here, and saying nothing must stay different from saying
+   * "no window".
+   */
+  target?: TargetSpec;
 }
 
 export interface CandidateIngress {
@@ -73,6 +93,8 @@ export interface IngressEventSource {
 interface CacheEntry {
   candidates: UiEntityCandidate[];
   warnings: string[];
+  /** ADR-036 — the resolved target these candidates describe; see `ProviderResult.target`. */
+  target?: TargetSpec;
   fetchedAtMs: number;
   dirty: boolean;
 }
@@ -118,7 +140,7 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings };
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
@@ -126,6 +148,7 @@ export class SnapshotIngress implements CandidateIngress {
       this.cache.set(targetKey, {
         candidates: result.candidates,
         warnings: result.warnings,
+        target: result.target,
         fetchedAtMs: now,
         dirty: false,
       });
@@ -135,7 +158,7 @@ export class SnapshotIngress implements CandidateIngress {
       // Stale cache fallback — mark dirty so next call retries.
       if (entry) {
         entry.dirty = true;
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"] };
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target };
       }
       return { candidates: [], warnings: ["ingress_fetch_error"] };
     }

@@ -255,19 +255,33 @@ export async function composeCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
   const normalized = await normalizeTarget(target);
-  // ADR-036 probe — the second seam, and the one the session never sees. What comes out of here
-  // is what every provider reads; what the session stores is what went in. When a bare
-  // `desktop_discover()` resolves the foreground window, `in` is empty and `out` names a handle,
-  // and that handle is the one the write path does NOT get.
+  // ADR-036 probe — the seam the session never used to see. What comes out of here is what every
+  // provider reads; what the session stored was what went in. When a bare `desktop_discover()`
+  // resolves the foreground window, `in` is empty and `out` names a handle — and that handle was
+  // the one the write path did NOT get (measured, 2026-09-09).
   probeAim("compose.normalize", {
     in: target ?? null,
     out: normalized.target ?? null,
     warnings: normalized.warnings,
   });
   if (!normalized.target) {
+    // Nothing resolved: no candidates, and — deliberately — no `target`. "We could not work out
+    // which window" must not arrive as "the window is nothing" (ADR-036).
     return { candidates: [], warnings: normalized.warnings };
   }
-  target = normalized.target;
+
+  // ADR-036 — the resolution and the warnings it produced are applied HERE, once, rather than at
+  // each lane's return. A lane added later inherits both instead of having to remember them,
+  // which is the disease this ADR is about: identity that is carried by hand gets dropped by hand.
+  const result = await composeCandidatesInner(normalized.target);
+  return {
+    ...withPrependedWarnings(result, normalized.warnings),
+    target: normalized.target,
+  };
+}
+
+/** The provider fan-out, against a target that is already resolved. */
+async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResult> {
 
   if (isBrowserTarget(target)) {
     const [browser, visual] = await Promise.allSettled([
@@ -288,10 +302,7 @@ export async function composeCandidates(
       ? { ...merged, warnings: [...merged.warnings, ...extra] }
       : merged;
 
-    return withPrependedWarnings(
-      addWarningIfPartial(finalMerged, browserResult.candidates.length),
-      normalized.warnings
-    );
+    return addWarningIfPartial(finalMerged, browserResult.candidates.length);
   }
 
   if (isTerminalTarget(target)) {
@@ -304,12 +315,9 @@ export async function composeCandidates(
     const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
     const visualResult = visual.status   === "fulfilled" ? visual.value   : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-    return withPrependedWarnings(
-      addWarningIfPartial(
-        mergeResults([termResult, uiaResult, visualResult]),
-        termResult.candidates.length
-      ),
-      normalized.warnings
+    return addWarningIfPartial(
+      mergeResults([termResult, uiaResult, visualResult]),
+      termResult.candidates.length
     );
   }
 
@@ -340,8 +348,5 @@ export async function composeCandidates(
     ? { ...merged, warnings: [...merged.warnings, ...extra] }
     : merged;
 
-  return withPrependedWarnings(
-    addWarningIfPartial(finalMerged, uiaResult.candidates.length),
-    normalized.warnings
-  );
+  return addWarningIfPartial(finalMerged, uiaResult.candidates.length);
 }
