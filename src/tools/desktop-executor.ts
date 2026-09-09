@@ -23,6 +23,7 @@ import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { AimedWindowGoneError, AIM_WINDOW_GONE } from "../engine/aim.js";
 import { parseTargetHwnd, type TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
@@ -221,6 +222,12 @@ export function createDesktopExecutor(
         } catch (uiaErr) {
           // R3 tool-exclusion — as in the click path below: refusals are not rungs.
           if (uiaErr instanceof WindowExcludedError) throw uiaErr;
+          // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses
+          // the same handle (`keyboardTypeBg` looks the window up by hwnd and throws when the
+          // enumeration does not hold it), so it cannot write into a different window — and a
+          // window whose UIA provider has gone while the HWND lives is exactly the case WM_CHAR
+          // injection was added for. The click path's downgrade is blind by coordinate; this one
+          // is not.
           try {
             await d.keyboardTypeBg(winTitle, text, aimHwnd);
             return "keyboard";
@@ -243,6 +250,12 @@ export function createDesktopExecutor(
         // that window", and the mouse fallback would touch it anyway, by coordinate, at the
         // rect the secure dialog now occupies (2ゲート目の指摘).
         if (uiaErr instanceof WindowExcludedError) throw uiaErr;
+        // ADR-036 — nor is a dead aim a rung. The rect below is where the window WAS; a window
+        // that has closed since the lease was taken has usually been replaced on screen by
+        // whatever was behind it, and the downgrade would click that instead. "Window drift" is
+        // one of the five failures the perception graph is built to stop, so this ends the
+        // ladder and says so (2ゲート目の指摘).
+        if (uiaErr instanceof AimedWindowGoneError) throw uiaErr;
         // UIA click failed (element not found, stale tree, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
         // which may be stale (captured at recognition time, before the element moved).
@@ -403,12 +416,15 @@ function getSharedRealDeps(): ExecutorDeps {
       // for every resolved window since then. What could not reach it was THIS path: the
       // interface above had nowhere to put a handle, so `desktop_act` always asked by title.
       const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
+      // ADR-036 — "the window is gone" is not "UIA could not do it": see `aim.ts`.
+      if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
       if (!r.ok) throw new Error(r.error ?? "UIA click failed");
     },
 
     async uiaSetValue(windowTitle, value, name, automationId, hwnd) {
       const { setElementValue } = await import("../engine/uia-bridge.js");
       const r = await setElementValue(windowTitle, value, name, automationId, hwnd !== undefined ? { hwnd } : undefined);
+      if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
       if (!r.ok) throw new Error(r.error ?? "UIA setElementValue failed");
     },
 

@@ -177,7 +177,10 @@ export const clickElementHandler = async ({
     const hintsBlock = buildHintsForTitle(
       effectiveWindowTitle, resolvedWin?.hwnd, hwndParam !== undefined,
     );
-    // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
+    // H3: pass resolved hwnd so uia-bridge can use FromHandle() for common dialogs. ADR-036 —
+    // the bridge now decides WHEN to use it: it addresses the handle where the title would
+    // reach a different window, and otherwise keeps the native title path and retries through
+    // the handle if that comes back empty-handed (which is what the dialogs need).
     const result = await clickElement(
       effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
@@ -562,15 +565,17 @@ export const setElementValueHandler = async ({
     // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
     // Owed from here: from this line on, some window has been written to (or an
     // attempt was made on it) and the drift baseline is stale until observed.
-    // Channel 1 goes through the handle, so the debt names the handle.
+    // Channel 1 is aimed at the handle, so the debt names the handle — whether the bridge
+    // reached it through `FromHandle` or through a title it had just checked names that window
+    // alone (ADR-036, `scopingWouldChangeTheWindow`).
     observationOwedFor = { title: effectiveTitle, ...(resolvedWin && { hwnd: resolvedWin.hwnd }) };
     const r1 = await setElementValue(
       effectiveTitle, value, name, automationId,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
     );
     if (r1.ok) {
-      // Channel 1 is handle-addressed (the `hwnd` passed above), so the report
-      // may name that handle.
+      // Channel 1 is aimed at the handle passed above — see the note on the debt — so the
+      // report may name that handle.
       const hintsBlock = observe(effectiveTitle, resolvedWin?.hwnd);
       const hints = {
         ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),

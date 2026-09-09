@@ -13,6 +13,9 @@
  * Warnings:
  *   ocr_provider_failed  — runSomPipeline threw or returned 0 elements on error
  *   ocr_attempted_empty  — pipeline ran successfully but returned 0 candidates
+ *   target_hwnd_unparseable — the target carried an hwnd this could not read, so the OCR ran
+ *                             against the foreground window while the candidates carry the
+ *                             caller's handle as their target id (ADR-036)
  */
 
 import type { Rect, UiEntityCandidate } from "../../engine/vision-gpu/types.js";

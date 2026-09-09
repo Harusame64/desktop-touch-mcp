@@ -21,6 +21,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import { parseTargetHwnd } from "../../src/engine/world-graph/session-registry.js";
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
+import { AimedWindowGoneError } from "../../src/engine/aim.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 function entity(overrides: Partial<UiEntity> = {}): UiEntity {
@@ -122,6 +123,33 @@ describe("ADR-036 — the handle reaches the backend", () => {
     await expect(exec(entity({ role: "textbox" }), "type", "hello"))
       .rejects.toBeInstanceOf(WindowExcludedError);
     expect(deps.keyboardTypeBg).not.toHaveBeenCalled();
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("a dead aim ends the click ladder — the mouse does not finish what UIA would not start", async () => {
+    // `FromHandle` throws for a window that has closed since the lease was taken, and the rect
+    // below is where that window used to be. Treating it as an ordinary UIA failure clicks
+    // whatever moved in behind it — window drift, one of the five failures the graph exists to
+    // stop. The refusal has to end the ladder, the way an excluded window does.
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new AimedWindowGoneError(4919n, "Window not found by hwnd"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Untitled - Notepad", hwnd: "4919" }, deps);
+    await expect(exec(entity(), "click")).rejects.toBeInstanceOf(AimedWindowGoneError);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("but the type ladder still tries the keyboard, because that rung addresses the handle", async () => {
+    // Not symmetry for its own sake: `keyboardTypeBg` looks the window up BY HANDLE and throws
+    // when the enumeration does not hold it, so it cannot write into a different window. And a
+    // window whose UIA provider has gone while the HWND lives is the case WM_CHAR injection was
+    // added for. The click ladder's downgrade is blind by coordinate; this one is not.
+    const deps = mockDeps({
+      uiaSetValue: vi.fn(async () => { throw new AimedWindowGoneError(4919n, "Window not found by hwnd"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Untitled - Notepad", hwnd: "4919" }, deps);
+    await exec(entity({ role: "textbox" }), "type", "hello");
+    expect(deps.keyboardTypeBg).toHaveBeenCalledWith("Untitled - Notepad", "hello", 4919n);
     expect(deps.mouseClick).not.toHaveBeenCalled();
   });
 

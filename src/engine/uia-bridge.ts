@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
+import { AIM_WINDOW_GONE } from "./aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
 import { enumWindowsInZOrder, isExcludedTitle, isExcludedWindowHandle } from "./win32.js";
@@ -108,6 +109,29 @@ const PS_MIN_TREE_BUDGET_MS = 1000;
  */
 export function psTreeBudgetMs(timeoutMs: number): number {
   return Math.max(PS_MIN_TREE_BUDGET_MS, timeoutMs - PS_STARTUP_HEADROOM_MS);
+}
+
+/**
+ * ADR-036 — how long to wait on a script that has no clock of its own.
+ *
+ * The twin of `psTreeBudgetMs`, for the other shape of read. The tree walk carries a stopwatch
+ * and can be told to stop early, so its budget is cut to fit the caller's deadline; the
+ * TextPattern read is a single `FindAll(Descendants)` followed by `GetText`, and neither can be
+ * interrupted, so nothing inside the script can be shortened. What moves instead is the wait.
+ *
+ * Without this, `getTextViaTextPattern`'s default 6000 ms had the process start taken out of it
+ * before the script's first statement ran, leaving a fraction of the deadline for the read
+ * itself — and a timeout here returns `null`, which the terminal provider reports as "no buffer"
+ * rather than "not read in time" (2ゲート目の指摘). It bites hardest on the case this ADR is
+ * about: the scoped read exists for the same-titled pair, and that is where the PowerShell path
+ * is taken at all.
+ *
+ * The parameter then means the same thing on both roads: how long the READ may take. The native
+ * path already read it that way — it pays no process start — so the two only agreed by accident
+ * before.
+ */
+export function psReadWaitMs(readBudgetMs: number): number {
+  return readBudgetMs + PS_STARTUP_HEADROOM_MS;
 }
 
 function makeGetElementsScript(
@@ -316,9 +340,16 @@ function makeClickElementScriptByHwnd(
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
+# ADR-036: FromHandle THROWS (ElementNotAvailableException) for a handle whose window has
+# gone, rather than returning null — and the aim is held across calls, so a window closing
+# between two of them is routine. Without the catch the script died with empty stdout, the
+# caller got a JSON parse error, and the executor read that as an ordinary UIA failure and
+# clicked the rect the window used to occupy (2ゲート目の指摘). The read half has had this
+# catch since 505290d; this is its twin.
 $hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
-$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
@@ -367,9 +398,16 @@ function makeSetValueScriptByHwnd(
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
+# ADR-036: FromHandle THROWS (ElementNotAvailableException) for a handle whose window has
+# gone, rather than returning null — and the aim is held across calls, so a window closing
+# between two of them is routine. Without the catch the script died with empty stdout, the
+# caller got a JSON parse error, and the executor read that as an ordinary UIA failure and
+# clicked the rect the window used to occupy (2ゲート目の指摘). The read half has had this
+# catch since 505290d; this is its twin.
 $hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
-$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
@@ -701,7 +739,10 @@ export async function getUiElements(
   timeoutMs = 10000,
   options?: {
     cached?: boolean;
-    /** Cache key only — which window's tree this result files under. Does not scope the read. */
+    /**
+     * Cache key only — which window's tree a title-derived result files under. Does not scope
+     * the read, and is the caller's claim that its title names this window.
+     */
     hwnd?: bigint;
     /**
      * ADR-036 — scope the read to this window, through `FromHandle`.
@@ -711,6 +752,8 @@ export async function getUiElements(
      * that scope the read took the Rust path away from them (a cache miss then paid a
      * PowerShell round trip and could exceed its 8 s cap, returning nothing on a deep tree).
      * Two things that are not the same thing do not share a name.
+     *
+     * It keys the cache too, but only when it actually scoped the read — see `cacheKey` below.
      */
     pinnedHwnd?: bigint;
     fetchValues?: boolean;
@@ -718,8 +761,6 @@ export async function getUiElements(
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
-  // The scoped window is what the result describes, so it is also what the result files under.
-  const cacheKey = options?.pinnedHwnd ?? options?.hwnd;
   // Scope only where it changes the answer — see `scopingWouldChangeTheWindow`. Without this,
   // every discover pays the PowerShell path, because `normalizeTarget` fills a handle from the
   // foreground even for a bare call (2ゲート目の指摘).
@@ -728,6 +769,21 @@ export async function getUiElements(
     scopingWouldChangeTheWindow(windowTitle, options.pinnedHwnd)
       ? options.pinnedHwnd
       : undefined;
+  // A tree is filed under a handle only when the read was SCOPED to that handle.
+  //
+  // `pinnedHwnd` on its own is not enough. When the gate answers "the title already names only
+  // this window" the read goes back through the title, and the two are not the same question:
+  // the gate reads Win32 captions from an enumeration that drops invisible, untitled and tiny
+  // windows, while the title search runs over UIA's root children and matches UIA `Name`, which
+  // is not always the caption (measured on 2026-09-09 — a WPF window whose `Name` was its
+  // content). Where they disagree the read reaches a window the gate never looked at, and filing
+  // that tree under the caller's handle would be a wrong answer stored under the right key —
+  // which `screenshot` and `get_ui_elements` would later serve from the cache as though it
+  // described the pinned window (2ゲート目の指摘).
+  //
+  // A title-derived tree still files under `hwnd`, which is the caller's own claim about the
+  // window its title names. That claim is as old as the cache and is not what this ADR changed.
+  const cacheKey = scopeHwnd ?? options?.hwnd;
   // Cache hit path — only when caller provides hwnd + cached:true
   // Note: cache is never used when fetchValues:true (values may have changed)
   if (options?.cached && cacheKey !== undefined && !options.fetchValues) {
@@ -972,12 +1028,27 @@ export async function clickElement(
   controlType?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
-): Promise<{ ok: boolean; element?: string; error?: string }> {
+): Promise<{ ok: boolean; element?: string; error?: string; code?: string }> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
-  // H3: hwnd-based lookup goes directly to PowerShell FromHandle path.
-  // The Rust native path (uiaClickElement) does not accept hwnd, so we skip it
-  // when hwnd is provided to ensure the hwnd-aware PS script is used.
+  // ADR-036 — on the WRITE path a handle is authoritative and is never traded for a title.
+  //
+  // The read half gates its scoping on "does the title already name only this window?", because
+  // scoping every read costs a PowerShell round trip on every `desktop_discover` (184 ms against
+  // 517 ms, measured) and `normalizeTarget` fills a handle from the foreground even for a bare
+  // call. The same trade was written here and refused, correctly, by gate 1: the check is not
+  // atomic — a same-titled window can appear between the enumeration and the invoke — and it
+  // compares Win32 captions against a search that matches UIA `Name`, which is not always the
+  // caption. Both ways of being wrong land in exactly the case this ADR is about, and here being
+  // wrong means the click happens in the other window. A read that goes to the wrong window
+  // comes back describing it; a write does not come back at all.
+  //
+  // So the cost stays, and it is named rather than negotiated: `uiaClickElement` takes a title
+  // and nothing else, so an aimed action is a PowerShell round trip. The way out is to give the
+  // native side a handle — not to make the aim conditional on an enumeration.
+  //
+  // H3 — this is also what reaches the common dialogs (Save As on Win11 Notepad): they are not
+  // among the UIA root children the title search walks, and `FromHandle` does not walk them.
   if (options?.hwnd === undefined && nativeUia?.uiaClickElement) {
     try {
       const result = await nativeUia.uiaClickElement({
@@ -986,7 +1057,12 @@ export async function clickElement(
         automationId: automationId ?? undefined,
         controlType: controlType ?? undefined,
       });
-      return { ok: result.ok, element: result.element ?? undefined, error: result.error ?? undefined };
+      return {
+        ok: result.ok,
+        element: result.element ?? undefined,
+        error: result.error ?? undefined,
+        code: result.code ?? undefined,
+      };
     } catch (e) {
       console.warn("[uia-bridge] Native uiaClickElement failed, falling back to PowerShell:", e);
     }
@@ -1007,10 +1083,11 @@ export async function setElementValue(
   automationId?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: string }> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
-  // H3: hwnd-based lookup skips Rust native (same reason as clickElement above).
+  // A handle is authoritative here too — see `clickElement` above for why the read half's gate
+  // does not belong on a write.
   if (options?.hwnd === undefined && nativeUia?.uiaSetValue) {
     try {
       const result = await nativeUia.uiaSetValue({
@@ -1019,7 +1096,7 @@ export async function setElementValue(
         name: name ?? undefined,
         automationId: automationId ?? undefined,
       });
-      return { ok: result.ok, error: result.error ?? undefined };
+      return { ok: result.ok, error: result.error ?? undefined, code: result.code ?? undefined };
     } catch (e) {
       console.warn("[uia-bridge] Native uiaSetValue failed, falling back to PowerShell:", e);
     }
@@ -1435,7 +1512,8 @@ try {
 }
 `;
   try {
-    const out = await runPS(script, timeoutMs);
+    // The deadline is the read's, not the process start's — see `psReadWaitMs`.
+    const out = await runPS(script, psReadWaitMs(timeoutMs));
     const parsed = JSON.parse(out) as { ok: boolean; text?: string; error?: string };
     if (!parsed.ok) return null;
     return parsed.text ?? "";

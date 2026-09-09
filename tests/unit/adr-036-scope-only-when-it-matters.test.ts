@@ -9,7 +9,7 @@
  * The predicate decides when the title already reaches exactly the window the handle names.
  */
 import { describe, it, expect } from "vitest";
-import { titleAlreadyNamesOnly, psTreeBudgetMs } from "../../src/engine/uia-bridge.js";
+import { titleAlreadyNamesOnly, psTreeBudgetMs, psReadWaitMs } from "../../src/engine/uia-bridge.js";
 
 const A = { hwnd: 0x1111n, title: "Untitled - Notepad" };
 const B = { hwnd: 0x2222n, title: "Untitled - Notepad" };
@@ -70,5 +70,23 @@ describe("psTreeBudgetMs — the walk always ends before the wait around it", ()
   it("never asks for a walk too short to reach anything", () => {
     expect(psTreeBudgetMs(0)).toBe(1000);
     expect(psTreeBudgetMs(-5000)).toBe(1000);
+  });
+});
+
+describe("psReadWaitMs — the other shape of read, where the deadline is what moves", () => {
+  it("adds the process start to the caller's read budget", () => {
+    // `getTextViaTextPattern` is one `FindAll(Descendants)` and a `GetText`; neither can be
+    // stopped early, so nothing inside the script can be shortened to fit a deadline the way
+    // the tree walk's budget is. Sharing one number left the read a fraction of it.
+    expect(psReadWaitMs(6000)).toBe(10000);
+    expect(psReadWaitMs(2000)).toBe(6000);
+  });
+
+  it("is the inverse of psTreeBudgetMs above the floor", () => {
+    // Both roads then mean the same thing by the number: how long the READ may take. The native
+    // path always read it that way — it pays no process start.
+    for (const budget of [2000, 6000, 20000]) {
+      expect(psTreeBudgetMs(psReadWaitMs(budget))).toBe(budget);
+    }
   });
 });
