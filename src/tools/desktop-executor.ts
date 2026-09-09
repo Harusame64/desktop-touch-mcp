@@ -23,6 +23,7 @@ import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { probeAim, aimProbeEnabled, readWindowIdentity } from "../engine/aim-probe.js";
 import {
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
@@ -231,6 +232,17 @@ async function assertPointIsInsideAim(
     return;
   }
   const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+  // ADR-036 probe — the containment verdict, with the rectangle it was taken against. A row with
+  // `inside:true` and a rect whose origin has moved since discover is the hole: the check passes
+  // and the press goes somewhere else in the same window.
+  probeAim("act.route", {
+    route: "containment_check",
+    aimHwnd: aimHwnd.toString(),
+    point: { x, y },
+    windowRect: rect,
+    inside,
+    label,
+  });
   if (!inside) {
     // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
     // and that reason's first suggestion is a coordinate click at the entity's rect — this point.
@@ -274,6 +286,32 @@ export function createDesktopExecutor(
     // ADR-036 — resolved once per touch, next to the title it replaces, so a route added later
     // has to walk past it rather than reach for `winTitle` alone.
     const aimHwnd = parseTargetHwnd(target);
+
+    // ADR-036 probe — the seam where the read path's work either arrives or does not. `target`
+    // here is the session's `lastTarget`, which is the RAW target the caller sent; a bare
+    // `desktop_discover()` therefore lands here with `aimHwnd: null` even though the providers
+    // read a handle. And the identity is read (never compared, today) so the specification's
+    // "identity must be stronger than hwnd" has a before/after pair to be measured against.
+    if (aimProbeEnabled()) {
+      probeAim("act.aim", {
+        target: target ?? null,
+        winTitle,
+        aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
+        entityId: entity.entityId,
+        entityLabel: entity.label ?? null,
+        action,
+        sources: entity.sources,
+        preferredExecutors: entity.preferredExecutors ?? null,
+        rect: entity.rect ?? null,
+      });
+      if (aimHwnd !== undefined) {
+        probeAim("act.identity", {
+          aimHwnd: aimHwnd.toString(),
+          identity: readWindowIdentity(aimHwnd),
+          comparedByExecutor: false,   // the specification asks for this; nothing does it yet
+        });
+      }
+    }
 
     // Issue #296 Phase 2 — `desktop_discover` derives `unsupportedExecutors`
     // from UIA `controlType` + `patterns` (e.g. `ListItem`/`TabItem` without
@@ -432,6 +470,20 @@ export function createDesktopExecutor(
         // BE on one — a stale rect that now sits off-screen is refused here
         // rather than clicked somewhere else.
         assertCoordinateReachable(x, y);
+        // ADR-036 probe — the downgrade press. This one is never checked against the aim: it only
+        // runs for an UNPINNED call, where there is no window to check it against. Recorded so the
+        // two mouse roads can be told apart in the log.
+        probeAim("act.route", {
+          route: "mouse",
+          why: "uia_downgrade",
+          aimed: false,
+          // Always null, and the compiler knows it: the pinned case threw four branches up, so
+          // this road is unreachable with an aim. Written out rather than omitted, so the log's
+          // two mouse rows have the same shape.
+          aimHwnd: null,
+          point: { x, y },
+          entityId: entity.entityId,
+        });
         await d.mouseClick(x, y);
         // Issue #327 item C: signal the silent downgrade so the LLM sees
         // `executor: "mouse"` AND `downgrade: { from: "uia", reason: ... }`
@@ -559,6 +611,22 @@ export function createDesktopExecutor(
     if (aimHwnd !== undefined) {
       await assertPointIsInsideAim(d, aimHwnd, x, y, entity.label ?? entity.entityId);
     }
+    // ADR-036 probe — the press this ADR is about: a coordinate, taken from a rect remembered at
+    // discover time. `aimed` says only that the containment check ran, NOT that the point still
+    // belongs to the entity — a window that moved with the point still inside passes it, and the
+    // press lands on whatever arrived there (measured 2026-09-09). The specification's ladder for
+    // this press is homing correction → occlusion test → identity invalidation; none of the three
+    // is here yet, which is what this row is for.
+    probeAim("act.route", {
+      route: "mouse",
+      why: "visual_or_read_entity",
+      aimed: aimHwnd !== undefined,
+      aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
+      point: { x, y },
+      rect: entity.rect,
+      entityId: entity.entityId,
+      entityLabel: entity.label ?? null,
+    });
     await d.mouseClick(x, y);
     return "mouse";
   };

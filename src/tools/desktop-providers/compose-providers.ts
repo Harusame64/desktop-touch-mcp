@@ -30,6 +30,7 @@ import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
+import { probeAim }               from "../../engine/aim-probe.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -254,6 +255,15 @@ export async function composeCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
   const normalized = await normalizeTarget(target);
+  // ADR-036 probe — the second seam, and the one the session never sees. What comes out of here
+  // is what every provider reads; what the session stores is what went in. When a bare
+  // `desktop_discover()` resolves the foreground window, `in` is empty and `out` names a handle,
+  // and that handle is the one the write path does NOT get.
+  probeAim("compose.normalize", {
+    in: target ?? null,
+    out: normalized.target ?? null,
+    warnings: normalized.warnings,
+  });
   if (!normalized.target) {
     return { candidates: [], warnings: normalized.warnings };
   }

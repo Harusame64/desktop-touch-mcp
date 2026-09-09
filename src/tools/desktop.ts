@@ -15,6 +15,7 @@ import {
 } from "../engine/world-graph/session-registry.js";
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
+import { probeAim } from "../engine/aim-probe.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import type { TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
@@ -348,6 +349,15 @@ export class DesktopFacade {
     const peekedRoundTrip = session.leaseStore.peekObservedRoundTripMs();
     const observedRoundTripMs = peekedRoundTrip?.elapsedMs;
 
+    // ADR-036 probe — the first seam. `lastTarget` is set from the RAW target here, while the
+    // providers below read a normalized one; the two are recorded separately so the divergence is
+    // a row rather than a claim.
+    probeAim("see.enter", {
+      key,
+      viewId: session.viewId,
+      rawTarget: input.target ?? null,
+      hasIngress: Boolean(this.opts.ingress),
+    });
     session.lastTarget = input.target;
     const prevViewId = session.viewId;
     const newViewId = randomUUID();
@@ -375,6 +385,17 @@ export class DesktopFacade {
         rawResult = { ...rawResult, warnings: [...rawResult.warnings, "visual_not_attempted"] };
       }
     }
+    // ADR-036 probe — what the session is left holding, next to what the candidates say they
+    // describe. `targetIds` is the set the providers stamped: if it disagrees with `lastTarget`,
+    // the read and the write are about different windows and nothing downstream can tell.
+    probeAim("see.store", {
+      key,
+      viewId: session.viewId,
+      lastTarget: session.lastTarget ?? null,
+      candidateCount: rawResult.candidates.length,
+      targetIds: [...new Set(rawResult.candidates.map((c) => String(c.target?.id ?? "")))].slice(0, 8),
+      warnings: rawResult.warnings,
+    });
     let resolved = resolveCandidates(rawResult.candidates, session.generation);
 
     if (input.query) {
