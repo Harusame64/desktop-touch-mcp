@@ -184,7 +184,10 @@ describe("ADR-036 — one answer to \"is this a handle\"", () => {
     // "0x1337" names a real window, and rejecting it would turn a call that would have worked
     // into a silent fall back to aiming by title — the failure this exists to remove.
     expect(parseTargetHwnd({ hwnd: " 0x1337 " })).toBe(4919n);
-    for (const hwnd of ["", "0", "not-a-handle", "12.5"]) {
+    // `-1` is INVALID_HANDLE_VALUE and arrives from stringified sentinels; taking it as a
+    // handle sends the write down the by-handle branch to fail there, instead of using the
+    // title that would have worked.
+    for (const hwnd of ["", "0", "-1", "-4919", "not-a-handle", "12.5"]) {
       expect(parseTargetHwnd({ hwnd }), `hwnd = ${JSON.stringify(hwnd)}`).toBeUndefined();
     }
     expect(parseTargetHwnd({ windowTitle: "App" })).toBeUndefined();

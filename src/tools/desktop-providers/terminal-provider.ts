@@ -23,9 +23,17 @@ function isPromptLine(line: string): boolean {
 export async function fetchTerminalCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
-  // ADR-036 — `getTextViaTextPattern` takes a handle now, so a handle-only target is readable
-  // and, more to the point, a handle-keyed session reads the buffer of the window it writes to
-  // rather than the first one answering to the title.
+  // ADR-036 — `getTextViaTextPattern` takes a handle now, so a handle-keyed session reads the
+  // buffer of the window it writes to rather than the first one answering to the title. That
+  // half is live.
+  //
+  // The handle-ONLY half is not, and the door below is open ahead of it: nothing reaches this
+  // provider except through `isTerminalTarget`, which is a regex over `target.windowTitle`
+  // alone (`compose-providers.ts`) — so a session known only by handle is never a terminal, no
+  // matter what class its window is. Deciding that by window class instead changes WHICH
+  // provider runs for a given target, so it moves on its own rather than riding here
+  // (2ゲート目の指摘: this branch is unreachable today, and saying so is cheaper than pretending
+  // it is not there).
   const pinned = parseTargetHwnd(target);
   if (!target?.windowTitle && pinned === undefined) return { candidates: [], warnings: [] };
   const windowTitle = target?.windowTitle ?? "@active";

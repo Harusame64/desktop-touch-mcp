@@ -37,6 +37,8 @@ const h = vi.hoisted(() => ({
     text: "native buffer",
   },
   psOutput: '{"ok":true}',
+  /** What `getCachedUia` hands back, if anything. */
+  cached: null as string | null,
   calls: {
     nativeClick: 0,
     nativeSetValue: 0,
@@ -44,6 +46,7 @@ const h = vi.hoisted(() => ({
     nativeText: 0,
     ps: [] as { script: string; timeout?: number }[],
     cacheWrites: [] as { hwnd: bigint; text: string }[],
+    enumerations: 0,
   },
 }));
 
@@ -60,13 +63,13 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({
-  enumWindowsInZOrder: vi.fn(() => h.windows),
+  enumWindowsInZOrder: vi.fn(() => { h.calls.enumerations++; return h.windows; }),
   isExcludedTitle: vi.fn(() => false),
   isExcludedWindowHandle: vi.fn(() => false),
 }));
 
 vi.mock("../../src/engine/layer-buffer.js", () => ({
-  getCachedUia: () => null,
+  getCachedUia: () => h.cached,
   updateUiaCache: (hwnd: bigint, text: string) => { h.calls.cacheWrites.push({ hwnd, text }); },
 }));
 
@@ -109,6 +112,8 @@ beforeEach(() => {
   h.calls.nativeText = 0;
   h.calls.ps = [];
   h.calls.cacheWrites = [];
+  h.calls.enumerations = 0;
+  h.cached = null;
   h.native.click = { ok: true, element: "Start", error: null, code: null };
   h.native.setValue = { ok: true, error: null, code: null };
   h.psOutput = '{"ok":true}';
@@ -234,6 +239,29 @@ describe("a tree is filed under a handle only when the read was scoped to it", (
     // ADR; that claim is theirs to make and is left alone.
     await getUiElements("Untitled - Notepad", 3, 50, 10000, { hwnd: OTHER });
     expect(h.calls.cacheWrites.map((c) => c.hwnd)).toEqual([OTHER]);
+  });
+});
+
+describe("a cache hit does not pay for a question it did not need to ask", () => {
+  it("probes the cache before sweeping every top-level window", async () => {
+    // The scoping gate is an `enumWindowsInZOrder()` sweep — a handful of syscalls per window —
+    // and it exists to decide how to READ. A hit does not read (2ゲート目の指摘).
+    h.cached = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
+    const r = await getUiElements("Untitled - Notepad", 3, 50, 10000, {
+      hwnd: NOTEPAD, pinnedHwnd: NOTEPAD, cached: true,
+    });
+    expect(r._cacheHit).toBe(true);
+    expect(h.calls.enumerations).toBe(0);
+    expect(h.calls.nativeElements).toBe(0);
+    expect(h.calls.ps).toHaveLength(0);
+  });
+
+  it("still asks when there is nothing cached", async () => {
+    await getUiElements("Untitled - Notepad", 3, 50, 10000, {
+      hwnd: NOTEPAD, pinnedHwnd: NOTEPAD, cached: true,
+    });
+    expect(h.calls.enumerations).toBe(1);
+    expect(h.calls.nativeElements).toBe(1);
   });
 });
 

@@ -23,16 +23,23 @@ export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string }
  * back to the foreground window, and one used the string as a window *title*. For a single
  * malformed value the read half and the write half could then aim at different windows.
  *
- * Returns `undefined` for a spec with no handle, for one that does not parse, and for zero —
- * `BigInt("")` is `0n`, and window zero is not a window. What each caller does with
- * `undefined` stays that caller's decision; only the answer to "is this a handle" is shared.
+ * Returns `undefined` for a spec with no handle, for one that does not parse, and for anything
+ * that is not a positive number: `BigInt("")` is `0n` and window zero is not a window, and `-1`
+ * is `INVALID_HANDLE_VALUE`, which arrives from a stringified sentinel and would otherwise send
+ * `keyboardTypeBg` and `terminalSend` down the by-handle branch to fail there instead of using
+ * the title that would have worked (2ゲート目の指摘). Hex is accepted deliberately — `"0x1337"`
+ * names a real window, and refusing it would turn a call that would have worked into a silent
+ * fall back to aiming by title, which is the failure this exists to remove.
+ *
+ * What each caller does with `undefined` stays that caller's decision; only the answer to "is
+ * this a handle" is shared.
  */
 export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefined {
   const raw = target?.hwnd;
   if (raw === undefined || raw === "") return undefined;
   try {
     const h = BigInt(raw);
-    return h === 0n ? undefined : h;
+    return h <= 0n ? undefined : h;
   } catch {
     return undefined;
   }

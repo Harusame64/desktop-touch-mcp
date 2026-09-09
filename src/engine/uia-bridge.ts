@@ -106,6 +106,14 @@ const PS_MIN_TREE_BUDGET_MS = 1000;
  * A deadline shorter than the startup headroom cannot hold a walk at all; the floor keeps the
  * script from being asked for a walk it could not begin, and the wait outside ends it. Nothing
  * here can make a 500 ms deadline produce a tree.
+ *
+ * Gate 2 asked for the PowerShell path to be skipped outright in that case — `workspace.ts`
+ * passes 2000 ms, so the process is spawned and killed before its first statement. Not taken,
+ * and the reason is worth keeping: **4000 is an estimate of process start plus two `Add-Type`
+ * loads, not a measured floor.** Refusing work on an estimate turns a guess into a gate, and on
+ * a machine where PowerShell starts in well under a second it would disable reads that would
+ * have returned. What it wants first is a measurement on the real machine; until there is one,
+ * the outer wait ends the attempt, which is what a caller who asked for 2000 ms is entitled to.
  */
 export function psTreeBudgetMs(timeoutMs: number): number {
   return Math.max(PS_MIN_TREE_BUDGET_MS, timeoutMs - PS_STARTUP_HEADROOM_MS);
@@ -761,6 +769,23 @@ export async function getUiElements(
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
+  // Cache hit path — only when caller provides a handle + cached:true. It is probed BEFORE the
+  // scoping gate below, because that gate is a full `enumWindowsInZOrder()` sweep (a handful of
+  // syscalls per top-level window) and a hit does not need it: the cached tree was filed under
+  // this handle by whoever read it, and nothing about that changes with what is on screen now
+  // (2ゲート目の指摘). Note: cache is never used when fetchValues:true (values may have changed).
+  const probeKey = options?.hwnd ?? options?.pinnedHwnd;
+  if (options?.cached && probeKey !== undefined && !options.fetchValues) {
+    const cached = getCachedUia(probeKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached) as UiElementsResult;
+        return { ...parsed, _cacheHit: true };
+      } catch {
+        // fall through to live fetch
+      }
+    }
+  }
   // Scope only where it changes the answer — see `scopingWouldChangeTheWindow`. Without this,
   // every discover pays the PowerShell path, because `normalizeTarget` fills a handle from the
   // foreground even for a bare call (2ゲート目の指摘).
@@ -784,20 +809,6 @@ export async function getUiElements(
   // A title-derived tree still files under `hwnd`, which is the caller's own claim about the
   // window its title names. That claim is as old as the cache and is not what this ADR changed.
   const cacheKey = scopeHwnd ?? options?.hwnd;
-  // Cache hit path — only when caller provides hwnd + cached:true
-  // Note: cache is never used when fetchValues:true (values may have changed)
-  if (options?.cached && cacheKey !== undefined && !options.fetchValues) {
-    const cached = getCachedUia(cacheKey);
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as UiElementsResult;
-        return { ...parsed, _cacheHit: true };
-      } catch {
-        // fall through to live fetch
-      }
-    }
-  }
-
   // ★ Rust native path
   //
   // ADR-036 — skipped only when the read is SCOPED to a handle, the same way `clickElement`

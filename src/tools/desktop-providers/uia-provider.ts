@@ -75,7 +75,16 @@ export async function fetchUiaCandidates(
     // two halves aim at different windows. `BigInt(target.hwnd)` here used to throw straight
     // out of the provider.
     const pinned = parseTargetHwnd(target);
-    const options = pinned !== undefined ? { pinnedHwnd: pinned } : undefined;
+    // Two different requests, so two names (ADR-036). `pinnedHwnd` asks the bridge to SCOPE the
+    // read to this window; `hwnd` says which window's tree the result files under, and is the
+    // same claim `screenshot` and `get_ui_elements` have always made — "the title I passed names
+    // this window". Passing only the first stopped `desktop_discover` priming the cache at all,
+    // so a following `screenshot({cached:true})` always missed and the `caches.uiaCache.exists`
+    // hint read `false` right after a discover (2ゲート目の指摘). Passing both restores that
+    // without the bridge inventing an attribution out of a scoping request: where this session
+    // has no title to name the window (`@active`), the gate scopes anyway, so the claim is the
+    // scoped read's own.
+    const options = pinned !== undefined ? { pinnedHwnd: pinned, hwnd: pinned } : undefined;
     const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
 
     const candidates: UiEntityCandidate[] = result.elements

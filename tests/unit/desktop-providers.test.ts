@@ -89,6 +89,26 @@ describe("composeCandidates — routing policy (P2-B)", () => {
 
 // ── Individual provider error resilience ─────────────────────────────────────
 
+describe("fetchUiaCandidates — what it asks the bridge for (ADR-036)", () => {
+  it("asks for the read to be scoped AND says which window the result describes", () => {
+    // Two different requests that briefly shared one parameter. `pinnedHwnd` scopes the read;
+    // `hwnd` is the cache attribution — the same claim `screenshot` makes. Passing only the
+    // first stopped a discover priming the cache at all, so a following `screenshot({cached:
+    // true})` always missed and `caches.uiaCache.exists` read false right after a discover.
+    uiaBridgeMocks.getUiElements.mockClear();
+    return fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" }).then(() => {
+      expect(uiaBridgeMocks.getUiElements.mock.lastCall![4])
+        .toMatchObject({ pinnedHwnd: 4919n, hwnd: 4919n });
+    });
+  });
+
+  it("asks for neither when the target carries no readable handle", async () => {
+    uiaBridgeMocks.getUiElements.mockClear();
+    await fetchUiaCandidates({ windowTitle: "Untitled - Notepad" });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toBeUndefined();
+  });
+});
+
 describe("fetchUiaCandidates — error resilience (P2-C)", () => {
   it("returns empty candidates + no warnings when target is undefined", async () => {
     const r = await fetchUiaCandidates(undefined);

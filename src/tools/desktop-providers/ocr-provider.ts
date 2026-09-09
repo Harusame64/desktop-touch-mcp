@@ -13,9 +13,11 @@
  * Warnings:
  *   ocr_provider_failed  — runSomPipeline threw or returned 0 elements on error
  *   ocr_attempted_empty  — pipeline ran successfully but returned 0 candidates
- *   target_hwnd_unparseable — the target carried an hwnd this could not read, so the OCR ran
- *                             against the foreground window while the candidates carry the
- *                             caller's handle as their target id (ADR-036)
+ *   target_hwnd_unparseable — the target carried an hwnd this could not read. The OCR then runs
+ *                             against `target.windowTitle` if there is one and against the
+ *                             FOREGROUND window if there is not — either way not necessarily the
+ *                             window the caller named, while the candidates still carry the
+ *                             caller's raw handle string as their target id (ADR-036)
  */
 
 import type { Rect, UiEntityCandidate } from "../../engine/vision-gpu/types.js";
@@ -43,9 +45,11 @@ export async function fetchOcrCandidates(
   // malformed handle threw straight out of the provider while the UIA side quietly read by
   // title: one bad value, two different answers to "which window".
   //
-  // Leniency here has its own cost, though: with no handle the title falls back to `@active`
-  // and this OCRs the FOREGROUND window while labelling the candidates with the handle the
-  // caller asked for. Loud is better than wrong, so it says so (2ゲート目の指摘).
+  // Leniency here has its own cost, though. With the handle unread, the window is whatever
+  // `windowTitle` finds — the caller's title if it passed one, and the FOREGROUND window when it
+  // did not (`@active`) — while the candidates keep the caller's raw handle string as their
+  // target id. Neither is necessarily the window that was asked for, so the warning says the
+  // handle was unreadable rather than naming a window it cannot vouch for (2ゲート目の指摘).
   const hwnd        = parseTargetHwnd(target) ?? null;
   const hwndWarnings = hwnd === null && target?.hwnd ? ["target_hwnd_unparseable"] : [];
 
