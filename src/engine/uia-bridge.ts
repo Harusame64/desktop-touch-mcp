@@ -134,11 +134,20 @@ const PS_PRINT_MARGIN_MS = 300;
  * the subtraction would come out as the machine's uptime and the budget would land on the floor
  * for every call, with nothing thrown to say so (win, 2026-09-09, who checked the pairing on the
  * real machine and left `dev/ps-startup-20260909/verify-node-clock.mjs` for the next person to
- * change one side). The difference is
- * the startup this machine really had, on this run, under whatever load it was under — which is
- * what `PS_STARTUP_HEADROOM_MS` was guessing at. Both sides read UTC wall-clock milliseconds;
- * `powershell.exe` 5.1 ticks that at ~15.6 ms, which does not matter for a budget in seconds,
- * and a clock that jumps backwards lands on the floor.
+ * change one side). What the subtraction gives is the startup this machine really had, on this
+ * run, under whatever load it was under — which is what `PS_STARTUP_HEADROOM_MS` was guessing at.
+ *
+ * Both sides read UTC, and both must: `[datetime]::Now` in the script would be out by the
+ * machine's offset from UTC, which is nine hours of budget on the machine this was checked on,
+ * and again nothing would be thrown. The whole expression was run there — JST, `ja-JP` — and
+ * came back at 233 ms median, overlapping the arms measured other ways
+ * (`dev/ps-startup-20260909/verify-wallclock-pair.mjs`, which carries the values that would give
+ * a wrong clock away).
+ *
+ * Resolution does not threaten this. `[datetime]::UtcNow` was measured at 1.001 ms median on
+ * 5.1 and `Date.now()` at 1 ms; the familiar 15.6 ms is the OS's default timer tick and applies
+ * only when nothing has raised it, so even at its worst it is under 7% of a 233 ms startup. A
+ * clock that jumps backwards lands on the floor.
  */
 function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
   // Epoch milliseconds by subtraction rather than `[DateTimeOffset]::…ToUnixTimeMilliseconds()`,
