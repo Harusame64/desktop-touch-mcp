@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Accessibility::*;
 use windows::core::Interface;
 
@@ -34,6 +34,16 @@ pub struct GetElementsOptions {
     pub max_depth: Option<u32>,
     pub max_elements: Option<u32>,
     pub fetch_values: Option<bool>,
+    /// ADR-036 — read THIS window, rather than the first one whose name contains `window_title`.
+    ///
+    /// A decimal handle as a string, the shape `ScrollByWheelAtHwndOptions` already uses. When
+    /// present the title is not searched at all, so a second window answering to the same title
+    /// cannot be read instead — and the caller does not have to leave this engine to get that,
+    /// which is what it had to do before: the TS bridge fell back to a PowerShell script for
+    /// every pinned read, at 184 ms against 517 ms on the same window, and that road cannot see
+    /// a window's frame without registering MSAA clientside providers, which gives the frame
+    /// English names this one does not use.
+    pub hwnd: Option<String>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -53,7 +63,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     let max_elements = opts.max_elements.unwrap_or(DEFAULT_MAX_ELEMENTS);
     let fetch_values = opts.fetch_values.unwrap_or(false);
 
-    let root = find_window(ctx, &opts.window_title)?;
+    let root = resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title)?;
 
     // Extract window metadata from element-scoped cache.
     let window_title = unsafe { root.CachedName().map_err(win_err)?.to_string() };
@@ -153,6 +163,64 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
 }
 
 // ─── Window finding ──────────────────────────────────────────────────────────
+
+/// ADR-036 — the window this call is about: the handle when the caller named one, otherwise the
+/// first top-level window whose name contains the title.
+///
+/// Both roads return an element with the cache already populated, because everything downstream
+/// reads `Cached*`; an element straight from `ElementFromHandle` has an empty cache and would
+/// answer `CachedName()` with an error rather than a name.
+pub(crate) fn resolve_root(
+    ctx: &UiaContext,
+    hwnd: Option<&str>,
+    title: &str,
+) -> napi::Result<IUIAutomationElement> {
+    match hwnd {
+        Some(h) => element_from_handle(ctx, h),
+        None => find_window(ctx, title),
+    }
+}
+
+/// Resolve a decimal window handle to its element, with the cache built.
+///
+/// The handle is a string on the wire for the same reason `ScrollByWheelAtHwndOptions.hwnd` is:
+/// a Win32 handle does not fit a JS number, and napi's BigInt crossing is more ceremony than a
+/// decimal string that both sides already agree on.
+pub(crate) fn element_from_handle(
+    ctx: &UiaContext,
+    hwnd: &str,
+) -> napi::Result<IUIAutomationElement> {
+    let raw: i64 = hwnd
+        .parse()
+        .map_err(|e| napi::Error::from_reason(format!("hwnd parse error: {e}")))?;
+    if raw <= 0 {
+        // Zero is not a window and -1 is INVALID_HANDLE_VALUE; the TS side rejects both before
+        // it gets here (`parseTargetHwnd`), and this is the same answer from the other end.
+        return Err(napi::Error::from_reason(format!(
+            "Window not found by hwnd: {hwnd}"
+        )));
+    }
+    let handle = HWND(raw as *mut std::ffi::c_void);
+    unsafe {
+        let elem = ctx
+            .automation
+            .ElementFromHandle(handle)
+            .map_err(|_| napi::Error::from_reason(format!("Window not found by hwnd: {hwnd}")))?;
+        // ADR-036 — the cache build is a SEPARATE failure, and it must not be called a window that
+        // went away. `ElementFromHandle` refusing the handle means the window is not there; a
+        // provider or RPC fault inside `BuildUpdatedCache` happens to a window that is perfectly
+        // alive, and telling the caller it vanished sends it to re-discover instead of to retry
+        // (PR 側 codex, P2 on #631). The `CACHE_BUILD_FAILED_PREFIX` is how the two arrive apart;
+        // it is produced and consumed in this crate only, so no caller parses a backend's words.
+        elem.BuildUpdatedCache(&ctx.cache_request)
+            .map_err(|e| napi::Error::from_reason(format!("{CACHE_BUILD_FAILED_PREFIX}{e}")))
+    }
+}
+
+/// Marks a `resolve_root` failure that happened AFTER the window was found — see
+/// [`element_from_handle`]. `actions.rs` reads it to decide whether the answer may carry
+/// `aim_window_gone`.
+pub(crate) const CACHE_BUILD_FAILED_PREFIX: &str = "UIA cache build failed: ";
 
 /// Find a top-level window whose name contains `title` (case-insensitive substring match).
 pub(crate) fn find_window(ctx: &UiaContext, title: &str) -> napi::Result<IUIAutomationElement> {

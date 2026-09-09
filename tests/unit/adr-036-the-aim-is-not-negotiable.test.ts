@@ -37,8 +37,14 @@ const h = vi.hoisted(() => ({
       elements: [] as unknown[],
     } as Record<string, unknown>,
     text: "native buffer",
-    /** Make the native read fail, so an UNSCOPED caller reaches the PowerShell fallback. */
+    /** Make the native read fail, so the caller reaches the PowerShell fallback. */
     textThrows: false,
+    /**
+     * Make the whole engine fail. Since the engine takes a handle (ADR-036 PR 2) a pinned call
+     * stays native, so the PowerShell script — which still exists for builds without the addon —
+     * is reached only this way.
+     */
+    engineThrows: false,
   },
   psOutput: '{"ok":true}',
   /** What `getCachedUia` hands back, if anything. */
@@ -50,12 +56,14 @@ const h = vi.hoisted(() => ({
   calls: {
     nativeClick: 0,
     nativeSetValue: 0,
+    nativeInsertText: 0,
     nativeElements: 0,
     nativeText: 0,
     ps: [] as { script: string; timeout?: number }[],
     cacheWrites: [] as { hwnd: bigint; text: string }[],
     cacheProbes: [] as bigint[],
     enumerations: 0,
+    nativeHwnds: [] as (string | undefined)[],
   },
 }));
 
@@ -85,16 +93,33 @@ vi.mock("../../src/engine/layer-buffer.js", () => ({
 
 vi.mock("../../src/engine/native-engine.js", () => ({
   nativeUia: {
-    async uiaClickElement() {
-      h.calls.nativeClick++;
+    async uiaClickElement(o: { hwnd?: string }) {
+      h.calls.nativeClick++; h.calls.nativeHwnds.push(o?.hwnd);
+      // Two different failures, and cells on both sides of this rebase need both: `clickThrows` is
+      // one call failing, after which the PowerShell script finishes the act and the answer says
+      // `powershell`; `engineThrows` is "no engine at all", which is how the fallback roads open.
       if (h.native.clickThrows) throw new Error("native click failed");
+      if (h.native.engineThrows) throw new Error("engine unavailable");
       return h.native.click;
     },
-    async uiaSetValue() { h.calls.nativeSetValue++; return h.native.setValue; },
-    async uiaGetElements() { h.calls.nativeElements++; return h.native.elements; },
-    async uiaGetTextViaTextPattern() {
-      h.calls.nativeText++;
-      if (h.native.textThrows) throw new Error("native read failed");
+    async uiaSetValue(o: { hwnd?: string }) {
+      h.calls.nativeSetValue++; h.calls.nativeHwnds.push(o?.hwnd);
+      if (h.native.engineThrows) throw new Error("engine unavailable");
+      return h.native.setValue;
+    },
+    async uiaInsertText(o: { hwnd?: string }) {
+      h.calls.nativeInsertText++; h.calls.nativeHwnds.push(o?.hwnd);
+      if (h.native.engineThrows) throw new Error("engine unavailable");
+      return h.native.setValue;
+    },
+    async uiaGetElements(o: { hwnd?: string }) {
+      h.calls.nativeElements++; h.calls.nativeHwnds.push(o?.hwnd);
+      if (h.native.engineThrows) throw new Error("engine unavailable");
+      return h.native.elements;
+    },
+    async uiaGetTextViaTextPattern(o: { hwnd?: string }) {
+      h.calls.nativeText++; h.calls.nativeHwnds.push(o?.hwnd);
+      if (h.native.textThrows || h.native.engineThrows) throw new Error("native read failed");
       return h.native.text;
     },
   },
@@ -126,6 +151,7 @@ function ambiguous(): void {
 beforeEach(() => {
   h.calls.nativeClick = 0;
   h.calls.nativeSetValue = 0;
+  h.calls.nativeInsertText = 0;
   h.calls.nativeElements = 0;
   h.calls.nativeText = 0;
   h.calls.ps = [];
@@ -140,6 +166,8 @@ beforeEach(() => {
   h.psOutput = '{"ok":true}';
   h.native.textThrows = false;
   h.native.clickThrows = false;
+  h.native.engineThrows = false;
+  h.calls.nativeHwnds = [];
   unambiguous();
 });
 
@@ -158,29 +186,54 @@ describe("each answer says which client gave it (ADR-036 item 16, gate 2 on #624
     expect(h.calls.ps).toHaveLength(1);
   });
 
-  it("a read says which client read it", async () => {
+  it("a read says which client read it — and a pinned read now stays in the engine", async () => {
     expect(await getUiElements("Untitled - Notepad")).toMatchObject({ via: "native" });
+    // This is the assertion the branch inverts, and it is most of what the branch buys: a scoped
+    // read used to skip the engine, because `uiaGetElements` took a title and nothing else, so a
+    // pinned read cost the PowerShell road while every write on the session addressed the handle.
+    expect(await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD }))
+      .toMatchObject({ via: "native" });
+    expect(h.calls.nativeHwnds).toEqual([undefined, NOTEPAD.toString()]);
+    expect(h.calls.ps).toHaveLength(0);
+  });
+
+  it("a pinned read falls back to the by-handle script when there is no engine, and says powershell", async () => {
+    // The fallback keeps the scoping: what it must never do is trade the handle for the title.
+    h.native.engineThrows = true;
     h.psOutput = '{"elements":[],"elementCount":0,"windowRect":null,"clientProviders":"registered"}';
-    expect(await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD })).toMatchObject({ via: "powershell" });
+    expect(await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD }))
+      .toMatchObject({ via: "powershell" });
+    expect(h.calls.ps).toHaveLength(1);
+    expect(h.calls.ps[0]!.script).toContain(NOTEPAD.toString());
   });
 });
 
 describe("a handle on the write path is never traded for a title", () => {
-  it("addresses the handle even when the title looks unambiguous right now", async () => {
-    // The enumeration is a photograph, and the invoke happens after it. A same-titled window
-    // opening in between would turn a checked title into an ambiguous one, and nothing would
-    // notice. This is the one place the cost is paid without asking (gate 1, round 4).
+  it("tells the engine which window, instead of leaving it", async () => {
+    // The whole of PR 2. Before it, a handle meant a PowerShell round trip — 184 ms against
+    // 517 ms — because the engine took a title and nothing else, so pinning the aim cost the
+    // Rust walker on every act and every pinned read.
     await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
-    expect(h.calls.nativeClick).toBe(0);
+    expect(h.calls.nativeClick).toBe(1);
+    expect(h.calls.nativeHwnds).toEqual([NOTEPAD.toString()]);
+    expect(h.calls.ps).toHaveLength(0);
+  });
+
+  it("falls back to the by-handle script when there is no engine, still by handle", async () => {
+    h.native.engineThrows = true;
+    await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
     expect(h.calls.ps).toHaveLength(1);
     expect(h.calls.ps[0]!.script).toContain("FromHandle");
     expect(h.calls.ps[0]!.script).toContain(NOTEPAD.toString());
   });
 
-  it("addresses the handle with a same-titled sibling on screen, obviously", async () => {
+  it("addresses the handle with a same-titled sibling on screen, on either road", async () => {
     ambiguous();
     await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
-    expect(h.calls.nativeClick).toBe(0);
+    expect(h.calls.nativeHwnds).toEqual([NOTEPAD.toString()]);
+    h.native.engineThrows = true;
+    h.calls.ps = [];
+    await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
     expect(h.calls.ps[0]!.script).toContain("FromHandle");
   });
 
@@ -191,39 +244,76 @@ describe("a handle on the write path is never traded for a title", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("setValue keeps the handle the same way", async () => {
-    h.psOutput = '{"ok":true}';
-    await setElementValue("Untitled - Notepad", "hello", "Text", undefined, { hwnd: NOTEPAD });
-    expect(h.calls.nativeSetValue).toBe(0);
-    expect(h.calls.ps[0]!.script).toContain("FromHandle");
-    // …and by title when nothing was resolved, which is where the Rust engine still earns its keep.
-    h.calls.ps = [];
-    await setElementValue("Untitled - Notepad", "hello", "Text");
-    expect(h.calls.nativeSetValue).toBe(1);
+  it("insertText carries the handle too, when the caller resolved one", async () => {
+    // Gate 2: the engine and its declaration took a handle here, and the bridge dropped it — a road
+    // that accepts a handle and then resolves by title is the defect this ADR exists to remove. The
+    // one production caller deliberately addresses by title from that channel on (`ui-elements.ts`
+    // R-36-5, where the debt follows the channel), so this pins the road, not that caller.
+    const { insertTextViaTextPattern2 } = await import("../../src/engine/uia-bridge.js");
+    await insertTextViaTextPattern2("Untitled - Notepad", "hello", "Text", undefined, { hwnd: NOTEPAD });
+    expect(h.calls.nativeHwnds).toEqual([NOTEPAD.toString()]);
     expect(h.calls.ps).toHaveLength(0);
   });
 
-  it("reaches a common dialog, which is what the by-handle road was added for", async () => {
+  it("insertText's fallback resolves by handle too, because it is the half that writes", async () => {
+    // PR 側 codex, P1 on #631: the engine refuses when TextPattern2 is the road, so this script runs
+    // on a real machine. Resolving it by title would insert into a same-titled sibling while the
+    // caller held an authoritative handle — the last road that still traded the handle away.
+    const { insertTextViaTextPattern2 } = await import("../../src/engine/uia-bridge.js");
+    h.native.engineThrows = true;
+    ambiguous();
+    h.psOutput = '{"ok":true}';
+    await insertTextViaTextPattern2("Untitled - Notepad", "hello", "Text", undefined, { hwnd: NOTEPAD });
+    const script = h.calls.ps[0]!.script;
+    expect(script).toMatch(/try \{ \$target = .*FromHandle/);
+    expect(script).toContain(NOTEPAD.toString());
+    expect(script).toContain('"code":"aim_window_gone"');
+    // …and it does not fall back to walking the root's children by title.
+    expect(script).not.toContain("RootElement");
+  });
+
+  it("setValue keeps the handle the same way", async () => {
+    h.psOutput = '{"ok":true}';
+    await setElementValue("Untitled - Notepad", "hello", "Text", undefined, { hwnd: NOTEPAD });
+    expect(h.calls.nativeHwnds).toEqual([NOTEPAD.toString()]);
+    expect(h.calls.ps).toHaveLength(0);
+    // …and says nothing about a window nobody named.
+    h.calls.nativeHwnds = [];
+    await setElementValue("Untitled - Notepad", "hello", "Text");
+    expect(h.calls.nativeHwnds).toEqual([undefined]);
+  });
+
+  it("reaches a common dialog through the engine, which is what the handle was added for", async () => {
     // Save As on Win11 Notepad is in the Win32 enumeration under its own title but is not among
     // the UIA root children the title search walks (H3). Gating the write on the enumeration
     // would have sent this one back through the title road that cannot see it.
     h.windows = [{ hwnd: DIALOG, title: "Save As" }, { hwnd: OTHER, title: "Calculator" }];
-    h.psOutput = '{"ok":true,"element":"Save"}';
+    h.native.click = { ok: true, element: "Save", error: null, code: null };
     const r = await clickElement("Save As", "Save", undefined, undefined, { hwnd: DIALOG });
-    expect(h.calls.nativeClick).toBe(0);
-    expect(h.calls.ps[0]!.script).toContain(DIALOG.toString());
-    expect(r).toEqual({ ok: true, element: "Save", via: "powershell" });
+    // This is the assertion the branch inverts. Before it, a pinned click paid a PowerShell round
+    // trip and answered `via:"powershell"`; now the handle goes to the engine, so the dialog is
+    // reached without leaving it.
+    expect(h.calls.nativeHwnds).toEqual([DIALOG.toString()]);
+    expect(h.calls.ps).toHaveLength(0);
+    expect(r).toEqual({ ok: true, element: "Save", via: "native" });
   });
 });
 
 describe("a pinned read is scoped, whatever the enumeration says", () => {
-  it("scopes even when the title looks unambiguous right now", async () => {
-    // This used to keep the native path here, and both gates refused the predicate that decided
-    // it: a Win32 caption sweep cannot vouch for what a UIA `Name` search reaches, and it is a
-    // photograph taken before the read. The cost is real and is paid.
+  it("stays in the engine and tells it the handle", async () => {
+    // Two gates refused the predicate that used to decide this by title — a Win32 caption sweep
+    // cannot vouch for what a UIA Name search reaches — so every pinned read was scoped, and
+    // scoping meant PowerShell. Now it means one more field.
+    await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
+    expect(h.calls.nativeElements).toBe(1);
+    expect(h.calls.nativeHwnds).toEqual([NOTEPAD.toString()]);
+    expect(h.calls.ps).toHaveLength(0);
+  });
+
+  it("still scopes by handle when it has to fall back to the script", async () => {
+    h.native.engineThrows = true;
     h.psOutput = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
     await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
-    expect(h.calls.nativeElements).toBe(0);
     expect(h.calls.ps[0]!.script).toContain("FromHandle");
     expect(h.calls.ps[0]!.script).toContain(NOTEPAD.toString());
   });
@@ -246,6 +336,9 @@ describe("a pinned read is scoped, whatever the enumeration says", () => {
 
 describe("the budget never outlives the wait that kills the process", () => {
   it("floors at zero, not at a walk that would run past the deadline", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     // `workspace.ts` asks for 2000 ms. A 1000 ms floor plus a slow start ends the walk at
     // ~2044 ms against a 2000 ms kill: empty stdout, a parse error, and the whole read lost —
     // which is what `truncated` exists to avoid. An empty tree that says it was cut short is a
@@ -256,6 +349,9 @@ describe("the budget never outlives the wait that kills the process", () => {
   });
 
   it("clamps the elapsed term too, so a backwards clock cannot lengthen the walk", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     // The outer `Max(0, …)` only stops the budget going negative. If the clock steps BACKWARDS
     // between the timestamp taken here and the read inside the script, `(now − spawnedAt)` is
     // negative and the budget grows by that much — past the deadline, so the walk outlives the
@@ -306,6 +402,9 @@ describe("an ordinary closed window is not called a security refusal", () => {
 
 describe("a dead handle is said out loud, not parsed as a crash", () => {
   it("the by-handle click script catches FromHandle and prints the code", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     ambiguous();
     h.psOutput = '{"ok":false,"error":"Window not found by hwnd","code":"aim_window_gone"}';
     const r = await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
@@ -341,7 +440,39 @@ describe("a dead handle is said out loud, not parsed as a crash", () => {
     }
   });
 
+  it("the engine says the same thing, on the road that is now primary", async () => {
+    // Gate 2 on this branch: every cell above holds the PowerShell road, which is the fallback
+    // now. The engine answers a dead handle with a sentence, and the code is what the executor
+    // weighs — without it a pinned act on a closed window came back `aim_route_failed`, whose
+    // advice is not "do not press the rect". The Rust side sets the code on the handle road only.
+    h.native.click = { ok: false, element: null, error: "Window not found by hwnd: 4369", code: "aim_window_gone" };
+    const r = await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
+    expect(h.calls.ps).toHaveLength(0);
+    expect(r).toEqual({ ok: false, error: "Window not found by hwnd: 4369", code: "aim_window_gone", via: "native" });
+  });
+
+  it("a failure raised after the window was found keeps no gone code", async () => {
+    // PR 側 codex, P2 on #631: `BuildUpdatedCache` can fault on a window that is perfectly alive (a
+    // provider hiccup, an RPC fault), and calling that "gone" would send the caller to re-discover a
+    // window that is still there. The Rust side marks that case and withholds the code; this pins the
+    // shape the bridge must pass through untouched — no code, so the ladder answers aim_route_failed.
+    h.native.click = { ok: false, element: null, error: "UIA cache build failed: 0x80004005", code: null };
+    const r = await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
+    expect(r).toMatchObject({ ok: false, via: "native" });
+    expect(r.code).toBeUndefined();
+  });
+
+  it("a title call keeps no gone code, because a title that matches nothing is not a window that left", async () => {
+    h.native.click = { ok: false, element: null, error: "Window not found: Untitled - Notepad", code: null };
+    const r = await clickElement("Untitled - Notepad", "Start");
+    expect(r).toMatchObject({ ok: false, via: "native" });
+    expect(r.code).toBeUndefined();
+  });
+
   it("the by-handle setValue script carries the same catch", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     ambiguous();
     h.psOutput = '{"ok":false,"error":"Window not found by hwnd","code":"aim_window_gone"}';
     const r = await setElementValue("Untitled - Notepad", "hello", "Text", undefined, { hwnd: NOTEPAD });
@@ -406,6 +537,23 @@ describe("a tree is filed under a handle only when the read was scoped to it", (
     expect(h.calls.cacheWrites.map((c) => c.hwnd)).toEqual([NOTEPAD]);
   });
 
+  it("does not file a tree that may have been cut short, on the engine's road either", async () => {
+    // The PowerShell road refuses to cache a truncated tree; the engine reports no `truncated`, so
+    // the proxy is the cap — a walk holding exactly as many elements as it was allowed may have
+    // stopped early. Before this branch a pinned read took the PowerShell road, where the refusal
+    // already lived; gate 2 found the native road caching unconditionally, which would serve a
+    // prefix to `screenshot` for the whole TTL.
+    h.native.elements = {
+      windowTitle: "Untitled - Notepad", elementCount: 2,
+      elements: [{ name: "a" }, { name: "b" }] as never,
+    } as never;
+    await getUiElements("Untitled - Notepad", 3, 2, 10000, { pinnedHwnd: NOTEPAD });
+    expect(h.calls.cacheWrites).toHaveLength(0);
+    // …and a read that came back under the cap is filed as before.
+    await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
+    expect(h.calls.cacheWrites.map((c) => c.hwnd)).toEqual([NOTEPAD]);
+  });
+
   it("still honours the caller's own claim about the title it passed", async () => {
     // `screenshot` and `get_ui_elements` have keyed the cache by handle since long before this
     // ADR; that claim is theirs to make and is left alone.
@@ -416,6 +564,9 @@ describe("a tree is filed under a handle only when the read was scoped to it", (
 
 describe("the frame of the window is in the tree, or the read says it is not", () => {
   it("warms UIA up BEFORE registering the clientside providers, because the order is the fix", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     // Measured four ways on Windows: no registration 2 elements, registration alone 2, warm-up
     // alone 2, warm-up THEN registration 26. Registering straight after `Add-Type` returns
     // without error and changes nothing — the failure this ordering prevents is invisible.
@@ -430,6 +581,7 @@ describe("the frame of the window is in the tree, or the read says it is not", (
   });
 
   it("carries the verdict back, rather than assuming the call worked", async () => {
+    h.native.engineThrows = true;   // clientProviders is a property of the fallback road; the engine never needed the registration
     h.psOutput = JSON.stringify({
       windowTitle: "x", elementCount: 1, clientProviders: "noop",
       elements: [{ name: "Pane" }],
@@ -454,6 +606,9 @@ describe("a cache hit does not pay for a question it did not need to ask", () =>
   });
 
   it("still reads when there is nothing cached", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     h.psOutput = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
     await getUiElements("Untitled - Notepad", 3, 50, 10000, {
       hwnd: NOTEPAD, pinnedHwnd: NOTEPAD, cached: true,
@@ -465,6 +620,9 @@ describe("a cache hit does not pay for a question it did not need to ask", () =>
 
 describe("the walk measures its own start instead of being told what it cost", () => {
   it("hands the script the caller's whole deadline and a timestamp to subtract", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     // The constant it replaced was 4000 ms; the real thing was measured at 233 ms median on the
     // Windows machine. Subtracting the estimate cost `_narration` most of its walking time —
     // 4000 ms of deadline collapsing to the 1000 ms floor.
@@ -489,6 +647,7 @@ describe("the walk measures its own start instead of being told what it cost", (
   });
 
   it("does not cache a tree the walk cut short", async () => {
+    h.native.engineThrows = true;   // only the fallback walk has a clock to run out of
     // A prefix of a window is not the window, and the cache serves it for the whole TTL.
     h.psOutput = JSON.stringify({
       windowTitle: "Untitled - Notepad", elementCount: 1, truncated: true,
@@ -501,10 +660,22 @@ describe("the walk measures its own start instead of being told what it cost", (
 });
 
 describe("the terminal buffer read gets a deadline it can finish inside", () => {
+  it("reads the pinned terminal through the engine, handle and all", async () => {
+    // The buffer read had to leave the engine for the same reason the tree read did: a title and
+    // nothing else. Reading one terminal while the keys go to its same-titled twin is the split
+    // this ADR closed, and it was closed by paying PowerShell until the engine could be told.
+    const text = await getTextViaTextPattern("Untitled - Notepad", 6000, { pinnedHwnd: NOTEPAD });
+    expect(text).toBe("native buffer");
+    expect(h.calls.nativeHwnds).toEqual([NOTEPAD.toString()]);
+    expect(h.calls.ps).toHaveLength(0);
+  });
+
   it("adds the process start to the caller's budget rather than eating it", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     h.psOutput = '{"ok":true,"text":"C:\\\\> ","controlType":"Document"}';
     await getTextViaTextPattern("Untitled - Notepad", 6000, { pinnedHwnd: NOTEPAD });
-    expect(h.calls.nativeText).toBe(0);
     // 6000 ms of reading, plus the process start and the two Add-Type loads that happen before
     // the script's first statement. Sharing one number left ~2 s for the read itself, and a
     // timeout here returns null — reported as "no buffer", not as "not read in time".
@@ -512,6 +683,9 @@ describe("the terminal buffer read gets a deadline it can finish inside", () => 
   });
 
   it("leaves an unpinned caller's deadline alone, even when it falls back to PowerShell", async () => {
+    // The engine takes a handle now, so a pinned call stays native. The script below is the
+    // fallback for a build without the addon — where every protection still has to hold.
+    h.native.engineThrows = true;
     // `terminal.ts` reads a baseline and a post-read around every send and treats 6000 as a hard
     // deadline. The headroom exists for the read this ADR added; quietly adding four seconds to
     // every existing caller is not its business (2ゲート目の指摘).
