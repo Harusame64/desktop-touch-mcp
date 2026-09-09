@@ -185,17 +185,22 @@ function resolveWindowTitle(target?: TargetSpec): string {
  *
  * What this does NOT prove, in the order the holes were found:
  *
- *   - Containment is not position WITHIN the window. Measured on Windows 2026-09-09 (win2):
- *     Notepad moved 280×140 px with the remembered point still inside its rectangle came back
- *     `ok:true`, `executor:"mouse"` — the press went ahead, at a screen point that now sits
- *     280×140 px further into the window than the one the lease described. So this check catches
- *     the move that takes the point OUT of the window (and minimise, which parks the rect at
- *     -32000, and a window that is gone); it does not catch the move that keeps it in.
+ *   - Containment is not identity WITHIN the window, and a different CONTROL takes the press.
+ *     Measured on Windows 2026-09-09 (win2, five stacked buttons whose own click handlers write to
+ *     a log): a lease taken on the title bar, the window moved 71 px up, the remembered point left
+ *     where it was — `desktop_act` returned `ok:true`, `executor:"mouse"`, and the button that
+ *     logged the press was `BTN1`, which the lease had never named. Three independent channels
+ *     agreed: the rect read from outside (top 200 → 129), `AutomationElement::FromPoint`
+ *     (`CELL BUTTONS` → `BTN1`), and the button's own log line. Nothing in the envelope shows it —
+ *     `observation.motion` was `no_change` and `residual.fractionChanged` was 0.
  *
- *     What that cell does NOT say is whether a different CONTROL took the press: Notepad's text
- *     area is one element, so both answers look the same there. A window with several pressable
- *     things inside the entity's rect is needed to tell them apart, and that measurement is
- *     pending — the honest statement today is about the position, not about the control.
+ *     So this check catches the move that takes the point OUT of the window (and minimise, which
+ *     parks the rect at -32000, and a window that is gone); it does not catch the move that keeps
+ *     the point inside, and that case presses whatever has arrived under the point.
+ *
+ *     The population is narrower than it looks: only entities that reach the mouse route get here,
+ *     which in that fixture meant the `read` / `primaryAction:"read"` class. A button whose
+ *     `preferredExecutors` lead with `uia` goes down the UIA road and never asks this question.
  *
  *     Closing it needs the offset carried from discover time, or the entity re-resolved at act
  *     time; that is a different change with its own costs, recorded as an open question rather
