@@ -116,7 +116,17 @@ export async function fetchUiaCandidates(
         provisional: false,
       }));
 
-    const warnings: string[] = [...hwndWarnings, ...(candidates.length === 0 ? ["uia_no_elements"] : [])];
+    const warnings: string[] = [
+      ...hwndWarnings,
+      // ADR-036 — a pinned read is the PowerShell walk, and that walk stops when the caller's
+      // deadline runs out. Publishing the prefix is right (a partial view is still a view), but
+      // publishing it as though it were the window is not: whatever was still on the stack is
+      // missing, and the caller cannot tell that from a window that simply has fewer elements
+      // (2ゲート目の指摘). `_narration` refuses a truncated tree outright because it DIFFS two of
+      // them; discover only has to say so.
+      ...(result.truncated ? ["uia_tree_truncated"] : []),
+      ...(candidates.length === 0 ? ["uia_no_elements"] : []),
+    ];
 
     // H4: detect UIA-blind conditions (single-giant-pane / too-few-elements)
     // so that compose-providers can escalate visual lane explainability.

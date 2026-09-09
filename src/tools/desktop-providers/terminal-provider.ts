@@ -20,7 +20,7 @@ function isPromptLine(line: string): boolean {
   return /[>$#]\s*$/.test(line.trim());
 }
 
-/** How long the buffer read itself may take; the wait around it adds the process start. */
+/** How long a SCOPED buffer read may take; the wait around it adds the process start. */
 const TERMINAL_READ_BUDGET_MS = 2000;
 
 export async function fetchTerminalCandidates(
@@ -44,15 +44,22 @@ export async function fetchTerminalCandidates(
 
   try {
     const { getTextViaTextPattern } = await import("../../engine/uia-bridge.js");
-    // The read budget is passed rather than defaulted, because a scoped read leaves the native
-    // engine and the wait around it is the budget plus the process start. Defaulting to 6000 put
-    // a 10 s stall in front of every discover of a terminal-titled window — `normalizeTarget`
-    // fills a handle for every call, so that is not an exceptional path (2ゲート目の指摘). 2000
-    // keeps the worst case where it was before this ADR. It is a stall budget, not a measurement:
-    // if a real conhost buffer needs more, the acceptance cell that reads one will say so.
-    const raw = await getTextViaTextPattern(
-      windowTitle, TERMINAL_READ_BUDGET_MS, pinned !== undefined ? { pinnedHwnd: pinned } : undefined,
-    );
+    // The budget is shortened only on the SCOPED arm. That arm leaves the native engine, and the
+    // wait around it is the budget plus the process start — so the 6000 default became a 10 s
+    // stall in front of a discover. 2000 puts the worst case back where it was before this ADR.
+    //
+    // The unscoped arm keeps the default, because 2000 there is not a stall budget but a hard
+    // cut: it goes to the native reader (or, without one, to PowerShell with no headroom added),
+    // and a conhost buffer that read fine at 6000 would come back `null` — which this provider
+    // reports as `terminal_buffer_empty`, "no buffer", for a read that merely ran out of time
+    // (2ゲート目の指摘). A plain top-level window resolves to no handle at all
+    // (`_resolve-window.ts` Case 3), so that arm is the common one, not the exception.
+    //
+    // Both numbers are stall budgets rather than measurements: if a real conhost buffer needs
+    // more, the acceptance cell that reads one will say so.
+    const raw = pinned !== undefined
+      ? await getTextViaTextPattern(windowTitle, TERMINAL_READ_BUDGET_MS, { pinnedHwnd: pinned })
+      : await getTextViaTextPattern(windowTitle);
 
     const candidates: UiEntityCandidate[] = [];
     const warnings: string[] = [];

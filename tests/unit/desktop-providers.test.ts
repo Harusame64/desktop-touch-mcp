@@ -18,16 +18,21 @@ const uiaBridgeMocks = vi.hoisted(() => ({
     windowRect:   null,
   }),
   detectUiaBlind: vi.fn().mockReturnValue({ blind: false }),
+  getTextViaTextPattern: vi.fn().mockResolvedValue("PS C:\\> "),
 }));
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getUiElements:  uiaBridgeMocks.getUiElements,
   detectUiaBlind: uiaBridgeMocks.detectUiaBlind,
+  getTextViaTextPattern: uiaBridgeMocks.getTextViaTextPattern,
 }));
 
 beforeEach(() => {
+  uiaBridgeMocks.getUiElements.mockReset();
   uiaBridgeMocks.getUiElements.mockResolvedValue({ elements: [], elementCount: 0, windowRect: null });
   uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: false });
+  uiaBridgeMocks.getTextViaTextPattern.mockReset();
+  uiaBridgeMocks.getTextViaTextPattern.mockResolvedValue("PS C:\\> ");
 });
 
 // ── Routing helpers ───────────────────────────────────────────────────────────
@@ -115,6 +120,48 @@ describe("fetchUiaCandidates — what it asks the bridge for (ADR-036)", () => {
     const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "0" });
     expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toBeUndefined();
     expect(r.warnings).toContain("target_hwnd_unparseable");
+  });
+});
+
+describe("fetchUiaCandidates — a prefix of a window says it is one (ADR-036)", () => {
+  it("warns when the walk ran out of time", async () => {
+    // A pinned read is the PowerShell walk, and that walk stops at the caller's deadline.
+    // Publishing the prefix is fine; publishing it as though it were the whole window is not —
+    // the caller cannot tell a truncated tree from a window with fewer elements.
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Start", controlType: "Button", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null, truncated: true,
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.candidates).toHaveLength(1);
+    expect(r.warnings).toContain("uia_tree_truncated");
+  });
+
+  it("says nothing when the tree is whole", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Start", controlType: "Button", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null,
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.warnings).not.toContain("uia_tree_truncated");
+  });
+});
+
+describe("fetchTerminalCandidates — which arm gets the shortened budget (ADR-036)", () => {
+  it("shortens the read only when it is scoped", async () => {
+    // The scoped arm leaves the native engine and its wait is the budget plus the process start,
+    // so the 6000 default became a 10 s stall in front of a discover.
+    await fetchTerminalCandidates({ windowTitle: "Windows Terminal", hwnd: "4919" });
+    expect(uiaBridgeMocks.getTextViaTextPattern.mock.lastCall)
+      .toEqual(["Windows Terminal", 2000, { pinnedHwnd: 4919n }]);
+  });
+
+  it("leaves the unscoped read on its old budget", async () => {
+    // A plain top-level window resolves to no handle, so this is the common arm — and here 2000
+    // is not a stall budget but a hard cut: a buffer that read fine at 6000 would come back null
+    // and be reported as `terminal_buffer_empty`, "no buffer", for a read that ran out of time.
+    await fetchTerminalCandidates({ windowTitle: "Windows Terminal" });
+    expect(uiaBridgeMocks.getTextViaTextPattern.mock.lastCall).toEqual(["Windows Terminal"]);
   });
 });
 

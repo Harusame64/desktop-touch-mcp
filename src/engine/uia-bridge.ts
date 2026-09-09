@@ -26,8 +26,9 @@ function refuseUiaTitleIfExcluded(windowTitle: string): void {
 }
 
 /**
- * (R3 tool-exclusion) The `options.hwnd` route below skips the title-based root search, so the
- * title check above no longer stands between a caller and the window it names. A caller holding
+ * (R3 tool-exclusion) The by-handle route (`options.pinnedHwnd` on the reads, `options.hwnd` on
+ * the writes) skips the title-based root search, so the title check above no longer stands
+ * between a caller and the window it names. A caller holding
  * the locker's handle — or one that resolved it before the locker armed — would otherwise reach
  * the secure dialog with any benign title string attached. The handle registry is the same one
  * `enumWindowsInZOrder` consults, and it short-circuits to `false` when no locker is alive.
@@ -113,11 +114,17 @@ const PS_STARTUP_HEADROOM_MS = 4000;
 /** Enough to reach a first element and print. Below this the walk is not worth starting. */
 const PS_MIN_TREE_BUDGET_MS = 1000;
 /**
- * Left at the end of the deadline for `ConvertTo-Json` and the write to stdout. An estimate, and
- * one whose error is bounded: too small truncates the tail of a tree that was going to be
- * truncated anyway; too large gives up a little walking time.
+ * Left at the end of the deadline for `ConvertTo-Json -Depth 6` and the write to stdout.
+ *
+ * An estimate — nobody has measured serialising a deep tree — so it is set by which way being
+ * wrong hurts. Too small and the serialise overruns the wait that kills the process: empty
+ * stdout, a parse error, **the whole read lost**, which is the failure `truncated` exists to
+ * replace with a partial answer. Too large and the walk gives up some time it could have spent,
+ * and says so in `truncated`. One of those is recoverable by the caller and the other is not, so
+ * this is generous rather than tight (2ゲート目の指摘: at 300 ms it was neither, on a path this
+ * branch had just made the primary one).
  */
-const PS_PRINT_MARGIN_MS = 300;
+const PS_PRINT_MARGIN_MS = 1000;
 
 /**
  * ADR-036 — there used to be a `psTreeBudgetMs(deadline)` here, deriving the walk's budget by
@@ -842,11 +849,15 @@ export async function getUiElements(
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
-  // Cache hit path — only when caller provides a handle + cached:true. It is probed BEFORE the
-  // scoping gate below, because that gate is a full `enumWindowsInZOrder()` sweep (a handful of
-  // syscalls per top-level window) and a hit does not need it: the cached tree was filed under
-  // this handle by whoever read it, and nothing about that changes with what is on screen now
-  // (2ゲート目の指摘). Note: cache is never used when fetchValues:true (values may have changed).
+  // Cache hit path — only when the caller provides a handle and asks for `cached`. The refusals
+  // above run first and stay first: a window that may not be touched, or is gone, is not a thing
+  // to answer from a cache. Note: the cache is never used when fetchValues:true (values may have
+  // changed).
+  //
+  // (An earlier version of this comment explained the ordering by a scoping gate that used to sit
+  // below and sweep every top-level window. The gate is gone — see the note above the scripts —
+  // and the sentence outlived it by a round, which is the thing this file keeps catching itself
+  // doing.)
   // One key for the probe and the write: they had opposite precedence for a while, so a caller
   // passing both a scoping handle and a different cache key would have written under one and
   // looked under the other — a permanent miss, and a title-derived tree answering a scoped

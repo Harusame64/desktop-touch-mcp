@@ -377,15 +377,26 @@ export function isExcludedWindowHandle(hwnd: unknown): boolean {
 }
 
 /**
- * True when the handle no longer names a window.
+ * True when the handle is known NOT to name a window any more.
  *
- * `GetWindowThreadProcessId` answers 0 for a destroyed window, which is also the value
- * `isExcludedWindowHandle` treats as "cannot tell, refuse" while a key locker is armed. Both
- * refusals are right; they are not the same sentence, and a caller that has just been told its
- * target belongs to a secure dialog will not go and re-discover (ADR-036).
+ * `GetWindowThreadProcessId` answers 0 for a destroyed window, which is also what
+ * `isExcludedWindowHandle` reads as "cannot tell, refuse" while a key locker is armed. Both
+ * refusals are right; they are not the same sentence, and a caller told its target belongs to a
+ * secure dialog will not go and re-discover (ADR-036).
+ *
+ * The difference has to be earned, though. `getWindowProcessId` also answers 0 when the native
+ * binding is missing or the call throws, and reading that as "gone" would turn every fail-closed
+ * refusal into "the window you aimed at is gone" — about a window that is on screen and locked,
+ * with the two cases swapped (2ゲート目の指摘). So this asks the binding directly and says
+ * **false** whenever it cannot get an answer: only a call that succeeded and returned PID 0 is
+ * evidence of a destroyed window, and "cannot tell" leaves the stricter refusal standing.
  */
 export function isWindowGone(hwnd: bigint): boolean {
-  return getWindowProcessId(hwnd) === 0;
+  try {
+    return requireNativeWin32().win32GetWindowThreadProcessId!(hwnd).processId >>> 0 === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
