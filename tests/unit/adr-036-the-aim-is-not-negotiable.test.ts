@@ -41,6 +41,10 @@ const h = vi.hoisted(() => ({
   psOutput: '{"ok":true}',
   /** What `getCachedUia` hands back, if anything. */
   cached: null as string | null,
+  /** `isExcludedWindowHandle` — true while a key locker is armed, or on a PID it cannot read. */
+  excludedHandle: false,
+  /** `isWindowGone` — the window behind the handle has been destroyed. */
+  windowGone: false,
   calls: {
     nativeClick: 0,
     nativeSetValue: 0,
@@ -48,6 +52,7 @@ const h = vi.hoisted(() => ({
     nativeText: 0,
     ps: [] as { script: string; timeout?: number }[],
     cacheWrites: [] as { hwnd: bigint; text: string }[],
+    cacheProbes: [] as bigint[],
     enumerations: 0,
   },
 }));
@@ -67,11 +72,12 @@ vi.mock("node:child_process", () => ({
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: vi.fn(() => { h.calls.enumerations++; return h.windows; }),
   isExcludedTitle: vi.fn(() => false),
-  isExcludedWindowHandle: vi.fn(() => false),
+  isExcludedWindowHandle: vi.fn(() => h.excludedHandle),
+  isWindowGone: vi.fn(() => h.windowGone),
 }));
 
 vi.mock("../../src/engine/layer-buffer.js", () => ({
-  getCachedUia: () => h.cached,
+  getCachedUia: (hwnd: bigint) => { h.calls.cacheProbes.push(hwnd); return h.cached; },
   updateUiaCache: (hwnd: bigint, text: string) => { h.calls.cacheWrites.push({ hwnd, text }); },
 }));
 
@@ -118,8 +124,11 @@ beforeEach(() => {
   h.calls.nativeText = 0;
   h.calls.ps = [];
   h.calls.cacheWrites = [];
+  h.calls.cacheProbes = [];
   h.calls.enumerations = 0;
   h.cached = null;
+  h.excludedHandle = false;
+  h.windowGone = false;
   h.native.click = { ok: true, element: "Start", error: null, code: null };
   h.native.setValue = { ok: true, error: null, code: null };
   h.psOutput = '{"ok":true}';
@@ -203,6 +212,50 @@ describe("a pinned read is scoped, whatever the enumeration says", () => {
     await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
     await getTextViaTextPattern("Untitled - Notepad", 6000, { pinnedHwnd: NOTEPAD });
     expect(h.calls.enumerations).toBe(0);
+  });
+});
+
+describe("the budget never outlives the wait that kills the process", () => {
+  it("floors at zero, not at a walk that would run past the deadline", async () => {
+    // `workspace.ts` asks for 2000 ms. A 1000 ms floor plus a slow start ends the walk at
+    // ~2044 ms against a 2000 ms kill: empty stdout, a parse error, and the whole read lost —
+    // which is what `truncated` exists to avoid. An empty tree that says it was cut short is a
+    // thing a caller can act on; nothing is not.
+    h.psOutput = JSON.stringify({ windowTitle: "x", elementCount: 0, truncated: true, elements: [] });
+    await getUiElements("Untitled - Notepad", 3, 50, 2000, { pinnedHwnd: NOTEPAD });
+    expect(h.calls.ps[0]!.script).toContain("[Math]::Max(0, 2000 -");
+  });
+
+  it("probes and writes the cache under one key", async () => {
+    // The two had opposite precedence for a while, so a caller passing both would write under
+    // one and look under the other: a permanent miss, and a title-derived tree answering a
+    // scoped request.
+    h.psOutput = JSON.stringify({ windowTitle: "x", elementCount: 0, elements: [] });
+    await getUiElements("Untitled - Notepad", 3, 50, 10000, {
+      hwnd: OTHER, pinnedHwnd: NOTEPAD, cached: true,
+    });
+    expect(h.calls.cacheProbes).toEqual([NOTEPAD]);
+    expect(h.calls.cacheWrites.map((c) => c.hwnd)).toEqual([NOTEPAD]);
+  });
+});
+
+describe("an ordinary closed window is not called a security refusal", () => {
+  it("says the aim is gone when the handle names nothing, even while a locker is armed", async () => {
+    // `isExcludedWindowHandle` fails CLOSED on a PID it cannot read, and a destroyed window
+    // reads as PID 0. Both answers refuse; only one of them is true, and the executor rethrows
+    // an exclusion without trying anything else — telling the caller it may not touch a window
+    // that no longer exists, instead of telling it to discover again.
+    h.excludedHandle = true;
+    h.windowGone = true;
+    await expect(getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD }))
+      .rejects.toThrow(/is gone/);
+  });
+
+  it("still refuses an excluded window that is very much alive", async () => {
+    h.excludedHandle = true;
+    h.windowGone = false;
+    await expect(getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD }))
+      .rejects.toThrow(/key locker/);
   });
 });
 

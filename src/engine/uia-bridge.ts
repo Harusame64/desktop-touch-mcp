@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
-import { AIM_WINDOW_GONE } from "./aim.js";
+import { AIM_WINDOW_GONE, AimedWindowGoneError } from "./aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
-import { isExcludedTitle, isExcludedWindowHandle } from "./win32.js";
+import { isExcludedTitle, isExcludedWindowHandle, isWindowGone } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
@@ -33,11 +33,16 @@ function refuseUiaTitleIfExcluded(windowTitle: string): void {
  * `enumWindowsInZOrder` consults, and it short-circuits to `false` when no locker is alive.
  */
 function refuseUiaHwndIfExcluded(hwnd: bigint): void {
-  if (isExcludedWindowHandle(hwnd)) {
-    throw new WindowExcludedError(
-      `UIA target window handle ${hwnd} belongs to the desktop-touch key locker and is excluded`,
-    );
-  }
+  if (!isExcludedWindowHandle(hwnd)) return;
+  // ADR-036 — that predicate fails CLOSED on a PID it cannot read, and a window that has been
+  // destroyed reads as PID 0. So while a locker is armed, an ordinary closed window came back as
+  // a security refusal: the executor rethrows `WindowExcludedError` without trying anything else
+  // and the caller is told it may not touch a window that no longer exists, instead of being
+  // told to discover again (2ゲート目の指摘). Both answers refuse; only one of them is true.
+  if (isWindowGone(hwnd)) throw new AimedWindowGoneError(hwnd);
+  throw new WindowExcludedError(
+    `UIA target window handle ${hwnd} belongs to the desktop-touch key locker and is excluded`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -155,8 +160,13 @@ function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
   // on, and a script that throws here would come back as empty stdout and a parse error — the
   // failure this file has already spent two rounds removing.
   const nowMs = "[int64]([datetime]::UtcNow - [datetime]'1970-01-01').TotalMilliseconds";
-  return `[Math]::Max(${PS_MIN_TREE_BUDGET_MS}, ${deadlineMs} - ` +
-    `(${nowMs} - ${spawnedAtMs}) - ${PS_PRINT_MARGIN_MS})`;
+  // Floored at zero, not at a minimum walk. A floor above what is left would put the walk past
+  // the wait that kills the process — `workspace.ts` asks for 2000 ms, and a slow start plus a
+  // 1000 ms floor ends at ~2044 ms against a 2000 ms kill, so the caller gets empty stdout and a
+  // parse error: the whole read lost, which is the failure `truncated` exists to avoid
+  // (2ゲート目の指摘). A walk with no time left prints an empty tree that says it was cut short,
+  // which is a thing a caller can act on.
+  return `[Math]::Max(0, ${deadlineMs} - (${nowMs} - ${spawnedAtMs}) - ${PS_PRINT_MARGIN_MS})`;
 }
 
 /**
@@ -802,12 +812,15 @@ export async function getUiElements(
      * ADR-036 — scope the read to this window, through `FromHandle`.
      *
      * Separate from `hwnd` because the two are different requests and were briefly the same
-     * parameter: `screenshot` and `get_ui_elements` pass a handle to key the cache, and making
-     * that scope the read took the Rust path away from them (a cache miss then paid a
-     * PowerShell round trip and could exceed its 8 s cap, returning nothing on a deep tree).
-     * Two things that are not the same thing do not share a name.
+     * parameter: `screenshot` passes a handle to key the cache, and making that scope the read
+     * took the Rust path away from it. Two things that are not the same thing do not share a
+     * name.
      *
-     * It keys the cache too, but only when it actually scoped the read — see `cacheKey` below.
+     * Scoping is not free — it is the PowerShell path, and a deep tree comes back `truncated`
+     * where the native walker would have finished. `get_ui_elements` pays it deliberately
+     * (`ui-elements.ts`): it resolves a window and then reports which one it read, so a read of
+     * a different window would make that report false. `screenshot` does not pin, and keeps the
+     * native path. The cost goes away when the native side takes a handle, not before.
      */
     pinnedHwnd?: bigint;
     fetchValues?: boolean;
@@ -820,9 +833,13 @@ export async function getUiElements(
   // syscalls per top-level window) and a hit does not need it: the cached tree was filed under
   // this handle by whoever read it, and nothing about that changes with what is on screen now
   // (2ゲート目の指摘). Note: cache is never used when fetchValues:true (values may have changed).
-  const probeKey = options?.hwnd ?? options?.pinnedHwnd;
-  if (options?.cached && probeKey !== undefined && !options.fetchValues) {
-    const cached = getCachedUia(probeKey);
+  // One key for the probe and the write: they had opposite precedence for a while, so a caller
+  // passing both a scoping handle and a different cache key would have written under one and
+  // looked under the other — a permanent miss, and a title-derived tree answering a scoped
+  // request (2ゲート目の指摘).
+  const cacheKey = options?.pinnedHwnd ?? options?.hwnd;
+  if (options?.cached && cacheKey !== undefined && !options.fetchValues) {
+    const cached = getCachedUia(cacheKey);
     if (cached) {
       try {
         const parsed = JSON.parse(cached) as UiElementsResult;
@@ -834,12 +851,10 @@ export async function getUiElements(
   }
   // A pinned read is scoped to the handle. Always — see the note above the scripts.
   const scopeHwnd = options?.pinnedHwnd;
-  // A tree is filed under a handle only when the read was SCOPED to that handle — a scoped read
-  // is the only one that can vouch for which window it describes. A title-derived tree still
-  // files under `hwnd`, which is the caller's own claim that the title it passed names that
-  // window; that claim is as old as the cache and is not what this ADR changed. What is not
-  // allowed is the bridge inventing the claim out of a scoping request (2ゲート目の指摘).
-  const cacheKey = scopeHwnd ?? options?.hwnd;
+  // The key above says which window this result describes: the scoped handle when there is one,
+  // because a scoped read is the only one that can vouch for the window it read; otherwise the
+  // handle the caller keyed by, which is the caller's own claim that its title names that window.
+  // That claim is as old as the cache and is not what this ADR changed.
   // ★ Rust native path
   //
   // ADR-036 — skipped only when the read is SCOPED to a handle, the same way `clickElement`

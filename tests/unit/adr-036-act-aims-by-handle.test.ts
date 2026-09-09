@@ -139,6 +139,21 @@ describe("ADR-036 — the handle reaches the backend", () => {
     expect(deps.mouseClick).not.toHaveBeenCalled();
   });
 
+  it("gives the same answer for a gone window whichever action asked", async () => {
+    // The keyboard rung is tried (see the cell below), but when it fails too the refusal that
+    // was let through is the whole answer. Otherwise typing at a closed window reports an
+    // ordinary `executor_failed` while clicking at the same closed window reports the typed
+    // refusal — one condition, two answers.
+    const deps = mockDeps({
+      uiaSetValue:    vi.fn(async () => { throw new AimedWindowGoneError(4919n); }),
+      keyboardTypeBg: vi.fn(async () => { throw new Error("hwnd 4919 is not in the enumeration"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Untitled - Notepad", hwnd: "4919" }, deps);
+    await expect(exec(entity({ role: "textbox" }), "type", "hello"))
+      .rejects.toBeInstanceOf(AimedWindowGoneError);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
   it("but the type ladder still tries the keyboard, because that rung addresses the handle", async () => {
     // Not symmetry for its own sake: `keyboardTypeBg` looks the window up BY HANDLE and throws
     // when the enumeration does not hold it, so it cannot write into a different window. And a

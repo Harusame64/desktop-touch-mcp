@@ -232,6 +232,11 @@ export function createDesktopExecutor(
             await d.keyboardTypeBg(winTitle, text, aimHwnd);
             return "keyboard";
           } catch (kbErr) {
+            // Both rungs are spent, so the refusal that was let through above is now the whole
+            // answer: a window that has gone gets the same typed refusal here as it does on the
+            // click path, instead of an `executor_failed` that reads like a UIA hiccup
+            // (2ゲート目の指摘). One condition, one answer, whichever action asked.
+            if (uiaErr instanceof AimedWindowGoneError) throw uiaErr;
             throw new Error(
               `Type fallback ladder exhausted for "${entity.label ?? entity.entityId}": ` +
               `uia=${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)} / ` +

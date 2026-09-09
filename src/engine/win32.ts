@@ -377,6 +377,18 @@ export function isExcludedWindowHandle(hwnd: unknown): boolean {
 }
 
 /**
+ * True when the handle no longer names a window.
+ *
+ * `GetWindowThreadProcessId` answers 0 for a destroyed window, which is also the value
+ * `isExcludedWindowHandle` treats as "cannot tell, refuse" while a key locker is armed. Both
+ * refusals are right; they are not the same sentence, and a caller that has just been told its
+ * target belongs to a secure dialog will not go and re-discover (ADR-036).
+ */
+export function isWindowGone(hwnd: bigint): boolean {
+  return getWindowProcessId(hwnd) === 0;
+}
+
+/**
  * (R3 tool-exclusion) True when `windowTitle` names (substring, case-insensitive) a top-level
  * window owned by an excluded PID. This is the by-TITLE counterpart of `isExcludedWindowHandle`
  * for the non-win32 readers that resolve a window from a title STRING through their own subsystem

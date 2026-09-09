@@ -20,6 +20,9 @@ function isPromptLine(line: string): boolean {
   return /[>$#]\s*$/.test(line.trim());
 }
 
+/** How long the buffer read itself may take; the wait around it adds the process start. */
+const TERMINAL_READ_BUDGET_MS = 2000;
+
 export async function fetchTerminalCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
@@ -41,7 +44,15 @@ export async function fetchTerminalCandidates(
 
   try {
     const { getTextViaTextPattern } = await import("../../engine/uia-bridge.js");
-    const raw = await getTextViaTextPattern(windowTitle, undefined, pinned !== undefined ? { pinnedHwnd: pinned } : undefined);
+    // The read budget is passed rather than defaulted, because a scoped read leaves the native
+    // engine and the wait around it is the budget plus the process start. Defaulting to 6000 put
+    // a 10 s stall in front of every discover of a terminal-titled window — `normalizeTarget`
+    // fills a handle for every call, so that is not an exceptional path (2ゲート目の指摘). 2000
+    // keeps the worst case where it was before this ADR. It is a stall budget, not a measurement:
+    // if a real conhost buffer needs more, the acceptance cell that reads one will say so.
+    const raw = await getTextViaTextPattern(
+      windowTitle, TERMINAL_READ_BUDGET_MS, pinned !== undefined ? { pinnedHwnd: pinned } : undefined,
+    );
 
     const candidates: UiEntityCandidate[] = [];
     const warnings: string[] = [];
