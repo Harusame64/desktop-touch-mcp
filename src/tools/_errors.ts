@@ -272,6 +272,15 @@ const SUGGESTS: Record<string, string[]> = {
     "Do NOT retry with the same handle, and do NOT retry by coordinate: both address whatever occupies that window's place now.",
     "If the application was expected to restart (an update, a crash, a document reopened), the new window is a normal target — discover it and take a fresh lease. Handles are not stable across a restart.",
   ],
+  // ADR-036 item 6 — the point is covered. The advice must not send the caller back to
+  // desktop_discover as its first move: the coordinates are already right, and a fresh lease
+  // returns them unchanged with the same window on top.
+  AimOccluded: [
+    "Another window is on top of the point this act would have pressed, and it would have taken the press. Nothing was done. The message names the window in the way.",
+    "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
+    "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top.",
+    "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
+  ],
   // ADR-036 — the aimed press would land outside the window the call named. Every line here has
   // to hold one door shut: `executor_failed` opens with "fall back to mouse_click using the entity
   // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone

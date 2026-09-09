@@ -149,6 +149,7 @@ describe("the identity is the one from the read, not from the moment it was file
         warnings: [],
         target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
         identity: fromTheRead,
+        identityRead: true,
       }),
       executorDeps: {
         uiaClick:       vi.fn(async () => {}),
@@ -167,6 +168,45 @@ describe("the identity is the one from the read, not from the moment it was file
     const result = await facade.touch({ lease: seen.entities[0]!.lease });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("aim_identity_changed");
+  });
+
+  it("keeps an unanswered identity unanswered, instead of reading a fresh one", async () => {
+    // The subtler half of the same bug (PR-side review). "This path does not read identities" and
+    // "it read and could not answer" both arrive as `identity: undefined`, and only the first may
+    // be repaired later: a read taken now describes whoever owns the handle NOW, which on a cache
+    // hit can be the window that inherited it. Recording that as the baseline makes the act-time
+    // comparison answer "same" about a stranger — the exact hole the identity check exists to
+    // close, re-opened by its own fallback.
+    const facade = new DesktopFacade(async () => [], {
+      ingress: ingressReturning({
+        candidates: [candidate("2624042")],
+        warnings: [],
+        target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+        identity: undefined,
+        identityRead: true,        // looked, could not answer
+      }),
+      // The fallback, if it ran, would read THIS — a different process from the one the act finds
+      // below. Injected so the two answers look different on a machine with no native binding,
+      // where "did not run" and "ran and could not answer" are otherwise the same output.
+      readWindowIdentity: () => ({ pid: 4242, processName: "explorer.exe", processStartTimeMs: 111 }),
+      executorDeps: {
+        uiaClick:       vi.fn(async () => {}),
+        uiaSetValue:    vi.fn(async () => {}),
+        cdpClick:       vi.fn(async () => {}),
+        cdpFill:        vi.fn(async () => {}),
+        terminalSend:   vi.fn(async () => {}),
+        keyboardTypeBg: vi.fn(async () => {}),
+        mouseClick:     vi.fn(async () => {}),
+        // If a baseline had been invented, this would be compared against it and the act refused.
+        aimIdentity:    vi.fn(async () => ({ hwnd: 2624042n, pid: 9999, processName: "chrome.exe", processStartTimeMs: 222 })),
+      },
+    });
+
+    const seen = await facade.see({});
+    const result = await facade.touch({ lease: seen.entities[0]!.lease });
+    // No baseline, so nothing to compare: the act goes through, and the log says why rather than
+    // pretending the window was verified.
+    expect(result.ok).toBe(true);
   });
 
   it("keeps identity and candidates together in the cache", async () => {

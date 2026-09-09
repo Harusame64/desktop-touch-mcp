@@ -115,6 +115,32 @@ export class AimIdentityChangedError extends Error {
   }
 }
 
+/**
+ * ADR-036 item 6 — another window is drawn over the point.
+ *
+ * The specification's ladder for a coordinate press blocks or refocuses here; this blocks, and
+ * says which window is in the way so the caller can decide. Refocusing is not done silently
+ * because bringing a window forward is a focus change, and focus theft is one of the five failures
+ * the perception graph exists to notice — a guard that commits it while enforcing itself would be
+ * the same joke as an envelope that recommends the press it just refused.
+ *
+ * Distinct from {@link AimedPointOutsideWindowError}: there the aim's own rectangle no longer
+ * covers the point, and re-discovering fixes it. Here the rectangle is right and something else is
+ * on top, so re-discovering returns the same coordinates and the press lands in the same stranger.
+ */
+export class AimOccludedError extends Error {
+  readonly hwnd: bigint;
+  constructor(hwnd: bigint, byHwnd: bigint, byTitle: string, x: number, y: number) {
+    super(
+      `Refusing to press (${x}, ${y}) for the window this act named (hwnd ${hwnd}): the window on top at ` +
+      `that point is ${byTitle ? `"${byTitle}"` : "another window"} (hwnd ${byHwnd}), so the press would go there. ` +
+      `Bring the intended window forward, or act through a route that does not use coordinates.`,
+    );
+    this.name = "AimOccludedError";
+    this.hwnd = hwnd;
+  }
+}
+
 // ── The aim as a value ────────────────────────────────────────────────────────
 
 /**

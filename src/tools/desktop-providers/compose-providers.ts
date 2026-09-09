@@ -285,6 +285,9 @@ export async function composeCandidates(
     ...withPrependedWarnings(result, normalized.warnings),
     target: normalized.target,
     identity,
+    // Looked for, whether or not it was found. A later read cannot stand in for this one: it would
+    // describe whoever owns the handle at that later moment.
+    identityRead: true,
   };
 }
 

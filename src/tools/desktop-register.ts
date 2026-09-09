@@ -45,6 +45,7 @@ import {
   CursorPlacementBlockedError,
   AimWindowGoneError,
   AimPointOutsideWindowError,
+  AimOccludedError,
   AimIdentityChangedError,
   AimRouteFailedError,
   WindowExcludedRefusalError,
@@ -1006,6 +1007,21 @@ export const desktopActRawHandler = async (
   // rect. All three exist to refuse exactly that press, so the envelope was undoing the executor.
   // Each gets its own entry for the same reason the three above have one.
   //
+  // ADR-036 item 6 — the coordinates are right and something is drawn over them. Its own envelope
+  // because re-discovering, which every neighbour's advice opens with, changes nothing here.
+  if (!result.ok && result.reason === "aim_occluded") {
+    const failure = toFailureEnvelope(
+      Err(new AimOccludedError(
+        "AimOccluded: another window is drawn over the point this act would have pressed, and it would have taken the press — nothing was done. " +
+        "Bring the intended window forward, or use click_element, which does not press a coordinate"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // The aim went stale: the window is alive but has moved or been minimised, so the remembered
   // point is no longer inside it. Re-discovering is the fix, not a consolation.
   if (!result.ok && result.reason === "aim_point_outside_window") {
@@ -1527,6 +1543,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
       "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
       "  aim_identity_changed → the window this act named has closed and Windows gave its handle to another process; nothing was done, and the lease describes a window that is gone. Re-call desktop_discover — do NOT retry with the same handle or by coordinate;",
+      "  aim_occluded → another window is drawn over the point; it would have taken the press, so nothing was done. Bring the intended window forward, or use V1 click_element — re-calling desktop_discover alone does not help, the coordinates are already right;",
       "  aim_point_outside_window → the window is still open but has moved or been minimised, so the remembered point is no longer inside it; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate;",
       "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. Re-call desktop_discover, or try V1 click_element(name=…) on the same entity;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",

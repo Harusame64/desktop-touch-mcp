@@ -77,6 +77,20 @@ export interface ProviderResult {
    * specification files it as a fluent of the entity for the same reason.
    */
   identity?: WindowIdentity;
+  /**
+   * ADR-036 — whether the identity was LOOKED FOR, as opposed to found.
+   *
+   * `identity: undefined` has two meanings and they must not be merged: this path does not read
+   * identities at all (the direct `CandidateProvider`), or it read and the question could not be
+   * answered (no native binding, the window already gone). The first may be repaired by reading
+   * one later; the second may NOT — a later read describes whoever owns the handle NOW, which on a
+   * cache hit can be the window that inherited it, and recording that as the baseline makes the
+   * act-time comparison answer "same" about a stranger (PR 側 codex, 2026-09-09).
+   *
+   * So the flag says which of the two it is, rather than leaving the reader to infer it from an
+   * absence — the same rule the probe had to learn twice today.
+   */
+  identityRead?: boolean;
 }
 
 export interface CandidateIngress {
@@ -109,6 +123,8 @@ interface CacheEntry {
   target?: TargetSpec;
   /** ADR-036 — the identity read at the same moment; see `ProviderResult.identity`. */
   identity?: WindowIdentity;
+  /** ADR-036 — whether it was looked for; see `ProviderResult.identityRead`. */
+  identityRead?: boolean;
   fetchedAtMs: number;
   dirty: boolean;
 }
@@ -154,7 +170,7 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity };
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
@@ -164,6 +180,7 @@ export class SnapshotIngress implements CandidateIngress {
         warnings: result.warnings,
         target: result.target,
         identity: result.identity,
+        identityRead: result.identityRead,
         fetchedAtMs: now,
         dirty: false,
       });
@@ -173,7 +190,7 @@ export class SnapshotIngress implements CandidateIngress {
       // Stale cache fallback — mark dirty so next call retries.
       if (entry) {
         entry.dirty = true;
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity };
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead };
       }
       return { candidates: [], warnings: ["ingress_fetch_error"] };
     }

@@ -133,6 +133,21 @@ export class AimIdentityChangedError extends HandlerError {
 }
 
 /**
+ * ADR-036 — another window is drawn over the point the press would land on.
+ *
+ * Separate from {@link AimPointOutsideWindowError} because the recoveries are opposite. There the
+ * remembered coordinates are stale and re-discovering produces working ones; here they are correct,
+ * and re-discovering returns the same point with the same window on top of it. What has to change
+ * is the screen, not the lease.
+ */
+export class AimOccludedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimOccluded";
+  }
+}
+
+/**
  * ADR-036 — the aimed press would land outside the window the call named.
  *
  * The window is alive; the coordinate is stale. That is why it is not {@link AimWindowGoneError}:

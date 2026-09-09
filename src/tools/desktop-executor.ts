@@ -24,12 +24,14 @@ import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { probeAim, aimProbeEnabled, readWindowIdentity } from "../engine/aim-probe.js";
+import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
 import {
   toAim,
   compareAimIdentity,
   type Aim,
   type WindowIdentity,
   AimIdentityChangedError,
+  AimOccludedError,
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
@@ -124,6 +126,18 @@ export interface ExecutorDeps {
    * no comparison is made, and the probe records that as its own row rather than as a silent pass.
    */
   aimIdentity?(hwnd: bigint): Promise<WindowIdentity | undefined> | WindowIdentity | undefined;
+  /**
+   * ADR-036 item 6 — who would take a press at this point, from the aim's point of view.
+   *
+   * `"other"` blocks the press: the window on top would have taken it. `"owned"` allows it even
+   * where the aim's own rectangle does not reach, because that is where a dropdown or a context
+   * menu lives. `"unknown"` is not a verdict — the containment check decides, exactly as it did
+   * before this dep existed.
+   *
+   * Optional so a test double need not grow one, and so a build whose enumeration cannot answer
+   * loses only this rung rather than the whole press.
+   */
+  pointOwner?(aimHwnd: bigint, x: number, y: number): PointOwner | undefined;
 }
 
 // ── G2: Background terminal send — injectable for testing ─────────────────────
@@ -252,9 +266,17 @@ async function assertPointIsInsideAim(
     return;
   }
   const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
-  // ADR-036 probe — the containment verdict, with the rectangle it was taken against. A row with
-  // `inside:true` and a rect whose origin has moved since discover is the hole: the check passes
-  // and the press goes somewhere else in the same window.
+
+  // ADR-036 item 6 — who would actually take this press. The specification's ladder asks this
+  // between the moved-rectangle correction and the identity check, and it answers a different
+  // question from containment: a rectangle can contain a point that another window is drawn over.
+  //
+  // It runs BEFORE the containment verdict is acted on, because it can also overrule it. A combo
+  // dropdown, a context menu and a tooltip are separate top-level windows that sit outside their
+  // owner's rectangle, and they are what the caller means to press when they discovered one —
+  // refusing those as "the point left the window" is a false refusal the containment check makes
+  // today (gate 2).
+  const owner = deps.pointOwner?.(aimHwnd, x, y);
   probeAim("act.route", {
     route: "containment_check",
     checked: true,
@@ -262,8 +284,15 @@ async function assertPointIsInsideAim(
     point: { x, y },
     windowRect: rect,
     inside,
+    pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title } : {}), ...("why" in owner ? { why: owner.why } : {}) } : null,
     label,
   });
+  if (owner?.kind === "other") {
+    throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y);
+  }
+  // The press is on a window this one owns: allowed, and allowed even when the aim's own rectangle
+  // does not contain the point, because that is where dropdowns live.
+  if (owner?.kind === "owned") return;
   if (!inside) {
     // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
     // and that reason's first suggestion is a coordinate click at the entity's rect — this point.
@@ -918,6 +947,12 @@ function getSharedRealDeps(): ExecutorDeps {
     async aimRect(hwnd) {
       const { getWindowRectByHwnd } = await import("../engine/win32.js");
       return getWindowRectByHwnd(hwnd);
+    },
+
+    pointOwner(aimHwnd, x, y) {
+      // Synchronous on purpose: it reads one enumeration snapshot, and an await here would let the
+      // screen change between the question and the press it is protecting.
+      return whoIsUnderPoint(aimHwnd, x, y);
     },
 
     async aimIdentity(hwnd) {

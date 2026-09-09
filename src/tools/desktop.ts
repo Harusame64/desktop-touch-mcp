@@ -174,6 +174,15 @@ export interface DesktopFacadeOptions {
    */
   executorDeps?: ExecutorDeps;
   /**
+   * ADR-036 — how to read a window's identity, for the paths that have to read one themselves.
+   *
+   * Production leaves it unset and `win32.getWindowIdentity` is used. A test sets it to make the
+   * difference between "the fallback did not run" and "it ran and could not answer" visible —
+   * on any machine without the native binding those two are the same output, which is how a
+   * guard that stopped running would keep passing.
+   */
+  readWindowIdentity?: (hwnd: bigint) => { pid: number; processName: string; processStartTimeMs: number };
+  /**
    * Override modal detection. Default: session-aware check (UIA unknown-role entity in snapshot).
    * Set to () => false to disable. Issue #63 (Codex P1): when overridden alone, `blockingElement`
    * on the modal_blocking response is intentionally dropped to prevent identity mismatch with
@@ -412,8 +421,14 @@ export class DesktopFacade {
     // which has no cache and so has no gap to fall through. Absence stays absence: no native
     // binding, a window already gone, an unreadable handle all leave the aim without an identity,
     // which the comparison reads as "cannot tell" rather than as "changed".
-    session.lastAim = rawResult.identity
+    session.lastAim = rawResult.identityRead
+      // The read looked. Whatever it found — including nothing — is the baseline, and reading again
+      // here would replace "could not tell who owned it" with "here is who owns it NOW". On a cache
+      // hit that is a different window: the one that inherited the handle after the candidates were
+      // taken, recorded as though it had been discovered (PR 側 codex, 2026-09-09).
       ? { ...toAim(session.lastTarget), identity: rawResult.identity }
+      // Nothing looked: the direct `candidateProvider` path, which has no cache and therefore no
+      // gap between the read and this line.
       : await this._aimFor(session.lastTarget);
 
 
@@ -426,6 +441,7 @@ export class DesktopFacade {
       lastTarget: session.lastTarget ?? null,
       lastTargetFrom: rawResult.target ? "resolved" : "caller",
       aimHasIdentity: session.lastAim?.identity !== undefined,
+      identityRead: rawResult.identityRead === true,
       candidateCount: rawResult.candidates.length,
       targetIds: [...new Set(rawResult.candidates.map((c) => String(c.target?.id ?? "")))].slice(0, 8),
       warnings: rawResult.warnings,
@@ -819,8 +835,12 @@ export class DesktopFacade {
     const aim = toAim(target);
     if (aim.hwnd === undefined) return aim;
     try {
-      const { getWindowIdentity } = await import("../engine/win32.js");
-      const ident = getWindowIdentity(aim.hwnd);
+      // Injectable so a test can tell "the fallback did not run" from "the fallback ran and this
+      // machine cannot answer". Without that, the two look identical everywhere except Windows,
+      // and a guard that stopped running would pass its own suite (found by mutating it).
+      const read = this.opts.readWindowIdentity
+        ?? (await import("../engine/win32.js")).getWindowIdentity;
+      const ident = read(aim.hwnd);
       if (!ident || ident.pid === 0) return aim;   // could not ask — absence, not a value
       return {
         ...aim,
