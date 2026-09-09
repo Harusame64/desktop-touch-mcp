@@ -1304,7 +1304,7 @@ export async function evaluateKeyboardGuards(opts: {
   } = opts;
 
   if (lensId) {
-    const guardResult = await evaluatePreToolGuards(lensId, toolName, {});
+    const guardResult = await evaluatePreToolGuards(lensId, toolName, {}, explicitHwnd?.toString());
     if (!guardResult.ok && guardResult.policy === "block") {
       const env = buildEnvelopeFor(lensId, { toolName });
       return {
@@ -2287,7 +2287,7 @@ export const keyboardTypeHandler = async ({
     // Step 2: Guard evaluation (on already-focused window).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:type", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:type", {}, resolvedWin?.hwnd?.toString());
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "keyboard:type" });
         return failWith(
@@ -2857,7 +2857,7 @@ export const keyboardPressHandler = async ({
     // Step 2: Guard evaluation (on already-focused window).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:press", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:press", {}, resolvedWin?.hwnd?.toString());
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "keyboard:press" });
         return failWith(
@@ -3086,7 +3086,7 @@ export const keyboardSequenceHandler = async ({
       // Guard evaluation (lensId perception OR auto-guard).
       let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
       if (lensId) {
-        const guardResult = await evaluatePreToolGuards(lensId, "keyboard:sequence", {});
+        const guardResult = await evaluatePreToolGuards(lensId, "keyboard:sequence", {}, resolvedWin?.hwnd?.toString());
         if (!guardResult.ok && guardResult.policy === "block") {
           const env = buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" });
           return failWith(

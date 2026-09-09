@@ -23,6 +23,15 @@ export interface GuardContext {
   clickY?: number;
   toolName?: string;
   /**
+   * ADR-036 — the window this action is about to touch, as a decimal handle.
+   *
+   * Every other field here describes the ACT; this one describes its target, and it is here
+   * because `target.lensAimsHere` is the one guard that compares the lens against the world
+   * outside it. `undefined` means the caller resolved no window (a bare coordinate click, a
+   * browser tab), and the guard passes rather than guessing.
+   */
+  aimHwnd?: string;
+  /**
    * Set by the caller (e.g. keyboard tools after a successful focusWindowForKeyboard)
    * to indicate that the target window was just brought to the foreground by a
    * verified transition. When true, safe.keyboardTarget skips the foreground==true
@@ -477,6 +486,43 @@ function evalBrowserReady(
   return { kind, ok: true, confidence: readyState.confidence };
 }
 
+/**
+ * ADR-036 — is this lens about the window the action will touch?
+ *
+ * Every other guard here answers a question about the lens's own window: is its process the same
+ * one, is it in the foreground, do these coordinates land inside it. All of them are worth
+ * nothing to a caller whose action is aimed somewhere else — and that was reachable, because a
+ * lens binds a window by title at registration time while the action resolves its own target,
+ * and nothing compared the two. The response then carried the lens's verdicts as though they
+ * described the act.
+ *
+ * Passes when the caller resolved no window at all: a coordinate click has no handle to compare,
+ * and refusing there would break the case the lens exists for.
+ */
+function evalLensAimsHere(lens: PerceptionLens, ctx: GuardContext): GuardResult {
+  if (lens.spec.target.kind !== "window") {
+    return { kind: "target.lensAimsHere", ok: true, confidence: 1 };
+  }
+  if (ctx.aimHwnd === undefined) {
+    return { kind: "target.lensAimsHere", ok: true, confidence: 1 };
+  }
+  if (ctx.aimHwnd === lens.binding.hwnd) {
+    return { kind: "target.lensAimsHere", ok: true, confidence: 1 };
+  }
+  return {
+    kind: "target.lensAimsHere",
+    ok: false,
+    confidence: 1,
+    reason:
+      `This lens watches window ${lens.binding.hwnd} ("${lens.binding.windowTitle}"), ` +
+      `but the action is aimed at window ${ctx.aimHwnd}. Its guards describe the window it ` +
+      `watches, not the one about to be touched.`,
+    suggestedAction:
+      "Register a lens on the window you are acting on, or drop lensId and let the action guard " +
+      "judge the target it resolved",
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -494,6 +540,7 @@ export function evaluateGuard(
     case "safe.clickCoordinates":  return evalClickCoordinates(lens, store, nowMs, ctx);
     case "stable.rect":            return evalStableRect(lens, store, nowMs);
     case "browser.ready":          return evalBrowserReady(lens, store, nowMs, "browser.ready", ctx);
+    case "target.lensAimsHere":    return evalLensAimsHere(lens, ctx);
   }
 }
 
@@ -507,7 +554,14 @@ export function evaluateGuards(
   const results: GuardResult[] = [];
   let firstFailure: GuardResult | undefined;
 
-  for (const kind of lens.spec.guards) {
+  // ADR-036 — `target.lensAimsHere` is not in `lens.spec.guards` and cannot be taken out of it.
+  // A lens chooses which questions to ask about its window; it does not get to choose whether it
+  // is the right window. Every other guard's answer depends on this one being yes.
+  const kinds: GuardKind[] = lens.spec.guards.includes("target.lensAimsHere")
+    ? [...lens.spec.guards]
+    : ["target.lensAimsHere", ...lens.spec.guards];
+
+  for (const kind of kinds) {
     const r = evaluateGuard(kind, lens, store, nowMs, ctx);
     results.push(r);
     if (!r.ok && !firstFailure) firstFailure = r;

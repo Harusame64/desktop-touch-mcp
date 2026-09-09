@@ -836,6 +836,19 @@ export async function runActionGuard(
     };
   }
 
+  // Two different claims, and they are not interchangeable.
+  //
+  // `namedHandle` — the caller typed a handle somewhere. Used below to explain a target that was
+  // not found, because a handle missing from the enumeration is the explanation.
+  //
+  // `addressedHandle` — the DESCRIPTOR carries a handle, which is the tool saying "this action
+  // reaches its window through this handle". `set_element_value` withholds it on purpose while
+  // `DTM_SET_VALUE_CHAIN` is armed, because the extra channels in that chain still resolve by
+  // title, and a refusal lifted there would be a write into the sibling. Reading the caller's
+  // handle instead of the descriptor's would step straight over that decision (ADR-036).
+  const namedHandle = (descriptor?.kind === "window" ? descriptor.hwnd : undefined) ?? callerHwnd;
+  const addressedHandle = descriptor?.kind === "window" ? descriptor.hwnd : undefined;
+
   // No candidates → target not found
   if (resolved.candidates === 0 || !resolved.lens || !resolved.localStore) {
     const status: AutoGuardEnvelope["status"] = "target_not_found";
@@ -851,7 +864,6 @@ export async function runActionGuard(
     // the title, and giving it an empty one is a behaviour change on every tool
     // that reaches here, with no real-machine acceptance behind it. What changes
     // is that the answer stops naming two things that cannot work.
-    const namedHandle = (descriptor?.kind === "window" ? descriptor.hwnd : undefined) ?? callerHwnd;
     const titlelessHandle = namedHandle !== undefined
       && handleIsMissingFromEnumeration(namedHandle);
     // descriptor is non-null at this point (null-checked above)
@@ -915,8 +927,18 @@ export async function runActionGuard(
     }
   }
 
-  // Ambiguous (multiple windows) — v3 §4.1 step 4: keyboard/UIA fail closed, mouse uses coord disambiguation
-  if (resolved.candidates > 1) {
+  // Ambiguous (multiple windows) — v3 §4.1 step 4: keyboard/UIA fail closed, mouse uses coord
+  // disambiguation.
+  //
+  // ADR-036 — "two windows share a title" is a reason to refuse only while the title is how the
+  // action finds its window. A caller that named a handle has already answered the question this
+  // refusal asks, and every write below now addresses that handle: the UIA routes go through
+  // `ElementFromHandle`, the keyboard rungs look the window up by handle, and the guard was the
+  // last layer still counting same-titled windows and stopping the call over it. Note also that
+  // this failure is not among the five the perception graph was built for — focus theft, modal
+  // insertion, window drift, entity replacement, delayed action — every one of which presumes
+  // the target is already known.
+  if (resolved.candidates > 1 && addressedHandle === undefined) {
     if (
       actionKind === "keyboard" ||
       actionKind === "uiaInvoke" ||

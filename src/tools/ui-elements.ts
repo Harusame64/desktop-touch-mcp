@@ -132,7 +132,7 @@ export const clickElementHandler = async ({
 
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "click_element", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "click_element", {}, resolvedWin?.hwnd?.toString());
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "click_element" });
         return failWith(
@@ -257,7 +257,7 @@ export const setElementValueHandler = async ({
 
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "set_element_value", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "set_element_value", {}, resolvedWin?.hwnd?.toString());
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "set_element_value" });
         return failWith(

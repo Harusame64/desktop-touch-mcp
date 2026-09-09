@@ -129,6 +129,17 @@ export const GUARD_KINDS = [
   "safe.clickCoordinates",
   "stable.rect",
   "browser.ready",
+  /**
+   * ADR-036 — does this lens describe the window the action is about to touch?
+   *
+   * The others answer questions about the lens's own window. This one asks whether that window
+   * is the one being acted on, and it exists because the answer was assumed. A caller passing
+   * `lensId` got the lens's verdict attached to its response — `target.identityStable: true` —
+   * about a window the action never went near, while the guard that would have judged the real
+   * target was skipped entirely (`lensId` took an `else if` branch away from it). Two windows in
+   * one envelope, one of them acted on and neither of them named as such.
+   */
+  "target.lensAimsHere",
 ] as const;
 export type GuardKind = (typeof GUARD_KINDS)[number];
 

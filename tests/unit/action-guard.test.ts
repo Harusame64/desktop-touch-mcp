@@ -147,6 +147,46 @@ describe("runActionGuard", () => {
     expect(result.summary.status).toBe("ambiguous_target");
   });
 
+  it("does not block a UIA write that addresses a handle, however many share the title", async () => {
+    // ADR-036 PR 3 — "two windows share a title" is a reason to refuse only while the title is
+    // how the action finds its window. Every UIA write addresses the handle now
+    // (`ElementFromHandle`), so this was the last layer counting same-titled windows and
+    // stopping the call over it — and the failure it refused is not among the five the
+    // perception graph was built for, all of which presume the target is already known.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 3, warnings: [],
+    });
+    mockEvaluateGuards.mockReturnValue(makeOkGuardResult());
+    const result = await runActionGuard({
+      toolName: "click_element",
+      actionKind: "uiaInvoke",
+      descriptor: { kind: "window", titleIncludes: "notepad", hwnd: 0x1234n },
+    });
+    expect(result.block).toBe(false);
+    expect(result.summary.status).not.toBe("ambiguous_target");
+  });
+
+  it("still blocks the same call when the DESCRIPTOR carries no handle", async () => {
+    // The paired half: it is the descriptor — the tool saying "this action reaches its window
+    // through this handle" — that lifts the refusal, not the caller having typed one somewhere.
+    // `set_element_value` withholds the handle on purpose while its fallback chain is armed,
+    // because those channels still resolve by title, and reading the caller's handle here would
+    // step over that decision.
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 3, warnings: [],
+    });
+    const result = await runActionGuard({
+      toolName: "set_element_value",
+      actionKind: "uiaSetValue",
+      descriptor: { kind: "window", titleIncludes: "notepad" },
+      callerHwnd: 0x1234n,
+    });
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("ambiguous_target");
+  });
+
   it("continues for mouseClick with multiple candidates (coordinate disambiguates)", async () => {
     const lens = makeFakeLens();
     mockResolveActionTarget.mockResolvedValue({

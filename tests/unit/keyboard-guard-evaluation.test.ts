@@ -83,6 +83,11 @@ describe("evaluateKeyboardGuards (Focus Leash Phase A — PR #64 Codex fix)", ()
         "L1",
         "keyboard:type",
         {},
+        // ADR-036 — the window the keys are aimed at, so the lens's verdicts can be checked
+        // against it. `undefined` here because this fixture names no explicit handle; the
+        // argument is required so that a caller cannot ask for a verdict without saying what it
+        // is about to touch.
+        undefined,
       );
       // auto-guard path must be untouched when lensId is provided
       expect(runActionGuard).not.toHaveBeenCalled();

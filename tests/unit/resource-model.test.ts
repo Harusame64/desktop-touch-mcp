@@ -186,7 +186,9 @@ describe("projectResourceGuards", () => {
 
     expect(guards.lensId).toBe("perc-1");
     expect(Array.isArray(guards.guards)).toBe(true);
-    expect(guards.guards.length).toBe(baseSpec.guards.length);
+    // +1 for `target.lensAimsHere`, which ADR-036 adds to every lens's evaluation: a lens picks
+    // which questions to ask about its window, not whether it is the right window.
+    expect(guards.guards.length).toBe(baseSpec.guards.length + 1);
     for (const g of guards.guards) {
       expect(typeof g.summary).toBe("string");
     }

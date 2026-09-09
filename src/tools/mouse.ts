@@ -602,7 +602,7 @@ export const mouseClickHandler = async ({
     // Step 3: Guard evaluation on FINAL coordinates (after conversion + homing).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "mouse_click", { x: tx, y: ty, clickAt: { x: tx, y: ty } });
+      const guardResult = await evaluatePreToolGuards(lensId, "mouse_click", { x: tx, y: ty, clickAt: { x: tx, y: ty } }, resolvedWin?.hwnd?.toString());
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "mouse_click", args: { x: tx, y: ty } });
         return failWith(
@@ -827,7 +827,7 @@ export const mouseDragHandler = async ({
     // Step 2: Guard evaluation on FINAL start coordinates (after homing).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "mouse_drag", { x: tsx, y: tsy });
+      const guardResult = await evaluatePreToolGuards(lensId, "mouse_drag", { x: tsx, y: tsy }, resolvedWin?.hwnd?.toString());
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "mouse_drag" });
         return failWith(

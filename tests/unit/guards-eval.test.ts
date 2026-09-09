@@ -530,6 +530,32 @@ describe("evaluateGuards — policy integration", () => {
     populateStore(store, hwnd);
     const lens = makeLens({ spec: { ...baseSpec, guards: ["target.identityStable", "safe.keyboardTarget", "stable.rect"] } });
     const result = evaluateGuards(lens, store, "block");
-    expect(result.results).toHaveLength(3);
+    // Four, not three: ADR-036 prepends `target.lensAimsHere`, which a lens does not get to
+    // leave out. It answers whether this lens is about the window the action will touch, and
+    // every other verdict here is worth nothing if the answer is no.
+    expect(result.results).toHaveLength(4);
+    expect(result.results.map((r) => r.kind)).toContain("target.lensAimsHere");
+  });
+
+  it("does not add the aim guard twice when a lens already asks for it", () => {
+    const store = makeStore();
+    populateStore(store, hwnd);
+    const lens = makeLens({ spec: { ...baseSpec, guards: ["target.lensAimsHere", "target.identityStable"] } });
+    const result = evaluateGuards(lens, store, "block");
+    expect(result.results).toHaveLength(2);
+  });
+
+  it("fails when the action is aimed at a window this lens does not watch", () => {
+    // The defect it was written for: a caller passing `lensId` got this lens's verdicts attached
+    // to its response — `target.identityStable: true` — about a window the action never touched.
+    const store = makeStore();
+    populateStore(store, hwnd);
+    const lens = makeLens({ spec: { ...baseSpec, guards: ["target.identityStable"] } });
+    const elsewhere = evaluateGuards(lens, store, "block", { aimHwnd: "999999" });
+    expect(elsewhere.ok).toBe(false);
+    expect(elsewhere.failedGuard?.kind).toBe("target.lensAimsHere");
+    // …and passes for the window it does watch, and for a caller that resolved none.
+    expect(evaluateGuards(lens, store, "block", { aimHwnd: String(hwnd) }).ok).toBe(true);
+    expect(evaluateGuards(lens, store, "block", {}).ok).toBe(true);
   });
 });

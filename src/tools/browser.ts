@@ -1346,7 +1346,11 @@ async function handleBrowserClickByAxis(args: {
 
   let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
   if (lensId) {
-    const guardResult = await evaluatePreToolGuards(lensId, "browser_click", {});
+    const guardResult = await evaluatePreToolGuards(lensId, "browser_click", {},
+        // ADR-036 — no window handle: this acts on a CDP tab, and a browserTab lens has
+        // no hwnd to be compared against. `target.lensAimsHere` passes for that kind.
+        undefined,
+      );
     if (!guardResult.ok && guardResult.policy === "block") {
       const env = buildEnvelopeFor(lensId, { toolName: "browser_click" });
       return failWith(
@@ -1661,7 +1665,11 @@ export const browserClickElementHandler = async ({
 
     let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "browser_click", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_click", {},
+        // ADR-036 — no window handle: this acts on a CDP tab, and a browserTab lens has
+        // no hwnd to be compared against. `target.lensAimsHere` passes for that kind.
+        undefined,
+      );
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "browser_click" });
         return failWith(
@@ -1923,7 +1931,11 @@ export const browserEvalJsHandler = async ({
   try {
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "browser_eval", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_eval", {},
+        // ADR-036 — no window handle: this acts on a CDP tab, and a browserTab lens has
+        // no hwnd to be compared against. `target.lensAimsHere` passes for that kind.
+        undefined,
+      );
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
@@ -2101,7 +2113,11 @@ export const browserNavigateHandler = async ({
   try {
     let perceptionEnvNav: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "browser_navigate", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_navigate", {},
+        // ADR-036 — no window handle: this acts on a CDP tab, and a browserTab lens has
+        // no hwnd to be compared against. `target.lensAimsHere` passes for that kind.
+        undefined,
+      );
       if (!guardResult.ok && guardResult.policy === "block") {
         const env = buildEnvelopeFor(lensId, { toolName: "browser_navigate" });
         return failWith(

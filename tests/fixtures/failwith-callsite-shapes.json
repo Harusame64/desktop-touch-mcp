@@ -83,7 +83,7 @@
     },
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 1066,
+      "line": 1088,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
@@ -132,70 +132,70 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1667,
+      "line": 1675,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1719,
+      "line": 1727,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1928,
+      "line": 1940,
       "tool": "browser_eval",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2077,
+      "line": 2089,
       "tool": "browser_eval",
       "errKind": "identifier",
       "contextShape": "dynamic"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2124,
+      "line": 2140,
       "tool": "browser_navigate",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2215,
+      "line": 2231,
       "tool": "browser_navigate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2431,
+      "line": 2447,
       "tool": "browser_overview",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2583,
+      "line": 2599,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2714,
+      "line": 2730,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2862,
+      "line": 2878,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"

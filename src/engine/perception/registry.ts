@@ -891,7 +891,18 @@ export function listLenses(): LensSummary[] {
 export async function evaluatePreToolGuards(
   lensId: string,
   toolName: string,
-  args: unknown
+  args: unknown,
+  /**
+   * ADR-036 — the window this action will touch, as a decimal handle, or `undefined` when the
+   * caller resolved none (a bare coordinate click, a browser tab).
+   *
+   * Required, with no default, so that a tool cannot ask for a lens's verdict without saying
+   * what it is about to act on. That was the shape of the defect: `lensId` handed the caller the
+   * lens's guards — `target.identityStable: true` — about a window the action never touched, and
+   * took the branch away from the guard that would have judged the real one. A parameter that
+   * can be forgotten is a parameter that will be.
+   */
+  aimHwnd: string | undefined,
 ): Promise<GuardEvalResult> {
   const lens = lenses.get(lensId);
   if (!lens) throw new Error(`Lens not found: ${lensId}`);
@@ -911,7 +922,7 @@ export async function evaluatePreToolGuards(
     ingestObservations(obs);
   }
 
-  const ctx: GuardContext = { toolName };
+  const ctx: GuardContext = { toolName, ...(aimHwnd !== undefined && { aimHwnd }) };
   if (args && typeof args === "object") {
     const a = args as Record<string, unknown>;
     if (typeof a["x"] === "number") ctx.clickX = a["x"] as number;
