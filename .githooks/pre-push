@@ -52,20 +52,31 @@ export GIT_TERMINAL_PROMPT
 GIT_NO_REPLACE_OBJECTS=1
 export GIT_NO_REPLACE_OBJECTS
 
-# Strip the userinfo out of a URL, so a destination can be NAMED in a message
-# without its credentials being named with it. `https://user:token@host/repo` is
-# a form git accepts and CI hands out, and git passes this hook the destination
-# URL verbatim as `$2`.
+# Reduce a URL to the part that NAMES a destination, so a message can say where
+# it could not reach without saying what it would have authenticated with. Git
+# passes this hook the destination URL verbatim as `$2`, and CI hands out URLs
+# that carry a credential in more than one place.
 #
-# Cuts at the last `@` before the first `/` of the authority and nowhere else: a
-# path containing `@` survives, and a password containing one is still removed.
-# An `scp`-like address (`git@host:path`, no `://`) has no userinfo field to cut
-# and is left as it is.
+# Userinfo — `https://user:token@host/repo`. Cut at the last `@` before the first
+# `/` of the authority and nowhere else: a path containing `@` survives, and a
+# password containing one is still removed.
+#
+# Query and fragment — `https://host/repo.git?access_token=TOKEN`. The first
+# version of this cut the userinfo only, and a token in the query went straight
+# to stderr from the same refusal the userinfo cut was added for: the same defect
+# through a second carrier. Neither part is needed to name a destination, so both
+# go, and they go BEFORE the authority is read so nothing downstream sees them.
+#
+# An `scp`-like address (`git@host:path`, no `://`) has no userinfo, query or
+# fragment field to cut and is left as it is — `?` and `#` there are ordinary
+# path bytes, and mangling a name makes a message less actionable, not safer.
 redact_url() {
     case "$1" in
         *://*)
             _ru_scheme=${1%%://*}
             _ru_rest=${1#*://}
+            _ru_rest=${_ru_rest%%"#"*}
+            _ru_rest=${_ru_rest%%"?"*}
             _ru_auth=${_ru_rest%%/*}
             case "$_ru_auth" in
                 *@*) _ru_rest="${_ru_auth##*@}${_ru_rest#"$_ru_auth"}" ;;

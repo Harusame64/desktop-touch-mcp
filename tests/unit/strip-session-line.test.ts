@@ -584,6 +584,20 @@ describe("pre-push refuses what it should", () => {
     expect(r.stderr).toContain("https://example.invalid/repo.git");
   });
 
+  it.skipIf(!hasSh)("keeps a query-string credential out of the refusal too", () => {
+    // A credential does not have to be userinfo, and the redactor's first
+    // version only cut userinfo — so this reached stderr from the same refusal
+    // the cut was added for. Driven through the hook rather than through
+    // `redact_url` alone, because the unit case cannot see a message that
+    // interpolates something other than `$remote_display`.
+    const dest = "https://example.invalid/repo.git?access_token=TOPSECRET";
+    const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest, {}, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("could not verify");
+    expect(r.stderr, "the query-string token reached stderr").not.toContain("TOPSECRET");
+    expect(r.stderr).toContain("https://example.invalid/repo.git");
+  });
+
   it.skipIf(!hasSh)("redacts the userinfo and only the userinfo", () => {
     // Runs the function as it is written in the hook, rather than a copy of it
     // here — a copy would keep passing after the shipped one changed.
@@ -614,6 +628,23 @@ describe("pre-push refuses what it should", () => {
     expect(redact("git@example.invalid:owner/repo.git")).toBe("git@example.invalid:owner/repo.git");
     // Authority with no path at all.
     expect(redact("https://user:TOPSECRET@example.invalid")).toBe("https://example.invalid");
+    // A credential does not have to be userinfo. The first version of this cut
+    // only the userinfo, and a token in the query reached stderr from the same
+    // refusal the cut was added for — the same defect through a second carrier.
+    expect(redact("https://example.invalid/repo.git?access_token=TOPSECRET")).toBe(
+      "https://example.invalid/repo.git"
+    );
+    expect(redact("https://example.invalid/repo.git#TOPSECRET")).toBe(
+      "https://example.invalid/repo.git"
+    );
+    // Both carriers at once, and the query stripped before the authority is
+    // read so an `@` inside it cannot be mistaken for userinfo.
+    expect(redact("https://user:P@SS@example.invalid/r.git?tok=A@B#f")).toBe(
+      "https://example.invalid/r.git"
+    );
+    // scp-like: `?` and `#` are ordinary path bytes there, and mangling a name
+    // makes the message less actionable rather than safer.
+    expect(redact("git@example.invalid:owner/repo?x.git")).toBe("git@example.invalid:owner/repo?x.git");
   });
 
   it.skipIf(!hasSh)("allows a push that adds none", () => {
