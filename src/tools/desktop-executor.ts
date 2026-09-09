@@ -71,6 +71,14 @@ export interface ExecutorDeps {
   keyboardTypeBg(windowTitle: string, text: string, hwnd?: bigint): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
+  /**
+   * ADR-036 — where the aimed window is NOW, so a coordinate press can be checked against it.
+   *
+   * `null` when the handle names no window any more. Optional, and omitting it skips the check
+   * rather than blocking the press: a test double that does not care about coordinates should
+   * not have to grow one. Production passes `getWindowRectByHwnd`.
+   */
+  aimRect?(hwnd: bigint): Promise<{ x: number; y: number; width: number; height: number } | null>;
 }
 
 // ── G2: Background terminal send — injectable for testing ─────────────────────
@@ -134,6 +142,47 @@ function resolveWindowTitle(target?: TargetSpec): string {
 
 // ADR-036 — the parse lives in `session-registry.ts`, next to `TargetSpec`, because the read
 // half and the write half have to agree on what counts as a handle. See `parseTargetHwnd`.
+
+/**
+ * ADR-036 — a coordinate press on a pinned session has to land inside the window it named.
+ *
+ * The mouse route is not a downgrade: for an entity whose only affordance is visual — an OCR
+ * label, a `read`-only control — it is the route, and refusing it outright would take the
+ * capability away from exactly the windows UIA cannot see. What it must not be is BLIND. The
+ * point comes from a rect remembered at discover time, and a window that has since moved,
+ * minimised or closed leaves that point over something else, which then takes the press.
+ *
+ * Measured on Windows 2026-09-09: pinned `desktop_act` on `read` entities pressed the remembered
+ * rect and returned `ok:true` with no `downgrade` — invisible to the caller and to the guard
+ * that ends the ladder after a failed UIA attempt, because there was no failed attempt.
+ *
+ * What this does NOT prove: that the aimed window is the topmost one at that point. Another
+ * window can sit over it and take the click. Containment is one syscall and catches what was
+ * measured — moved, minimised (rect at -32000), gone; occlusion needs a hit test and is not
+ * claimed here.
+ */
+async function assertPointIsInsideAim(
+  deps: ExecutorDeps,
+  aimHwnd: bigint,
+  x: number,
+  y: number,
+  label: string,
+): Promise<void> {
+  if (!deps.aimRect) return;   // nothing to check with — see the JSDoc on the dep
+  const rect = await deps.aimRect(aimHwnd);
+  if (!rect) {
+    throw new AimedWindowGoneError(aimHwnd, `no rectangle for the window this press was aimed at`);
+  }
+  const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+  if (!inside) {
+    throw new Error(
+      `Refusing to click (${x}, ${y}) for "${label}": this call named window ${aimHwnd}, and that ` +
+      `window is now at (${rect.x}, ${rect.y}) ${rect.width}x${rect.height}. The point comes from a ` +
+      `rectangle remembered at discover time; the window has moved, been minimised, or closed since, ` +
+      `so whatever is under that point now would take the click. Re-run desktop_discover.`,
+    );
+  }
+}
 
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
   return {
@@ -424,6 +473,10 @@ export function createDesktopExecutor(
     const { x, y } = rectCenter(entity.rect);
     // ADR-029 Phase 1 — see the downgrade path above.
     assertCoordinateReachable(x, y);
+    // ADR-036 — and if this call named a window, the point has to still be in it.
+    if (aimHwnd !== undefined) {
+      await assertPointIsInsideAim(d, aimHwnd, x, y, entity.label ?? entity.entityId);
+    }
     await d.mouseClick(x, y);
     return "mouse";
   };
@@ -618,6 +671,11 @@ function getSharedRealDeps(): ExecutorDeps {
           `Background keyboard type incomplete: sent ${r.sent}/${text.length} chars to "${windowTitle}"`,
         );
       }
+    },
+
+    async aimRect(hwnd) {
+      const { getWindowRectByHwnd } = await import("../engine/win32.js");
+      return getWindowRectByHwnd(hwnd);
     },
 
     async mouseClick(x, y) {

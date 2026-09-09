@@ -140,6 +140,46 @@ describe("ADR-036 — the handle reaches the backend", () => {
     expect(deps.mouseClick).not.toHaveBeenCalled();
   });
 
+  it("a pinned press refuses a point that is no longer inside the window it named", async () => {
+    // The mouse route is not always a downgrade. For an entity whose only affordance is visual —
+    // an OCR label, a `read`-only control — it is THE route, so nothing failed first and the
+    // guard that ends the ladder after a failed UIA attempt never ran. Measured on Windows
+    // 2026-09-09: pinned `desktop_act` on `read` entities pressed the rect remembered at discover
+    // time and returned ok:true with no `downgrade` at all — invisible to the caller.
+    const deps = mockDeps({
+      aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 50, height: 50 })),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
+    // entity() sits at 100,200 — outside the window's current rectangle.
+    await expect(exec(entity({ sources: ["visual_gpu"] }), "click")).rejects.toThrow(/Refusing to click/);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("…and presses when the point is still inside it", async () => {
+    const deps = mockDeps({
+      aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 1000, height: 1000 })),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
+    await exec(entity({ sources: ["visual_gpu"] }), "click");
+    expect(deps.mouseClick).toHaveBeenCalledWith(140, 215);
+  });
+
+  it("says the aim is gone when the window has no rectangle at all", async () => {
+    const deps = mockDeps({ aimRect: vi.fn(async () => null) });
+    const exec = createDesktopExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
+    await expect(exec(entity({ sources: ["visual_gpu"] }), "click"))
+      .rejects.toBeInstanceOf(AimedWindowGoneError);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unpinned press alone — there is no window to check it against", async () => {
+    const deps = mockDeps({ aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 1, height: 1 })) });
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
+    await exec(entity({ sources: ["visual_gpu"] }), "click");
+    expect(deps.mouseClick).toHaveBeenCalled();
+    expect(deps.aimRect).not.toHaveBeenCalled();
+  });
+
   it("but an unpinned click still downgrades — a title never promised which window", async () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("Element not found"); }),
