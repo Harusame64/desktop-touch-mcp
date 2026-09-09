@@ -22,7 +22,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { homingCorrection, type Aim, type WindowRect } from "../../src/engine/aim.js";
+import { homingCorrectionForSources, type Aim, type WindowRect } from "../../src/engine/aim.js";
+
+/** A lane that reads inside the bracketed fan-out, so the policy lets these cells through. */
+const LIVE = ["ocr"];
+
+import * as aimModule from "../../src/engine/aim.js";
 import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
@@ -33,12 +38,24 @@ const ORIGIN: WindowRect = { x: 100, y: 200, width: 600, height: 400 };
 const MOVED: WindowRect = { x: 100, y: 129, width: 600, height: 400 };
 
 describe("the correction moves the point with the window, and only then", () => {
+  it("cannot be reached without the policy that decides whether it may run", () => {
+    // `homingCorrection` is module-private: the entry point is the only way in, so a third caller
+    // cannot step around the policy the way the frame-diff focal point did. The comment used to say
+    // "cannot miss it" while the bare function was still exported and nothing stopped anyone
+    // importing it — a claim, not a check (win2, 2026-09-10).
+    expect("homingCorrection" in aimModule).toBe(false);
+    // And the policy is what the entry point applies: a lane the bracketed origin cannot describe
+    // never reaches the correction at all, whatever the rectangles say.
+    expect(homingCorrectionForSources(["visual_gpu"], { kind: "measured", rect: ORIGIN }, MOVED, 458, 215))
+      .toEqual({ applied: false, x: 458, y: 215, why: "measurement_moment_unknown" });
+  });
+
   it("translates a point that was inside a window that moved", () => {
-    expect(homingCorrection({ kind: "measured", rect: ORIGIN }, MOVED, 458, 215)).toEqual({ applied: true, x: 458, y: 144, dx: 0, dy: -71 });
+    expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, MOVED, 458, 215)).toEqual({ applied: true, x: 458, y: 144, dx: 0, dy: -71 });
   });
 
   it("leaves a point alone when the window did not move", () => {
-    expect(homingCorrection({ kind: "measured", rect: ORIGIN }, { ...ORIGIN }, 458, 215))
+    expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, { ...ORIGIN }, 458, 215))
       .toEqual({ applied: false, x: 458, y: 215, why: "not_moved" });
   });
 
@@ -47,7 +64,7 @@ describe("the correction moves the point with the window, and only then", () => 
     // button can point at whatever the layout put there instead, and moving the point by the
     // origin's delta would be inventing a layout rather than following one.
     const resized: WindowRect = { x: 100, y: 129, width: 900, height: 400 };
-    expect(homingCorrection({ kind: "measured", rect: ORIGIN }, resized, 458, 215))
+    expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, resized, 458, 215))
       .toEqual({ applied: false, x: 458, y: 215, why: "window_resized" });
   });
 
@@ -55,7 +72,7 @@ describe("the correction moves the point with the window, and only then", () => 
     // A dropdown, a context menu and a tooltip are top-level windows of their own, sitting outside
     // their owner's rectangle. The owner's delta is not theirs, and item 6 is what allows those
     // presses — this rung must not silently move them.
-    expect(homingCorrection({ kind: "measured", rect: ORIGIN }, MOVED, 458, 900))
+    expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, MOVED, 458, 900))
       .toEqual({ applied: false, x: 458, y: 900, why: "point_was_outside_origin" });
   });
 
@@ -66,7 +83,7 @@ describe("the correction moves the point with the window, and only then", () => 
     // refusal that names the cause. The parked rectangle is how containment recognised a minimised
     // window in the first place (gate 1, 2026-09-09).
     const parked: WindowRect = { x: -32000, y: -32000, width: 600, height: 400 };
-    expect(homingCorrection({ kind: "measured", rect: ORIGIN }, parked, 458, 215))
+    expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, parked, 458, 215))
       .toEqual({ applied: false, x: 458, y: 215, why: "window_off_desktop" });
   });
 
@@ -75,14 +92,14 @@ describe("the correction moves the point with the window, and only then", () => 
     // by this window's layout, so a change in that layout says nothing about it. Testing the resize
     // first would refuse a dropdown press because its OWNER had been resized.
     const resizedOwner: WindowRect = { x: 100, y: 129, width: 900, height: 400 };
-    expect(homingCorrection({ kind: "measured", rect: ORIGIN }, resizedOwner, 458, 900))
+    expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, resizedOwner, 458, 900))
       .toEqual({ applied: false, x: 458, y: 900, why: "point_was_outside_origin" });
   });
 
   it("keeps 'nobody measured one' apart from 'the window would not hold still'", () => {
     // The distinction the whole `AimOrigin` union exists for: one costs the correction, the other
     // refuses the press.
-    expect(homingCorrection({ kind: "moved_during_read" }, MOVED, 458, 215))
+    expect(homingCorrectionForSources(LIVE, { kind: "moved_during_read" }, MOVED, 458, 215))
       .toEqual({ applied: false, x: 458, y: 215, why: "moved_during_read" });
   });
 
@@ -90,7 +107,7 @@ describe("the correction moves the point with the window, and only then", () => 
     // An aim from before this rung, or from a build whose rectangle read could not answer. The two
     // must not look like a window that stood still: one is a missing measurement, the other is a
     // measurement that came back equal.
-    expect(homingCorrection(undefined, MOVED, 458, 215))
+    expect(homingCorrectionForSources(LIVE, undefined, MOVED, 458, 215))
       .toEqual({ applied: false, x: 458, y: 215, why: "no_origin_rect" });
   });
 });

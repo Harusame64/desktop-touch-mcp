@@ -450,6 +450,11 @@ const BRACKETED_SOURCES: ReadonlySet<string> = new Set(["uia", "cdp", "win32", "
  * (found by win2 auditing the review, 2026-09-10). A guard added in one of two callers is the
  * defect this branch keeps re-finding, and that time it was reproduced INSIDE the fix for it.
  *
+ * `homingCorrection` itself is module-private, so this is not a convention a third caller can
+ * quietly step around — the previous version of this comment said "cannot miss it" while the bare
+ * function was still exported and nothing stopped anyone importing it, which is the same kind of
+ * claim-without-a-check the rest of this file is about (win2, 2026-09-10).
+ *
  * What stays out of here is the one signal that needs the screen: an owned popup sitting on the
  * remembered point. Only the press path can ask (it holds the `pointOwner` dep), so only the press
  * path declines for it — which means a diagnostic region can still be corrected where the press was
@@ -470,7 +475,7 @@ export function homingCorrectionForSources(
   return homingCorrection(aimOrigin, current, x, y);
 }
 
-export function homingCorrection(
+function homingCorrection(
   aimOrigin: AimOrigin | undefined,
   current: WindowRect,
   x: number,
