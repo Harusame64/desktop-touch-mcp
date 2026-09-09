@@ -389,9 +389,15 @@ function readOneSample(
   if (!ident || ident.pid === 0) return undefined;
   const className = readOrNothing(reads.className, hwnd);
   const titleFingerprint = readOrNothing(reads.title, hwnd);
-  // The same question again, after the reads that could have straddled a handover. A pid or start
-  // time that has moved means the class and title just read belong to a different window from the
-  // process identity above them.
+  // The same questions again, after the reads that could have straddled a handover.
+  //
+  // BOTH of them, and the first version of this check only re-read the identity — which validates
+  // the process fields while leaving out the one this commit exists for. A window replaced inside
+  // ONE process gives two identical identity reads (same pid, same start time) around a class read
+  // that captured the old window, so the sample passed the check carrying a class the handle no
+  // longer has, `compareAimIdentity` answered "same", and the act went to the replacement (PR 側
+  // codex on #608, second round). A consistency check has to cover every field the comparison
+  // reads, or it certifies the sample against the wrong question.
   let after;
   try {
     after = reads.identity(hwnd);
@@ -400,6 +406,7 @@ function readOneSample(
   }
   if (!after || after.pid === 0) return undefined;
   if (after.pid !== ident.pid || after.processStartTimeMs !== ident.processStartTimeMs) return undefined;
+  if (readOrNothing(reads.className, hwnd) !== className) return undefined;
   return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs, className, titleFingerprint };
 }
 

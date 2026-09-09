@@ -81,6 +81,25 @@ describe("one policy for what an identity read records", () => {
     expect(got).toMatchObject({ pid: 9999, processName: "chrome.exe", className: "Chrome_WidgetWin_1" });
   });
 
+  it("throws away a sample whose CLASS moved, with the process standing still", () => {
+    // PR 側 codex on #608, second round. The first version of the check re-read only the identity,
+    // which validates the process fields and leaves out the one this whole PR exists for: a window
+    // replaced inside ONE process gives two identical identity reads around a class read that
+    // captured the old window. The sample passed carrying a class the handle no longer had,
+    // `compareAimIdentity` answered "same", and the act went to the replacement.
+    const A = { pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 };
+    const classes = ["Notepad", "#32770", "#32770", "#32770"];
+    let c = 0;
+    const got = readWindowIdentityFields(HWND, {
+      identity: () => A,                                  // the process never moves
+      className: () => classes[Math.min(c++, classes.length - 1)]!,
+      title: () => "t",
+    });
+    // The second attempt reads the replacement consistently, so the act-side comparison sees a
+    // different class and refuses — instead of "same" about a window nobody looked at.
+    expect(got).toMatchObject({ pid: 1234, className: "#32770" });
+  });
+
   it("gives up rather than returning a sample it could never settle", () => {
     // A handle flipping through both attempts. Absence is the honest answer — and absence reads as
     // "unknown", which lets the act through, exactly as it does on a build that cannot ask at all.
