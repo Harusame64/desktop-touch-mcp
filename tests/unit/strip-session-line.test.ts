@@ -171,6 +171,22 @@ describe("stripSessionLines — what comes out", () => {
     expect(text).toBe("subject\nbody\n\n");
   });
 
+  it("leaves an unterminated last line unterminated", () => {
+    // The surviving line never had an ending, so giving it one is a byte this
+    // function invented. With `commit.cleanup=verbatim` that byte reaches the
+    // stored commit.
+    const { text, removed } = stripSessionLines(`${TRAILER}\nbody`);
+    expect(removed).toBe(1);
+    expect(text).toBe("body");
+  });
+
+  it("keeps CRLF endings when the removed line was the one carrying them", () => {
+    // The case the borrowed-separator rule was written for. It has to keep
+    // holding without the borrow.
+    const { text } = stripSessionLines(`${TRAILER}\r\nbody\r\n`);
+    expect(text).toBe("body\r\n");
+  });
+
   it("does not add a newline the author never wrote when the removal is mid-message", () => {
     // No trailing blank here, so this isolates the other half: the empty chunk
     // that says "the message ended with a separator" must not be lent one. It

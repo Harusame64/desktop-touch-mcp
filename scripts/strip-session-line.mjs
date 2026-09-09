@@ -73,9 +73,6 @@ export function stripSessionLines(message) {
   const parts = message.split(LINE_SPLIT_RE);
   const kept = [];
   let removed = 0;
-  // The ending the message itself uses, remembered across removed lines too —
-  // the line that carried it may be the one being taken out.
-  let lastSeparator = "\n";
 
   // Where the removal happened, and where the surviving content ends — both as
   // positions in the ORIGINAL message. The trailing-blank rule below needs to
@@ -88,7 +85,6 @@ export function stripSessionLines(message) {
     const line = i / 2;
     const text = parts[i];
     const sep = parts[i + 1] ?? "";
-    if (sep !== "") lastSeparator = sep;
     if (SESSION_LINE_RE.test(text)) {
       removed++;
       lastRemovedLine = line;
@@ -125,18 +121,21 @@ export function stripSessionLines(message) {
 
   if (kept.length === 0) return { text: "", removed };
 
-  // The last surviving line keeps its own ending. If it had none — it was the
-  // unterminated final chunk — it borrows the LAST ending the message used,
-  // looked for across the whole message rather than among the survivors: when
-  // the only line carrying one was the line just removed, there is no surviving
-  // neighbour to ask, and a CRLF message came back with an LF on the end.
-  const last = kept[kept.length - 1];
-  // `text === ""` with no ending is not a line that lost one: it is the empty
-  // chunk that says the message ENDED with a separator, and it contributes no
-  // bytes. Lending it one appends a newline the author never wrote. It only
-  // became reachable when the trailing-blank rule above stopped firing
-  // unconditionally — before that, the pop always took this chunk away first.
-  if (last.sep === "" && last.text !== "") last.sep = lastSeparator;
+  // Nothing is lent an ending here any more.
+  //
+  // There used to be a rule that gave the last surviving chunk the message's
+  // last-seen separator when it had none of its own, written for a CRLF message
+  // whose only ending belonged to the line just removed. It fabricated bytes in
+  // two shapes instead: the empty chunk that merely says "the message ended with
+  // a separator" was lent one, and so was a genuinely unterminated final line —
+  // `Claude-Session: x` + newline + `body` came back as `body` + newline, in a
+  // function whose whole promise is to return what it was given. With
+  // `commit.cleanup=verbatim` those bytes reach the stored commit.
+  //
+  // Removed rather than narrowed, because no test pinned it: with the rule taken
+  // out entirely the suite was still green, and the CRLF case it was written for
+  // holds on its own — the chunk carrying `\r\n` survives and keeps its own
+  // ending. Both shapes are pinned by cases now.
   return { text: kept.map((k) => k.text + k.sep).join(""), removed };
 }
 
