@@ -82,7 +82,10 @@ export const getUiElementsHandler = async ({
     // the read takes one now, so both are pinned to the handle the caller named. Leaving the
     // hints unpinned would have been worse than before: the read would have been scoped to
     // whichever window the hints found by title, making the `hwnd` parameter inert (gate 2).
-    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
+    // The third argument is the PUBLIC `hwnd` argument, not "did we resolve one" — it is what
+    // keys the observation. Omitting it filed two same-titled windows under one title slot, so
+    // alternating between them reported a cache invalidation that never happened (2ゲート目).
+    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd, hwndParam !== undefined);
     const result = await getUiElements(effectiveTitle, maxDepth, maxElements, 10000, {
       pinnedHwnd: resolvedWin?.hwnd, hwnd: hintsBlock?.hwnd, cached: false,
     });

@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
-import { isExcludedTitle, isExcludedWindowHandle } from "./win32.js";
+import { enumWindowsInZOrder, isExcludedTitle, isExcludedWindowHandle } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
@@ -84,6 +84,11 @@ export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
 // Scripts
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The DFS budget written into `makeGetElementsScript`. Kept next to the wait that has to outlast it. */
+const PS_TREE_BUDGET_MS = 8000;
+/** Process start plus two `Add-Type` assembly loads, before the script's own clock starts. */
+const PS_STARTUP_HEADROOM_MS = 4000;
+
 function makeGetElementsScript(
   windowTitle: string,
   maxDepth: number,
@@ -116,8 +121,13 @@ $trueC = [System.Windows.Automation.Condition]::TrueCondition
 
 ${hwnd !== undefined
   ? `# ADR-036: the caller named a window by handle, so no title search happens here.
+# FromHandle THROWS (ElementNotAvailableException) for a handle whose window has gone, rather
+# than returning null — and on the read path handles are stored and reused across calls, so a
+# window closing between two of them is routine. Without the catch the caller got empty stdout
+# and a JSON parse error instead of this sentence (2ゲート目の指摘).
 $hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
-$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"error":"Window not found by hwnd"}'; exit }
 if (-not $target) { Write-Output '{"error":"Window not found by hwnd"}'; exit }`
   : `# Find window by partial title (live query — before cache scope)
 $target = $null
@@ -220,6 +230,44 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
 
 @{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
+}
+
+/**
+ * ADR-036 — is scoping this read to a handle going to change which window it reaches?
+ *
+ * Scoping is a correction for ambiguity, not a different kind of read, and it is not free:
+ * neither `uiaGetElements` nor `uiaGetTextViaTextPattern` takes a handle, so a scoped read
+ * leaves the Rust engine for a PowerShell round trip — measured at 184 ms against 517 ms for
+ * the same window on 2026-09-09. Paying that on every `desktop_discover` is what this asks
+ * about, since `normalizeTarget` fills a handle from the foreground even for a bare call.
+ *
+ * The answer is no when the Win32 enumeration shows exactly one window whose title matches
+ * the query and it is the pinned one: a title search cannot reach a different window than the
+ * handle names, because there is no different window to reach.
+ *
+ * **What this does not cover.** The title searches run against UIA's `Name`, and the
+ * enumeration reads Win32's title; the two can differ (measured on 2026-09-09 — a WPF window
+ * whose UIA `Name` was its content, not its caption). Where they differ, a unique Win32 title
+ * does not prove a unique UIA one, and this returns "no scope needed" for a read that then
+ * resolves by a name this never looked at. That is the same exposure the title-only read had
+ * before any of this, and it closes when the native side takes a handle.
+ */
+export function titleAlreadyNamesOnly(
+  windows: ReadonlyArray<{ hwnd: bigint; title: string }>,
+  windowTitle: string,
+  hwnd: bigint,
+): boolean {
+  const q = windowTitle.toLowerCase();
+  const matches = windows.filter((w) => w.title.toLowerCase().includes(q));
+  return matches.length === 1 && matches[0]!.hwnd === hwnd;
+}
+
+function scopingWouldChangeTheWindow(windowTitle: string, hwnd: bigint): boolean {
+  try {
+    return !titleAlreadyNamesOnly(enumWindowsInZOrder(), windowTitle, hwnd);
+  } catch {
+    return true; // Could not ask — scope, which is the answer that cannot be wrong.
+  }
 }
 
 /**
@@ -649,6 +697,14 @@ export async function getUiElements(
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
   // The scoped window is what the result describes, so it is also what the result files under.
   const cacheKey = options?.pinnedHwnd ?? options?.hwnd;
+  // Scope only where it changes the answer — see `scopingWouldChangeTheWindow`. Without this,
+  // every discover pays the PowerShell path, because `normalizeTarget` fills a handle from the
+  // foreground even for a bare call (2ゲート目の指摘).
+  const scopeHwnd =
+    options?.pinnedHwnd !== undefined &&
+    scopingWouldChangeTheWindow(windowTitle, options.pinnedHwnd)
+      ? options.pinnedHwnd
+      : undefined;
   // Cache hit path — only when caller provides hwnd + cached:true
   // Note: cache is never used when fetchValues:true (values may have changed)
   if (options?.cached && cacheKey !== undefined && !options.fetchValues) {
@@ -672,7 +728,7 @@ export async function getUiElements(
   // round-trip: a read of window A and a click on window B report `no_change` for an action
   // that landed. A handle passed merely to key the cache keeps the native path. When the
   // native side grows a handle parameter this branch goes away.
-  if (nativeUia?.uiaGetElements && options?.pinnedHwnd === undefined) {
+  if (nativeUia?.uiaGetElements && scopeHwnd === undefined) {
     try {
       const result = await nativeUia.uiaGetElements({
         windowTitle,
@@ -707,9 +763,12 @@ export async function getUiElements(
     maxDepth,
     maxElements,
     options?.fetchValues ?? false,
-    options?.pinnedHwnd,
+    scopeHwnd,
   );
-  const output = await runPS(script, timeoutMs);
+  // The script walks the tree under its own 8 s budget and then prints. Killing the process at
+  // the same 8 s means a saturated walk produces nothing at all rather than a truncated answer,
+  // so the outer wait has to be the longer one (2ゲート目の指摘).
+  const output = await runPS(script, Math.max(timeoutMs, PS_TREE_BUDGET_MS + PS_STARTUP_HEADROOM_MS));
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
 
@@ -1226,10 +1285,16 @@ export async function getTextViaTextPattern(
 ): Promise<string | null> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
+  // Same gate as `getUiElements`: scope only where it changes which window is read.
+  const scopeHwnd =
+    options?.pinnedHwnd !== undefined &&
+    scopingWouldChangeTheWindow(windowTitle, options.pinnedHwnd)
+      ? options.pinnedHwnd
+      : undefined;
   // ★ Rust native path (Phase C) — skipped while a handle is in hand: it takes a title only,
   // and a terminal buffer read from one window while the keys go to its same-titled twin is
   // the same split this ADR closed on the UIA route.
-  if (nativeUia?.uiaGetTextViaTextPattern && options?.pinnedHwnd === undefined) {
+  if (nativeUia?.uiaGetTextViaTextPattern && scopeHwnd === undefined) {
     try {
       return await nativeUia.uiaGetTextViaTextPattern({ windowTitle, timeoutMs });
     } catch (e) {
@@ -1248,10 +1313,12 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
-${options?.pinnedHwnd !== undefined
-  ? `# ADR-036: named by handle, so no title search happens here.
-$hwndPtr = [System.IntPtr]::new(${options.pinnedHwnd.toString()})
-$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
+${scopeHwnd !== undefined
+  ? `# ADR-036: named by handle, so no title search happens here. FromHandle throws for a
+# window that has gone; see the twin in makeGetElementsScript.
+$hwndPtr = [System.IntPtr]::new(${scopeHwnd.toString()})
+try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
+catch { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
 if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }`
   : `$target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)

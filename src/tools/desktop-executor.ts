@@ -454,14 +454,6 @@ function getSharedRealDeps(): ExecutorDeps {
       const { enumWindowsInZOrder } = await import("../engine/win32.js");
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
-      // ADR-036 — a by-handle miss is ordinary (`enumWindowsInZOrder` drops untitled, sub-50 px
-      // and excluded windows), and `terminalBgExecute` only knows the title it was handed, so
-      // it would report a window that is plainly on screen as missing. Say which was asked.
-      if (hwnd !== undefined && !wins.some((w) => w.hwnd === hwnd)) {
-        throw new Error(
-          `Terminal window not found: hwnd ${hwnd} is not in the enumeration (title was "${windowTitle}")`,
-        );
-      }
       terminalBgExecute(windowTitle, text, {
         // ADR-035 Phase 1 — the same unfiltered, silently-first-match shape the
         // v1 resolvers have, reached through `desktop_act` instead. Instrumented
@@ -483,6 +475,16 @@ function getSharedRealDeps(): ExecutorDeps {
               identity: "lookup",
               intent: "write",
             });
+            // ADR-036 — a by-handle miss is ordinary (`enumWindowsInZOrder` drops untitled,
+            // sub-50 px and excluded windows), and the throw downstream only knows the title,
+            // so it named a window that is plainly on screen. Thrown here, AFTER the resolve
+            // is logged: an earlier pre-check said the same sentence but left the miss out of
+            // the H2 evidence, counting handle successes and not handle failures (2ゲート目).
+            if (!named[0]) {
+              throw new Error(
+                `Terminal window not found: hwnd ${hwnd} is not in the enumeration (title was "${title}")`,
+              );
+            }
             return named[0];
           }
           const matches = wins.filter((w) => w.title.toLowerCase().includes(title.toLowerCase()));

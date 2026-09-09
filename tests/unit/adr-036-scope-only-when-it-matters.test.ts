@@ -1,0 +1,54 @@
+/**
+ * ADR-036 — scoping a read to a handle is a correction for ambiguity, not a different read.
+ *
+ * It is not free: neither `uiaGetElements` nor `uiaGetTextViaTextPattern` takes a handle, so a
+ * scoped read leaves the Rust engine for a PowerShell round trip — 184 ms against 517 ms on the
+ * same window (Windows, 2026-09-09). `normalizeTarget` fills a handle from the foreground even
+ * for a bare `desktop_discover()`, so scoping unconditionally put every discover on that path.
+ *
+ * The predicate decides when the title already reaches exactly the window the handle names.
+ */
+import { describe, it, expect } from "vitest";
+import { titleAlreadyNamesOnly } from "../../src/engine/uia-bridge.js";
+
+const A = { hwnd: 0x1111n, title: "Untitled - Notepad" };
+const B = { hwnd: 0x2222n, title: "Untitled - Notepad" };
+const C = { hwnd: 0x3333n, title: "Calculator" };
+
+describe("titleAlreadyNamesOnly", () => {
+  it("is true when the title matches one window and it is the pinned one", () => {
+    expect(titleAlreadyNamesOnly([A, C], "Notepad", A.hwnd)).toBe(true);
+  });
+
+  it("is false with a same-titled sibling — the case this ADR exists for", () => {
+    expect(titleAlreadyNamesOnly([A, B, C], "Notepad", A.hwnd)).toBe(false);
+    expect(titleAlreadyNamesOnly([A, B, C], "Notepad", B.hwnd)).toBe(false);
+  });
+
+  it("is false when the one match is a different window", () => {
+    // The title would reach C; the caller named A. Scoping is exactly what is needed.
+    expect(titleAlreadyNamesOnly([A, C], "Calculator", A.hwnd)).toBe(false);
+  });
+
+  it("is false when the pinned window is not in the enumeration at all", () => {
+    // `enumWindowsInZOrder` drops untitled, sub-50 px and excluded windows. A handle naming one
+    // of those cannot be reached by title, so the read has to be scoped.
+    expect(titleAlreadyNamesOnly([C], "Notepad", A.hwnd)).toBe(false);
+    expect(titleAlreadyNamesOnly([], "Notepad", A.hwnd)).toBe(false);
+  });
+
+  it("matches on substring and ignores case, the way the reads do", () => {
+    expect(titleAlreadyNamesOnly([A, C], "notepad", A.hwnd)).toBe(true);
+    expect(titleAlreadyNamesOnly([A, C], "UNTITLED", A.hwnd)).toBe(true);
+  });
+
+  it("is false for a query that matches both windows even without a shared full title", () => {
+    // "Report" and "Report archive" are two windows to a substring search, and the shorter
+    // query reaches both — the asymmetry ADR-036's refusal text has to explain.
+    const short = { hwnd: 0x4444n, title: "Report" };
+    const long  = { hwnd: 0x5555n, title: "Report archive" };
+    expect(titleAlreadyNamesOnly([short, long], "Report", short.hwnd)).toBe(false);
+    // The longer query names only one, so a read by title reaches it and scoping adds nothing.
+    expect(titleAlreadyNamesOnly([short, long], "Report archive", long.hwnd)).toBe(true);
+  });
+});

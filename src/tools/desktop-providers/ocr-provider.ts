@@ -39,14 +39,19 @@ export async function fetchOcrCandidates(
   // ADR-036 — the same parse the UIA halves use. This line sat outside the try below, so a
   // malformed handle threw straight out of the provider while the UIA side quietly read by
   // title: one bad value, two different answers to "which window".
+  //
+  // Leniency here has its own cost, though: with no handle the title falls back to `@active`
+  // and this OCRs the FOREGROUND window while labelling the candidates with the handle the
+  // caller asked for. Loud is better than wrong, so it says so (2ゲート目の指摘).
   const hwnd        = parseTargetHwnd(target) ?? null;
+  const hwndWarnings = hwnd === null && target?.hwnd ? ["target_hwnd_unparseable"] : [];
 
   try {
     const { runSomPipeline } = await import("../../engine/ocr-bridge.js");
     const somResult = await runSomPipeline(windowTitle, hwnd, detectOcrLanguage(), 2, "auto", false, dictionary, roi);
 
     if (somResult.elements.length === 0) {
-      return { candidates: [], warnings: ["ocr_attempted_empty"] };
+      return { candidates: [], warnings: [...hwndWarnings, "ocr_attempted_empty"] };
     }
 
     const candidates: UiEntityCandidate[] = somResult.elements.map((el): UiEntityCandidate => ({
@@ -80,9 +85,9 @@ export async function fetchOcrCandidates(
       // Continue — primary OCR result is unaffected.
     }
 
-    return { candidates, warnings: [] };
+    return { candidates, warnings: [...hwndWarnings] };
   } catch (err) {
     console.error("[ocr-provider] fetchOcrCandidates failed:", err);
-    return { candidates: [], warnings: ["ocr_provider_failed"] };
+    return { candidates: [], warnings: [...hwndWarnings, "ocr_provider_failed"] };
   }
 }
