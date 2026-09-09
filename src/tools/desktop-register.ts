@@ -759,9 +759,15 @@ export const desktopActRawHandler = async (
         // diff clips to a padded region around the expected change rather than
         // diluting a small localized repaint across the whole window (→ false
         // `indeterminate`). Resolved before the touch from the discover snapshot.
+        //
+        // ADR-036 item 5 — `wr` is passed so the centre gets the SAME homing correction the press
+        // gets. Without it the region is centred where the entity WAS and the repaint happens
+        // where the press went, which for a drag past the padding is a correct press reported as
+        // unverified (gate 2, second pass).
         frameDiffPoint = facade.resolveEntityCenterForViewId(
           input.lease.viewId,
           input.lease.entityId,
+          wr,
         );
         preFrame = await captureFrame(frameDiffHwnd, wr);
       }
@@ -1023,13 +1029,15 @@ export const desktopActRawHandler = async (
     };
   }
 
-  // The aim went stale: the window is alive but has moved or been minimised, so the remembered
-  // point is no longer inside it. Re-discovering is the fix, not a consolation.
+  // The aim went stale in a way the homing correction cannot repair: the window is alive, but it
+  // was minimised, or it RESIZED — and a resize may have reflowed the contents, so translating the
+  // point through it would be inventing a layout. A window that only moved never reaches here.
+  // Re-discovering is the fix, not a consolation.
   if (!result.ok && result.reason === "aim_point_outside_window") {
     const failure = toFailureEnvelope(
       Err(new AimPointOutsideWindowError(
-        "AimPointOutsideWindow: the point this act would have pressed is no longer inside the window it named — nothing was clicked. " +
-        "Re-run desktop_discover; the window has moved or been minimised since the lease was taken"
+        "AimPointOutsideWindow: the point this act would have pressed can no longer be followed to the window it named — nothing was clicked. " +
+        "Re-run desktop_discover; the window was minimised, was resized so its contents may have moved independently of its origin, or was moving while it was being read"
       )),
       { optIn: false },
     );
@@ -1545,7 +1553,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
       "  aim_identity_changed → the window this act named has gone and its handle now names a different window (another process, or another window of the same program); nothing was done, and the lease describes a window that is gone. Re-call desktop_discover — do NOT retry with the same handle or by coordinate;",
       "  aim_occluded → another window is drawn over the point; it would have taken the press, so nothing was done. Bring the intended window forward, or use V1 click_element — re-calling desktop_discover alone does not help, the coordinates are already right;",
-      "  aim_point_outside_window → the window is still open but has moved or been minimised, so the remembered point is no longer inside it; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate;",
+      "  aim_point_outside_window → the window is still open but its coordinates can no longer be followed (minimised; resized, so the contents may have reflowed — refused even where the point still falls inside; or moved while it was being read, so that snapshot has no single origin); nothing was clicked. A window that only moved is followed automatically. Re-call desktop_discover — do NOT retry by coordinate;",
       "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. Re-call desktop_discover, or try V1 click_element(name=…) on the same entity;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",

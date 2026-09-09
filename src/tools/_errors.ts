@@ -299,8 +299,9 @@ const SUGGESTS: Record<string, string[]> = {
   // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone
   // the window is still there, so re-discovering is not a consolation — it is the fix.
   AimPointOutsideWindow: [
-    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but it has moved or been minimised since the lease was taken, so the remembered rectangle points somewhere else.",
-    "Do NOT retry by coordinate. The point was refused because it is no longer inside that window — whatever is under it now would take the press.",
+    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but the coordinates taken from it can no longer be trusted.",
+    "A window that only MOVED does not reach here — the point is carried with it by the same offset. This reason means the window was minimised; or it changed SIZE, and a resize may have reflowed the contents, so it is refused even where the point still falls inside; or it moved WHILE it was being discovered, in which case that snapshot's coordinates were measured against more than one position and no correction can describe them — discover again once the window has settled.",
+    "Do NOT retry by coordinate. Whatever is under that point now would take the press.",
     "If the window was minimised, restore it first (focus_window), then re-run desktop_discover: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
     "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way.",
   ],

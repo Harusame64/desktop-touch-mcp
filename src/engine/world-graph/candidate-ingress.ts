@@ -21,7 +21,7 @@
 
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
 import type { TargetSpec } from "./session-registry.js";
-import type { WindowIdentity } from "../aim.js";
+import type { WindowIdentity, AimOrigin } from "../aim.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,6 +91,17 @@ export interface ProviderResult {
    * absence — the same rule the probe had to learn twice today.
    */
   identityRead?: boolean;
+  /**
+   * ADR-036 item 5 — where that window WAS when these candidates were read, or the fact that it
+   * would not hold still while they were being read.
+   *
+   * Carried with the candidates for the same reason the identity is: every rect in the snapshot is
+   * a screen coordinate, and the window origin they were measured against is what makes them
+   * meaningful later. Read at store time instead, a cache hit would pair coordinates from one
+   * moment with an origin from another, and the correction built on the difference would move the
+   * press by a delta that never happened.
+   */
+  origin?: AimOrigin;
 }
 
 export interface CandidateIngress {
@@ -125,6 +136,8 @@ interface CacheEntry {
   identity?: WindowIdentity;
   /** ADR-036 — whether it was looked for; see `ProviderResult.identityRead`. */
   identityRead?: boolean;
+  /** ADR-036 item 5 — the window origin those candidates were measured against. */
+  origin?: AimOrigin;
   fetchedAtMs: number;
   dirty: boolean;
 }
@@ -170,7 +183,7 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead };
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
@@ -181,6 +194,7 @@ export class SnapshotIngress implements CandidateIngress {
         target: result.target,
         identity: result.identity,
         identityRead: result.identityRead,
+        origin: result.origin,
         fetchedAtMs: now,
         dirty: false,
       });
@@ -190,7 +204,7 @@ export class SnapshotIngress implements CandidateIngress {
       // Stale cache fallback — mark dirty so next call retries.
       if (entry) {
         entry.dirty = true;
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead };
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin };
       }
       return { candidates: [], warnings: ["ingress_fetch_error"] };
     }

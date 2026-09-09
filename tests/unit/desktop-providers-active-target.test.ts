@@ -29,6 +29,23 @@ vi.mock("../../src/tools/desktop-providers/visual-provider.js", () => ({
   fetchVisualCandidates: mocks.fetchVisualCandidates,
 }));
 
+/** ADR-036 item 5 — swapped by the cell that makes the window move mid-read. */
+const rectRef = vi.hoisted(() => ({ value: { x: 100, y: 200, width: 600, height: 400 } as { x: number; y: number; width: number; height: number } }));
+
+// ADR-036 — the two reads the ingress takes WITH the observation, so the cell below can tell
+// "stamped on the result" from "the machine could not answer". Everything else in `win32` stays
+// real: only these four are asked for on this path.
+vi.mock("../../src/engine/win32.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
+  return {
+    ...actual,
+    getWindowIdentity: vi.fn(() => ({ pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 })),
+    getWindowClassName: vi.fn(() => "Notepad"),
+    getWindowTitleW: vi.fn(() => "Untitled - Notepad"),
+    getWindowRectByHwnd: vi.fn(() => rectRef.value),
+  };
+});
+
 import { composeCandidates } from "../../src/tools/desktop-providers/compose-providers.js";
 
 function candidate(
@@ -242,6 +259,61 @@ describe("composeCandidates — active target fallback", () => {
     expect(result.warnings[0]).toBe("@active resolved to the CLI host window.");
     expect(result.warnings).toContain("uia_no_elements");
     expect(result.warnings).toContain("partial_results_only");
+  });
+
+  it("stamps the identity and the window origin on the result it hands back", async () => {
+    // ADR-036 items 2 and 5. Both are evidence about THIS observation and both are read here,
+    // before the lanes run — read at store time instead, a cache hit would pair candidates from
+    // one moment with an identity and an origin from another. Nothing else on this path can
+    // notice if the stamp is dropped: the fields are optional, so the types stay green and the
+    // session simply stops correcting and stops comparing.
+    const result = await composeCandidates({ hwnd: "999" });
+
+    expect(result.identityRead).toBe(true);
+    expect(result.identity).toMatchObject({ pid: 1234, className: "Notepad", titleFingerprint: "Untitled - Notepad" });
+    expect(result.origin).toEqual({ kind: "measured", rect: { x: 100, y: 200, width: 600, height: 400 } });
+  });
+
+  it("records no origin at all when the window moved while the lanes were running", async () => {
+    // ADR-036 item 5, the hazard this rung introduces if the origin is sampled once (gate 1): the
+    // lanes take seconds, and a window that moves while they run leaves the candidates describing
+    // its NEW position and the origin its old one. The correction would then treat a move that
+    // happened before the coordinates were measured as one that happened after, and shift an
+    // already-correct point a second time — a wrong press in a case the code got right before this
+    // existed. There is no single origin for those coordinates, so the aim records none.
+    const positions = [
+      { x: 100, y: 200, width: 600, height: 400 },
+      { x: 100, y: 129, width: 600, height: 400 },
+    ];
+    let n = 0;
+    rectRef.value = positions[0]!;
+    const win32 = await import("../../src/engine/win32.js");
+    vi.mocked(win32.getWindowRectByHwnd).mockImplementation(() => positions[Math.min(n++, 1)]!);
+
+    const result = await composeCandidates({ hwnd: "999" });
+
+    // Positive evidence that the coordinates are unusable, NOT an absent rectangle: an absence
+    // would read as "nobody looked" and let the blind press through.
+    expect(result.origin).toEqual({ kind: "moved_during_read" });
+    // The identity is NOT dropped with it: a stale identity fails safe (the act-time comparison
+    // answers "changed" and refuses), so only the origin is read twice.
+    expect(result.identity).toMatchObject({ pid: 1234 });
+    vi.mocked(win32.getWindowRectByHwnd).mockImplementation(() => rectRef.value);
+  });
+
+  it("does not keep an origin the second read could not confirm", async () => {
+    // The window closed, or the read failed, between the two samples. "Could not ask" is not
+    // "unchanged": keeping the first rectangle would hand the correction a delta measured against
+    // a window nothing could see any more.
+    const first = { x: 100, y: 200, width: 600, height: 400 };
+    let n = 0;
+    const win32 = await import("../../src/engine/win32.js");
+    vi.mocked(win32.getWindowRectByHwnd).mockImplementation(() => (n++ === 0 ? first : null));
+
+    const result = await composeCandidates({ hwnd: "999" });
+
+    expect(result.origin).toBeUndefined();
+    vi.mocked(win32.getWindowRectByHwnd).mockImplementation(() => rectRef.value);
   });
 
   it("returns no_provider_matched when @active cannot be resolved", async () => {

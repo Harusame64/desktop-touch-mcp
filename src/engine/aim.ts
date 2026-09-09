@@ -42,10 +42,14 @@ export class AimedWindowGoneError extends Error {
 }
 
 /**
- * The aimed press would land outside the window it named.
+ * The coordinates this act would have pressed can no longer be followed to the window it named.
  *
- * `assertPointIsInsideAim` refuses when the point taken from the entity's remembered rect is no
- * longer inside the aimed window — it moved, or it was minimised (rect at -32000). The refusal
+ * `resolvePressPoint` refuses when the point taken from the entity's remembered rect cannot be
+ * carried to the window as it is now: the window was MINIMISED (parked at -32000), it was RESIZED
+ * (the contents may have reflowed, so it is refused even where the point still falls inside), it
+ * MOVED WHILE IT WAS BEING READ (that snapshot's coordinates were measured against more than one
+ * position), or there was no origin to follow and the point has left the rectangle. A window that
+ * only moved is followed automatically and never arrives here (ADR-036 item 5). The refusal
  * was right from the first day; what it threw was a plain `Error`, so `GuardedTouchLoop` reported
  * `executor_failed`, whose published first suggestion is "fall back to mouse_click using the
  * entity rect center". That is the coordinate this refusal just rejected, named verbatim: the
@@ -266,6 +270,47 @@ export interface Aim {
    * different window, so nothing may refuse on it.
    */
   readonly identity?: WindowIdentity;
+  /**
+   * ADR-036 item 5 — where the aimed window WAS when these coordinates were taken.
+   *
+   * Every entity rect in a snapshot is in screen coordinates, and a screen coordinate is only
+   * meaningful next to the window origin it was measured against. Without this the executor can
+   * ask "is the point still inside the window", which a window that moved with the point still
+   * inside passes, and cannot ask "where did that point go" — which is the specification's first
+   * rung: *if rect moved, apply homing correction*.
+   *
+   * Absent means nothing measured an origin — an aim from before this rung, a build that cannot
+   * ask — and absence is not evidence, so it costs the correction and nothing else.
+   */
+  readonly origin?: AimOrigin;
+}
+
+/**
+ * ADR-036 item 5 — what the read could say about the window's position while it was reading.
+ *
+ * One value rather than a rectangle plus a flag, because the two would have to be kept in step and
+ * a disagreement between them would be unreadable. The second case is the one that keeps being
+ * re-learned on this branch in a new place: **"could not ask" and "asked, and the answer is that
+ * the coordinates are unusable" are not the same fact**, and merging them into an absent rectangle
+ * turns a refusal into a silent blind press (gate 1, third pass, 2026-09-09).
+ */
+export type AimOrigin =
+  /** The window held this rectangle for the whole read, so every coordinate is relative to it. */
+  | { kind: "measured"; rect: WindowRect }
+  /**
+   * The window MOVED while the lanes were reading it. There is no single origin those coordinates
+   * were all measured against — an early lane's candidate describes one position and a late one's
+   * another — so nothing can be corrected and nothing can be trusted. A coordinate press on this
+   * snapshot is refused.
+   */
+  | { kind: "moved_during_read" };
+
+/** A window rectangle in screen coordinates, as `getWindowRectByHwnd` answers it. */
+export interface WindowRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
 }
 
 /** The `TargetSpec` shape, structurally, so this module does not depend on the session registry. */
@@ -310,6 +355,116 @@ function parseHandle(raw: string | undefined): bigint | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * ADR-036 item 5 — the specification's homing correction, as one decision.
+ *
+ * > Need `safe.clickCoordinates(target, x, y)`
+ * >   -> check cached target rect and z-order
+ * >   -> refresh target rect via Win32 if stale or dirty
+ * >   -> **if rect moved, apply homing correction**
+ * >   -> if another top-level window covers point, block or refocus
+ * >   -> if target identity changed, invalidate coordinates
+ *
+ * A point taken from a snapshot is a screen coordinate, and a screen coordinate means something
+ * only next to the window origin it was measured against. When the window has moved and nothing
+ * else has changed, the point the caller means is the same OFFSET INSIDE the window, not the same
+ * place on the screen. The implementation had only the containment check, which asks a different
+ * question and answers "still inside" for exactly the case that goes wrong:
+ *
+ * > Measured on Windows 2026-09-09 (win2, five stacked buttons whose own click handlers write to a
+ * > log): a lease taken on the title bar, the window moved 71 px up, the remembered point left
+ * > where it was — `desktop_act` returned `ok:true`, `executor:"mouse"`, and the button that
+ * > logged the press was `BTN1`, which the lease had never named.
+ *
+ * Deliberately narrow, because the three refusals are the honest answers to the cases a
+ * translation cannot describe:
+ *
+ *   - **Resized.** A window that changed size may have reflowed its contents, and moving the point
+ *     by the origin's delta would be inventing a layout. Not corrected, and the row says so.
+ *   - **The point was not inside the window to begin with.** An owned popup — a dropdown, a
+ *     context menu — lives outside its owner's rectangle, and the owner's delta is not its delta.
+ *   - **Nothing to compare against.** No origin rectangle means the aim predates this rung or the
+ *     read could not answer, and a correction invented from one rectangle is not a correction.
+ *
+ * Pure, and returns the reason in every branch: a press that was NOT corrected has to be
+ * distinguishable in the log from a press that was never asked about.
+ */
+export type Homing =
+  | { applied: true; x: number; y: number; dx: number; dy: number }
+  | {
+      applied: false;
+      x: number;
+      y: number;
+      why:
+        | "no_origin_rect"
+        | "moved_during_read"
+        | "not_moved"
+        | "window_resized"
+        | "point_was_outside_origin"
+        | "owned_popup_at_remembered_point"
+        | "window_off_desktop";
+    };
+
+/**
+ * Windows parks a minimised window at `-32000, -32000`, keeping its size.
+ *
+ * Without this, a minimised window reads as an ordinary move of about 32000 px: the point would be
+ * translated into the parked rectangle, containment would PASS (the point really is inside it), and
+ * the caller would get a generic coordinate failure from the reachability check instead of the
+ * refusal that names the cause and says what to do (gate 1, 2026-09-09). That is a regression this
+ * rung would have introduced into a case the code already handled — the parked rectangle is how
+ * containment recognised a minimised window in the first place.
+ */
+const OFF_DESKTOP = -32000;
+
+export function homingCorrection(
+  aimOrigin: AimOrigin | undefined,
+  current: WindowRect,
+  x: number,
+  y: number,
+): Homing {
+  // Asked FIRST, before the two origin short-circuits, because "parked off the desktop" is a
+  // property of the current rectangle alone and needs no origin to establish. Asked after them, an
+  // aim with no origin — the direct `candidateProvider` road, or a bracket read that could not
+  // answer — fell through to the occlusion rung, which filters minimised windows out of its own
+  // candidates and named whatever was over the remembered point: the caller was told to bring a
+  // MINIMISED window forward (gate 2, third pass). The rung was closed for measured origins only.
+  if (current.x <= OFF_DESKTOP || current.y <= OFF_DESKTOP) {
+    return { applied: false, x, y, why: "window_off_desktop" };
+  }
+  if (!aimOrigin) return { applied: false, x, y, why: "no_origin_rect" };
+  // Not a missing measurement: a measurement that says these coordinates are unusable. The caller
+  // refuses on it, where `no_origin_rect` costs only the correction.
+  if (aimOrigin.kind === "moved_during_read") return { applied: false, x, y, why: "moved_during_read" };
+  const origin = aimOrigin.rect;
+  // Asked before the resize test on purpose. A point that was never inside this window — an owned
+  // popup, which has its own origin — was not described by this window's layout, so a change in
+  // that layout says nothing about it. Testing the resize first would refuse a dropdown press
+  // because its OWNER had been resized.
+  //
+  // The converse — a modal dialog or a dropdown that opens OVER its combo, so its centre sits
+  // INSIDE the owner's rectangle — is NOT a blind spot to record, because it is a REGRESSION: an
+  // owned top-level window does not move when its owner moves, so correcting by the owner's delta
+  // moves a point that was correct, and the ownership test then runs at the moved point and can see
+  // the owner as clear. That is a press the code got right before this rung existed (PR 側 codex on
+  // #609, second round), and it is the one outcome a new rung may not produce. The caller therefore
+  // asks who is under the REMEMBERED point before adopting a correction, and declines it when the
+  // answer is a window the aim owns — see `owned_popup_at_remembered_point` in the executor.
+  if (!containsPoint(origin, x, y)) return { applied: false, x, y, why: "point_was_outside_origin" };
+  if (origin.width !== current.width || origin.height !== current.height) {
+    return { applied: false, x, y, why: "window_resized" };
+  }
+  const dx = current.x - origin.x;
+  const dy = current.y - origin.y;
+  if (dx === 0 && dy === 0) return { applied: false, x, y, why: "not_moved" };
+  return { applied: true, x: x + dx, y: y + dy, dx, dy };
+}
+
+/** Half-open on the far edges, the same rule the containment check uses. */
+export function containsPoint(rect: WindowRect, x: number, y: number): boolean {
+  return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
 }
 
 /**
