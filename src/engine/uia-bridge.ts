@@ -159,7 +159,13 @@ function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
   // which needs .NET 4.6. This form works on every framework `powershell.exe` 5.1 can be sitting
   // on, and a script that throws here would come back as empty stdout and a parse error — the
   // failure this file has already spent two rounds removing.
-  const nowMs = "[int64]([datetime]::UtcNow - [datetime]'1970-01-01').TotalMilliseconds";
+  //
+  // The epoch is CONSTRUCTED, not parsed. `[datetime]'1970-01-01'` is a string cast, and a string
+  // cast is parsed in the current culture — it happens to work in `ja-JP` (checked on the Windows
+  // machine) and nobody here can check the rest. `::new(1970, 1, 1)` asks no question that a
+  // culture could answer differently, which is cheaper than measuring every culture that could
+  // answer it wrong (win, 2026-09-09).
+  const nowMs = "[int64]([datetime]::UtcNow - [datetime]::new(1970,1,1)).TotalMilliseconds";
   // Floored at zero, not at a minimum walk. A floor above what is left would put the walk past
   // the wait that kills the process — `workspace.ts` asks for 2000 ms, and a slow start plus a
   // 1000 ms floor ends at ~2044 ms against a 2000 ms kill, so the caller gets empty stdout and a
