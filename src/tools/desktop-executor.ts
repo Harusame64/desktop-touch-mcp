@@ -551,7 +551,7 @@ function getSharedRealDeps(): ExecutorDeps {
       // canInjectViaPostMessage() gates supported terminals (Windows Terminal, conhost).
       // Unsupported windows (Chromium, UWP) throw explicitly — caller gets executor_failed
       // and the LLM description directs them to V1 terminal({action:'send'}) as fallback.
-      const { enumWindowsInZOrder } = await import("../engine/win32.js");
+      const { enumWindowsInZOrder, isWindowGone: isWindowGoneSync } = await import("../engine/win32.js");
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       terminalBgExecute(windowTitle, text, {
@@ -581,6 +581,14 @@ function getSharedRealDeps(): ExecutorDeps {
             // is logged: an earlier pre-check said the same sentence but left the miss out of
             // the H2 evidence, counting handle successes and not handle failures (2ゲート目).
             if (!named[0]) {
+              // ADR-036 — and say WHICH kind of miss it is. A generic Error becomes
+              // `executor_failed`, whose published terminal recovery is "use V1
+              // terminal(action='send')" — a title-based road that can type into a same-titled
+              // sibling or into the replacement window. That advice is right for a window that
+              // is merely filtered out of the enumeration (untitled, sub-50 px, excluded) and
+              // wrong for one that has been destroyed, so the two stop sharing an answer
+              // (PR 側 codex の P1).
+              if (isWindowGoneSync(hwnd)) throw new AimedWindowGoneError(hwnd);
               throw new Error(
                 `Terminal window not found: hwnd ${hwnd} is not in the enumeration (title was "${title}")`,
               );

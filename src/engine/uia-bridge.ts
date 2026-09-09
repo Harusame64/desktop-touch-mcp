@@ -541,11 +541,18 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS}
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
+# ADR-036 — the window can go between FromHandle and the invoke, and everything in this stretch
+# throws ElementNotAvailableException when it does: FindAll, $el.Current, TryGetCurrentPattern.
+# Only FromHandle was caught, so a window closing here died with a PowerShell exception, reached
+# the caller as a JSON parse error, and the executor read that as an ordinary UIA failure — the
+# route that used to end at a blind press of the remembered rect (PR 側 codex の P1).
+try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
     if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})) { $found = $el; break }
 }
+} catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
 try {
@@ -558,11 +565,21 @@ $ip = $null
 if (-not $found.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$ip)) {
     Write-Output '{"ok":false,"error":"InvokePattern not supported by this element"}'; exit
 }
+# ADR-036 — the name is read BEFORE the invoke and serialised by ConvertTo-Json, not concatenated.
+#
+# Two failures in one line before this. A name containing a quote or a newline produced invalid
+# JSON, so JSON.parse threw AFTER the invoke had already happened, and the caller saw an
+# ordinary failure for an action that had succeeded. And reading $found.Current.Name after
+# $ip.Invoke() throws ElementNotAvailableException for exactly the controls worth invoking —
+# a Close or an OK that destroys itself — turning a success into a failure with no way to tell.
+# Both ended at the same place: the executor treating it as a UIA miss (PR 側 codex の P1/P2).
+$elementName = ''
+try { $elementName = [string]$found.Current.Name } catch {}
 try {
     $ip.Invoke()
-    Write-Output ('{"ok":true,"element":"' + $found.Current.Name + '"}')
+    @{ ok = $true; element = $elementName } | ConvertTo-Json -Compress
 } catch {
-    Write-Output ('{"ok":false,"error":"' + $_.Exception.Message + '"}')
+    @{ ok = $false; error = [string]$_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
 }
@@ -599,11 +616,14 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS}
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
+# The same catch as the click script's — see there.
+try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
     if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
 }
+} catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
 try {
@@ -611,7 +631,10 @@ try {
     $vp.SetValue('${escaped}')
     Write-Output '{"ok":true}'
 } catch {
-    Write-Output ('{"ok":false,"error":"' + $_.Exception.Message + '"}')
+    # Serialised, not concatenated — an exception message can carry a quote (see the click
+    # script), and invalid JSON here reads as an ordinary failure for a write that may have
+    # happened.
+    @{ ok = $false; error = [string]$_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
 }

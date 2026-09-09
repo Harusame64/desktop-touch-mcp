@@ -321,6 +321,45 @@ describe("a dead handle is said out loud, not parsed as a crash", () => {
   });
 });
 
+describe("the pre-invoke stretch is guarded too, and the payload is serialised", () => {
+  it("catches a window that goes between FromHandle and the invoke", async () => {
+    // FindAll, `$el.Current` and TryGetCurrentPattern all throw ElementNotAvailableException
+    // when the window closes mid-script. Only FromHandle was caught, so that death arrived as a
+    // PowerShell exception, reached the caller as a JSON parse error, and read as an ordinary
+    // UIA failure — the route that used to end at a blind press of the remembered rect.
+    h.native.engineThrows = true;
+    ambiguous();
+    h.psOutput = '{"ok":true}';
+    await clickElement("Untitled - Notepad", "Start", undefined, undefined, { hwnd: NOTEPAD });
+    const script = h.calls.ps[0]!.script;
+    // The whole lookup sits inside a try that answers with the gone-aim code, not just the
+    // FromHandle line above it.
+    const fromHandleCatch = script.indexOf("catch { Write-Output");
+    const findAll = script.indexOf("$all   = $target.FindAll");
+    const lookupCatch = script.indexOf('} catch { Write-Output \'{"ok":false,"error":"Window not found by hwnd"');
+    expect(findAll).toBeGreaterThan(fromHandleCatch);
+    expect(lookupCatch).toBeGreaterThan(findAll);
+  });
+
+  it("reads the element name before invoking, and serialises the answer", async () => {
+    // Two failures in one line before this: a name with a quote made invalid JSON, so the parse
+    // threw AFTER the invoke had happened; and reading the name after `Invoke()` throws for
+    // exactly the controls worth invoking — a Close or an OK that destroys itself.
+    h.native.engineThrows = true;
+    ambiguous();
+    h.psOutput = '{"ok":true}';
+    await clickElement("Untitled - Notepad", "Close", undefined, undefined, { hwnd: NOTEPAD });
+    const script = h.calls.ps[0]!.script;
+    expect(script).toContain("$elementName = ''");
+    // The CODE line, not the comment above it that mentions the same call — the comment sits
+    // earlier in the script and an `indexOf` cannot tell them apart.
+    expect(script.indexOf("$elementName = [string]$found.Current.Name"))
+      .toBeLessThan(script.indexOf("\n    $ip.Invoke()"));
+    expect(script).toContain("ConvertTo-Json -Compress");
+    expect(script).not.toContain(`'{"ok":true,"element":"' +`);
+  });
+});
+
 describe("a tree is filed under a handle only when the read was scoped to it", () => {
   it("files under the window that was read, not the one the caller keyed by", async () => {
     // The two parameters are different requests, and when they disagree the read is the one
