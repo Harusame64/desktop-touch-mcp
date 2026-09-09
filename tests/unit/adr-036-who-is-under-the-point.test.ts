@@ -97,10 +97,12 @@ describe("who would take the press", () => {
   });
 
   it("does not pass over a transparent window that is not layered", () => {
-    // `WS_EX_TRANSPARENT` alone governs painting order among siblings; such a window can still take
-    // the press (PR 側 codex). Skipping it would report the aim as clear and let the click land on
-    // the overlay — so it counts as occluding, and the caller gets a refusal naming it rather than
-    // a silent press into something else.
+    // Measured on Windows 2026-09-10 (win2, ADR-036 item 11), after two reviews said opposite
+    // things about it and neither had measured: a titled, visible overlay carrying
+    // `WS_EX_TRANSPARENT` and NOT `WS_EX_LAYERED` (exStyle read back as `0x00050128`) BLOCKED the
+    // press to the fixture below, behaving exactly like a plain opaque window. Both bits together
+    // (`0x000D0128`) let it through. So this is not the cautious reading — it is the right one, and
+    // skipping such a window would report the aim as clear and let the click land on the overlay.
     const deps = enumerating(
       win({ hwnd: OTHER, zOrder: 0, exStyle: 0x00000020, title: "overlay" }),
       win({ hwnd: AIM, zOrder: 1 }),

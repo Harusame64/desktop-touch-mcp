@@ -54,13 +54,23 @@ import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
  * forward. The exact answer needs `WindowFromPoint` / `WM_NCHITTEST`, which the native bindings do
  * not expose.
  *
- * **The two gates say opposite things about this bit and neither was measured** (ADR-036 item 11).
- * Gate 2 reads `WS_EX_TRANSPARENT` as the hit-test rule for a top-level window, which would make
- * this mask a permanent block on coordinate presses under any annotation or HUD overlay —
- * re-discovering returns the same answer, so the caller cannot get past it. The conservative side
- * is in the code because a refusal that names a window is recoverable in a way a silent press into
- * an overlay is not. Settling it is one Windows round: a titled, visible, >=50 px window with
- * `WS_EX_TRANSPARENT` and NOT `WS_EX_LAYERED` over the BTN1 fixture, and the fixture's own log.
+ * **Measured, and both bits really are required** (win2, 2026-09-10, ADR-036 item 11). Two reviews
+ * had said opposite things about this and neither had measured it: one read `WS_EX_TRANSPARENT` as
+ * the hit-test rule for a top-level window, which would have made this mask a permanent block on
+ * coordinate presses under any annotation or HUD overlay. The round put a titled, visible, >=50 px
+ * overlay over a fixture whose buttons log their own presses, and read the fixture's log:
+ *
+ *   | overlay                            | exStyle read back | press |
+ *   |------------------------------------|-------------------|-------|
+ *   | none                               | —                 | lands |
+ *   | plain opaque                       | `0x00050108`      | blocked |
+ *   | `TRANSPARENT` only                 | `0x00050128`      | **blocked** |
+ *   | `TRANSPARENT \| LAYERED`           | `0x000D0128`      | lands |
+ *   | `LAYERED` only                     | `0x000D0108`      | blocked |
+ *
+ * So `TRANSPARENT` alone behaves exactly like a plain opaque window, and the mask below is not the
+ * cautious choice — it is the correct one. An overlay carrying only that bit really does take the
+ * press, so refusing under it is not a false refusal.
  */
 const WS_EX_TRANSPARENT = 0x00000020;
 const WS_EX_LAYERED     = 0x00080000;
