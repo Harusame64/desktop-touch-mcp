@@ -49,7 +49,9 @@ export class AimedWindowGoneError extends Error {
  * (the contents may have reflowed, so it is refused even where the point still falls inside), it
  * MOVED WHILE IT WAS BEING READ (that snapshot's coordinates were measured against more than one
  * position), or there was no origin to follow and the point has left the rectangle. A window that
- * only moved is followed automatically and never arrives here (ADR-036 item 5). The refusal
+ * moved WITHOUT resizing is followed automatically and never arrives here, when the coordinates
+ * were measured in the same read that measured the window; a move large enough to put the point
+ * off the window is answered earlier by the viewport gate (ADR-036 item 5). The refusal
  * was right from the first day; what it threw was a plain `Error`, so `GuardedTouchLoop` reported
  * `executor_failed`, whose published first suggestion is "fall back to mouse_click using the
  * entity rect center". That is the coordinate this refusal just rejected, named verbatim: the

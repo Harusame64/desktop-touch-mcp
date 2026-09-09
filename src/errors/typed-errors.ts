@@ -156,7 +156,10 @@ export class AimOccludedError extends HandlerError {
  * recovery is one recovery: the window may be MINIMISED (parked off the desktop), RESIZED (the
  * contents may have reflowed, so it is refused even where the point still falls inside), or it may
  * have MOVED WHILE IT WAS BEING READ (that snapshot's coordinates were measured against more than
- * one position). A window that only moved is followed automatically and never arrives here.
+ * one position). A window that moved WITHOUT resizing is followed automatically and never arrives
+ * here — when the coordinates were measured in the same read that measured the window. A move
+ * large enough to put the point off the window is answered earlier still, by the viewport gate as
+ * `entity_outside_viewport`.
  *
  * The window is alive; its coordinates are stale. That is why it is not {@link AimWindowGoneError}:
  * there, nothing addressed to the old handle can succeed and the caller has to start from a new
