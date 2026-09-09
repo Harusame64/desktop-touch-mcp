@@ -101,7 +101,12 @@ describe("ADR-036 — a handle-named observation is keyed by the handle", () => 
     // The key is NUL-separated because a window title can contain anything else
     // — including `hwnd:4369`. Nothing exercised that, and a mutant using a
     // printable prefix survived the suite.
-    const collide = `hwnd:${A}`;
+    // `String(...)` rather than letting the template convert: the handle is a BigInt, and the
+    // conversion is the whole point of the line — this key is a STRING that a window title could
+    // also carry. CodeQL reads the implicit form as a conversion "from undefined" (js/implicit-
+    // operand-conversion, alert 161 on main), which is wrong about the value and right about the
+    // style: a conversion worth a test is worth spelling out.
+    const collide = `hwnd:${String(A)}`;
     windows = [{ hwnd: A, title: collide }];
     expect(buildHintsForTitle(collide, A, true)).not.toBeNull();   // handle slot
     takeLastInvalidation();
