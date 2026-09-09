@@ -35,6 +35,8 @@ const h = vi.hoisted(() => ({
       elements: [] as unknown[],
     } as Record<string, unknown>,
     text: "native buffer",
+    /** Make the native read fail, so an UNSCOPED caller reaches the PowerShell fallback. */
+    textThrows: false,
   },
   psOutput: '{"ok":true}',
   /** What `getCachedUia` hands back, if anything. */
@@ -78,7 +80,11 @@ vi.mock("../../src/engine/native-engine.js", () => ({
     async uiaClickElement() { h.calls.nativeClick++; return h.native.click; },
     async uiaSetValue() { h.calls.nativeSetValue++; return h.native.setValue; },
     async uiaGetElements() { h.calls.nativeElements++; return h.native.elements; },
-    async uiaGetTextViaTextPattern() { h.calls.nativeText++; return h.native.text; },
+    async uiaGetTextViaTextPattern() {
+      h.calls.nativeText++;
+      if (h.native.textThrows) throw new Error("native read failed");
+      return h.native.text;
+    },
   },
 }));
 
@@ -117,6 +123,7 @@ beforeEach(() => {
   h.native.click = { ok: true, element: "Start", error: null, code: null };
   h.native.setValue = { ok: true, error: null, code: null };
   h.psOutput = '{"ok":true}';
+  h.native.textThrows = false;
   unambiguous();
 });
 
@@ -269,6 +276,36 @@ describe("a cache hit does not pay for a question it did not need to ask", () =>
   });
 });
 
+describe("the walk measures its own start instead of being told what it cost", () => {
+  it("hands the script the caller's whole deadline and a timestamp to subtract", async () => {
+    // The constant it replaced was 4000 ms; the real thing was measured at 233 ms median on the
+    // Windows machine. Subtracting the estimate cost `_narration` most of its walking time —
+    // 4000 ms of deadline collapsing to the 1000 ms floor.
+    h.psOutput = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
+    const before = Date.now();
+    await getUiElements("Untitled - Notepad", 3, 50, 4000, { pinnedHwnd: NOTEPAD });
+    const script = h.calls.ps[0]!.script;
+    // The deadline is in the script, not a number derived from it out here …
+    expect(script).toContain("4000 -");
+    // … and what gets subtracted is read from the clock, not assumed.
+    expect(script).toContain("[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()");
+    const stamp = Number(/ToUnixTimeMilliseconds\(\) - (\d+)\)/.exec(script)![1]);
+    expect(stamp).toBeGreaterThanOrEqual(before);
+    expect(stamp).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("does not cache a tree the walk cut short", async () => {
+    // A prefix of a window is not the window, and the cache serves it for the whole TTL.
+    h.psOutput = JSON.stringify({
+      windowTitle: "Untitled - Notepad", elementCount: 1, truncated: true,
+      elements: [{ name: "Start" }],
+    });
+    const r = await getUiElements("Untitled - Notepad", 3, 50, 4000, { pinnedHwnd: NOTEPAD });
+    expect(r.truncated).toBe(true);
+    expect(h.calls.cacheWrites).toHaveLength(0);
+  });
+});
+
 describe("the terminal buffer read gets a deadline it can finish inside", () => {
   it("adds the process start to the caller's budget rather than eating it", async () => {
     h.psOutput = '{"ok":true,"text":"C:\\\\> ","controlType":"Document"}';
@@ -278,6 +315,16 @@ describe("the terminal buffer read gets a deadline it can finish inside", () => 
     // the script's first statement. Sharing one number left ~2 s for the read itself, and a
     // timeout here returns null — reported as "no buffer", not as "not read in time".
     expect(h.calls.ps[0]!.timeout).toBe(10000);
+  });
+
+  it("leaves an unpinned caller's deadline alone, even when it falls back to PowerShell", async () => {
+    // `terminal.ts` reads a baseline and a post-read around every send and treats 6000 as a hard
+    // deadline. The headroom exists for the read this ADR added; quietly adding four seconds to
+    // every existing caller is not its business (2ゲート目の指摘).
+    h.native.textThrows = true;
+    h.psOutput = '{"ok":true,"text":"C:\\> ","controlType":"Document"}';
+    await getTextViaTextPattern("Untitled - Notepad", 6000);
+    expect(h.calls.ps[0]!.timeout).toBe(6000);
   });
 
   it("keeps the native path for an unpinned read, where its deadline is untouched", async () => {

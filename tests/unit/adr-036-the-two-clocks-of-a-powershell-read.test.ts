@@ -7,32 +7,13 @@
  * by both gates, because a Win32 caption sweep cannot vouch for what a UIA `Name` search will
  * reach, and it is a photograph taken before the read anyway.
  *
- * So what is left to get right is the time: the walk must finish inside the wait, and the wait
- * must be long enough for the read to happen at all.
+ * So what is left to get right is the time. The two reads answer it differently: the tree walk
+ * measures its own start and stops inside the caller's deadline, while the TextPattern read
+ * cannot be interrupted at all, so its WAIT is what has to be long enough.
  */
 import { describe, it, expect } from "vitest";
-import { psTreeBudgetMs, psReadWaitMs } from "../../src/engine/uia-bridge.js";
+import { psReadWaitMs } from "../../src/engine/uia-bridge.js";
 
-
-describe("psTreeBudgetMs — the walk always ends before the wait around it", () => {
-  it("leaves room for process start and the assembly loads", () => {
-    expect(psTreeBudgetMs(10000)).toBe(6000);
-    expect(psTreeBudgetMs(8000)).toBe(4000);
-  });
-
-  it("follows a caller who asks for less, rather than overriding them", () => {
-    // `workspace.ts` passes 2000 and `_narration.ts` 4000 on purpose. A fixed budget made both
-    // wait twelve seconds; a fixed wait killed the walk before it printed. Neither is the
-    // caller's business — the budget is derived from what they asked for.
-    expect(psTreeBudgetMs(2000)).toBeLessThan(2000);
-    expect(psTreeBudgetMs(4000)).toBeLessThan(4000);
-  });
-
-  it("never asks for a walk too short to reach anything", () => {
-    expect(psTreeBudgetMs(0)).toBe(1000);
-    expect(psTreeBudgetMs(-5000)).toBe(1000);
-  });
-});
 
 describe("psReadWaitMs — the other shape of read, where the deadline is what moves", () => {
   it("adds the process start to the caller's read budget", () => {
@@ -43,11 +24,11 @@ describe("psReadWaitMs — the other shape of read, where the deadline is what m
     expect(psReadWaitMs(2000)).toBe(6000);
   });
 
-  it("is the inverse of psTreeBudgetMs above the floor", () => {
-    // Both roads then mean the same thing by the number: how long the READ may take. The native
-    // path always read it that way — it pays no process start.
-    for (const budget of [2000, 6000, 20000]) {
-      expect(psTreeBudgetMs(psReadWaitMs(budget))).toBe(budget);
-    }
+  it("is generous on purpose, and that is free here", () => {
+    // The startup it allows for was measured at 233 ms median (Windows, 2026-09-09), and 4000 is
+    // roughly seventeen times that — deliberately, because a cold machine was never measured and
+    // a wait that is too long costs nothing until something has already failed. The same
+    // generosity was NOT free on the walk's budget, which is why that one measures instead.
+    expect(psReadWaitMs(0)).toBeGreaterThan(1044); // the worst of sixteen spawning at once
   });
 });

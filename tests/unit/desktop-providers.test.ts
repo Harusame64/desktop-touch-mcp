@@ -90,22 +90,31 @@ describe("composeCandidates — routing policy (P2-B)", () => {
 // ── Individual provider error resilience ─────────────────────────────────────
 
 describe("fetchUiaCandidates — what it asks the bridge for (ADR-036)", () => {
-  it("asks for the read to be scoped AND says which window the result describes", () => {
-    // Two different requests that briefly shared one parameter. `pinnedHwnd` scopes the read;
-    // `hwnd` is the cache attribution — the same claim `screenshot` makes. Passing only the
-    // first stopped a discover priming the cache at all, so a following `screenshot({cached:
-    // true})` always missed and `caches.uiaCache.exists` read false right after a discover.
+  it("asks for the read to be scoped to the window the session names", async () => {
+    // `pinnedHwnd` is a scoping request, and a scoped read is also the only one that can vouch
+    // for which window it describes — so it keys the cache too. There was a moment when this
+    // passed `hwnd` alongside it, to prime the cache back when the read could still go by
+    // title; with the read always scoped that said nothing the scoping did not.
     uiaBridgeMocks.getUiElements.mockClear();
-    return fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" }).then(() => {
-      expect(uiaBridgeMocks.getUiElements.mock.lastCall![4])
-        .toMatchObject({ pinnedHwnd: 4919n, hwnd: 4919n });
-    });
+    await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ pinnedHwnd: 4919n });
   });
 
-  it("asks for neither when the target carries no readable handle", async () => {
+  it("asks for nothing when the target carries no handle", async () => {
     uiaBridgeMocks.getUiElements.mockClear();
     await fetchUiaCandidates({ windowTitle: "Untitled - Notepad" });
     expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toBeUndefined();
+  });
+
+  it("says so when the handle cannot be read, as the OCR lane does", async () => {
+    // With the handle unread there is no scoping, so this reads the title — or the FOREGROUND
+    // window when there is none — while the candidates still carry the caller's raw string as
+    // their target id. Two providers went two ways about the same malformed value in the same
+    // discover: one warned, one was silent.
+    uiaBridgeMocks.getUiElements.mockClear();
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "0" });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toBeUndefined();
+    expect(r.warnings).toContain("target_hwnd_unparseable");
   });
 });
 

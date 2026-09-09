@@ -67,24 +67,26 @@ export async function fetchUiaCandidates(
   // while the write half addressed another.
   const windowTitle = target.windowTitle ?? "@active";
   const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
+  // ADR-036 — the same parse the write half uses, so one malformed handle cannot make the two
+  // halves aim at different windows. `BigInt(target.hwnd)` here used to throw straight out of
+  // the provider.
+  const pinned = parseTargetHwnd(target);
+  // …and the OCR lane says so when a handle cannot be read, while this lane went quiet about the
+  // same value in the same discover. With the handle unread there is no scoping, so this reads
+  // `windowTitle` — the caller's title if it passed one, the FOREGROUND window if it did not —
+  // while every candidate still carries the caller's raw handle string as its target id
+  // (2ゲート目の指摘).
+  const hwndWarnings = pinned === undefined && target.hwnd ? ["target_hwnd_unparseable"] : [];
 
   try {
     const { getUiElements, detectUiaBlind } = await import("../../engine/uia-bridge.js");
 
-    // ADR-036 — the same parse the write half uses, so one malformed handle cannot make the
-    // two halves aim at different windows. `BigInt(target.hwnd)` here used to throw straight
-    // out of the provider.
-    const pinned = parseTargetHwnd(target);
-    // Two different requests, so two names (ADR-036). `pinnedHwnd` asks the bridge to SCOPE the
-    // read to this window; `hwnd` says which window's tree the result files under, and is the
-    // same claim `screenshot` and `get_ui_elements` have always made — "the title I passed names
-    // this window". Passing only the first stopped `desktop_discover` priming the cache at all,
-    // so a following `screenshot({cached:true})` always missed and the `caches.uiaCache.exists`
-    // hint read `false` right after a discover (2ゲート目の指摘). Passing both restores that
-    // without the bridge inventing an attribution out of a scoping request: where this session
-    // has no title to name the window (`@active`), the gate scopes anyway, so the claim is the
-    // scoped read's own.
-    const options = pinned !== undefined ? { pinnedHwnd: pinned, hwnd: pinned } : undefined;
+    // `pinnedHwnd` asks the bridge to SCOPE the read to this window, through `FromHandle`
+    // (ADR-036). It keys the cache too, but only because a scoped read is the one thing that can
+    // vouch for which window it describes — the bridge will not file a title-derived tree under
+    // a handle nobody scoped to. Passing `hwnd` as well was a way to prime the cache back when
+    // the read could still go by title; now it would say nothing the scoped read does not.
+    const options = pinned !== undefined ? { pinnedHwnd: pinned } : undefined;
     const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
 
     const candidates: UiEntityCandidate[] = result.elements
@@ -114,7 +116,7 @@ export async function fetchUiaCandidates(
         provisional: false,
       }));
 
-    const warnings: string[] = candidates.length === 0 ? ["uia_no_elements"] : [];
+    const warnings: string[] = [...hwndWarnings, ...(candidates.length === 0 ? ["uia_no_elements"] : [])];
 
     // H4: detect UIA-blind conditions (single-giant-pane / too-few-elements)
     // so that compose-providers can escalate visual lane explainability.
@@ -127,6 +129,6 @@ export async function fetchUiaCandidates(
     return { candidates, warnings };
   } catch (err) {
     console.error(`[uia-provider] Error for target "${targetId}":`, err);
-    return { candidates: [], warnings: ["uia_provider_failed"] };
+    return { candidates: [], warnings: [...hwndWarnings, "uia_provider_failed"] };
   }
 }

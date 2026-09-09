@@ -181,6 +181,27 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(mockGetUiElements).toHaveBeenCalledTimes(2);
   });
 
+  it("withholds the diff when the UIA read came back cut short", async () => {
+    // A tree the PowerShell walk stopped early is a PREFIX, and this wrapper diffs two of them.
+    // Two prefixes that end in different places read as elements appearing and disappearing
+    // that never moved — a change the user never made, described confidently. Before the walk
+    // measured its own start, a 4 s deadline left it 1 s and this was routine (2ゲート目の指摘).
+    windows = [{ hwnd: 0x2222n, title: SHARED_TITLE }];
+    // Once: the before-snapshot is enough to withhold, so the after-snapshot is never taken —
+    // and a persistent override would leak into every later cell in this file.
+    mockGetUiElements.mockResolvedValueOnce({
+      ok: true, truncated: true,
+      elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }],
+    } as never);
+    const r = await narrated({
+      windowTitle: SHARED_TITLE, hwnd: LIVE, name: "OK", narrate: "rich",
+    } as never);
+    expect(richOf(r).diffDegraded).toBe("timeout");
+    expect(richOf(r).diffSource).toBe("none");
+    // The write still happened; what is withheld is the description of it.
+    expect(innerHandler).toHaveBeenCalled();
+  });
+
   it("withholds when the enumeration cannot say whether the title is shared", async () => {
     // Documented trade: the caller named a handle, so a report that cannot be
     // shown to describe that window is withheld rather than guessed at.

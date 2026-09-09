@@ -86,46 +86,67 @@ export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Process start plus two `Add-Type` assembly loads, before the script's own clock starts.
- * Subtracted from the caller's deadline to get the walk's budget, so the script always finishes
- * and prints inside the wait around it.
+ * How long a PowerShell read may spend before its own work starts: process start plus two
+ * `Add-Type` assembly loads.
+ *
+ * Measured on the Windows machine 2026-09-09 (`dev/ps-startup-20260909/`): **233 ms median** for
+ * `powershell.exe` 5.1 with both loads, 190.9 ms for the bare start, and 814 ms median / 1044 ms
+ * worst with sixteen spawning at once. **A cold machine was not measured**, so this stays the
+ * generous number it always was — but only where being generous is free.
+ *
+ * Where it is free: the WAIT around a read that has no clock of its own (`psReadWaitMs`). A
+ * timeout that is too long costs nothing until something has already failed.
+ *
+ * Where it was not free: the walk's budget, which used to be `deadline - this`. At 4000 against a
+ * real 233 the walk lost seconds it could have used, and `_narration.ts`'s 4000 ms deadline
+ * collapsed to the floor — so its two snapshots truncated at different points and the diff
+ * reported elements appearing and disappearing that never moved (2ゲート目の指摘). The script
+ * measures its own start now (see `makeGetElementsScript`), so no estimate stands between the
+ * caller's deadline and the walk.
  */
 const PS_STARTUP_HEADROOM_MS = 4000;
 /** Enough to reach a first element and print. Below this the walk is not worth starting. */
 const PS_MIN_TREE_BUDGET_MS = 1000;
+/**
+ * Left at the end of the deadline for `ConvertTo-Json` and the write to stdout. An estimate, and
+ * one whose error is bounded: too small truncates the tail of a tree that was going to be
+ * truncated anyway; too large gives up a little walking time.
+ */
+const PS_PRINT_MARGIN_MS = 300;
 
 /**
- * ADR-036 — how long the script may walk, given how long the caller is willing to wait.
- *
- * These were both 8000 and independent, so a walk that used its budget was killed by the wait
- * before it could print: the caller got nothing instead of a truncated tree (2ゲート目の指摘).
- * Raising the wait to clear the budget fixed that and broke the other direction — `workspace.ts`
- * asks for 2000 ms and `_narration.ts` for 4000 ms deliberately, and neither should wait twelve
- * seconds because this file has an opinion (PR 側の codex). So the budget follows the deadline.
- *
- * A deadline shorter than the startup headroom cannot hold a walk at all; the floor keeps the
- * script from being asked for a walk it could not begin, and the wait outside ends it. Nothing
- * here can make a 500 ms deadline produce a tree.
- *
- * Gate 2 asked for the PowerShell path to be skipped outright in that case — `workspace.ts`
- * passes 2000 ms, so the process is spawned and killed before its first statement. Not taken,
- * and the reason is worth keeping: **4000 is an estimate of process start plus two `Add-Type`
- * loads, not a measured floor.** Refusing work on an estimate turns a guess into a gate, and on
- * a machine where PowerShell starts in well under a second it would disable reads that would
- * have returned. What it wants first is a measurement on the real machine; until there is one,
- * the outer wait ends the attempt, which is what a caller who asked for 2000 ms is entitled to.
+ * ADR-036 — there used to be a `psTreeBudgetMs(deadline)` here, deriving the walk's budget by
+ * subtracting `PS_STARTUP_HEADROOM_MS` from the caller's deadline. It answered a real defect —
+ * budget and wait were both a fixed 8000, so a walk that used its budget was killed before it
+ * could print — and then the estimate it leaned on turned out to be seventeen times the measured
+ * value, which cost `_narration.ts` most of its walking time. The script measures its own start
+ * instead; see `psBudgetExpression`.
  */
-export function psTreeBudgetMs(timeoutMs: number): number {
-  return Math.max(PS_MIN_TREE_BUDGET_MS, timeoutMs - PS_STARTUP_HEADROOM_MS);
+
+/**
+ * The PowerShell expression the walk uses for its own budget: the caller's deadline, less what
+ * starting up actually took, less room to print.
+ *
+ * `spawnedAtMs` is read here, one statement before the process is created; the script reads the
+ * same clock after its assemblies are loaded and its target window is found. The difference is
+ * the startup this machine really had, on this run, under whatever load it was under — which is
+ * what `PS_STARTUP_HEADROOM_MS` was guessing at. Both sides read UTC wall-clock milliseconds;
+ * `powershell.exe` 5.1 ticks that at ~15.6 ms, which does not matter for a budget in seconds,
+ * and a clock that jumps backwards lands on the floor.
+ */
+function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
+  return `[Math]::Max(${PS_MIN_TREE_BUDGET_MS}, ${deadlineMs} - ` +
+    `([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - ${spawnedAtMs}) - ${PS_PRINT_MARGIN_MS})`;
 }
 
 /**
  * ADR-036 — how long to wait on a script that has no clock of its own.
  *
- * The twin of `psTreeBudgetMs`, for the other shape of read. The tree walk carries a stopwatch
- * and can be told to stop early, so its budget is cut to fit the caller's deadline; the
- * TextPattern read is a single `FindAll(Descendants)` followed by `GetText`, and neither can be
- * interrupted, so nothing inside the script can be shortened. What moves instead is the wait.
+ * For the other shape of read. The tree walk carries a stopwatch and stops itself inside the
+ * caller's deadline; the TextPattern read is a single `FindAll(Descendants)` followed by
+ * `GetText`, and neither can be interrupted, so nothing inside that script can be shortened.
+ * What moves instead is the wait — and a wait that is too long costs nothing until something has
+ * already failed, which is why the generous constant lives here and nowhere else.
  *
  * Without this, `getTextViaTextPattern`'s default 6000 ms had the process start taken out of it
  * before the script's first statement ran, leaving a fraction of the deadline for the read
@@ -154,8 +175,9 @@ function makeGetElementsScript(
    * handle, so `desktop_discover` could enumerate one window and `desktop_act` drive another.
    */
   hwnd?: bigint,
-  /** How long the walk may run — see `psTreeBudgetMs`. Always shorter than the wait outside. */
-  budgetMs: number = PS_MIN_TREE_BUDGET_MS,
+  /** The caller's whole deadline. The script works out how much of it is left — see
+   * `psBudgetExpression`. */
+  deadlineMs: number = PS_MIN_TREE_BUDGET_MS + PS_PRINT_MARGIN_MS,
 ): string {
   const safeTitle = escapeLike(windowTitle);
   const fetchValuesBlock = fetchValues
@@ -206,6 +228,8 @@ try {
 $cvWalker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
 $results  = [System.Collections.Generic.List[object]]::new()
 $count    = 0
+# What is left of the caller's deadline now that starting up and finding the window are paid for.
+$budgetMs = ${psBudgetExpression(deadlineMs, Date.now())}
 $sw       = [System.Diagnostics.Stopwatch]::StartNew()
 
 $stack = [System.Collections.Generic.Stack[object]]::new()
@@ -218,7 +242,7 @@ $wantedPats.Add('InvokePattern') > $null; $wantedPats.Add('ValuePattern') > $nul
 $wantedPats.Add('ExpandCollapsePattern') > $null; $wantedPats.Add('SelectionItemPattern') > $null
 $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $null
 
-while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt ${budgetMs}) {
+while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt $budgetMs) {
     $item  = $stack.Pop()
     $el    = $item.el
     $depth = $item.depth
@@ -283,7 +307,12 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
     }
 }
 
-@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
+# ADR-036 — say when the walk ran out of time. A short deadline can still cut the tree mid-walk,
+# and a truncated tree that does not admit it is worse than none: _narration diffs two snapshots,
+# and two different truncation points read as elements appearing and disappearing that never
+# changed (2ゲート目の指摘). Running out of maxElements is the caller's own limit, and is not this.
+$truncated = ($stack.Count -gt 0) -and ($sw.ElapsedMilliseconds -ge $budgetMs)
+@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; truncated=$truncated; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
 }
 
@@ -728,6 +757,12 @@ export interface UiElementsResult {
   /** Bounding rectangle of the root window in screen coordinates. */
   windowRect?: { x: number; y: number; width: number; height: number } | null;
   elementCount: number;
+  /**
+   * ADR-036 — true when the PowerShell walk stopped because its time ran out, so the tree is a
+   * prefix rather than the window. Absent on the native path, which has no such clock. A caller
+   * that compares two snapshots has to refuse this; one that shows what it found need not.
+   */
+  truncated?: boolean;
   elements: UiElement[];
 }
 
@@ -830,16 +865,19 @@ export async function getUiElements(
     maxElements,
     options?.fetchValues ?? false,
     scopeHwnd,
-    psTreeBudgetMs(timeoutMs),
+    timeoutMs,
   );
-  // The script walks the tree under its own 8 s budget and then prints. Killing the process at
-  // the same 8 s means a saturated walk produces nothing at all rather than a truncated answer,
-  // so the outer wait has to be the longer one (2ゲート目の指摘).
+  // The script ends its walk inside the caller's deadline and then prints, having measured its
+  // own start rather than being told what it cost. Before that it walked to a fixed 8 s while the
+  // wait was also 8 s, so a saturated walk produced nothing at all rather than a truncated
+  // answer (2ゲート目の指摘).
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
 
-  if (cacheKey !== undefined) {
+  // A prefix of a window is not the window: caching it would serve it to `screenshot` for the
+  // whole TTL as though it were complete.
+  if (cacheKey !== undefined && !result.truncated) {
     try { updateUiaCache(cacheKey, output); } catch { /* ignore */ }
   }
   return result as UiElementsResult;
@@ -1495,8 +1533,11 @@ try {
 }
 `;
   try {
-    // The deadline is the read's, not the process start's — see `psReadWaitMs`.
-    const out = await runPS(script, psReadWaitMs(timeoutMs));
+    // The deadline is the read's, not the process start's — see `psReadWaitMs`. Only on the
+    // scoped path: every other caller here has been passing a deadline it treats as a hard one
+    // (`terminal.ts` reads a baseline and a post-read around every send), and quietly adding
+    // four seconds to each of them is not this ADR's business (2ゲート目の指摘).
+    const out = await runPS(script, scopeHwnd !== undefined ? psReadWaitMs(timeoutMs) : timeoutMs);
     const parsed = JSON.parse(out) as { ok: boolean; text?: string; error?: string };
     if (!parsed.ok) return null;
     return parsed.text ?? "";
