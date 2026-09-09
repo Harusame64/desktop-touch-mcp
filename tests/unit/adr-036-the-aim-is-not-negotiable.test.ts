@@ -226,6 +226,18 @@ describe("the budget never outlives the wait that kills the process", () => {
     expect(h.calls.ps[0]!.script).toContain("[Math]::Max(0, 2000 -");
   });
 
+  it("clamps the elapsed term too, so a backwards clock cannot lengthen the walk", async () => {
+    // The outer `Max(0, …)` only stops the budget going negative. If the clock steps BACKWARDS
+    // between the timestamp taken here and the read inside the script, `(now − spawnedAt)` is
+    // negative and the budget grows by that much — past the deadline, so the walk outlives the
+    // kill and the whole read is lost. Measured on the real machine by running the emitted
+    // expression: a 2 s backwards jump against a 2000 ms deadline produced a 2909 ms budget.
+    h.psOutput = JSON.stringify({ windowTitle: "x", elementCount: 0, elements: [] });
+    await getUiElements("Untitled - Notepad", 3, 50, 2000, { pinnedHwnd: NOTEPAD });
+    const script = h.calls.ps[0]!.script;
+    expect(script).toMatch(/\[Math\]::Max\(0, 2000 - \[Math\]::Max\(0, /);
+  });
+
   it("probes and writes the cache under one key", async () => {
     // The two had opposite precedence for a while, so a caller passing both would write under
     // one and look under the other: a permanent miss, and a title-derived tree answering a

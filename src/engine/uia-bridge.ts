@@ -158,8 +158,12 @@ const PS_PRINT_MARGIN_MS = 1000;
  *
  * Resolution does not threaten this. `[datetime]::UtcNow` was measured at 1.001 ms median on
  * 5.1 and `Date.now()` at 1 ms; the familiar 15.6 ms is the OS's default timer tick and applies
- * only when nothing has raised it, so even at its worst it is under 7% of a 233 ms startup. A
- * clock that jumps backwards lands on the floor.
+ * only when nothing has raised it, so even at its worst it is under 7% of a 233 ms startup.
+ *
+ * A clock that steps FORWARDS shortens the budget to nothing, which is safe and is where sleep
+ * and resume land. One that steps BACKWARDS would have lengthened it — past the deadline — until
+ * the inner clamp below; the sentence that used to sit here said the opposite (win, 2026-09-09,
+ * who ran the expression rather than reading it).
  */
 function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
   // Epoch milliseconds by subtraction rather than `[DateTimeOffset]::…ToUnixTimeMilliseconds()`,
@@ -187,7 +191,16 @@ function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
   // parse error: the whole read lost, which is the failure `truncated` exists to avoid
   // (2ゲート目の指摘). A walk with no time left prints an empty tree that says it was cut short,
   // which is a thing a caller can act on.
-  return `[Math]::Max(0, ${deadlineMs} - (${nowMs} - ${spawnedAtMs}) - ${PS_PRINT_MARGIN_MS})`;
+  // Both ends are clamped, and the inner one is the one that is easy to miss. `Max(0, …)` on the
+  // OUTSIDE only stops the budget going negative; if the clock steps BACKWARDS between the
+  // timestamp taken here and the read inside the script, `(now − spawnedAt)` is negative and the
+  // budget grows by that much — past the deadline, so the walk outlives `runPS`'s kill and the
+  // read is lost entirely, which is the failure this expression exists to avoid. Measured by
+  // running the emitted expression: a 2 s backwards step against a 2000 ms deadline gave a
+  // 2909 ms budget and a 4142 ms walk (win, 2026-09-09). Clamping the elapsed term holds the
+  // budget at or under `deadline − margin` whatever the clock does.
+  return `[Math]::Max(0, ${deadlineMs} - [Math]::Max(0, ${nowMs} - ${spawnedAtMs})` +
+    ` - ${PS_PRINT_MARGIN_MS})`;
 }
 
 /**
