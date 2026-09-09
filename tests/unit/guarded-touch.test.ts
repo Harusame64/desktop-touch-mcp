@@ -366,6 +366,28 @@ describe("GuardedTouchLoop — pre-touch checks", () => {
     if (!result.ok) expect(result.reason).toBe("cursor_placement_blocked");
   });
 
+  // ADR-036: the window the act was aimed at is gone. Measured on Windows 2026-09-09 that this
+  // and an EXCLUDED window came back identical — same envelope, same four `try_next` items, both
+  // saying "fall back to mouse_click at the entity's rect". The rect is where the aimed window
+  // used to be, so following that advice presses whatever moved in behind it. The type was
+  // built, thrown, and flattened here; the flattening is what handed over the advice.
+  it("promotes a gone aim to its own reason, so the advice stops pointing at the old rect", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      execute: async () => {
+        const err = new Error("The window this action was aimed at (hwnd 4919) is gone…");
+        err.name = "AimedWindowGoneError";
+        throw err;
+      },
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("aim_window_gone");
+  });
+
   it("safe-fails when executor throws", async () => {
     const e = entity("e1", GEN);
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });

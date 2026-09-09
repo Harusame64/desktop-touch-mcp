@@ -133,6 +133,7 @@ function createMcpServer(): McpServer {
         "  origin_window_not_visible → the window the element came from is minimised or hidden: focus_window(windowTitle) to restore it, then re-call desktop_discover;",
         "  coordinate_outside_reachable_bounds → the point is not on any connected monitor: the coordinates are stale (window moved or closed) — re-call desktop_discover and retry. On builds without the native input module, mouse input reaches the primary monitor only; move the window there first. click_element (UIA invoke) never moves the cursor;",
         "  cursor_placement_blocked → the coordinate is fine but the pointer could not be placed there, so nothing was clicked: click_element (UIA invoke) acts without moving the cursor and works meanwhile. Otherwise leave or close the app holding the cursor (common in full-screen games), reconnect the remote-desktop session if it is disconnected, or — if a monitor was just added or removed — re-call desktop_discover for fresh coordinates;",
+        "  aim_window_gone → the window this act was aimed at no longer exists, so nothing was clicked: re-call desktop_discover to see what is there now. Do NOT retry by coordinate — the entity's rect is where that window used to be, and whatever occupies it now would take the click;",
         "  executor_failed → fall back to click_element / mouse_click / browser_click",
         "",
         "## Observation — priority order",

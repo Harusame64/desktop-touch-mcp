@@ -39,7 +39,7 @@ import type { ToolResult } from "./_types.js";
 import { persistCapture, REF_URI_PREFIX } from "../engine/screenshot-cache.js";
 import { pngDimensions } from "./screenshot-response.js";
 import { Err } from "../types/result.js";
-import { ExecutorFailedError, CoordinateOutsideReachableBoundsError, CursorPlacementBlockedError } from "../errors/typed-errors.js";
+import { ExecutorFailedError, CoordinateOutsideReachableBoundsError, CursorPlacementBlockedError, AimWindowGoneError } from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
@@ -958,6 +958,24 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // ADR-036: the window this act was aimed at is gone. Its own envelope for the same reason as
+  // the two above, and the sharpest case of it: `executor_failed`'s advice is "fall back to
+  // mouse_click", and the only coordinates the caller has are the entity's rect — where the
+  // window WAS. Measured on Windows 2026-09-09: an excluded window and a closed one came back
+  // identical here, down to all four `try_next` items, both pointing at the rect.
+  if (!result.ok && result.reason === "aim_window_gone") {
+    const failure = toFailureEnvelope(
+      Err(new AimWindowGoneError(
+        "AimWindowGone: the window this action was aimed at no longer exists — nothing was clicked. " +
+        "Re-call desktop_discover to see what is there now; do not click the entity's rect, which is where that window used to be"
+      )),
+      { optIn: false },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // ADR-026 §3.6: when the act carried a roiCapture crop, attach its by-ref link
   // as a resource_link content block alongside the JSON result. The crop pixels
   // are NOT inlined in the envelope (roiCapture.somImage is null); the agent
@@ -1430,6 +1448,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
       "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",
       "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
+      "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",

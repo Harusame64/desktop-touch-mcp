@@ -51,6 +51,7 @@ export type TouchFailReason =
   | "origin_window_not_visible"
   | "coordinate_outside_reachable_bounds"
   | "cursor_placement_blocked"
+  | "aim_window_gone"
   | "executor_failed";
 
 /**
@@ -541,6 +542,16 @@ export class GuardedTouchLoop {
       // advice, so it must not be folded into them.
       if (err instanceof Error && err.name === "CursorPlacementBlocked") {
         return { ok: false, reason: "cursor_placement_blocked", diff: [] };
+      }
+      // ADR-036 — the window the action was aimed at is gone, and this is the third refusal that
+      // must not become `executor_failed` for exactly the reason written above: that reason's
+      // advice is "fall back to mouse_click", and the only coordinates the caller has are the
+      // entity's rect — which is where the window USED to be. Whatever occupies it now takes the
+      // click. `aim.ts` says so in its own words; the type was built, thrown and then flattened
+      // here, so the advice arrived unchanged (measured on Windows 2026-09-09: an excluded window
+      // and a closed one produced identical envelopes down to all four `try_next` items).
+      if (err instanceof Error && err.name === "AimedWindowGoneError") {
+        return { ok: false, reason: "aim_window_gone", diff: [] };
       }
       return { ok: false, reason: "executor_failed", diff: [] };
     }

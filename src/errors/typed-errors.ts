@@ -96,6 +96,25 @@ export class CursorPlacementBlockedError extends HandlerError {
 }
 
 /**
+ * ADR-036 — the window the action was aimed at is gone.
+ *
+ * Its own envelope because its recovery is the opposite of `executor_failed`'s. That one says
+ * "fall back to mouse_click", and the only coordinates a caller holds are the entity's rect —
+ * which is where the window used to be, so the click lands on whatever moved in behind it. The
+ * recovery here is to look again: the session's target no longer exists, and nothing addressed
+ * to it can succeed until `desktop_discover` says what is there now.
+ *
+ * Distinct from an excluded window too. Both refuse, but "you may not touch that" and "there is
+ * nothing there" send the caller to different places, and they were arriving identical.
+ */
+export class AimWindowGoneError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimWindowGone";
+  }
+}
+
+/**
  * ADR-031 — a screen rectangle the current capture backend cannot read.
  *
  * Which rectangle counts as capturable is decided by the backend the process
