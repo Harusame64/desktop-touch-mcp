@@ -234,7 +234,12 @@ async function assertPointIsInsideAim(
   y: number,
   label: string,
 ): Promise<void> {
-  if (!deps.aimRect) return;   // nothing to check with — see the JSDoc on the dep
+  if (!deps.aimRect) {
+    // A skipped check writes a row saying so. Without it the log shows a press with a handle and
+    // no containment row, which reads exactly like a build that never reached this line.
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_aim_rect_dep", aimHwnd: aimHwnd.toString(), point: { x, y }, label });
+    return;
+  }
   const rect = await deps.aimRect(aimHwnd);
   if (!rect) {
     // No rectangle is two different facts. Only a source that can say so reports the window gone;
@@ -243,6 +248,7 @@ async function assertPointIsInsideAim(
     if (await deps.aimIsGone?.(aimHwnd)) {
       throw new AimedWindowGoneError(aimHwnd, `no rectangle for the window this press was aimed at`);
     }
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), point: { x, y }, label });
     return;
   }
   const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
@@ -251,6 +257,7 @@ async function assertPointIsInsideAim(
   // and the press goes somewhere else in the same window.
   probeAim("act.route", {
     route: "containment_check",
+    checked: true,
     aimHwnd: aimHwnd.toString(),
     point: { x, y },
     windowRect: rect,
@@ -282,7 +289,10 @@ async function assertPointIsInsideAim(
 function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity, extra: Record<string, unknown> = {}): void {
   probeAim("act.route", {
     route,
-    aimed: aimHwnd !== undefined,
+    // `hasAim`, not `aimed`: this is a reading of the handle, and it was called `aimed` while the
+    // comment beside it claimed it meant "the containment check ran". Those are different facts,
+    // and on a build whose `aimRect` cannot answer they come apart (gate 2).
+    hasAim: aimHwnd !== undefined,
     aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
     entityId: entity.entityId,
     entityLabel: entity.label ?? null,
@@ -355,7 +365,19 @@ export function createDesktopExecutor(
     // ADR-036 probe — the seam where the read path's work either arrives or does not.
     if (aimProbeEnabled()) {
       probeAim("act.aim", {
-        target: target ?? null,
+        // Spelled out rather than handing the whole value over. The replacer in `aim-probe.ts`
+        // makes a raw `Aim` serialisable now, but a row is a statement about what the executor
+        // read, and every field here is one this code actually uses — a value dumped whole says
+        // "here is everything", which is how a reader ends up believing a field that was never
+        // consulted (gate 2).
+        aim: {
+          title: aim.title ?? null,
+          hwnd: aim.hwnd?.toString() ?? null,
+          tabId: aim.tabId ?? null,
+          identity: aim.identity
+            ? { pid: aim.identity.pid, processName: aim.identity.processName, processStartTimeMs: aim.identity.processStartTimeMs }
+            : null,
+        },
         aimFrom: (target as Aim | undefined)?.kind === "aim" ? "aim" : "target_spec",
         aimHasIdentity: aim.identity !== undefined,
         winTitle,
