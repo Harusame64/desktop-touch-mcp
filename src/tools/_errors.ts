@@ -263,6 +263,37 @@ const SUGGESTS: Record<string, string[]> = {
     "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
     "If the app was NOT expected to close, it may have crashed or restarted: desktop_discover will show the replacement window, which needs a fresh lease — the old handle is not reusable.",
   ],
+  // ADR-036 — the aimed press would land outside the window the call named. Every line here has
+  // to hold one door shut: `executor_failed` opens with "fall back to mouse_click using the entity
+  // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone
+  // the window is still there, so re-discovering is not a consolation — it is the fix.
+  AimPointOutsideWindow: [
+    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but it has moved or been minimised since the lease was taken, so the remembered rectangle points somewhere else.",
+    "Do NOT retry by coordinate. The point was refused because it is no longer inside that window — whatever is under it now would take the press.",
+    "If the window was minimised, restore it first (focus_window), then re-run desktop_discover: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
+    "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way.",
+  ],
+  // ADR-036 — the UIA route failed on the named window and the coordinate fallback is refused.
+  // Same door, different cause: the aim is current, the attempt failed. So the advice may offer
+  // element-level routes, which the stale-aim entry above must not.
+  AimedUiaClickFailed: [
+    "Re-run desktop_discover: this act named its window by handle, the UIA attempt on it failed, and the entity may have changed name, moved in the tree, or gone.",
+    "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
+    "click_element(name=…) is worth one try when the entity is still on screen: it re-resolves the element through the accessibility API rather than reusing the lease's locator.",
+    "If the control has no InvokePattern (a custom-drawn button, a canvas), the message says so — act on a different affordance (setValue / select) or use keyboard navigation to reach it.",
+  ],
+  // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
+  // advice is deliberately short on alternatives — every "try the other tool" line would be an
+  // instruction to walk around a security boundary. Worded for BOTH families: `desktop_act`'s
+  // envelope reaches it through `reason:"window_excluded"`, and the two producers that spell
+  // `WindowExcluded: …` into the message (`_resolve-window.ts`) reach it through the declared-code
+  // arm of `classify`, so it must not claim a click was attempted.
+  WindowExcluded: [
+    "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
+    "Act on another window: desktop_discover (or any by-identity tool) on a different target returns what this server may touch.",
+    "If the excluded window is a prompt waiting for a person — the key locker's own dialog — it is theirs to answer; this session cannot answer it for them.",
+  ],
   CursorPlacementBlocked: [
     "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
     "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",

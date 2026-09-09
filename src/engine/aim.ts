@@ -1,5 +1,5 @@
 /**
- * aim.ts — what `desktop_act` is aimed at, and the one refusal that says the aim is gone.
+ * aim.ts — what `desktop_act` is aimed at, and the refusals that say the aim cannot be honoured.
  *
  * ADR-036. A session knows which window it was opened on (`hwnd > tabId > windowTitle`, see
  * `session-registry.ts`), and every backend now takes that handle so a same-titled sibling
@@ -37,6 +37,50 @@ export class AimedWindowGoneError extends Error {
       `${detail ? `: ${detail}` : ""}. Run desktop_discover again to see what is there now.`,
     );
     this.name = "AimedWindowGoneError";
+    this.hwnd = hwnd;
+  }
+}
+
+/**
+ * The aimed press would land outside the window it named.
+ *
+ * `assertPointIsInsideAim` refuses when the point taken from the entity's remembered rect is no
+ * longer inside the aimed window — it moved, or it was minimised (rect at -32000). The refusal
+ * was right from the first day; what it threw was a plain `Error`, so `GuardedTouchLoop` reported
+ * `executor_failed`, whose published first suggestion is "fall back to mouse_click using the
+ * entity rect center". That is the coordinate this refusal just rejected, named verbatim: the
+ * executor closed the door and the envelope handed back the key (PR 側 codex, 2026-09-09).
+ *
+ * Distinct from {@link AimedWindowGoneError}: there the window is gone and nothing addressed to
+ * it can succeed; here the window is alive and the coordinate is stale, so a fresh
+ * `desktop_discover` returns a rect that works.
+ */
+export class AimedPointOutsideWindowError extends Error {
+  readonly hwnd?: bigint;
+  constructor(message: string, hwnd?: bigint) {
+    super(message);
+    this.name = "AimedPointOutsideWindowError";
+    this.hwnd = hwnd;
+  }
+}
+
+/**
+ * The UIA route failed on the window the call named, and the blind fallback is refused.
+ *
+ * An unpinned call finishes a failed UIA click by pressing the entity's rect: a title was never a
+ * promise about which window, and the rect is all it ever had. A call that named its window by
+ * handle is the opposite case — the coordinate is not aimed at anything, and ADR-036 exists to
+ * stop exactly that press. So the ladder ends, and this type carries why.
+ *
+ * It must not arrive as `executor_failed`: that reason's first suggestion is the coordinate
+ * click this refusal is about (PR 側 codex, 2026-09-09). Same shape as
+ * {@link AimedPointOutsideWindowError}, different cause — the aim is fine, the UIA attempt failed.
+ */
+export class AimedUiaClickFailedError extends Error {
+  readonly hwnd?: bigint;
+  constructor(message: string, hwnd?: bigint, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimedUiaClickFailedError";
     this.hwnd = hwnd;
   }
 }

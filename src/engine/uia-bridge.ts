@@ -2257,12 +2257,32 @@ const UIA_BLIND_PANE_AREA_RATIO = 0.9;
  *
  * Pure function — does not perform any async I/O.
  *
+ * BOTH conditions count elements, so a truncated walk cannot answer either of them: the count it
+ * carries describes the prefix that came back before the deadline, not the window. A healthy but
+ * slow tree cut short of five elements was being labelled `too-few-elements`, and the same cut can
+ * leave a top-level Pane with fewer than five actionable siblings, which is `single-giant-pane` —
+ * so the refusal has to sit in front of both branches rather than in front of the sparsity one
+ * (PR 側 codex + win2, 2026-09-09). Downstream that verdict is not cosmetic: `composeProviders`
+ * escalates the OCR lane on it and publishes constraints describing the app as UIA-blind.
+ *
+ * A truncated tree therefore returns "not blind, and not decided" rather than "not blind": the two
+ * are different answers, and a caller that logs the verdict should be able to tell them apart. The
+ * `blind:false` half keeps the shape every existing caller reads.
+ *
  * @returns `{ blind: false }` when the UIA tree looks healthy.
+ *          `{ blind: false, undecided: "truncated_tree" }` when the walk was cut short — no
+ *          evidence either way. Discover publishes `uia_tree_truncated` for the same fact.
  *          `{ blind: true, reason }` when the Sparsity conditions are met.
  */
 export function detectUiaBlind(
   result: UiElementsResult,
-): { blind: false } | { blind: true; reason: UiaBlindReason } {
+): { blind: false; undecided?: "truncated_tree" } | { blind: true; reason: UiaBlindReason } {
+  // Insufficient evidence, not a healthy tree — see the JSDoc. Ahead of both conditions because
+  // both of them are counts, and a prefix's count is a lower bound.
+  if (result.truncated) {
+    return { blind: false, undecided: "truncated_tree" };
+  }
+
   // Condition A: total element count is critically low
   if (result.elementCount < UIA_BLIND_MIN_ELEMENTS) {
     return { blind: true, reason: "too-few-elements" };

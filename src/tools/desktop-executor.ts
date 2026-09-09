@@ -23,7 +23,12 @@ import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
-import { AimedWindowGoneError, AIM_WINDOW_GONE } from "../engine/aim.js";
+import {
+  AimedWindowGoneError,
+  AimedPointOutsideWindowError,
+  AimedUiaClickFailedError,
+  AIM_WINDOW_GONE,
+} from "../engine/aim.js";
 import { parseTargetHwnd, type TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
@@ -175,11 +180,14 @@ async function assertPointIsInsideAim(
   }
   const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
   if (!inside) {
-    throw new Error(
+    // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
+    // and that reason's first suggestion is a coordinate click at the entity's rect — this point.
+    throw new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": this call named window ${aimHwnd}, and that ` +
       `window is now at (${rect.x}, ${rect.y}) ${rect.width}x${rect.height}. The point comes from a ` +
       `rectangle remembered at discover time; the window has moved, been minimised, or closed since, ` +
       `so whatever is under that point now would take the click. Re-run desktop_discover.`,
+      aimHwnd,
     );
   }
 }
@@ -328,11 +336,16 @@ export function createDesktopExecutor(
         // re-discover; a blind press lets it believe. Unpinned calls keep the downgrade: a title
         // was never a promise about which window, and the rect is all they ever had.
         if (aimHwnd !== undefined) {
-          throw new Error(
+          // Typed for the same reason the two refusals above are: an untyped throw arrives as
+          // `executor_failed`, and that reason's published first suggestion is "fall back to
+          // mouse_click using the entity rect center" — the blind press this branch exists to
+          // refuse, handed back as the recovery (PR 側 codex, 2026-09-09).
+          throw new AimedUiaClickFailedError(
             `UIA click failed for "${entity.label ?? entity.entityId}" on window ${aimHwnd}: ` +
             `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. ` +
             `Not falling back to a coordinate click — this call named its window, and the ` +
             `entity's rect is a screen point that any window can be under. Re-run desktop_discover.`,
+            aimHwnd,
             { cause: uiaErr },
           );
         }

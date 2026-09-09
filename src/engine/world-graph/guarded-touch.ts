@@ -52,6 +52,9 @@ export type TouchFailReason =
   | "coordinate_outside_reachable_bounds"
   | "cursor_placement_blocked"
   | "aim_window_gone"
+  | "aim_point_outside_window"
+  | "aimed_uia_click_failed"
+  | "window_excluded"
   | "executor_failed";
 
 /**
@@ -552,6 +555,27 @@ export class GuardedTouchLoop {
       // and a closed one produced identical envelopes down to all four `try_next` items).
       if (err instanceof Error && err.name === "AimedWindowGoneError") {
         return { ok: false, reason: "aim_window_gone", diff: [] };
+      }
+      // PR 側 codex 2026-09-09 — the three refusals below reached this catch as plain errors, so
+      // all three arrived as `executor_failed`, whose first suggestion names the coordinate click
+      // they refused. The executor closed the door; the envelope handed back the key. Same
+      // `name`-not-`instanceof` matching as above, for the same module-identity reason.
+      //
+      // The point the press would land on is no longer inside the window this call named. Unlike
+      // `aim_window_gone` the window is alive, so re-discovering returns a rect that works.
+      if (err instanceof Error && err.name === "AimedPointOutsideWindowError") {
+        return { ok: false, reason: "aim_point_outside_window", diff: [] };
+      }
+      // The UIA route failed on the named window and the blind coordinate press is refused —
+      // ADR-036's whole subject arriving as the recovery is what this stops.
+      if (err instanceof Error && err.name === "AimedUiaClickFailedError") {
+        return { ok: false, reason: "aimed_uia_click_failed", diff: [] };
+      }
+      // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
+      // it told the caller to press the rect the excluded window occupies, which is the one
+      // outcome the exclusion exists to prevent (`tool-exclusion.ts` R3).
+      if (err instanceof Error && err.name === "WindowExcludedError") {
+        return { ok: false, reason: "window_excluded", diff: [] };
       }
       return { ok: false, reason: "executor_failed", diff: [] };
     }
