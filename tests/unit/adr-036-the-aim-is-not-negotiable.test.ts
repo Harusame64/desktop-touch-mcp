@@ -342,9 +342,12 @@ describe("the walk measures its own start instead of being told what it cost", (
     expect(script).toContain("4000 -");
     // … and what gets subtracted is read from the clock, not assumed. Epoch milliseconds the
     // long way round, because `ToUnixTimeMilliseconds` wants .NET 4.6 and a script that throws
-    // comes back as a parse error — and with the epoch CONSTRUCTED rather than parsed from a
-    // string, because a string cast is parsed in the machine's culture.
+    // comes back as a parse error.
     expect(script).toContain("[datetime]::UtcNow - [datetime]::new(1970,1,1)");
+    // No date string in the expression. The cast form was measured to be culture-invariant, so
+    // this is not guarding today's behaviour — it is guarding the tidy-up that turns a string
+    // into `::Parse`, which is +543 years in th-TH, negative in fa-IR, and an exception in
+    // ar-SA (empty stdout, and the failure arrives wearing a parse error's face).
     expect(script).not.toContain("'1970-01-01'");
     const stamp = Number(/TotalMilliseconds - (\d+)\)/.exec(script)![1]);
     expect(stamp).toBeGreaterThanOrEqual(before);

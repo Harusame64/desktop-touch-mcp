@@ -160,11 +160,19 @@ function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
   // on, and a script that throws here would come back as empty stdout and a parse error — the
   // failure this file has already spent two rounds removing.
   //
-  // The epoch is CONSTRUCTED, not parsed. `[datetime]'1970-01-01'` is a string cast, and a string
-  // cast is parsed in the current culture — it happens to work in `ja-JP` (checked on the Windows
-  // machine) and nobody here can check the rest. `::new(1970, 1, 1)` asks no question that a
-  // culture could answer differently, which is cheaper than measuring every culture that could
-  // answer it wrong (win, 2026-09-09).
+  // The epoch is CONSTRUCTED, and the point is that nothing here parses a date at all.
+  //
+  // Not because the cast was broken: `[datetime]'1970-01-01'` was measured across eight cultures
+  // including three non-Gregorian calendars, as a literal, through a variable, and through
+  // `Invoke-Expression`, and every one agreed — PowerShell converts strings to `datetime`
+  // invariantly, unlike C#'s `Parse` (win, 2026-09-09, `dev/ps-startup-20260909/`). What was
+  // measured to be dangerous is `[datetime]::Parse($s)`: +543 years in `th-TH`, negative in
+  // `fa-IR`, and an EXCEPTION in `ar-SA` — which arrives here as empty stdout and a JSON parse
+  // error, the same shape as the .NET 4.6 method this expression already avoids.
+  //
+  // So this guards a rewrite rather than a bug: while a date string is sitting in the
+  // expression, someone tidying it can reach for `::Parse` and land on that. There is no string.
+  // The test that asserts the literal is absent is the same guard from the other side.
   const nowMs = "[int64]([datetime]::UtcNow - [datetime]::new(1970,1,1)).TotalMilliseconds";
   // Floored at zero, not at a minimum walk. A floor above what is left would put the walk past
   // the wait that kills the process — `workspace.ts` asks for 2000 ms, and a slow start plus a
