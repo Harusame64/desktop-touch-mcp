@@ -30,6 +30,9 @@ import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
+import { probeAim }               from "../../engine/aim-probe.js";
+import { toAim, type WindowIdentity } from "../../engine/aim.js";
+import { getWindowIdentity }       from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -254,10 +257,63 @@ export async function composeCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
   const normalized = await normalizeTarget(target);
+  // ADR-036 probe — the seam the session never used to see. What comes out of here is what every
+  // provider reads; what the session stored was what went in. When a bare `desktop_discover()`
+  // resolves the foreground window, `in` is empty and `out` names a handle — and that handle was
+  // the one the write path did NOT get (measured, 2026-09-09).
+  probeAim("compose.normalize", {
+    in: target ?? null,
+    out: normalized.target ?? null,
+    warnings: normalized.warnings,
+  });
   if (!normalized.target) {
+    // Nothing resolved: no candidates, and — deliberately — no `target`. "We could not work out
+    // which window" must not arrive as "the window is nothing" (ADR-036).
     return { candidates: [], warnings: normalized.warnings };
   }
-  target = normalized.target;
+
+  // ADR-036 — the resolution and the warnings it produced are applied HERE, once, rather than at
+  // each lane's return. A lane added later inherits both instead of having to remember them,
+  // which is the disease this ADR is about: identity that is carried by hand gets dropped by hand.
+  // ADR-036 — the identity is taken HERE, with the read, not later when the session files it. On a
+  // cache hit those are different moments, and a handle recycled in between would be baselined
+  // against its new owner (gate 1, 2026-09-09). Taken before the lanes run rather than after, so
+  // it describes the window they are about to be pointed at.
+  const identity = readIdentityForTarget(normalized.target);
+  const result = await composeCandidatesInner(normalized.target);
+  return {
+    ...withPrependedWarnings(result, normalized.warnings),
+    target: normalized.target,
+    identity,
+    // Looked for, whether or not it was found. A later read cannot stand in for this one: it would
+    // describe whoever owns the handle at that later moment.
+    identityRead: true,
+  };
+}
+
+/**
+ * ADR-036 — who owns the target's window right now, or nothing when the question cannot be asked.
+ *
+ * Read through `win32` directly rather than through `identity-tracker.ts`: that module's entry
+ * point RECORDS what it sees, and a read that updates a baseline compares the world against
+ * itself. A zeroed identity (`pid: 0`) means "could not ask" — a missing native binding, a window
+ * already gone — and becomes `undefined` here, because absence has to stay distinguishable from a
+ * value.
+ */
+function readIdentityForTarget(target: TargetSpec): WindowIdentity | undefined {
+  const hwnd = toAim(target).hwnd;
+  if (hwnd === undefined) return undefined;
+  try {
+    const ident = getWindowIdentity(hwnd);
+    if (!ident || ident.pid === 0) return undefined;
+    return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The provider fan-out, against a target that is already resolved. */
+async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResult> {
 
   if (isBrowserTarget(target)) {
     const [browser, visual] = await Promise.allSettled([
@@ -278,10 +334,7 @@ export async function composeCandidates(
       ? { ...merged, warnings: [...merged.warnings, ...extra] }
       : merged;
 
-    return withPrependedWarnings(
-      addWarningIfPartial(finalMerged, browserResult.candidates.length),
-      normalized.warnings
-    );
+    return addWarningIfPartial(finalMerged, browserResult.candidates.length);
   }
 
   if (isTerminalTarget(target)) {
@@ -294,12 +347,9 @@ export async function composeCandidates(
     const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
     const visualResult = visual.status   === "fulfilled" ? visual.value   : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-    return withPrependedWarnings(
-      addWarningIfPartial(
-        mergeResults([termResult, uiaResult, visualResult]),
-        termResult.candidates.length
-      ),
-      normalized.warnings
+    return addWarningIfPartial(
+      mergeResults([termResult, uiaResult, visualResult]),
+      termResult.candidates.length
     );
   }
 
@@ -330,8 +380,5 @@ export async function composeCandidates(
     ? { ...merged, warnings: [...merged.warnings, ...extra] }
     : merged;
 
-  return withPrependedWarnings(
-    addWarningIfPartial(finalMerged, uiaResult.candidates.length),
-    normalized.warnings
-  );
+  return addWarningIfPartial(finalMerged, uiaResult.candidates.length);
 }

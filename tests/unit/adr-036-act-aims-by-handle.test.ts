@@ -191,6 +191,35 @@ describe("ADR-036 — the handle reaches the backend", () => {
     expect(deps.mouseClick).toHaveBeenCalled();
   });
 
+  it("records a containment check it could not make, instead of leaving no row", async () => {
+    // A press with a handle and no containment row reads exactly like a build that never reached
+    // the line. The probe writes `checked:false` on both roads it can skip by (gate 2).
+    const dir = (await import("node:fs")).mkdtempSync(
+      (await import("node:path")).join((await import("node:os")).tmpdir(), "aim-route-"),
+    );
+    const logPath = (await import("node:path")).join(dir, "probe.jsonl");
+    process.env.DESKTOP_TOUCH_AIM_PROBE = "1";
+    process.env.DESKTOP_TOUCH_AIM_PROBE_PATH = logPath;
+    vi.resetModules();
+    try {
+      const { createDesktopExecutor: freshExecutor } = await import("../../src/tools/desktop-executor.js");
+      const deps = mockDeps();                       // no aimRect at all
+      const exec = freshExecutor({ windowTitle: "App", hwnd: "4919" }, deps);
+      await exec(entity({ sources: ["visual_gpu"] }), "click");
+
+      const rows = (await import("node:fs")).readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const containment = rows.find((r) => r.route === "containment_check");
+      expect(containment, "a skipped check must still leave a row").toBeDefined();
+      expect(containment!.checked).toBe(false);
+      expect(containment!.why).toBe("no_aim_rect_dep");
+    } finally {
+      delete process.env.DESKTOP_TOUCH_AIM_PROBE;
+      delete process.env.DESKTOP_TOUCH_AIM_PROBE_PATH;
+      (await import("node:fs")).rmSync(dir, { recursive: true, force: true });
+      vi.resetModules();
+    }
+  });
+
   it("refuses an exhausted WRITE ladder the way it refuses an exhausted click", async () => {
     // Both rungs addressed the handle and both are spent. Reported as `executor_failed`, the
     // caller is told to fall back to click_element / mouse_click at the entity's rect — the blind

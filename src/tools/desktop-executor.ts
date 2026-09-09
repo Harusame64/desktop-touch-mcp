@@ -23,13 +23,21 @@ import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { probeAim, aimProbeEnabled, readWindowIdentity } from "../engine/aim-probe.js";
+import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
 import {
+  toAim,
+  compareAimIdentity,
+  type Aim,
+  type WindowIdentity,
+  AimIdentityChangedError,
+  AimOccludedError,
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
   AIM_WINDOW_GONE,
 } from "../engine/aim.js";
-import { parseTargetHwnd, type TargetSpec } from "../engine/world-graph/session-registry.js";
+import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
@@ -106,6 +114,30 @@ export interface ExecutorDeps {
    * a test double may return a plain boolean.
    */
   aimIsGone?(hwnd: bigint): Promise<boolean> | boolean;
+  /**
+   * ADR-036 — who owns the aimed handle right now.
+   *
+   * `undefined` means the question could not be answered — no native binding, the window already
+   * gone, a build that cannot ask — and that is NOT evidence of a different window: the comparison
+   * treats it as `"unknown"` and lets the action through, because refusing on an unanswered
+   * question would take every aimed action down on such a build.
+   *
+   * Optional, so a test double that does not care about identity need not grow one; absent means
+   * no comparison is made, and the probe records that as its own row rather than as a silent pass.
+   */
+  aimIdentity?(hwnd: bigint): Promise<WindowIdentity | undefined> | WindowIdentity | undefined;
+  /**
+   * ADR-036 item 6 — who would take a press at this point, from the aim's point of view.
+   *
+   * `"other"` blocks the press: the window on top would have taken it. `"owned"` allows it even
+   * where the aim's own rectangle does not reach, because that is where a dropdown or a context
+   * menu lives. `"unknown"` is not a verdict — the containment check decides, exactly as it did
+   * before this dep existed.
+   *
+   * Optional so a test double need not grow one, and so a build whose enumeration cannot answer
+   * loses only this rung rather than the whole press.
+   */
+  pointOwner?(aimHwnd: bigint, x: number, y: number): PointOwner | undefined;
 }
 
 // ── G2: Background terminal send — injectable for testing ─────────────────────
@@ -160,15 +192,12 @@ export function terminalBgExecute(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function resolveWindowTitle(target?: TargetSpec): string {
-  // When only a handle is known there is no title to look up, and the handle's digits are not
-  // one: `parseTargetHwnd` carries it instead, and the backends that take it skip the title
-  // search entirely. `"@active"` is what the title-only backends get told.
-  return target?.windowTitle ?? "@active";
-}
-
-// ADR-036 — the parse lives in `session-registry.ts`, next to `TargetSpec`, because the read
-// half and the write half have to agree on what counts as a handle. See `parseTargetHwnd`.
+// ADR-036 item 2 — the two helpers that used to live here, `resolveWindowTitle(target)` and the
+// call to `parseTargetHwnd(target)`, are gone into the aim itself (`engine/aim.ts`). Both read the
+// same `TargetSpec` and each answered half of "which window is this?", which is precisely how the
+// two halves came to disagree: the title helper answered `windowTitle ?? "@active"` while the
+// registry keyed sessions `hwnd > tabId > windowTitle`. One value with both fields cannot hold two
+// opinions. `"@active"` is still what the title-only backends are told when there is no title.
 
 /**
  * ADR-036 — a coordinate press on a pinned session has to land inside the window it named.
@@ -219,7 +248,12 @@ async function assertPointIsInsideAim(
   y: number,
   label: string,
 ): Promise<void> {
-  if (!deps.aimRect) return;   // nothing to check with — see the JSDoc on the dep
+  if (!deps.aimRect) {
+    // A skipped check writes a row saying so. Without it the log shows a press with a handle and
+    // no containment row, which reads exactly like a build that never reached this line.
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_aim_rect_dep", aimHwnd: aimHwnd.toString(), point: { x, y }, label });
+    return;
+  }
   const rect = await deps.aimRect(aimHwnd);
   if (!rect) {
     // No rectangle is two different facts. Only a source that can say so reports the window gone;
@@ -228,9 +262,37 @@ async function assertPointIsInsideAim(
     if (await deps.aimIsGone?.(aimHwnd)) {
       throw new AimedWindowGoneError(aimHwnd, `no rectangle for the window this press was aimed at`);
     }
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), point: { x, y }, label });
     return;
   }
   const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+
+  // ADR-036 item 6 — who would actually take this press. The specification's ladder asks this
+  // between the moved-rectangle correction and the identity check, and it answers a different
+  // question from containment: a rectangle can contain a point that another window is drawn over.
+  //
+  // It runs BEFORE the containment verdict is acted on, because it can also overrule it. A combo
+  // dropdown, a context menu and a tooltip are separate top-level windows that sit outside their
+  // owner's rectangle, and they are what the caller means to press when they discovered one —
+  // refusing those as "the point left the window" is a false refusal the containment check makes
+  // today (gate 2).
+  const owner = deps.pointOwner?.(aimHwnd, x, y);
+  probeAim("act.route", {
+    route: "containment_check",
+    checked: true,
+    aimHwnd: aimHwnd.toString(),
+    point: { x, y },
+    windowRect: rect,
+    inside,
+    pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title } : {}), ...("why" in owner ? { why: owner.why } : {}) } : null,
+    label,
+  });
+  if (owner?.kind === "other") {
+    throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y);
+  }
+  // The press is on a window this one owns: allowed, and allowed even when the aim's own rectangle
+  // does not contain the point, because that is where dropdowns live.
+  if (owner?.kind === "owned") return;
   if (!inside) {
     // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
     // and that reason's first suggestion is a coordinate click at the entity's rect — this point.
@@ -242,6 +304,29 @@ async function assertPointIsInsideAim(
       aimHwnd,
     );
   }
+}
+
+/**
+ * ADR-036 probe — a road that succeeded says so.
+ *
+ * The first version of this probe only wrote at the two mouse presses and the containment check,
+ * so a run that went cleanly through UIA left no row at all and had to be inferred from the gap
+ * between `act.aim` and the next seam. That is the probe breaking its own rule — absence is
+ * recorded, not inferred — and it made the road that works the only one with no evidence (win2,
+ * from the first real-machine sweep, 2026-09-09).
+ */
+function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity, extra: Record<string, unknown> = {}): void {
+  probeAim("act.route", {
+    route,
+    // `hasAim`, not `aimed`: this is a reading of the handle, and it was called `aimed` while the
+    // comment beside it claimed it meant "the containment check ran". Those are different facts,
+    // and on a build whose `aimRect` cannot answer they come apart (gate 2).
+    hasAim: aimHwnd !== undefined,
+    aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
+    entityId: entity.entityId,
+    entityLabel: entity.label ?? null,
+    ...extra,
+  });
 }
 
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
@@ -264,16 +349,88 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
  * UIA click failure gracefully falls through to mouse when entity has a rect.
  */
 export function createDesktopExecutor(
-  target: TargetSpec | undefined,
+  target: Aim | TargetSpec | undefined,
   deps?: ExecutorDeps
 ): (entity: UiEntity, action: TouchAction, text?: string) => Promise<ExecutorKind | ExecutorOutcome> {
   const d = deps ?? getSharedRealDeps();
+  // ADR-036 item 2 — the aim is a value now. A raw `TargetSpec` is still accepted, because most
+  // callers (nearly all of them tests) hand one over, and `toAim` reads it as an aim with no
+  // identity — which is the truth about it: the caller's words were never evidence about who owns
+  // the window. Production passes a real `Aim`, and only that arm can carry identity.
+  const aim = toAim(target);
 
   return async (entity, action, text) => {
-    const winTitle = resolveWindowTitle(target);
-    // ADR-036 — resolved once per touch, next to the title it replaces, so a route added later
-    // has to walk past it rather than reach for `winTitle` alone.
-    const aimHwnd = parseTargetHwnd(target);
+    const winTitle = aim.title ?? "@active";
+    // ADR-036 — read once per touch, next to the title it replaces, so a route added later has to
+    // walk past it rather than reach for `winTitle` alone.
+    const aimHwnd = aim.hwnd;
+
+    // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
+    // checked: after the lease was taken and before anything is done about it.
+    //
+    // > If the same `hwnd` appears with a different process identity, RPG treats it as identity
+    // > invalidation, not an ordinary update.
+    //
+    // Windows recycles handles, so "the handle still names a window" is not "the handle still
+    // names YOUR window" — and every check downstream, the containment one included, asks the OS
+    // about whatever owns the number now. `"unknown"` is not `"changed"`: a build with no native
+    // binding, or a process that has already gone, cannot answer, and refusing on an unanswered
+    // question would take every action down on those builds.
+    if (aim.hwnd !== undefined && aim.identity !== undefined) {
+      const now = await d.aimIdentity?.(aim.hwnd);
+      const verdict = compareAimIdentity(aim, now);
+      probeAim("act.identity", {
+        aimHwnd: aim.hwnd.toString(),
+        then: { pid: aim.identity.pid, processName: aim.identity.processName, processStartTimeMs: aim.identity.processStartTimeMs },
+        now: now ? { pid: now.pid, processName: now.processName, processStartTimeMs: now.processStartTimeMs } : null,
+        verdict,
+        comparedByExecutor: true,
+      });
+      if (verdict === "changed") {
+        throw new AimIdentityChangedError(aim.hwnd, aim.identity, now);
+      }
+    }
+
+    // ADR-036 probe — the seam where the read path's work either arrives or does not.
+    if (aimProbeEnabled()) {
+      probeAim("act.aim", {
+        // Spelled out rather than handing the whole value over. The replacer in `aim-probe.ts`
+        // makes a raw `Aim` serialisable now, but a row is a statement about what the executor
+        // read, and every field here is one this code actually uses — a value dumped whole says
+        // "here is everything", which is how a reader ends up believing a field that was never
+        // consulted (gate 2).
+        aim: {
+          title: aim.title ?? null,
+          hwnd: aim.hwnd?.toString() ?? null,
+          tabId: aim.tabId ?? null,
+          identity: aim.identity
+            ? { pid: aim.identity.pid, processName: aim.identity.processName, processStartTimeMs: aim.identity.processStartTimeMs }
+            : null,
+        },
+        aimFrom: (target as Aim | undefined)?.kind === "aim" ? "aim" : "target_spec",
+        aimHasIdentity: aim.identity !== undefined,
+        winTitle,
+        aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
+        entityId: entity.entityId,
+        entityLabel: entity.label ?? null,
+        action,
+        sources: entity.sources,
+        preferredExecutors: entity.preferredExecutors ?? null,
+        rect: entity.rect ?? null,
+      });
+      if (aimHwnd !== undefined && aim.identity === undefined) {
+        // No identity to compare against — the aim came in as a raw target, or the read could not
+        // answer when it was taken. Recorded anyway: "nothing to compare" and "compared, same" are
+        // different facts, and only one of them is evidence.
+        probeAim("act.identity", {
+          aimHwnd: aimHwnd.toString(),
+          then: null,
+          now: readWindowIdentity(aimHwnd),
+          verdict: "unknown",
+          comparedByExecutor: false,
+        });
+      }
+    }
 
     // Issue #296 Phase 2 — `desktop_discover` derives `unsupportedExecutors`
     // from UIA `controlType` + `patterns` (e.g. `ListItem`/`TabItem` without
@@ -327,6 +484,7 @@ export function createDesktopExecutor(
       if ((action === "type" || action === "setValue") && text !== undefined) {
         try {
           await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
+          probeRoute("uia", aimHwnd, entity, { why: "uia_set_value" });
           return "uia";
         } catch (uiaErr) {
           // R3 tool-exclusion — as in the click path below: refusals are not rungs.
@@ -339,6 +497,7 @@ export function createDesktopExecutor(
           // is not.
           try {
             await d.keyboardTypeBg(winTitle, text, aimHwnd);
+            probeRoute("keyboard", aimHwnd, entity, { why: "uia_set_value_failed" });
             return "keyboard";
           } catch (kbErr) {
             // Both rungs are spent, so the refusal that was let through above is now the whole
@@ -374,6 +533,7 @@ export function createDesktopExecutor(
       }
       try {
         await d.uiaClick(winTitle, name, automationId, aimHwnd);
+        probeRoute("uia", aimHwnd, entity, { why: "uia_invoke" });
         return "uia";
       } catch (uiaErr) {
         // R3 tool-exclusion — a refusal is not a failure to route around. Every other throw
@@ -432,6 +592,12 @@ export function createDesktopExecutor(
         // BE on one — a stale rect that now sits off-screen is refused here
         // rather than clicked somewhere else.
         assertCoordinateReachable(x, y);
+        // ADR-036 probe — the downgrade press. This one is never checked against the aim: it only
+        // runs for an UNPINNED call, where there is no window to check it against. Recorded so the
+        // two mouse roads can be told apart in the log.
+        // `aimed:false` is not a reading of the value: the pinned case threw four branches up,
+        // so this road is unreachable with an aim.
+        probeRoute("mouse", undefined, entity, { why: "uia_downgrade", point: { x, y } });
         await d.mouseClick(x, y);
         // Issue #327 item C: signal the silent downgrade so the LLM sees
         // `executor: "mouse"` AND `downgrade: { from: "uia", reason: ... }`
@@ -445,14 +611,16 @@ export function createDesktopExecutor(
     // ── CDP route ────────────────────────────────────────────────────────────
     const cdpSelector = entity.locator?.cdp?.selector;
     if (cdpSelector && !cdpBlocked && preferredAllows("cdp")) {
-      const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
+      const cdpTabId = entity.locator?.cdp?.tabId ?? aim.tabId;
       // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
       // browser_fill for controlled inputs (React/Vue/Svelte).
       if ((action === "type" || action === "setValue") && text !== undefined) {
         await d.cdpFill(cdpSelector, text, cdpTabId);
+        probeRoute("cdp", aimHwnd, entity, { why: "cdp_fill", tabId: cdpTabId ?? null });
         return "cdp";
       }
       await d.cdpClick(cdpSelector, cdpTabId);
+      probeRoute("cdp", aimHwnd, entity, { why: "cdp_click", tabId: cdpTabId ?? null });
       return "cdp";
     }
 
@@ -475,6 +643,7 @@ export function createDesktopExecutor(
       // (gate 1). The title is still passed for the backend that has no handle to use.
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
       await d.terminalSend(termWin, text, aimHwnd);
+      probeRoute("terminal", aimHwnd, entity, { why: "terminal_send", termWin });
       return "terminal";
     }
 
@@ -509,6 +678,7 @@ export function createDesktopExecutor(
       (action === "type" || action === "setValue")
     ) {
       await d.keyboardTypeBg(winTitle, text, aimHwnd);
+      probeRoute("keyboard", aimHwnd, entity, { why: "keyboard_only_entity" });
       return "keyboard";
     }
 
@@ -559,6 +729,17 @@ export function createDesktopExecutor(
     if (aimHwnd !== undefined) {
       await assertPointIsInsideAim(d, aimHwnd, x, y, entity.label ?? entity.entityId);
     }
+    // ADR-036 probe — the press this ADR is about: a coordinate, taken from a rect remembered at
+    // discover time. `aimed` says only that the containment check ran, NOT that the point still
+    // belongs to the entity — a window that moved with the point still inside passes it, and the
+    // press lands on whatever arrived there (measured 2026-09-09). The specification's ladder for
+    // this press is homing correction → occlusion test → identity invalidation; none of the three
+    // is here yet, which is what this row is for.
+    probeRoute("mouse", aimHwnd, entity, {
+      why: "visual_or_read_entity",
+      point: { x, y },
+      rect: entity.rect,
+    });
     await d.mouseClick(x, y);
     return "mouse";
   };
@@ -766,6 +947,21 @@ function getSharedRealDeps(): ExecutorDeps {
     async aimRect(hwnd) {
       const { getWindowRectByHwnd } = await import("../engine/win32.js");
       return getWindowRectByHwnd(hwnd);
+    },
+
+    pointOwner(aimHwnd, x, y) {
+      // Synchronous on purpose: it reads one enumeration snapshot, and an await here would let the
+      // screen change between the question and the press it is protecting.
+      return whoIsUnderPoint(aimHwnd, x, y);
+    },
+
+    async aimIdentity(hwnd) {
+      // `getWindowIdentity` answers a zeroed identity for both "no such window" and "this build
+      // cannot ask", and the two have to arrive as one thing the caller can recognise: nothing.
+      const { getWindowIdentity } = await import("../engine/win32.js");
+      const ident = getWindowIdentity(hwnd);
+      if (!ident || ident.pid === 0) return undefined;
+      return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs };
     },
 
     async aimIsGone(hwnd) {

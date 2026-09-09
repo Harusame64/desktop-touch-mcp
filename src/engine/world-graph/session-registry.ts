@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Aim } from "../aim.js";
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "./types.js";
 import { LeaseStore } from "./lease-store.js";
@@ -171,6 +172,15 @@ export interface SessionState {
   generation: string;
   entities: UiEntity[];
   lastTarget: TargetSpec | undefined;
+  /**
+   * ADR-036 item 2 — the aim, as one value: the window the last read was made against, with who
+   * owned it at that moment.
+   *
+   * `lastTarget` stays beside it because several readers still want the caller-shaped spec (the
+   * OCR fold's key, the Stage 5 resolver). What they must not do is answer "which window" from it
+   * separately — that is how the two halves came to disagree in the first place.
+   */
+  lastAim: Aim | undefined;
   readonly leaseStore: LeaseStore;
   readonly loop: GuardedTouchLoop;
   lastAccessMs: number;
@@ -202,7 +212,7 @@ export interface SessionCreateOpts {
    * Use this (via createDesktopExecutor) so the executor sees the up-to-date target spec.
    * Ignored when executorFn is set.
    */
-  executorFactory?: (target: TargetSpec | undefined) => ExecutorFn;
+  executorFactory?: (aim: Aim | TargetSpec | undefined) => ExecutorFn;
   /**
    * Override modal detection. Default: session-aware check — blocks if any OTHER entity
    * in the current snapshot is a UIA "unknown"-role element (overlay/dialog pattern).
@@ -341,6 +351,7 @@ export class SessionRegistry {
       generation: "",
       entities: [],
       lastTarget: undefined,
+      lastAim: undefined,
       leaseStore: new LeaseStore({ defaultTtlMs: opts.defaultTtlMs, nowFn: opts.nowFn }),
       loop: null!,  // assigned immediately below
       lastAccessMs: opts.nowFn?.() ?? Date.now(),
@@ -381,7 +392,9 @@ export class SessionRegistry {
       // Resolve executor lazily so s.lastTarget is current at touch time.
       execute: (entity, action, text) => {
         const execFn = opts.executorFn
-          ?? opts.executorFactory?.(s.lastTarget)
+          // ADR-036 — the aim first: it carries the identity the executor compares against. The
+          // spec falls back for sessions created before a read resolved anything.
+          ?? opts.executorFactory?.(s.lastAim ?? s.lastTarget)
           ?? (async () => "mouse" as ExecutorKind);
         return execFn(entity, action, text);
       },

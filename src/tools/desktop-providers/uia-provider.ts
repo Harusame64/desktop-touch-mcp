@@ -13,6 +13,7 @@
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
+import { probeAim } from "../../engine/aim-probe.js";
 import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
@@ -88,6 +89,20 @@ export async function fetchUiaCandidates(
     // the read could still go by title; now it would say nothing the scoped read does not.
     const options = pinned !== undefined ? { pinnedHwnd: pinned } : undefined;
     const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
+
+    // ADR-036 probe — what this lane actually asked for, and what it stamps on every candidate.
+    // `scoped:false` with a `targetId` that looks like a handle is the read describing one window
+    // while claiming another.
+    probeAim("provider.read", {
+      lane: "uia",
+      windowTitle,
+      targetId: String(targetId),
+      scoped: pinned !== undefined,
+      pinnedHwnd: pinned !== undefined ? pinned.toString() : null,
+      elementCount: result.elementCount,
+      truncated: result.truncated ?? null,
+      clientProviders: result.clientProviders ?? null,
+    });
 
     const candidates: UiEntityCandidate[] = result.elements
       .filter((el) => el.isEnabled && el.name)

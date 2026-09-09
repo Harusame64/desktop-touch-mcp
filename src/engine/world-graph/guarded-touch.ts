@@ -52,7 +52,9 @@ export type TouchFailReason =
   | "coordinate_outside_reachable_bounds"
   | "cursor_placement_blocked"
   | "aim_window_gone"
+  | "aim_identity_changed"
   | "aim_point_outside_window"
+  | "aim_occluded"
   | "aim_route_failed"
   | "window_excluded"
   | "executor_failed";
@@ -556,11 +558,23 @@ export class GuardedTouchLoop {
       if (err instanceof Error && err.name === "AimedWindowGoneError") {
         return { ok: false, reason: "aim_window_gone", diff: [] };
       }
+      // ADR-036 item 2 — the handle now belongs to a different process. The specification calls
+      // this invalidation rather than an ordinary update, and the distinction is the whole point:
+      // an action addressed to this aim would not fail, it would succeed against a stranger.
+      if (err instanceof Error && err.name === "AimIdentityChangedError") {
+        return { ok: false, reason: "aim_identity_changed", diff: [] };
+      }
       // PR 側 codex 2026-09-09 — the three refusals below reached this catch as plain errors, so
       // all three arrived as `executor_failed`, whose first suggestion names the coordinate click
       // they refused. The executor closed the door; the envelope handed back the key. Same
       // `name`-not-`instanceof` matching as above, for the same module-identity reason.
       //
+      // ADR-036 item 6 — the aim's rectangle covers the point and another window is drawn over it.
+      // Its own reason because re-discovering does not help: the coordinates are correct and the
+      // press would still land in the window on top.
+      if (err instanceof Error && err.name === "AimOccludedError") {
+        return { ok: false, reason: "aim_occluded", diff: [] };
+      }
       // The point the press would land on is no longer inside the window this call named. Unlike
       // `aim_window_gone` the window is alive, so re-discovering returns a rect that works.
       if (err instanceof Error && err.name === "AimedPointOutsideWindowError") {

@@ -115,6 +115,39 @@ export class AimWindowGoneError extends HandlerError {
 }
 
 /**
+ * ADR-036 — the aimed handle now belongs to a different process.
+ *
+ * Its own envelope because its recovery is unlike every neighbour's. `AimWindowGone` says there is
+ * nothing there; this says there is something there and it is a stranger, which is worse: the
+ * action would have landed. Windows recycles handles, so a window that closed between the read and
+ * the write can leave its number to anything.
+ *
+ * The specification calls this **identity invalidation, not an ordinary update** — every belief
+ * keyed to that handle is void, not stale, and the lease cannot be repaired by waiting.
+ */
+export class AimIdentityChangedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimIdentityChanged";
+  }
+}
+
+/**
+ * ADR-036 — another window is drawn over the point the press would land on.
+ *
+ * Separate from {@link AimPointOutsideWindowError} because the recoveries are opposite. There the
+ * remembered coordinates are stale and re-discovering produces working ones; here they are correct,
+ * and re-discovering returns the same point with the same window on top of it. What has to change
+ * is the screen, not the lease.
+ */
+export class AimOccludedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimOccluded";
+  }
+}
+
+/**
  * ADR-036 — the aimed press would land outside the window the call named.
  *
  * The window is alive; the coordinate is stale. That is why it is not {@link AimWindowGoneError}:
