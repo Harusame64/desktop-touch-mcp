@@ -1,16 +1,195 @@
 #!/bin/sh
-# Block direct push to main. Set DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 to bypass
-# (release flow only — see docs/release-process.md and CLAUDE.md 強制命令 8).
+# Two refusals before anything reaches the server:
+#   1. Direct push to main. Set DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 to bypass
+#      (release flow only — see docs/release-process.md and CLAUDE.md 強制命令 8).
+#   2. A Claude session id in a commit message (repo policy, user decision
+#      2026-09-08: no session IDs in the public repo).
+#      `.githooks/commit-msg` removes those at commit time, so this is not a
+#      second copy of that check — it covers what that hook cannot see:
+#        - `git rebase` does NOT re-run commit-msg. It carries existing commits
+#          forward as they are, so a trailer written before the hook existed, or
+#          on a branch where it was skipped, reaches a public branch untouched.
+#        - `git commit --no-verify` skips commit-msg outright.
+#        - a machine with no node, where commit-msg steps aside on purpose.
+#      (`git commit --amend` DOES re-run it, so that path is already covered.)
+#      This one refuses rather than rewrites: the line is inside a commit by
+#      now, and rewriting history under the author's feet is not a hook's job.
+#
+# THE RULE THAT KEPT BEING GOT WRONG, written down so the next edit does not
+# have to rediscover it: `refs/remotes/*` is NOT evidence that a commit is on
+# the push target. It drifts from the destination in at least three ways — a
+# second remote you have fetched, `remote.<name>.pushurl` sending pushes
+# elsewhere, and `git remote set-url` leaving the old tracking refs behind — and
+# each of those was a separate leak until the rule was stated. Nothing here
+# decides from the tracking namespace. What decides is the destination's own
+# live refs, asked for once ($2 is the push URL, so it is the machine actually
+# being written to), and only when something was found worth asking about.
+#
+# The other rule, learned the same number of times: a check that could not run
+# is not a check that failed, and it is not a check that passed either. Every
+# step below produces an answer or says it could not.
 
+# Default word splitting, whatever the caller exported. Everything split below
+# is hex or a marker, but that is an argument for not depending on it.
+unset IFS
+
+# Never block a push on a credential prompt whose output goes nowhere. With
+# this, an unreachable or unauthenticated destination fails instead of hanging,
+# and the failure is refused explicitly a few lines down.
+GIT_TERMINAL_PROMPT=0
+export GIT_TERMINAL_PROMPT
+
+# Read the objects that will actually be TRANSFERRED, not the ones this clone
+# has been told to show instead. With `refs/replace/<oid>` pointing at a commit
+# whose message is clean, every object-reading command below — the scan, the
+# range count, the ancestry test, the report — reads the replacement while
+# `git push` sends the original. The scan finds nothing and the trailer lands on
+# the destination: a check that ran, on the wrong objects.
+#
+# Set once and exported rather than passed to each of the four commands, for the
+# same reason `$remote_display` exists: a fifth command added below is covered
+# without anyone remembering to cover it.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+
+# Reduce a URL to the part that NAMES a destination, so a message can say where
+# it could not reach without saying what it would have authenticated with. Git
+# passes this hook the destination URL verbatim as `$2`, and CI hands out URLs
+# that carry a credential in more than one place.
+#
+# Userinfo — `https://user:token@host/repo`. Cut at the last `@` before the first
+# `/` of the authority and nowhere else: a path containing `@` survives, and a
+# password containing one is still removed.
+#
+# Query and fragment — `https://host/repo.git?access_token=TOKEN`. The first
+# version of this cut the userinfo only, and a token in the query went straight
+# to stderr from the same refusal the userinfo cut was added for: the same defect
+# through a second carrier. Neither part is needed to name a destination, so both
+# go, and they go BEFORE the authority is read so nothing downstream sees them.
+#
+# An `scp`-like address (`git@host:path`, no `://`) has no userinfo, query or
+# fragment field to cut and is left as it is — `?` and `#` there are ordinary
+# path bytes, and mangling a name makes a message less actionable, not safer.
+redact_url() {
+    case "$1" in
+        *://*)
+            _ru_scheme=${1%%://*}
+            _ru_rest=${1#*://}
+            _ru_rest=${_ru_rest%%"#"*}
+            _ru_rest=${_ru_rest%%"?"*}
+            _ru_auth=${_ru_rest%%/*}
+            case "$_ru_auth" in
+                *@*) _ru_rest="${_ru_auth##*@}${_ru_rest#"$_ru_auth"}" ;;
+            esac
+            printf '%s://%s\n' "$_ru_scheme" "$_ru_rest"
+            ;;
+        *)
+            printf '%s\n' "$1"
+            ;;
+    esac
+}
+
+# `$1` is the remote's NAME when the push names a configured one, and the URL
+# ITSELF when it does not — git's pre-push documentation says both parameters
+# equal the location in that case. So it is exactly as sensitive as `$2`, and
+# the two refusals below that suggest `git fetch $remote_name` were handing a
+# push token to stderr by the other hand while `$2` was being redacted.
+#
+# Redacted at the assignment rather than at those two sites, because nothing
+# here passes this to git: it is only ever printed. Keeping no raw form is what
+# stops a third message from reaching for one.
+# Session ids out of anything this hook PRINTS. The refusal below shows each
+# offending commit's subject so a person can find it — and when the session line
+# IS the subject, `%s` handed the complete secret to stderr and to CI logs. That
+# is the same defect this file already fixed once for push URLs, one printf over.
+redact_session() {
+    printf '%s\n' "$1" |
+        sed -e 's|\(https://claude[.]ai/code/session_\)[A-Za-z0-9_-]*|\1<redacted>|g' \
+            -e 's|\(Claude-Session:\)[^ ]*|\1 <redacted>|g'
+}
+
+remote_name=$(redact_url "$1")
+remote_location="$2"
+# Two names for one destination, on purpose. `$remote_location` is what git is
+# handed; `$remote_display` is the only one that may be PRINTED. Keeping them
+# apart is what makes the safe one the easy one to reach for: this hook exists
+# to keep secrets out of the public record, and it was itself putting a push
+# token into stderr — and into CI logs — whenever the destination was
+# unreachable. A single redaction at the call site would have left the next
+# message added below to remember on its own.
+remote_display=$(redact_url "$2")
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
+session_pattern='^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
+
+# How many id characters after `session_` make it worth refusing mid-line. Every
+# real id in this repo's history is 24; the only shorter one is the literal
+# `session_x` this repo writes when it DISCUSSES the rule — in prose, in tests,
+# and in a commit message already in main. Refusing on any embedded URL would
+# make that commit unpushable forever, so the floor is what separates a leaked
+# id from the repo talking about ids.
+session_min_id=16
+
+# Commits in $1 (a rev range) whose message carries a session id, one sha per
+# line, followed by a "@@SCANNED@@<n>" line saying how many commits were walked.
+# The caller checks that count: without it, a scan that produced nothing because
+# `tr` or `awk` was missing looks exactly like a clean push.
+#
+# The record marker is `\001` followed by exactly 40 hex — checked, not assumed.
+# A commit message with a line starting with `\001` otherwise counted as a
+# commit header, the walked total overshot, and the branch became unpushable
+# with an internal-error message.
+#
+# `tr` comes first because a message written with lone CR line endings is a
+# single line to grep and awk alike, so the anchored pattern never saw the
+# trailer — such a commit went through both hooks. Rewriting CR to LF is safe
+# here because nothing is written back; this half only looks.
+leaking_commits() {
+    git log $1 --format="%x01%H%n%B" 2>/dev/null |
+        tr '\r' '\n' |
+        awk -v pat="$session_pattern" -v minid="$session_min_id" '
+            # A session URL inside prose — `see [the session](https://…)` — is a leak
+            # the anchored pattern was never going to see. Removal stays anchored (a
+            # mid-line rewrite would eat the sentence around it); the REFUSAL can be
+            # broader, because refusing only asks a human to reword.
+            # No interval expressions here: mawk does not have them.
+            function embeds(line,   i, rest, n, c) {
+                while ((i = index(line, "claude.ai/code/session_")) > 0) {
+                    rest = substr(line, i + 23)
+                    n = 0
+                    while (n < length(rest)) {
+                        c = substr(rest, n + 1, 1)
+                        if (c ~ /[A-Za-z0-9]/) n++; else break
+                    }
+                    if (n >= minid) return 1
+                    line = rest
+                }
+                return 0
+            }
+            /^\001[0-9a-f][0-9a-f]*$/ && length($0) == 41 {
+                sha = substr($0, 2); walked++; next
+            }
+            sha != "" && !(sha in seen) && ($0 ~ pat || embeds($0)) { seen[sha] = 1; print sha }
+            END { print "@@SCANNED@@" walked + 0 }
+        '
+}
+
+refuse_unverifiable() {
+    echo "" >&2
+    echo "ERROR: could not verify what this push would add — $1" >&2
+    echo "  Refusing rather than pushing unchecked." >&2
+    echo "" >&2
+    exit 1
+}
 
 while read local_ref local_oid remote_ref remote_oid
 do
+    # Deleting a ref pushes no commits.
+    if [ "$local_oid" = "$zero" ]; then
+        continue
+    fi
+
     if [ "$remote_ref" = "$protected_branch" ]; then
-        if [ "$local_oid" = "$zero" ]; then
-            continue
-        fi
         if [ "${DESKTOP_TOUCH_ALLOW_MAIN_PUSH:-0}" != "1" ]; then
             echo "" >&2
             echo "ERROR: direct push to main is forbidden." >&2
@@ -22,6 +201,120 @@ do
         else
             echo "WARNING: DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 — bypassing main protection." >&2
         fi
+    fi
+
+    # Step 1 — what to look at. For an existing ref the remote told us its own
+    # tip, so `remote_oid..local_oid` is exactly what this push adds.
+    #
+    # For a NEW ref there is no tip, and the whole branch is scanned. Excluding
+    # `--remotes=<name>` here would be cheaper and was tried; it is wrong in the
+    # one direction that matters. Tracking refs OVER-state what is published, so
+    # a leaking commit they wrongly cover is dropped before the live-ref check
+    # can see it — measured: with `git remote set-url` pointing origin at a
+    # public repo while its tracking refs still described a private one, the
+    # leak was filtered out here and the push went through. A pre-filter may be
+    # cheap; it may not be the thing that decides.
+    if [ "$remote_oid" = "$zero" ]; then
+        range="$local_oid"
+    else
+        range="$remote_oid..$local_oid"
+    fi
+
+    if ! scan=$(leaking_commits "$range"); then
+        refuse_unverifiable "the commit-message scan failed to run"
+    fi
+
+    hits=""
+    scanned=""
+    for line in $scan; do
+        case "$line" in
+            @@SCANNED@@*) scanned=${line#@@SCANNED@@} ;;
+            *) hits="$hits $line" ;;
+        esac
+    done
+
+    # Also the range check: `rev-list` exits non-zero when the range names an
+    # object this clone does not have, which `remote_oid` can after a force-push
+    # to an unfetched remote. Reading that as "found nothing" is what let a
+    # trailer publish, so it is the one walk that both counts and validates.
+    if ! expected=$(git rev-list --count $range 2>/dev/null); then
+        refuse_unverifiable "git rev-list $range failed (try 'git fetch $remote_name' first)"
+    fi
+    if [ "$scanned" != "$expected" ]; then
+        refuse_unverifiable "the scan covered $scanned of $expected commits"
+    fi
+
+    # Step 2 — nothing matched, so there is nobody to ask. This is where almost
+    # every push ends, and it touches the network zero times.
+    if [ -z "$hits" ]; then
+        continue
+    fi
+
+    # Step 3 — something matched, so now one round trip is worth it. This is the
+    # only thing that actually knows what the destination has. Note that on a
+    # forge this includes refs the destination serves but nobody pushed by hand
+    # (`refs/pull/*` on GitHub); those are publicly fetchable, so counting them
+    # as published is deliberate.
+    if ! dest_refs=$(git ls-remote "$remote_location" 2>/dev/null); then
+        refuse_unverifiable "could not list refs on $remote_display"
+    fi
+    dest_oids=$(printf '%s\n' "$dest_refs" | awk '{ print $1 }')
+
+    # Step 4 — a hit already reachable from something the destination has is
+    # already published there, and this push does not add it. Decided per commit
+    # rather than per range, which is what lets this repo's own historical
+    # trailers through with no special case.
+    #
+    # Three outcomes, not two. `--is-ancestor` exits 0 for yes, 1 for no, and
+    # 128 when it cannot tell — the destination advanced past our last fetch, so
+    # `ls-remote` named objects we do not have. Folding 128 into "no" reported
+    # "this push would publish a session id" about a commit nothing had examined:
+    # a check that could not run, announced as a check that failed.
+    unpublished=""
+    for hit in $hits; do
+        hit_published=no
+        # An unreadable destination tip is remembered, not acted on yet. Refusing
+        # at the first one gave up while a LATER ref could still prove the commit
+        # published: a destination whose `HEAD` we have not fetched, listed ahead
+        # of a branch that plainly contains the hit, was refused although the
+        # answer was there to be found two refs down. Fail-closed is preserved by
+        # the check after the loop — an indeterminate that nothing else settled
+        # still refuses.
+        hit_unreadable=""
+        for dest in $dest_oids; do
+            git merge-base --is-ancestor "$hit" "$dest" 2>/dev/null
+            case $? in
+                0) hit_published=yes; break ;;
+                1) ;;
+                *) hit_unreadable=$dest ;;
+            esac
+        done
+        if [ "$hit_published" = "no" ] && [ -n "$hit_unreadable" ]; then
+            refuse_unverifiable "could not compare $hit with $hit_unreadable (try 'git fetch $remote_name' first)"
+        fi
+        if [ "$hit_published" = "no" ]; then
+            unpublished="$unpublished $hit"
+        fi
+    done
+
+    if [ -n "$unpublished" ]; then
+        echo "" >&2
+        echo "ERROR: this push would publish commit(s) whose message carries a Claude session id." >&2
+        echo "  Repo policy: no session IDs in the public repo." >&2
+        echo "  .githooks/commit-msg removes these at commit time — it was skipped," >&2
+        echo "  or these commits predate it and a rebase is carrying them forward." >&2
+        for hit in $unpublished; do
+            hit_subject=$(git log -1 --format='%h %s' "$hit" 2>/dev/null)
+            if [ -n "$hit_subject" ]; then
+                printf '    %s\n' "$(redact_session "$hit_subject")" >&2
+            else
+                echo "    $hit" >&2
+            fi
+        done
+        echo "  Reword them before pushing — 'git commit --amend' for the tip," >&2
+        echo "  'git rebase' for anything older." >&2
+        echo "" >&2
+        exit 1
     fi
 done
 

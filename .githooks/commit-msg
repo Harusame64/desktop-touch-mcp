@@ -1,0 +1,34 @@
+#!/bin/sh
+# Remove `Claude-Session:` trailers from the commit message, and say so.
+#
+# Repo policy (user decision, 2026-09-08): no Claude session IDs in the public
+# repo. The Claude Code harness adds the trailer on its own, so REJECTING the
+# commit would make every correctly-authored commit be typed twice — friction
+# larger than the leak it prevents. Removing it silently is the other failure:
+# the author never learns that what landed differs from what they wrote. So the
+# line is removed and the removal is announced.
+#
+# `Co-Authored-By:` is deliberately left alone — attribution stays.
+#
+# The work is in `scripts/strip-session-line.mjs`, not here, so it can be tested
+# (`tests/unit/strip-session-line.test.ts`). A rewrite that can empty a commit
+# message is exactly the thing that must not be verified by reading: the first
+# version of this hook did the removal in `sed` and, on the very pattern it
+# carries, silently wrote a zero-byte file over the message.
+#
+# If node is not on PATH the commit proceeds unchanged rather than failing —
+# `.githooks/pre-push` refuses the push if a session id survives to a commit,
+# and a hook must not make a commit impossible on a machine without node.
+
+msg_file="$1"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+hook_dir=$(dirname "$0")
+
+if command -v node >/dev/null 2>&1; then
+    node "$hook_dir/../scripts/strip-session-line.mjs" "$msg_file" || exit 0
+else
+    echo "[commit-msg] node not found — session lines left as written; pre-push will refuse them" >&2
+fi
+
+exit 0

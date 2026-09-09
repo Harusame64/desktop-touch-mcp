@@ -1,0 +1,9 @@
+# `.githooks/` の中身は sh が読む。`core.autocrlf=true` の Windows で checkout されると
+# CRLF になり、シェバンが `#!/bin/sh\r` になる。**それを実行できない sh が在る**
+# ——そこでは `core.hooksPath=.githooks` を張った瞬間から、コミットも push も
+# フックの手前で落ちる。
+#
+# **この台では再現しない**（2026-09-09 実測: Git Bash は `#!/bin/sh\r` を実行し、
+# CRLF のままのフックが正しく refuse した）。**塞ぐのは、台に依るから**であって、
+# ここで壊れたのを見たからではない。
+.githooks/** text eol=lf
