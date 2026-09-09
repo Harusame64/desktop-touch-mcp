@@ -261,6 +261,32 @@ export function createDesktopExecutor(
         // one of the five failures the perception graph is built to stop, so this ends the
         // ladder and says so (2ゲート目の指摘).
         if (uiaErr instanceof AimedWindowGoneError) throw uiaErr;
+        // ADR-036 — and an aimed click does not finish as a blind one.
+        //
+        // The downgrade below clicks `entity.rect`'s centre. That is a screen coordinate, and a
+        // coordinate is not aimed at anything: whatever occupies the point takes the press. For a
+        // call that named its window by handle — the whole subject of this ADR — that is the
+        // failure it exists to remove, arriving as the recovery path.
+        //
+        // Measured on Windows 2026-09-09, and worse than the argument: with the window frame
+        // synthesised into the read but not the write, EVERY press of `Close` and `Minimize` on a
+        // pinned session came back `ok:true` while `executor` said `mouse` and `downgrade` said
+        // `Element not found` — the mouse landed on the rect, one of them at `-32000,-32000`, and
+        // only a caller reading `downgrade` could have known. Success was being reported for a
+        // press that UIA never made.
+        //
+        // So the ladder ends here when the aim was a handle. An honest failure lets the caller
+        // re-discover; a blind press lets it believe. Unpinned calls keep the downgrade: a title
+        // was never a promise about which window, and the rect is all they ever had.
+        if (aimHwnd !== undefined) {
+          throw new Error(
+            `UIA click failed for "${entity.label ?? entity.entityId}" on window ${aimHwnd}: ` +
+            `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. ` +
+            `Not falling back to a coordinate click — this call named its window, and the ` +
+            `entity's rect is a screen point that any window can be under. Re-run desktop_discover.`,
+            { cause: uiaErr },
+          );
+        }
         // UIA click failed (element not found, stale tree, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
         // which may be stale (captured at recognition time, before the element moved).

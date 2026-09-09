@@ -478,6 +478,33 @@ if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firs
  */
 
 /**
+ * ADR-036 — the same warm-up-then-register the read does, for the scripts that WRITE.
+ *
+ * The registration is process-local and every call is a fresh `powershell.exe`, so a discover
+ * that registered and an act that did not are two different views of the window: discover
+ * returned Notepad's `Close` button and the act could not find it. Measured on Windows
+ * 2026-09-09 — and what happened next is the reason this is not cosmetic. The UIA lookup missed,
+ * the executor downgraded to a mouse click at the entity's stale rect, and the response came
+ * back `ok:true` with the truth only in `downgrade`. On `Minimize` the rect was already
+ * `-32000,-32000`. So the frame this branch made VISIBLE was only ever pressable through the
+ * blind fallback this ADR exists to remove.
+ *
+ * The warm-up before the registration is not a spare RPC: registering first does nothing at all,
+ * silently (measured four ways).
+ */
+const PS_REGISTER_CLIENTSIDE_PROVIDERS = `
+$null = $target.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Automation]::ControlViewCondition)
+try {
+    $regMethod = [System.Windows.Automation.ClientSettings].GetMethod('RegisterClientSideProviderAssembly')
+    if ($null -ne $regMethod) {
+        [System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
+            (New-Object System.Reflection.AssemblyName(
+                'UIAutomationClientsideProviders, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')))
+    }
+} catch {}
+`;
+
+/**
  * (H3) Click an element by finding the window via HWND directly.
  * AutomationElement.FromHandle() bypasses the title-based root search,
  * which fixes WindowNotFound for common dialogs whose title is not visible
@@ -510,7 +537,7 @@ $hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
 try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
 catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
-
+${PS_REGISTER_CLIENTSIDE_PROVIDERS}
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
@@ -568,7 +595,7 @@ $hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
 try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
 catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
-
+${PS_REGISTER_CLIENTSIDE_PROVIDERS}
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null

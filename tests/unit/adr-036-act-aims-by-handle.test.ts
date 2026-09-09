@@ -126,6 +126,30 @@ describe("ADR-036 — the handle reaches the backend", () => {
     expect(deps.mouseClick).not.toHaveBeenCalled();
   });
 
+  it("an aimed click does not finish as a blind one, whatever UIA's reason was", async () => {
+    // The rect is a screen point, and any window can be under it. Measured on Windows
+    // 2026-09-09: with the window frame synthesised into the read but not the write, every
+    // pinned press of `Close` and `Minimize` came back ok:true while `executor` said `mouse`
+    // and `downgrade` said "Element not found" — the mouse landed on the rect, one of them at
+    // -32000,-32000. Success was reported for a press UIA never made.
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("Element not found"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Untitled - Notepad", hwnd: "4919" }, deps);
+    await expect(exec(entity(), "click")).rejects.toThrow(/named its window/);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("but an unpinned click still downgrades — a title never promised which window", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("Element not found"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Untitled - Notepad" }, deps);
+    const outcome = await exec(entity(), "click");
+    expect(deps.mouseClick).toHaveBeenCalled();
+    expect(typeof outcome === "object" && outcome.downgrade?.from).toBe("uia");
+  });
+
   it("a dead aim ends the click ladder — the mouse does not finish what UIA would not start", async () => {
     // `FromHandle` throws for a window that has closed since the lease was taken, and the rect
     // below is where that window used to be. Treating it as an ordinary UIA failure clicks

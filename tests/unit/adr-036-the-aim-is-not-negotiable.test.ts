@@ -287,6 +287,31 @@ describe("a dead handle is said out loud, not parsed as a crash", () => {
     expect(r).toEqual({ ok: false, error: "Window not found by hwnd", code: "aim_window_gone" });
   });
 
+  it("both write scripts register the providers too, or discover shows what act cannot press", async () => {
+    // The registration is process-local and every call is a fresh powershell.exe, so a discover
+    // that registered and an act that did not are two views of one window. Measured: discover
+    // returned Notepad's `Close`, the act could not find it, and the executor pressed the
+    // entity's rect with the mouse — `ok:true`, the truth only in `downgrade`, and `Minimize`'s
+    // rect already at -32000,-32000. Warm-up first: registering before UIA is up does nothing,
+    // silently.
+    h.native.engineThrows = true;
+    ambiguous();
+    h.psOutput = '{"ok":true}';
+    for (const run of [
+      () => clickElement("Untitled - Notepad", "Close", undefined, undefined, { hwnd: NOTEPAD }),
+      () => setElementValue("Untitled - Notepad", "x", "Field", undefined, { hwnd: NOTEPAD }),
+    ]) {
+      h.calls.ps = [];
+      await run();
+      const script = h.calls.ps[0]!.script;
+      const warmUp = script.indexOf("$null = $target.FindAll");
+      const register = script.indexOf("RegisterClientSideProviderAssembly");
+      expect(register, "the write road must register too").toBeGreaterThan(-1);
+      expect(warmUp).toBeGreaterThan(-1);
+      expect(warmUp, "warm-up first, or the registration is a silent no-op").toBeLessThan(register);
+    }
+  });
+
   it("the by-handle setValue script carries the same catch", async () => {
     ambiguous();
     h.psOutput = '{"ok":false,"error":"Window not found by hwnd","code":"aim_window_gone"}';

@@ -66,7 +66,7 @@ describe("desktop executor — unreachable coordinates (ADR-029 Phase 1)", () =>
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("element not found"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "123" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const e = entity({ sources: ["uia"], rect: OFF_PRIMARY_RECT });
     await expect(exec(e, "click")).rejects.toMatchObject({
       name: "CoordinateOutsideReachableBounds",

@@ -146,6 +146,12 @@ describe("createDesktopExecutor — route priority", () => {
   });
 });
 
+// ADR-036 — the cells below drive an UNPINNED session (`windowTitle` only), because the mouse
+// downgrade they describe is now only for those. A call that named its window by handle ends the
+// ladder instead of pressing `entity.rect`'s centre: that is a screen point, and any window can
+// be under it. Measured on Windows 2026-09-09 — with the frame in the read but not the write,
+// every pinned press of `Close`/`Minimize` came back ok:true while the mouse landed on the rect,
+// one of them at -32000,-32000.
 describe("createDesktopExecutor — error handling and UIA fallback", () => {
   it("mouse fallback throws when entity has no rect", async () => {
     const deps = mockDeps();
@@ -158,7 +164,7 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("element not found"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click"
@@ -176,7 +182,7 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("UIA error"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     await expect(exec(entity({ sources: ["uia"], rect: undefined }), "click"))
       .rejects.toThrow("no rect for mouse fallback");
   });
@@ -202,7 +208,7 @@ describe("createDesktopExecutor — UIA click → mouse downgrade marker (#327 i
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("InvokePatternNotSupported"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click",
@@ -217,7 +223,7 @@ describe("createDesktopExecutor — UIA click → mouse downgrade marker (#327 i
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("element not found"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     await expect(exec(entity({ sources: ["uia"], rect: undefined }), "click"))
       .rejects.toThrow("no rect for mouse fallback");
   });
@@ -226,7 +232,7 @@ describe("createDesktopExecutor — UIA click → mouse downgrade marker (#327 i
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw "string-only error"; }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 0, y: 0, width: 10, height: 10 } }),
       "click",
@@ -285,7 +291,7 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("InvokePattern missing"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click",
@@ -375,7 +381,7 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("not found"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     // entity.rect absent → falls back to locator.visual.rect
     const e = entity({
       sources: ["uia"],
@@ -388,7 +394,7 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
 
     // entity.rect present → entity.rect wins over locator.visual.rect
     const deps2 = mockDeps({ uiaClick: vi.fn(async () => { throw new Error("fail"); }) });
-    const exec2 = createDesktopExecutor({ hwnd: "1" }, deps2);
+    const exec2 = createDesktopExecutor({ windowTitle: "App" }, deps2);
     const e2 = entity({
       sources: ["uia"],
       rect: { x: 10, y: 20, width: 40, height: 20 }, // live rect
