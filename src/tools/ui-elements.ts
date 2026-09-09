@@ -177,10 +177,9 @@ export const clickElementHandler = async ({
     const hintsBlock = buildHintsForTitle(
       effectiveWindowTitle, resolvedWin?.hwnd, hwndParam !== undefined,
     );
-    // H3: pass resolved hwnd so uia-bridge can use FromHandle() for common dialogs. ADR-036 —
-    // the bridge now decides WHEN to use it: it addresses the handle where the title would
-    // reach a different window, and otherwise keeps the native title path and retries through
-    // the handle if that comes back empty-handed (which is what the dialogs need).
+    // H3: pass the resolved hwnd so uia-bridge addresses the window through FromHandle() rather
+    // than searching for its title — which is what reaches the common dialogs, and (ADR-036)
+    // what keeps a same-titled sibling from answering instead.
     const result = await clickElement(
       effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
@@ -565,9 +564,8 @@ export const setElementValueHandler = async ({
     // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
     // Owed from here: from this line on, some window has been written to (or an
     // attempt was made on it) and the drift baseline is stale until observed.
-    // Channel 1 is aimed at the handle, so the debt names the handle — whether the bridge
-    // reached it through `FromHandle` or through a title it had just checked names that window
-    // alone (ADR-036, `scopingWouldChangeTheWindow`).
+    // Channel 1 is aimed at the handle — the bridge addresses it through `FromHandle` — so the
+    // debt names the handle (ADR-036).
     observationOwedFor = { title: effectiveTitle, ...(resolvedWin && { hwnd: resolvedWin.hwnd }) };
     const r1 = await setElementValue(
       effectiveTitle, value, name, automationId,

@@ -171,28 +171,31 @@ describe("a handle on the write path is never traded for a title", () => {
   });
 });
 
-describe("the read half is the one that asks first", () => {
-  it("keeps the native path when the title already names only the pinned window", async () => {
-    await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
-    expect(h.calls.nativeElements).toBe(1);
-    expect(h.calls.ps).toHaveLength(0);
-  });
-
-  it("scopes the read when a same-titled sibling could answer instead", async () => {
-    ambiguous();
+describe("a pinned read is scoped, whatever the enumeration says", () => {
+  it("scopes even when the title looks unambiguous right now", async () => {
+    // This used to keep the native path here, and both gates refused the predicate that decided
+    // it: a Win32 caption sweep cannot vouch for what a UIA `Name` search reaches, and it is a
+    // photograph taken before the read. The cost is real and is paid.
     h.psOutput = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
     await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
     expect(h.calls.nativeElements).toBe(0);
     expect(h.calls.ps[0]!.script).toContain("FromHandle");
+    expect(h.calls.ps[0]!.script).toContain(NOTEPAD.toString());
   });
 
-  it("scopes when it cannot ask — an enumeration that throws is not a licence to guess", async () => {
-    const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
-    vi.mocked(enumWindowsInZOrder).mockImplementationOnce(() => { throw new Error("no win32"); });
+  it("keeps the native path for a read that pinned nothing", async () => {
+    // A handle passed only to key the cache is not a scoping request, and `screenshot` passes
+    // exactly that — taking the Rust engine away from it was a regression once already.
+    await getUiElements("Untitled - Notepad", 3, 50, 10000, { hwnd: NOTEPAD });
+    expect(h.calls.nativeElements).toBe(1);
+    expect(h.calls.ps).toHaveLength(0);
+  });
+
+  it("does not consult the window list at all — there is no question left to ask", async () => {
     h.psOutput = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
     await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
-    expect(h.calls.nativeElements).toBe(0);
-    expect(h.calls.ps).toHaveLength(1);
+    await getTextViaTextPattern("Untitled - Notepad", 6000, { pinnedHwnd: NOTEPAD });
+    expect(h.calls.enumerations).toBe(0);
   });
 });
 
@@ -218,13 +221,13 @@ describe("a dead handle is said out loud, not parsed as a crash", () => {
 });
 
 describe("a tree is filed under a handle only when the read was scoped to it", () => {
-  it("does not file a title-derived tree under the pinned handle", async () => {
-    // The gate reads Win32 captions; the title search matches UIA `Name`, and the two are not
-    // always the same string. A tree that came back through the title is not evidence about the
-    // pinned window, and caching it there would serve it to `screenshot` as though it were.
-    await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD });
-    expect(h.calls.nativeElements).toBe(1);
-    expect(h.calls.cacheWrites).toHaveLength(0);
+  it("files under the window that was read, not the one the caller keyed by", async () => {
+    // The two parameters are different requests, and when they disagree the read is the one
+    // that can vouch for itself: it went through `FromHandle`. A caller's key is a claim about
+    // a title; a scoped read is evidence about a window.
+    h.psOutput = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
+    await getUiElements("Untitled - Notepad", 3, 50, 10000, { hwnd: OTHER, pinnedHwnd: NOTEPAD });
+    expect(h.calls.cacheWrites.map((c) => c.hwnd)).toEqual([NOTEPAD]);
   });
 
   it("files a scoped tree under the handle it was scoped to", async () => {
@@ -256,18 +259,18 @@ describe("a cache hit does not pay for a question it did not need to ask", () =>
     expect(h.calls.ps).toHaveLength(0);
   });
 
-  it("still asks when there is nothing cached", async () => {
+  it("still reads when there is nothing cached", async () => {
+    h.psOutput = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
     await getUiElements("Untitled - Notepad", 3, 50, 10000, {
       hwnd: NOTEPAD, pinnedHwnd: NOTEPAD, cached: true,
     });
-    expect(h.calls.enumerations).toBe(1);
-    expect(h.calls.nativeElements).toBe(1);
+    expect(h.calls.ps).toHaveLength(1);
+    expect(h.calls.cacheWrites.map((c) => c.hwnd)).toEqual([NOTEPAD]);
   });
 });
 
 describe("the terminal buffer read gets a deadline it can finish inside", () => {
   it("adds the process start to the caller's budget rather than eating it", async () => {
-    ambiguous();
     h.psOutput = '{"ok":true,"text":"C:\\\\> ","controlType":"Document"}';
     await getTextViaTextPattern("Untitled - Notepad", 6000, { pinnedHwnd: NOTEPAD });
     expect(h.calls.nativeText).toBe(0);
@@ -277,8 +280,8 @@ describe("the terminal buffer read gets a deadline it can finish inside", () => 
     expect(h.calls.ps[0]!.timeout).toBe(10000);
   });
 
-  it("keeps the native path, and its untouched deadline, when scoping changes nothing", async () => {
-    const text = await getTextViaTextPattern("Untitled - Notepad", 6000, { pinnedHwnd: NOTEPAD });
+  it("keeps the native path for an unpinned read, where its deadline is untouched", async () => {
+    const text = await getTextViaTextPattern("Untitled - Notepad", 6000);
     expect(text).toBe("native buffer");
     expect(h.calls.ps).toHaveLength(0);
   });

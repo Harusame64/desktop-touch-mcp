@@ -4,7 +4,7 @@ import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { AIM_WINDOW_GONE } from "./aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
-import { enumWindowsInZOrder, isExcludedTitle, isExcludedWindowHandle } from "./win32.js";
+import { isExcludedTitle, isExcludedWindowHandle } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
@@ -288,42 +288,33 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
 }
 
 /**
- * ADR-036 — is scoping this read to a handle going to change which window it reaches?
+ * ADR-036 — why there is no "do we really need to scope this?" predicate here any more.
  *
- * Scoping is a correction for ambiguity, not a different kind of read, and it is not free:
- * neither `uiaGetElements` nor `uiaGetTextViaTextPattern` takes a handle, so a scoped read
- * leaves the Rust engine for a PowerShell round trip — measured at 184 ms against 517 ms for
- * the same window on 2026-09-09. Paying that on every `desktop_discover` is what this asks
- * about, since `normalizeTarget` fills a handle from the foreground even for a bare call.
+ * There was one. It asked whether the Win32 enumeration showed exactly one window whose caption
+ * matched the query and it was the pinned one, and skipped scoping when it did — because
+ * scoping costs a PowerShell round trip (184 ms against 517 ms on the same window, measured
+ * 2026-09-09) and `normalizeTarget` fills a handle for every call, so the price was paid on
+ * every `desktop_discover`.
  *
- * The answer is no when the Win32 enumeration shows exactly one window whose title matches
- * the query and it is the pinned one: a title search cannot reach a different window than the
- * handle names, because there is no different window to reach.
+ * Both gates refused it, one round apart, for the same two reasons:
  *
- * **What this does not cover.** The title searches run against UIA's `Name`, and the
- * enumeration reads Win32's title; the two can differ (measured on 2026-09-09 — a WPF window
- * whose UIA `Name` was its content, not its caption). Where they differ, a unique Win32 title
- * does not prove a unique UIA one, and this returns "no scope needed" for a read that then
- * resolves by a name this never looked at. That is the same exposure the title-only read had
- * before any of this, and it closes when the native side takes a handle.
+ *   - **it is not atomic.** The enumeration is a photograph; the read happens after it. A
+ *     same-titled window appearing in between turns a checked title into an ambiguous one and
+ *     nothing notices.
+ *   - **the populations differ.** The predicate reads Win32 captions from an enumeration that
+ *     drops invisible, untitled and sub-50 px windows; the search matches UIA `Name` over the
+ *     root children, and the two are not always the same string (measured — a WPF window whose
+ *     `Name` was its content, not its caption).
+ *
+ * Both ways of being wrong land in exactly the case this ADR is about, and the result is a read
+ * of one window feeding actions aimed at another — which is the split the ADR closed. No cheap
+ * verification exists either: two maximized same-titled windows have the same class and the same
+ * rect, so nothing the read returns can tell them apart.
+ *
+ * So a pinned read is scoped, always, and the round trip is the price until the native side
+ * takes a handle — `uiaGetElements` / `uiaGetTextViaTextPattern` take a title and nothing else,
+ * and giving them one removes the cost and the question together.
  */
-export function titleAlreadyNamesOnly(
-  windows: ReadonlyArray<{ hwnd: bigint; title: string }>,
-  windowTitle: string,
-  hwnd: bigint,
-): boolean {
-  const q = windowTitle.toLowerCase();
-  const matches = windows.filter((w) => w.title.toLowerCase().includes(q));
-  return matches.length === 1 && matches[0]!.hwnd === hwnd;
-}
-
-function scopingWouldChangeTheWindow(windowTitle: string, hwnd: bigint): boolean {
-  try {
-    return !titleAlreadyNamesOnly(enumWindowsInZOrder(), windowTitle, hwnd);
-  } catch {
-    return true; // Could not ask — scope, which is the answer that cannot be wrong.
-  }
-}
 
 /**
  * (H3) Click an element by finding the window via HWND directly.
@@ -786,28 +777,13 @@ export async function getUiElements(
       }
     }
   }
-  // Scope only where it changes the answer — see `scopingWouldChangeTheWindow`. Without this,
-  // every discover pays the PowerShell path, because `normalizeTarget` fills a handle from the
-  // foreground even for a bare call (2ゲート目の指摘).
-  const scopeHwnd =
-    options?.pinnedHwnd !== undefined &&
-    scopingWouldChangeTheWindow(windowTitle, options.pinnedHwnd)
-      ? options.pinnedHwnd
-      : undefined;
-  // A tree is filed under a handle only when the read was SCOPED to that handle.
-  //
-  // `pinnedHwnd` on its own is not enough. When the gate answers "the title already names only
-  // this window" the read goes back through the title, and the two are not the same question:
-  // the gate reads Win32 captions from an enumeration that drops invisible, untitled and tiny
-  // windows, while the title search runs over UIA's root children and matches UIA `Name`, which
-  // is not always the caption (measured on 2026-09-09 — a WPF window whose `Name` was its
-  // content). Where they disagree the read reaches a window the gate never looked at, and filing
-  // that tree under the caller's handle would be a wrong answer stored under the right key —
-  // which `screenshot` and `get_ui_elements` would later serve from the cache as though it
-  // described the pinned window (2ゲート目の指摘).
-  //
-  // A title-derived tree still files under `hwnd`, which is the caller's own claim about the
-  // window its title names. That claim is as old as the cache and is not what this ADR changed.
+  // A pinned read is scoped to the handle. Always — see the note above the scripts.
+  const scopeHwnd = options?.pinnedHwnd;
+  // A tree is filed under a handle only when the read was SCOPED to that handle — a scoped read
+  // is the only one that can vouch for which window it describes. A title-derived tree still
+  // files under `hwnd`, which is the caller's own claim that the title it passed names that
+  // window; that claim is as old as the cache and is not what this ADR changed. What is not
+  // allowed is the bridge inventing the claim out of a scoping request (2ゲート目の指摘).
   const cacheKey = scopeHwnd ?? options?.hwnd;
   // ★ Rust native path
   //
@@ -1397,12 +1373,8 @@ export async function getTextViaTextPattern(
 ): Promise<string | null> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
-  // Same gate as `getUiElements`: scope only where it changes which window is read.
-  const scopeHwnd =
-    options?.pinnedHwnd !== undefined &&
-    scopingWouldChangeTheWindow(windowTitle, options.pinnedHwnd)
-      ? options.pinnedHwnd
-      : undefined;
+  // Scoped whenever a handle is in hand, as in `getUiElements`.
+  const scopeHwnd = options?.pinnedHwnd;
   // ★ Rust native path (Phase C) — skipped while a handle is in hand: it takes a title only,
   // and a terminal buffer read from one window while the keys go to its same-titled twin is
   // the same split this ADR closed on the UIA route.
