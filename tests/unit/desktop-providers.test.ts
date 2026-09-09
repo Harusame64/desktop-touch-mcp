@@ -137,6 +137,28 @@ describe("fetchUiaCandidates — a prefix of a window says it is one (ADR-036)",
     expect(r.warnings).toContain("uia_tree_truncated");
   });
 
+  it("says when the frame's names came from the MSAA synthesis, not the provider", async () => {
+    // 26 elements on both roads, and not the same 26: `Button:Close` here against
+    // `Button:閉じる` there, `Document` against `Edit`. Twenty of the twenty-six differ. A caller
+    // that addresses elements by name is looking at two vocabularies for one window depending on
+    // whether it passed a handle, and nothing else in the response says so.
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Close", controlType: "Button", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null, clientProviders: "registered",
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.warnings).toContain("uia_frame_names_synthesized");
+  });
+
+  it("says nothing about vocabulary when the registration did nothing", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Pane", controlType: "Pane", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null, clientProviders: "noop",
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.warnings).not.toContain("uia_frame_names_synthesized");
+  });
+
   it("says nothing when the tree is whole", async () => {
     uiaBridgeMocks.getUiElements.mockResolvedValue({
       elements: [{ name: "Start", controlType: "Button", isEnabled: true, patterns: [] }],

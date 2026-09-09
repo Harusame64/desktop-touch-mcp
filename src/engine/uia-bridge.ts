@@ -900,12 +900,27 @@ export interface UiElementsResult {
    * button), which the managed UIA client reaches only through the clientside providers.
    *
    * `"registered"` — the assembly was registered and the tree grew, so the frame is in there.
-   * `"noop"` — registered without effect; the tree is the client area only. `"failed"` /
-   * `"unavailable"` — the registration threw, or this .NET has no such method. Absent on the
+   * `"noop"` — registered without effect; the tree is the client area only (measured on a WPF
+   * window, which publishes its own UIA and gives the MSAA synthesis nothing to add). `"failed"`
+   * / `"unavailable"` — the registration threw, or this .NET has no such method. Absent on the
    * native path, which goes through COM and never needed any of it.
    *
    * Reported rather than assumed because the failure is silent: registering at the wrong moment
    * returns without error and changes nothing.
+   *
+   * **`"registered"` also means the names in this tree are the synthesised ones.** The same
+   * Notepad returns 26 elements on both roads and they are not the same 26: through the
+   * clientside providers the frame is `Button:Close` / `Button:Minimize` /
+   * `MenuBar:Application`, through COM it is `Button:閉じる` / `Button:最小化` /
+   * `MenuBar:アプリケーション`, and control types differ too (`Document` against `Edit`,
+   * `Edit` against `Text`). Twenty of the twenty-six differ. A caller that addresses elements by
+   * name — this product does — sees one window under two vocabularies depending on whether it
+   * passed a handle.
+   *
+   * Kept anyway, because the alternative is that a session holding a window's handle cannot
+   * press that window's close button at all, and because the vocabulary is self-consistent
+   * within one road: a pinned discover and the pinned act that follows it both speak MSAA. It
+   * goes away when the native side takes a handle, which is the next change.
    */
   clientProviders?: "registered" | "noop" | "failed" | "unavailable";
   elements: UiElement[];

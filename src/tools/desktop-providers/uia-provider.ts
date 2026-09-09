@@ -125,6 +125,14 @@ export async function fetchUiaCandidates(
       // (2ゲート目の指摘). `_narration` refuses a truncated tree outright because it DIFFS two of
       // them; discover only has to say so.
       ...(result.truncated ? ["uia_tree_truncated"] : []),
+      // ADR-036 — this tree's frame elements were synthesised from MSAA by the clientside
+      // providers, so they carry MSAA's vocabulary: `Close` where the COM road says `閉じる`,
+      // `MenuBar:Application` where it says `MenuBar:アプリケーション`, `Document` where it says
+      // `Edit`. Twenty of Notepad's twenty-six elements differ that way (measured 2026-09-09).
+      // Self-consistent within this road — the act that follows speaks the same vocabulary — but
+      // a caller comparing against a title-derived read, or against a name a human read off the
+      // screen, is looking at two vocabularies for one window.
+      ...(result.clientProviders === "registered" ? ["uia_frame_names_synthesized"] : []),
       ...(candidates.length === 0 ? ["uia_no_elements"] : []),
     ];
 
