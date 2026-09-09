@@ -9,7 +9,7 @@ use windows::core::Interface;
 
 use super::scroll::find_element;
 use super::thread::{self, UiaContext};
-use super::tree::find_window;
+use super::tree::resolve_root;
 use super::types::*;
 
 const DEFAULT_TIMEOUT_MS: u32 = 8_000;
@@ -24,6 +24,9 @@ pub struct ClickElementOptions {
     pub name: Option<String>,
     pub automation_id: Option<String>,
     pub control_type: Option<String>,
+    /// ADR-036 — act on THIS window, rather than the first one whose name contains `window_title`.
+    /// A decimal handle as a string; see `GetElementsOptions::hwnd`.
+    pub hwnd: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -33,6 +36,9 @@ pub struct SetValueOptions {
     pub value: String,
     pub name: Option<String>,
     pub automation_id: Option<String>,
+    /// ADR-036 — act on THIS window, rather than the first one whose name contains `window_title`.
+    /// A decimal handle as a string; see `GetElementsOptions::hwnd`.
+    pub hwnd: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -42,6 +48,9 @@ pub struct InsertTextOptions {
     pub value: String,
     pub name: Option<String>,
     pub automation_id: Option<String>,
+    /// ADR-036 — act on THIS window, rather than the first one whose name contains `window_title`.
+    /// A decimal handle as a string; see `GetElementsOptions::hwnd`.
+    pub hwnd: Option<String>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -70,7 +79,7 @@ pub fn insert_text(opts: InsertTextOptions) -> napi::Result<ActionResult> {
 // ─── Implementation ──────────────────────────────────────────────────────────
 
 fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Result<ActionResult> {
-    let window = match find_window(ctx, &opts.window_title) {
+    let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
         Err(e) => {
             return Ok(ActionResult {
@@ -164,7 +173,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
 }
 
 fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<ActionResult> {
-    let window = match find_window(ctx, &opts.window_title) {
+    let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
         Err(e) => {
             return Ok(ActionResult {
@@ -247,7 +256,7 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
 }
 
 fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<ActionResult> {
-    let window = match find_window(ctx, &opts.window_title) {
+    let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
         Err(e) => {
             return Ok(ActionResult {

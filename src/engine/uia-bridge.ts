@@ -472,9 +472,15 @@ if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firs
  * verification exists either: two maximized same-titled windows have the same class and the same
  * rect, so nothing the read returns can tell them apart.
  *
- * So a pinned read is scoped, always, and the round trip is the price until the native side
- * takes a handle — `uiaGetElements` / `uiaGetTextViaTextPattern` take a title and nothing else,
- * and giving them one removes the cost and the question together.
+ * So a pinned read is scoped, always. The round trip was the price of that until the engine
+ * learned to take a handle, which it now does: `uiaGetElements`, `uiaGetTextViaTextPattern`,
+ * `uiaClickElement` and `uiaSetValue` all accept one, and a pinned call stays in Rust.
+ *
+ * The scripts below are what is left of that road — reached on a build with no native addon, or
+ * when a native call throws. They keep every guard the pinned path grew while it lived here (the
+ * budget the script measures for itself, the clamps around it, the catch around `FromHandle`,
+ * the clientside-provider registration and the warning about the vocabulary it brings), because
+ * a fallback that quietly does less than the road it replaces is the failure this ADR is about.
  */
 
 /**
@@ -991,20 +997,21 @@ export async function getUiElements(
   // That claim is as old as the cache and is not what this ADR changed.
   // ★ Rust native path
   //
-  // ADR-036 — skipped only when the read is SCOPED to a handle, the same way `clickElement`
-  // and `setElementValue` skip it: `uiaGetElements` takes a title and nothing else, so going
-  // through it would read whichever window the title found first while every write on this
-  // session addressed the handle. The two halves disagreeing is worse than the PowerShell
-  // round-trip: a read of window A and a click on window B report `no_change` for an action
-  // that landed. A handle passed merely to key the cache keeps the native path. When the
-  // native side grows a handle parameter this branch goes away.
-  if (nativeUia?.uiaGetElements && scopeHwnd === undefined) {
+  // ADR-036 — this used to be skipped for a scoped read, because `uiaGetElements` took a title
+  // and nothing else: going through it would have read whichever window the title found first
+  // while every write on the session addressed the handle. The engine takes a handle now, so a
+  // pinned read stays here — which is the whole of the next change and most of what it buys.
+  // What it costs to leave: 184 ms against 517 ms on the same window, a frame the PowerShell
+  // road can only see by registering MSAA clientside providers, and English names for that
+  // frame when it does (measured on Windows 2026-09-09).
+  if (nativeUia?.uiaGetElements) {
     try {
       const result = await nativeUia.uiaGetElements({
         windowTitle,
         maxDepth,
         maxElements,
         fetchValues: options?.fetchValues ?? false,
+        ...(scopeHwnd !== undefined && { hwnd: scopeHwnd.toString() }),
       });
       // Normalise: Rust returns Option<T> as undefined; TS expects null for rects
       const normalised: UiElementsResult = {
@@ -1241,15 +1248,17 @@ export async function clickElement(
   // and nothing else, so an aimed action is a PowerShell round trip. The way out is to give the
   // native side a handle — not to make the aim conditional on an enumeration.
   //
-  // H3 — this is also what reaches the common dialogs (Save As on Win11 Notepad): they are not
-  // among the UIA root children the title search walks, and `FromHandle` does not walk them.
-  if (options?.hwnd === undefined && nativeUia?.uiaClickElement) {
+  // H3 — the handle is also what reaches the common dialogs (Save As on Win11 Notepad): they are
+  // not among the UIA root children a title search walks, and `ElementFromHandle` does not walk
+  // them either. The engine takes the handle now, so this no longer means leaving it.
+  if (nativeUia?.uiaClickElement) {
     try {
       const result = await nativeUia.uiaClickElement({
         windowTitle,
         name: name ?? undefined,
         automationId: automationId ?? undefined,
         controlType: controlType ?? undefined,
+        ...(options?.hwnd !== undefined && { hwnd: options.hwnd.toString() }),
       });
       return {
         ok: result.ok,
@@ -1282,13 +1291,14 @@ export async function setElementValue(
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // A handle is authoritative here too — see `clickElement` above for why the read half's gate
   // does not belong on a write.
-  if (options?.hwnd === undefined && nativeUia?.uiaSetValue) {
+  if (nativeUia?.uiaSetValue) {
     try {
       const result = await nativeUia.uiaSetValue({
         windowTitle,
         value,
         name: name ?? undefined,
         automationId: automationId ?? undefined,
+        ...(options?.hwnd !== undefined && { hwnd: options.hwnd.toString() }),
       });
       return { ok: result.ok, error: result.error ?? undefined, code: result.code ?? undefined };
     } catch (e) {
@@ -1582,12 +1592,17 @@ export async function getTextViaTextPattern(
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
   // Scoped whenever a handle is in hand, as in `getUiElements`.
   const scopeHwnd = options?.pinnedHwnd;
-  // ★ Rust native path (Phase C) — skipped while a handle is in hand: it takes a title only,
-  // and a terminal buffer read from one window while the keys go to its same-titled twin is
-  // the same split this ADR closed on the UIA route.
-  if (nativeUia?.uiaGetTextViaTextPattern && scopeHwnd === undefined) {
+  // ★ Rust native path (Phase C) — takes the handle too now, so a pinned terminal read no
+  // longer has to leave it. Reading one terminal's buffer while the keys go to its same-titled
+  // twin is the split this ADR closed on the UIA route, and it was closed here by paying for
+  // PowerShell until the engine could be told which window.
+  if (nativeUia?.uiaGetTextViaTextPattern) {
     try {
-      return await nativeUia.uiaGetTextViaTextPattern({ windowTitle, timeoutMs });
+      return await nativeUia.uiaGetTextViaTextPattern({
+        windowTitle,
+        timeoutMs,
+        ...(scopeHwnd !== undefined && { hwnd: scopeHwnd.toString() }),
+      });
     } catch (e) {
       console.warn("[uia-bridge] Native uiaGetTextViaTextPattern failed, falling back to PowerShell:", e);
     }
