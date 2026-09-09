@@ -161,6 +161,25 @@ describe("stripSessionLines — what comes out", () => {
     expect(text).toBe("fix: b\n\nbody\n");
   });
 
+  it("keeps a trailing blank the removal did not strand — content outlived the trailer", () => {
+    // The trailer is in the MIDDLE, so the blank line at the end is the
+    // author's and not something the removal left behind. Popping it edits
+    // bytes outside the targeted line, and with `commit.cleanup=verbatim` that
+    // reaches the stored commit.
+    const { text, removed } = stripSessionLines(`subject\n${TRAILER}\nbody\n\n`);
+    expect(removed).toBe(1);
+    expect(text).toBe("subject\nbody\n\n");
+  });
+
+  it("does not add a newline the author never wrote when the removal is mid-message", () => {
+    // No trailing blank here, so this isolates the other half: the empty chunk
+    // that says "the message ended with a separator" must not be lent one. It
+    // was unreachable while the blank-trim always fired, because the trim took
+    // that chunk away first.
+    const { text } = stripSessionLines(`subject\n${TRAILER}\nbody\n`);
+    expect(text).toBe("subject\nbody\n");
+  });
+
   it("keeps a trailing 0xA0 line — 'blank' is the pattern's idea of blank, not Unicode's", () => {
     // On a latin1 byte string 0xA0 is NBSP to `String.trim()` and an ordinary
     // byte to the hook. Trimming deleted it, which is a byte this function

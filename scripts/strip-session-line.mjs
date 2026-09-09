@@ -77,14 +77,24 @@ export function stripSessionLines(message) {
   // the line that carried it may be the one being taken out.
   let lastSeparator = "\n";
 
+  // Where the removal happened, and where the surviving content ends — both as
+  // positions in the ORIGINAL message. The trailing-blank rule below needs to
+  // tell "these blanks are what the removal left behind" from "these blanks are
+  // the author's, and the removal happened somewhere above them".
+  let lastRemovedLine = -1;
+  let lastKeptContentLine = -1;
+
   for (let i = 0; i < parts.length; i += 2) {
+    const line = i / 2;
     const text = parts[i];
     const sep = parts[i + 1] ?? "";
     if (sep !== "") lastSeparator = sep;
     if (SESSION_LINE_RE.test(text)) {
       removed++;
+      lastRemovedLine = line;
       continue;
     }
+    if (!BLANK_LINE_RE.test(text)) lastKeptContentLine = line;
     kept.push({ text, sep });
   }
 
@@ -93,11 +103,25 @@ export function stripSessionLines(message) {
   // only the ones ending in a newline.
   if (removed === 0) return { text: message, removed: 0 };
 
-  // Blank lines stranded at the end by the removal. Tested against the pattern
-  // rather than `String.trim()`, which is Unicode-aware: on a latin1 byte string
-  // a trailing line holding the single byte 0xA0 counted as blank and was
-  // deleted, which is a byte this function promises to keep.
-  while (kept.length > 0 && BLANK_LINE_RE.test(kept[kept.length - 1].text)) kept.pop();
+  // Blank lines stranded at the end by the removal — and ONLY those. The
+  // comment and the test beside it always said "stranded", but the loop popped
+  // every trailing blank line whatever put it there, so
+  // `subject / Claude-Session / body / <blank>` came back without the author's
+  // final blank line: content the removal did not strand, in a function whose
+  // whole promise is to return the message in the bytes it arrived in. With
+  // `commit.cleanup=verbatim` that edit reaches the stored commit.
+  //
+  // The question is whether the removal is what left these at the end, and the
+  // original line numbers answer it: if any content OUTLIVED the last removed
+  // line, the blanks after it are the author's and are kept.
+  //
+  // Tested against the pattern rather than `String.trim()`, which is
+  // Unicode-aware: on a latin1 byte string a trailing line holding the single
+  // byte 0xA0 counted as blank and was deleted, which is a byte this function
+  // promises to keep.
+  if (lastRemovedLine > lastKeptContentLine) {
+    while (kept.length > 0 && BLANK_LINE_RE.test(kept[kept.length - 1].text)) kept.pop();
+  }
 
   if (kept.length === 0) return { text: "", removed };
 
@@ -107,7 +131,12 @@ export function stripSessionLines(message) {
   // the only line carrying one was the line just removed, there is no surviving
   // neighbour to ask, and a CRLF message came back with an LF on the end.
   const last = kept[kept.length - 1];
-  if (last.sep === "") last.sep = lastSeparator;
+  // `text === ""` with no ending is not a line that lost one: it is the empty
+  // chunk that says the message ENDED with a separator, and it contributes no
+  // bytes. Lending it one appends a newline the author never wrote. It only
+  // became reachable when the trailing-blank rule above stopped firing
+  // unconditionally — before that, the pop always took this chunk away first.
+  if (last.sep === "" && last.text !== "") last.sep = lastSeparator;
   return { text: kept.map((k) => k.text + k.sep).join(""), removed };
 }
 
