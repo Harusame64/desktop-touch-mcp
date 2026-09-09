@@ -136,7 +136,7 @@ const PS_PRINT_MARGIN_MS = 1000;
  */
 
 /**
- * The PowerShell expression the walk uses for its own budget: the caller's deadline, less what
+ * The PowerShell lines the walk uses to work out its own budget: the caller's deadline, less what
  * starting up actually took, less room to print.
  *
  * `spawnedAtMs` is read here, one statement before the process is created; the script reads the
@@ -191,16 +191,23 @@ function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
   // parse error: the whole read lost, which is the failure `truncated` exists to avoid
   // (2ゲート目の指摘). A walk with no time left prints an empty tree that says it was cut short,
   // which is a thing a caller can act on.
-  // Both ends are clamped, and the inner one is the one that is easy to miss. `Max(0, …)` on the
-  // OUTSIDE only stops the budget going negative; if the clock steps BACKWARDS between the
-  // timestamp taken here and the read inside the script, `(now − spawnedAt)` is negative and the
-  // budget grows by that much — past the deadline, so the walk outlives `runPS`'s kill and the
-  // read is lost entirely, which is the failure this expression exists to avoid. Measured by
-  // running the emitted expression: a 2 s backwards step against a 2000 ms deadline gave a
-  // 2909 ms budget and a 4142 ms walk (win, 2026-09-09). Clamping the elapsed term holds the
-  // budget at or under `deadline − margin` whatever the clock does.
-  return `[Math]::Max(0, ${deadlineMs} - [Math]::Max(0, ${nowMs} - ${spawnedAtMs})` +
-    ` - ${PS_PRINT_MARGIN_MS})`;
+  // A clock that steps BACKWARDS between the timestamp taken here and the read inside the script
+  // makes the elapsed term negative, and a negative subtrahend LENGTHENS the budget — past the
+  // deadline, so the walk outlives `runPS`'s kill and the read is lost entirely. Measured by
+  // running the emitted expression rather than reading it: a 2 s backwards step against a
+  // 2000 ms deadline gave a 2909 ms budget and a 4142 ms walk (win, 2026-09-09).
+  //
+  // Clamping that term at zero fixes the sign but throws the startup out of the sum with it: the
+  // script would then believe it started instantly and walk `deadline − margin`, on top of a
+  // start that really happened, overshooting the kill by `startup + print − margin`. Smaller,
+  // same shape. So a nonsense measurement falls back to the estimate instead of to zero —
+  // `PS_STARTUP_HEADROOM_MS` is generous (measured 233 ms against 4000) and generous is the safe
+  // direction here, which is the one place in this file where that constant still earns its keep.
+  return [
+    `$elapsedMs = ${nowMs} - ${spawnedAtMs}`,
+    `if ($elapsedMs -lt 0) { $elapsedMs = ${PS_STARTUP_HEADROOM_MS} }`,
+    `$budgetMs = [Math]::Max(0, ${deadlineMs} - $elapsedMs - ${PS_PRINT_MARGIN_MS})`,
+  ].join("\n");
 }
 
 /**
@@ -293,7 +300,7 @@ $cvWalker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
 $results  = [System.Collections.Generic.List[object]]::new()
 $count    = 0
 # What is left of the caller's deadline now that starting up and finding the window are paid for.
-$budgetMs = ${psBudgetExpression(deadlineMs, Date.now())}
+${psBudgetExpression(deadlineMs, Date.now())}
 $sw       = [System.Diagnostics.Stopwatch]::StartNew()
 
 $stack = [System.Collections.Generic.Stack[object]]::new()

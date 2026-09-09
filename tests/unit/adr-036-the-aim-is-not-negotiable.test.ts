@@ -235,7 +235,11 @@ describe("the budget never outlives the wait that kills the process", () => {
     h.psOutput = JSON.stringify({ windowTitle: "x", elementCount: 0, elements: [] });
     await getUiElements("Untitled - Notepad", 3, 50, 2000, { pinnedHwnd: NOTEPAD });
     const script = h.calls.ps[0]!.script;
-    expect(script).toMatch(/\[Math\]::Max\(0, 2000 - \[Math\]::Max\(0, /);
+    // Not clamped to zero: that fixes the sign and drops the real startup out of the sum, so the
+    // script walks `deadline − margin` on top of a start that happened. A measurement that came
+    // out negative is nonsense, and nonsense falls back to the conservative estimate.
+    expect(script).toContain("if ($elapsedMs -lt 0) { $elapsedMs = 4000 }");
+    expect(script).toContain("$budgetMs = [Math]::Max(0, 2000 - $elapsedMs - 1000)");
   });
 
   it("probes and writes the cache under one key", async () => {
@@ -361,7 +365,7 @@ describe("the walk measures its own start instead of being told what it cost", (
     // into `::Parse`, which is +543 years in th-TH, negative in fa-IR, and an exception in
     // ar-SA (empty stdout, and the failure arrives wearing a parse error's face).
     expect(script).not.toContain("'1970-01-01'");
-    const stamp = Number(/TotalMilliseconds - (\d+)\)/.exec(script)![1]);
+    const stamp = Number(/TotalMilliseconds - (\d+)/.exec(script)![1]);
     expect(stamp).toBeGreaterThanOrEqual(before);
     expect(stamp).toBeLessThanOrEqual(Date.now());
   });
