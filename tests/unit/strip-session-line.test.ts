@@ -551,6 +551,34 @@ describe("pre-push refuses what it should", () => {
     expect(r.stderr).toContain("https://example.invalid/repo.git");
   });
 
+  it.skipIf(!hasSh)("keeps looking after a destination ref it cannot read", () => {
+    // An unreadable tip used to end the search. With a ref the clone has never
+    // fetched listed ahead of a branch that plainly contains the commit, the
+    // push was refused although the answer sat two refs down. `ls-remote` sorts
+    // by ref name, so `aaa-unknown` is read before `pub`.
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    world.git(["push", "-q", "--no-verify", dest, `${world.leaking}:refs/heads/pub`]);
+    // An object the destination has and this clone does not: built inside the
+    // bare repo, never fetched back.
+    const bg = (args: string[]) => spawnSync("git", args, { cwd: dest, encoding: "utf8" });
+    const emptyTree = bg(["hash-object", "-w", "-t", "tree", "--stdin"]);
+    const tree = emptyTree.stdout.trim();
+    const orphan = spawnSync("git", ["commit-tree", tree, "-m", "unreachable here"], {
+      cwd: dest,
+      encoding: "utf8",
+      input: "",
+    }).stdout.trim();
+    expect(orphan, "could not build an object the clone lacks").toMatch(/^[0-9a-f]{40}$/);
+    bg(["update-ref", "refs/heads/aaa-unknown", orphan]);
+    // The clone must genuinely not have it, or the case proves nothing.
+    expect(world.git(["cat-file", "-e", orphan]).status, "the clone already has it").not.toBe(0);
+
+    const r = world.push(`refs/heads/x ${world.leaking} refs/heads/x ${world.clean}\n`, dest);
+    expect(r.stderr).not.toContain("could not verify");
+    expect(r.status, "refused although a later ref proves it published").toBe(0);
+  });
+
   it.skipIf(!hasSh)("reads the objects that will be pushed, not their replacements", () => {
     // `refs/replace/<oid>` makes every object-reading command show a stand-in,
     // while `git push` sends the original. Point one at a commit with a clean

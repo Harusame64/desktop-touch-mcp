@@ -102,9 +102,13 @@ npm publish --dry-run
 direct pushes to `main` and commit messages carrying a Claude session id — it
 does not lint, so lint otherwise runs for the first time in CI.
 
-The release flow's direct pushes to `main` are unaffected by either check:
-`DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1` still bypasses the branch guard, and a release
-push adds no new commits for the session-id check to look at.
+The release flow's direct pushes to `main` still need `DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1`
+for the branch guard. The session-id check is a different matter: the flow below
+makes a `Prepare release X.Y.Z` commit and pushes it, so there IS a commit to
+scan — it passes because that message is clean, not because there is nothing to
+look at. `DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1` does not cover it, so a release commit
+that somehow kept a session line — `commit-msg` skipped, or the hook path not
+installed — is refused like any other.
 
 ### Dogfood Pass (Required, v1.3 lesson)
 

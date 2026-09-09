@@ -237,14 +237,25 @@ do
     unpublished=""
     for hit in $hits; do
         hit_published=no
+        # An unreadable destination tip is remembered, not acted on yet. Refusing
+        # at the first one gave up while a LATER ref could still prove the commit
+        # published: a destination whose `HEAD` we have not fetched, listed ahead
+        # of a branch that plainly contains the hit, was refused although the
+        # answer was there to be found two refs down. Fail-closed is preserved by
+        # the check after the loop — an indeterminate that nothing else settled
+        # still refuses.
+        hit_unreadable=""
         for dest in $dest_oids; do
             git merge-base --is-ancestor "$hit" "$dest" 2>/dev/null
             case $? in
                 0) hit_published=yes; break ;;
                 1) ;;
-                *) refuse_unverifiable "could not compare $hit with $dest (try 'git fetch $remote_name' first)" ;;
+                *) hit_unreadable=$dest ;;
             esac
         done
+        if [ "$hit_published" = "no" ] && [ -n "$hit_unreadable" ]; then
+            refuse_unverifiable "could not compare $hit with $hit_unreadable (try 'git fetch $remote_name' first)"
+        fi
         if [ "$hit_published" = "no" ]; then
             unpublished="$unpublished $hit"
         fi
