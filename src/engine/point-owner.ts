@@ -53,6 +53,14 @@ import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
  * the cheaper mistake: it is visible, it names the window, and the caller can bring the aim
  * forward. The exact answer needs `WindowFromPoint` / `WM_NCHITTEST`, which the native bindings do
  * not expose.
+ *
+ * **The two gates say opposite things about this bit and neither was measured** (ADR-036 item 11).
+ * Gate 2 reads `WS_EX_TRANSPARENT` as the hit-test rule for a top-level window, which would make
+ * this mask a permanent block on coordinate presses under any annotation or HUD overlay —
+ * re-discovering returns the same answer, so the caller cannot get past it. The conservative side
+ * is in the code because a refusal that names a window is recoverable in a way a silent press into
+ * an overlay is not. Settling it is one Windows round: a titled, visible, >=50 px window with
+ * `WS_EX_TRANSPARENT` and NOT `WS_EX_LAYERED` over the BTN1 fixture, and the fixture's own log.
  */
 const WS_EX_TRANSPARENT = 0x00000020;
 const WS_EX_LAYERED     = 0x00080000;

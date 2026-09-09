@@ -28,6 +28,7 @@ import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
 import {
   toAim,
   compareAimIdentity,
+  readWindowIdentityFields,
   type Aim,
   type WindowIdentity,
   AimIdentityChangedError,
@@ -329,6 +330,22 @@ function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity
   });
 }
 
+/**
+ * One side of an `act.identity` row — every field {@link compareAimIdentity} looks at, and nothing
+ * it does not. A row that omitted a field the decision used made a real refusal look like a bug.
+ */
+function identityRow(id: WindowIdentity): Record<string, unknown> {
+  return {
+    pid: id.pid,
+    processName: id.processName,
+    processStartTimeMs: id.processStartTimeMs,
+    // Written as null rather than left out when absent: "could not read the class" and "this build
+    // never read one" are different readings, and only one of them is about the window.
+    className: id.className ?? null,
+    titleFingerprint: id.titleFingerprint ?? null,
+  };
+}
+
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
   return {
     x: Math.round(rect.x + rect.width / 2),
@@ -379,10 +396,15 @@ export function createDesktopExecutor(
     if (aim.hwnd !== undefined && aim.identity !== undefined) {
       const now = await d.aimIdentity?.(aim.hwnd);
       const verdict = compareAimIdentity(aim, now);
+      // Every field the comparator reads, on both sides. The row used to carry pid, process name
+      // and start time only, so a `changed` decided by the CLASS landed as a row whose two sides
+      // were byte-identical — indistinguishable from a broken comparator, in the one instrument
+      // that exists to explain this refusal (gate 2, 2026-09-09). `titleFingerprint` rides along
+      // because it is recorded and never decisive, and a reader has to be able to see that.
       probeAim("act.identity", {
         aimHwnd: aim.hwnd.toString(),
-        then: { pid: aim.identity.pid, processName: aim.identity.processName, processStartTimeMs: aim.identity.processStartTimeMs },
-        now: now ? { pid: now.pid, processName: now.processName, processStartTimeMs: now.processStartTimeMs } : null,
+        then: identityRow(aim.identity),
+        now: now ? identityRow(now) : null,
         verdict,
         comparedByExecutor: true,
       });
@@ -959,16 +981,11 @@ function getSharedRealDeps(): ExecutorDeps {
       // `getWindowIdentity` answers a zeroed identity for both "no such window" and "this build
       // cannot ask", and the two have to arrive as one thing the caller can recognise: nothing.
       const { getWindowIdentity, getWindowClassName, getWindowTitleW } = await import("../engine/win32.js");
-      const ident = getWindowIdentity(hwnd);
-      if (!ident || ident.pid === 0) return undefined;
-      return {
-        hwnd,
-        pid: ident.pid,
-        processName: ident.processName,
-        processStartTimeMs: ident.processStartTimeMs,
-        className: getWindowClassName(hwnd) || undefined,
-        titleFingerprint: (() => { try { return getWindowTitleW(hwnd) || undefined; } catch { return undefined; } })(),
-      };
+      return readWindowIdentityFields(hwnd, {
+        identity: getWindowIdentity,
+        className: getWindowClassName,
+        title: getWindowTitleW,
+      });
     },
 
     async aimIsGone(hwnd) {

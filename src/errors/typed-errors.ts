@@ -120,7 +120,8 @@ export class AimWindowGoneError extends HandlerError {
  * Its own envelope because its recovery is unlike every neighbour's. `AimWindowGone` says there is
  * nothing there; this says there is something there and it is a stranger, which is worse: the
  * action would have landed. Windows recycles handles, so a window that closed between the read and
- * the write can leave its number to anything.
+ * the write can leave its number to anything — including to the next window of the SAME program,
+ * which is why process identity alone was not enough to notice it.
  *
  * The specification calls this **identity invalidation, not an ordinary update** — every belief
  * keyed to that handle is void, not stale, and the lease cannot be repaired by waiting.
