@@ -287,9 +287,11 @@ describe("the walk measures its own start instead of being told what it cost", (
     const script = h.calls.ps[0]!.script;
     // The deadline is in the script, not a number derived from it out here …
     expect(script).toContain("4000 -");
-    // … and what gets subtracted is read from the clock, not assumed.
-    expect(script).toContain("[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()");
-    const stamp = Number(/ToUnixTimeMilliseconds\(\) - (\d+)\)/.exec(script)![1]);
+    // … and what gets subtracted is read from the clock, not assumed. Epoch milliseconds the
+    // long way round, because `ToUnixTimeMilliseconds` wants .NET 4.6 and a script that throws
+    // comes back as a parse error.
+    expect(script).toContain("[datetime]::UtcNow - [datetime]'1970-01-01'");
+    const stamp = Number(/TotalMilliseconds - (\d+)\)/.exec(script)![1]);
     expect(stamp).toBeGreaterThanOrEqual(before);
     expect(stamp).toBeLessThanOrEqual(Date.now());
   });

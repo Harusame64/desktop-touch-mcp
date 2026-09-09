@@ -128,15 +128,26 @@ const PS_PRINT_MARGIN_MS = 300;
  * starting up actually took, less room to print.
  *
  * `spawnedAtMs` is read here, one statement before the process is created; the script reads the
- * same clock after its assemblies are loaded and its target window is found. The difference is
+ * same clock after its assemblies are loaded and its target window is found. **The same clock is
+ * the whole contract**: both sides read UTC wall time, and swapping either half for a monotonic
+ * one (`process.hrtime.bigint()` here, `Stopwatch::GetTimestamp()` there) breaks it *silently* —
+ * the subtraction would come out as the machine's uptime and the budget would land on the floor
+ * for every call, with nothing thrown to say so (win, 2026-09-09, who checked the pairing on the
+ * real machine and left `dev/ps-startup-20260909/verify-node-clock.mjs` for the next person to
+ * change one side). The difference is
  * the startup this machine really had, on this run, under whatever load it was under — which is
  * what `PS_STARTUP_HEADROOM_MS` was guessing at. Both sides read UTC wall-clock milliseconds;
  * `powershell.exe` 5.1 ticks that at ~15.6 ms, which does not matter for a budget in seconds,
  * and a clock that jumps backwards lands on the floor.
  */
 function psBudgetExpression(deadlineMs: number, spawnedAtMs: number): string {
+  // Epoch milliseconds by subtraction rather than `[DateTimeOffset]::…ToUnixTimeMilliseconds()`,
+  // which needs .NET 4.6. This form works on every framework `powershell.exe` 5.1 can be sitting
+  // on, and a script that throws here would come back as empty stdout and a parse error — the
+  // failure this file has already spent two rounds removing.
+  const nowMs = "[int64]([datetime]::UtcNow - [datetime]'1970-01-01').TotalMilliseconds";
   return `[Math]::Max(${PS_MIN_TREE_BUDGET_MS}, ${deadlineMs} - ` +
-    `([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - ${spawnedAtMs}) - ${PS_PRINT_MARGIN_MS})`;
+    `(${nowMs} - ${spawnedAtMs}) - ${PS_PRINT_MARGIN_MS})`;
 }
 
 /**
