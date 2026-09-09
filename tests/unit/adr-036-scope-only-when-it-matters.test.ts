@@ -9,7 +9,7 @@
  * The predicate decides when the title already reaches exactly the window the handle names.
  */
 import { describe, it, expect } from "vitest";
-import { titleAlreadyNamesOnly } from "../../src/engine/uia-bridge.js";
+import { titleAlreadyNamesOnly, psTreeBudgetMs } from "../../src/engine/uia-bridge.js";
 
 const A = { hwnd: 0x1111n, title: "Untitled - Notepad" };
 const B = { hwnd: 0x2222n, title: "Untitled - Notepad" };
@@ -50,5 +50,25 @@ describe("titleAlreadyNamesOnly", () => {
     expect(titleAlreadyNamesOnly([short, long], "Report", short.hwnd)).toBe(false);
     // The longer query names only one, so a read by title reaches it and scoping adds nothing.
     expect(titleAlreadyNamesOnly([short, long], "Report archive", long.hwnd)).toBe(true);
+  });
+});
+
+describe("psTreeBudgetMs — the walk always ends before the wait around it", () => {
+  it("leaves room for process start and the assembly loads", () => {
+    expect(psTreeBudgetMs(10000)).toBe(6000);
+    expect(psTreeBudgetMs(8000)).toBe(4000);
+  });
+
+  it("follows a caller who asks for less, rather than overriding them", () => {
+    // `workspace.ts` passes 2000 and `_narration.ts` 4000 on purpose. A fixed budget made both
+    // wait twelve seconds; a fixed wait killed the walk before it printed. Neither is the
+    // caller's business — the budget is derived from what they asked for.
+    expect(psTreeBudgetMs(2000)).toBeLessThan(2000);
+    expect(psTreeBudgetMs(4000)).toBeLessThan(4000);
+  });
+
+  it("never asks for a walk too short to reach anything", () => {
+    expect(psTreeBudgetMs(0)).toBe(1000);
+    expect(psTreeBudgetMs(-5000)).toBe(1000);
   });
 });

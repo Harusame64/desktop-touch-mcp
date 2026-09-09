@@ -84,10 +84,31 @@ export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
 // Scripts
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The DFS budget written into `makeGetElementsScript`. Kept next to the wait that has to outlast it. */
-const PS_TREE_BUDGET_MS = 8000;
-/** Process start plus two `Add-Type` assembly loads, before the script's own clock starts. */
+/**
+ * Process start plus two `Add-Type` assembly loads, before the script's own clock starts.
+ * Subtracted from the caller's deadline to get the walk's budget, so the script always finishes
+ * and prints inside the wait around it.
+ */
 const PS_STARTUP_HEADROOM_MS = 4000;
+/** Enough to reach a first element and print. Below this the walk is not worth starting. */
+const PS_MIN_TREE_BUDGET_MS = 1000;
+
+/**
+ * ADR-036 — how long the script may walk, given how long the caller is willing to wait.
+ *
+ * These were both 8000 and independent, so a walk that used its budget was killed by the wait
+ * before it could print: the caller got nothing instead of a truncated tree (2ゲート目の指摘).
+ * Raising the wait to clear the budget fixed that and broke the other direction — `workspace.ts`
+ * asks for 2000 ms and `_narration.ts` for 4000 ms deliberately, and neither should wait twelve
+ * seconds because this file has an opinion (PR 側の codex). So the budget follows the deadline.
+ *
+ * A deadline shorter than the startup headroom cannot hold a walk at all; the floor keeps the
+ * script from being asked for a walk it could not begin, and the wait outside ends it. Nothing
+ * here can make a 500 ms deadline produce a tree.
+ */
+export function psTreeBudgetMs(timeoutMs: number): number {
+  return Math.max(PS_MIN_TREE_BUDGET_MS, timeoutMs - PS_STARTUP_HEADROOM_MS);
+}
 
 function makeGetElementsScript(
   windowTitle: string,
@@ -100,7 +121,9 @@ function makeGetElementsScript(
    * kept picking the first window whose title matched while the write half addressed the
    * handle, so `desktop_discover` could enumerate one window and `desktop_act` drive another.
    */
-  hwnd?: bigint
+  hwnd?: bigint,
+  /** How long the walk may run — see `psTreeBudgetMs`. Always shorter than the wait outside. */
+  budgetMs: number = PS_MIN_TREE_BUDGET_MS,
 ): string {
   const safeTitle = escapeLike(windowTitle);
   const fetchValuesBlock = fetchValues
@@ -163,7 +186,7 @@ $wantedPats.Add('InvokePattern') > $null; $wantedPats.Add('ValuePattern') > $nul
 $wantedPats.Add('ExpandCollapsePattern') > $null; $wantedPats.Add('SelectionItemPattern') > $null
 $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $null
 
-while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt 8000) {
+while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt ${budgetMs}) {
     $item  = $stack.Pop()
     $el    = $item.el
     $depth = $item.depth
@@ -764,11 +787,12 @@ export async function getUiElements(
     maxElements,
     options?.fetchValues ?? false,
     scopeHwnd,
+    psTreeBudgetMs(timeoutMs),
   );
   // The script walks the tree under its own 8 s budget and then prints. Killing the process at
   // the same 8 s means a saturated walk produces nothing at all rather than a truncated answer,
   // so the outer wait has to be the longer one (2ゲート目の指摘).
-  const output = await runPS(script, Math.max(timeoutMs, PS_TREE_BUDGET_MS + PS_STARTUP_HEADROOM_MS));
+  const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
 
