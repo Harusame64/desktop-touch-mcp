@@ -16,6 +16,29 @@ import { resolveCandidates } from "./resolver.js";
 export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
 
 /**
+ * ADR-036 — the one place that decides whether a `TargetSpec` names a window by handle.
+ *
+ * `hwnd` is a decimal string on the wire, so "what counts as a handle" is a parse, and it was
+ * being answered separately at every site that asked: one threw, one returned `null`, one fell
+ * back to the foreground window, and one used the string as a window *title*. For a single
+ * malformed value the read half and the write half could then aim at different windows.
+ *
+ * Returns `undefined` for a spec with no handle, for one that does not parse, and for zero —
+ * `BigInt("")` is `0n`, and window zero is not a window. What each caller does with
+ * `undefined` stays that caller's decision; only the answer to "is this a handle" is shared.
+ */
+export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefined {
+  const raw = target?.hwnd;
+  if (raw === undefined || raw === "") return undefined;
+  try {
+    const h = BigInt(raw);
+    return h === 0n ? undefined : h;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * UI-chrome control types that UIA exposes with `role:"unknown"` but which
  * are NEVER modal blockers (Issue #297). Without this exclusion list,
  * `isModalCandidate` flagged a focused `MenuBar` / `TitleBar` / `StatusBar`

@@ -19,6 +19,8 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
+import { parseTargetHwnd } from "../../src/engine/world-graph/session-registry.js";
+import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 function entity(overrides: Partial<UiEntity> = {}): UiEntity {
@@ -99,6 +101,30 @@ describe("ADR-036 — the handle reaches the backend", () => {
     expect(deps.uiaClick).toHaveBeenCalledWith("@active", "Start", undefined, 4919n);
   });
 
+  it("a refusal is not a rung: an excluded window is not clicked with the mouse instead", async () => {
+    // The handle route skips the title-based root search, and with it the title-based
+    // exclusion check, so the bridge refuses by handle. If that refusal were treated like any
+    // other UIA failure it would fall to `entity.rect` and click the secure dialog by
+    // coordinate — routing around the refusal rather than obeying it.
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new WindowExcludedError("excluded"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Locker", hwnd: "4919" }, deps);
+    await expect(exec(entity(), "click")).rejects.toBeInstanceOf(WindowExcludedError);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("the same for the type ladder — the keyboard rung is not a way around it", async () => {
+    const deps = mockDeps({
+      uiaSetValue: vi.fn(async () => { throw new WindowExcludedError("excluded"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Locker", hwnd: "4919" }, deps);
+    await expect(exec(entity({ role: "textbox" }), "type", "hello"))
+      .rejects.toBeInstanceOf(WindowExcludedError);
+    expect(deps.keyboardTypeBg).not.toHaveBeenCalled();
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
   it("the terminal route takes the handle only when it is describing that same window", async () => {
     // The handle names the session's window. An entity that carries a terminal window title of
     // its own is naming a different window, and aiming at the session's handle would send the
@@ -118,5 +144,33 @@ describe("ADR-036 — the handle reaches the backend", () => {
       "dir\n",
     );
     expect(same.terminalSend).toHaveBeenCalledWith("PowerShell", "dir\n", 4919n);
+
+    // Two windows can share a title — that is why this ADR exists — so an entity that named
+    // its own terminal window is addressing that name even when the strings happen to match.
+    const twin = mockDeps();
+    await createDesktopExecutor({ windowTitle: "PowerShell", hwnd: "4919" }, twin)(
+      entity({ sources: ["terminal"], locator: { terminal: { windowTitle: "PowerShell" } } }),
+      "type",
+      "dir\n",
+    );
+    expect(twin.terminalSend).toHaveBeenCalledWith("PowerShell", "dir\n", undefined);
+  });
+});
+
+describe("ADR-036 — one answer to \"is this a handle\"", () => {
+  // The read half and the write half both call this. When each parsed for itself, one threw,
+  // one returned null, one fell back to the foreground window and one used the digits as a
+  // window title — so a single malformed value could point the two halves at two windows.
+  it("takes a decimal handle and refuses everything that is not one", () => {
+    expect(parseTargetHwnd({ hwnd: "4919" })).toBe(4919n);
+    // `BigInt` also accepts hex and surrounding whitespace. That is left alone deliberately:
+    // "0x1337" names a real window, and rejecting it would turn a call that would have worked
+    // into a silent fall back to aiming by title — the failure this exists to remove.
+    expect(parseTargetHwnd({ hwnd: " 0x1337 " })).toBe(4919n);
+    for (const hwnd of ["", "0", "not-a-handle", "12.5"]) {
+      expect(parseTargetHwnd({ hwnd }), `hwnd = ${JSON.stringify(hwnd)}`).toBeUndefined();
+    }
+    expect(parseTargetHwnd({ windowTitle: "App" })).toBeUndefined();
+    expect(parseTargetHwnd(undefined)).toBeUndefined();
   });
 });

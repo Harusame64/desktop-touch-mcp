@@ -88,7 +88,14 @@ function makeGetElementsScript(
   windowTitle: string,
   maxDepth: number,
   maxElements: number,
-  fetchValues = false
+  fetchValues = false,
+  /**
+   * ADR-036 — when the caller resolved a handle, the read is scoped to that window through
+   * `FromHandle`, the same door `makeClickElementScriptByHwnd` uses. Without it the read half
+   * kept picking the first window whose title matched while the write half addressed the
+   * handle, so `desktop_discover` could enumerate one window and `desktop_act` drive another.
+   */
+  hwnd?: bigint
 ): string {
   const safeTitle = escapeLike(windowTitle);
   const fetchValuesBlock = fetchValues
@@ -107,13 +114,18 @@ Add-Type -AssemblyName UIAutomationTypes
 $root  = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 
-# Find window by partial title (live query — before cache scope)
+${hwnd !== undefined
+  ? `# ADR-036: the caller named a window by handle, so no title search happens here.
+$hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
+$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
+if (-not $target) { Write-Output '{"error":"Window not found by hwnd"}'; exit }`
+  : `# Find window by partial title (live query — before cache scope)
 $target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
 foreach ($w in $allWins) {
     if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
 }
-if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }
+if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }`}
 $winTitle     = $target.Current.Name
 $winClassName = $target.Current.ClassName
 
@@ -619,6 +631,7 @@ export async function getUiElements(
   options?: { cached?: boolean; hwnd?: bigint; fetchValues?: boolean }
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle);
+  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // Cache hit path — only when caller provides hwnd + cached:true
   // Note: cache is never used when fetchValues:true (values may have changed)
   if (options?.cached && options.hwnd !== undefined && !options.fetchValues) {
@@ -634,7 +647,14 @@ export async function getUiElements(
   }
 
   // ★ Rust native path
-  if (nativeUia?.uiaGetElements) {
+  //
+  // ADR-036 — skipped when a handle is in hand, the same way `clickElement` and
+  // `setElementValue` skip it: `uiaGetElements` takes a title and nothing else, so going
+  // through it would read whichever window the title found first while every write on this
+  // session addressed the handle. The two halves disagreeing is worse than the PowerShell
+  // round-trip: a read of window A and a click on window B report `no_change` for an action
+  // that landed. When the native side grows a handle parameter this branch goes away.
+  if (nativeUia?.uiaGetElements && options?.hwnd === undefined) {
     try {
       const result = await nativeUia.uiaGetElements({
         windowTitle,
@@ -665,7 +685,13 @@ export async function getUiElements(
   }
 
   // PowerShell fallback (existing implementation)
-  const script = makeGetElementsScript(windowTitle, maxDepth, maxElements, options?.fetchValues ?? false);
+  const script = makeGetElementsScript(
+    windowTitle,
+    maxDepth,
+    maxElements,
+    options?.fetchValues ?? false,
+    options?.hwnd,
+  );
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);

@@ -22,7 +22,8 @@ import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-gr
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
-import type { TargetSpec } from "../engine/world-graph/session-registry.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { parseTargetHwnd, type TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
@@ -125,33 +126,13 @@ export function terminalBgExecute(
 
 function resolveWindowTitle(target?: TargetSpec): string {
   // When only a handle is known there is no title to look up, and the handle's digits are not
-  // one: `resolveAimHwnd` carries it instead, and the backends that take it skip the title
-  // search entirely. `"@active"` remains what the title-only backends get told.
-  return target?.windowTitle ?? (target?.hwnd !== undefined ? "@active" : undefined) ?? "@active";
+  // one: `parseTargetHwnd` carries it instead, and the backends that take it skip the title
+  // search entirely. `"@active"` is what the title-only backends get told.
+  return target?.windowTitle ?? "@active";
 }
 
-/**
- * ADR-036 — the handle the session was keyed by, for the backends that can aim with it.
- *
- * `session-registry.ts` keys a session `hwnd > tabId > windowTitle`, and until this existed the
- * executor read the same `TargetSpec` the other way round: `windowTitle ?? hwnd`. The session
- * therefore knew which window it belonged to while every action it dispatched was aimed by
- * title — measured on Windows 2026-09-09, where `desktop_act` landed on whichever window the
- * enumeration returned first, not the one `desktop_discover` had been pointed at.
- *
- * Returns `undefined` for a spec with no handle, and for a handle that is not a number — the
- * field is a string on the wire, and a malformed one must not become `0n`.
- */
-function resolveAimHwnd(target?: TargetSpec): bigint | undefined {
-  const raw = target?.hwnd;
-  if (raw === undefined) return undefined;
-  try {
-    const h = BigInt(raw);
-    return h === 0n ? undefined : h;
-  } catch {
-    return undefined;
-  }
-}
+// ADR-036 — the parse lives in `session-registry.ts`, next to `TargetSpec`, because the read
+// half and the write half have to agree on what counts as a handle. See `parseTargetHwnd`.
 
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
   return {
@@ -159,7 +140,6 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
     y: Math.round(rect.y + rect.height / 2),
   };
 }
-
 // ── Executor factory ──────────────────────────────────────────────────────────
 
 /**
@@ -183,7 +163,7 @@ export function createDesktopExecutor(
     const winTitle = resolveWindowTitle(target);
     // ADR-036 — resolved once per touch, next to the title it replaces, so a route added later
     // has to walk past it rather than reach for `winTitle` alone.
-    const aimHwnd = resolveAimHwnd(target);
+    const aimHwnd = parseTargetHwnd(target);
 
     // Issue #296 Phase 2 — `desktop_discover` derives `unsupportedExecutors`
     // from UIA `controlType` + `patterns` (e.g. `ListItem`/`TabItem` without
@@ -239,6 +219,8 @@ export function createDesktopExecutor(
           await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
           return "uia";
         } catch (uiaErr) {
+          // R3 tool-exclusion — as in the click path below: refusals are not rungs.
+          if (uiaErr instanceof WindowExcludedError) throw uiaErr;
           try {
             await d.keyboardTypeBg(winTitle, text, aimHwnd);
             return "keyboard";
@@ -256,6 +238,11 @@ export function createDesktopExecutor(
         await d.uiaClick(winTitle, name, automationId, aimHwnd);
         return "uia";
       } catch (uiaErr) {
+        // R3 tool-exclusion — a refusal is not a failure to route around. Every other throw
+        // here means "UIA could not do it, try the mouse"; this one means "you may not touch
+        // that window", and the mouse fallback would touch it anyway, by coordinate, at the
+        // rect the secure dialog now occupies (2ゲート目の指摘).
+        if (uiaErr instanceof WindowExcludedError) throw uiaErr;
         // UIA click failed (element not found, stale tree, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
         // which may be stale (captured at recognition time, before the element moved).
@@ -301,11 +288,16 @@ export function createDesktopExecutor(
     // fall through to the mouse fallback so click/invoke on a terminal entity
     // doesn't silently send an empty string.
     if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined && preferredAllows("terminal")) {
-      const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
-      // The handle names the session's window. When the entity names a terminal window of its
-      // own, that title is describing a different window and the handle would aim somewhere the
-      // caller did not ask for — so it is passed only when this fell back to the session target.
-      await d.terminalSend(termWin, text, termWin === winTitle ? aimHwnd : undefined);
+      // The handle names the session's window. When the entity carries a terminal window title
+      // of its own, that title is what is being addressed and the session's handle may name a
+      // different window, so it is dropped. Asked as "did the entity name one?" rather than by
+      // comparing the two strings: equal strings do not make them the same window (two windows
+      // can share a title — the whole reason this ADR exists), and the day the provider stores
+      // the enumerated full title instead of the caller's substring, a string test would
+      // silently stop passing the handle at all (2ゲート目の指摘).
+      const ownTerminalTitle = entity.locator?.terminal?.windowTitle;
+      const termWin = ownTerminalTitle ?? winTitle;
+      await d.terminalSend(termWin, text, ownTerminalTitle === undefined ? aimHwnd : undefined);
       return "terminal";
     }
 
@@ -405,8 +397,9 @@ function getSharedRealDeps(): ExecutorDeps {
     async uiaClick(windowTitle, name, automationId, hwnd) {
       const { clickElement } = await import("../engine/uia-bridge.js");
       // ADR-036 — the bridge has taken a handle since H3 ("bypass title-based root search",
-      // added for Save As and the other common dialogs). Nothing on this path could reach it
-      // until the interface above had somewhere to put one.
+      // added for Save As and the other common dialogs), and `ui-elements.ts` has passed one
+      // for every resolved window since then. What could not reach it was THIS path: the
+      // interface above had nowhere to put a handle, so `desktop_act` always asked by title.
       const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
       if (!r.ok) throw new Error(r.error ?? "UIA click failed");
     },

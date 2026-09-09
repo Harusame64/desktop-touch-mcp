@@ -13,7 +13,7 @@
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
 function uiaRoleFromControlType(ct: string): string {
@@ -61,14 +61,21 @@ export async function fetchUiaCandidates(
     return { candidates: [], warnings: [] };
   }
 
-  const windowTitle = target.windowTitle ?? target.hwnd ?? "@active";
+  // ADR-036 — the handle is not a title. It used to stand in for one here, so a session known
+  // only by handle asked UIA for a window whose *name* contains the handle's digits; and when
+  // both were present the title won, which is how the read half could enumerate one window
+  // while the write half addressed another.
+  const windowTitle = target.windowTitle ?? "@active";
   const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
 
   try {
     const { getUiElements, detectUiaBlind } = await import("../../engine/uia-bridge.js");
 
-    // hwnd invariant: always decimal string (bigint as decimal, per codebase convention)
-    const options = target.hwnd ? { hwnd: BigInt(target.hwnd) } : undefined;
+    // ADR-036 — the same parse the write half uses, so one malformed handle cannot make the
+    // two halves aim at different windows. `BigInt(target.hwnd)` here used to throw straight
+    // out of the provider.
+    const pinned = parseTargetHwnd(target);
+    const options = pinned !== undefined ? { hwnd: pinned } : undefined;
     const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
 
     const candidates: UiEntityCandidate[] = result.elements
