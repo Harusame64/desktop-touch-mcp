@@ -303,16 +303,31 @@ try {
     }
 } catch {}
 
-$cvWalker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+# ADR-036 — the same traversal the native walker uses: FindAll(Children) under the ControlView
+# condition, breadth-first, one call per parent. NOT ControlViewWalker's GetFirstChild /
+# GetNextSibling chain, which was here and which returns a DIFFERENT set on real windows: on
+# Notepad the chain reaches two panes (the edit area and the status bar) while FindAll reaches
+# 26 elements including the title bar, the menu, the close button and the text editor itself
+# (measured on Windows 2026-09-09). Nothing was throwing and nothing was offscreen — the chain
+# simply does not lead to the non-client children.
+#
+# The consequence was the worst kind: a read that named its window by handle saw LESS of it than
+# a read that guessed by title, silently and with no warning, so desktop_act could not press
+# the close button of a window whose handle the caller was holding. The point of this ADR is
+# that naming the window makes the read more precise, not less.
+$cvCond   = [System.Windows.Automation.Automation]::ControlViewCondition
+$children = [System.Windows.Automation.TreeScope]::Children
 $results  = [System.Collections.Generic.List[object]]::new()
 $count    = 0
 # What is left of the caller's deadline now that starting up and finding the window are paid for.
 ${psBudgetExpression(deadlineMs, Date.now())}
 $sw       = [System.Diagnostics.Stopwatch]::StartNew()
 
-$stack = [System.Collections.Generic.Stack[object]]::new()
-$first = $cvWalker.GetFirstChild($target)
-if ($null -ne $first) { $stack.Push(@{ el=$first; depth=0 }) }
+# Queue entries are (parent, depth of its children), and the root's children are depth 1 — the
+# native walker's numbering, so the two roads agree on what depth means as well as on what the
+# tree contains.
+$queue = [System.Collections.Generic.Queue[object]]::new()
+$queue.Enqueue(@{ el=$target; depth=1 })
 
 # Patterns we care about (subset of all UIA patterns)
 $wantedPats = [System.Collections.Generic.HashSet[string]]::new()
@@ -320,17 +335,19 @@ $wantedPats.Add('InvokePattern') > $null; $wantedPats.Add('ValuePattern') > $nul
 $wantedPats.Add('ExpandCollapsePattern') > $null; $wantedPats.Add('SelectionItemPattern') > $null
 $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $null
 
-while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt $budgetMs) {
-    $item  = $stack.Pop()
-    $el    = $item.el
-    $depth = $item.depth
+:bfs while ($queue.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt $budgetMs) {
+    $item   = $queue.Dequeue()
+    $parent = $item.el
+    $depth  = $item.depth
+    if ($depth -gt ${maxDepth}) { continue }
 
-    # Push next sibling first so it waits until children are exhausted (correct DFS pre-order)
-    try {
-        $next = $cvWalker.GetNextSibling($el)
-        if ($null -ne $next) { $stack.Push(@{ el=$next; depth=$depth }) }
-    } catch {}
+    # One call per parent, like the native path. A parent that refuses to enumerate is skipped
+    # rather than ending the walk.
+    $kids = $null
+    try { $kids = $parent.FindAll($children, $cvCond) } catch { continue }
+    if ($null -eq $kids) { continue }
 
+    foreach ($el in $kids) {
     # Skip offscreen elements — prune subtree (children will also be offscreen)
     $offscreen = $false
     try { $offscreen = $el.Current.IsOffscreen } catch {}
@@ -375,13 +392,9 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
     if ($null -ne $elVal) { $elObj['value'] = $elVal }
     $results.Add($elObj)
     $count++
+    if ($count -ge ${maxElements}) { break bfs }
 
-    # Push first child after sibling so child is popped next (depth-first)
-    if ($depth -lt ${maxDepth}) {
-        try {
-            $child = $cvWalker.GetFirstChild($el)
-            if ($null -ne $child) { $stack.Push(@{ el=$child; depth=($depth+1) }) }
-        } catch {}
+    if ($depth -lt ${maxDepth}) { $queue.Enqueue(@{ el=$el; depth=($depth+1) }) }
     }
 }
 
@@ -389,7 +402,7 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
 # and a truncated tree that does not admit it is worse than none: _narration diffs two snapshots,
 # and two different truncation points read as elements appearing and disappearing that never
 # changed (2ゲート目の指摘). Running out of maxElements is the caller's own limit, and is not this.
-$truncated = ($stack.Count -gt 0) -and ($sw.ElapsedMilliseconds -ge $budgetMs)
+$truncated = ($queue.Count -gt 0) -and ($sw.ElapsedMilliseconds -ge $budgetMs)
 @{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; truncated=$truncated; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
 }
