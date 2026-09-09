@@ -98,6 +98,16 @@ redact_url() {
 # Redacted at the assignment rather than at those two sites, because nothing
 # here passes this to git: it is only ever printed. Keeping no raw form is what
 # stops a third message from reaching for one.
+# Session ids out of anything this hook PRINTS. The refusal below shows each
+# offending commit's subject so a person can find it — and when the session line
+# IS the subject, `%s` handed the complete secret to stderr and to CI logs. That
+# is the same defect this file already fixed once for push URLs, one printf over.
+redact_session() {
+    printf '%s\n' "$1" |
+        sed -e 's|\(https://claude[.]ai/code/session_\)[A-Za-z0-9_-]*|\1<redacted>|g' \
+            -e 's|\(Claude-Session:\)[^ ]*|\1 <redacted>|g'
+}
+
 remote_name=$(redact_url "$1")
 remote_location="$2"
 # Two names for one destination, on purpose. `$remote_location` is what git is
@@ -111,6 +121,14 @@ remote_display=$(redact_url "$2")
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
 session_pattern='^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
+
+# How many id characters after `session_` make it worth refusing mid-line. Every
+# real id in this repo's history is 24; the only shorter one is the literal
+# `session_x` this repo writes when it DISCUSSES the rule — in prose, in tests,
+# and in a commit message already in main. Refusing on any embedded URL would
+# make that commit unpushable forever, so the floor is what separates a leaked
+# id from the repo talking about ids.
+session_min_id=16
 
 # Commits in $1 (a rev range) whose message carries a session id, one sha per
 # line, followed by a "@@SCANNED@@<n>" line saying how many commits were walked.
@@ -129,11 +147,29 @@ session_pattern='^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claud
 leaking_commits() {
     git log $1 --format="%x01%H%n%B" 2>/dev/null |
         tr '\r' '\n' |
-        awk -v pat="$session_pattern" '
+        awk -v pat="$session_pattern" -v minid="$session_min_id" '
+            # A session URL inside prose — `see [the session](https://…)` — is a leak
+            # the anchored pattern was never going to see. Removal stays anchored (a
+            # mid-line rewrite would eat the sentence around it); the REFUSAL can be
+            # broader, because refusing only asks a human to reword.
+            # No interval expressions here: mawk does not have them.
+            function embeds(line,   i, rest, n, c) {
+                while ((i = index(line, "claude.ai/code/session_")) > 0) {
+                    rest = substr(line, i + 23)
+                    n = 0
+                    while (n < length(rest)) {
+                        c = substr(rest, n + 1, 1)
+                        if (c ~ /[A-Za-z0-9]/) n++; else break
+                    }
+                    if (n >= minid) return 1
+                    line = rest
+                }
+                return 0
+            }
             /^\001[0-9a-f][0-9a-f]*$/ && length($0) == 41 {
                 sha = substr($0, 2); walked++; next
             }
-            sha != "" && $0 ~ pat && !(sha in seen) { seen[sha] = 1; print sha }
+            sha != "" && !(sha in seen) && ($0 ~ pat || embeds($0)) { seen[sha] = 1; print sha }
             END { print "@@SCANNED@@" walked + 0 }
         '
 }
@@ -268,7 +304,12 @@ do
         echo "  .githooks/commit-msg removes these at commit time — it was skipped," >&2
         echo "  or these commits predate it and a rebase is carrying them forward." >&2
         for hit in $unpublished; do
-            git log -1 --format='    %h %s' "$hit" >&2 2>/dev/null || echo "    $hit" >&2
+            hit_subject=$(git log -1 --format='%h %s' "$hit" 2>/dev/null)
+            if [ -n "$hit_subject" ]; then
+                printf '    %s\n' "$(redact_session "$hit_subject")" >&2
+            else
+                echo "    $hit" >&2
+            fi
         done
         echo "  Reword them before pushing — 'git commit --amend' for the tip," >&2
         echo "  'git rebase' for anything older." >&2

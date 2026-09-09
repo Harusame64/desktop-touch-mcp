@@ -533,6 +533,83 @@ describe("pre-push refuses what it should", () => {
     expect(r.stderr).toContain("would publish commit(s)");
   });
 
+  it.skipIf(!hasSh)("refuses a session URL written inside prose", () => {
+    // The pattern is anchored so a message DISCUSSING the rule survives, and that
+    // let a real link through in the shape people actually write:
+    // "see [the session](https://.../session_<id>)". Removal has to stay anchored —
+    // rewriting mid-line would eat the sentence around it — but refusing only costs
+    // a reword, so the push side may look anywhere.
+    const NL = String.fromCharCode(10);
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    // Branch from the CLEAN commit: the harness also builds a leaking one, and a
+    // tip descended from it is refused for that ancestor no matter what this case
+    // writes — which is how the first draft of these three passed without ever
+    // testing their own message.
+    world.git(["checkout", "-q", world.clean]);
+    writeFileSync(join(world.work, "a.txt"), "prose");
+    world.git(["add", "-A"]);
+    world.git([
+      "commit", "-q", "--no-verify",
+      "-m", "chore: mention",
+      "-m", "see [the session](https://claude.ai/code/session_012A8NB4QjLTAPaKtNcNxaBe) for context",
+    ]);
+    const tip = world.git(["rev-parse", "HEAD"]).stdout.trim();
+    const r = world.push(`refs/heads/x ${tip} refs/heads/x ${world.clean}${NL}`, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("lets the repo write about session_x without refusing itself", () => {
+    // This repo talks about the rule using session_x — in prose, in the cases
+    // above, and in a commit message already on main. Refusing every embedded URL
+    // would make that commit unpushable for good: the guard would have locked the
+    // door on the history it lives in. The id-length floor is what separates a
+    // leaked id from a sentence about ids.
+    const NL = String.fromCharCode(10);
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    // Branch from the CLEAN commit: the harness also builds a leaking one, and a
+    // tip descended from it is refused for that ancestor no matter what this case
+    // writes — which is how the first draft of these three passed without ever
+    // testing their own message.
+    world.git(["checkout", "-q", world.clean]);
+    writeFileSync(join(world.work, "a.txt"), "about");
+    world.git(["add", "-A"]);
+    world.git([
+      "commit", "-q", "--no-verify",
+      "-m", "docs: explain",
+      "-m", "written + https://claude.ai/code/session_x went through both nets",
+    ]);
+    const tip = world.git(["rev-parse", "HEAD"]).stdout.trim();
+    const r = world.push(`refs/heads/x ${tip} refs/heads/x ${world.clean}${NL}`, dest);
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it.skipIf(!hasSh)("does not print the session id it is refusing", () => {
+    // The refusal lists each offending commit's subject so a person can find it,
+    // and when the session line IS the subject, %s handed the whole secret to
+    // stderr and to CI logs — the same shape this file already fixed once for
+    // push URLs, one printf over.
+    const NL = String.fromCharCode(10);
+    const dest = world.bare("origin.git");
+    world.git(["remote", "add", "origin", dest]);
+    // Branch from the CLEAN commit: the harness also builds a leaking one, and a
+    // tip descended from it is refused for that ancestor no matter what this case
+    // writes — which is how the first draft of these three passed without ever
+    // testing their own message.
+    world.git(["checkout", "-q", world.clean]);
+    writeFileSync(join(world.work, "a.txt"), "subject");
+    world.git(["add", "-A"]);
+    world.git(["commit", "-q", "--no-verify", "-m", TRAILER]);
+    const tip = world.git(["rev-parse", "HEAD"]).stdout.trim();
+    const r = world.push(`refs/heads/x ${tip} refs/heads/x ${world.clean}${NL}`, dest);
+    expect(r.status).toBe(1);
+    expect(r.stderr, "the id reached stderr").not.toContain("012A8NB4QjLTAPaKtNcNxaBe");
+    // Redacted, not swallowed: the line still has to name the commit.
+    expect(r.stderr).toContain(tip.slice(0, 7));
+  });
+
   it.skipIf(!hasSh)("names an unreachable destination without naming its credentials", () => {
     // The hook is the thing that keeps secrets out of the public record, and it
     // was putting one into stderr itself: git hands it the destination URL
