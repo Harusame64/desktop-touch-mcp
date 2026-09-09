@@ -27,9 +27,11 @@
  *     when it cannot enumerate at all.
  *   - **A rectangle is not a hit region.** Rounded corners, custom regions and per-pixel-alpha
  *     layered windows all take presses on some of their rectangle and not the rest.
- *   - **Click-through windows are excluded by style, not by behaviour.** `WS_EX_TRANSPARENT` is
- *     honoured here because that is what it means, but a window can be effectively click-through in
- *     other ways.
+ *   - **Click-through is decided by style, not by a hit test.** A window is passed over only when
+ *     it carries `WS_EX_TRANSPARENT` **and** `WS_EX_LAYERED`, the documented combination; a
+ *     transparent non-layered window can still take the press, so it is treated as occluding. The
+ *     error therefore falls on the side of a visible refusal rather than a silent press into an
+ *     overlay.
  *
  * When the native side gains `WindowFromPoint`, this becomes a fallback for builds without it
  * rather than the primary answer.
@@ -37,8 +39,42 @@
 
 import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
 
-/** `WS_EX_TRANSPARENT` — the style that says "presses pass through me". */
+/**
+ * `WS_EX_TRANSPARENT` + `WS_EX_LAYERED` — the documented combination for a click-through window.
+ *
+ * `WS_EX_TRANSPARENT` on its own is NOT a promise about hit testing: on a non-layered window it
+ * governs painting order among siblings, and such a window can still take the press (PR 側 codex,
+ * 2026-09-09). Skipping it there would classify the aim as "clear" and let the click land on the
+ * overlay — the failure direction this whole module is written to avoid. So both bits are required
+ * before a window is passed over, and everything else is treated as able to take a press.
+ *
+ * A window that IS effectively click-through by some other route is therefore reported as
+ * occluding, and the caller gets a refusal naming a window it could have pressed through. That is
+ * the cheaper mistake: it is visible, it names the window, and the caller can bring the aim
+ * forward. The exact answer needs `WindowFromPoint` / `WM_NCHITTEST`, which the native bindings do
+ * not expose.
+ *
+ * **Measured, and both bits really are required** (win2, 2026-09-10, ADR-036 item 11). Two reviews
+ * had said opposite things about this and neither had measured it: one read `WS_EX_TRANSPARENT` as
+ * the hit-test rule for a top-level window, which would have made this mask a permanent block on
+ * coordinate presses under any annotation or HUD overlay. The round put a titled, visible, >=50 px
+ * overlay over a fixture whose buttons log their own presses, and read the fixture's log:
+ *
+ *   | overlay                            | exStyle read back | press |
+ *   |------------------------------------|-------------------|-------|
+ *   | none                               | —                 | lands |
+ *   | plain opaque                       | `0x00050108`      | blocked |
+ *   | `TRANSPARENT` only                 | `0x00050128`      | **blocked** |
+ *   | `TRANSPARENT \| LAYERED`           | `0x000D0128`      | lands |
+ *   | `LAYERED` only                     | `0x000D0108`      | blocked |
+ *
+ * So `TRANSPARENT` alone behaves exactly like a plain opaque window, and the mask below is not the
+ * cautious choice — it is the correct one. An overlay carrying only that bit really does take the
+ * press, so refusing under it is not a false refusal.
+ */
 const WS_EX_TRANSPARENT = 0x00000020;
+const WS_EX_LAYERED     = 0x00080000;
+const CLICK_THROUGH     = WS_EX_TRANSPARENT | WS_EX_LAYERED;
 
 /**
  * Who is under the point, from the aim's point of view.
@@ -108,7 +144,7 @@ export function whoIsUnderPoint(
   const byHwnd = new Map(windows.map((w) => [String(w.hwnd), w]));
   const candidates = windows
     .filter((w) => !w.isMinimized && !w.isCloaked)
-    .filter((w) => ((w.exStyle ?? 0) & WS_EX_TRANSPARENT) === 0)
+    .filter((w) => ((w.exStyle ?? 0) & CLICK_THROUGH) !== CLICK_THROUGH)
     .filter((w) => contains(w, x, y))
     .sort((a, b) => a.zOrder - b.zOrder);
 

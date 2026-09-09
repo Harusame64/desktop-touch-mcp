@@ -86,14 +86,28 @@ describe("who would take the press", () => {
 
   it("ignores windows that cannot take a press", () => {
     // Minimised (parked rect), DWM-cloaked (a virtual desktop's leftovers), and click-through
-    // (`WS_EX_TRANSPARENT`) windows are drawn over nothing the user can hit.
+    // (`WS_EX_TRANSPARENT | WS_EX_LAYERED`) windows are drawn over nothing the user can hit.
     const deps = enumerating(
       win({ hwnd: 11n, zOrder: 0, isMinimized: true }),
       win({ hwnd: 12n, zOrder: 1, isCloaked: true }),
-      win({ hwnd: 13n, zOrder: 2, exStyle: 0x00000020 }),
+      win({ hwnd: 13n, zOrder: 2, exStyle: 0x00000020 | 0x00080000 }),
       win({ hwnd: AIM, zOrder: 3 }),
     );
     expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "aim" });
+  });
+
+  it("does not pass over a transparent window that is not layered", () => {
+    // Measured on Windows 2026-09-10 (win2, ADR-036 item 11), after two reviews said opposite
+    // things about it and neither had measured: a titled, visible overlay carrying
+    // `WS_EX_TRANSPARENT` and NOT `WS_EX_LAYERED` (exStyle read back as `0x00050128`) BLOCKED the
+    // press to the fixture below, behaving exactly like a plain opaque window. Both bits together
+    // (`0x000D0128`) let it through. So this is not the cautious reading — it is the right one, and
+    // skipping such a window would report the aim as clear and let the click land on the overlay.
+    const deps = enumerating(
+      win({ hwnd: OTHER, zOrder: 0, exStyle: 0x00000020, title: "overlay" }),
+      win({ hwnd: AIM, zOrder: 1 }),
+    );
+    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "other", hwnd: OTHER, title: "overlay" });
   });
 
   it("answers unknown rather than clear when it cannot ask", () => {

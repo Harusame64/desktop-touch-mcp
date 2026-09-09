@@ -562,6 +562,13 @@ export class GuardedTouchLoop {
       // this invalidation rather than an ordinary update, and the distinction is the whole point:
       // an action addressed to this aim would not fail, it would succeed against a stranger.
       if (err instanceof Error && err.name === "AimIdentityChangedError") {
+        // The engine's message names the field that decided (`describeIdentityChange` in `aim.ts`),
+        // and it stops here: the reason is all `TouchResult` carries, and `desktop-register.ts`
+        // renders its own text from the reason alone. So the published advice must NOT promise that
+        // the message says which of the three happened — it did, and the caller never saw one
+        // (PR 側 codex on #608, P2). Carrying the detail through would mean widening `TouchResult`;
+        // recorded as an open question rather than done here, because the recovery is identical for
+        // all three and the detail is diagnostic, not actionable. `act.identity` has it either way.
         return { ok: false, reason: "aim_identity_changed", diff: [] };
       }
       // PR 側 codex 2026-09-09 — the three refusals below reached this catch as plain errors, so

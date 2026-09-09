@@ -89,6 +89,48 @@ describe("an act on a recycled handle is refused before anything is done", () =>
   });
 });
 
+describe("a handle can change hands without leaving the process", () => {
+  // Windows reuses handles inside one still-running application too: destroy a top-level window,
+  // create another, and pid and start time are unchanged (PR 側 codex, after PR 2 merged). The
+  // specification's WindowIdentity carries `className` and `titleFingerprint` for exactly this, and
+  // the type had been trimmed to the three fields getWindowIdentity answers.
+  const withClass: Aim = {
+    kind: "aim", title: "Untitled - Notepad", hwnd: HWND,
+    identity: { ...WHEN_TAKEN, className: "Notepad", titleFingerprint: "Untitled - Notepad" },
+  };
+
+  it("refuses when the same process put a different KIND of window on the handle", async () => {
+    const d = deps({
+      aimIdentity: vi.fn(async () => ({ ...WHEN_TAKEN, className: "#32770" })),   // a dialog now
+    });
+    const exec = createDesktopExecutor(withClass, d);
+    await expect(exec(entity(), "click")).rejects.toBeInstanceOf(AimIdentityChangedError);
+    expect(d.uiaClick).not.toHaveBeenCalled();
+  });
+
+  it("does not refuse on a class it could not read", () => {
+    // An empty class is "could not ask" — the readers drop it rather than storing "", and a missing
+    // one on either side is another unanswered question.
+    expect(compareAimIdentity(withClass, { ...WHEN_TAKEN })).toBe("same");
+    expect(compareAimIdentity(aimWithIdentity, { ...WHEN_TAKEN, className: "Notepad" })).toBe("same");
+  });
+
+  it("does not refuse on a renamed title, which is the ordinary case", () => {
+    // A document window renames itself on every save and a browser tab on every navigation. The
+    // fingerprint is recorded so a report can say what the window was called; deciding on it would
+    // refuse the most common thing a window does.
+    const renamed = { ...WHEN_TAKEN, className: "Notepad", titleFingerprint: "notes.txt - Notepad" };
+    expect(compareAimIdentity(withClass, renamed)).toBe("same");
+  });
+
+  it("still cannot see a window replaced by one of the same class, and that is written down", () => {
+    // The residual hole, pinned so it is a decision rather than an oversight: same pid, same start
+    // time, same class. Separating those needs a per-window generation the native side does not
+    // expose, and guessing here would trade a silent wrong press for a noisy wrong refusal.
+    expect(compareAimIdentity(withClass, { ...WHEN_TAKEN, className: "Notepad" })).toBe("same");
+  });
+});
+
 describe("an unanswered question is not an answer", () => {
   it("acts when nothing could say who owns the handle now", async () => {
     // The build with no native binding. Refusing here would refuse everything on it, about windows

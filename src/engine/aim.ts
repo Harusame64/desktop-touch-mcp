@@ -105,14 +105,59 @@ export class AimIdentityChangedError extends Error {
   readonly hwnd: bigint;
   constructor(hwnd: bigint, then: WindowIdentity, now: WindowIdentity | undefined) {
     super(
-      `The window this action was aimed at (hwnd ${hwnd}) now belongs to a different process: it was ` +
-      `${then.processName || "an unnamed process"} (pid ${then.pid}) when the lease was taken and is ` +
-      `${now?.processName || "an unnamed process"} (pid ${now?.pid ?? 0}) now. Windows reuses handles, so ` +
-      `this is a different window wearing the same number — nothing was done to it. Run desktop_discover again.`,
+      `The window this action was aimed at (hwnd ${hwnd}) is not the window the lease was taken on: ` +
+      `${describeIdentityChange(then, now)}. Windows reuses handles, so this is a different window wearing ` +
+      `the same number — nothing was done to it. Run desktop_discover again.`,
     );
     this.name = "AimIdentityChangedError";
     this.hwnd = hwnd;
   }
+}
+
+/**
+ * Say which field actually differed, in the same order {@link compareAimIdentity} decides in.
+ *
+ * The message used to tell one story — "now belongs to a different process" — and print only pid
+ * and process name from both sides. When the class check started firing, that produced a refusal
+ * that contradicts itself: an application replacing its own window prints *notepad.exe (pid 1234)*
+ * on BOTH sides and claims they are different processes (gate 2, 2026-09-09). A reader who trusts
+ * the sentence concludes the comparator is broken; a reader who trusts the numbers concludes the
+ * refusal is spurious. Neither is true, and neither can be told apart from the text.
+ *
+ * So the branches here mirror the comparator's exactly, including its two "compared only when both
+ * sides have one" rules — a message that names a field the decision did not use would be the same
+ * defect pointing the other way.
+ */
+function describeIdentityChange(then: WindowIdentity, now: WindowIdentity | undefined): string {
+  // Unreachable from the executor: `compareAimIdentity` answers "unknown" for an absent `now`, and
+  // only "changed" throws. Spelled out anyway because the constructor is public and a caller that
+  // built one by hand deserves a sentence rather than "undefined".
+  if (!now) return `nothing could say who owns the handle now (it was ${named(then)} when the lease was taken)`;
+  if (then.pid !== now.pid) {
+    return `it belonged to ${named(then)} and now belongs to ${named(now)}`;
+  }
+  if (then.processStartTimeMs !== 0 && now.processStartTimeMs !== 0
+      && then.processStartTimeMs !== now.processStartTimeMs) {
+    return `${named(then)} was restarted — same pid, a later process wearing it`;
+  }
+  if (then.className !== undefined && now.className !== undefined
+      && then.className !== now.className) {
+    return `${named(then)} replaced the window on that handle: its class was "${then.className}" ` +
+           `when the lease was taken and is "${now.className}" now`;
+  }
+  // The comparator found something this function does not know how to name — which means the two
+  // have been allowed to drift apart. Print both sides whole rather than inventing a reason.
+  return `it changed in a way this message does not name yet (then ${JSON.stringify(then, replaceHandle)}, ` +
+         `now ${JSON.stringify(now, replaceHandle)})`;
+}
+
+function named(id: WindowIdentity): string {
+  return `${id.processName || "an unnamed process"} (pid ${id.pid})`;
+}
+
+/** `WindowIdentity.hwnd` is a bigint, and `JSON.stringify` throws on those. */
+function replaceHandle(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? value.toString() : value;
 }
 
 /**
@@ -157,15 +202,40 @@ export class AimOccludedError extends Error {
  * only the handle — including the containment check, which asks the OS for "that window's"
  * rectangle — passes about the replacement.
  *
- * Held as the three fields `win32.getWindowIdentity` can actually answer, rather than the
- * specification's full shape: a field this cannot fill would be a hole wearing a name.
- * `className` and `titleFingerprint` are the obvious next two when something needs them.
+ * The specification's shape is
+ * `WindowIdentity = { hwnd, pid, processStartTime?, processName, className?, titleFingerprint? }`,
+ * and every field here is one a `win32` read can actually fill — a field nothing can fill would be
+ * a hole wearing a name. It was first written to the three `getWindowIdentity` answers alone;
+ * `className` and `titleFingerprint` were added when the same-process case proved the three were
+ * not enough, and {@link readWindowIdentityFields} is the one place that fills them, so the three
+ * call sites cannot record different things under the same names.
  */
 export interface WindowIdentity {
   readonly hwnd: bigint;
   readonly pid: number;
   readonly processName: string;
   readonly processStartTimeMs: number;
+  /**
+   * The window's class, when it could be read.
+   *
+   * Process identity alone answers "did the handle move to another program", and Windows also
+   * reuses handles INSIDE one program: an application that destroys a top-level window and creates
+   * another gets the same pid, the same start time, and can get the same number (PR 側 codex,
+   * 2026-09-09). The specification asks for exactly this discriminator —
+   * `WindowIdentity = { hwnd, pid, processStartTime?, processName, className?, titleFingerprint? }`
+   * — and it was left out when the type was first written to the three fields
+   * `getWindowIdentity` answers.
+   */
+  readonly className?: string;
+  /**
+   * The window's title when the aim was taken.
+   *
+   * Recorded, and deliberately NOT decisive: a document window renames itself on every save, and a
+   * browser tab on every navigation, so a changed title is the ordinary case rather than evidence
+   * of a different window. It is here so a report can say what the window was called, and so a
+   * future rule that wants it does not have to re-take the observation.
+   */
+  readonly titleFingerprint?: string;
 }
 
 /**
@@ -243,6 +313,113 @@ function parseHandle(raw: string | undefined): bigint | undefined {
 }
 
 /**
+ * ADR-036 — read a window's identity the same way everywhere.
+ *
+ * Three places take this baseline: the ingress path (`compose-providers.ts`), the fallback for
+ * results that carried none (`desktop.ts::_aimFor`), and the act-side re-read (the executor's
+ * `aimIdentity` dep). They were three copies of the same fifteen lines, and they had already
+ * drifted: two recorded `target.windowTitle` — the caller's SEARCH STRING, so
+ * `desktop_discover({windowTitle: "Notepad"})` against "Untitled - Notepad" filed the query as the
+ * window's title — while the third recorded the live `GetWindowTextW`. Nothing consumes the field
+ * yet, so nothing was refused wrongly; the first rule that compares the two sides would have
+ * refused every act (gate 2, 2026-09-09).
+ *
+ * The reads are passed in rather than imported so this module stays free of `win32` (the engine
+ * imports it, and one of the callers loads `win32` lazily on purpose). What lives here is the
+ * POLICY, which is the part that was inconsistent:
+ *
+ *   - a zeroed pid is "could not ask", and becomes nothing at all rather than a value;
+ *   - an empty class or title is "could not read it", not "it has none", so it is dropped;
+ *   - a throwing secondary read costs its own field and not the whole identity.
+ *
+ * Not atomic — the handle can change hands between the calls — so the identity is read again after
+ * the secondary reads and a sample that moved under us is discarded instead of returned. See the
+ * body for why the earlier reasoning ("a cross-process tear fails safe") was wrong: two windows can
+ * share a framework class, and then the chimera matches the lease on every compared field.
+ *
+ * What this does NOT do is close the gap between the check and the press. Nothing here can: that
+ * gap is milliseconds to seconds wide and this one is microseconds. It only stops the function from
+ * reporting a window that never existed (gate 1 and the PR review, 2026-09-09; ADR-036 item 9).
+ */
+export function readWindowIdentityFields(
+  hwnd: bigint,
+  reads: {
+    identity: (hwnd: bigint) => { pid: number; processName: string; processStartTimeMs: number } | undefined;
+    className?: (hwnd: bigint) => string;
+    title?: (hwnd: bigint) => string;
+  },
+): WindowIdentity | undefined {
+  // Two attempts, because a sample assembled from two windows describes neither.
+  //
+  // The reads are not atomic, and the handle can change hands between them. The comment that used
+  // to stand here claimed that only the same-process case mattered, because a cross-process tear
+  // would leave a pid that no longer matches and fail safe. **That was wrong, and the PR review
+  // found the case**: two windows can share a framework class (`Chrome_WidgetWin_1`, `#32770`),
+  // and then the chimera — the OLD process's pid with the NEW window's class — matches the lease
+  // on every compared field. `compareAimIdentity` answers "same" and the act goes to the stranger.
+  //
+  // So the identity is read again after the secondary reads, and a sample that moved under us is
+  // thrown away rather than returned. Retrying once is enough: a handle changing hands twice inside
+  // two microsecond-scale reads is not a case worth a loop, and the second attempt is what makes
+  // the act-side comparison see the NEW process and refuse. This does NOT close the gap between the
+  // check and the press — nothing here can, and that gap is milliseconds to seconds wider — but it
+  // stops this function from inventing a window that never existed.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const sample = readOneSample(hwnd, reads);
+    if (sample) return sample;
+  }
+  return undefined;
+}
+
+/** One internally consistent sample, or nothing when the handle moved under the read. */
+function readOneSample(
+  hwnd: bigint,
+  reads: {
+    identity: (hwnd: bigint) => { pid: number; processName: string; processStartTimeMs: number } | undefined;
+    className?: (hwnd: bigint) => string;
+    title?: (hwnd: bigint) => string;
+  },
+): WindowIdentity | undefined {
+  let ident;
+  try {
+    ident = reads.identity(hwnd);
+  } catch {
+    return undefined;
+  }
+  if (!ident || ident.pid === 0) return undefined;
+  const className = readOrNothing(reads.className, hwnd);
+  const titleFingerprint = readOrNothing(reads.title, hwnd);
+  // The same questions again, after the reads that could have straddled a handover.
+  //
+  // BOTH of them, and the first version of this check only re-read the identity — which validates
+  // the process fields while leaving out the one this commit exists for. A window replaced inside
+  // ONE process gives two identical identity reads (same pid, same start time) around a class read
+  // that captured the old window, so the sample passed the check carrying a class the handle no
+  // longer has, `compareAimIdentity` answered "same", and the act went to the replacement (PR 側
+  // codex on #608, second round). A consistency check has to cover every field the comparison
+  // reads, or it certifies the sample against the wrong question.
+  let after;
+  try {
+    after = reads.identity(hwnd);
+  } catch {
+    return undefined;
+  }
+  if (!after || after.pid === 0) return undefined;
+  if (after.pid !== ident.pid || after.processStartTimeMs !== ident.processStartTimeMs) return undefined;
+  if (readOrNothing(reads.className, hwnd) !== className) return undefined;
+  return { hwnd, pid: ident.pid, processName: ident.processName, processStartTimeMs: ident.processStartTimeMs, className, titleFingerprint };
+}
+
+function readOrNothing(read: ((hwnd: bigint) => string) | undefined, hwnd: bigint): string | undefined {
+  if (!read) return undefined;
+  try {
+    return read(hwnd) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * ADR-036 — whether the window behind the aim is still the one the aim was taken on.
  *
  * Returns `"same"`, `"changed"`, or `"unknown"`, and the third is not a polite form of the second.
@@ -266,5 +443,18 @@ export function compareAimIdentity(
       && then.processStartTimeMs !== now.processStartTimeMs) {
     return "changed";
   }
+  // And the same PROCESS can hand the same handle to a different window. Class is the cheapest
+  // discriminator that is a property of the window rather than of its owner, and it is in the
+  // specification's shape for that reason. Compared only when both sides have one — a missing
+  // class is another unanswered question, not a mismatch.
+  if (then.className !== undefined && now.className !== undefined
+      && then.className !== now.className) {
+    return "changed";
+  }
+  // What is left: one process destroying a window and creating another OF THE SAME CLASS before
+  // the act. Pid, start time and class all match, and nothing readable here separates them —
+  // telling those apart needs a per-window generation the native side does not expose. Recorded in
+  // ADR-036 rather than papered over: the title is not it (documents rename themselves), and
+  // guessing here would trade a silent wrong press for a noisy wrong refusal.
   return "same";
 }

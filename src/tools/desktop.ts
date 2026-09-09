@@ -16,7 +16,7 @@ import {
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { probeAim } from "../engine/aim-probe.js";
-import { toAim, type Aim } from "../engine/aim.js";
+import { toAim, readWindowIdentityFields, type Aim } from "../engine/aim.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import type { TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
@@ -838,19 +838,15 @@ export class DesktopFacade {
       // Injectable so a test can tell "the fallback did not run" from "the fallback ran and this
       // machine cannot answer". Without that, the two look identical everywhere except Windows,
       // and a guard that stopped running would pass its own suite (found by mutating it).
-      const read = this.opts.readWindowIdentity
-        ?? (await import("../engine/win32.js")).getWindowIdentity;
-      const ident = read(aim.hwnd);
-      if (!ident || ident.pid === 0) return aim;   // could not ask — absence, not a value
-      return {
-        ...aim,
-        identity: {
-          hwnd: aim.hwnd,
-          pid: ident.pid,
-          processName: ident.processName,
-          processStartTimeMs: ident.processStartTimeMs,
-        },
-      };
+      const win32 = await import("../engine/win32.js");
+      const identity = readWindowIdentityFields(aim.hwnd, {
+        identity: this.opts.readWindowIdentity ?? win32.getWindowIdentity,
+        className: win32.getWindowClassName,
+        title: win32.getWindowTitleW,
+      });
+      // Absence is not a value: a build that cannot ask leaves the aim without an identity, and
+      // nothing downstream may read that as a changed window.
+      return identity ? { ...aim, identity } : aim;
     } catch {
       return aim;
     }
