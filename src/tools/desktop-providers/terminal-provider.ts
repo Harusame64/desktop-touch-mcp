@@ -33,7 +33,7 @@ export async function fetchTerminalCandidates(
 
   try {
     const { getTextViaTextPattern } = await import("../../engine/uia-bridge.js");
-    const raw = await getTextViaTextPattern(windowTitle, undefined, pinned !== undefined ? { hwnd: pinned } : undefined);
+    const raw = await getTextViaTextPattern(windowTitle, undefined, pinned !== undefined ? { pinnedHwnd: pinned } : undefined);
 
     const candidates: UiEntityCandidate[] = [];
     const warnings: string[] = [];

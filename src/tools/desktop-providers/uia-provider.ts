@@ -75,7 +75,7 @@ export async function fetchUiaCandidates(
     // two halves aim at different windows. `BigInt(target.hwnd)` here used to throw straight
     // out of the provider.
     const pinned = parseTargetHwnd(target);
-    const options = pinned !== undefined ? { hwnd: pinned } : undefined;
+    const options = pinned !== undefined ? { pinnedHwnd: pinned } : undefined;
     const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
 
     const candidates: UiEntityCandidate[] = result.elements

@@ -454,6 +454,14 @@ function getSharedRealDeps(): ExecutorDeps {
       const { enumWindowsInZOrder } = await import("../engine/win32.js");
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
+      // ADR-036 — a by-handle miss is ordinary (`enumWindowsInZOrder` drops untitled, sub-50 px
+      // and excluded windows), and `terminalBgExecute` only knows the title it was handed, so
+      // it would report a window that is plainly on screen as missing. Say which was asked.
+      if (hwnd !== undefined && !wins.some((w) => w.hwnd === hwnd)) {
+        throw new Error(
+          `Terminal window not found: hwnd ${hwnd} is not in the enumeration (title was "${windowTitle}")`,
+        );
+      }
       terminalBgExecute(windowTitle, text, {
         // ADR-035 Phase 1 — the same unfiltered, silently-first-match shape the
         // v1 resolvers have, reached through `desktop_act` instead. Instrumented
@@ -538,7 +546,14 @@ function getSharedRealDeps(): ExecutorDeps {
         intent: "write",
       });
       if (!win) {
-        throw new Error(`Window not found for keyboardTypeBg: "${windowTitle}"`);
+        // ADR-036 — say which question was asked. `enumWindowsInZOrder` drops untitled,
+        // sub-50 px and excluded windows, so a by-handle miss is ordinary, and reporting the
+        // title alone told an operator that a window plainly on screen was "not found".
+        throw new Error(
+          byHandle
+            ? `Window not found for keyboardTypeBg: hwnd ${hwnd} is not in the enumeration (title was "${windowTitle}")`
+            : `Window not found for keyboardTypeBg: "${windowTitle}"`,
+        );
       }
       const check = canInjectAtTarget(win.hwnd);
       if (!check.supported) {

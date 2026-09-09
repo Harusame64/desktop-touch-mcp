@@ -75,17 +75,16 @@ export const getUiElementsHandler = async ({
     const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
-    // ADR-036 — NOT pinned, deliberately. `getUiElements` passes only the TITLE
-    // to both its native and PowerShell paths; the handle it takes is used as a
-    // cache key and nothing else. Pinning the hints here would report the named
-    // window while the elements came from the first same-titled one, and would
-    // then file that sibling's elements in the cache under the named window's
-    // handle — a wrong answer stored under the right key, which is worse than
-    // the uniformly title-based answer it replaces. The hints follow the read;
-    // they do not lead it. Pin both together when the read takes a handle.
-    const hintsBlock = buildHintsForTitle(effectiveTitle);
+    // ADR-036 — pinned, both together. This used to read "NOT pinned, deliberately", because
+    // `getUiElements` took only a title and pinning the hints alone would have described the
+    // named window while the elements came from the first same-titled one. That comment named
+    // its own condition for changing — "pin both together when the read takes a handle" — and
+    // the read takes one now, so both are pinned to the handle the caller named. Leaving the
+    // hints unpinned would have been worse than before: the read would have been scoped to
+    // whichever window the hints found by title, making the `hwnd` parameter inert (gate 2).
+    const hintsBlock = buildHintsForTitle(effectiveTitle, resolvedWin?.hwnd);
     const result = await getUiElements(effectiveTitle, maxDepth, maxElements, 10000, {
-      hwnd: hintsBlock?.hwnd, cached: false,
+      pinnedHwnd: resolvedWin?.hwnd, hwnd: hintsBlock?.hwnd, cached: false,
     });
     const hints = {
       ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),

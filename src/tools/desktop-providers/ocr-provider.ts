@@ -16,7 +16,7 @@
  */
 
 import type { Rect, UiEntityCandidate } from "../../engine/vision-gpu/types.js";
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import type { OcrDictionaryEntry } from "../../engine/ocr-bridge.js";
 import { detectOcrLanguage } from "../../engine/ocr-bridge.js";
@@ -36,7 +36,10 @@ export async function fetchOcrCandidates(
 
   const windowTitle = target.windowTitle ?? "@active";
   const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
-  const hwnd        = target.hwnd ? BigInt(target.hwnd) : null;
+  // ADR-036 — the same parse the UIA halves use. This line sat outside the try below, so a
+  // malformed handle threw straight out of the provider while the UIA side quietly read by
+  // title: one bad value, two different answers to "which window".
+  const hwnd        = parseTargetHwnd(target) ?? null;
 
   try {
     const { runSomPipeline } = await import("../../engine/ocr-bridge.js");

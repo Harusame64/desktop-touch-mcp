@@ -628,14 +628,31 @@ export async function getUiElements(
   maxDepth = 3,
   maxElements = 50,
   timeoutMs = 10000,
-  options?: { cached?: boolean; hwnd?: bigint; fetchValues?: boolean }
+  options?: {
+    cached?: boolean;
+    /** Cache key only — which window's tree this result files under. Does not scope the read. */
+    hwnd?: bigint;
+    /**
+     * ADR-036 — scope the read to this window, through `FromHandle`.
+     *
+     * Separate from `hwnd` because the two are different requests and were briefly the same
+     * parameter: `screenshot` and `get_ui_elements` pass a handle to key the cache, and making
+     * that scope the read took the Rust path away from them (a cache miss then paid a
+     * PowerShell round trip and could exceed its 8 s cap, returning nothing on a deep tree).
+     * Two things that are not the same thing do not share a name.
+     */
+    pinnedHwnd?: bigint;
+    fetchValues?: boolean;
+  }
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle);
-  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
+  if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
+  // The scoped window is what the result describes, so it is also what the result files under.
+  const cacheKey = options?.pinnedHwnd ?? options?.hwnd;
   // Cache hit path — only when caller provides hwnd + cached:true
   // Note: cache is never used when fetchValues:true (values may have changed)
-  if (options?.cached && options.hwnd !== undefined && !options.fetchValues) {
-    const cached = getCachedUia(options.hwnd);
+  if (options?.cached && cacheKey !== undefined && !options.fetchValues) {
+    const cached = getCachedUia(cacheKey);
     if (cached) {
       try {
         const parsed = JSON.parse(cached) as UiElementsResult;
@@ -648,13 +665,14 @@ export async function getUiElements(
 
   // ★ Rust native path
   //
-  // ADR-036 — skipped when a handle is in hand, the same way `clickElement` and
-  // `setElementValue` skip it: `uiaGetElements` takes a title and nothing else, so going
+  // ADR-036 — skipped only when the read is SCOPED to a handle, the same way `clickElement`
+  // and `setElementValue` skip it: `uiaGetElements` takes a title and nothing else, so going
   // through it would read whichever window the title found first while every write on this
   // session addressed the handle. The two halves disagreeing is worse than the PowerShell
   // round-trip: a read of window A and a click on window B report `no_change` for an action
-  // that landed. When the native side grows a handle parameter this branch goes away.
-  if (nativeUia?.uiaGetElements && options?.hwnd === undefined) {
+  // that landed. A handle passed merely to key the cache keeps the native path. When the
+  // native side grows a handle parameter this branch goes away.
+  if (nativeUia?.uiaGetElements && options?.pinnedHwnd === undefined) {
     try {
       const result = await nativeUia.uiaGetElements({
         windowTitle,
@@ -673,9 +691,8 @@ export async function getUiElements(
           boundingRect: el.boundingRect ?? null,
         })),
       };
-      // Update cache if we know the hwnd
-      if (options?.hwnd !== undefined) {
-        try { updateUiaCache(options.hwnd, JSON.stringify(normalised)); } catch { /* ignore */ }
+      if (cacheKey !== undefined) {
+        try { updateUiaCache(cacheKey, JSON.stringify(normalised)); } catch { /* ignore */ }
       }
       return normalised;
     } catch (e) {
@@ -690,15 +707,14 @@ export async function getUiElements(
     maxDepth,
     maxElements,
     options?.fetchValues ?? false,
-    options?.hwnd,
+    options?.pinnedHwnd,
   );
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
 
-  // Update cache if we know the hwnd
-  if (options?.hwnd !== undefined) {
-    try { updateUiaCache(options.hwnd, output); } catch { /* ignore */ }
+  if (cacheKey !== undefined) {
+    try { updateUiaCache(cacheKey, output); } catch { /* ignore */ }
   }
   return result as UiElementsResult;
 }
@@ -1206,14 +1222,14 @@ export async function getTextViaTextPattern(
   windowTitle: string,
   timeoutMs = 6000,
   /** ADR-036 — scope the read to a resolved window, so the buffer read matches the window written. */
-  options?: { hwnd?: bigint },
+  options?: { pinnedHwnd?: bigint },
 ): Promise<string | null> {
   refuseUiaTitleIfExcluded(windowTitle);
-  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
+  if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
   // ★ Rust native path (Phase C) — skipped while a handle is in hand: it takes a title only,
   // and a terminal buffer read from one window while the keys go to its same-titled twin is
   // the same split this ADR closed on the UIA route.
-  if (nativeUia?.uiaGetTextViaTextPattern && options?.hwnd === undefined) {
+  if (nativeUia?.uiaGetTextViaTextPattern && options?.pinnedHwnd === undefined) {
     try {
       return await nativeUia.uiaGetTextViaTextPattern({ windowTitle, timeoutMs });
     } catch (e) {
@@ -1232,9 +1248,9 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
-${options?.hwnd !== undefined
+${options?.pinnedHwnd !== undefined
   ? `# ADR-036: named by handle, so no title search happens here.
-$hwndPtr = [System.IntPtr]::new(${options.hwnd.toString()})
+$hwndPtr = [System.IntPtr]::new(${options.pinnedHwnd.toString()})
 $target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
 if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }`
   : `$target = $null

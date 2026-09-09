@@ -26,7 +26,7 @@
  * know the difference. This is replaced by real per-frame ingestion in Phase 3.
  */
 
-import type { TargetSpec } from "../world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../world-graph/session-registry.js";
 import type { UiEntityCandidate } from "./types.js";
 import { TrackStore } from "./track-store.js";
 import { TemporalFusion } from "./temporal-fusion.js";
@@ -152,7 +152,8 @@ export class OcrVisualAdapter {
     } else {
       try {
         const { runSomPipeline } = await import("../ocr-bridge.js");
-        const hwnd = target.hwnd ? BigInt(target.hwnd) : null;
+        // ADR-036 — shared parse; see `parseTargetHwnd`.
+        const hwnd = parseTargetHwnd(target) ?? null;
         const title = target.windowTitle ?? "@active";
         const result = await runSomPipeline(title, hwnd, detectOcrLanguage(), 2, "auto", false, dictionary);
         elements = result.elements;
