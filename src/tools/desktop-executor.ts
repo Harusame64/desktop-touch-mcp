@@ -427,8 +427,9 @@ async function resolvePressPoint(
       `Refusing to click (${x}, ${y}) for "${label}": this call named window ${aimHwnd}, which is ` +
       `still on screen but has been RESIZED since the lease was taken — it was ` +
       `${origin.rect.width}x${origin.rect.height} and is ${rect.width}x${rect.height} now. A ` +
-      `window that only moved would have been followed; a resize can lay its contents out ` +
-      `differently, and nothing here can say what is under that point now. Re-run desktop_discover.`,
+      `window that moved without resizing would have been followed, had these coordinates been ` +
+      `measured in the same read that measured it; a resize can lay the contents out differently, ` +
+      `and nothing here can say what is under that point now. Re-run desktop_discover.`,
       aimHwnd,
     );
   }
