@@ -286,6 +286,31 @@ describe("the identity is the one from the read, not from the moment it was file
       .toEqual({ x: 458, y: 220 });
   });
 
+  it("declines the same corrections the press declines, through the same entry point", async () => {
+    // How the defect got reproduced inside its own fix (win2, auditing the review): the press path
+    // learned to decline for coordinates the bracketed origin cannot describe, and this caller —
+    // the SSIM focal point — went on correcting them, because the policy lived in the executor and
+    // `homingCorrection` stayed unconditional. A guard added in one of two callers is the shape
+    // this branch keeps re-finding.
+    const origin = { kind: "measured" as const, rect: { x: 100, y: 200, width: 600, height: 400 } };
+    const stored = { ...candidate("2624042"), source: "visual_gpu" as const };
+    const facade = new DesktopFacade(async () => [], {
+      ingress: ingressReturning({
+        candidates: [stored],
+        warnings: [],
+        target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+        identityRead: true,
+        origin,
+      }),
+    });
+    const seen = await facade.see({});
+    const entityId = seen.entities[0]!.entityId;
+    // A stored GPU snapshot: its coordinates may predate the origin, so neither the press nor the
+    // region may be moved by that delta.
+    expect(facade.resolveEntityCenterForViewId(seen.viewId, entityId, { x: 100, y: 129, width: 600, height: 400 }))
+      .toEqual({ x: 458, y: 291 });
+  });
+
   it("keeps identity and candidates together in the cache", async () => {
     const identity = { hwnd: 2624042n, pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 };
     const fetchFn = vi.fn(async () => ({

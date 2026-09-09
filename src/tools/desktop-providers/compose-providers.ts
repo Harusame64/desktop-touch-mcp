@@ -368,11 +368,16 @@ function readOriginRectForTarget(target: TargetSpec): WindowRect | undefined {
   }
 }
 
-/** Two samples of the same window, taken around the lanes. */
-function sameRect(a: WindowRect | undefined, b: WindowRect | undefined): boolean {
-  // Both sides have to be an answer: a read that failed on either end leaves the question open,
-  // and an open question is not agreement.
-  if (!a || !b) return false;
+/**
+ * Two samples of the same window, taken around the lanes.
+ *
+ * Both sides are required to BE answers, and that is enforced by the caller rather than repeated
+ * here: the only call site is inside `originBefore && originAfter`, so a guard for the undefined
+ * case could never fire and CodeQL was right to call it useless. The rule it stood for — a read
+ * that failed on either end leaves the question open, and an open question is not agreement — is
+ * kept where it is actually decided.
+ */
+function sameRect(a: WindowRect, b: WindowRect): boolean {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 

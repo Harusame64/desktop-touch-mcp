@@ -420,6 +420,54 @@ export type Homing =
  */
 const OFF_DESKTOP = -32000;
 
+/**
+ * ADR-036 item 5 — lanes whose coordinates were measured DURING this observation.
+ *
+ * The correction is only valid when the coordinates and the origin describe the same moment. The
+ * origin is bracketed around the provider fan-out, so it describes that moment — and every lane
+ * reading inside the fan-out is covered by it. `visual_gpu` is not: `getStableCandidates()` hands
+ * back the backend's STORED snapshot, whose rectangles may have been captured at a position
+ * neither bracket read saw.
+ *
+ * Correcting those is a REGRESSION, not an imprecision. With `P_cap` the window position at
+ * capture, `P_brk` what the bracket saw, `P_act` the position at act time: without this rung the
+ * press is right when `P_act == P_cap`; with it, when `P_cap == P_brk`. A window that moved after
+ * the capture, sat elsewhere while the lanes ran and came BACK by act time was therefore pressed
+ * correctly before the rung and incorrectly after it.
+ *
+ * `inferred` is out for the same reason with less evidence: nothing says when it was measured.
+ */
+const BRACKETED_SOURCES: ReadonlySet<string> = new Set(["uia", "cdp", "win32", "ocr", "som", "terminal"]);
+
+/**
+ * ADR-036 item 5 — the correction with the policy that decides whether it may run at all.
+ *
+ * **Every caller goes through here, and that is the point.** The first version put the policy in
+ * the executor and left {@link homingCorrection} unconditional, so the frame-diff focal point —
+ * the second caller — kept applying a correction the press path had already learned to decline
+ * (found by win2 auditing the review, 2026-09-10). A guard added in one of two callers is the
+ * defect this branch keeps re-finding, and that time it was reproduced INSIDE the fix for it.
+ *
+ * What stays out of here is the one signal that needs the screen: an owned popup sitting on the
+ * remembered point. Only the press path can ask (it holds the `pointOwner` dep), so only the press
+ * path declines for it — which means a diagnostic region can still be corrected where the press was
+ * not. That costs an off-centre SSIM window and never a press, and it is written down rather than
+ * silently uneven.
+ */
+export function homingCorrectionForSources(
+  sources: readonly string[],
+  aimOrigin: AimOrigin | undefined,
+  current: WindowRect,
+  x: number,
+  y: number,
+): Homing {
+  // Every source, not any: a merged entity is only as trustworthy as its least-dated lane.
+  if (sources.length === 0 || !sources.every((src) => BRACKETED_SOURCES.has(src))) {
+    return { applied: false, x, y, why: "measurement_moment_unknown" };
+  }
+  return homingCorrection(aimOrigin, current, x, y);
+}
+
 export function homingCorrection(
   aimOrigin: AimOrigin | undefined,
   current: WindowRect,
