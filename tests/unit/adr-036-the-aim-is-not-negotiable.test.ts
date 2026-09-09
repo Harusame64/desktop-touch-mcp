@@ -321,6 +321,31 @@ describe("a tree is filed under a handle only when the read was scoped to it", (
   });
 });
 
+describe("the frame of the window is in the tree, or the read says it is not", () => {
+  it("warms UIA up BEFORE registering the clientside providers, because the order is the fix", async () => {
+    // Measured four ways on Windows: no registration 2 elements, registration alone 2, warm-up
+    // alone 2, warm-up THEN registration 26. Registering straight after `Add-Type` returns
+    // without error and changes nothing — the failure this ordering prevents is invisible.
+    h.psOutput = JSON.stringify({ windowTitle: "x", elementCount: 0, elements: [] });
+    await getUiElements("Untitled - Notepad", 3, 50, 8000, { pinnedHwnd: NOTEPAD });
+    const script = h.calls.ps[0]!;
+    const warmUp = script.script.indexOf("$preRegisterChildren = $target.FindAll");
+    const register = script.script.indexOf("RegisterClientSideProviderAssembly");
+    expect(warmUp).toBeGreaterThan(-1);
+    expect(register).toBeGreaterThan(-1);
+    expect(warmUp, "the warm-up must come first or the registration is a no-op").toBeLessThan(register);
+  });
+
+  it("carries the verdict back, rather than assuming the call worked", async () => {
+    h.psOutput = JSON.stringify({
+      windowTitle: "x", elementCount: 1, clientProviders: "noop",
+      elements: [{ name: "Pane" }],
+    });
+    const r = await getUiElements("Untitled - Notepad", 3, 50, 8000, { pinnedHwnd: NOTEPAD });
+    expect(r.clientProviders).toBe("noop");
+  });
+});
+
 describe("a cache hit does not pay for a question it did not need to ask", () => {
   it("probes the cache before sweeping every top-level window", async () => {
     // The scoping gate is an `enumWindowsInZOrder()` sweep — a handful of syscalls per window —

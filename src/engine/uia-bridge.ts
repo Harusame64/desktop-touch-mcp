@@ -322,6 +322,35 @@ try {
 # frame — which inverts the ADR, because it is the read that NAMED its window that lands here.
 $cvCond   = [System.Windows.Automation.Automation]::ControlViewCondition
 $children = [System.Windows.Automation.TreeScope]::Children
+
+# ADR-036 — teach this client to see the window's frame.
+#
+# The managed client (System.Windows.Automation) reaches a legacy window's title bar, menu bar
+# and close button only through the clientside providers, which synthesise them from MSAA — and
+# that assembly is registered per process. A bare powershell.exe has no registration, so a read
+# of Notepad came back with the two client-area panes and nothing else: no title bar, no menu, no
+# close button, not even the text editor. The COM client the Rust engine uses needs none of this,
+# which is why the same window was 2 elements here and 26 there (measured 2026-09-09).
+#
+# ORDER MATTERS, and getting it wrong is silent. Registering straight after Add-Type does
+# nothing at all — measured, four ways: no registration 2 elements, registration alone 2,
+# warm-up alone 2, warm-up THEN registration 26. So the warm-up call below is not a spare RPC;
+# it is what makes the next line take effect. Nothing throws in the case that does not work.
+#
+# So the result reports what happened, because the failure is invisible otherwise: the count
+# before registering is kept, and the walk's own first level is compared against it at the end.
+$preRegisterChildren = -1
+try { $preRegisterChildren = $target.FindAll($children, $cvCond).Count } catch {}
+$clientProviders = 'unavailable'
+try {
+    $regMethod = [System.Windows.Automation.ClientSettings].GetMethod('RegisterClientSideProviderAssembly')
+    if ($null -ne $regMethod) {
+        [System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
+            (New-Object System.Reflection.AssemblyName(
+                'UIAutomationClientsideProviders, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')))
+        $clientProviders = 'registered'
+    }
+} catch { $clientProviders = 'failed' }
 $results  = [System.Collections.Generic.List[object]]::new()
 $count    = 0
 # What is left of the caller's deadline now that starting up and finding the window are paid for.
@@ -408,7 +437,14 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
 # and two different truncation points read as elements appearing and disappearing that never
 # changed (2ゲート目の指摘). Running out of maxElements is the caller's own limit, and is not this.
 $truncated = ($queue.Count -gt 0) -and ($sw.ElapsedMilliseconds -ge $budgetMs)
-@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; truncated=$truncated; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
+# Did the registration above actually take? Compared by what the tree yields, not by the call
+# returning without error — the case that silently does nothing also returns without error. A
+# walk cut short by maxElements can under-count the first level, so this is advisory.
+$firstLevel = @($results | Where-Object { $_.depth -eq 1 }).Count
+if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firstLevel -le $preRegisterChildren) {
+    $clientProviders = 'noop'
+}
+@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; truncated=$truncated; clientProviders=$clientProviders; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
 }
 
@@ -859,6 +895,19 @@ export interface UiElementsResult {
    * that compares two snapshots has to refuse this; one that shows what it found need not.
    */
   truncated?: boolean;
+  /**
+   * ADR-036 — whether the PowerShell read could see the window's FRAME (title bar, menu, close
+   * button), which the managed UIA client reaches only through the clientside providers.
+   *
+   * `"registered"` — the assembly was registered and the tree grew, so the frame is in there.
+   * `"noop"` — registered without effect; the tree is the client area only. `"failed"` /
+   * `"unavailable"` — the registration threw, or this .NET has no such method. Absent on the
+   * native path, which goes through COM and never needed any of it.
+   *
+   * Reported rather than assumed because the failure is silent: registering at the wrong moment
+   * returns without error and changes nothing.
+   */
+  clientProviders?: "registered" | "noop" | "failed" | "unavailable";
   elements: UiElement[];
 }
 
