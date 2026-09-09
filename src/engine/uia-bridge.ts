@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
-import { isExcludedTitle } from "./win32.js";
+import { isExcludedTitle, isExcludedWindowHandle } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
@@ -20,6 +20,21 @@ function refuseUiaTitleIfExcluded(windowTitle: string): void {
   if (isExcludedTitle(windowTitle)) {
     throw new WindowExcludedError(
       `UIA target window "${windowTitle}" belongs to the desktop-touch key locker and is excluded`,
+    );
+  }
+}
+
+/**
+ * (R3 tool-exclusion) The `options.hwnd` route below skips the title-based root search, so the
+ * title check above no longer stands between a caller and the window it names. A caller holding
+ * the locker's handle — or one that resolved it before the locker armed — would otherwise reach
+ * the secure dialog with any benign title string attached. The handle registry is the same one
+ * `enumWindowsInZOrder` consults, and it short-circuits to `false` when no locker is alive.
+ */
+function refuseUiaHwndIfExcluded(hwnd: bigint): void {
+  if (isExcludedWindowHandle(hwnd)) {
+    throw new WindowExcludedError(
+      `UIA target window handle ${hwnd} belongs to the desktop-touch key locker and is excluded`,
     );
   }
 }
@@ -834,6 +849,7 @@ export async function clickElement(
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; element?: string; error?: string }> {
   refuseUiaTitleIfExcluded(windowTitle);
+  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // H3: hwnd-based lookup goes directly to PowerShell FromHandle path.
   // The Rust native path (uiaClickElement) does not accept hwnd, so we skip it
   // when hwnd is provided to ensure the hwnd-aware PS script is used.
@@ -868,6 +884,7 @@ export async function setElementValue(
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; error?: string }> {
   refuseUiaTitleIfExcluded(windowTitle);
+  if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // H3: hwnd-based lookup skips Rust native (same reason as clickElement above).
   if (options?.hwnd === undefined && nativeUia?.uiaSetValue) {
     try {

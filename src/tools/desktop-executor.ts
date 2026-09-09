@@ -28,10 +28,17 @@ import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 // ── Injectable backend interface ──────────────────────────────────────────────
 
 export interface ExecutorDeps {
-  /** UIA Invoke: click/invoke by label (name) or automationId. */
-  uiaClick(windowTitle: string, name?: string, automationId?: string): Promise<void>;
-  /** UIA ValuePattern: type text into a textbox. */
-  uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string): Promise<void>;
+  /**
+   * UIA Invoke: click/invoke by label (name) or automationId.
+   *
+   * ADR-036 — `hwnd` names the window the caller actually resolved. When it is present the
+   * backend addresses that handle and does not look a window up by title, so a second window
+   * answering to the same title cannot take the action. Trailing and optional so a backend
+   * (or a test double) that ignores it still satisfies the interface.
+   */
+  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint): Promise<void>;
+  /** UIA ValuePattern: type text into a textbox. `hwnd` as in {@link ExecutorDeps.uiaClick}. */
+  uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string, hwnd?: bigint): Promise<void>;
   /** CDP: click a DOM element by CSS selector. */
   cdpClick(selector: string, tabId?: string): Promise<void>;
   /** CDP: fill a text input by CSS selector.
@@ -42,7 +49,7 @@ export interface ExecutorDeps {
    * Does not steal focus. Throws explicitly for unsupported windows (Chromium, UWP).
    * On failure, caller sees ok:false reason:"executor_failed" and can fall back to V1 terminal({action:'send'}).
    */
-  terminalSend(windowTitle: string, text: string): Promise<void>;
+  terminalSend(windowTitle: string, text: string, hwnd?: bigint): Promise<void>;
   /**
    * Issue #327 item E: UIA `setValue` fallback. Posts WM_CHAR to the focused child
    * of the target window via `bg-input.ts::postCharsToHwnd`. Used when the primary
@@ -59,7 +66,7 @@ export interface ExecutorDeps {
    * 4-executor union). See `types.ts::ExecutorKind` JSDoc for the
    * advertised-surface rationale.
    */
-  keyboardTypeBg(windowTitle: string, text: string): Promise<void>;
+  keyboardTypeBg(windowTitle: string, text: string, hwnd?: bigint): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
 }
@@ -117,7 +124,33 @@ export function terminalBgExecute(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function resolveWindowTitle(target?: TargetSpec): string {
-  return target?.windowTitle ?? target?.hwnd ?? "@active";
+  // When only a handle is known there is no title to look up, and the handle's digits are not
+  // one: `resolveAimHwnd` carries it instead, and the backends that take it skip the title
+  // search entirely. `"@active"` remains what the title-only backends get told.
+  return target?.windowTitle ?? (target?.hwnd !== undefined ? "@active" : undefined) ?? "@active";
+}
+
+/**
+ * ADR-036 — the handle the session was keyed by, for the backends that can aim with it.
+ *
+ * `session-registry.ts` keys a session `hwnd > tabId > windowTitle`, and until this existed the
+ * executor read the same `TargetSpec` the other way round: `windowTitle ?? hwnd`. The session
+ * therefore knew which window it belonged to while every action it dispatched was aimed by
+ * title — measured on Windows 2026-09-09, where `desktop_act` landed on whichever window the
+ * enumeration returned first, not the one `desktop_discover` had been pointed at.
+ *
+ * Returns `undefined` for a spec with no handle, and for a handle that is not a number — the
+ * field is a string on the wire, and a malformed one must not become `0n`.
+ */
+function resolveAimHwnd(target?: TargetSpec): bigint | undefined {
+  const raw = target?.hwnd;
+  if (raw === undefined) return undefined;
+  try {
+    const h = BigInt(raw);
+    return h === 0n ? undefined : h;
+  } catch {
+    return undefined;
+  }
 }
 
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
@@ -148,6 +181,9 @@ export function createDesktopExecutor(
 
   return async (entity, action, text) => {
     const winTitle = resolveWindowTitle(target);
+    // ADR-036 — resolved once per touch, next to the title it replaces, so a route added later
+    // has to walk past it rather than reach for `winTitle` alone.
+    const aimHwnd = resolveAimHwnd(target);
 
     // Issue #296 Phase 2 — `desktop_discover` derives `unsupportedExecutors`
     // from UIA `controlType` + `patterns` (e.g. `ListItem`/`TabItem` without
@@ -200,11 +236,11 @@ export function createDesktopExecutor(
       // error message so the LLM sees both rungs' diagnostics in one envelope.
       if ((action === "type" || action === "setValue") && text !== undefined) {
         try {
-          await d.uiaSetValue(winTitle, text, name, automationId);
+          await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
           return "uia";
         } catch (uiaErr) {
           try {
-            await d.keyboardTypeBg(winTitle, text);
+            await d.keyboardTypeBg(winTitle, text, aimHwnd);
             return "keyboard";
           } catch (kbErr) {
             throw new Error(
@@ -217,7 +253,7 @@ export function createDesktopExecutor(
         }
       }
       try {
-        await d.uiaClick(winTitle, name, automationId);
+        await d.uiaClick(winTitle, name, automationId, aimHwnd);
         return "uia";
       } catch (uiaErr) {
         // UIA click failed (element not found, stale tree, etc.).
@@ -266,7 +302,10 @@ export function createDesktopExecutor(
     // doesn't silently send an empty string.
     if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined && preferredAllows("terminal")) {
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
-      await d.terminalSend(termWin, text);
+      // The handle names the session's window. When the entity names a terminal window of its
+      // own, that title is describing a different window and the handle would aim somewhere the
+      // caller did not ask for — so it is passed only when this fell back to the session target.
+      await d.terminalSend(termWin, text, termWin === winTitle ? aimHwnd : undefined);
       return "terminal";
     }
 
@@ -300,7 +339,7 @@ export function createDesktopExecutor(
       text !== undefined &&
       (action === "type" || action === "setValue")
     ) {
-      await d.keyboardTypeBg(winTitle, text);
+      await d.keyboardTypeBg(winTitle, text, aimHwnd);
       return "keyboard";
     }
 
@@ -363,15 +402,18 @@ let _realDepsCache: ExecutorDeps | undefined;
 function getSharedRealDeps(): ExecutorDeps {
   if (_realDepsCache) return _realDepsCache;
   _realDepsCache = {
-    async uiaClick(windowTitle, name, automationId) {
+    async uiaClick(windowTitle, name, automationId, hwnd) {
       const { clickElement } = await import("../engine/uia-bridge.js");
-      const r = await clickElement(windowTitle, name, automationId);
+      // ADR-036 — the bridge has taken a handle since H3 ("bypass title-based root search",
+      // added for Save As and the other common dialogs). Nothing on this path could reach it
+      // until the interface above had somewhere to put one.
+      const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
       if (!r.ok) throw new Error(r.error ?? "UIA click failed");
     },
 
-    async uiaSetValue(windowTitle, value, name, automationId) {
+    async uiaSetValue(windowTitle, value, name, automationId, hwnd) {
       const { setElementValue } = await import("../engine/uia-bridge.js");
-      const r = await setElementValue(windowTitle, value, name, automationId);
+      const r = await setElementValue(windowTitle, value, name, automationId, hwnd !== undefined ? { hwnd } : undefined);
       if (!r.ok) throw new Error(r.error ?? "UIA setElementValue failed");
     },
 
@@ -409,7 +451,7 @@ function getSharedRealDeps(): ExecutorDeps {
       if (!r.ok) throw new Error(r.error ?? "CDP fill failed");
     },
 
-    async terminalSend(windowTitle, text) {
+    async terminalSend(windowTitle, text, hwnd) {
       // G2: Background WM_CHAR path — no focus steal.
       // canInjectViaPostMessage() gates supported terminals (Windows Terminal, conhost).
       // Unsupported windows (Chromium, UWP) throw explicitly — caller gets executor_failed
@@ -424,6 +466,22 @@ function getSharedRealDeps(): ExecutorDeps {
         // out would put a hole in the H2 evidence exactly where a v2 caller
         // writes (Opus Round 2 P2).
         findWindow: (title) => {
+          // ADR-036 — when the caller resolved a handle, this is no longer a lookup: the
+          // enumeration is consulted only to fetch that window's record, and a same-titled
+          // sibling cannot be returned instead. `pinnedByHwnd` keeps the ADR-035 evidence
+          // able to count the two shapes apart.
+          if (hwnd !== undefined) {
+            const named = wins.filter((w) => w.hwnd === hwnd);
+            logResolve({
+              resolver: "desktopActTerminalSend",
+              query: title,
+              matches: named,
+              pinnedByHwnd: true,
+              identity: "lookup",
+              intent: "write",
+            });
+            return named[0];
+          }
           const matches = wins.filter((w) => w.title.toLowerCase().includes(title.toLowerCase()));
           logResolve({
             resolver: "desktopActTerminalSend",
@@ -449,7 +507,7 @@ function getSharedRealDeps(): ExecutorDeps {
       });
     },
 
-    async keyboardTypeBg(windowTitle, text) {
+    async keyboardTypeBg(windowTitle, text, hwnd) {
       // Issue #327 item E: UIA setValue fallback. Uses the same WM_CHAR primitive
       // as terminalSend but resolves to the focused child via `canInjectAtTarget`
       // so the BG class check classifies the actual key-receiving HWND (Notepad's
@@ -469,12 +527,18 @@ function getSharedRealDeps(): ExecutorDeps {
       const { canInjectAtTarget, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       // ADR-035 Phase 1 — the `terminalSend` twin above; see its comment.
-      const matches = wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      // ADR-036 — and its handle branch: a resolved handle names the window outright, so the
+      // enumeration is only asked for that window's record.
+      const byHandle = hwnd !== undefined;
+      const matches = byHandle
+        ? wins.filter((w) => w.hwnd === hwnd)
+        : wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
       const win = matches[0];
       logResolve({
         resolver: "desktopActKeyboardType",
         query: windowTitle,
         matches,
+        ...(byHandle && { pinnedByHwnd: true }),
         identity: "lookup",
         intent: "write",
       });
