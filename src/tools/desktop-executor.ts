@@ -265,6 +265,8 @@ export function terminalBgExecute(
 async function resolvePressPoint(
   deps: ExecutorDeps,
   aim: Aim,
+  /** ADR-036 item 5 — its sources say whether the bracketed origin can describe its coordinates. */
+  entity: UiEntity,
   x: number,
   y: number,
   label: string,
@@ -318,6 +320,12 @@ async function resolvePressPoint(
   // leave the point alone: the entity plausibly belongs to it, that window has not moved, and the
   // press then goes out exactly as it did before this rung, where the `owned` allowance below lets
   // it through. The mistake it risks is a declined correction, which costs the press nothing.
+  if (homing.applied && !measuredInsideTheBracket(entity)) {
+    // The origin describes the moment the lanes ran; these coordinates do not. See
+    // `BRACKETED_SOURCES` for why applying the delta anyway is a regression rather than a rounding
+    // error.
+    homing = { applied: false, x, y, why: "measurement_moment_unknown" };
+  }
   if (homing.applied && deps.pointOwner?.(aimHwnd, x, y)?.kind === "owned") {
     homing = { applied: false, x, y, why: "owned_popup_at_remembered_point" };
   }
@@ -472,6 +480,35 @@ function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity
     entityLabel: entity.label ?? null,
     ...extra,
   });
+}
+
+/**
+ * ADR-036 item 5 — lanes whose coordinates were measured DURING this observation.
+ *
+ * The correction is only valid when the coordinates and the origin describe the same moment. The
+ * origin is bracketed around the provider fan-out, so it describes that moment — and every lane
+ * that reads inside the fan-out is covered by it. `visual_gpu` is not: `getStableCandidates()`
+ * hands back the backend's stored snapshot, whose rectangles may have been captured at a position
+ * neither bracket read saw (PR 側 codex on the item-5 PR).
+ *
+ * Correcting those is not merely imprecise, it is a REGRESSION, by the same test the rest of this
+ * rung is held to. Write `P_cap` for the window position when the candidate was captured, `P_brk`
+ * for what the bracket saw, `P_act` for the position at act time. Without the rung the press is
+ * right when `P_act == P_cap`; with it, it is right when `P_cap == P_brk`. So a window that moved
+ * after the capture, sat elsewhere while the lanes ran, and came BACK by act time was pressed
+ * correctly before this rung and incorrectly after it.
+ *
+ * `inferred` is excluded for the same reason with less evidence: nothing says when it was measured.
+ *
+ * The real close is each observation carrying the origin it was measured against — `runSomPipeline`
+ * already computes exactly that and drops it, and the GPU snapshot would have to keep one. That is
+ * lane work, and until it exists this list is the honest approximation: correct where the bracket
+ * demonstrably covers the measurement, decline where it does not.
+ */
+const BRACKETED_SOURCES: ReadonlySet<string> = new Set(["uia", "cdp", "win32", "ocr", "som", "terminal"]);
+
+function measuredInsideTheBracket(entity: UiEntity): boolean {
+  return entity.sources.length > 0 && entity.sources.every((src) => BRACKETED_SOURCES.has(src));
 }
 
 /**
@@ -897,7 +934,7 @@ export function createDesktopExecutor(
     // the point is in the window at all. Identity invalidation ran at the top of this closure,
     // before any route was chosen, because a changed identity makes every rectangle meaningless.
     const { x, y } = aimHwnd !== undefined
-      ? await resolvePressPoint(d, aim, remembered.x, remembered.y, entity.label ?? entity.entityId)
+      ? await resolvePressPoint(d, aim, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
       : remembered;
     // ADR-029 Phase 1 — and the point that gets PRESSED is the one that has to be on a monitor.
     // Checked here rather than on the remembered point, because those stopped being the same

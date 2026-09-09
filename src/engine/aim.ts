@@ -404,6 +404,7 @@ export type Homing =
         | "window_resized"
         | "point_was_outside_origin"
         | "owned_popup_at_remembered_point"
+        | "measurement_moment_unknown"
         | "window_off_desktop";
     };
 

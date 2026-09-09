@@ -100,7 +100,10 @@ describe("the correction moves the point with the window, and only then", () => 
 function entity(rect = { x: 328, y: 205, width: 260, height: 20 }): UiEntity {
   return {
     entityId: "e1", role: "text", label: "CELL BUTTONS", confidence: 0.9,
-    sources: ["visual_gpu"],
+    // `ocr`, not `visual_gpu`: the OCR capture runs INSIDE the bracketed fan-out, so the origin
+    // taken around it describes the same moment as these coordinates. A `visual_gpu` entity comes
+    // from a stored snapshot and is declined — see the cell for it below.
+    sources: ["ocr"],
     affordances: [{ verb: "click", executors: ["mouse"], confidence: 0.9, preconditions: [], postconditions: [] }],
     generation: "gen-1", evidenceDigest: "d", rect,
   };
@@ -126,6 +129,29 @@ describe("the press lands where the control went", () => {
     const d = deps();
     await createDesktopExecutor(aimed, d)(entity(), "click");
     expect(d.mouseClick).toHaveBeenCalledWith(458, 144);
+  });
+
+  it("declines to correct coordinates the bracketed origin cannot describe", async () => {
+    // PR 側 codex on the item-5 PR, and it is a REGRESSION rather than a residual — which is the
+    // third time today that distinction has been got wrong here. `visual_gpu` candidates come from
+    // `getStableCandidates()`, the backend's STORED snapshot, so their rectangles may have been
+    // captured at a window position neither bracket read saw.
+    //
+    // Write `P_cap` for the position at capture, `P_brk` for what the bracket saw, `P_act` for the
+    // position at act time. Without this rung the press is right when `P_act == P_cap`; with it,
+    // right when `P_cap == P_brk`. A window that moved after the capture, sat elsewhere while the
+    // lanes ran and came BACK by act time was therefore pressed correctly before the rung and
+    // incorrectly after it. So the correction declines where the bracket cannot vouch.
+    const stored: UiEntity = { ...entity(), sources: ["visual_gpu"] };
+    const d = deps();
+    await createDesktopExecutor(aimed, d)(stored, "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(458, 215);   // the remembered point, uncorrected
+
+    // A merged entity is only corrected when EVERY source was measured inside the bracket.
+    const mixed: UiEntity = { ...entity(), sources: ["ocr", "visual_gpu"] };
+    const d2 = deps();
+    await createDesktopExecutor(aimed, d2)(mixed, "click");
+    expect(d2.mouseClick).toHaveBeenCalledWith(458, 215);
   });
 
   it("presses the remembered point exactly when there is no origin to compare against", async () => {
