@@ -78,7 +78,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     const overlay = win({ hwnd: OTHER, zOrder: 0, exStyle: 0x00080088 });   // LAYERED|TOOLWINDOW|TOPMOST
     const aimed = win({ hwnd: AIM, zOrder: 1 });
     expect(whoIsUnderPoint(AIM, 500, 500, enumerating(overlay, aimed)))
-      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "enumeration" });
     expect(whoIsUnderPoint(AIM, 500, 500, hitting(at({ root: AIM }), overlay, aimed)))
       .toEqual({ kind: "aim" });
   });
@@ -96,11 +96,11 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // worse: for a WinForms owned dialog (overlapped rather than WS_POPUP) it answers *itself*,
     // losing the ownership, and for a dropdown it answers the desktop window (win2, 2026-09-10).
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, ownerChain: [AIM] }))))
-      .toEqual({ kind: "owned", hwnd: POPUP, title: `w${POPUP}` });
+      .toEqual({ kind: "owned", hwnd: POPUP, title: `w${POPUP}`, via: "os_hit_test" });
     // Through a chain, because the aim can itself be an owned window: a walk that passes THROUGH
     // it and continues would read as unrelated if only the last hop were compared.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, ownerChain: [1n, AIM, 2n] }))))
-      .toEqual({ kind: "owned", hwnd: POPUP, title: `w${POPUP}` });
+      .toEqual({ kind: "owned", hwnd: POPUP, title: `w${POPUP}`, via: "os_hit_test" });
   });
 
   it("cannot attribute a captionless window on the aim's own thread, and says so", () => {
@@ -120,7 +120,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // every other window the app has open, and a press landing there would be reported as landing
     // on the aim. The caption is what excludes it, on this evidence.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: OTHER, rootHasCaption: true, rootThreadId: AIM_THREAD }))))
-      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "os_hit_test" });
   });
 
   it("lets the app's own context menu through and keeps a shell menu out", () => {
@@ -135,7 +135,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // A shell menu — the desktop's, Explorer's — is another thread and another process, owned by
     // the shell's XAML island. Refusing there is correct: it is not the application's window.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: true, rootThreadId: 4242, rootProcessId: 4242 }))))
-      .toEqual({ kind: "other", hwnd: POPUP, title: `w${POPUP}` });
+      .toEqual({ kind: "other", hwnd: POPUP, title: `w${POPUP}`, via: "os_hit_test" });
   });
 
   it("reads the caption, not popup-ness — which is this rung's whole cost", () => {
@@ -146,7 +146,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // surprise: the alternative is `other`, which refuses every combo-box press on every desktop.
     const sibling = { root: OTHER, rootThreadId: AIM_THREAD };
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ ...sibling, rootHasCaption: true }))))
-      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "os_hit_test" });
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ ...sibling, rootHasCaption: false }))))
       .toEqual({ kind: "unknown", why: "unattributable_window" });
   });
@@ -175,7 +175,7 @@ describe("who would take the press", () => {
       win({ hwnd: OTHER, zOrder: 0, title: "設定" }),
       win({ hwnd: AIM, zOrder: 1 }),
     );
-    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "other", hwnd: OTHER, title: "設定" });
+    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "other", hwnd: OTHER, title: "設定", via: "enumeration" });
   });
 
   it("recognises a popup the aim owns, which is where dropdowns live", () => {
@@ -184,7 +184,7 @@ describe("who would take the press", () => {
       win({ hwnd: AIM, zOrder: 1, region: { x: 0, y: 0, width: 1000, height: 800 } }),
     );
     // The point is BELOW the aim's rectangle — a dropdown hanging off the bottom of its owner.
-    expect(whoIsUnderPoint(AIM, 500, 1000, deps)).toEqual({ kind: "owned", hwnd: POPUP, title: "" });
+    expect(whoIsUnderPoint(AIM, 500, 1000, deps)).toEqual({ kind: "owned", hwnd: POPUP, title: "", via: "enumeration" });
   });
 
   it("follows the owner chain more than one hop, and does not spin on a loop", () => {
@@ -227,7 +227,7 @@ describe("who would take the press", () => {
       win({ hwnd: OTHER, zOrder: 0, exStyle: 0x00000020, title: "overlay" }),
       win({ hwnd: AIM, zOrder: 1 }),
     );
-    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "other", hwnd: OTHER, title: "overlay" });
+    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "other", hwnd: OTHER, title: "overlay", via: "enumeration" });
   });
 
   it("answers unknown rather than clear when it cannot ask", () => {

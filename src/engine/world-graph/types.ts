@@ -180,6 +180,22 @@ export interface UiEntity {
    * query rather than an identity: re-resolving a title at act time can select a
    * different window if the Z-order changed since discovery, and the click would
    * then be judged against — and land in — the wrong one.
+   *
+   * Absent `hwnd` means no lane that records one looked — **with one state left in the code that
+   * would also produce it, deliberately.** If a group's handles ever DID disagree, `resolver.ts`
+   * takes none of them rather than an arbitrary one, and that arrives here as the same absence.
+   * The derivation there says the state cannot occur; the test is kept because it costs one
+   * comparison and the failure it prevents is a press into another window. That is not the trade
+   * the `hwndConflict` machinery offered: a refusal path with published advice, reachable only from
+   * a fixture, which every reader had to model as a case that happens (Opus sandbox review,
+   * 2026-09-10, for catching that this sentence and that line were arguing with each other). A round of
+   * ADR-036 item 12 also carried `hwndConflict` here, for a merged group whose lanes named
+   * different windows — deleted, because the two lanes that record a handle (`ocr` and
+   * `visual_gpu`) cannot share a group: the producer's digest keys one of them and the
+   * source-omitting fallback keys the other, so every handle in a group comes from a single OCR
+   * read (the derivation is in `resolver.ts`, corrected once by a gate). The shape it was defending
+   * against is real and worth remembering — a silence and an answer must not share a representation
+   * — but this was not an instance of it.
    */
   origin?: { kind: "window" | "browserTab"; id: string; hwnd?: string };
 }

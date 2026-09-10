@@ -4,6 +4,9 @@ import type {
   UiEntity, UiEntityRole, UiAffordance, AffordanceVerb,
   ExecutorKind, EntitySourceKind, EntityLocator,
 } from "./types.js";
+// ADR-036 item 12 — the same rule for "does this string name a window" the coordinate ladder uses.
+// `aim.ts` imports nothing, so reading it from the world-graph adds no cycle.
+import { parseWindowHandle } from "../aim.js";
 
 const ROLE_ALLOW: ReadonlySet<string> = new Set([
   "button", "textbox", "link", "menuitem", "label",
@@ -141,6 +144,67 @@ export function resolveCandidates(
       patterns = [...set];
     }
 
+    // Whose handle this is, in the order the evidence supports.
+    //
+    // 1. The PRIMARY's own, when it has one. The entity's rect and locator come from that
+    //    candidate, so its handle is the one that certainly describes them — a handle borrowed
+    //    from another lane is an assumption that both lanes resolved the same window, and a
+    //    title-only query against two overlapping same-titled windows is exactly where that fails
+    //    (PR 側 codex, 2026-09-10).
+    // 2. Otherwise the group's, when every lane that recorded one agrees. This is the case the
+    //    previous commit was for: the UIA lane records no handle at all, so a merged uia+ocr entity
+    //    lost the handle the OCR capture had resolved whenever the UIA candidate arrived last.
+    // 3. Otherwise nothing.
+    //
+    // A ROUND OF THIS CARRIED A FOURTH CASE, and it is deleted rather than kept as insurance. It
+    // marked "the lanes named two different windows" as a conflict so the executor could refuse
+    // instead of pressing blind.
+    //
+    // **THE WRITER COUNT IN THIS PARAGRAPH HAS BEEN WRONG TWICE**, and each time a different gate
+    // caught it (2026-09-10). It first said ONE writer; corrected to TWO; the answer is THREE, and
+    // the third is the one that matters most because it is designed to share the second's key:
+    //
+    //   1. `ocr-provider.ts` — stamps the handle `runSomPipeline` resolved in THIS discovery pass.
+    //   2. `ocr-adapter.ts` — stamps the one ITS own `runSomPipeline` resolved, a separate call
+    //      that `desktop-register.ts` makes with no pre-fetched handle.
+    //   3. `_roi-preview.ts` `somElementsToCandidates` — stamps `String(hwnd)` for the ROI
+    //      carry-forward, and is written to mirror the discover OCR lane FIELD FOR FIELD so that an
+    //      unchanged element yields the same `entityId`. It therefore produces the SAME fallback
+    //      key as (1) on purpose.
+    //
+    // Three independent title resolutions, any two of which can name different windows. The state
+    // is still unreachable, and the reason is different for each pair:
+    //
+    // (1) vs (2): they cannot land in the same group. `candidateKey` returns the producer's
+    // `digest` when there is one, and `CandidateProducer` — the adapter's road — always sets it,
+    // over a string that starts with the literal source `visual_gpu`. Every other lane has no
+    // digest and falls to the source-OMITTING fallback key, so those two key differently by
+    // construction.
+    //
+    // (1) vs (3): they never meet in one call. The ROI candidates reach `resolveCandidates` only as
+    // a standalone list (`buildFoldPostSnapshot` → `guarded-touch.ts`), every member stamped with
+    // the same `String(hwnd)`, and the ingress cache REPLACES per pass rather than accumulating.
+    //
+    // So within one group every handle comes from a single stamping call, which writes one resolved
+    // handle onto all of its candidates. **What has to answer for this again** is any change that
+    // gives a fourth lane a handle, that makes two of these share a key, or that lets the ingress
+    // cache accumulate across passes.
+    //
+    // Dead code that only a hand-built fixture could reach is worse than absent: it reads as a case
+    // that happens, and the refusal it threw was flattened to `aim_point_outside_window` by
+    // `guarded-touch` anyway, so its recovery advice never reached a caller (PR 側 codex,
+    // 2026-09-10). **What has to answer for this again** is any change that gives a second lane a
+    // handle, or that makes two lanes share a key — the digest is the load-bearing half.
+    //
+    // WHAT NAMES A WINDOW is the ADR's rule, not `!== undefined` (gate 2, 2026-09-10). `"0"` counted
+    // as a handle here and stopped counting as one in `observedHwndOfOrigin` two files away: a `"0"`
+    // from the primary lane won this choice and then resolved to nothing, skipping the ladder, and a
+    // `"0"` beside a real handle made an agreeing group look like a disagreeing one.
+    const namesAWindow = (h: string | undefined) => parseWindowHandle(h) !== undefined;
+    const groupHwnds = [...new Set(group.map((c) => c.originHwnd).filter(namesAWindow))];
+    const primaryHwnd = namesAWindow(primary.originHwnd) ? primary.originHwnd : undefined;
+    const groupHwnd = primaryHwnd ?? (groupHwnds.length === 1 ? groupHwnds[0] : undefined);
+
     const entity: UiEntity = {
       entityId: stableEntityId(key),
       role: normalizeRole(primary.role),
@@ -157,8 +221,15 @@ export function resolveCandidates(
       // through to the entity so the viewport gate can compare against the
       // origin window's current rect. `target` is required on
       // UiEntityCandidate, so `primary.target` is always present.
-      origin: primary.originHwnd !== undefined
-        ? { ...primary.target, hwnd: primary.originHwnd }
+      //
+      // ADR-036 item 12 — the HANDLE, though, is a fact about the group rather than about whichever
+      // lane happened to observe last. `primary` is the most recent candidate and the UIA lane
+      // records no handle at all, so a merged uia+ocr entity dropped the handle the OCR capture had
+      // resolved whenever the UIA candidate arrived later — a race deciding whether the coordinate
+      // ladder runs at all (PR 側 codex, 2026-09-10). Every candidate in a group describes the same
+      // element, so any one that resolved a handle answers for all of them.
+      origin: groupHwnd !== undefined
+        ? { ...primary.target, hwnd: groupHwnd }
         : primary.target,
     };
     if (controlType !== undefined) entity.controlType = controlType;
