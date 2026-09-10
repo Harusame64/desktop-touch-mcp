@@ -643,6 +643,16 @@ export function createDesktopExecutor(
     // Kept SEPARATE from `aimHwnd`: this one only decides where a coordinate press may land and is
     // never handed to a backend, so the read path's addressing is untouched and a wrong value costs
     // a refusal rather than a press into another window.
+    //
+    // **Which entities this actually reaches, stated narrowly.** Only lanes that RECORD a handle
+    // put one here: `runSomPipeline` resolves one and the visual and OCR lanes carry it through as
+    // `originHwnd`. The UIA lane records none — `getUiElements` resolves a window by title and
+    // reports its title, class and rect, but not the handle it resolved, on either the Rust path or
+    // the PowerShell one — so a UIA-ONLY entity from a title-only discover still has no handle and
+    // still gets no ladder (PR 側 codex, 2026-09-10). A merged group is covered, since the handle is
+    // read from the group rather than from whichever lane observed last. Closing the UIA-only case
+    // means returning the resolved root handle from the bridge, which is read-path work and is
+    // filed as its own item rather than inferred here from a title.
     const coordHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
 
     // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
