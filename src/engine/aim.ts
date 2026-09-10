@@ -307,6 +307,30 @@ export class AimOccludedError extends Error implements CallerFacingRefusal {
   }
 }
 
+/**
+ * ADR-036 item 6 — the point is covered by a window this server may not act through.
+ *
+ * Its own class, not a reuse of `WindowExcludedError`, because the two say opposite things about
+ * the window the CALLER named. That one means "the window you addressed is out of bounds"; this one
+ * means "yours is fine, and something else is over the point". They were briefly the same refusal,
+ * and the advice published with it told the caller their own window was excluded and to go act on a
+ * different one — false, and the only actionable line pointed away from a window that was perfectly
+ * touchable (gate 2, Opus sandbox review, 2026-09-10).
+ *
+ * **The covering window is never described.** No handle, no title, no process — that is what the
+ * exclusion registry exists to withhold, and naming it would confirm which window it is to a caller
+ * who never asked about it. The sentence is supplied by the thrower, and carries only the caller's
+ * own coordinates and label.
+ */
+export class AimBlockedByExcludedWindowError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  constructor(callerDetail: string, options?: ErrorOptions) {
+    super(callerDetail, options);
+    this.name = "AimBlockedByExcludedWindowError";
+    this.callerDetail = callerDetail;
+  }
+}
+
 // ── The aim as a value ────────────────────────────────────────────────────────
 
 /**

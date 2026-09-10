@@ -199,6 +199,25 @@ export class AimRouteFailedError extends HandlerError {
 }
 
 /**
+ * ADR-036 item 6 — the point a coordinate press would land on is covered by a window this server
+ * may not act through (R3 tool exclusion, met at a coordinate rather than at a target).
+ *
+ * Separate from {@link WindowExcludedRefusalError} because the two say opposite things about the
+ * window the caller named: that one means "the window you addressed is out of bounds", this one
+ * means "yours is fine, something else is over the point". Sharing a code shared the advice, and
+ * two of its four lines were then false — the caller was told their own window was excluded, and
+ * the only actionable line sent them to act on a different window (gate 2, 2026-09-10).
+ *
+ * `name` is `"AimBlockedByExcluded"`, matching the SUGGESTS key.
+ */
+export class AimBlockedByExcludedRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimBlockedByExcluded";
+  }
+}
+
+/**
  * R3 tool exclusion — the window may not be touched by this server at all.
  *
  * The engine-side throw is `WindowExcludedError` (`engine/tool-exclusion.ts`), whose module header

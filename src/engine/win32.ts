@@ -450,6 +450,44 @@ export function isWindowGone(hwnd: bigint): boolean {
 }
 
 /**
+ * (R3 tool-exclusion) True when a tool-excluded window's rectangle contains `(x, y)`.
+ *
+ * The by-POINT counterpart of {@link isExcludedTitle}, and it exists for the same reason stated
+ * there: the filtered `enumWindowsInZOrder` HIDES the locker, so a check made against that list
+ * never sees the one window it must refuse. For a title that meant the refusal never fired; for a
+ * POINT it is worse — the reconstruction in `point-owner.ts` answers about whatever is BEHIND the
+ * hidden window, which on an ordinary desktop is the caller's own, and the press then goes out into
+ * the secure dialog. Same defect as the one found on the OS hit-test road, through the other door
+ * (gate 2, Opus sandbox review, 2026-09-10; that road is `isExcludedWindowHandle` on the hit test).
+ *
+ * **Deliberately coarser than a hit test.** ANY visible, non-minimised excluded window whose
+ * RECTANGLE contains the point blocks, whether or not it is on top and whether or not it would take
+ * the press. This road has no hit test — that is why it is the fallback — so the choice is between
+ * over-refusing inside the locker's rectangle and pressing into it. The over-refusal is bounded by
+ * that rectangle and only while a locker is armed, which is the same trade `isExcludedTitle` makes.
+ *
+ * Zero-overhead when idle (empty registry short-circuits); fail-closed on an enumeration failure
+ * while armed.
+ */
+export function isExcludedWindowAtPoint(x: number, y: number): boolean {
+  if (!hasExcludedPids()) return false;
+  try {
+    const w32 = requireNativeWin32();
+    for (const hwnd of w32.win32EnumTopLevelWindows!()) {
+      if (!w32.win32IsWindowVisible!(hwnd)) continue;
+      if (!isExcludedWindowHandle(hwnd)) continue;
+      if (w32.win32IsIconic!(hwnd)) continue;
+      const rect = w32.win32GetWindowRect!(hwnd);
+      if (!rect) continue;
+      if (x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom) return true;
+    }
+  } catch {
+    return true; // enumeration failed while armed → fail closed
+  }
+  return false;
+}
+
+/**
  * (R3 tool-exclusion) True when `windowTitle` names (substring, case-insensitive) a top-level
  * window owned by an excluded PID. This is the by-TITLE counterpart of `isExcludedWindowHandle`
  * for the non-win32 readers that resolve a window from a title STRING through their own subsystem

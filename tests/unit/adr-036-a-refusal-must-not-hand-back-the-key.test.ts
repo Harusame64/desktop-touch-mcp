@@ -19,12 +19,14 @@ import { describe, it, expect } from "vitest";
 import {
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
+  AimBlockedByExcludedWindowError,
 } from "../../src/engine/aim.js";
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
 import {
   AimPointOutsideWindowError,
   AimRouteFailedError,
   WindowExcludedRefusalError,
+  AimBlockedByExcludedRefusalError,
 } from "../../src/errors/typed-errors.js";
 import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
@@ -94,6 +96,25 @@ describe("the loop keeps each refusal's own name", () => {
     if (!result.ok) expect(result.reason).toBe("window_excluded");
   });
 
+  it("keeps the coordinate case apart from the target case, because the advice differs", async () => {
+    // Same registry, opposite statements about the window the CALLER named: `window_excluded` means
+    // "the one you addressed is out of bounds", this means "yours is fine, something else is over
+    // the point". They shared a reason for one commit, and the caller was then told their own
+    // window was excluded and to go act on a different one (gate 2, Opus sandbox review).
+    const { loop, lease } = loopThatThrows(
+      new AimBlockedByExcludedWindowError("Refusing to click (140, 215) for \"Save\": a window this server may not act through is over that point."),
+    );
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("aim_blocked_by_excluded_window");
+      // The sentence travels — that is item 13 — and it is the one the thrower chose to publish.
+      expect(result.detail).toMatch(/may not act through/);
+      // …and it is not the other refusal's sentence.
+      expect(result.detail).not.toMatch(/key locker/i);
+    }
+  });
+
   it("matches names the classes actually carry", () => {
     // Same seam as the existing arm in `guarded-touch.test.ts`: the catch arms hold a string, the
     // classes hold a string, and nothing but this joins them. Rename one side and every refusal
@@ -101,6 +122,7 @@ describe("the loop keeps each refusal's own name", () => {
     expect(new AimedPointOutsideWindowError("x").name).toBe("AimedPointOutsideWindowError");
     expect(new AimedRouteFailedError("x").name).toBe("AimedRouteFailedError");
     expect(new WindowExcludedError("x").name).toBe("WindowExcludedError");
+    expect(new AimBlockedByExcludedWindowError("x").name).toBe("AimBlockedByExcludedWindowError");
   });
 });
 
@@ -128,7 +150,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(generic.join(" ")).toMatch(/mouse_click/);
   });
 
-  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded"]) {
+  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcluded"]) {
     it(`${name} never tells the caller to press the coordinate it just refused`, async () => {
       const advice = await adviceFor(name);
       const joined = advice.join(" ");
@@ -151,6 +173,24 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(new AimPointOutsideWindowError("x").name).toBe("AimPointOutsideWindow");
     expect(new AimRouteFailedError("x").name).toBe("AimRouteFailed");
     expect(new WindowExcludedRefusalError("x").name).toBe("WindowExcluded");
+    expect(new AimBlockedByExcludedRefusalError("x").name).toBe("AimBlockedByExcluded");
+  });
+
+  it("does not tell a caller whose window is fine that their window is the excluded one", async () => {
+    // The half a shared code got wrong. `WindowExcluded`'s advice opens with "This window is
+    // excluded ... Nothing was done to it" and closes by naming the key locker's own dialog — true
+    // for a caller who addressed the locker, false for one whose own window is merely covered, and
+    // the identification is exactly what the refusal's detail is written to withhold.
+    const covered = await adviceFor("AimBlockedByExcluded");
+    const joined = covered.join(" ");
+    expect(joined).not.toMatch(/key locker/i);
+    expect(joined).toMatch(/NOT the excluded one/i);
+    // A recovery that works on a window that is fine, rather than "go act on a different window".
+    expect(joined).toMatch(/click_element/);
+    // The control: the target case still says both of the things this one must not.
+    const addressed = await adviceFor("WindowExcluded");
+    expect(addressed.join(" ")).toMatch(/key locker/i);
+    expect(addressed.join(" ")).toMatch(/Act on another window/i);
   });
 });
 

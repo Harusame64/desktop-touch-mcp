@@ -19,14 +19,17 @@
 import { describe, it, expect, vi } from "vitest";
 import { whoIsUnderPoint } from "../../src/engine/point-owner.js";
 import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
-import { AimOccludedError, type Aim } from "../../src/engine/aim.js";
+import { AimOccludedError, AimBlockedByExcludedWindowError, type Aim } from "../../src/engine/aim.js";
 import type { WindowZInfo } from "../../src/engine/win32.js";
 import type { NativeWindowAtPoint } from "../../src/engine/native-types.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
+import { registerExcludedPid, _resetExcludedPidsForTest } from "../../src/engine/tool-exclusion.js";
 
 const AIM = 4919n;
 const OTHER = 777n;
 const POPUP = 888n;
+/** A window owned by a tool-excluded process — the key locker's secure dialog. */
+const LOCKER = 4242n;
 
 function win(over: Partial<WindowZInfo> & { hwnd: bigint; zOrder: number }): WindowZInfo {
   return {
@@ -149,6 +152,74 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
       .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "os_hit_test" });
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ ...sibling, rootHasCaption: false }))))
       .toEqual({ kind: "unknown", why: "unattributable_window" });
+  });
+
+  it("stops the press at a tool-excluded window without describing it", () => {
+    // R3: the key locker's own windows are excluded from every tool surface, so a secret being
+    // typed cannot be read or driven by the same session. `enumWindowsInZOrder` filters them, so
+    // the road below never sees one — but `WindowFromPoint` asks the OS, and the OS does not know
+    // about this server's registry.
+    //
+    // Two properties, and the first version of this branch had only the second: the verdict must
+    // REFUSE, and it must name nothing. `unknown` gave up the first — it means "no evidence", the
+    // ladder falls through to containment, and a locker dialog drawn inside its owner's rectangle
+    // leaves the point inside, so the press went out into the secure dialog (PR 側 codex on #618,
+    // P1). Held here as the pair of assertions the branch actually has to satisfy.
+    //
+    // This cell is about the WIRING — that the default predicate really is
+    // `isExcludedWindowHandle`, so arming the registry reaches this branch. It is armed with a PID
+    // that matches nothing and leans on the fail-closed arm: `777n` names no window, so its PID
+    // reads as 0 whether or not an addon is loaded, and 0 is excluded while armed. Which window is
+    // excluded is pinned by the injected cell below, not here.
+    registerExcludedPid(999_999);
+    try {
+      const verdict = whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: OTHER })));
+      expect(verdict).toEqual({ kind: "blocked", why: "excluded_window" });
+      // Says nothing about the window it stopped the press at — not its handle, not its title.
+      expect(Object.keys(verdict)).toEqual(["kind", "why"]);
+    } finally {
+      _resetExcludedPidsForTest();
+    }
+  });
+
+  it("costs nothing, and blocks nothing, while no locker is armed", () => {
+    // An empty registry short-circuits before any syscall, so this rung does not exist on an
+    // ordinary desktop.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: OTHER }))))
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "os_hit_test" });
+  });
+
+  it("blocks the excluded window and not the desktop it is sitting on", () => {
+    // **The cell above does not pin this, and the pair of them did not either.** On a machine with
+    // no addon every handle's PID reads as 0, so while the registry is armed "excluded" and
+    // "unreadable" are the same answer — and a build that simply refused every press whenever a
+    // locker was open passed both (gate 2, Opus sandbox review, 2026-09-10). That build is the
+    // realistic wrong fix here, and it makes the whole desktop unclickable for as long as a secure
+    // dialog is open. So the predicate is injected, and this cell says WHICH window is excluded.
+    const only = (h: bigint) => h === LOCKER;
+    expect(whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: LOCKER })), isExcluded: only }))
+      .toEqual({ kind: "blocked", why: "excluded_window" });
+    expect(whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: OTHER })), isExcluded: only }))
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "os_hit_test" });
+    // And the aim itself still answers `aim` — the branch above it does not sweep in the window the
+    // caller is aiming at just because a locker is open somewhere.
+    expect(whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: AIM })), isExcluded: only }))
+      .toEqual({ kind: "aim" });
+  });
+
+  it("blocks on the enumeration road too, where the excluded window is not in the list", () => {
+    // The other door to the same press. `enumWindowsInZOrder` FILTERS excluded windows, so the
+    // reconstruction answers about whatever is behind one — here the aim — and `aim` allows the
+    // press, into the locker. Every build without `win32WindowFromPoint` uses this road.
+    const covered = enumerating(win({ hwnd: AIM, zOrder: 0 }));
+    expect(whoIsUnderPoint(AIM, 500, 500, { ...covered, excludedAtPoint: () => true }))
+      .toEqual({ kind: "blocked", why: "excluded_window" });
+    // Asked about the POINT, not about the windows the enumeration can see. A verdict that consulted
+    // the by-handle predicate here would be asking a filtered list to confirm what the filter
+    // removed, and would answer `blocked` for any excluded window ANYWHERE while allowing the press
+    // that matters.
+    expect(whoIsUnderPoint(AIM, 500, 500, { ...covered, excludedAtPoint: () => false, isExcluded: () => true }))
+      .toEqual({ kind: "aim" });
   });
 
   it("keeps `nothing is there` apart from `could not ask`", () => {
@@ -290,6 +361,33 @@ describe("the press is blocked, or allowed, by who is under it", () => {
     });
     const exec = createDesktopExecutor(aim, d);
     await expect(exec(entity(), "click")).rejects.toThrow(/Refusing to click/);
+  });
+
+  it("refuses a press an excluded window is sitting on, and names nothing", async () => {
+    // The point is INSIDE the aim's rectangle — the default 1000x1000 rect contains the entity's
+    // centre — which is the case the containment check waves through. A key locker's dialog drawn
+    // inside its owner is exactly that shape.
+    const d = deps({ pointOwner: () => ({ kind: "blocked", why: "excluded_window" }) });
+    const exec = createDesktopExecutor(aim, d);
+    const err = await exec(entity(), "click").then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(AimBlockedByExcludedWindowError);
+    expect(d.mouseClick).not.toHaveBeenCalled();
+    // Whatever it says, it does not describe the window it stopped at. The verdict carries no
+    // handle and no title, and the sentence may not reach for one of its own. Its own class, too:
+    // `WindowExcludedError` publishes advice saying the CALLER's window is the excluded one and to
+    // go act on a different window — false here, and the only actionable line points away from a
+    // window that is perfectly touchable.
+    expect((err as Error).message).toMatch(/not its title, not its handle/);
+    expect((err as Error).message).not.toContain(String(OTHER));
+  });
+
+  it("would have pressed, had that verdict been `unknown` — which is why it is not", async () => {
+    // The regression this pair exists to catch, at the SAME point as the cell above: `unknown`
+    // means no evidence, and no evidence lets the containment check decide. It says inside.
+    const d = deps({ pointOwner: () => ({ kind: "unknown", why: "unattributable_window" }) });
+    const exec = createDesktopExecutor(aim, d);
+    await exec(entity(), "click");
+    expect(d.mouseClick).toHaveBeenCalled();
   });
 
   it("does not ask at all for an unpinned press", async () => {

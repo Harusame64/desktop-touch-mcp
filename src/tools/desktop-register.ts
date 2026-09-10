@@ -49,6 +49,7 @@ import {
   AimIdentityChangedError,
   AimRouteFailedError,
   WindowExcludedRefusalError,
+  AimBlockedByExcludedRefusalError,
 } from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
@@ -1065,6 +1066,22 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // The same security boundary, met at a coordinate. Its own reason and its own advice: the lines
+  // below `window_excluded` would tell this caller their own window is excluded and to go act on a
+  // different one, and their window is fine.
+  if (!result.ok && result.reason === "aim_blocked_by_excluded_window") {
+    const failure = toFailureEnvelope(
+      Err(new AimBlockedByExcludedRefusalError(
+        "AimBlockedByExcluded: a window this server may not act through is over the point this act would have pressed — nothing was clicked. " +
+        "The window you named is not the excluded one. Act through click_element, or retry once the point is clear"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // A security refusal, not a failed route. `tool-exclusion.ts` has claimed since it was written
   // that this error is wired into `_errors.ts`; it was not, so the one refusal that must never
   // suggest a coordinate press was the loudest about it.
@@ -1559,6 +1576,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  aim_occluded → another window is drawn over the point, so nothing was done. Whether it would really have taken the press cannot be asked here (that needs the OS hit test), so anything on top counts as in the way — an overlay presses pass through is reported the same. Bring the intended window forward, or use V1 click_element, which is also the way past such an overlay — re-calling desktop_discover alone does not help, the coordinates are already right;",
       "  aim_point_outside_window → the window is still open but its coordinates can no longer be followed (among them: minimised; resized, so the contents may have reflowed — refused even where the point still falls inside; moved while it was being read, so that snapshot has no single origin; measured by a lane whose moment cannot be established, such as a stored visual snapshot; or captured in a window other than the one this act named — a menu or dropdown has an origin of its own and is followed only while it is still what sits under the point); nothing was clicked. A window that moved WITHOUT resizing is followed automatically when the coordinates were measured in the same read that measured the window; a move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport (that check does not look at uia / cdp / terminal entities). Re-call desktop_discover — do NOT retry by coordinate;",
       "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. Re-call desktop_discover, or try V1 click_element(name=…) on the same entity;",
+      "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",

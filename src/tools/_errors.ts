@@ -323,6 +323,23 @@ const SUGGESTS: Record<string, string[]> = {
   // envelope reaches it through `reason:"window_excluded"`, and the two producers that spell
   // `WindowExcluded: …` into the message (`_resolve-window.ts`) reach it through the declared-code
   // arm of `classify`, so it must not claim a click was attempted.
+  // ADR-036 item 6 — the same registry met at a COORDINATE. Its own key, because sharing
+  // `WindowExcluded`'s meant publishing two lines that are false here: that the caller's own window
+  // is excluded ("Nothing was done to it"), and that the recovery is to act on a different window —
+  // when their window is fine and perfectly touchable. A third named the key locker in prose, which
+  // handed back the identification the refusal's own detail was written to withhold (gate 2, Opus
+  // sandbox review, 2026-09-10).
+  //
+  // **Nothing here describes the covering window.** Not its title, not its handle, not what it
+  // belongs to. A caller told only "something is over the point" can still act; a caller told what
+  // it is has been given the thing the registry exists to keep.
+  AimBlockedByExcluded: [
+    "A window this server may not act through is over the point this act would have pressed, so nothing was done. Your window is NOT the excluded one — it is still there and still actionable; something else is drawn over that point right now.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the same point would reach that window through a route that does not check this, which is the press being refused here.",
+    "Act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which does not move the cursor and does not press whatever is on top.",
+    "Or wait for the point to clear and act again — a window that covers it now need not cover it in a moment. Re-running desktop_discover does not help by itself: the entity's coordinates are correct; what is wrong is what is drawn over them.",
+    "Nothing in this response describes the window in the way, by design.",
+  ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",

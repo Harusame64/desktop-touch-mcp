@@ -55,6 +55,7 @@ export type TouchFailReason =
   | "aim_identity_changed"
   | "aim_point_outside_window"
   | "aim_occluded"
+  | "aim_blocked_by_excluded_window"
   | "aim_route_failed"
   | "window_excluded"
   | "executor_failed";
@@ -619,6 +620,14 @@ export class GuardedTouchLoop {
       // press would still land in the window on top.
       if (err instanceof Error && err.name === "AimOccludedError") {
         return { ok: false, reason: "aim_occluded", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // R3 tool exclusion, met at a COORDINATE rather than at a target. `window_excluded` is the
+      // other half of the same registry and says the opposite thing about the caller's own window
+      // — "the one you addressed is out of bounds" against "yours is fine, something else is over
+      // the point" — so they do not share a reason. The advice for the first is false for this one
+      // in two of its four lines (gate 2, Opus sandbox review, 2026-09-10).
+      if (err instanceof Error && err.name === "AimBlockedByExcludedWindowError") {
+        return { ok: false, reason: "aim_blocked_by_excluded_window", diff: [], ...(detail !== undefined && { detail }) };
       }
       // The point the press would land on is no longer inside the window this call named. Unlike
       // `aim_window_gone` the window is alive, so re-discovering returns a rect that works.
