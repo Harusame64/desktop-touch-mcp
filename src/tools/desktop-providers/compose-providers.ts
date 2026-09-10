@@ -152,8 +152,14 @@ function applyVisualEscalation(
   if (primaryKind === "uia" && uiaBlind && !visualUnready && visualEmpty) {
     extra.push("visual_attempted_empty");
   }
-  // Rule-C: browser CDP failed + visual also empty → visual_attempted_empty_cdp_fallback
-  if (primaryKind === "browser" && cdpFailed && visualEmpty) {
+  // Rule-C: browser CDP failed + visual also empty → visual_attempted_empty_cdp_fallback.
+  //
+  // `!visualBlind` for the same reason Rule-A' carries it: "ran and found no candidates" is a claim
+  // about an attempt, and a backend that recognises nothing made none. Without it the response said
+  // both — the backend cannot inspect the window, AND it inspected and found nothing — with advice
+  // to retry (PR 側 codex). The blind notice rides on its own, and it is news here because the
+  // visual lane was the fallback CDP had just handed off to.
+  if (primaryKind === "browser" && cdpFailed && visualEmpty && !visualBlind) {
     extra.push("visual_attempted_empty_cdp_fallback");
   }
   return extra;
@@ -176,9 +182,9 @@ function applyVisualEscalation(
  * The provider still reports it, because the composer needs to see it to make this decision; what
  * changes is that the caller is not told about a lane whose silence cost them nothing.
  */
-function withoutUnneededBlindNotice(result: ProviderResult, primaryResult: ProviderResult): ProviderResult {
+function withoutUnneededBlindNotice(result: ProviderResult, visualWasNeeded: boolean): ProviderResult {
+  if (visualWasNeeded) return result;
   if (!result.warnings.includes("visual_backend_cannot_recognise")) return result;
-  if (primaryResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w))) return result;
   return { ...result, warnings: result.warnings.filter((w) => w !== "visual_backend_cannot_recognise") };
 }
 
@@ -361,7 +367,13 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
       ? visual.value
       : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-    const merged     = mergeResults([browserResult, visualResult]);
+    // The visual lane is the FALLBACK here, so its incapacity is news exactly when CDP failed —
+    // the same test Rule-C uses below. A successful CDP discovery does not need to hear about it,
+    // and the browser branch was left out of the first version of this filter (PR 側 codex).
+    const merged     = withoutUnneededBlindNotice(
+      mergeResults([browserResult, visualResult]),
+      browserResult.warnings.includes("cdp_provider_failed"),
+    );
     const escalation = applyVisualEscalation(browserResult, visualResult, "browser");
     const extra      = escalation.filter((w) => !merged.warnings.includes(w));
     const finalMerged = extra.length > 0
@@ -381,8 +393,15 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
     const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
     const visualResult = visual.status   === "fulfilled" ? visual.value   : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
+    // Terminal reads its own buffer; the visual lane is additive and nobody falls back to it here,
+    // so its incapacity is never news on this road. Left out of the first version of the filter for
+    // the same reason the browser branch was: the fix was written where the case had been measured
+    // and not where the warning is merged (PR 側 codex).
     return addWarningIfPartial(
-      mergeResults([termResult, uiaResult, visualResult]),
+      withoutUnneededBlindNotice(
+        mergeResults([termResult, uiaResult, visualResult]),
+        termResult.warnings.includes("terminal_provider_failed"),
+      ),
       termResult.candidates.length
     );
   }
@@ -407,7 +426,7 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
       ).catch((): ProviderResult => ({ candidates: [], warnings: ["ocr_provider_failed"] }))
     : { candidates: [], warnings: [] };
 
-  const merged     = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaResult);
+  const merged     = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaBlindForOcr);
   const escalation = applyVisualEscalation(uiaResult, visualResult, "uia");
   const extra      = escalation.filter((w) => !merged.warnings.includes(w));
   const finalMerged = extra.length > 0
