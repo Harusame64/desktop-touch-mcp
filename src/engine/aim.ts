@@ -491,6 +491,14 @@ export function observedHwndOfOrigin(
  * Every verdict is a RUNG here, in the order it is asked, and a new one has to be given a place in
  * that order rather than a place in front of it.
  *
+ * **Where these reasons actually go.** Into the `act.route` probe row, and into the message of
+ * `AimedPointOutsideWindowError` — which `desktop-register.ts` replaces with fixed text and
+ * `guarded-touch.ts` collapses to a reason code. So a caller does not see which rung declined; only
+ * the log does (gate 2, 2026-09-10, correcting the previous version of this comment, which said the
+ * reason "goes in the published refusal text"). Carrying the engine's message through the envelope
+ * is ADR-036 item 13. Until it is done, the order below is chosen for what it PRESSES, not for what
+ * it says.
+ *
  * **Every caller goes through here, and that is the point.** The first version put the policy in
  * the executor and left the correction unconditional, so the frame-diff focal point — the second
  * caller — kept applying a correction the press path had already learned to decline (found by win2
@@ -534,28 +542,32 @@ export function homingCorrectionForSources(
   if (current.x <= OFF_DESKTOP || current.y <= OFF_DESKTOP) {
     return { applied: false, x, y, why: "window_off_desktop" };
   }
+  // ONLY the rung above is about the screen. Everything from here down compares an ORIGIN to a
+  // CURRENT rectangle, and both of those belong to the window the aim resolved — so the first
+  // question is whether these coordinates belong to that window at all.
+  //
+  // Asked before the two origin verdicts, and that took two corrections in opposite directions.
+  // Below them it produced a false refusal: `moved_during_read` is manufactured from two bracket
+  // reads of the AIM's rectangle, and an owned popup does not move when its owner moves, so an
+  // entity captured in a dropdown was refused as "the window would not hold still" on evidence
+  // about a window it does not live on — a press that was correct before this rung existed (gate 2,
+  // 2026-09-10). Above them, an earlier round had it short-circuit `window_off_desktop` as well,
+  // which is why that one stays first: a parked owner hides its popups with it, so there is nothing
+  // on screen for these coordinates either way.
+  //
+  // What this verdict is NOT is permission. The caller holds the one piece of evidence that can
+  // stand in for the comparisons below — who is under the point NOW — and it may press only where
+  // that answer is the window the pixels came from. See `measured_in_another_window` in the
+  // executor: the reason travels with the handle so the caller can ask.
+  if (window?.capturedIn !== undefined && window.originOf !== undefined
+      && window.capturedIn !== window.originOf) {
+    return { applied: false, x, y, why: "measured_in_another_window" };
+  }
   if (!aimOrigin) return { applied: false, x, y, why: "no_origin_rect" };
   // Not a missing measurement: a measurement that says these coordinates are unusable. The caller
   // refuses on it, where `no_origin_rect` costs only the correction.
   if (aimOrigin.kind === "moved_during_read") return { applied: false, x, y, why: "moved_during_read" };
 
-  // ONLY NOW the question of whose measurement these coordinates are.
-  //
-  // The three verdicts above do not depend on it: `window_off_desktop` is a property of the
-  // current rectangle alone, and the two origin verdicts are properties of the origin value. They
-  // are also statements about the WHOLE SNAPSHOT — a minimised aim and a smeared read make every
-  // coordinate in it unusable, an owned popup's included — and the executor turns exactly those
-  // two into refusals. A verdict about one entity's provenance must not be able to answer in their
-  // place, which is what both of the next two did while they sat in front of this function.
-  //
-  // The capture handle first, because it is evidence rather than inference: ADR-029 records the
-  // window each candidate was actually observed in, where the sources gate below reasons from a
-  // lane's NAME. Both decline the same correction; the more specific reason is the better one to
-  // hand a caller.
-  if (window?.capturedIn !== undefined && window.originOf !== undefined
-      && window.capturedIn !== window.originOf) {
-    return { applied: false, x, y, why: "measured_in_another_window" };
-  }
   // Every source, not any: a merged entity is only as trustworthy as its least-dated lane.
   if (sources.length === 0 || !sources.every((src) => BRACKETED_SOURCES.has(src))) {
     return { applied: false, x, y, why: "measurement_moment_unknown" };

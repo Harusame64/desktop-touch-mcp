@@ -39,11 +39,12 @@ const MOVED: WindowRect = { x: 100, y: 129, width: 600, height: 400 };
 
 describe("the correction moves the point with the window, and only then", () => {
   it("cannot be reached without the policy that decides whether it may run", () => {
-    // `homingCorrection` is module-private: the entry point is the only way in, so a third caller
-    // cannot step around the policy the way the frame-diff focal point did. The comment used to say
-    // "cannot miss it" while the bare function was still exported and nothing stopped anyone
-    // importing it — a claim, not a check (win2, 2026-09-10).
-    expect("homingCorrection" in aimModule).toBe(false);
+    // There is ONE way in, and this is the check for it rather than a claim about it. The first
+    // version said "cannot miss it" while a bare `homingCorrection` was still exported (win2,
+    // 2026-09-10); the second asserted that one name was absent, which the module satisfies forever
+    // by having deleted it — a wrapper called anything else would have passed (gate 2, 2026-09-10).
+    // So the cell asks the question the design actually makes: how many ways in are there.
+    expect(Object.keys(aimModule).filter((k) => /homing/i.test(k))).toEqual(["homingCorrectionForSources"]);
     // And the policy is what the entry point applies: a lane the bracketed origin cannot describe
     // never reaches the correction at all, whatever the rectangles say.
     expect(homingCorrectionForSources(["visual_gpu"], { kind: "measured", rect: ORIGIN }, MOVED, 458, 215))
@@ -110,29 +111,33 @@ describe("the correction moves the point with the window, and only then", () => 
       .toEqual({ applied: false, x: 458, y: 215, why: "moved_during_read" });
   });
 
-  it("still refuses a parked or smeared window when the pixels came from another window", () => {
-    // PR 側 codex (2026-09-10), and the SAME shape as the cell above with a different guard: the
-    // capture-window check was the second policy to arrive as a wrapper in front of this ladder.
-    // An entity captured in an owned popup answered `measured_in_another_window` even when the aim
-    // was minimised or would not hold still — and `resolvePressPoint` switches on the reason, so
-    // both whole-snapshot refusals were skipped and the `owned` allowance pressed the remembered
-    // point of a snapshot already known to be unusable.
+  it("keeps the parked verdict, and does not let the aim's own instability answer for another window", () => {
+    // Both directions of this were wrong once (2026-09-10). Below the origin verdicts, the guard
+    // let `moved_during_read` answer for coordinates it knows nothing about: that verdict is
+    // manufactured from two bracket reads of the AIM's rectangle, and an owned popup does not move
+    // when its owner moves — so an entity captured in a dropdown was refused on evidence about a
+    // window it does not live on (gate 2). Above `window_off_desktop`, an earlier round had it
+    // short-circuit the minimise refusal instead (PR 側 codex). Parked stays first, because a parked
+    // owner takes its popups off the screen with it; the rest of the ladder is about the aim's
+    // rectangle, so a foreign capture handle answers before them.
     const elsewhere = { capturedIn: 888n, originOf: HWND };
     const parked: WindowRect = { x: -32000, y: -32000, width: 600, height: 400 };
     expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, parked, 458, 215, elsewhere))
       .toEqual({ applied: false, x: 458, y: 215, why: "window_off_desktop" });
     expect(homingCorrectionForSources(LIVE, { kind: "moved_during_read" }, MOVED, 458, 215, elsewhere))
-      .toEqual({ applied: false, x: 458, y: 215, why: "moved_during_read" });
-    // Where the snapshot IS usable, the guard still has its say — it declines the correction, it
-    // just does not get to answer in place of the two verdicts about the whole snapshot.
+      .toEqual({ applied: false, x: 458, y: 215, why: "measured_in_another_window" });
     expect(homingCorrectionForSources(LIVE, { kind: "measured", rect: ORIGIN }, MOVED, 458, 215, elsewhere))
       .toEqual({ applied: false, x: 458, y: 215, why: "measured_in_another_window" });
+    // And with no capture handle to compare, the aim's own instability is all there is.
+    expect(homingCorrectionForSources(LIVE, { kind: "moved_during_read" }, MOVED, 458, 215))
+      .toEqual({ applied: false, x: 458, y: 215, why: "moved_during_read" });
   });
 
   it("names the capture handle rather than the lane when both would decline", () => {
-    // Both rungs refuse the same correction, so the only thing at stake is which reason the caller
-    // is handed — and it goes in the published refusal text. The recorded handle is evidence about
-    // THIS entity; the lane name is an inference about when its coordinates were measured.
+    // Both rungs decline the same correction, so the only thing at stake is which reason is
+    // recorded — and today that is the `act.route` row, not the caller's envelope, which
+    // `desktop-register.ts` rebuilds from fixed text (ADR-036 item 13). The recorded handle is
+    // evidence about THIS entity; the lane name is an inference about when it was measured.
     expect(homingCorrectionForSources(["visual_gpu"], { kind: "measured", rect: ORIGIN }, MOVED, 458, 215,
       { capturedIn: 888n, originOf: HWND }))
       .toEqual({ applied: false, x: 458, y: 215, why: "measured_in_another_window" });
@@ -324,19 +329,46 @@ describe("the press lands where the control went", () => {
     expect(d.mouseClick).not.toHaveBeenCalled();
   });
 
-  it("refuses a smeared snapshot even when the pixels came from another window", async () => {
-    // PR 側 codex (2026-09-10). The two cells above put a popup under the stale point; this pair
-    // puts the popup in the ENTITY — `origin.hwnd` says the pixels were captured in window 888 —
-    // which used to answer `measured_in_another_window` before the ladder ever asked whether the
-    // snapshot was usable at all. With the guard given a rung instead of a wrapper, the smeared
-    // read still wins, and the `owned` allowance never gets the chance to press.
+  it("presses when the window the pixels came from is the one under the point", async () => {
+    // Two reviews said opposite things about this case and the answer is in neither of them. The
+    // entity was captured in window 888 — a dropdown — and the AIM was being dragged while the read
+    // happened. `moved_during_read` is a statement about the aim's rectangle, and an owned popup
+    // does not move when its owner moves, so it says nothing about these coordinates. What does say
+    // something is the live screen: 888 is under the point right now (gate 2, 2026-09-10).
     const d = deps({ pointOwner: () => ({ kind: "owned" as const, hwnd: 888n, title: "" }) });
     const unstable: Aim = { kind: "aim", title: "CELL BUTTONS", hwnd: HWND, origin: { kind: "moved_during_read" } };
-    const fromAnotherWindow: UiEntity = {
+    const fromTheDropdown: UiEntity = {
       ...entity(),
       origin: { kind: "window", id: "CELL BUTTONS", hwnd: "888" },
     };
-    await expect(createDesktopExecutor(unstable, d)(fromAnotherWindow, "click")).rejects.toThrow(/while it was being read/);
+    await createDesktopExecutor(unstable, d)(fromTheDropdown, "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(458, 215);   // uncorrected, and pressed
+  });
+
+  it("refuses when a DIFFERENT owned window is the one under the point", async () => {
+    // The other half, and the reason the allowance is not simply `owned` (PR 側 codex on #609): a
+    // dropdown that happens to sit under the stale point is not the dropdown the entity came from,
+    // and pressing it reports success for something nobody discovered. The recorded capture handle
+    // is what tells the two apart — before it, both answered `owned` and both were pressed.
+    const d = deps({ pointOwner: () => ({ kind: "owned" as const, hwnd: 999n, title: "Recent files" }) });
+    const unstable: Aim = { kind: "aim", title: "CELL BUTTONS", hwnd: HWND, origin: { kind: "moved_during_read" } };
+    const fromTheDropdown: UiEntity = {
+      ...entity(),
+      origin: { kind: "window", id: "CELL BUTTONS", hwnd: "888" },
+    };
+    await expect(createDesktopExecutor(unstable, d)(fromTheDropdown, "click")).rejects.toThrow(/Recent files/);
+    expect(d.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the aim itself is what sits under coordinates taken from elsewhere", async () => {
+    // The dropdown is gone and its owner's surface is what the press would hit. Nothing here can
+    // say what is at that point in the owner's own layout, and the entity was never on it.
+    const d = deps({ pointOwner: () => ({ kind: "aim" as const }) });
+    const fromTheDropdown: UiEntity = {
+      ...entity(),
+      origin: { kind: "window", id: "CELL BUTTONS", hwnd: "888" },
+    };
+    await expect(createDesktopExecutor(aimed, d)(fromTheDropdown, "click")).rejects.toThrow(/measured in window 888/);
     expect(d.mouseClick).not.toHaveBeenCalled();
   });
 

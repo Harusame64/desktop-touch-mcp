@@ -404,6 +404,36 @@ async function resolvePressPoint(
       aimHwnd,
     );
   }
+  // ADR-036 item 5 — the coordinates say which window they came from, so the screen has to agree.
+  //
+  // `measured_in_another_window` is the one verdict that invalidates every comparison the ladder
+  // makes: the origin, the current rectangle, the resize and the containment are all about the aim,
+  // and these pixels are not. That leaves exactly one usable piece of evidence — who is under the
+  // point NOW — and it is the caller who holds it.
+  //
+  // So the press is allowed where that answer is the window the pixels came from, and refused where
+  // it is a different one. Both halves are corrections of a round that got the other half wrong:
+  // letting any owned window through pressed a dropdown nobody discovered (PR 側 codex on #609), and
+  // refusing the whole case pressed nothing where the entity's own dropdown was sitting right there
+  // (gate 2, 2026-09-10). `unknown` and a missing dep stay out of it — a build whose enumeration
+  // cannot answer must not have every aimed action refused — and `other` falls through to the
+  // occlusion refusal below, which names the covering window and says what to do about it.
+  const capturedIn = observedHwndOfOrigin(entity.origin);
+  if (!homing.applied && homing.why === "measured_in_another_window" && capturedIn !== undefined) {
+    if (owner?.kind === "owned" && owner.hwnd === capturedIn) return { x, y };
+    if (owner?.kind === "owned" || owner?.kind === "aim") {
+      throw new AimedPointOutsideWindowError(
+        `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
+        `${capturedIn}, and the window under that point now is ` +
+        `${owner.kind === "aim" ? `${aimHwnd}, the one this act aimed at` : `${owner.hwnd} ("${owner.title}")`}. ` +
+        `A menu, dialog or dropdown has an origin of its own and does not move with the window that ` +
+        `owns it, so nothing here can follow these coordinates to where they went. Nothing was ` +
+        `clicked. Re-run desktop_discover.`,
+        aimHwnd,
+      );
+    }
+  }
+
   // Only now the popup allowance. The press is on a window this one owns: allowed, and allowed
   // even where the aim's own rectangle does not contain the point, because that is where dropdowns
   // live — and allowed before the verdicts BELOW, which are statements about the AIM's layout and

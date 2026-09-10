@@ -31,8 +31,10 @@
     resized (the contents may have been laid out differently, so this is refused
     even where the point still falls inside); it moved while it was being read;
     the coordinates came from a stored visual snapshot whose moment cannot be
-    established; or they were captured in a different window from the one the
-    call named — a menu or dialog your window owns has an origin of its own.
+    established; or they were captured in a window other than the one the call
+    named. A menu or dialog your window owns has an origin of its own and does
+    not move with its owner, so it is pressed while it is still what sits under
+    the point, and refused once something else is.
 
   **A window that only moved is followed instead of refused** — the point is
   carried by the same offset, so a press after a drag lands on the control you
