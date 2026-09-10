@@ -95,10 +95,20 @@ export async function fetchVisualCandidates(
     //
     // Only when the answer is empty: a backend that replays something HAS produced candidates for
     // this target, and saying it cannot look would be false about the answer in hand.
-    if (candidates.length === 0 && runtime.recognitionCapability() === "replays_injected_only") {
-      return probeLane("visual_gpu", "read", { ...asked, warmState }, { candidates, warnings: ["visual_backend_cannot_recognise"] });
+    //
+    // ADR-036 item 14a — and the lane's row says whether it LOOKED, which is a different question
+    // from whether it answered. A backend that replays injected snapshots never inspects the window,
+    // whatever it returns, so its row is `skipped` — with its candidates still counted, because a
+    // replay can carry what another lane saw earlier. Writing `read` here made the row reach evidence
+    // for a look that never happened, which is the ambiguity these rows exist to remove (PR 側 codex
+    // on #621, P1).
+    const recognition = runtime.recognitionCapability();
+    const looked = recognition !== "replays_injected_only";
+    const row = { ...asked, warmState, recognition, ...(!looked && { why: "replays_injected_only" }) };
+    if (candidates.length === 0 && !looked) {
+      return probeLane("visual_gpu", "skipped", row, { candidates, warnings: ["visual_backend_cannot_recognise"] });
     }
-    return probeLane("visual_gpu", "read", { ...asked, warmState }, { candidates, warnings: [] });
+    return probeLane("visual_gpu", looked ? "read" : "skipped", row, { candidates, warnings: [] });
   } catch (err) {
     console.error("[visual-provider] getStableCandidates failed:", err);
     return probeLane("visual_gpu", "failed", { ...asked, warmState }, { candidates: [], warnings: ["visual_provider_failed"] });

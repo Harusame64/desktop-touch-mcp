@@ -1191,7 +1191,16 @@ export function createDesktopExecutor(
       // every ordinary terminal entity and `terminalSend` went back to the first z-order match
       // (gate 1). The title is still passed for the backend that has no handle to use.
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
-      await d.terminalSend(termWin, text, aimHwnd);
+      try {
+        await d.terminalSend(termWin, text, aimHwnd);
+      } catch (err) {
+        // ADR-036 item 14c — the terminal lookup refuses a destroyed handle with its own typed
+        // refusal, and it went straight out of here with no row: the record showed `act.aim` and
+        // then nothing, the silence the UIA route's rows were added to remove (gate 2 on #621).
+        if (err instanceof AimedWindowGoneError) probeRefusal("terminal_send", "aim_window_gone", aimHwnd, entity);
+        else if (err instanceof WindowExcludedError) probeRefusal("terminal_send", "window_excluded", aimHwnd, entity);
+        throw err;
+      }
       probeRoute("terminal", aimHwnd, entity, { why: "terminal_send", termWin });
       return "terminal";
     }

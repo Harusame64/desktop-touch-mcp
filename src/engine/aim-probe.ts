@@ -264,7 +264,20 @@ function runHeader(): Record<string, unknown> {
 function loadedAddonFiles(): Record<string, unknown> {
   const addonFilesFrom = "process.report.sharedObjects";
   try {
-    const report = process.report.getReport() as { sharedObjects?: unknown };
+    // By default the report resolves every open socket's address to a host name, synchronously, on
+    // the event loop — and this runs inside the first seam of a measured run. A connection with no
+    // reverse-DNS entry would stall the run being measured until the lookup timed out (gate 2 on
+    // #621: 19.0 ms against 8.7 ms on a loopback connection alone). The list this needs is not
+    // network information, so the lookups are switched off for the one call and the setting put back.
+    const settings = process.report as typeof process.report & { excludeNetwork?: boolean };
+    const previous = settings.excludeNetwork;
+    settings.excludeNetwork = true;
+    let report: { sharedObjects?: unknown };
+    try {
+      report = process.report.getReport() as { sharedObjects?: unknown };
+    } finally {
+      settings.excludeNetwork = previous;
+    }
     const shared = report.sharedObjects;
     if (!Array.isArray(shared)) {
       return { addonFilesFrom, addonFiles: null, addonFilesError: "the report carries no sharedObjects list" };

@@ -137,6 +137,22 @@ describe("row zero says what the process is running on (14b)", () => {
     expect(rows()[0]!.addonFiles).toEqual([{ path: vanished, error: expect.any(String) }]);
   });
 
+  it("asks for the report without resolving socket names, and puts the setting back", async () => {
+    // Gate 2 on #621: the report looks up a host name for every open socket by default, on the
+    // event loop, inside the first seam of the run being measured.
+    const settings = process.report as typeof process.report & { excludeNetwork?: boolean };
+    const before = settings.excludeNetwork;
+    const seen: unknown[] = [];
+    vi.spyOn(process.report, "getReport").mockImplementation(() => {
+      seen.push(settings.excludeNetwork);
+      return { sharedObjects: [] } as never;
+    });
+    const { probeAim } = await probeOn(["uiaGetElements"]);
+    probeAim("see.enter", {});
+    expect(seen).toEqual([true]);
+    expect(settings.excludeNetwork).toBe(before);
+  });
+
   it("still writes the header, and the rows after it, when the process cannot say what it loaded", async () => {
     vi.spyOn(process.report, "getReport").mockImplementation(() => {
       throw new Error("report unavailable");
@@ -295,8 +311,33 @@ describe("every lane says what it did with the read (14a)", () => {
       });
       await throwing({ windowTitle: "W" });
       const [a, b] = laneRows("visual_gpu");
-      expect(a).toMatchObject({ outcome: "read", targetKey: "title:W", warmState: "warm", candidateCount: 1 });
+      expect(a).toMatchObject({ outcome: "read", targetKey: "title:W", warmState: "warm", recognition: "recognises", candidateCount: 1 });
       expect(b).toMatchObject({ outcome: "failed", why: "ensure_warm_threw" });
+    });
+
+    it("does not call a replay a look, whether or not it replayed anything", async () => {
+      // PR 側 codex on #621 (P1). The default build's backend is warm in 50 ms and never inspects the
+      // window: it serves snapshots another lane injected. Its row said `read`, so a round using
+      // `provider.read` as reach evidence would have concluded the visual lane looked at a painted
+      // window it never saw. A replay that DID carry candidates did not look either.
+      const replay = (candidates: unknown[]) => visualWith({
+        isAvailable: () => true,
+        ensureWarm: async () => "warm",
+        getStableCandidates: async () => candidates,
+        recognitionCapability: () => "replays_injected_only",
+      });
+      await (await replay([]))({ windowTitle: "W" });
+      vi.resetModules();
+      await (await replay([{ source: "visual_gpu", label: "Replayed from OCR" }]))({ windowTitle: "W" });
+      const [empty, replayed] = laneRows("visual_gpu");
+      expect(empty).toMatchObject({
+        outcome: "skipped", why: "replays_injected_only", recognition: "replays_injected_only",
+        candidateCount: 0, warnings: ["visual_backend_cannot_recognise"],
+      });
+      expect(replayed).toMatchObject({
+        outcome: "skipped", why: "replays_injected_only", recognition: "replays_injected_only",
+        candidateCount: 1, warnings: [],
+      });
     });
   });
 
@@ -529,6 +570,25 @@ describe("a refusal says which rung made it (14c)", () => {
       expect(record).not.toContain("SECRET-SCRIPT-BODY");
       expect(record).not.toContain("PROBE-TYPED-TEXT");
     });
+  });
+
+  it("records a terminal whose window has gone, on the terminal route", async () => {
+    // Gate 2 on #621: `terminalSend`'s lookup throws a typed refusal for a destroyed handle, and it
+    // left the executor with no row — `act.aim`, then nothing.
+    const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+    const { AimedWindowGoneError } = await import("../../src/engine/aim.js");
+    const terminal: UiEntity = {
+      entityId: "t1", role: "textbox", label: "PS C:\\>", confidence: 1, sources: ["terminal"],
+      locator: { terminal: { windowTitle: "Windows PowerShell" } },
+      affordances: [{ verb: "type", executors: ["terminal"], confidence: 1, preconditions: [], postconditions: [] }],
+      generation: "gen-1", evidenceDigest: "d", rect: { x: 1, y: 2, width: 3, height: 4 },
+    };
+    const d = deps({ terminalSend: vi.fn(async () => { throw new AimedWindowGoneError(HWND); }) });
+    const aim: Aim = { kind: "aim", title: "Windows PowerShell", hwnd: HWND };
+    const thrown = await createDesktopExecutor(aim, d)(terminal, "type", "dir").then(() => undefined, (e: unknown) => e);
+    expect(thrown).toBeInstanceOf(Error);
+    expect(refusals()).toEqual([expect.objectContaining({ rung: "terminal_send", refused: "aim_window_gone", aimHwnd: String(HWND) })]);
+    expect(refusals()[0]!.refused).toBe(await publishedReason(thrown));
   });
 
   it("marks the identity row that refused, and leaves the one that let the act through unmarked", async () => {
