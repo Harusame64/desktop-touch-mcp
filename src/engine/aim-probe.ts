@@ -19,23 +19,37 @@
  *   - **Absence is recorded, not inferred.** A seam that is reached with no aim writes
  *     `hwnd: null` rather than writing nothing, so "the aim was empty here" and "this build never
  *     reached this line" are different rows.
+ *   - **It says what it is running on.** Row zero of every process names the addon that answered
+ *     and what it binds (item 14b), so a record needs no note beside it saying which build it was
+ *     taken on — the note is the part that drifted.
  *
  * Off unless `DESKTOP_TOUCH_AIM_PROBE=1`. The path is `DESKTOP_TOUCH_AIM_PROBE_PATH`, or
  * `<home>/.desktop-touch-mcp/logs/aim-probe.jsonl`.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { nativeExportNames } from "./native-engine.js";
 import { getWindowIdentity } from "./win32.js";
 
 /** The seams, in the order one `desktop_discover` → `desktop_act` pair passes through them. */
 export type AimSeam =
+  /**
+   * Row zero of every process (item 14b): the addon that answered and what it binds. Written once,
+   * before the first seam, so a record says what it was taken on without a note kept beside it.
+   */
+  | "probe.start"
   /** `see()` entry: the target the caller sent, and the session key it resolved to. */
   | "see.enter"
   /** `normalizeTarget`: what went in, what came out, and what it warned about. */
   | "compose.normalize"
-  /** A provider lane: the target id it stamped on its candidates, and the handle it scoped to. */
+  /**
+   * A provider lane: what it was asked for, what it did with it (`read` / `skipped` / `failed`),
+   * and the handle it scoped to. Every lane writes one where it returns (item 14a).
+   */
   | "provider.read"
   /** `see()` exit: what the session ends up remembering as `lastTarget`. */
   | "see.store"
@@ -43,12 +57,14 @@ export type AimSeam =
   | "act.aim"
   /** Act time: the identity of the window that handle names NOW (read-only). */
   | "act.identity"
-  /** Act time: which backend ran, and whether it was aimed. */
+  /** Act time: which backend ran, whether it was aimed, and which rung refused when one did. */
   | "act.route";
 
 let seq = 0;
 let resolvedPath: string | null = null;
 let disabled = false;
+/** Set BEFORE the header is assembled, so a header that cannot be written is not retried per row. */
+let headerWritten = false;
 
 function probePath(): string | null {
   if (disabled) return null;
@@ -77,11 +93,21 @@ function probePath(): string | null {
 export function probeAim(seam: AimSeam, data: Record<string, unknown>): void {
   const p = probePath();
   if (!p) return;
+  if (!headerWritten) {
+    headerWritten = true;
+    // Row ZERO, not row one: every row after it keeps the number it had before the header existed,
+    // so a record taken before item 14b and one taken after count the same way — and counting is
+    // how the `bigint` loss below was found.
+    writeRow(p, 0, "probe.start", runHeader());
+  }
   // Taken BEFORE anything that can throw, so a row that cannot be written still owns its number
   // and the fallback below can name it. The first version incremented it inside the
   // `JSON.stringify(...)` argument, so a throw consumed the number and left a gap — which is how
   // this bug was found: by counting the gaps (win2, 2026-09-09).
-  const n = ++seq;
+  writeRow(p, ++seq, seam, data);
+}
+
+function writeRow(p: string, n: number, seam: AimSeam, data: Record<string, unknown>): void {
   try {
     appendFileSync(p, JSON.stringify({ seq: n, tsMs: Date.now(), pid: process.pid, seam, ...data }, jsonSafe) + "\n");
   } catch (err) {
@@ -132,8 +158,8 @@ export function aimProbeEnabled(): boolean {
  */
 export function readWindowIdentity(hwnd: bigint): Record<string, unknown> {
   try {
-    // `win32.ts` loads the native binding lazily inside its own functions, so importing it here
-    // costs nothing in a run with the probe off.
+    // The binding is loaded when `native-engine.ts` is first imported, long before any seam runs,
+    // so neither this import nor the header's (item 14b) adds a load to a run with the probe off.
     const ident = getWindowIdentity(hwnd);
     return {
       pid: ident.pid,
@@ -144,4 +170,132 @@ export function readWindowIdentity(hwnd: bigint): Record<string, unknown> {
   } catch (err) {
     return { answered: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** The lanes, named the way the candidates' own `sources` name them, so a row joins to an entity. */
+export type ProbeLane = "uia" | "terminal" | "ocr" | "cdp" | "visual_gpu";
+
+/**
+ * What a lane did with the read it was asked for.
+ *
+ *   - `read`    — it looked. Zero candidates is still a read; its warnings say what it found.
+ *   - `skipped` — it was asked and did not look, and `why` says why: no target, no backend,
+ *                 still warming, or a road that runs it only for a UIA-blind window.
+ *   - `failed`  — it tried and could not.
+ */
+export type LaneOutcome = "read" | "skipped" | "failed";
+
+/**
+ * ADR-036 item 14a — one `provider.read` row from every lane, written where the lane RETURNS.
+ *
+ * Only the UIA lane used to write one, so `lanesThatRead` was a reach proof on the native road and
+ * an absence everywhere else: a terminal, OCR or CDP read left nothing, and "that lane did not
+ * read" printed exactly like "that lane is not instrumented" (win2, 2026-09-10, `dev/pr615-roads/`
+ * — a passing terminal arm was voided by that rule, and the rule was wrong). With a row on every
+ * return, a lane with no row was not called.
+ *
+ * Returns `result` untouched, so a return site wraps the value it already had instead of growing a
+ * second statement that can drift from it. Never records candidate CONTENT — a terminal buffer or
+ * a DOM label can carry anything the user has on screen — only counts and the lane's own codes.
+ */
+export function probeLane<R extends { candidates: readonly unknown[]; warnings: readonly string[] }>(
+  lane: ProbeLane,
+  outcome: LaneOutcome,
+  data: Record<string, unknown>,
+  result: R,
+): R {
+  probeAim("provider.read", {
+    lane,
+    ...data,
+    // New keys go at the END: the UIA lane's row predates them, and excerpts are read at fixed width.
+    outcome,
+    candidateCount: result.candidates.length,
+    warnings: [...result.warnings],
+  });
+  return result;
+}
+
+/**
+ * ADR-036 item 14b — what this process is running on, said once, as row zero.
+ *
+ * Every round before this kept a note beside its record: which sandbox, which `.node`, copied from
+ * where. The note was right until it was not — a sandbox carrying the 2026-08-29 addon measured the
+ * enumeration road while its source had the OS hit test, and only `pointOwner.via` caught it (win2,
+ * 2026-09-10). A record that says what it was taken on cannot drift from a note it does not need.
+ *
+ * Two readings, from two places, so that they can disagree:
+ *   - `boundExports` — what the binding this module imported actually exposes, by name.
+ *   - `addonFiles` — which `.node` files the PROCESS has mapped, asked of the process itself, each
+ *     with its size, mtime and sha256. Not recomputed from `index.js`'s candidate list: a second
+ *     lookup names the file that SHOULD have loaded, which is the note this replaces.
+ *
+ * Every field is total. A reading that fails is recorded as the failure, and the header never throws
+ * into the row it precedes.
+ */
+function runHeader(): Record<string, unknown> {
+  let boundExports: string[] | null = null;
+  let boundExportsError: string | undefined;
+  try {
+    boundExports = nativeExportNames();
+  } catch (err) {
+    boundExportsError = messageOf(err);
+  }
+  return {
+    node: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    // Which build is answering: the script the process was started with, and this module's file.
+    entry: process.argv[1] ?? null,
+    probeModule: moduleFile(),
+    boundExports,
+    ...(boundExportsError !== undefined && { boundExportsError }),
+    ...loadedAddonFiles(),
+  };
+}
+
+/**
+ * The `.node` files mapped into this process, as the process reports them.
+ *
+ * ASSUMED: that `process.report`'s `sharedObjects` lists a loaded `.node` on Windows — it is Node's
+ * own list of loaded libraries, and no machine has shown it for this addon yet. An empty list beside
+ * a non-null `boundExports` is the answer that says it does not, and the first round on this build
+ * is what settles it.
+ */
+function loadedAddonFiles(): Record<string, unknown> {
+  const addonFilesFrom = "process.report.sharedObjects";
+  try {
+    const report = process.report.getReport() as { sharedObjects?: unknown };
+    const shared = report.sharedObjects;
+    if (!Array.isArray(shared)) {
+      return { addonFilesFrom, addonFiles: null, addonFilesError: "the report carries no sharedObjects list" };
+    }
+    const addonFiles = shared
+      .filter((s): s is string => typeof s === "string" && /\.node$/i.test(s))
+      .map(fileIdentity);
+    return { addonFilesFrom, addonFiles };
+  } catch (err) {
+    return { addonFilesFrom, addonFiles: null, addonFilesError: messageOf(err) };
+  }
+}
+
+/** A listed file this cannot read is named with the failure, not dropped from the list. */
+function fileIdentity(path: string): Record<string, unknown> {
+  try {
+    const st = statSync(path);
+    return { path, bytes: st.size, mtimeMs: st.mtimeMs, sha256: createHash("sha256").update(readFileSync(path)).digest("hex") };
+  } catch (err) {
+    return { path, error: messageOf(err) };
+  }
+}
+
+function moduleFile(): string | null {
+  try {
+    return fileURLToPath(import.meta.url);
+  } catch {
+    return null;
+  }
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

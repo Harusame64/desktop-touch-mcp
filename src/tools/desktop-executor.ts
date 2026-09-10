@@ -320,6 +320,27 @@ async function resolvePressPoint(
   const theWindow = handleFrom === "aim"
     ? `the window this call named (hwnd ${aimHwnd})`
     : `the window these coordinates were measured in (hwnd ${aimHwnd}, from the entity's origin)`;
+  // ADR-036 item 14c — every refusal below writes a row naming the rung that made it.
+  //
+  // `homing` and `containment_check` are written before all of them, so the ladder is never silent
+  // about having run. What the rows could not say is WHICH rung stopped it: seven refuse, five of
+  // them throw one class, and the envelope folds those five into `aim_point_outside_window` — so a
+  // round had to read the refusal's prose against the rows to tell a minimise from a resize (win2,
+  // 2026-09-11, a reading of this code that the next round measures). `refused` is spelled the way
+  // `guarded-touch.ts` spells the reason, so one search finds every refusal in a record, the
+  // `aim_check` row's included. Called at the throw, so `point` is the one the rung judged.
+  const refusal = (rung: string, refused: string, err: Error): Error => {
+    probeAim("act.route", {
+      route: "refusal",
+      rung,
+      refused,
+      coordHwnd: String(aimHwnd),
+      coordHwndFrom: handleFrom,
+      point: { x, y },
+      label,
+    });
+    return err;
+  };
   if (!deps.aimRect) {
     // A skipped check writes a row saying so. Without it the log shows a press with a handle and
     // no containment row, which reads exactly like a build that never reached this line.
@@ -501,12 +522,12 @@ async function resolvePressPoint(
     // **The residual, stated rather than hidden**: a caller that presses point after point still
     // learns WHERE something out of bounds is, because a refusal is an answer. All three options
     // leak that much; the other two add the window's title, or the keystroke itself.
-    throw new AimBlockedByExcludedWindowError(
+    throw refusal("excluded_window", "aim_blocked_by_excluded_window", new AimBlockedByExcludedWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": a window this server may not act through is ` +
       `over that point. Nothing was clicked. Nothing about that window is named here — not its ` +
       `title, not its handle — and it is not the window these coordinates were measured in.`,
       because,
-    );
+    ));
   }
   if (!homing.applied && homing.why === "window_off_desktop") {
     // Refused HERE, not left to the containment check below. Between the two sits the occlusion
@@ -515,14 +536,14 @@ async function resolvePressPoint(
     // would get `aim_occluded` ("bring the intended window forward") about a window that is
     // minimised, instead of the refusal that names the minimise and says to restore it (gate 2,
     // second pass). The unit cell for this passed only because its deps carried no `pointOwner`.
-    throw new AimedPointOutsideWindowError(
+    throw refusal("window_off_desktop", "aim_point_outside_window", new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": ${theWindow} is ` +
       `parked off the desktop at (${rect.x}, ${rect.y}) — that is what Windows reports for a ` +
       `MINIMISED window, and no point on screen belongs to it. Nothing was clicked. Restore it ` +
       `(focus_window) and re-run desktop_discover.`,
       aimHwnd,
       because,
-    );
+    ));
   }
   if (!homing.applied && homing.why === "moved_during_read") {
     // The window would not hold still while it was being read, so the coordinates in this snapshot
@@ -530,14 +551,14 @@ async function resolvePressPoint(
     // where it was, a late one's where it went, and nothing here can say which is which. Pressing
     // the remembered point is the stale-coordinate press this rung exists to remove, and no
     // correction can repair it — there is no single delta (gate 1, third pass, 2026-09-09).
-    throw new AimedPointOutsideWindowError(
+    throw refusal("moved_during_read", "aim_point_outside_window", new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": these coordinates belong to ${theWindow}, and ` +
       `that window MOVED while it was being read, so the coordinates in that snapshot were measured ` +
       `against more than one position — no single correction describes them. Nothing was clicked. ` +
       `Re-run desktop_discover once the window has settled.`,
       aimHwnd,
       because,
-    );
+    ));
   }
   // ADR-036 item 5 — the coordinates say which window they came from, so the screen has to agree.
   //
@@ -610,7 +631,7 @@ async function resolvePressPoint(
     if (capturedIn === undefined || owner.hwnd === capturedIn || owner.via !== "os_hit_test") {
       return { x, y };
     }
-    throw new AimedPointOutsideWindowError(
+    throw refusal("owned_window_not_origin", "aim_point_outside_window", new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
       `${capturedIn}, and the window under that point now is ${owner.hwnd} ("${owner.title}") — ` +
       `a different window that ${aimHwnd} also owns. A menu, dialog or dropdown has an origin of ` +
@@ -618,7 +639,7 @@ async function resolvePressPoint(
       `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
       aimHwnd,
       because,
-    );
+    ));
   }
 
   if (!homing.applied && homing.why === "window_resized" && origin?.kind === "measured") {
@@ -632,7 +653,7 @@ async function resolvePressPoint(
     // (re-discover and act on what comes back), and the published advice for that reason already
     // names the resize. A second reason with the same advice would be one more thing to keep in
     // step for no reader's benefit.
-    throw new AimedPointOutsideWindowError(
+    throw refusal("window_resized", "aim_point_outside_window", new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": these coordinates belong to ${theWindow}, which is ` +
       `still on screen but has been RESIZED since the lease was taken — it was ` +
       `${origin.rect.width}x${origin.rect.height} and is ${rect.width}x${rect.height} now. A ` +
@@ -641,17 +662,17 @@ async function resolvePressPoint(
       `and nothing here can say what is under that point now. Re-run desktop_discover.`,
       aimHwnd,
       because,
-    );
+    ));
   }
   // Now the stranger on top — after this rung's verdicts, because "bring the intended window
   // forward" is not the recovery for a window that resized or is minimised.
   if (owner?.kind === "other") {
-    throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y, because, theWindow);
+    throw refusal("occluded", "aim_occluded", new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y, because, theWindow));
   }
   if (!inside) {
     // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
     // and that reason's first suggestion is a coordinate click at the entity's rect — this point.
-    throw new AimedPointOutsideWindowError(
+    throw refusal("point_outside_window", "aim_point_outside_window", new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": these coordinates belong to ${theWindow}, and ` +
       `that window is now at (${rect.x}, ${rect.y}) ${rect.width}x${rect.height}. The point comes from a ` +
       `rectangle remembered at discover time, and it was not corrected: ${homing.applied ? "it was" : homing.why}. ` +
@@ -660,7 +681,7 @@ async function resolvePressPoint(
       `Re-run desktop_discover.`,
       aimHwnd,
       because,
-    );
+    ));
   }
   return { x, y };
 }
@@ -686,6 +707,21 @@ function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity
     entityLabel: entity.label ?? null,
     ...extra,
   });
+}
+
+/**
+ * ADR-036 item 14c — a refusal on a ROUTE writes a row too, naming the route and the reason.
+ *
+ * Without it an aimed act that the UIA route could not finish ended in a typed refusal and no
+ * `act.route` row at all, which is how a record says "nothing ran" (win2, 2026-09-11, a reading of
+ * this code — the round that provokes it records the before side on `main`).
+ *
+ * The backend's own message is NOT written. On the PowerShell road it is the whole script, and on the
+ * `type` road it carries the text being typed (item 13) — a probe file is still a file on the user's
+ * disk. A reader who needs the message needs the fixture's record, not this one.
+ */
+function probeRefusal(rung: string, refused: string, aimHwnd: bigint | undefined, entity: UiEntity): void {
+  probeRoute("refusal", aimHwnd, entity, { rung, refused });
 }
 
 /**
@@ -836,6 +872,9 @@ export function createDesktopExecutor(
         now: now ? identityRow(now) : null,
         verdict,
         comparedByExecutor: true,
+        // ADR-036 item 14c — the refusal, spelled the way the envelope spells it, so one search for
+        // `refused` finds every refusal in a record. `null` when this row let the act through.
+        refused: verdict === "changed" ? "aim_identity_changed" : null,
       });
       if (verdict === "changed") {
         throw new AimIdentityChangedError(aim.hwnd, aim.identity, now);
@@ -939,7 +978,10 @@ export function createDesktopExecutor(
           return "uia";
         } catch (uiaErr) {
           // R3 tool-exclusion — as in the click path below: refusals are not rungs.
-          if (uiaErr instanceof WindowExcludedError) throw uiaErr;
+          if (uiaErr instanceof WindowExcludedError) {
+            probeRefusal("uia_set_value", "window_excluded", aimHwnd, entity);
+            throw uiaErr;
+          }
           // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses
           // the same handle (`keyboardTypeBg` looks the window up by hwnd and throws when the
           // enumeration does not hold it), so it cannot write into a different window — and a
@@ -955,7 +997,10 @@ export function createDesktopExecutor(
             // answer: a window that has gone gets the same typed refusal here as it does on the
             // click path, instead of an `executor_failed` that reads like a UIA hiccup
             // (2ゲート目の指摘). One condition, one answer, whichever action asked.
-            if (uiaErr instanceof AimedWindowGoneError) throw uiaErr;
+            if (uiaErr instanceof AimedWindowGoneError) {
+              probeRefusal("uia_set_value_then_keyboard", "aim_window_gone", aimHwnd, entity);
+              throw uiaErr;
+            }
             // ADR-036 — and an aimed WRITE ends the same way an aimed click does. Both rungs
             // addressed the handle and both are spent; reported as `executor_failed` the caller is
             // told to fall back to `click_element` / `mouse_click` at the entity's rect, which is
@@ -975,6 +1020,7 @@ export function createDesktopExecutor(
               `uia=${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)} / ` +
               `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`;
             if (aimHwnd !== undefined) {
+              probeRefusal("uia_set_value_then_keyboard", "aim_route_failed", aimHwnd, entity);
               throw new AimedRouteFailedError(
                 `${ladder}. Not falling back to a coordinate press — this call named its window, ` +
                 `and the entity's rect is a screen point that any window can be under. ` +
@@ -1001,13 +1047,19 @@ export function createDesktopExecutor(
         // here means "UIA could not do it, try the mouse"; this one means "you may not touch
         // that window", and the mouse fallback would touch it anyway, by coordinate, at the
         // rect the secure dialog now occupies (2ゲート目の指摘).
-        if (uiaErr instanceof WindowExcludedError) throw uiaErr;
+        if (uiaErr instanceof WindowExcludedError) {
+          probeRefusal("uia_click", "window_excluded", aimHwnd, entity);
+          throw uiaErr;
+        }
         // ADR-036 — nor is a dead aim a rung. The rect below is where the window WAS; a window
         // that has closed since the lease was taken has usually been replaced on screen by
         // whatever was behind it, and the downgrade would click that instead. "Window drift" is
         // one of the five failures the perception graph is built to stop, so this ends the
         // ladder and says so (2ゲート目の指摘).
-        if (uiaErr instanceof AimedWindowGoneError) throw uiaErr;
+        if (uiaErr instanceof AimedWindowGoneError) {
+          probeRefusal("uia_click", "aim_window_gone", aimHwnd, entity);
+          throw uiaErr;
+        }
         // ADR-036 — and an aimed click does not finish as a blind one.
         //
         // The downgrade below clicks `entity.rect`'s centre. That is a screen coordinate, and a
@@ -1026,6 +1078,7 @@ export function createDesktopExecutor(
         // re-discover; a blind press lets it believe. Unpinned calls keep the downgrade — a title
         // was never a promise about which window — but it is no longer BLIND: see below.
         if (aimHwnd !== undefined) {
+          probeRefusal("uia_click", "aim_route_failed", aimHwnd, entity);
           // Typed for the same reason the two refusals above are: an untyped throw arrives as
           // `executor_failed`, and that reason's published first suggestion is "fall back to
           // mouse_click using the entity rect center" — the blind press this branch exists to

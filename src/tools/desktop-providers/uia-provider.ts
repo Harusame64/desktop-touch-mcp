@@ -13,7 +13,7 @@
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
-import { probeAim } from "../../engine/aim-probe.js";
+import { probeLane } from "../../engine/aim-probe.js";
 import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
@@ -59,7 +59,7 @@ export async function fetchUiaCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
   if (!target || (!target.hwnd && !target.windowTitle)) {
-    return { candidates: [], warnings: [] };
+    return probeLane("uia", "skipped", { why: "no_target" }, { candidates: [], warnings: [] });
   }
 
   // ADR-036 — the handle is not a title. It used to stand in for one here, so a session known
@@ -78,6 +78,15 @@ export async function fetchUiaCandidates(
   // while every candidate still carries the caller's raw handle string as its target id
   // (2ゲート目の指摘).
   const hwndWarnings = pinned === undefined && target.hwnd ? ["target_hwnd_unparseable"] : [];
+  // ADR-036 item 14a — what this lane asks for, known before the read, so a read that throws still
+  // says it. `read` is filled once the bridge answers; the row is written where the lane returns.
+  const asked = {
+    windowTitle,
+    targetId: String(targetId),
+    scoped: pinned !== undefined,
+    pinnedHwnd: pinned !== undefined ? pinned.toString() : null,
+  };
+  let read: Record<string, unknown> | undefined;
 
   try {
     const { getUiElements, detectUiaBlind } = await import("../../engine/uia-bridge.js");
@@ -92,20 +101,17 @@ export async function fetchUiaCandidates(
 
     // ADR-036 probe — what this lane actually asked for, and what it stamps on every candidate.
     // `scoped:false` with a `targetId` that looks like a handle is the read describing one window
-    // while claiming another.
-    probeAim("provider.read", {
-      lane: "uia",
-      windowTitle,
-      targetId: String(targetId),
-      scoped: pinned !== undefined,
-      pinnedHwnd: pinned !== undefined ? pinned.toString() : null,
+    // while claiming another. Written where the lane returns (item 14a), so the row also says what
+    // came back — and a throw between here and there still writes it, as `failed`.
+    read = {
+      ...asked,
       elementCount: result.elementCount,
       truncated: result.truncated ?? null,
       clientProviders: result.clientProviders ?? null,
       // ADR-036 item 15 — recorded because "the ladder did not run" and "the read could not say
       // which window" look identical downstream, and only this row separates them.
       windowHwnd: result.windowHwnd ?? null,
-    });
+    };
 
     const candidates: UiEntityCandidate[] = result.elements
       .filter((el) => el.isEnabled && el.name)
@@ -175,9 +181,10 @@ export async function fetchUiaCandidates(
       else if (blind.reason === "too-few-elements") warnings.push("uia_blind_too_few_elements");
     }
 
-    return { candidates, warnings };
+    return probeLane("uia", "read", read, { candidates, warnings });
   } catch (err) {
     console.error(`[uia-provider] Error for target "${targetId}":`, err);
-    return { candidates: [], warnings: [...hwndWarnings, "uia_provider_failed"] };
+    // What was read, when the throw came after the read; what was asked, when it came before.
+    return probeLane("uia", "failed", read ?? asked, { candidates: [], warnings: [...hwndWarnings, "uia_provider_failed"] });
   }
 }

@@ -420,6 +420,20 @@ try {
   // Native addon not built or platform unsupported — callers fall back to TS/PowerShell.
 }
 
+/**
+ * ADR-036 item 14b — every callable the loaded binding exposes, by name and sorted; `null` when no
+ * binding loaded at all.
+ *
+ * The whole set, not a list of the ones someone thought to check. A curated list answers the
+ * question its author already had, and the one that cost a round on 2026-09-10 — does this `.node`
+ * carry `win32WindowFromPoint`? — was on nobody's list until a sandbox had been read wrong for it.
+ */
+export function nativeExportNames(): string[] | null {
+  const binding = nativeBinding;
+  if (!binding) return null;
+  return Object.keys(binding).filter((k) => typeof binding[k] === "function").sort();
+}
+
 export const nativeEngine: NativeEngine | null =
   nativeBinding &&
   typeof nativeBinding.computeChangeFraction === "function" &&

@@ -16,6 +16,7 @@
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { getVisualRuntime, targetKeyToWarmTarget } from "../../engine/vision-gpu/runtime.js";
+import { probeLane } from "../../engine/aim-probe.js";
 
 // H-killswitch: operator escape hatch. When set, the visual lane behaves
 // exactly as if no backend were attached — the provider returns
@@ -34,31 +35,36 @@ function targetKeyFromSpec(target: TargetSpec | undefined): string {
 export async function fetchVisualCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
+  // ADR-036 item 14a — every return below writes the lane's row. The first two answer the same
+  // warning for two different reasons, and only the row's `why` tells an operator's switch from a
+  // backend that never attached.
   if (VISUAL_GPU_DISABLED) {
-    return { candidates: [], warnings: ["visual_provider_unavailable"] };
+    return probeLane("visual_gpu", "skipped", { why: "disabled_by_env" }, { candidates: [], warnings: ["visual_provider_unavailable"] });
   }
 
   const runtime = getVisualRuntime();
 
   if (!runtime.isAvailable()) {
     // No backend attached — Phase 2 stub behavior.
-    return { candidates: [], warnings: ["visual_provider_unavailable"] };
+    return probeLane("visual_gpu", "skipped", { why: "no_backend" }, { candidates: [], warnings: ["visual_provider_unavailable"] });
   }
 
   const targetKey  = targetKeyFromSpec(target);
   const warmTarget = targetKeyToWarmTarget(targetKey);
 
+  // What this lane asks for; the warm state joins it once there is one.
+  const asked = { targetKey };
   let warmState: import("../../engine/vision-gpu/types.js").WarmState;
   try {
     warmState = await runtime.ensureWarm(warmTarget);
   } catch (err) {
     console.error("[visual-provider] ensureWarm failed:", err);
-    return { candidates: [], warnings: ["visual_provider_failed"] };
+    return probeLane("visual_gpu", "failed", { ...asked, why: "ensure_warm_threw" }, { candidates: [], warnings: ["visual_provider_failed"] });
   }
 
   if (warmState === "cold" || warmState === "warming") {
     // Pipeline not ready yet — let the caller know so LLM can retry.
-    return { candidates: [], warnings: ["visual_provider_warming"] };
+    return probeLane("visual_gpu", "skipped", { ...asked, why: "warming", warmState }, { candidates: [], warnings: ["visual_provider_warming"] });
   }
 
   if (warmState === "evicted") {
@@ -67,10 +73,10 @@ export async function fetchVisualCandidates(
     try {
       warmState = await runtime.ensureWarm(warmTarget);
     } catch {
-      return { candidates: [], warnings: ["visual_provider_failed"] };
+      return probeLane("visual_gpu", "failed", { ...asked, why: "ensure_warm_threw", warmState: "evicted" }, { candidates: [], warnings: ["visual_provider_failed"] });
     }
     if (warmState !== "warm") {
-      return { candidates: [], warnings: ["visual_provider_warming"] };
+      return probeLane("visual_gpu", "skipped", { ...asked, why: "warming", warmState }, { candidates: [], warnings: ["visual_provider_warming"] });
     }
   }
 
@@ -90,11 +96,11 @@ export async function fetchVisualCandidates(
     // Only when the answer is empty: a backend that replays something HAS produced candidates for
     // this target, and saying it cannot look would be false about the answer in hand.
     if (candidates.length === 0 && runtime.recognitionCapability() === "replays_injected_only") {
-      return { candidates, warnings: ["visual_backend_cannot_recognise"] };
+      return probeLane("visual_gpu", "read", { ...asked, warmState }, { candidates, warnings: ["visual_backend_cannot_recognise"] });
     }
-    return { candidates, warnings: [] };
+    return probeLane("visual_gpu", "read", { ...asked, warmState }, { candidates, warnings: [] });
   } catch (err) {
     console.error("[visual-provider] getStableCandidates failed:", err);
-    return { candidates: [], warnings: ["visual_provider_failed"] };
+    return probeLane("visual_gpu", "failed", { ...asked, warmState }, { candidates: [], warnings: ["visual_provider_failed"] });
   }
 }

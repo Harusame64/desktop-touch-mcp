@@ -15,6 +15,7 @@
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
+import { probeLane } from "../../engine/aim-probe.js";
 
 function isPromptLine(line: string): boolean {
   return /[>$#]\s*$/.test(line.trim());
@@ -38,9 +39,19 @@ export async function fetchTerminalCandidates(
   // (2ゲート目の指摘: this branch is unreachable today, and saying so is cheaper than pretending
   // it is not there).
   const pinned = parseTargetHwnd(target);
-  if (!target?.windowTitle && pinned === undefined) return { candidates: [], warnings: [] };
+  if (!target?.windowTitle && pinned === undefined) {
+    return probeLane("terminal", "skipped", { why: "no_target" }, { candidates: [], warnings: [] });
+  }
   const windowTitle = target?.windowTitle ?? "@active";
   const targetId    = target?.hwnd ?? target?.windowTitle ?? "@active";
+  // ADR-036 item 14a — what this lane asks for, known before the read so a read that throws still
+  // says it. Never the buffer: a terminal holds whatever the user typed, secrets included.
+  const asked = {
+    windowTitle,
+    targetId,
+    scoped: pinned !== undefined,
+    pinnedHwnd: pinned !== undefined ? pinned.toString() : null,
+  };
 
   try {
     const { getTextViaTextPattern } = await import("../../engine/uia-bridge.js");
@@ -114,9 +125,10 @@ export async function fetchTerminalCandidates(
       });
     }
 
-    return { candidates, warnings };
+    // Whether the buffer came back — never what it said.
+    return probeLane("terminal", "read", { ...asked, bufferRead: Boolean(raw) }, { candidates, warnings });
   } catch (err) {
     console.error(`[terminal-provider] Error for "${windowTitle}":`, err);
-    return { candidates: [], warnings: ["terminal_provider_failed"] };
+    return probeLane("terminal", "failed", asked, { candidates: [], warnings: ["terminal_provider_failed"] });
   }
 }
