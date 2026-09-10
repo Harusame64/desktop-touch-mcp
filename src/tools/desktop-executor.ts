@@ -266,13 +266,18 @@ export function terminalBgExecute(
 async function resolvePressPoint(
   deps: ExecutorDeps,
   aim: Aim,
+  /**
+   * ADR-036 item 12 — the window these COORDINATES were measured in, which is not always the window
+   * the call named. Passed in rather than read off the aim, because for a title-only discover the
+   * aim has no handle at all and the entity does.
+   */
+  aimHwnd: bigint | undefined,
   /** ADR-036 item 5 — its sources say whether the bracketed origin can describe its coordinates. */
   entity: UiEntity,
   x: number,
   y: number,
   label: string,
 ): Promise<{ x: number; y: number }> {
-  const aimHwnd = aim.hwnd;
   // Narrowed rather than asserted. The caller only reaches here with a handle, and an assertion
   // would keep that true by decree: this way a caller that stops checking loses the ladder, which
   // is what it did before the ladder existed, instead of throwing inside it.
@@ -579,6 +584,28 @@ export function createDesktopExecutor(
     // ADR-036 — read once per touch, next to the title it replaces, so a route added later has to
     // walk past it rather than reach for `winTitle` alone.
     const aimHwnd = aim.hwnd;
+
+    // ADR-036 item 12 — which window this entity's COORDINATES were measured in.
+    //
+    // `aimHwnd` is what the call NAMED, and for the commonest way of naming a window it is nothing:
+    // `desktop_discover({windowTitle: "…"})` against an ordinary top-level window goes through
+    // `_resolve-window.ts` case 3, which finds the window and returns null ON PURPOSE so the
+    // providers keep searching by title. The aim then carries no handle, and every rung of this
+    // ADR — identity invalidation, occlusion, containment, the homing correction — is gated behind
+    // one and silently does not run.
+    //
+    // The entity knows. ADR-029 already answered this for the viewport gate, and `origin.hwnd` is
+    // its answer: the handle the CAPTURE resolved, not a re-derivation of the query. Re-resolving
+    // the title here instead would be worse than doing nothing: three searches resolve a title in
+    // this codebase and none of them agree by construction — the UIA bridge takes the first
+    // UIA-tree child whose name matches, `runSomPipeline` the first Z-ORDER window, and
+    // `findPlainTopLevelWindowsByTitle` walks Z-order while excluding dialogs and owned windows. A
+    // fourth search would pin the act to a window the read may never have touched.
+    //
+    // Kept SEPARATE from `aimHwnd`: this one only decides where a coordinate press may land and is
+    // never handed to a backend, so the read path's addressing is untouched and a wrong value costs
+    // a refusal rather than a press into another window.
+    const coordHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
 
     // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
     // checked: after the lease was taken and before anything is done about it.
@@ -947,8 +974,8 @@ export function createDesktopExecutor(
     // where the press actually goes: homing correction, then who is under the point, then whether
     // the point is in the window at all. Identity invalidation ran at the top of this closure,
     // before any route was chosen, because a changed identity makes every rectangle meaningless.
-    const { x, y } = aimHwnd !== undefined
-      ? await resolvePressPoint(d, aim, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
+    const { x, y } = coordHwnd !== undefined
+      ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
       : remembered;
     // ADR-029 Phase 1 — and the point that gets PRESSED is the one that has to be on a monitor.
     // Checked here rather than on the remembered point, because those stopped being the same
@@ -965,6 +992,10 @@ export function createDesktopExecutor(
       point: { x, y },
       remembered,
       rect: entity.rect,
+      // Both, because they are different facts: what the call named, and what the ladder ran
+      // against. A row where `aimHwnd` is null and `coordHwnd` is not is item 12 doing its work.
+      coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
+      coordHwndFrom: aimHwnd !== undefined ? "aim" : coordHwnd !== undefined ? "entity_origin" : null,
     });
     await d.mouseClick(x, y);
     return "mouse";
