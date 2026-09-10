@@ -23,9 +23,9 @@
     compared as well as the process. Nothing was done, and the recovery is the
     same for all of them: discover again and act on what comes back.
   - `aim_occluded` — another window is drawn over the point and would have taken
-    the click. The message names it, so you can bring your window forward or act
-    through `click_element`, which does not use coordinates. A dropdown or menu
-    your own window owns is *not* treated as being in the way.
+    the click. Bring your window forward, or act through `click_element`, which
+    does not use coordinates. A dropdown or menu your own window owns is *not*
+    treated as being in the way.
   - `aim_point_outside_window` — the coordinates can no longer be followed to the
     window they were measured in: it was minimised, or it was resized (the
     contents may have been laid out differently, so this is refused even where
