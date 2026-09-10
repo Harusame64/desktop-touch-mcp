@@ -1072,7 +1072,7 @@ export const desktopActRawHandler = async (
   if (!result.ok && result.reason === "aim_blocked_by_excluded_window") {
     const failure = toFailureEnvelope(
       Err(new AimBlockedByExcludedRefusalError(
-        "AimBlockedByExcluded: a window this server may not act through is over the point this act would have pressed — nothing was clicked. " +
+        "AimBlockedByExcludedWindow: a window this server may not act through is over the point this act would have pressed — nothing was clicked. " +
         "The window you named is not the excluded one. Act through click_element, or retry once the point is clear"
       )),
       { optIn: false, detail: result.detail },

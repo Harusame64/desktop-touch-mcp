@@ -333,7 +333,7 @@ const SUGGESTS: Record<string, string[]> = {
   // **Nothing here describes the covering window.** Not its title, not its handle, not what it
   // belongs to. A caller told only "something is over the point" can still act; a caller told what
   // it is has been given the thing the registry exists to keep.
-  AimBlockedByExcluded: [
+  AimBlockedByExcludedWindow: [
     "A window this server may not act through is over the point this act would have pressed, so nothing was done. Your window is NOT the excluded one — it is still there and still actionable; something else is drawn over that point right now.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the same point would reach that window through a route that does not check this, which is the press being refused here.",
     "Act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which does not move the cursor and does not press whatever is on top.",

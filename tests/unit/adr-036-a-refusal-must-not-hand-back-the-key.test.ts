@@ -27,7 +27,11 @@ import {
   AimRouteFailedError,
   WindowExcludedRefusalError,
   AimBlockedByExcludedRefusalError,
+  CursorPlacementBlockedError,
+  CoordinateOutsideReachableBoundsError,
 } from "../../src/errors/typed-errors.js";
+import { toFailureEnvelope } from "../../src/tools/_envelope.js";
+import { Err } from "../../src/types/result.js";
 import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import { detectUiaBlind } from "../../src/engine/uia-bridge.js";
@@ -115,6 +119,47 @@ describe("the loop keeps each refusal's own name", () => {
     }
   });
 
+  it("publishes the same reason the loop reported, which the class name alone decides", async () => {
+    // Two surfaces, one refusal. `desktop_act`'s catalogue documents the reason the loop reports,
+    // while the RAW (non-opt-in) shape derives its `reason` from the typed error's name through
+    // `pascalToSnake`. A class named one word short of the reason published two different strings
+    // for one failure, and a client following the documented contract would not recognise the
+    // short one (PR 側 codex on #618, P2).
+    const raw = (e: Error) => (toFailureEnvelope(Err(e), { optIn: false }) as { reason?: string }).reason;
+    expect(raw(new AimBlockedByExcludedRefusalError("x"))).toBe("aim_blocked_by_excluded_window");
+    // The control: the same derivation on the refusals that were already right. Without these the
+    // assertion above could be satisfied by a special case rather than by the naming rule.
+    expect(raw(new WindowExcludedRefusalError("x"))).toBe("window_excluded");
+    expect(raw(new AimPointOutsideWindowError("x"))).toBe("aim_point_outside_window");
+    expect(raw(new AimRouteFailedError("x"))).toBe("aim_route_failed");
+  });
+
+  it("carries a detail for the two pointer refusals, whose advice already points at the field", async () => {
+    // Both classes are purpose-written and engine-authored — coordinates, a monitor layout, and
+    // which of the named cases applies — so there is nothing foreign to leak and the opt-in should
+    // have covered them from the start. It did not, and the advice this branch added tells the
+    // caller to read `if_unexpected.detail`: an envelope naming a field that never appears, which
+    // is the defect item 13 exists to close, reintroduced by the line describing the fix.
+    const cursor = new CursorPlacementBlockedError(
+      "CursorPlacementBlocked: the cursor could not be moved to (140, 215), which is on a connected monitor.",
+    );
+    const cursorResult = await loopThatThrows(cursor).loop.touch({ lease: loopThatThrows(cursor).lease });
+    expect(cursorResult.ok).toBe(false);
+    if (!cursorResult.ok) {
+      expect(cursorResult.reason).toBe("cursor_placement_blocked");
+      expect(cursorResult.detail).toMatch(/on a connected monitor/);
+    }
+    const bounds = new CoordinateOutsideReachableBoundsError(
+      "CoordinateOutsideReachableBounds: (9999, 9999) is on no connected monitor.",
+    );
+    const boundsResult = await loopThatThrows(bounds).loop.touch({ lease: loopThatThrows(bounds).lease });
+    expect(boundsResult.ok).toBe(false);
+    if (!boundsResult.ok) {
+      expect(boundsResult.reason).toBe("coordinate_outside_reachable_bounds");
+      expect(boundsResult.detail).toMatch(/no connected monitor/);
+    }
+  });
+
   it("matches names the classes actually carry", () => {
     // Same seam as the existing arm in `guarded-touch.test.ts`: the catch arms hold a string, the
     // classes hold a string, and nothing but this joins them. Rename one side and every refusal
@@ -150,7 +195,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(generic.join(" ")).toMatch(/mouse_click/);
   });
 
-  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcluded"]) {
+  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcludedWindow"]) {
     it(`${name} never tells the caller to press the coordinate it just refused`, async () => {
       const advice = await adviceFor(name);
       const joined = advice.join(" ");
@@ -173,7 +218,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(new AimPointOutsideWindowError("x").name).toBe("AimPointOutsideWindow");
     expect(new AimRouteFailedError("x").name).toBe("AimRouteFailed");
     expect(new WindowExcludedRefusalError("x").name).toBe("WindowExcluded");
-    expect(new AimBlockedByExcludedRefusalError("x").name).toBe("AimBlockedByExcluded");
+    expect(new AimBlockedByExcludedRefusalError("x").name).toBe("AimBlockedByExcludedWindow");
   });
 
   it("does not tell a caller whose window is fine that their window is the excluded one", async () => {
@@ -181,7 +226,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     // excluded ... Nothing was done to it" and closes by naming the key locker's own dialog — true
     // for a caller who addressed the locker, false for one whose own window is merely covered, and
     // the identification is exactly what the refusal's detail is written to withhold.
-    const covered = await adviceFor("AimBlockedByExcluded");
+    const covered = await adviceFor("AimBlockedByExcludedWindow");
     const joined = covered.join(" ");
     expect(joined).not.toMatch(/key locker/i);
     expect(joined).toMatch(/NOT the excluded one/i);
