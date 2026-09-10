@@ -96,6 +96,20 @@ describe("the correction moves the point with the window, and only then", () => 
       .toEqual({ applied: false, x: 458, y: 900, why: "point_was_outside_origin" });
   });
 
+  it("still refuses a parked or smeared window when the coordinates are not ours to correct", () => {
+    // Gate 2 (2026-09-10) on the first version of the sources gate, which sat in a wrapper in FRONT
+    // of everything: a `visual_gpu` entity on a MINIMISED window answered `measurement_moment_unknown`,
+    // so the minimise refusal never fired and the caller was told by the occlusion rung to bring a
+    // minimised window forward — exactly the defect the OFF_DESKTOP comment records closing, re-made
+    // one layer up. These two verdicts are about the window and the origin, not about whose
+    // measurement the coordinates are, so they come first.
+    const parked: WindowRect = { x: -32000, y: -32000, width: 600, height: 400 };
+    expect(homingCorrectionForSources(["visual_gpu"], { kind: "measured", rect: ORIGIN }, parked, 458, 215))
+      .toEqual({ applied: false, x: 458, y: 215, why: "window_off_desktop" });
+    expect(homingCorrectionForSources(["visual_gpu"], { kind: "moved_during_read" }, MOVED, 458, 215))
+      .toEqual({ applied: false, x: 458, y: 215, why: "moved_during_read" });
+  });
+
   it("keeps 'nobody measured one' apart from 'the window would not hold still'", () => {
     // The distinction the whole `AimOrigin` union exists for: one costs the correction, the other
     // refuses the press.
@@ -280,6 +294,31 @@ describe("the press lands where the control went", () => {
     });
     await expect(createDesktopExecutor(aimed, d)(entity(), "click")).rejects.toThrow(/MINIMISED/);
     expect(d.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("declines when the capture says these pixels came from another window", async () => {
+    // Gate 2 (2026-09-10): the owned-popup guard was ENTIRELY conditional on `deps.pointOwner`,
+    // which is optional by design — a build whose enumeration cannot answer must not have every
+    // aimed action refused — so on a build without it nothing stood in front of the popup case at
+    // all. This half needs no enumeration: ADR-029 records the handle the capture resolved on every
+    // candidate, and it was there unread.
+    const d = deps();   // no pointOwner
+    const fromAnotherWindow: UiEntity = {
+      ...entity(),
+      origin: { kind: "window", id: "CELL BUTTONS", hwnd: "888" },   // a modal, not the aim
+    };
+    await createDesktopExecutor(aimed, d)(fromAnotherWindow, "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(458, 215);   // uncorrected
+  });
+
+  it("still corrects when the capture and the aim are the same window", async () => {
+    const d = deps();
+    const fromTheAim: UiEntity = {
+      ...entity(),
+      origin: { kind: "window", id: "CELL BUTTONS", hwnd: HWND.toString() },
+    };
+    await createDesktopExecutor(aimed, d)(fromTheAim, "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(458, 144);
   });
 
   it("allows a popup drawn OVER its owner, even after the owner resized", async () => {

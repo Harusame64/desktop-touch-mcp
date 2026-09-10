@@ -406,6 +406,7 @@ export type Homing =
         | "window_resized"
         | "point_was_outside_origin"
         | "owned_popup_at_remembered_point"
+        | "measured_in_another_window"
         | "measurement_moment_unknown"
         | "window_off_desktop";
     };
@@ -438,8 +439,18 @@ const OFF_DESKTOP = -32000;
  * correctly before the rung and incorrectly after it.
  *
  * `inferred` is out for the same reason with less evidence: nothing says when it was measured.
+ *
+ * **Two names, not six.** The first version listed `win32`, `som`, `cdp` and `terminal` as well,
+ * which asserted a property no name is tied to: `win32` and `som` are emitted by no provider in
+ * `composeCandidatesInner` at all, and `cdp` candidates carry no rect, so nothing on the mouse
+ * route ever arrived under them (gate 2, 2026-09-10). An allowlist of names is a claim about lanes,
+ * and a lane added later under a listed name inherits a trust nobody re-granted — which is exactly
+ * how `visual_gpu` was found. Listing only what exists keeps the next lane's arrival a decision.
+ *
+ * The property this really wants is on the observation, not on its lane's name: an origin recorded
+ * WITH each capture would answer it directly, and that is the lane work ADR-036 item 5 carries.
  */
-const BRACKETED_SOURCES: ReadonlySet<string> = new Set(["uia", "cdp", "win32", "ocr", "som", "terminal"]);
+const BRACKETED_SOURCES: ReadonlySet<string> = new Set(["uia", "ocr"]);
 
 /**
  * ADR-036 item 5 — the correction with the policy that decides whether it may run at all.
@@ -461,18 +472,51 @@ const BRACKETED_SOURCES: ReadonlySet<string> = new Set(["uia", "cdp", "win32", "
  * not. That costs an off-centre SSIM window and never a press, and it is written down rather than
  * silently uneven.
  */
+/**
+ * ADR-036 — the handle of the window an entity was actually observed in, when it is one.
+ *
+ * `origin.id` is provider-defined and is usually the caller's QUERY — a title, or `"@active"` — so
+ * only `origin.hwnd` is read, which ADR-029 defines as *"the handle of the window the candidate was
+ * actually observed in, when the producer knows it"*. A browser tab has no window handle and is
+ * skipped by the same rule. Non-positive and unreadable both mean "no handle", as everywhere else
+ * in this ADR.
+ *
+ * Structural parameter rather than `UiEntity`, so this module keeps its independence from the
+ * world-graph types.
+ */
+export function observedHwndOfOrigin(
+  origin: { kind: "window" | "browserTab"; hwnd?: string } | undefined,
+): bigint | undefined {
+  const raw = origin?.kind === "window" ? origin.hwnd : undefined;
+  return parseHandle(raw);
+}
+
 export function homingCorrectionForSources(
   sources: readonly string[],
   aimOrigin: AimOrigin | undefined,
   current: WindowRect,
   x: number,
   y: number,
+  /**
+   * ADR-036 item 5 — which window these coordinates were captured in, and which window the origin
+   * describes. When both are known and they differ, the origin's delta is not theirs.
+   *
+   * This is the screen-free half of the owned-popup guard. The other half asks `pointOwner` at the
+   * remembered point, and that dep is OPTIONAL by design — a build whose enumeration cannot answer
+   * must not have every aimed action refused — so on a build without it the popup case had nothing
+   * standing in front of it at all (gate 2, 2026-09-10). This half needs no enumeration: ADR-029
+   * already records "the handle the capture actually resolved" on every candidate it produces, and
+   * `productionCheckViewport` uses it for exactly this question. It was there and unread.
+   *
+   * Absent on either side means no evidence, which costs the guard and not the press.
+   */
+  window?: { capturedIn?: bigint; originOf?: bigint },
 ): Homing {
-  // Every source, not any: a merged entity is only as trustworthy as its least-dated lane.
-  if (sources.length === 0 || !sources.every((src) => BRACKETED_SOURCES.has(src))) {
-    return { applied: false, x, y, why: "measurement_moment_unknown" };
+  if (window?.capturedIn !== undefined && window.originOf !== undefined
+      && window.capturedIn !== window.originOf) {
+    return { applied: false, x, y, why: "measured_in_another_window" };
   }
-  return homingCorrection(aimOrigin, current, x, y);
+  return homingCorrection(aimOrigin, current, x, y, sources);
 }
 
 function homingCorrection(
@@ -480,6 +524,7 @@ function homingCorrection(
   current: WindowRect,
   x: number,
   y: number,
+  sources: readonly string[],
 ): Homing {
   // Asked FIRST, before the two origin short-circuits, because "parked off the desktop" is a
   // property of the current rectangle alone and needs no origin to establish. Asked after them, an
@@ -494,6 +539,25 @@ function homingCorrection(
   // Not a missing measurement: a measurement that says these coordinates are unusable. The caller
   // refuses on it, where `no_origin_rect` costs only the correction.
   if (aimOrigin.kind === "moved_during_read") return { applied: false, x, y, why: "moved_during_read" };
+
+  // ONLY NOW the question of whose measurement these coordinates are.
+  //
+  // The three verdicts above do not depend on it: `window_off_desktop` is a property of the
+  // current rectangle alone, and the two origin verdicts are properties of the origin value. The
+  // ones below all compare the origin to the current rectangle FOR THESE COORDINATES, so they do.
+  //
+  // The first version of this gate sat in a wrapper in front of the whole function, which made it
+  // a third short-circuit ahead of the one the comment above says is asked "FIRST" — so a
+  // `visual_gpu` entity on a MINIMISED window answered `measurement_moment_unknown`, the minimise
+  // refusal never fired, and the caller was told by the occlusion rung to bring a minimised window
+  // forward. Exactly the defect that comment records closing, re-made one layer up (gate 2,
+  // 2026-09-10). Merging the two functions is what keeps the order in one readable place.
+  //
+  // Every source, not any: a merged entity is only as trustworthy as its least-dated lane.
+  if (sources.length === 0 || !sources.every((src) => BRACKETED_SOURCES.has(src))) {
+    return { applied: false, x, y, why: "measurement_moment_unknown" };
+  }
+
   const origin = aimOrigin.rect;
   // Asked before the resize test on purpose. A point that was never inside this window — an owned
   // popup, which has its own origin — was not described by this window's layout, so a change in

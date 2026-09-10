@@ -30,6 +30,7 @@ import {
   compareAimIdentity,
   readWindowIdentityFields,
   homingCorrectionForSources,
+  observedHwndOfOrigin,
   containsPoint,
   type Aim,
   type WindowIdentity,
@@ -306,7 +307,10 @@ async function resolvePressPoint(
   // press itself — uses the corrected point, because a ladder that checks one point and presses
   // another is checking nothing.
   const origin = aim.origin;
-  let homing = homingCorrectionForSources(entity.sources, origin, rect, x, y);
+  let homing = homingCorrectionForSources(entity.sources, origin, rect, x, y, {
+    capturedIn: observedHwndOfOrigin(entity.origin),
+    originOf: aim.hwnd,
+  });
   // ADR-036 item 5 — the correction is about the AIMED window, and a point can belong to a window
   // merely drawn inside it. A modal dialog, or a dropdown that opens OVER its combo, is a top-level
   // window of its own whose centre falls inside the owner's rectangle — and it does NOT move when
@@ -444,11 +448,10 @@ async function resolvePressPoint(
     throw new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": this call named window ${aimHwnd}, and that ` +
       `window is now at (${rect.x}, ${rect.y}) ${rect.width}x${rect.height}. The point comes from a ` +
-      `rectangle remembered at discover time, and it could not be followed: the window was minimised ` +
-      `(a parked window reports ${OFF_DESKTOP_HINT}), or there was no origin to compare it against. ` +
-      `A window that moved WITHOUT resizing is followed automatically when the coordinates were ` +
-      `measured in this same read; a bigger move is answered earlier, by the viewport gate. ` +
-      `Whatever is under that point now would take the click. Re-run desktop_discover.`,
+      `rectangle remembered at discover time, and it was not corrected: ${homing.applied ? "it was" : homing.why}. ` +
+      `A window that moved WITHOUT resizing is followed when the coordinates were measured in the ` +
+      `same read that measured the window. Whatever is under that point now would take the click. ` +
+      `Re-run desktop_discover.`,
       aimHwnd,
     );
   }

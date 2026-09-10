@@ -16,7 +16,7 @@ import {
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { probeAim } from "../engine/aim-probe.js";
-import { toAim, readWindowIdentityFields, homingCorrectionForSources, type Aim } from "../engine/aim.js";
+import { toAim, readWindowIdentityFields, homingCorrectionForSources, observedHwndOfOrigin, type Aim } from "../engine/aim.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import type { TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
@@ -838,7 +838,10 @@ export class DesktopFacade {
     // how the defect got reproduced inside its own fix: the press path learned to decline for
     // coordinates the bracketed origin cannot describe, and this one went on correcting them
     // (win2, auditing the review, 2026-09-10).
-    const homed = homingCorrectionForSources(entity.sources, session.lastAim?.origin, windowRect, x, y);
+    const homed = homingCorrectionForSources(entity.sources, session.lastAim?.origin, windowRect, x, y, {
+      capturedIn: observedHwndOfOrigin(entity.origin),
+      originOf: session.lastAim?.hwnd,
+    });
     return { x: homed.x, y: homed.y };
   }
 
