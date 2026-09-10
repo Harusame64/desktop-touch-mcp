@@ -143,6 +143,21 @@ describe("the correction moves the point with the window, and only then", () => 
       .toEqual({ applied: false, x: 458, y: 215, why: "measured_in_another_window" });
   });
 
+  it("refuses a resize even for a lane whose measurement moment is unknown", () => {
+    // PR 側 codex (2026-09-10), and the third time on this branch that a new question was placed in
+    // front of an older refusal. The sources gate answered `measurement_moment_unknown` for a
+    // `visual_gpu` entity on a RESIZED window; the executor's resize refusal switches on
+    // `window_resized`, so it never fired and the remembered point was pressed into a layout that
+    // may have reflowed underneath it — a press that was refused before this gate existed.
+    const resized: WindowRect = { x: 100, y: 200, width: 900, height: 400 };
+    expect(homingCorrectionForSources(["visual_gpu"], { kind: "measured", rect: ORIGIN }, resized, 458, 215))
+      .toEqual({ applied: false, x: 458, y: 215, why: "window_resized" });
+    // And below the geometry it still does its whole job: a window that merely MOVED is not
+    // followed for a lane the bracket cannot vouch for.
+    expect(homingCorrectionForSources(["visual_gpu"], { kind: "measured", rect: ORIGIN }, MOVED, 458, 215))
+      .toEqual({ applied: false, x: 458, y: 215, why: "measurement_moment_unknown" });
+  });
+
   it("keeps 'nobody measured one' apart from 'the window would not hold still'", () => {
     // The distinction the whole `AimOrigin` union exists for: one costs the correction, the other
     // refuses the press.
@@ -296,6 +311,21 @@ describe("the press lands where the control went", () => {
     expect(d.mouseClick).toHaveBeenCalledWith(458, 215);
   });
 
+  it("follows the window anyway when the capture says the entity is the aim's own", async () => {
+    // PR 側 codex (2026-09-10). The popup guard reads the screen: an owned window on the remembered
+    // point suppresses the correction, because the entity MIGHT belong to it. When `origin.hwnd`
+    // says the pixels were captured in the AIM, that "might" is answered — the entity is the aim's
+    // own control, the correction is valid, and dropping it presses into whatever popup happens to
+    // be sitting on the stale point instead of following the control to where it went.
+    const d = deps({ pointOwner: () => ({ kind: "owned" as const, hwnd: 888n, title: "" }) });
+    const fromTheAim: UiEntity = {
+      ...entity(),
+      origin: { kind: "window", id: "CELL BUTTONS", hwnd: HWND.toString() },
+    };
+    await createDesktopExecutor(aimed, d)(fromTheAim, "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(458, 144);   // corrected, not left on the popup
+  });
+
   it("still follows the window when the point belongs to the aim itself", async () => {
     // The other side of the same question: `aim` under the point is not a reason to decline, and
     // neither is `unknown`. Declining on those would turn the rung off wherever the enumeration is
@@ -305,6 +335,15 @@ describe("the press lands where the control went", () => {
       await createDesktopExecutor(aimed, d)(entity(), "click");
       expect(d.mouseClick).toHaveBeenCalledWith(458, 144);
     }
+  });
+
+  it("refuses the press when a stored-snapshot entity's window has been resized", async () => {
+    // The executor half of the same finding: the reason has to reach the rung that refuses.
+    const resized: WindowRect = { x: 100, y: 200, width: 900, height: 400 };
+    const d = deps({ aimRect: vi.fn(async () => resized) });
+    const stored: UiEntity = { ...entity(), sources: ["visual_gpu"] };
+    await expect(createDesktopExecutor(aimed, d)(stored, "click")).rejects.toThrow(/RESIZED/);
+    expect(d.mouseClick).not.toHaveBeenCalled();
   });
 
   it("refuses a smeared snapshot even when a popup sits under the stale point", async () => {

@@ -568,11 +568,6 @@ export function homingCorrectionForSources(
   // refuses on it, where `no_origin_rect` costs only the correction.
   if (aimOrigin.kind === "moved_during_read") return { applied: false, x, y, why: "moved_during_read" };
 
-  // Every source, not any: a merged entity is only as trustworthy as its least-dated lane.
-  if (sources.length === 0 || !sources.every((src) => BRACKETED_SOURCES.has(src))) {
-    return { applied: false, x, y, why: "measurement_moment_unknown" };
-  }
-
   const origin = aimOrigin.rect;
   // Asked before the resize test on purpose. A point that was never inside this window — an owned
   // popup, which has its own origin — was not described by this window's layout, so a change in
@@ -591,6 +586,24 @@ export function homingCorrectionForSources(
   if (origin.width !== current.width || origin.height !== current.height) {
     return { applied: false, x, y, why: "window_resized" };
   }
+
+  // LAST, and it took a round to learn why. This is the only verdict here that is about the
+  // COORDINATES rather than about the window, and the caller refuses on several of the ones above
+  // it — so answering first meant answering INSTEAD of them. A `visual_gpu` entity on a window that
+  // had been RESIZED came back `measurement_moment_unknown`, the executor's resize refusal never
+  // fired (it switches on `window_resized`), and the remembered point was pressed into a layout
+  // that may have reflowed underneath it — a press that was refused before this gate existed
+  // (PR 側 codex, 2026-09-10). The same shape as the two rungs above, for the third time on this
+  // branch: a new question placed before an older refusal takes its turn.
+  //
+  // Below the geometry, it still does its whole job: a window that merely MOVED is not followed for
+  // a lane the bracket cannot vouch for, which is the regression this gate exists to prevent.
+  //
+  // Every source, not any: a merged entity is only as trustworthy as its least-dated lane.
+  if (sources.length === 0 || !sources.every((src) => BRACKETED_SOURCES.has(src))) {
+    return { applied: false, x, y, why: "measurement_moment_unknown" };
+  }
+
   const dx = current.x - origin.x;
   const dy = current.y - origin.y;
   if (dx === 0 && dy === 0) return { applied: false, x, y, why: "not_moved" };

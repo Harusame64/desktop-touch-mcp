@@ -318,13 +318,23 @@ async function resolvePressPoint(
   // ownership test below then runs at the moved point and can see the owner as clear (PR 側 codex
   // on #609, second round). That is a press the code got right before this rung existed.
   //
-  // Nothing recorded with the candidates says which window it came from — that is the lane work
-  // ADR-036 item 5 carries — so the question is put to the screen at the REMEMBERED point, and only
-  // when a correction would otherwise be adopted. An owned window sitting there is reason enough to
-  // leave the point alone: the entity plausibly belongs to it, that window has not moved, and the
-  // press then goes out exactly as it did before this rung, where the `owned` allowance below lets
-  // it through. The mistake it risks is a declined correction, which costs the press nothing.
-  if (homing.applied && deps.pointOwner?.(aimHwnd, x, y)?.kind === "owned") {
+  // The question is put to the screen at the REMEMBERED point, and only when a correction would
+  // otherwise be adopted. An owned window sitting there is reason to leave the point alone: the
+  // entity MAY belong to it, that window has not moved, and the press then goes out exactly as it
+  // did before this rung, where the `owned` allowance below lets it through.
+  //
+  // **"May" is doing real work, and it now has evidence against it in some cases.** When the entity
+  // records the window its pixels came from and that window IS the aim, the entity did not come out
+  // of the popup — so a popup that happens to sit on the remembered point says nothing, and
+  // dropping the correction there sends the press into the popup instead of following the aim's own
+  // control to where it moved (PR 側 codex, 2026-09-10). The evidence arrived one commit earlier,
+  // in `capturedIn`, and this line was still reading only the screen.
+  //
+  // An unrecorded origin still suppresses, because absence is not evidence either way and that is
+  // the behaviour every entity had before the handle existed. The mistake this risks is a declined
+  // correction, which costs the press nothing.
+  const capturedIn = observedHwndOfOrigin(entity.origin);
+  if (homing.applied && capturedIn !== aimHwnd && deps.pointOwner?.(aimHwnd, x, y)?.kind === "owned") {
     homing = { applied: false, x, y, why: "owned_popup_at_remembered_point" };
   }
   probeAim("act.route", {
@@ -427,7 +437,6 @@ async function resolvePressPoint(
   //
   // `unknown` and a missing dep stay out of it for the same reason, and `other` falls through to
   // the occlusion refusal below, which names the covering window and says what to do about it.
-  const capturedIn = observedHwndOfOrigin(entity.origin);
   if (!homing.applied && homing.why === "measured_in_another_window" && capturedIn !== undefined) {
     if (owner?.kind === "owned") {
       if (owner.hwnd === capturedIn) return { x, y };
