@@ -172,23 +172,38 @@ export function resolveCandidates(
     //      unchanged element yields the same `entityId`. It therefore produces the SAME fallback
     //      key as (1) on purpose.
     //
-    // Three independent title resolutions, any two of which can name different windows. The state
-    // is still unreachable, and the reason is different for each pair:
+    // **A FOURTH WRITER ARRIVED, and it is the one that CAN share a group** (item 15, 2026-09-10):
     //
-    // (1) vs (2): they cannot land in the same group. `candidateKey` returns the producer's
-    // `digest` when there is one, and `CandidateProducer` — the adapter's road — always sets it,
-    // over a string that starts with the literal source `visual_gpu`. Every other lane has no
+    //   4. `uia-provider.ts` — stamps the handle `getUiElements` resolved for the window it read.
+    //
+    // The three above cannot meet, each for its own reason. (1) vs (2): `candidateKey` returns the
+    // producer's `digest` when there is one and `CandidateProducer` — the adapter's road — always
+    // sets it, over a string starting with the literal source `visual_gpu`; every other lane has no
     // digest and falls to the source-OMITTING fallback key, so those two key differently by
-    // construction.
+    // construction. (1) vs (3): they never meet in one call — ROI candidates reach
+    // `resolveCandidates` only as a standalone list (`buildFoldPostSnapshot` → `guarded-touch.ts`),
+    // every member stamped with the same `String(hwnd)`, and the ingress cache REPLACES per pass.
     //
-    // (1) vs (3): they never meet in one call. The ROI candidates reach `resolveCandidates` only as
-    // a standalone list (`buildFoldPostSnapshot` → `guarded-touch.ts`), every member stamped with
-    // the same `String(hwnd)`, and the ingress cache REPLACES per pass rather than accumulating.
+    // **(4) vs (1) is different: they are MEANT to meet.** A UIA candidate and an OCR one for the
+    // same button merging into one entity is what this resolver is for, and they reach it through
+    // two independent title resolutions that do not agree by construction. So "every handle in a
+    // group comes from a single stamping call" is no longer true, and this paragraph may not lean
+    // on it. What holds instead is a pairing:
     //
-    // So within one group every handle comes from a single stamping call, which writes one resolved
-    // handle onto all of its candidates. **What has to answer for this again** is any change that
-    // gives a fourth lane a handle, that makes two of these share a key, or that lets the ingress
-    // cache accumulate across passes.
+    //   - when `primary` has a handle it wins, and `rect: primary.rect` above comes from the SAME
+    //     candidate — so the handle and the rectangle are always one lane's single read, which is
+    //     the invariant every rung below actually needs;
+    //   - when it does not, a handle is adopted only if the whole group agrees on one
+    //     (`groupHwnds.length === 1`). Two lanes naming different windows leaves it undefined, and
+    //     the entity keeps the behaviour it had before any lane recorded a handle;
+    //   - the remaining shape — exactly one lane has a handle and it is not the primary — pairs one
+    //     lane's rect with another's handle. If those name different windows the point falls outside
+    //     that window's rectangle and the ladder REFUSES (`point_was_outside_origin`). Wrong in the
+    //     safe direction, and it is the direction this ADR chooses everywhere else.
+    //
+    // **What has to answer for this again** is any change that lets a lane stamp a handle it did not
+    // itself resolve, that takes the rect and the handle from different candidates, or that lets the
+    // ingress cache accumulate across passes.
     //
     // Dead code that only a hand-built fixture could reach is worse than absent: it reads as a case
     // that happens, and the refusal it threw was flattened to `aim_point_outside_window` by
@@ -223,11 +238,13 @@ export function resolveCandidates(
       // UiEntityCandidate, so `primary.target` is always present.
       //
       // ADR-036 item 12 — the HANDLE, though, is a fact about the group rather than about whichever
-      // lane happened to observe last. `primary` is the most recent candidate and the UIA lane
-      // records no handle at all, so a merged uia+ocr entity dropped the handle the OCR capture had
-      // resolved whenever the UIA candidate arrived later — a race deciding whether the coordinate
-      // ladder runs at all (PR 側 codex, 2026-09-10). Every candidate in a group describes the same
-      // element, so any one that resolved a handle answers for all of them.
+      // lane happened to observe last. `primary` is the most recent candidate, and while the UIA
+      // lane recorded no handle at all a merged uia+ocr entity DROPPED the handle the OCR capture
+      // had resolved whenever the UIA candidate arrived later — a race deciding whether the
+      // coordinate ladder runs at all (PR 側 codex, 2026-09-10). Item 15 gave the UIA lane a handle
+      // of its own, so that race is gone by having an answer rather than by winning it; the
+      // group-wide fallback stays for a lane that still records none. Every candidate in a group
+      // describes the same element, so any one that resolved a handle answers for all of them.
       origin: groupHwnd !== undefined
         ? { ...primary.target, hwnd: groupHwnd }
         : primary.target,

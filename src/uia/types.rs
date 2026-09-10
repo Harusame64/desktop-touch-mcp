@@ -36,6 +36,18 @@ pub struct UiElementsResult {
     pub window_title: String,
     pub window_class_name: Option<String>,
     pub window_rect: Option<BoundingRect>,
+    /// ADR-036 item 15 — the HWND this read actually resolved, as a decimal string.
+    ///
+    /// The read reports the window's title, class and rectangle and reported everything about it
+    /// EXCEPT which window it was. That gap is why a UIA entity carries no `origin.hwnd`, and why
+    /// the coordinate ladder returns before its first rung on that road: measured on Windows
+    /// 2026-09-10 (win2), a UIA entity whose window had been closed was pressed blind at the
+    /// remembered coordinates and the caller was told `ok:true`.
+    ///
+    /// A string, not a number: handles are 64-bit and every other handle crossing this boundary is
+    /// already a decimal string. `None` when the element has no host window (never, for a top-level
+    /// window found by title) or when the property could not be read.
+    pub window_hwnd: Option<String>,
     pub element_count: u32,
     pub elements: Vec<UiElement>,
 }

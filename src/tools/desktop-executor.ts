@@ -731,13 +731,15 @@ export function createDesktopExecutor(
     //
     // **Which entities this actually reaches, stated narrowly.** Only lanes that RECORD a handle
     // put one here: `runSomPipeline` resolves one and the visual and OCR lanes carry it through as
-    // `originHwnd`. The UIA lane records none — `getUiElements` resolves a window by title and
-    // reports its title, class and rect, but not the handle it resolved, on either the Rust path or
-    // the PowerShell one — so a UIA-ONLY entity from a title-only discover still has no handle and
-    // still gets no ladder (PR 側 codex, 2026-09-10). A merged group is covered, since the handle is
-    // read from the group rather than from whichever lane observed last. Closing the UIA-only case
-    // means returning the resolved root handle from the bridge, which is read-path work and is
-    // filed as its own item rather than inferred here from a title.
+    // `originHwnd`. **The UIA lane records one too, since item 15** — `getUiElements` reports the
+    // handle it resolved, on both the Rust and the PowerShell road, and the provider stamps it. It
+    // did not until 2026-09-10, and the cost was measured rather than argued: a UIA entity whose
+    // window had been CLOSED was pressed blind at the remembered coordinates and the caller was
+    // told `ok:true` (win2, `dev/item13-detail/RESULTS-round2.md`).
+    //
+    // A build whose read cannot report a handle is unchanged — no handle, no ladder, exactly as
+    // before. A merged group is covered either way, since the handle is read from the group rather
+    // than from whichever lane observed last.
     const coordHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
 
     // A round of item 12 also carried a `hwndConflict` refusal here, for an entity whose lanes had

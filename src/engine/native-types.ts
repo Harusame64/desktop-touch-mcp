@@ -25,6 +25,15 @@ export interface NativeUiElementsResult {
   windowTitle: string
   windowClassName?: string | null
   windowRect?: NativeBoundingRect | null
+  /**
+   * ADR-036 item 15 — the HWND this read resolved, as a decimal string.
+   *
+   * The read reported the window's title, class and rectangle and not which window it was, so a
+   * UIA entity carried no `origin.hwnd` and the coordinate ladder returned before its first rung
+   * on that road (measured: a UIA entity whose window was closed was pressed blind and reported
+   * `ok:true`). Absent when the property could not be read; never `"0"`.
+   */
+  windowHwnd?: string | null
   elementCount: number
   elements: Array<NativeUiElement>
 }

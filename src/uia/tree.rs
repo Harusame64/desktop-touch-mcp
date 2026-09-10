@@ -59,6 +59,17 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     let window_title = unsafe { root.CachedName().map_err(win_err)?.to_string() };
     let window_class_name = unsafe { root.CachedClassName().ok().map(|b| b.to_string()) };
     let window_rect = cached_bounding_rect(&root).ok();
+    // ADR-036 item 15 — WHICH window this is, not just what it looks like. Read here, before `root`
+    // is moved into the walk's queue, and from the cache: `UIA_NativeWindowHandlePropertyId` has
+    // been in the standard cache request since ADR-007 P5c-0b, so this costs no extra RPC.
+    //
+    // Zero is filtered rather than reported: `CachedNativeWindowHandle` answers NULL for an element
+    // with no host window, and "no window" and "the window numbered 0" must not arrive as the same
+    // value — the consumer treats this as the handle to run the coordinate ladder against.
+    let window_hwnd = unsafe { root.CachedNativeWindowHandle().ok() }
+        .map(|h| h.0 as isize)
+        .filter(|h| *h != 0)
+        .map(|h| h.to_string());
 
     // ★ Batch BFS: FindAllBuildCache(TreeScope_Children) per parent.
     // Each RPC fetches all ControlView children of one parent at once.
@@ -120,6 +131,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     Ok(UiElementsResult {
         window_title,
         window_class_name,
+        window_hwnd,
         window_rect,
         element_count: elements.len() as u32,
         elements,

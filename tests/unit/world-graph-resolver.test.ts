@@ -72,13 +72,17 @@ describe("resolveCandidates — basic resolution", () => {
   });
 
   it("keeps the handle a lane resolved even when a lane without one observed later", () => {
-    // ADR-036 item 12 (PR 側 codex, 2026-09-10). The UIA lane records no `originHwnd`, so a merged
-    // uia+ocr entity lost the handle the OCR capture HAD resolved whenever the UIA candidate
-    // happened to arrive later — and with it the whole coordinate ladder, decided by a race
-    // between two lanes. Every candidate in a group describes the same element in the same window.
+    // ADR-036 item 12 (PR 側 codex, 2026-09-10). A merged entity lost the handle one lane HAD
+    // resolved whenever a lane without one happened to arrive later — and with it the whole
+    // coordinate ladder, decided by a race between two lanes. Every candidate in a group describes
+    // the same element in the same window.
+    //
+    // **The lane in this cell used to be `uia`, and item 15 gave that lane a handle of its own**
+    // (2026-09-10). The rule is unchanged and still has traffic — terminal, cdp and browser
+    // candidates record none — so the cell keeps its shape with a lane that still cannot answer.
     const ocr = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "4919" });
-    const uia = candidate("Play", { source: "uia", observedAtMs: 2000 });
-    const [e] = resolveCandidates([ocr, uia], GEN);
+    const noHandleLane = candidate("Play", { source: "terminal", observedAtMs: 2000 });
+    const [e] = resolveCandidates([ocr, noHandleLane], GEN);
     expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
   });
 
@@ -108,10 +112,13 @@ describe("resolveCandidates — basic resolution", () => {
     // describes them. A borrowed handle assumes both lanes resolved the same window, and a
     // title-only query against two overlapping same-titled windows is where that fails.
     //
-    // The two-handle group below is a FIXTURE state, deliberately: in production the two lanes that
-    // record a handle key differently (`visual_gpu` carries the producer's digest, `ocr` falls to
-    // the source-omitting key), so they never merge. The rule is pinned anyway because it is the
-    // rule the resolver applies, and the next lane to record a handle inherits it.
+    // **This stopped being a fixture-only state on 2026-09-10.** It was one while the only two lanes
+    // recording a handle keyed differently (`visual_gpu` carries the producer's digest, `ocr` falls
+    // to the source-omitting key), so they never merged. Item 15 gave the UIA lane a handle, and a
+    // uia+ocr merge is what this resolver exists to do — two independent title resolutions that do
+    // not agree by construction can now land in one group. The rule below is what makes that
+    // harmless: the winning handle and `rect: primary.rect` come from the same candidate, so the
+    // ladder always measures one lane's rectangle against that same lane's window.
     const older = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "777" });
     const primary = candidate("Play", { source: "visual_gpu", observedAtMs: 2000, originHwnd: "4919" });
     const [e] = resolveCandidates([older, primary], GEN);
