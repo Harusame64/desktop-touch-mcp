@@ -21,6 +21,7 @@ import { whoIsUnderPoint } from "../../src/engine/point-owner.js";
 import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import { AimOccludedError, type Aim } from "../../src/engine/aim.js";
 import type { WindowZInfo } from "../../src/engine/win32.js";
+import type { NativeWindowAtPoint } from "../../src/engine/native-types.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 const AIM = 4919n;
@@ -41,6 +42,104 @@ function win(over: Partial<WindowZInfo> & { hwnd: bigint; zOrder: number }): Win
 function enumerating(...windows: WindowZInfo[]) {
   return { enumerate: () => windows };
 }
+
+const AIM_THREAD = 12016;
+
+/** The OS hit test, as the deps see it. Defaults describe a foreign, captioned window. */
+function at(over: Partial<NativeWindowAtPoint> & { root: bigint }): NativeWindowAtPoint {
+  return {
+    child: over.root,
+    ownerChain: [],
+    rootThreadId: 999,
+    rootProcessId: 999,
+    rootHasCaption: true,
+    ...over,
+  };
+}
+
+function hitting(hit: NativeWindowAtPoint | null | undefined, ...windows: WindowZInfo[]) {
+  return {
+    enumerate: () => windows,
+    fromPoint: () => hit,
+    titleOf: (h: bigint) => `w${h}`,
+    threadOf: () => AIM_THREAD,
+  };
+}
+
+describe("Windows answers, and the enumeration is what is left when it cannot", () => {
+  it("believes the hit test over an enumeration that says the aim is covered", () => {
+    // The defect this road exists to close, as a cell. A full-screen `UpdateLayeredWindow` overlay
+    // — one ships with a common monitor utility — is `WS_EX_LAYERED` without `WS_EX_TRANSPARENT`,
+    // so the mask cannot pass it and the enumeration answers `other` at EVERY point on the screen,
+    // while presses go straight through it into the window below (measured 2026-09-10, win2: the
+    // shipped function said `other`, `WindowFromPoint` said the fixture's own button, and the
+    // fixture's log recorded the press). Refusing every coordinate press on such a desktop is the
+    // outcome; asking the OS is the fix.
+    const overlay = win({ hwnd: OTHER, zOrder: 0, exStyle: 0x00080088 });   // LAYERED|TOOLWINDOW|TOPMOST
+    const aimed = win({ hwnd: AIM, zOrder: 1 });
+    expect(whoIsUnderPoint(AIM, 500, 500, enumerating(overlay, aimed)))
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
+    expect(whoIsUnderPoint(AIM, 500, 500, hitting(at({ root: AIM }), overlay, aimed)))
+      .toEqual({ kind: "aim" });
+  });
+
+  it("walks the child up to its root, so the aim's own button is not another window", () => {
+    // `WindowFromPoint` returns the CHILD under the point — a button, not its frame (win2,
+    // 2026-09-10). Compared with a top-level handle as-is, every press on the aim's own control
+    // would read as an occlusion.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ child: 12345n, root: AIM }))))
+      .toEqual({ kind: "aim" });
+  });
+
+  it("calls a dialog owned when the GW_OWNER chain reaches the aim", () => {
+    // `GW_OWNER`, and every hop of it — not `GA_ROOTOWNER`, which was measured and is strictly
+    // worse: for a WinForms owned dialog (overlapped rather than WS_POPUP) it answers *itself*,
+    // losing the ownership, and for a dropdown it answers the desktop window (win2, 2026-09-10).
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, ownerChain: [AIM] }))))
+      .toEqual({ kind: "owned", hwnd: POPUP, title: `w${POPUP}` });
+    // Through a chain, because the aim can itself be an owned window: a walk that passes THROUGH
+    // it and continues would read as unrelated if only the last hop were compared.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, ownerChain: [1n, AIM, 2n] }))))
+      .toEqual({ kind: "owned", hwnd: POPUP, title: `w${POPUP}` });
+  });
+
+  it("cannot attribute a captionless window on the aim's own thread, and says so", () => {
+    // A `ComboLBox` dropdown has NO owner at all, so no ownership rule reaches it — and until this
+    // road existed it was invisible to us (untitled, dropped by the enumeration), the answer came
+    // back `aim`, and the press went through correctly. Asking Windows makes it visible for the
+    // first time, so calling it `other` would turn every combo-box press into a refusal: a rung
+    // breaking what worked. `unknown` keeps the caller's behaviour and claims nothing.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: false, rootThreadId: AIM_THREAD }))))
+      .toEqual({ kind: "unknown", why: "unattributable_window" });
+  });
+
+  it("does not extend that to the app's other windows, which carry captions", () => {
+    // The decisive row of the measurement: a modal dialog and an ordinary sibling window of the
+    // same application are identical in thread, in process, in `GA_ROOTOWNER` and in their whole
+    // window style. Only `GW_OWNER` separates them — so "on the aim's thread" alone would sweep in
+    // every other window the app has open, and a press landing there would be reported as landing
+    // on the aim. The caption is what excludes it, on this evidence.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: OTHER, rootHasCaption: true, rootThreadId: AIM_THREAD }))))
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
+  });
+
+  it("calls a Windows 11 context menu another window, because nothing links it to the app", () => {
+    // Different thread AND different process, owned by the shell's XAML island — measured across
+    // all three fields. No rule based on ownership, thread or process can call it the app's menu.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: true, rootThreadId: 4242, rootProcessId: 4242 }))))
+      .toEqual({ kind: "other", hwnd: POPUP, title: `w${POPUP}` });
+  });
+
+  it("keeps `nothing is there` apart from `could not ask`", () => {
+    // `null` is Windows having looked; `undefined` is an addon built before this function. One is
+    // an answer and one is a missing instrument, and collapsing them is the mistake this ADR keeps
+    // finding elsewhere — so the second falls back to the enumeration rather than answering.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(null, win({ hwnd: AIM, zOrder: 0 }))))
+      .toEqual({ kind: "unknown", why: "no_window_at_point" });
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(undefined, win({ hwnd: AIM, zOrder: 0 }))))
+      .toEqual({ kind: "aim" });
+  });
+});
 
 describe("who would take the press", () => {
   it("says the aim when the aim is on top at that point", () => {

@@ -1,5 +1,5 @@
 import { nativeL1, nativeWin32 } from "./native-engine.js";
-import type { NativeWgcCaptureOptions } from "./native-types.js";
+import type { NativeWgcCaptureOptions, NativeWindowAtPoint } from "./native-types.js";
 import { hasExcludedPids, isExcludedPid } from "./tool-exclusion.js";
 
 // Every Win32 binding this module used to carry has migrated to the
@@ -230,6 +230,36 @@ export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; widt
 }
 
 /**
+ * ADR-036 item 6 — ask Windows who is under a screen point.
+ *
+ * `WindowFromPoint`, resolved against real hit regions rather than rectangles: rounded corners,
+ * custom regions, and per-pixel-alpha layered windows, whose transparency lives in the pixels and
+ * is exposed by no window style. `point-owner.ts` reconstructs this answer from `enumWindowsInZOrder`
+ * when it is absent, and that reconstruction is measurably wrong under an ordinary desktop overlay.
+ *
+ * More than a handle, because one hit test can say several things and a second round-trip could see
+ * a different desktop: the CHILD under the point (a button, not its frame), the `root` that would
+ * take the press, the `GW_OWNER` chain above it, and the thread, process and caption of that root —
+ * the fields a caller needs to say "cannot attribute this window" honestly rather than refusing.
+ *
+ * `undefined` means "could not ask" — an addon built before this function, or a failed call. That is
+ * NOT "nothing is there", which is `null`: the caller has to keep those apart, because one is a
+ * missing instrument and the other is an answer.
+ */
+export function windowFromPoint(
+  x: number,
+  y: number,
+): NativeWindowAtPoint | null | undefined {
+  const w32 = nativeWin32;
+  if (!w32?.win32WindowFromPoint) return undefined;
+  try {
+    return w32.win32WindowFromPoint(Math.round(x), Math.round(y));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * ADR-029 Phase 1 — whether a window is currently drawn, by HWND.
  *
  * `enumWindowsInZOrder` deliberately drops windows that are invisible, untitled
@@ -338,6 +368,26 @@ export function clearWindowTopmost(hwnd: unknown): boolean {
  * `tests/e2e/process-tree.test.ts` rely on this). napi-rs's BigInt coercion
  * rejects non-bigint values with `BigintExpected`, so we filter here.
  */
+/**
+ * ADR-036 item 6 — the THREAD that owns a window, for the one comparison that is about "cannot
+ * tell" rather than about ownership.
+ *
+ * Thread does NOT establish ownership: a modal dialog and an ordinary second window of the same
+ * application were measured identical in thread, in process, in `GA_ROOTOWNER` and in their whole
+ * window style, and only `GW_OWNER` told them apart (win2, 2026-09-10). It is used only to
+ * recognise a captionless window on the aim's own thread as unattributable rather than foreign.
+ *
+ * `0` means the read failed, and every caller has to treat that as no evidence — never as a match.
+ */
+export function getWindowThreadId(hwnd: unknown): number {
+  if (typeof hwnd !== "bigint") return 0;
+  try {
+    return requireNativeWin32().win32GetWindowThreadProcessId!(hwnd).threadId >>> 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function getWindowProcessId(hwnd: unknown): number {
   if (typeof hwnd !== "bigint") return 0;
   try {
