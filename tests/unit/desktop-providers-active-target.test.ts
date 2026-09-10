@@ -141,6 +141,34 @@ describe("composeCandidates — H4 visual escalation (uia-blind + visual state)"
     expect(result.warnings).not.toContain("visual_attempted_empty");
   });
 
+  it("tells the caller the backend cannot look only where the visual lane was the one that could answer", async () => {
+    // Measured on a real machine (win2, 2026-09-10) and it is why this filter exists: with the
+    // default backend, a window whose UIA tree answered COMPLETELY — nine entities — carried the
+    // same warning and the same constraint as one whose buttons are painted. That is a fact about
+    // the deployment, not about the read, and on a default build it would ride on every
+    // desktop_discover response of every user. Noise on every response is how a caller learns to
+    // stop reading warnings.
+    mocks.fetchUiaCandidates.mockResolvedValue({
+      candidates: [candidate("Save", "uia", "123")],
+      warnings: [],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["visual_backend_cannot_recognise"],
+    });
+    const healthy = await composeCandidates({ hwnd: "123" });
+    expect(healthy.warnings).not.toContain("visual_backend_cannot_recognise");
+
+    // Blind primary: now the silence cost the caller something, and it is said.
+    mocks.fetchUiaCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["uia_blind_single_pane"],
+    });
+    const blind = await composeCandidates({ hwnd: "999" });
+    expect(blind.warnings).toContain("visual_backend_cannot_recognise");
+    expect(blind.warnings).toContain("visual_not_attempted");
+  });
+
   it("emits visual_attempted_empty_cdp_fallback for browser target with cdp failure and empty visual", async () => {
     mocks.fetchBrowserCandidates.mockResolvedValue({
       candidates: [],

@@ -159,6 +159,29 @@ function applyVisualEscalation(
   return extra;
 }
 
+/**
+ * ADR-036 — a fact about the deployment is not a warning about THIS read.
+ *
+ * `visual_backend_cannot_recognise` is true of every call in a default build: the attached backend
+ * replays injected snapshots and looks at nothing. Emitted as the provider sees it, it therefore
+ * appears on **every `desktop_discover` response of every user** — measured on a real machine
+ * (win2, 2026-09-10), where a window whose UIA tree answered completely, with nine entities, carried
+ * the same warning and the same constraint as one whose buttons are painted.
+ *
+ * That is the difference between a capability and a warning. It is newsworthy only where the visual
+ * lane was the one that could have answered — a target the primary lane came back blind on — and
+ * there the composer's own rules already fire. Everywhere else it is noise attached to a healthy
+ * result, and noise on every response is how a caller learns to stop reading warnings.
+ *
+ * The provider still reports it, because the composer needs to see it to make this decision; what
+ * changes is that the caller is not told about a lane whose silence cost them nothing.
+ */
+function withoutUnneededBlindNotice(result: ProviderResult, primaryResult: ProviderResult): ProviderResult {
+  if (!result.warnings.includes("visual_backend_cannot_recognise")) return result;
+  if (primaryResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w))) return result;
+  return { ...result, warnings: result.warnings.filter((w) => w !== "visual_backend_cannot_recognise") };
+}
+
 function withPrependedWarnings(result: ProviderResult, warnings: string[]): ProviderResult {
   if (warnings.length === 0) return result;
   const seen = new Set<string>();
@@ -384,7 +407,7 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
       ).catch((): ProviderResult => ({ candidates: [], warnings: ["ocr_provider_failed"] }))
     : { candidates: [], warnings: [] };
 
-  const merged     = mergeResults([uiaResult, visualResult, ocrResult]);
+  const merged     = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaResult);
   const escalation = applyVisualEscalation(uiaResult, visualResult, "uia");
   const extra      = escalation.filter((w) => !merged.warnings.includes(w));
   const finalMerged = extra.length > 0
