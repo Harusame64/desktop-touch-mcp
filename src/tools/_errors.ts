@@ -315,7 +315,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
     "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator.",
     "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
-    "If the control supports no pattern for this action (a custom-drawn button, a canvas), that is what the failure was — act on a different affordance or reach it by keyboard navigation. On the act path the specifics are in if_unexpected.detail; on a flat tool result they are in error.",
+    "If the control supports no pattern for this action (a custom-drawn button, a canvas), that is one of the things this failure can be — act on a different affordance or reach it by keyboard navigation. WHICH of them it was is not published: if_unexpected.detail names the window, the entity and which routes were spent, and stops there. The backend's own sentence is withheld because on this road it is a shell rejection carrying the command that produced it.",
   ],
   // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
   // advice is deliberately short on alternatives — every "try the other tool" line would be an

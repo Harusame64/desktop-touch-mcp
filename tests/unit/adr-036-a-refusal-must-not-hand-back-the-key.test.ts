@@ -212,6 +212,25 @@ describe("the advice for a refusal does not name the press it refused", () => {
     });
   }
 
+  it("does not promise a distinction the detail does not carry", async () => {
+    // The advice for this reason listed "the control supports no pattern" as THE failure and sent
+    // the caller to `if_unexpected.detail` for the specifics. The detail is written by the executor
+    // and is deliberately generic — it names the window, the entity and which routes were spent —
+    // because the backend's own sentence is a shell rejection carrying the command that produced
+    // it. So the caller could not tell "no pattern" from "element not found", which have different
+    // recoveries (PR 側 codex on #618, P2).
+    //
+    // Narrowed rather than filled: the sanitised classification that would let the advice keep its
+    // promise has to be written against the real backend messages, and those live on Windows. An
+    // expression written by the side without the runtime is unchecked until the side with it runs
+    // it — twice today that produced a fix that failed into the bug's own path.
+    const advice = (await adviceFor("AimRouteFailed")).join(" ");
+    expect(advice).toMatch(/WHICH of them it was is not published/);
+    // The control: a reason whose detail DOES carry the specifics still says so, so this cell is
+    // about honesty per reason and not a blanket ban on pointing at the field.
+    expect((await adviceFor("AimOccluded")).join(" ")).toMatch(/detail field in if_unexpected names the window/);
+  });
+
   it("renders each envelope-side class under the name its advice is filed under", () => {
     // `toFailureEnvelope` looks the advice up by `name`; a class whose name drifts gets the
     // generic entry and no test would notice, because the envelope still has a `try_next`.
