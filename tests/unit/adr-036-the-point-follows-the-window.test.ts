@@ -360,16 +360,20 @@ describe("the press lands where the control went", () => {
     expect(d.mouseClick).not.toHaveBeenCalled();
   });
 
-  it("refuses when the aim itself is what sits under coordinates taken from elsewhere", async () => {
-    // The dropdown is gone and its owner's surface is what the press would hit. Nothing here can
-    // say what is at that point in the owner's own layout, and the entity was never on it.
+  it("presses when the enumeration says the aim is on top, because it cannot see a popup", async () => {
+    // This cell shipped for a few hours asserting the opposite, and the measurement reversed it
+    // (win2, 2026-09-10). `whoIsUnderPoint` never sees an untitled popup: a `ComboLBox` dropdown or
+    // a tooltip drawn over its owner makes it answer `aim` WHILE THE POPUP IS ON TOP, and the press
+    // that follows lands on the popup and is correct. Reading `aim` as "the entity's window is not
+    // there" would have invented a false refusal for the commonest popup on Windows out of the
+    // enumeration's own blind spot.
     const d = deps({ pointOwner: () => ({ kind: "aim" as const }) });
     const fromTheDropdown: UiEntity = {
       ...entity(),
       origin: { kind: "window", id: "CELL BUTTONS", hwnd: "888" },
     };
-    await expect(createDesktopExecutor(aimed, d)(fromTheDropdown, "click")).rejects.toThrow(/measured in window 888/);
-    expect(d.mouseClick).not.toHaveBeenCalled();
+    await createDesktopExecutor(aimed, d)(fromTheDropdown, "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(458, 215);   // uncorrected, and pressed
   });
 
   it("refuses a minimised aim even when the pixels came from another window", async () => {

@@ -412,23 +412,31 @@ async function resolvePressPoint(
   // point NOW — and it is the caller who holds it.
   //
   // So the press is allowed where that answer is the window the pixels came from, and refused where
-  // it is a different one. Both halves are corrections of a round that got the other half wrong:
+  // it is a DIFFERENT one. Both halves are corrections of a round that got the other half wrong:
   // letting any owned window through pressed a dropdown nobody discovered (PR 側 codex on #609), and
   // refusing the whole case pressed nothing where the entity's own dropdown was sitting right there
-  // (gate 2, 2026-09-10). `unknown` and a missing dep stay out of it — a build whose enumeration
-  // cannot answer must not have every aimed action refused — and `other` falls through to the
-  // occlusion refusal below, which names the covering window and says what to do about it.
+  // (gate 2, 2026-09-10).
+  //
+  // **`aim` is NOT the third answer, and that is measured.** The version of this that shipped for a
+  // few hours also refused when the enumeration said the aim itself was on top — reading that as
+  // "the entity's window is not there". It does not mean that. `whoIsUnderPoint` cannot see an
+  // untitled popup at all, so a dropdown or tooltip drawn over its owner makes it answer `aim`
+  // while the popup really is on top, and the press that follows is correct (win2, 2026-09-10,
+  // `dev/adr036-items56-popups/`). Refusing there would have been a false refusal for the commonest
+  // popup on Windows, invented out of the enumeration's blind spot.
+  //
+  // `unknown` and a missing dep stay out of it for the same reason, and `other` falls through to
+  // the occlusion refusal below, which names the covering window and says what to do about it.
   const capturedIn = observedHwndOfOrigin(entity.origin);
   if (!homing.applied && homing.why === "measured_in_another_window" && capturedIn !== undefined) {
-    if (owner?.kind === "owned" && owner.hwnd === capturedIn) return { x, y };
-    if (owner?.kind === "owned" || owner?.kind === "aim") {
+    if (owner?.kind === "owned") {
+      if (owner.hwnd === capturedIn) return { x, y };
       throw new AimedPointOutsideWindowError(
         `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
-        `${capturedIn}, and the window under that point now is ` +
-        `${owner.kind === "aim" ? `${aimHwnd}, the one this act aimed at` : `${owner.hwnd} ("${owner.title}")`}. ` +
-        `A menu, dialog or dropdown has an origin of its own and does not move with the window that ` +
-        `owns it, so nothing here can follow these coordinates to where they went. Nothing was ` +
-        `clicked. Re-run desktop_discover.`,
+        `${capturedIn}, and the window under that point now is ${owner.hwnd} ("${owner.title}") — ` +
+        `a different window that ${aimHwnd} also owns. A menu, dialog or dropdown has an origin of ` +
+        `its own and does not move with the window that owns it, so nothing here can follow these ` +
+        `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
         aimHwnd,
       );
     }

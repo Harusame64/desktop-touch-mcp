@@ -21,20 +21,52 @@
  * answer from `enumWindowsInZOrder`: the frontmost enumerated window whose rectangle contains the
  * point. That is right in the ordinary case and blind in three named ways:
  *
- *   - **The enumeration drops windows.** Invisible, untitled and sub-50 px windows never appear, so
- *     a covering window with no caption is not seen. The failure direction is "looks clear when it
- *     is not", which is the dangerous one, and it is why this returns `unknown` rather than `aim`
- *     when it cannot enumerate at all.
+ *   - **The enumeration drops windows.** The cause is the TITLE filter, isolated by measurement
+ *     rather than inferred: two owned windows of the same size, same owner and same visibility,
+ *     differing only in whether they had a caption — the titled one is listed, the untitled one is
+ *     not (win2, 2026-09-10, `dev/adr036-items56-popups/`). So a `ComboLBox` dropdown, a
+ *     `tooltips_class32` tip and any untitled popup are invisible here.
  *   - **A rectangle is not a hit region.** Rounded corners, custom regions and per-pixel-alpha
  *     layered windows all take presses on some of their rectangle and not the rest.
- *   - **Click-through is decided by style, not by a hit test.** A window is passed over only when
- *     it carries `WS_EX_TRANSPARENT` **and** `WS_EX_LAYERED`, the documented combination; a
- *     transparent non-layered window can still take the press, so it is treated as occluding. The
- *     error therefore falls on the side of a visible refusal rather than a silent press into an
- *     overlay.
+ *   - **Click-through is decided by style, not by a hit test.** See the mask below, and the
+ *     measured overlay that this module reports as occluding while presses go straight through it.
+ *
+ * ## What `owned` really covers, measured
+ *
+ * The branch is NOT dead — the same round asked the shipped function about five real popups:
+ *
+ *   | popup                        | class                                    | title | owner    | `owned`? |
+ *   |------------------------------|------------------------------------------|-------|----------|----------|
+ *   | modal `ShowDialog`           | WinForms                                 | yes   | the host | **yes**  |
+ *   | modeless owned form          | WinForms                                 | yes   | the host | **yes**  |
+ *   | ComboBox dropdown            | `ComboLBox`                              | none  | **none** | no       |
+ *   | tooltip                      | `tooltips_class32`                       | none  | the host | no       |
+ *   | Windows 11 context menu      | `Microsoft.UI.Content.PopupWindowSiteBridge` | yes | **the shell's XAML island** | no |
+ *
+ * So `owned` answers for **titled owned windows — dialogs** — which is exactly the case it was
+ * written for: a dialog drawn INSIDE its owner's rectangle, whose remembered point must not be
+ * moved by the owner's delta. What it cannot see:
+ *
+ *   - **An untitled popup never reaches the ownership test at all.** The answer is then about
+ *     whatever is BEHIND it: a dropdown or tooltip drawn over its owner yields `aim` (and the press
+ *     is allowed, correct, without this module ever seeing the popup), while one drawn OUTSIDE its
+ *     owner yields `other` — a false refusal naming a window that is not in the way.
+ *   - **`ComboLBox` has no owner at all** (`ownerHwnd` is 0). Removing the title filter is
+ *     therefore necessary and NOT sufficient — and on its own it would make things worse: the
+ *     dropdown would arrive as an unowned window on top and turn today's correct `aim` into a false
+ *     `other`. Do not touch that filter before the hit test below exists.
+ *   - **A Windows 11 context menu is owned by a shell island**, not by the application. It IS
+ *     enumerated and it still answers `other`. No owner-chain rule can recognise it — neither
+ *     review round predicted this, and it is not a filter that can be widened to fix.
+ *
+ * **Therefore `aim` is not evidence that a popup is absent.** It is what this function returns when
+ * a popup it cannot see is sitting on top, so no rung may read it as "the entity's window is not
+ * there" (see `measured_in_another_window` in the executor).
  *
  * When the native side gains `WindowFromPoint`, this becomes a fallback for builds without it
- * rather than the primary answer.
+ * rather than the primary answer. **Note for that work**: `WindowFromPoint` returns the CHILD
+ * window under the point — a button, not its frame — so the result has to be walked up to its root
+ * before it is compared with a top-level handle, or the aim's own control reads as another window.
  */
 
 import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
