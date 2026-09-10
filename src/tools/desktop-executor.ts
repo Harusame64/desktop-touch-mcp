@@ -440,6 +440,7 @@ async function resolvePressPoint(
     point: { x, y },
     windowRect: rect,
     inside,
+    pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title, ...(owner.via ? { via: owner.via } : {}) } : {}), ...("why" in owner ? { why: owner.why } : {}) } : null,
     // WHOSE window it was checked against, said out loud. `checked:true` alone claims the point was
     // validated against the entity's window, and on this road nothing has verified that the handle
     // still NAMES that window: identity invalidation is gated on `aim.hwnd`, and a title-only act
@@ -447,7 +448,6 @@ async function resolvePressPoint(
     // sandbox review, 2026-09-10 — a residual, since the pre-ADR code pressed there with no row at
     // all). "Checked" and "checked against the right window" must not share a representation.
     identityBaseline: aim.identity !== undefined && aimHwnd === aim.hwnd ? "compared" : "none",
-    pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title, ...(owner.via ? { via: owner.via } : {}) } : {}), ...("why" in owner ? { why: owner.why } : {}) } : null,
     label,
   });
   if (!homing.applied && homing.why === "window_off_desktop") {
