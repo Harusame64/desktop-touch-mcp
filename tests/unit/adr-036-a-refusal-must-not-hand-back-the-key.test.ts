@@ -200,3 +200,51 @@ describe("a truncated UIA walk is not evidence of a sparse window", () => {
     expect(detectUiaBlind(cutShort)).toEqual({ blind: false, undecided: "truncated_tree" });
   });
 });
+
+/**
+ * ADR-036 item 13 — the envelope carries what the layer that refused knew, or the refusal is a code.
+ *
+ * The nine act-path refusals are REBUILT in `desktop-register.ts` from the reason alone, so the
+ * engine's sentence — which names the covering window, the identity field that changed, the
+ * rectangle the point left — stopped at `GuardedTouchLoop`. Measured on the real machine before
+ * the fix (win2, 2026-09-10, `dev/item13-envelope/`): an `aim_occluded` response carried neither
+ * the blocker's title nor its handle, and had no message field at all.
+ *
+ * These cells pin the two halves that make the sentence reach a caller: the envelope has a place
+ * to put it, and an absent detail stays absent rather than becoming an empty string.
+ */
+describe("the envelope carries the refusing layer's own words", () => {
+  it("puts the detail where the advice says to look", async () => {
+    const { toFailureEnvelope } = await import("../../src/tools/_envelope.js");
+    const detail = 'Refusing to press (426, 287) for the window this act named (hwnd 4919): the window on top at that point is "BLOCKER-CELL" (hwnd 777), so the press would go there.';
+    const failure = toFailureEnvelope(
+      { ok: false, error: new AimPointOutsideWindowError("AimPointOutsideWindow: …") },
+      { optIn: true, detail },
+    ) as { if_unexpected: { most_likely_cause: string; detail?: string } };
+    expect(failure.if_unexpected.detail).toBe(detail);
+    // The code still decides the advice — the detail is additive, not a replacement for either.
+    expect(failure.if_unexpected.most_likely_cause).toBe("AimPointOutsideWindow");
+  });
+
+  it("omits the field rather than carrying an empty one", async () => {
+    const { toFailureEnvelope } = await import("../../src/tools/_envelope.js");
+    for (const detail of [undefined, "", "   "]) {
+      const failure = toFailureEnvelope(
+        { ok: false, error: new AimPointOutsideWindowError("AimPointOutsideWindow: …") },
+        { optIn: true, detail },
+      ) as { if_unexpected: Record<string, unknown> };
+      expect("detail" in failure.if_unexpected).toBe(false);
+    }
+  });
+
+  it("the advice for an occluded aim points at the field by name", async () => {
+    // The line that names the covering window was REMOVED on 2026-09-10 because it pointed at a
+    // message the caller never receives, with a note that it comes back when item 13 lands. It is
+    // back — and it names `if_unexpected.detail`, not "the message", because a caller can only
+    // read a field that is in the response.
+    const { getSuggestsForCode } = await import("../../src/tools/_errors.js");
+    const advice = getSuggestsForCode("AimOccluded");
+    expect(advice.some((a) => a.includes("if_unexpected.detail"))).toBe(true);
+    expect(advice.some((a) => /read the message|the message names/i.test(a))).toBe(false);
+  });
+});

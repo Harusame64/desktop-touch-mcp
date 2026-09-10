@@ -231,6 +231,20 @@ export interface EnvelopeMinimalShape<T = unknown> {
 export interface IfUnexpectedShape {
   most_likely_cause: string;
   try_next: TryNextAction[];
+  /**
+   * ADR-036 item 13 — what the layer that refused actually knew.
+   *
+   * `most_likely_cause` is a CODE and `try_next` is generic advice; between them a caller learns
+   * what kind of thing went wrong and nothing about their case. The engine's refusals already name
+   * the specifics — the window drawn over the point and its handle, which identity field changed,
+   * the rectangle the point left — and until this field existed those sentences stopped at
+   * `GuardedTouchLoop` (measured 2026-09-10: an `aim_occluded` response carried neither the
+   * blocker's title nor its handle, and had no message field at all).
+   *
+   * Optional and additive: an envelope with nothing specific to say omits it rather than carrying
+   * an empty string, so "no detail" and "detail: nothing in particular" stay different facts.
+   */
+  detail?: string;
 }
 
 /**
@@ -1219,6 +1233,8 @@ export function buildFailureEnvelope(
   mostLikelyCause: string,
   tryNext: TryNextAction[],
   options?: EnvelopeOptions,
+  /** ADR-036 item 13 — the refusing layer's own sentence. Omitted from the envelope when absent. */
+  detail?: string,
 ): EnvelopeMinimalShape<null> {
   const wallclockSupplied =
     options?.asOfWallclockMs != null && Number.isFinite(options.asOfWallclockMs);
@@ -1228,7 +1244,11 @@ export function buildFailureEnvelope(
     data: null,
     as_of: { wallclock_ms: wallclock },
     confidence: "stale",
-    if_unexpected: { most_likely_cause: mostLikelyCause, try_next: tryNext },
+    if_unexpected: {
+      most_likely_cause: mostLikelyCause,
+      try_next: tryNext,
+      ...(detail !== undefined && detail.trim() !== "" ? { detail } : {}),
+    },
   };
 }
 
@@ -1275,6 +1295,12 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
      *  this single converter without changing their envelope shape (north star
      *  1: one failure path). Absent → derive from SUGGESTS as before. */
     tryNext?: TryNextAction[];
+    /**
+     * ADR-036 item 13 — the sentence the layer that refused wrote, passed through to
+     * `if_unexpected.detail`. Callers that rebuild an envelope from a reason code (the act path's
+     * nine refusals) hand the engine's message here instead of dropping it.
+     */
+    detail?: string;
   },
 ): Ok | EnvelopeMinimalShape<null> | CompatRawFailureShape {
   if (result.ok) return result.value;
@@ -1294,7 +1320,7 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
       ? tryNextStrings.map((action) => ({ action }))
       : [{ action: "Inspect the underlying error and retry with adjusted args" }];
   }
-  const failure = buildFailureEnvelope(errorName, tryNext, options.envelopeOptions);
+  const failure = buildFailureEnvelope(errorName, tryNext, options.envelopeOptions, options.detail);
   return options.optIn ? failure : compatFailureRaw(failure);
 }
 

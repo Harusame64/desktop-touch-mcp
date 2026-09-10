@@ -933,7 +933,7 @@ export const desktopActRawHandler = async (
   if (!result.ok && result.reason === "executor_failed") {
     const failure = toFailureEnvelope(
       Err(new ExecutorFailedError("desktop_act executor failed")),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -951,7 +951,7 @@ export const desktopActRawHandler = async (
       Err(new CoordinateOutsideReachableBoundsError(
         "CoordinateOutsideReachableBounds: the entity sits outside the area mouse input can currently reach"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -967,7 +967,7 @@ export const desktopActRawHandler = async (
       Err(new CursorPlacementBlockedError(
         "CursorPlacementBlocked: the pointer could not be placed on the entity — nothing was clicked"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -985,7 +985,7 @@ export const desktopActRawHandler = async (
         "AimWindowGone: the window this action was aimed at no longer exists — nothing was clicked. " +
         "Re-call desktop_discover to see what is there now; do not click the entity's rect, which is where that window used to be"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1002,7 +1002,7 @@ export const desktopActRawHandler = async (
         "AimIdentityChanged: the window this act was aimed at has gone and its handle now names a different window — nothing was done. " +
         "Re-run desktop_discover; the lease and every entity taken from it describe a window that is gone"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1022,7 +1022,7 @@ export const desktopActRawHandler = async (
         "AimOccluded: another window is drawn over the point this act would have pressed — nothing was done. Whether that window would really have taken the press cannot be asked here (it needs the OS hit test), so anything on top counts as in the way, including overlays that presses pass through. " +
         "Bring the intended window forward, or use click_element, which does not press a coordinate"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1042,7 +1042,7 @@ export const desktopActRawHandler = async (
         "AimPointOutsideWindow: the point this act would have pressed can no longer be followed to the window it named — nothing was clicked. " +
         "Re-run desktop_discover; among the reasons, the window was minimised, was resized so its contents may have moved independently of its origin, was moving while it was being read, the coordinates came from a lane whose measurement moment cannot be established — a stored visual snapshot may have been captured while the window was somewhere else — or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1058,7 +1058,7 @@ export const desktopActRawHandler = async (
         "AimRouteFailed: the route to the window this act named failed, and the act was not finished as a coordinate press — nothing was clicked or typed. " +
         "Re-run desktop_discover, or try click_element on the same entity"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1074,7 +1074,7 @@ export const desktopActRawHandler = async (
         "WindowExcluded: this window is excluded from every tool surface of this server — nothing was clicked, and no route here can click it. " +
         "Act on another window"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],

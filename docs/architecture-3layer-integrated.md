@@ -374,13 +374,21 @@ L1〜L5 のどこで失敗しても返せる **失敗テンプレ**:
   "if_unexpected": {
     "most_likely_cause": <typed enum>,
     "failed_at_layer": "L1" | "L2" | "L3" | "L4" | "L5",
-    "try_next": [...]
+    "try_next": [...],
+    "detail": <拒否した層自身の文。無いときは欄ごと出さない>   // ADR-036 item 13
   },
   "query_past": { ... }  // 過去への戻り口は失敗時こそ重要
 }
 ```
 
 各層は **自層が失敗した時点までの enrichment を残し、`if_unexpected.failed_at_layer` を埋めて return** する。
+
+**`detail` は「その層が持っていた具体」を運ぶ欄である**（ADR-036 item 13、2026-09-10）。`most_likely_cause` は
+**コード**、`try_next` は**一般的な助言**で、両者だけでは呼び手は「どの種類の失敗か」しか知れない。
+`desktop_act` の9つの拒否は `desktop-register.ts` が**理由コードから文面を作り直す**ため、engine が持っていた
+**覆っている窓の題名と handle・変わった身元の欄・点が出た矩形**が呼び手に届かなかった（実測 2026-09-10:
+`aim_occluded` の応答に blocker の題名も handle も無く、message の欄そのものが無かった）。
+**空文字は入れない**——「言うことが無い」と「欄が無い」は別の事実である。
 
 ---
 
