@@ -54,6 +54,17 @@ export class VisualRuntime {
   }
 
   /**
+   * Whether the attached backend can look at a window, or only replay what was handed to it.
+   *
+   * `"recognises"` when nothing is attached, and when a backend does not implement the method:
+   * both are the reading that emits no warning, because the caller is already told about an absent
+   * backend by `visual_provider_unavailable` and an older backend must not be made to look broken.
+   */
+  recognitionCapability(): "recognises" | "replays_injected_only" {
+    return this._backend?.recognitionCapability?.() ?? "recognises";
+  }
+
+  /**
    * Subscribe to dirty signals from the backend.
    * Returns unsubscribe function. No-op when no backend is attached.
    */
