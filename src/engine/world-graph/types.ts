@@ -180,8 +180,15 @@ export interface UiEntity {
    * query rather than an identity: re-resolving a title at act time can select a
    * different window if the Z-order changed since discovery, and the click would
    * then be judged against — and land in — the wrong one.
+   *
+   * `hwndConflict` marks the one case where absent `hwnd` is not ignorance: two lanes in the
+   * merged group named DIFFERENT windows for this entity. Without it, "the lanes disagreed" and
+   * "nobody looked" arrive at the executor as the same missing field, and the coordinate ladder is
+   * skipped for both — so the answer to conflicting provenance was a press with no containment and
+   * no occlusion check at all (PR 側 codex, 2026-09-10). ADR-036 keeps finding this shape: a
+   * silence and an answer must not share a representation.
    */
-  origin?: { kind: "window" | "browserTab"; id: string; hwnd?: string };
+  origin?: { kind: "window" | "browserTab"; id: string; hwnd?: string; hwndConflict?: true };
 }
 
 export interface EntityLease {

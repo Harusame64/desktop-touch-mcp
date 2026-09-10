@@ -82,13 +82,25 @@ describe("resolveCandidates — basic resolution", () => {
     expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
   });
 
-  it("answers no handle when two lanes resolved different windows", () => {
-    // Disagreement is not a vote: picking one of them is how a press lands in the other. The same
-    // reading every "cannot tell" in this ADR gets — the ladder declines rather than aims.
+  it("marks a disagreement as a conflict rather than as a missing handle", () => {
+    // Disagreement is not a vote — but it is not silence either. Both arrived at the executor as
+    // the same absent field, which skips the coordinate ladder: "declining to aim" had become
+    // pressing with no containment and no occlusion check (PR 側 codex, 2026-09-10).
     const a = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "4919" });
-    const b = candidate("Play", { source: "visual_gpu", observedAtMs: 2000, originHwnd: "777" });
-    const [e] = resolveCandidates([a, b], GEN);
-    expect(e.origin).toEqual(TARGET);
+    const b = candidate("Play", { source: "visual_gpu", observedAtMs: 3000, originHwnd: "777" });
+    const primaryWithout = candidate("Play", { source: "uia", observedAtMs: 4000 });
+    const [e] = resolveCandidates([a, b, primaryWithout], GEN);
+    expect(e.origin).toEqual({ ...TARGET, hwndConflict: true });
+  });
+
+  it("prefers the primary's own handle to one borrowed from another lane", () => {
+    // The entity's rect and locator come from the primary, so its handle is the one that certainly
+    // describes them. A borrowed handle assumes both lanes resolved the same window, and a
+    // title-only query against two overlapping same-titled windows is where that fails.
+    const older = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "777" });
+    const primary = candidate("Play", { source: "visual_gpu", observedAtMs: 2000, originHwnd: "4919" });
+    const [e] = resolveCandidates([older, primary], GEN);
+    expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
   });
 
   it("evidenceDigest is always set (required for lease issuance)", () => {

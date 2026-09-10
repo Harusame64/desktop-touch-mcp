@@ -655,6 +655,31 @@ export function createDesktopExecutor(
     // filed as its own item rather than inferred here from a title.
     const coordHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
 
+    /**
+     * ADR-036 item 12 — the lanes named two different windows for this entity.
+     *
+     * Refused rather than pressed, and this is the difference between an answer and a silence. A
+     * missing handle means nobody looked, and the coordinate press then goes out the way it always
+     * did; a CONFLICT means two lanes looked and disagreed about which window these pixels came
+     * from, so no window can be checked against and the ladder has nothing to run on. Reaching the
+     * same `coordHwnd === undefined` for both turned "declining to aim" into pressing blind
+     * (PR 側 codex, 2026-09-10).
+     *
+     * Only for a coordinate press: the UIA and CDP roads address an element, not a point, and a
+     * disagreement about which window it was seen in does not make them unsafe.
+     */
+    const coordHwndConflict = aimHwnd === undefined && entity.origin?.hwndConflict === true;
+    const refuseOnConflict = (): never => {
+      throw new AimedPointOutsideWindowError(
+        `Refusing to click for "${entity.label ?? entity.entityId}": this call named a title rather ` +
+        `than a window, and the lanes that saw this element resolved DIFFERENT windows for it — so ` +
+        `there is no window to check the coordinates against, and nothing was clicked. Two windows ` +
+        `matching one title is the ordinary cause. Name the window by hwnd, or act through ` +
+        `click_element, which does not press a coordinate.`,
+        undefined,
+      );
+    };
+
     // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
     // checked: after the lease was taken and before anything is done about it.
     //
@@ -900,6 +925,7 @@ export function createDesktopExecutor(
         // It is also the road that matters most: `productionCheckViewport` returns null for
         // anything carrying a uia / cdp / terminal source, so merged UIA entities — exactly the
         // ones that arrive here after a UIA failure — are the ladder's real traffic.
+        if (coordHwndConflict) refuseOnConflict();
         const { x, y } = coordHwnd !== undefined
           ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
           : remembered;
@@ -1048,6 +1074,7 @@ export function createDesktopExecutor(
     // where the press actually goes: homing correction, then who is under the point, then whether
     // the point is in the window at all. Identity invalidation ran at the top of this closure,
     // before any route was chosen, because a changed identity makes every rectangle meaningless.
+    if (coordHwndConflict) refuseOnConflict();
     const { x, y } = coordHwnd !== undefined
       ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
       : remembered;

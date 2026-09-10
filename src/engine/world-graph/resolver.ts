@@ -141,12 +141,24 @@ export function resolveCandidates(
       patterns = [...set];
     }
 
-    // Disagreement is not a vote. Two lanes naming different windows for one element is exactly
-    // the case where picking one presses into the other, so it answers "no handle" — the same
-    // reading every other "cannot tell" in this ADR gets, and the ladder then declines rather than
-    // aiming somewhere nobody measured.
+    // Whose handle this is, in the order the evidence supports.
+    //
+    // 1. The PRIMARY's own, when it has one. The entity's rect and locator come from that
+    //    candidate, so its handle is the one that certainly describes them — a handle borrowed
+    //    from another lane is an assumption that both lanes resolved the same window, and a
+    //    title-only query against two overlapping same-titled windows is exactly where that fails
+    //    (PR 側 codex, 2026-09-10).
+    // 2. Otherwise the group's, when every lane that recorded one agrees. This is the case the
+    //    previous commit was for: the UIA lane records no handle at all, so a merged uia+ocr entity
+    //    lost the handle the OCR capture had resolved whenever the UIA candidate arrived last.
+    // 3. Otherwise nothing — and when the reason is DISAGREEMENT, say so. "The lanes named two
+    //    different windows" and "nobody looked" are different facts, and they were arriving at the
+    //    executor as the same missing field: `coordHwnd` undefined, so the coordinate ladder was
+    //    skipped entirely and the remembered point was pressed with no containment and no occlusion
+    //    check. Declining to aim had become pressing blind.
     const groupHwnds = [...new Set(group.map((c) => c.originHwnd).filter((h) => h !== undefined))];
-    const groupHwnd = groupHwnds.length === 1 ? groupHwnds[0] : undefined;
+    const hwndConflict = groupHwnds.length > 1 && primary.originHwnd === undefined;
+    const groupHwnd = primary.originHwnd ?? (groupHwnds.length === 1 ? groupHwnds[0] : undefined);
 
     const entity: UiEntity = {
       entityId: stableEntityId(key),
@@ -173,7 +185,9 @@ export function resolveCandidates(
       // element, so any one that resolved a handle answers for all of them.
       origin: groupHwnd !== undefined
         ? { ...primary.target, hwnd: groupHwnd }
-        : primary.target,
+        : hwndConflict
+          ? { ...primary.target, hwndConflict: true as const }
+          : primary.target,
     };
     if (controlType !== undefined) entity.controlType = controlType;
     if (patterns !== undefined) entity.patterns = patterns;

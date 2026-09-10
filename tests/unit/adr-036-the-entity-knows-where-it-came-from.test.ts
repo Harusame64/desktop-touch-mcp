@@ -105,6 +105,20 @@ describe("a title-only discover still gets the coordinate ladder", () => {
     expect(d.mouseClick).toHaveBeenCalledWith(140, 215);   // not (240, 315)
   });
 
+  it("refuses the press outright when the lanes disagreed about the window", async () => {
+    // A missing handle means nobody looked, and the press goes out the way it always did. A
+    // CONFLICT means two lanes looked and named different windows — there is nothing to check the
+    // coordinates against, and reaching the same absent `coordHwnd` for both turned declining to
+    // aim into pressing blind (PR 側 codex, 2026-09-10).
+    const d = deps();
+    const conflicted: UiEntity = {
+      ...entity(),
+      origin: { kind: "window", id: "Notepad", hwndConflict: true },
+    };
+    await expect(createDesktopExecutor(titleOnly, d)(conflicted, "click")).rejects.toThrow(/DIFFERENT windows/);
+    expect(d.mouseClick).not.toHaveBeenCalled();
+  });
+
   it("checks the UIA downgrade against that window too, not only the mouse road", async () => {
     // Gate 2 (2026-09-10): the ladder was given `coordHwnd` at one of the two coordinate presses in
     // this closure. When UIA fails and the call downgrades to the mouse, the point came from the
