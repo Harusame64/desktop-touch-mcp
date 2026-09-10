@@ -271,10 +271,23 @@ export function whoIsUnderPoint(
     // or a custom-chrome frame is captionless too, and none was in that round. `unknown` is exactly
     // that much: no evidence either way, the caller keeps the behaviour it had.
     //
-    // A Windows 11 context menu does not reach here at all — it is a different thread AND a
-    // different process, owned by the shell's XAML island. **No rule based on ownership, thread or
-    // process can call it the application's menu**, measured across all three fields. Allowing a
-    // press there has to be decided on some other ground, and is not decided here.
+    // **A context menu lands on either side of this line, and which one is not a property of the
+    // menu.** Windows 11 raises two implementations from the same right-click on the same control,
+    // and both were seen on one machine (win2, 2026-09-10):
+    //
+    //   - the classic `#32768` runs on the APPLICATION's own thread and carries no caption, so it
+    //     reaches the rung above and answers `unknown` — the press goes through. **Measured.**
+    //   - the WinUI `Microsoft.UI.Content.PopupWindowSiteBridge` is a different thread AND a
+    //     different process, owned by the shell's XAML island, so nothing here can attribute it and
+    //     it answers `other` — the press is refused. Its thread and process were measured in the
+    //     Q4 round; that it therefore lands here is DERIVED, not observed in the same round.
+    //
+    // So a user pressing an item in their own context menu is refused or not depending on which
+    // implementation Windows happened to produce. That is a real gap and it is not fixed by any
+    // rule about ownership, thread or process — the shell-hosted one is genuinely not the
+    // application's window by any of them. It needs a different ground, and this function does not
+    // have one. Written down rather than papered over with a class-name check, which would be a
+    // rule about today's two class names rather than about who takes the press.
     const aimThread = deps.threadOf?.(aim);
     if (!at.rootHasCaption && aimThread !== undefined && aimThread !== 0 && at.rootThreadId === aimThread) {
       return { kind: "unknown", why: "unattributable_window" };

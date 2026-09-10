@@ -123,9 +123,20 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
       .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
   });
 
-  it("calls a Windows 11 context menu another window, because nothing links it to the app", () => {
-    // Different thread AND different process, owned by the shell's XAML island — measured across
-    // all three fields. No rule based on ownership, thread or process can call it the app's menu.
+  it("puts the two context menus on opposite sides of the line, which is the gap", () => {
+    // The same right-click on the same control raises either implementation, and both were seen on
+    // one machine (win2, 2026-09-10). This cell holds the ASYMMETRY rather than a verdict about
+    // "context menus", because the previous version of it asserted a property of the menu when it
+    // is a property of which one Windows happened to produce.
+    //
+    // Classic `#32768`: the application's own thread, no caption — reaches the rung above and the
+    // press goes through. Measured on a real desktop.
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: false, rootThreadId: AIM_THREAD }))))
+      .toEqual({ kind: "unknown", why: "unattributable_window" });
+    // WinUI `PopupWindowSiteBridge`: a different thread and process, owned by the shell's XAML
+    // island — nothing here can attribute it, and the press is refused. Its thread and process were
+    // measured in the Q4 round; that it lands here is derived from them, not observed in the same
+    // round as the line above.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: true, rootThreadId: 4242, rootProcessId: 4242 }))))
       .toEqual({ kind: "other", hwnd: POPUP, title: `w${POPUP}` });
   });
