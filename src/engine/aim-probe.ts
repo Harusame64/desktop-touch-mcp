@@ -28,7 +28,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -278,13 +278,30 @@ function loadedAddonFiles(): Record<string, unknown> {
   }
 }
 
-/** A listed file this cannot read is named with the failure, not dropped from the list. */
+/**
+ * A listed file this cannot read is named with the failure, not dropped from the list.
+ *
+ * One descriptor for all three readings. A `stat` of the path and a later read of the path can
+ * describe two different files if the addon is replaced in between (CodeQL, on #621), and the size
+ * and the hash in one row have to be about one file — the header exists because two notes about
+ * "the same" build turned out to be about two.
+ */
 function fileIdentity(path: string): Record<string, unknown> {
+  let fd: number | undefined;
   try {
-    const st = statSync(path);
-    return { path, bytes: st.size, mtimeMs: st.mtimeMs, sha256: createHash("sha256").update(readFileSync(path)).digest("hex") };
+    fd = openSync(path, "r");
+    const st = fstatSync(fd);
+    return { path, bytes: st.size, mtimeMs: st.mtimeMs, sha256: createHash("sha256").update(readFileSync(fd)).digest("hex") };
   } catch (err) {
     return { path, error: messageOf(err) };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // The row is already decided; a descriptor that will not close changes nothing in it.
+      }
+    }
   }
 }
 
