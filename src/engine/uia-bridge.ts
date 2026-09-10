@@ -300,6 +300,33 @@ try {
     $winClassName = $target.Current.ClassName
 } catch { Write-Output '{"error":"Window not found by hwnd"}'; exit }
 
+# ADR-036 item 15 — WHICH window this read resolved. Read from the element that was actually
+# walked, never by asking the title again: the second ask can land on a different window, and a
+# result that names the wrong window is worse than one that names none.
+#
+# Its own try, and not folded into the one above: a window that cannot report its handle still has
+# a title and a tree worth returning, and the caller treats an absent handle as "this read cannot
+# say" — which is what every consumer did before this field existed. Zero is dropped for the same
+# reason the native road drops it: "no window" and "window 0" are different facts.
+#
+# UNSIGNED, deliberately. NativeWindowHandle is an Int32 on the managed side, so a handle with the
+# high bit set arrives NEGATIVE, and a plain [int64] cast would sign-extend it into a negative
+# decimal string. parseWindowHandle rejects non-positive handles, so such a window would record no
+# handle and silently keep the behaviour this item exists to end (PR 側 codex on #619, P2).
+#
+# **The mask is [uint32]::MaxValue and NOT 0xFFFFFFFF.** PowerShell types the hex literal
+# 0xFFFFFFFF as Int32 -1, in 5.1 and in 7 alike, so -band 0xFFFFFFFF is the IDENTITY on a negative
+# value: the cast below then receives the negative number and THROWS, straight into the catch,
+# leaving $winHwnd null. That is the same silent no-handle outcome the mask was added to prevent —
+# the fix failing into the bug's own path, for exactly the windows it was written for. Measured on
+# Windows 2026-09-10 (win2, dev/item15-handle-width/), the shipped expression against three working
+# forms, identical in 5.1.26100.9444 and 7.6.5.
+$winHwnd = $null
+try {
+    $h = $target.Current.NativeWindowHandle
+    if ($h -ne 0) { $winHwnd = [string][uint32]([int64]$h -band [uint32]::MaxValue) }
+} catch {}
+
 # Capture window bounding rect for the caller
 $winRect = $null
 try {
@@ -450,7 +477,7 @@ $firstLevel = @($results | Where-Object { $_.depth -eq 1 }).Count
 if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firstLevel -le $preRegisterChildren) {
     $clientProviders = 'noop'
 }
-@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; truncated=$truncated; clientProviders=$clientProviders; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
+@{ windowTitle=$winTitle; windowClassName=$winClassName; windowHwnd=$winHwnd; windowRect=$winRect; elementCount=$results.Count; truncated=$truncated; clientProviders=$clientProviders; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
 }
 
@@ -947,6 +974,26 @@ export interface UiElementsResult {
   windowTitle: string;
   /** ClassName of the root window element — used for WinUI3 detection. */
   windowClassName?: string;
+  /**
+   * ADR-036 item 15 — WHICH window this read describes, as a decimal string handle.
+   *
+   * This result reported the window's title, its class and its rectangle, and not which window it
+   * was. That is the whole of item 15: a UIA entity therefore records no `origin.hwnd`, the
+   * executor has no coordinate handle for it, and `resolvePressPoint` returns before its first
+   * rung — so a UIA entity whose window has CLOSED is pressed blind at the remembered coordinates
+   * and the caller is told `ok:true` (measured on Windows 2026-09-10, win2,
+   * `dev/item13-detail/RESULTS-round2.md`).
+   *
+   * Reported by both roads and by construction rather than by a second lookup: the native path
+   * reads it from the cached root it walked, the PowerShell path from the element it resolved,
+   * and a scoped read already knows it. **Re-resolving the title here would be a different
+   * question** — the title can find a different window on the second ask, which is the class of
+   * error this ADR keeps finding.
+   *
+   * Absent when the read could not report one; never `"0"` — "no window" and "window 0" are not
+   * the same fact.
+   */
+  windowHwnd?: string;
   /** Bounding rectangle of the root window in screen coordinates. */
   windowRect?: { x: number; y: number; width: number; height: number } | null;
   elementCount: number;
@@ -1071,6 +1118,7 @@ export async function getUiElements(
       const normalised: UiElementsResult = {
         windowTitle: result.windowTitle,
         windowClassName: result.windowClassName ?? undefined,
+        windowHwnd: result.windowHwnd ?? undefined,
         windowRect: result.windowRect ?? null,
         elementCount: result.elementCount,
         elements: result.elements.map((el: NativeUiElement) => ({

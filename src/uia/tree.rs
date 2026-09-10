@@ -59,6 +59,31 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     let window_title = unsafe { root.CachedName().map_err(win_err)?.to_string() };
     let window_class_name = unsafe { root.CachedClassName().ok().map(|b| b.to_string()) };
     let window_rect = cached_bounding_rect(&root).ok();
+    // ADR-036 item 15 — WHICH window this is, not just what it looks like. Read here, before `root`
+    // is moved into the walk's queue, and from the cache: `UIA_NativeWindowHandlePropertyId` has
+    // been in the standard cache request since ADR-007 P5c-0b, so this costs no extra RPC.
+    //
+    // Zero is filtered rather than reported: `CachedNativeWindowHandle` answers NULL for an element
+    // with no host window, and "no window" and "the window numbered 0" must not arrive as the same
+    // value — the consumer treats this as the handle to run the coordinate ladder against.
+    //
+    // **`as u32`, not `as isize`.** The UIA property is a VT_I4, so a handle with the high bit set
+    // comes back sign-extended and `isize` renders it as a NEGATIVE decimal string;
+    // `parseWindowHandle` rejects non-positive handles, so exactly those windows would record none
+    // and keep the behaviour this item exists to end — invisibly, since a missing handle is
+    // indistinguishable from a build that cannot report one (PR 側 codex on #619, P2; my own claim
+    // that this road "was already right" was wrong).
+    //
+    // The low 32 bits are the whole handle — USER handles are 32-bit values sign-extended for
+    // interop — so the truncation loses nothing, and it makes the two roads agree: the same window
+    // read through Rust and through PowerShell now yields the same string, which two different
+    // representations would have quietly broken for merged entities.
+    let window_hwnd = unsafe { root.CachedNativeWindowHandle().ok() }
+        // `as usize as u32`: HWND is a raw pointer in windows 0.62, so the address is taken first
+        // and then truncated to the 32 bits that are the handle.
+        .map(|h| h.0 as usize as u32)
+        .filter(|h| *h != 0)
+        .map(|h| h.to_string());
 
     // ★ Batch BFS: FindAllBuildCache(TreeScope_Children) per parent.
     // Each RPC fetches all ControlView children of one parent at once.
@@ -120,6 +145,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     Ok(UiElementsResult {
         window_title,
         window_class_name,
+        window_hwnd,
         window_rect,
         element_count: elements.len() as u32,
         elements,

@@ -102,6 +102,9 @@ export async function fetchUiaCandidates(
       elementCount: result.elementCount,
       truncated: result.truncated ?? null,
       clientProviders: result.clientProviders ?? null,
+      // ADR-036 item 15 — recorded because "the ladder did not run" and "the read could not say
+      // which window" look identical downstream, and only this row separates them.
+      windowHwnd: result.windowHwnd ?? null,
     });
 
     const candidates: UiEntityCandidate[] = result.elements
@@ -111,6 +114,19 @@ export async function fetchUiaCandidates(
         target: { kind: "window", id: targetId },
         locator: { uia: { automationId: el.automationId || undefined, name: el.name } },
         role: uiaRoleFromControlType(el.controlType),
+        // ADR-036 item 15 — the window this element was READ from, carried so the coordinate
+        // ladder has a handle on this road at all. Before this line a UIA entity recorded no
+        // origin handle, `coordHwnd` was undefined, and `resolvePressPoint` returned before its
+        // first rung: a UIA entity whose window had CLOSED was pressed blind at the remembered
+        // coordinates and the caller was told `ok:true` (win2, 2026-09-10).
+        //
+        // The read's own answer, not a second lookup. A title resolved twice can name two windows,
+        // and stamping a handle the tree did not come from would make every rung below it precise
+        // about the wrong window — worse than having none.
+        //
+        // Absent stays absent: a build whose read cannot report a handle keeps exactly the
+        // behaviour it had, which is the ladder declining to run rather than running on a guess.
+        ...(result.windowHwnd !== undefined && result.windowHwnd !== null && { originHwnd: result.windowHwnd }),
         label: el.name,
         value: el.value,
         rect: el.boundingRect ?? undefined,
