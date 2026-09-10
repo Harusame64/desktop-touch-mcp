@@ -839,6 +839,16 @@ export class DesktopFacade {
     // how the defect got reproduced inside its own fix: the press path learned to decline for
     // coordinates the bracketed origin cannot describe, and this one went on correcting them
     // (win2, auditing the review, 2026-09-10).
+    //
+    // **And the two points can still disagree, by a moment rather than by a rule.** `windowRect`
+    // was read for the PRE-frame, before the press; `resolvePressPoint` reads its own rectangle at
+    // dispatch. A window that moves between them is homed here against the older one, so the SSIM
+    // region can sit off the repaint the press caused — and on the BitBlt fallback the post-frame
+    // is captured from that same older rectangle, so a real repaint reads `indeterminate` (PR 側
+    // codex, 2026-09-10, P2). Left as it is on purpose: the cost is a diagnostic verdict and never
+    // a press, closing it means threading the executor's resolved point back into verification,
+    // and the window that moves in that gap is the same one the ladder is about — measure it
+    // before rebuilding the seam for it.
     const homed = homingCorrectionForSources(entity.sources, session.lastAim?.origin, windowRect, x, y, {
       capturedIn: observedHwndOfOrigin(entity.origin),
       originOf: session.lastAim?.hwnd,
