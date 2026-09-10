@@ -123,22 +123,32 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
       .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
   });
 
-  it("puts the two context menus on opposite sides of the line, which is the gap", () => {
-    // The same right-click on the same control raises either implementation, and both were seen on
-    // one machine (win2, 2026-09-10). This cell holds the ASYMMETRY rather than a verdict about
-    // "context menus", because the previous version of it asserted a property of the menu when it
-    // is a property of which one Windows happened to produce.
+  it("lets the app's own context menu through and keeps a shell menu out", () => {
+    // Two different things, not two implementations of one — the version of this cell that said
+    // otherwise rested on a round that was clicking (0, 0), so the WinUI menu it saw belonged to
+    // the desktop (win2, 2026-09-10, re-measured).
     //
-    // Classic `#32768`: the application's own thread, no caption — reaches the rung above and the
-    // press goes through. Measured on a real desktop.
+    // The application's own menu is the classic `#32768`: its own thread, no caption. Ten
+    // right-clicks on a fixture's text box produced it ten times out of ten.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: false, rootThreadId: AIM_THREAD }))))
       .toEqual({ kind: "unknown", why: "unattributable_window" });
-    // WinUI `PopupWindowSiteBridge`: a different thread and process, owned by the shell's XAML
-    // island — nothing here can attribute it, and the press is refused. Its thread and process were
-    // measured in the Q4 round; that it lands here is derived from them, not observed in the same
-    // round as the line above.
+    // A shell menu — the desktop's, Explorer's — is another thread and another process, owned by
+    // the shell's XAML island. Refusing there is correct: it is not the application's window.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: true, rootThreadId: 4242, rootProcessId: 4242 }))))
       .toEqual({ kind: "other", hwnd: POPUP, title: `w${POPUP}` });
+  });
+
+  it("reads the caption, not popup-ness — which is this rung's whole cost", () => {
+    // The decisive arm of the measurement was an ordinary second window of the application with
+    // nothing changed but its title erased (win2, 2026-09-10). So an app's own untitled window — a
+    // tool palette, a custom frame, a window opened before its document — takes a press here as
+    // though it were the aim's dropdown. Held as a cell so the cost is a decision rather than a
+    // surprise: the alternative is `other`, which refuses every combo-box press on every desktop.
+    const sibling = { root: OTHER, rootThreadId: AIM_THREAD };
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ ...sibling, rootHasCaption: true }))))
+      .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}` });
+    expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ ...sibling, rootHasCaption: false }))))
+      .toEqual({ kind: "unknown", why: "unattributable_window" });
   });
 
   it("keeps `nothing is there` apart from `could not ask`", () => {

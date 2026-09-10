@@ -265,29 +265,38 @@ export function whoIsUnderPoint(
     // visible for the first time, and calling it `other` would turn every combo-box press on every
     // desktop into a refusal: a rung that breaks what worked, which this ladder may not do.
     //
-    // So a captionless window on the aim's own thread answers `unknown`. What the round could
-    // establish is that "same thread AND no caption" admits the dropdown and excludes the app's
-    // ordinary sibling windows (which carry captions) — necessary, not sufficient: a splash screen
-    // or a custom-chrome frame is captionless too, and none was in that round. `unknown` is exactly
-    // that much: no evidence either way, the caller keeps the behaviour it had.
+    // So a captionless window on the aim's own thread answers `unknown`. **And the rule is about
+    // the CAPTION, not about popups** — measured, and the decisive arm was an ordinary second
+    // window of the application with nothing changed but its title erased: `other` with a caption,
+    // `unknown` without one (win2, 2026-09-10). A splash screen and a custom-chrome frame answer
+    // `unknown` too.
     //
-    // **A context menu lands on either side of this line, and which one is not a property of the
-    // menu.** Windows 11 raises two implementations from the same right-click on the same control,
-    // and both were seen on one machine (win2, 2026-09-10):
+    // That is the cost of this rung, stated plainly: an application's own untitled second window —
+    // a tool palette, a custom frame, a window opened before its document — takes a press here as
+    // though it were the aim's dropdown. `unknown` is chosen anyway, because the alternative is
+    // `other`, and `other` refuses every combo-box press on every desktop: a rung breaking what
+    // worked. What it claims is only "no evidence either way"; the caller keeps the behaviour it
+    // had before this road existed, which for all of these windows was to press.
     //
-    //   - the classic `#32768` runs on the APPLICATION's own thread and carries no caption, so it
-    //     reaches the rung above and answers `unknown` — the press goes through. **Measured.**
-    //   - the WinUI `Microsoft.UI.Content.PopupWindowSiteBridge` is a different thread AND a
-    //     different process, owned by the shell's XAML island, so nothing here can attribute it and
-    //     it answers `other` — the press is refused. Its thread and process were measured in the
-    //     Q4 round; that it therefore lands here is DERIVED, not observed in the same round.
+    // **Two kinds of context menu, and they are different things rather than two implementations
+    // of one** (win2, 2026-09-10, re-measured after the first reading turned out to be an
+    // instrument fault — see below):
     //
-    // So a user pressing an item in their own context menu is refused or not depending on which
-    // implementation Windows happened to produce. That is a real gap and it is not fixed by any
-    // rule about ownership, thread or process — the shell-hosted one is genuinely not the
-    // application's window by any of them. It needs a different ground, and this function does not
-    // have one. Written down rather than papered over with a class-name check, which would be a
-    // rule about today's two class names rather than about who takes the press.
+    //   - the APPLICATION's own menu is the classic `#32768`: its own thread, no caption. It
+    //     reaches the rung above and answers `unknown`, so the press goes through. Ten right-clicks
+    //     on a fixture's text box produced it ten times out of ten.
+    //   - a SHELL menu — the desktop's, Explorer's — is `Microsoft.UI.Content.PopupWindowSiteBridge`
+    //     on a different thread and a different process, owned by the shell's XAML island. Nothing
+    //     here can attribute it to the aimed application, and it answers `other`. That is correct:
+    //     it really is not the application's window.
+    //
+    // **A claim this file carried for one commit is withdrawn**: that the same right-click on the
+    // same control raises either kind, so a user pressing an item in their own menu would be
+    // refused at random. The round that appeared to show it was clicking (0, 0) — a lookup returned
+    // null and the driver right-clicked the desktop — so the WinUI menu observed was the SHELL's,
+    // at `[-10, 0]`, nowhere near the fixture. The control in force checked that the fixture was
+    // alive and logging presses; it did not check that the arm's click landed inside the window it
+    // was aimed at. Recorded because the correction is more useful than the claim was.
     const aimThread = deps.threadOf?.(aim);
     if (!at.rootHasCaption && aimThread !== undefined && aimThread !== 0 && at.rootThreadId === aimThread) {
       return { kind: "unknown", why: "unattributable_window" };
