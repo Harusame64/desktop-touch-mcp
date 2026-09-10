@@ -922,9 +922,19 @@ export function createDesktopExecutor(
         // was never asked. That is the 2026-09-09 measurement recorded above, surviving in the case
         // this commit has just shown is not really unpinned.
         //
-        // It is also the road that matters most: `productionCheckViewport` returns null for
-        // anything carrying a uia / cdp / terminal source, so merged UIA entities — exactly the
-        // ones that arrive here after a UIA failure — are the ladder's real traffic.
+        // **How often this road is taken was a guess, and the machine answered differently.**
+        // The sentence here used to say merged UIA entities were "the ladder's real traffic". On a
+        // desktop with no vision backend there ARE no merged entities: a title-only discover
+        // returned `["uia"]` for every entity on two fixtures (13 of them), the visual lanes are
+        // called and produce nothing, and `act.route` shows one row per act — `route:"uia"`,
+        // `hasAim:false`. UIA invoke does not use coordinates, so the ladder is never reached at
+        // all (win2, 2026-09-10, `dev/pr612-entity-origin/`).
+        //
+        // That is scope, not a defect: this branch fixes the road for the entities that take it —
+        // ones a visual or OCR lane produced, which is where `origin.hwnd` comes from in the first
+        // place. Where UIA can serve the window by title, the coordinate road is not taken and none
+        // of this runs. Written here because the next reader will otherwise measure the same thing
+        // again to find out whether their change matters.
         if (coordHwndConflict) refuseOnConflict();
         const { x, y } = coordHwnd !== undefined
           ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
