@@ -18,6 +18,9 @@
  *   partial_results_only              — primary provider returned 0 entities; fallback attempted
  *   visual_not_attempted              — (H4) visual lane was unready (unavailable/warming) on a blind target
  *   visual_attempted_empty            — (H4) visual lane ran warm but produced no candidates on a blind target
+ *   visual_backend_cannot_recognise   — the attached backend replays injected snapshots and looks
+ *                                       at nothing (the default build), so an empty answer from it
+ *                                       is not evidence about the window
  *   visual_attempted_empty_cdp_fallback — (H4) CDP failed and visual also empty (browser target)
  */
 
@@ -131,7 +134,14 @@ function applyVisualEscalation(
   const extra: string[] = [];
   const uiaBlind      = primaryResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w));
   const cdpFailed     = primaryResult.warnings.includes("cdp_provider_failed");
-  const visualUnready = visualResult.warnings.some((w) => VISUAL_UNREADY_WARNINGS.has(w));
+  // "Cannot recognise" joins "unready" HERE and nowhere else. Rule-A' below would otherwise report
+  // `visual_attempted_empty` — *the lane ran warm and produced no candidates* — about a backend that
+  // never looked at the window, which is the claim this whole change exists to stop making. It is
+  // deliberately not added to `VISUAL_UNREADY_WARNINGS`: that set is also read by `desktop.ts` and
+  // by `lastDiscoverVisualOnly`, where "not ready yet, retry" is the meaning, and this state never
+  // becomes ready by waiting.
+  const visualBlind   = visualResult.warnings.includes("visual_backend_cannot_recognise");
+  const visualUnready = visualResult.warnings.some((w) => VISUAL_UNREADY_WARNINGS.has(w)) || visualBlind;
   const visualEmpty   = visualResult.candidates.length === 0;
 
   // Rule-A: uia blind + visual backend unready → visual_not_attempted

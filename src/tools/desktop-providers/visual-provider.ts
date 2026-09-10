@@ -79,6 +79,19 @@ export async function fetchVisualCandidates(
     const candidates = await runtime.getStableCandidates(targetKey);
     // Empty candidates when warm is valid — the GPU pipeline may not have any
     // stable tracks yet. No warning emitted (distinct from "unavailable").
+    //
+    // **Unless the backend cannot look at all**, which is the default build: `PocVisualBackend`
+    // replays injected snapshots and recognises nothing, yet it warms in 50 ms and answers `[]`
+    // exactly like a real pipeline that found no stable track. The caller was told neither, and the
+    // case where it matters is the one the visual lane exists for — a window whose buttons are
+    // PAINTED came back with the title bar's four elements and no note, when the honest answer was
+    // "the part you care about was never looked at" (win2, 2026-09-10).
+    //
+    // Only when the answer is empty: a backend that replays something HAS produced candidates for
+    // this target, and saying it cannot look would be false about the answer in hand.
+    if (candidates.length === 0 && runtime.recognitionCapability() === "replays_injected_only") {
+      return { candidates, warnings: ["visual_backend_cannot_recognise"] };
+    }
     return { candidates, warnings: [] };
   } catch (err) {
     console.error("[visual-provider] getStableCandidates failed:", err);

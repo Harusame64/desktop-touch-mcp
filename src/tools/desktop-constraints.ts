@@ -31,7 +31,14 @@ export interface ViewConstraints {
    * attempted_empty → visual lane ran but produced no candidates.
    * provider_unavailable / provider_warming → transient; compose retried once already.
    */
-  visual?: "not_attempted" | "attempted_empty" | "provider_unavailable" | "provider_warming";
+  visual?: "not_attempted" | "attempted_empty" | "provider_unavailable" | "provider_warming"
+    /**
+     * The attached backend does not look at windows — it replays what was handed to it, which is
+     * the default build. Distinct from `attempted_empty`, which is a pipeline that LOOKED and found
+     * no stable track: the two had been arriving as the same silence, and the remedy is different
+     * (enable a recognising backend, rather than wait or act on structure).
+     */
+    | "backend_cannot_recognise";
   /** Terminal provider status (terminal targets only). */
   terminal?: "buffer_empty" | "provider_failed";
   /**
@@ -144,6 +151,9 @@ export function deriveViewConstraints(
         break;
       case "visual_provider_warming":
         if (!c.visual) { c.visual = "provider_warming"; hasConstraint = true; }
+        break;
+      case "visual_backend_cannot_recognise":
+        if (!c.visual) { c.visual = "backend_cannot_recognise"; hasConstraint = true; }
         break;
       // Terminal
       case "terminal_provider_failed":
