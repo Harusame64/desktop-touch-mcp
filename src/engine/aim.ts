@@ -177,8 +177,13 @@ export class AimIdentityChangedError extends Error implements CallerFacingRefusa
     this.name = "AimIdentityChangedError";
     this.hwnd = hwnd;
     // The sentence names WHICH of the three fields decided — the fact the published advice was
-    // stripped of, because nothing carried it to a caller (PR 側 codex on #608).
-    this.callerDetail = this.message;
+    // stripped of, because nothing carried it to a caller (PR 側 codex on #608). Built separately
+    // from `message`: the un-named branch dumps both identity records, which is a log's business
+    // and not a caller's (gate 2 + win2's round, 2026-09-10).
+    this.callerDetail =
+      `The window this action was aimed at (hwnd ${hwnd}) is not the window the lease was taken on: ` +
+      `${describeIdentityChangeForCaller(then, now)}. Windows reuses handles, so this is a different ` +
+      `window wearing the same number — nothing was done to it. Run desktop_discover again.`;
   }
 }
 
@@ -217,6 +222,36 @@ function describeIdentityChange(then: WindowIdentity, now: WindowIdentity | unde
   // have been allowed to drift apart. Print both sides whole rather than inventing a reason.
   return `it changed in a way this message does not name yet (then ${JSON.stringify(then, replaceHandle)}, ` +
          `now ${JSON.stringify(now, replaceHandle)})`;
+}
+
+/**
+ * ADR-036 item 13 — the same sentence, minus the branch that dumps the two records.
+ *
+ * The three named branches are written for a caller already: a process name, a pid, a window class.
+ * The fallback is not — it prints both `WindowIdentity` objects, so the caller would receive this
+ * build's internal field names (`processStartTimeMs`, `titleFingerprint`) because the comparator
+ * and this function drifted apart. That is the shape win2's round found on the other road: a
+ * `type` ladder published `keyboardTypeBg`, an internal dep name, through a message written when
+ * nothing outside the process read it (2026-09-10, `dev/item13-detail/`). **A regex sweep does not
+ * find these** — it finds the shapes someone thought of — so the rule is that a caller-facing
+ * sentence is written on purpose, and anything not written on purpose stays in the log.
+ *
+ * The dump keeps its place in `message`, which is what a log wants, and `act.identity` carries both
+ * sides as fields regardless.
+ */
+function describeIdentityChangeForCaller(then: WindowIdentity, now: WindowIdentity | undefined): string {
+  if (!now) return `nothing could say who owns the handle now (it was ${named(then)} when the lease was taken)`;
+  if (then.pid !== now.pid) return `it belonged to ${named(then)} and now belongs to ${named(now)}`;
+  if (then.processStartTimeMs !== 0 && now.processStartTimeMs !== 0
+      && then.processStartTimeMs !== now.processStartTimeMs) {
+    return `${named(then)} was restarted — same pid, a later process wearing it`;
+  }
+  if (then.className !== undefined && now.className !== undefined
+      && then.className !== now.className) {
+    return `${named(then)} replaced the window on that handle: its class was "${then.className}" ` +
+           `when the lease was taken and is "${now.className}" now`;
+  }
+  return `it changed in a way this build does not name yet — the act's identity record has both sides`;
 }
 
 function named(id: WindowIdentity): string {

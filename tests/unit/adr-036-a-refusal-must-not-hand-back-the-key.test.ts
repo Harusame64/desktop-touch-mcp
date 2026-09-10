@@ -251,3 +251,53 @@ describe("the envelope carries the refusing layer's own words", () => {
     expect(advice.some((a) => /its handle always, its title when it has one/.test(a))).toBe(true);
   });
 });
+
+/**
+ * ADR-036 item 13 — what a caller-facing sentence may contain.
+ *
+ * Two rounds found the same shape on two roads: a message written when nothing outside the process
+ * read it, published the moment `detail` existed. win2's round caught `keyboardTypeBg` — an internal
+ * dep name — inside a `type` ladder's text (2026-09-10, `dev/item13-detail/`), and their scan for
+ * paths, PowerShell, HRESULTs and stack frames matched none of it: **a regex list finds the shapes
+ * someone thought of.** So these cells check the rule instead — a caller sentence is written on
+ * purpose, and the branches that dump internal records stay in `message`.
+ */
+describe("a published sentence carries no developer-facing text", () => {
+  it("does not put the identity records in the caller's copy", async () => {
+    const { AimIdentityChangedError } = await import("../../src/engine/aim.js");
+    const then = { pid: 100, processName: "notepad.exe", processStartTimeMs: 1, className: "Notepad" };
+    // Same pid, same start time, same class: the comparator would have to have decided on something
+    // this build does not name — the branch that prints both records whole.
+    const now = { pid: 100, processName: "notepad.exe", processStartTimeMs: 1, className: "Notepad" };
+    const e = new AimIdentityChangedError(4919n, then, now);
+    expect(e.message).toContain("processStartTimeMs");   // the log keeps the dump
+    expect(e.callerDetail).not.toContain("processStartTimeMs");
+    expect(e.callerDetail).not.toContain("{");
+    expect(e.callerDetail).toContain("does not name yet");
+  });
+
+  it("names the process and class when it can, because that is what the advice promises", async () => {
+    const { AimIdentityChangedError } = await import("../../src/engine/aim.js");
+    const then = { pid: 100, processName: "notepad.exe", processStartTimeMs: 1, className: "Notepad" };
+    const now  = { pid: 250, processName: "explorer.exe", processStartTimeMs: 2, className: "CabinetWClass" };
+    const e = new AimIdentityChangedError(4919n, then, now);
+    expect(e.callerDetail).toContain("notepad.exe");
+    expect(e.callerDetail).toContain("explorer.exe");
+  });
+
+  it("the route-failure publishes its own sentence, not the backend's", async () => {
+    // The leak gate 2 found: this error's message quotes the failure it reports, and on the UIA road
+    // that is a PowerShell rejection carrying the whole script — with the typed text interpolated
+    // into it on the `type` road.
+    const { AimedRouteFailedError } = await import("../../src/engine/aim.js");
+    const e = new AimedRouteFailedError(
+      'UIA click failed: Command failed: powershell.exe -NoProfile -Command "…$secret…"',
+      4919n,
+      undefined,
+      "The UIA route to window 4919 failed, and the act was not finished as a coordinate click.",
+    );
+    expect(e.message).toContain("powershell.exe");
+    expect(e.callerDetail).not.toContain("powershell.exe");
+    expect(e.callerDetail).not.toContain("Command failed");
+  });
+});
