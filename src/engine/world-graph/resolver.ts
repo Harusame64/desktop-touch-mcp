@@ -4,6 +4,9 @@ import type {
   UiEntity, UiEntityRole, UiAffordance, AffordanceVerb,
   ExecutorKind, EntitySourceKind, EntityLocator,
 } from "./types.js";
+// ADR-036 item 12 — the same rule for "does this string name a window" the coordinate ladder uses.
+// `aim.ts` imports nothing, so reading it from the world-graph adds no cycle.
+import { parseWindowHandle } from "../aim.js";
 
 const ROLE_ALLOW: ReadonlySet<string> = new Set([
   "button", "textbox", "link", "menuitem", "label",
@@ -151,14 +154,28 @@ export function resolveCandidates(
     // 2. Otherwise the group's, when every lane that recorded one agrees. This is the case the
     //    previous commit was for: the UIA lane records no handle at all, so a merged uia+ocr entity
     //    lost the handle the OCR capture had resolved whenever the UIA candidate arrived last.
-    // 3. Otherwise nothing — and when the reason is DISAGREEMENT, say so. "The lanes named two
-    //    different windows" and "nobody looked" are different facts, and they were arriving at the
-    //    executor as the same missing field: `coordHwnd` undefined, so the coordinate ladder was
-    //    skipped entirely and the remembered point was pressed with no containment and no occlusion
-    //    check. Declining to aim had become pressing blind.
-    const groupHwnds = [...new Set(group.map((c) => c.originHwnd).filter((h) => h !== undefined))];
-    const hwndConflict = groupHwnds.length > 1 && primary.originHwnd === undefined;
-    const groupHwnd = primary.originHwnd ?? (groupHwnds.length === 1 ? groupHwnds[0] : undefined);
+    // 3. Otherwise nothing.
+    //
+    // A ROUND OF THIS CARRIED A FOURTH CASE, and it is deleted rather than kept as insurance. It
+    // marked "the lanes named two different windows" as a conflict so the executor could refuse
+    // instead of pressing blind. The state cannot occur (gate 2, 2026-09-10, re-derived here):
+    // `originHwnd` is written by ONE road — `ocr-adapter` stamps a single resolved handle onto
+    // every candidate of a read — and `compose-providers` calls that road once per pass, so every
+    // candidate in a group that has a handle has the SAME handle. Two distinct handles in one group
+    // needs two OCR reads in one pass, which nothing calls. Dead code that only a hand-built
+    // fixture could reach is worse than absent: it reads as a case that happens, and the refusal it
+    // threw was flattened to `aim_point_outside_window` by `guarded-touch` anyway, so its recovery
+    // advice never reached a caller (PR 側 codex, 2026-09-10). If a second handle-recording lane is
+    // ever added, this is the line that has to answer for it again.
+    //
+    // WHAT NAMES A WINDOW is the ADR's rule, not `!== undefined` (gate 2, 2026-09-10). `"0"` counted
+    // as a handle here and stopped counting as one in `observedHwndOfOrigin` two files away: a `"0"`
+    // from the primary lane won this choice and then resolved to nothing, skipping the ladder, and a
+    // `"0"` beside a real handle made an agreeing group look like a disagreeing one.
+    const namesAWindow = (h: string | undefined) => parseWindowHandle(h) !== undefined;
+    const groupHwnds = [...new Set(group.map((c) => c.originHwnd).filter(namesAWindow))];
+    const primaryHwnd = namesAWindow(primary.originHwnd) ? primary.originHwnd : undefined;
+    const groupHwnd = primaryHwnd ?? (groupHwnds.length === 1 ? groupHwnds[0] : undefined);
 
     const entity: UiEntity = {
       entityId: stableEntityId(key),
@@ -185,9 +202,7 @@ export function resolveCandidates(
       // element, so any one that resolved a handle answers for all of them.
       origin: groupHwnd !== undefined
         ? { ...primary.target, hwnd: groupHwnd }
-        : hwndConflict
-          ? { ...primary.target, hwndConflict: true as const }
-          : primary.target,
+        : primary.target,
     };
     if (controlType !== undefined) entity.controlType = controlType;
     if (patterns !== undefined) entity.patterns = patterns;

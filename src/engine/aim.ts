@@ -31,10 +31,12 @@ export const AIM_WINDOW_GONE = "aim_window_gone";
  */
 export class AimedWindowGoneError extends Error {
   readonly hwnd?: bigint;
-  constructor(hwnd?: bigint, detail?: string) {
+  /** `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}. */
+  constructor(hwnd?: bigint, detail?: string, options?: ErrorOptions) {
     super(
       `The window this action was aimed at${hwnd !== undefined ? ` (hwnd ${hwnd})` : ""} is gone` +
       `${detail ? `: ${detail}` : ""}. Run desktop_discover again to see what is there now.`,
+      options,
     );
     this.name = "AimedWindowGoneError";
     this.hwnd = hwnd;
@@ -63,8 +65,16 @@ export class AimedWindowGoneError extends Error {
  */
 export class AimedPointOutsideWindowError extends Error {
   readonly hwnd?: bigint;
-  constructor(message: string, hwnd?: bigint) {
-    super(message);
+  /**
+   * `options` carries the failure this refusal happened DURING, when there was one (gate 2,
+   * 2026-09-10). On the UIA downgrade road the caller is already holding a UIA error and is
+   * refusing the coordinate press that would have covered for it; without a cause the envelope
+   * shows only the second failure, and the first — the reason the coordinate road was taken at
+   * all — is not recoverable from anywhere. {@link AimedRouteFailedError} takes it for the same
+   * reason, on the pinned half of that same fork.
+   */
+  constructor(message: string, hwnd?: bigint, options?: ErrorOptions) {
+    super(message, options);
     this.name = "AimedPointOutsideWindowError";
     this.hwnd = hwnd;
   }
@@ -181,11 +191,13 @@ function replaceHandle(_key: string, value: unknown): unknown {
  */
 export class AimOccludedError extends Error {
   readonly hwnd: bigint;
-  constructor(hwnd: bigint, byHwnd: bigint, byTitle: string, x: number, y: number) {
+  /** `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}. */
+  constructor(hwnd: bigint, byHwnd: bigint, byTitle: string, x: number, y: number, options?: ErrorOptions) {
     super(
       `Refusing to press (${x}, ${y}) for the window this act named (hwnd ${hwnd}): the window on top at ` +
       `that point is ${byTitle ? `"${byTitle}"` : "another window"} (hwnd ${byHwnd}), so the press would go there. ` +
       `Bring the intended window forward, or act through a route that does not use coordinates.`,
+      options,
     );
     this.name = "AimOccludedError";
     this.hwnd = hwnd;
@@ -336,7 +348,7 @@ export function toAim(input: Aim | TargetSpecLike | undefined): Aim {
   return {
     kind: "aim",
     title: spec.windowTitle,
-    hwnd: parseHandle(spec.hwnd),
+    hwnd: parseWindowHandle(spec.hwnd),
     tabId: spec.tabId,
   };
 }
@@ -348,8 +360,15 @@ export function toAim(input: Aim | TargetSpecLike | undefined): Aim {
  * "no handle" — and deliberately a second implementation rather than an import: this module is
  * imported by the engine, and the registry imports the engine. The rule is four lines and the
  * agreement between them is pinned by a test; a cycle to share it would cost more than it saves.
+ *
+ * **Exported for the resolver** (ADR-036 item 12, gate 2 2026-09-10). The world-graph decides which
+ * lane's `originHwnd` becomes `origin.hwnd`, and it was deciding that with `!== undefined` — so a
+ * lane recording `"0"` counted as a window there and stopped counting as one here, two lines apart
+ * in the same ADR. A `"0"` from the primary lane won the choice and then resolved to no handle,
+ * skipping the ladder; a `"0"` alongside a real handle made the group look like it disagreed. The
+ * import is safe in that direction: this module imports nothing.
  */
-function parseHandle(raw: string | undefined): bigint | undefined {
+export function parseWindowHandle(raw: string | undefined): bigint | undefined {
   if (raw === undefined || raw === "") return undefined;
   try {
     const h = BigInt(raw);
@@ -468,7 +487,7 @@ export function observedHwndOfOrigin(
   origin: { kind: "window" | "browserTab"; hwnd?: string } | undefined,
 ): bigint | undefined {
   const raw = origin?.kind === "window" ? origin.hwnd : undefined;
-  return parseHandle(raw);
+  return parseWindowHandle(raw);
 }
 
 /**

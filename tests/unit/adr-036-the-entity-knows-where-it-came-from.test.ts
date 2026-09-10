@@ -105,18 +105,21 @@ describe("a title-only discover still gets the coordinate ladder", () => {
     expect(d.mouseClick).toHaveBeenCalledWith(140, 215);   // not (240, 315)
   });
 
-  it("refuses the press outright when the lanes disagreed about the window", async () => {
-    // A missing handle means nobody looked, and the press goes out the way it always did. A
-    // CONFLICT means two lanes looked and named different windows — there is nothing to check the
-    // coordinates against, and reaching the same absent `coordHwnd` for both turned declining to
-    // aim into pressing blind (PR 側 codex, 2026-09-10).
+  it("presses unchecked when the recorded handle names no window, exactly as before the ladder", async () => {
+    // The boundary of "the entity knows". `"0"` is what a lane writes when it looked and resolved
+    // nothing, and it has to arrive here as SILENCE: no ladder, and the press goes out the way it
+    // did before this item existed. Pinned because the two sides of that rule sit in different
+    // files — the resolver decides which lane's handle becomes `origin.hwnd`, `observedHwndOfOrigin`
+    // decides whether that string names a window — and they were using different rules until gate 2
+    // (2026-09-10). A refusal here would be a new refusal in a case that used to work.
+    //
+    // A round of this branch also carried an `hwndConflict` refusal, for a group whose lanes named
+    // different windows; the state cannot occur (one road writes `originHwnd`, called once per
+    // pass), so the code and its cell are gone rather than kept as a fixture-only path.
     const d = deps();
-    const conflicted: UiEntity = {
-      ...entity(),
-      origin: { kind: "window", id: "Notepad", hwndConflict: true },
-    };
-    await expect(createDesktopExecutor(titleOnly, d)(conflicted, "click")).rejects.toThrow(/DIFFERENT windows/);
-    expect(d.mouseClick).not.toHaveBeenCalled();
+    await createDesktopExecutor(titleOnly, d)(entity({ kind: "window", id: "Notepad", hwnd: "0" }), "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
+    expect(d.aimRect).not.toHaveBeenCalled();
   });
 
   it("checks the UIA downgrade against that window too, not only the mouse road", async () => {

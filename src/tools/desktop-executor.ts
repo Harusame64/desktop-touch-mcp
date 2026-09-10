@@ -277,7 +277,20 @@ async function resolvePressPoint(
   x: number,
   y: number,
   label: string,
+  /**
+   * ADR-036 item 12 — the failure this call is already recovering FROM, when it is one.
+   *
+   * Only the UIA downgrade road has one: UIA click failed, and the mouse press that would have
+   * covered for it is what the ladder below may refuse. Without it the caller sees the refusal and
+   * not the failure that made the coordinate road the road (gate 2, 2026-09-10) — and "UIA could
+   * not find the element" is usually the more useful half for whoever has to decide what to do
+   * next. Attached to every refusal this function makes, because any of its rungs can be the one
+   * that ends that recovery.
+   */
+  cause?: unknown,
 ): Promise<{ x: number; y: number }> {
+  /** `undefined` rather than `{ cause: undefined }`: an absent cause must not print as one. */
+  const because: ErrorOptions | undefined = cause !== undefined ? { cause } : undefined;
   // Narrowed rather than asserted. The caller only reaches here with a handle, and an assertion
   // would keep that true by decree: this way a caller that stops checking loses the ladder, which
   // is what it did before the ladder existed, instead of throwing inside it.
@@ -312,7 +325,7 @@ async function resolvePressPoint(
     // everything else is "cannot tell", and a check that cannot be made is skipped rather than
     // turned into a refusal about a window that may well be on screen (see the deps' JSDoc).
     if (await deps.aimIsGone?.(aimHwnd)) {
-      throw new AimedWindowGoneError(aimHwnd, `no rectangle for ${theWindow}`);
+      throw new AimedWindowGoneError(aimHwnd, `no rectangle for ${theWindow}`, because);
     }
     probeAim("act.route", { route: "homing", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), hwndFrom: handleFrom, from: { x, y }, label });
     probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), hwndFrom: handleFrom, point: { x, y }, label });
@@ -432,6 +445,7 @@ async function resolvePressPoint(
       `MINIMISED window, and no point on screen belongs to it. Nothing was clicked. Restore it ` +
       `(focus_window) and re-run desktop_discover.`,
       aimHwnd,
+      because,
     );
   }
   if (!homing.applied && homing.why === "moved_during_read") {
@@ -446,6 +460,7 @@ async function resolvePressPoint(
       `against more than one position — no single correction describes them. Nothing was clicked. ` +
       `Re-run desktop_discover once the window has settled.`,
       aimHwnd,
+      because,
     );
   }
   // ADR-036 item 5 — the coordinates say which window they came from, so the screen has to agree.
@@ -481,6 +496,7 @@ async function resolvePressPoint(
         `its own and does not move with the window that owns it, so nothing here can follow these ` +
         `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
         aimHwnd,
+        because,
       );
     }
   }
@@ -516,12 +532,13 @@ async function resolvePressPoint(
       `measured in the same read that measured it; a resize can lay the contents out differently, ` +
       `and nothing here can say what is under that point now. Re-run desktop_discover.`,
       aimHwnd,
+      because,
     );
   }
   // Now the stranger on top — after this rung's verdicts, because "bring the intended window
   // forward" is not the recovery for a window that resized or is minimised.
   if (owner?.kind === "other") {
-    throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y);
+    throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y, because);
   }
   if (!inside) {
     // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
@@ -534,6 +551,7 @@ async function resolvePressPoint(
       `same read that measured the window. Whatever is under that point now would take the click. ` +
       `Re-run desktop_discover.`,
       aimHwnd,
+      because,
     );
   }
   return { x, y };
@@ -623,14 +641,24 @@ export function createDesktopExecutor(
     // ADR — identity invalidation, occlusion, containment, the homing correction — is gated behind
     // one and silently does not run.
     //
-    // **This buys three of those four, not all of them** (gate 2, 2026-09-10). Occlusion,
-    // containment and the homing correction all ask the OS about a window and can run on any handle
-    // that names one. Identity invalidation cannot: it compares the window against a BASELINE taken
-    // when the lease was read, and `readIdentityForTarget` only takes one for a target that
-    // resolved to a handle — so a title-only aim carries no `identity` to compare against, and
-    // there is nothing here for a handle to unlock. A recycled handle on this road is still
-    // uncaught, and closing it means recording an identity per OBSERVATION, which is the same lane
-    // work ADR-036 item 5 carries.
+    // **This buys TWO of those four, and the count was wrong twice before it was read carefully**
+    // (gate 2, 2026-09-10; corrected again on re-derivation). Occlusion and containment ask the OS
+    // where the window is NOW and can run on any handle that names one — those two are what a
+    // title-only call gains here.
+    //
+    // The homing correction cannot: it subtracts the delta between the window's rectangle at
+    // discover time and its rectangle now, and the first of those is `aim.origin` — measured around
+    // the window `toAim` resolved. This road has no such window, so `origin` is `undefined` below
+    // and the verdict is `no_origin_rect` every time. What the entity records is a HANDLE, not the
+    // rectangle it was measured against, and the correction needs the rectangle. (Do not "fix" that
+    // by passing `aim.origin` anyway: it belongs to a different window, and the cell above this
+    // one exists because doing so displaced a press by 100 px in each direction.)
+    //
+    // Identity invalidation cannot either: it compares the window against a BASELINE taken when the
+    // lease was read, and `readIdentityForTarget` only takes one for a target that resolved to a
+    // handle — so a title-only aim carries no `identity` to compare against. A recycled handle on
+    // this road is still uncaught, and closing it means recording an identity per OBSERVATION,
+    // which is the same lane work ADR-036 item 5 carries.
     //
     // The entity knows. ADR-029 already answered this for the viewport gate, and `origin.hwnd` is
     // its answer: the handle the CAPTURE resolved, not a re-derivation of the query. Re-resolving
@@ -655,30 +683,12 @@ export function createDesktopExecutor(
     // filed as its own item rather than inferred here from a title.
     const coordHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
 
-    /**
-     * ADR-036 item 12 — the lanes named two different windows for this entity.
-     *
-     * Refused rather than pressed, and this is the difference between an answer and a silence. A
-     * missing handle means nobody looked, and the coordinate press then goes out the way it always
-     * did; a CONFLICT means two lanes looked and disagreed about which window these pixels came
-     * from, so no window can be checked against and the ladder has nothing to run on. Reaching the
-     * same `coordHwnd === undefined` for both turned "declining to aim" into pressing blind
-     * (PR 側 codex, 2026-09-10).
-     *
-     * Only for a coordinate press: the UIA and CDP roads address an element, not a point, and a
-     * disagreement about which window it was seen in does not make them unsafe.
-     */
-    const coordHwndConflict = aimHwnd === undefined && entity.origin?.hwndConflict === true;
-    const refuseOnConflict = (): never => {
-      throw new AimedPointOutsideWindowError(
-        `Refusing to click for "${entity.label ?? entity.entityId}": this call named a title rather ` +
-        `than a window, and the lanes that saw this element resolved DIFFERENT windows for it — so ` +
-        `there is no window to check the coordinates against, and nothing was clicked. Two windows ` +
-        `matching one title is the ordinary cause. Name the window by hwnd, or act through ` +
-        `click_element, which does not press a coordinate.`,
-        undefined,
-      );
-    };
+    // A round of item 12 also carried a `hwndConflict` refusal here, for an entity whose lanes had
+    // named different windows. Deleted with the state that produced it: one road writes
+    // `originHwnd` and it is called once per discovery pass, so the handles in a group cannot
+    // disagree (gate 2, 2026-09-10 — see `world-graph/resolver.ts`). Only a hand-built entity could
+    // reach the refusal, and `guarded-touch` flattened its recovery advice to
+    // `aim_point_outside_window` on the way out, so nothing it said reached a caller either.
 
     // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
     // checked: after the lease was taken and before anything is done about it.
@@ -935,9 +945,8 @@ export function createDesktopExecutor(
         // place. Where UIA can serve the window by title, the coordinate road is not taken and none
         // of this runs. Written here because the next reader will otherwise measure the same thing
         // again to find out whether their change matters.
-        if (coordHwndConflict) refuseOnConflict();
         const { x, y } = coordHwnd !== undefined
-          ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
+          ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId, uiaErr)
           : remembered;
         // ADR-029: the UIA route works on any monitor. The mouse downgrade
         // reaches every monitor too since Phase 2a, but the point still has to
@@ -1084,7 +1093,6 @@ export function createDesktopExecutor(
     // where the press actually goes: homing correction, then who is under the point, then whether
     // the point is in the window at all. Identity invalidation ran at the top of this closure,
     // before any route was chosen, because a changed identity makes every rectangle meaningless.
-    if (coordHwndConflict) refuseOnConflict();
     const { x, y } = coordHwnd !== undefined
       ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
       : remembered;

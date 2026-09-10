@@ -181,14 +181,14 @@ export interface UiEntity {
    * different window if the Z-order changed since discovery, and the click would
    * then be judged against — and land in — the wrong one.
    *
-   * `hwndConflict` marks the one case where absent `hwnd` is not ignorance: two lanes in the
-   * merged group named DIFFERENT windows for this entity. Without it, "the lanes disagreed" and
-   * "nobody looked" arrive at the executor as the same missing field, and the coordinate ladder is
-   * skipped for both — so the answer to conflicting provenance was a press with no containment and
-   * no occlusion check at all (PR 側 codex, 2026-09-10). ADR-036 keeps finding this shape: a
-   * silence and an answer must not share a representation.
+   * Absent `hwnd` means ignorance and only ignorance: no lane that records one looked. A round of
+   * ADR-036 item 12 also carried `hwndConflict` here, for a merged group whose lanes named
+   * different windows — deleted, because one road writes `originHwnd` and `compose-providers` calls
+   * it once per pass, so a group's handles cannot disagree (see `resolver.ts`). The shape it was
+   * defending against is real and worth remembering — a silence and an answer must not share a
+   * representation — but this was not an instance of it.
    */
-  origin?: { kind: "window" | "browserTab"; id: string; hwnd?: string; hwndConflict?: true };
+  origin?: { kind: "window" | "browserTab"; id: string; hwnd?: string };
 }
 
 export interface EntityLease {

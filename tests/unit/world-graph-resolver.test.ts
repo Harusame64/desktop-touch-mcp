@@ -82,15 +82,25 @@ describe("resolveCandidates — basic resolution", () => {
     expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
   });
 
-  it("marks a disagreement as a conflict rather than as a missing handle", () => {
-    // Disagreement is not a vote — but it is not silence either. Both arrived at the executor as
-    // the same absent field, which skips the coordinate ladder: "declining to aim" had become
-    // pressing with no containment and no occlusion check (PR 側 codex, 2026-09-10).
-    const a = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "4919" });
-    const b = candidate("Play", { source: "visual_gpu", observedAtMs: 3000, originHwnd: "777" });
-    const primaryWithout = candidate("Play", { source: "uia", observedAtMs: 4000 });
-    const [e] = resolveCandidates([a, b, primaryWithout], GEN);
-    expect(e.origin).toEqual({ ...TARGET, hwndConflict: true });
+  it("does not take a recorded handle that names no window", () => {
+    // ADR-036 item 12 (gate 2, 2026-09-10). `"0"` is what a lane writes when it looked and
+    // resolved nothing, and this file was reading it as a window while `observedHwndOfOrigin` two
+    // files away was reading it as absence. The primary's `"0"` won the choice below and then
+    // resolved to no handle, so the entity carried an origin that skipped the whole ladder.
+    const zero = candidate("Play", { source: "ocr", observedAtMs: 2000, originHwnd: "0" });
+    const [e] = resolveCandidates([zero], GEN);
+    expect(e.origin).toEqual(TARGET);
+  });
+
+  it("a handle that names no window does not make an agreeing group look like a disagreeing one", () => {
+    // The other half of the same rule. One lane recorded `"0"`, one resolved a real window, and
+    // counting distinct strings made the group look like two answers — so the real handle was
+    // dropped and the coordinate ladder never ran.
+    const zero = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "0" });
+    const real = candidate("Play", { source: "ocr", observedAtMs: 2000, originHwnd: "4919" });
+    const primaryWithout = candidate("Play", { source: "uia", observedAtMs: 3000 });
+    const [e] = resolveCandidates([zero, real, primaryWithout], GEN);
+    expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
   });
 
   it("prefers the primary's own handle to one borrowed from another lane", () => {
