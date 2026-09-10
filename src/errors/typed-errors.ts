@@ -62,9 +62,24 @@ export class ExecutorFailedError extends HandlerError {
  * error code would be a breaking change.
  */
 export class CoordinateOutsideReachableBoundsError extends HandlerError {
+  /**
+   * ADR-036 item 13 — this sentence is fit to publish, and says so (`CallerFacingRefusal` in
+   * `aim.ts`; duck-typed here for the same reason `WindowExcludedError` does it).
+   *
+   * The published advice for this reason points the caller at `if_unexpected.detail`, and without
+   * this field the opt-in extraction found nothing to publish, every time — an envelope naming a
+   * field that never appears, which is the exact defect item 13 exists to close, reintroduced by
+   * the line that describes the fix (PR 側 codex on #618, P2).
+   *
+   * Safe to publish because every producer writes it: `describeUnreachable` states the point, the
+   * reachable region and which of the three cases applies. Nothing here is borrowed from a shell,
+   * a caller's text, or another process.
+   */
+  readonly callerDetail: string;
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "CoordinateOutsideReachableBounds";
+    this.callerDetail = message;
   }
 }
 
@@ -89,9 +104,19 @@ export class CoordinateOutsideReachableBoundsError extends HandlerError {
  * — that failure stays silent and is out of scope for this phase.
  */
 export class CursorPlacementBlockedError extends HandlerError {
+  /**
+   * ADR-036 item 13 — see {@link CoordinateOutsideReachableBoundsError}. The distinction this
+   * carries is the one the advice promises and could not deliver: the cursor read back at a
+   * DIFFERENT point (something is holding it) against the monitor layout being unreadable (the
+   * point was never checked at all). Same reason code, opposite recoveries.
+   *
+   * Written by `cursor.ts` from coordinates and a layout read; nothing foreign travels in it.
+   */
+  readonly callerDetail: string;
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "CursorPlacementBlocked";
+    this.callerDetail = message;
   }
 }
 
@@ -195,6 +220,28 @@ export class AimRouteFailedError extends HandlerError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "AimRouteFailed";
+  }
+}
+
+/**
+ * ADR-036 item 6 — the point a coordinate press would land on is covered by a window this server
+ * may not act through (R3 tool exclusion, met at a coordinate rather than at a target).
+ *
+ * Separate from {@link WindowExcludedRefusalError} because the two say opposite things about the
+ * window the caller named: that one means "the window you addressed is out of bounds", this one
+ * means "yours is fine, something else is over the point". Sharing a code shared the advice, and
+ * two of its four lines were then false — the caller was told their own window was excluded, and
+ * the only actionable line sent them to act on a different window (gate 2, 2026-09-10).
+ *
+ * `name` is `"AimBlockedByExcludedWindow"`, matching the SUGGESTS key — and carrying the whole
+ * reason, because the raw (non-opt-in) shape derives its public `reason` from this name by
+ * `pascalToSnake` while `desktop_act`'s documented catalogue spells it out. A name one word
+ * short published two different reasons for one refusal (PR 側 codex on #618, P2).
+ */
+export class AimBlockedByExcludedRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimBlockedByExcludedWindow";
   }
 }
 

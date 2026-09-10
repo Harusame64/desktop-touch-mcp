@@ -55,6 +55,7 @@ export type TouchFailReason =
   | "aim_identity_changed"
   | "aim_point_outside_window"
   | "aim_occluded"
+  | "aim_blocked_by_excluded_window"
   | "aim_route_failed"
   | "window_excluded"
   | "executor_failed";
@@ -228,6 +229,21 @@ export type TouchResult =
       diff: SemanticDiff;
       /** Set only when reason='modal_blocking' AND env.findBlockingModal returned a blocker. */
       blockingElement?: BlockingElementInfo;
+      /**
+       * ADR-036 item 13 — WHAT THE ENGINE KNEW, carried instead of rebuilt.
+       *
+       * The refusal that reaches this loop is a typed error whose message names the specifics: the
+       * window drawn over the point and its handle, which of the three identity fields changed, the
+       * rectangle the point left. The loop used to keep only the reason code, and
+       * `desktop-register.ts` then wrote fresh text from that code alone — so a caller was told
+       * "another window is drawn over the point" and never which window (measured 2026-09-10, win2,
+       * `dev/item13-envelope/`: the blocker's title and handle appear NOWHERE in the response, and
+       * the envelope has no message field at all).
+       *
+       * `undefined` when the throw carried no message, and absent rather than empty, so a row that
+       * has nothing to say does not claim to.
+       */
+      detail?: string;
     };
 
 /**
@@ -532,6 +548,30 @@ export class GuardedTouchLoop {
     try {
       outcome = await this.env.execute(entity, concreteAction, text);
     } catch (err) {
+      /**
+       * ADR-036 item 13 — the sentence the thrower declared fit to publish, or nothing.
+       *
+       * **Not `err.message`, and the first version of this line was.** Reading any throw's message
+       * publishes whatever a backend happened to say: the UIA road runs a ~2.5 KB PowerShell script
+       * through `execFileAsync`, whose rejection message is `Command failed:` plus the whole
+       * command line and stderr — and on the `type` road the script carries the text being typed
+       * (gate 2, Opus sandbox review, 2026-09-10). A caller-facing field is not a place to forward
+       * an exception to.
+       *
+       * So the contract is opt-in: `CallerFacingRefusal.callerDetail` (`aim.ts`) is a class saying
+       * "this sentence is written for a caller". Anything else — every backend exception, every
+       * `throw "string"` — produces no detail, and that reason arrives exactly as it did before
+       * this item. Duck-typed rather than `instanceof`, for the same module-identity reason the
+       * catch below matches on `name`.
+       *
+       * Capped as defence in depth: the longest sentence any of these classes writes is under 600
+       * characters, so a value past the cap means something unexpected is being published, and a
+       * truncated field is easier to notice than a page of text.
+       */
+      const declared = (err as { callerDetail?: unknown } | null)?.callerDetail;
+      const detail = typeof declared === "string" && declared.trim() !== ""
+        ? declared.slice(0, 1000)
+        : undefined;
       // ADR-029 Phase 1: an unreachable-coordinate refusal keeps its own reason.
       // Collapsing it into executor_failed would hand the caller that reason's
       // recovery advice — "fall back to mouse_click" — which walks straight back
@@ -539,14 +579,14 @@ export class GuardedTouchLoop {
       // error crosses module boundaries where a duplicated class identity would
       // silently fail the check.
       if (err instanceof Error && err.name === "CoordinateOutsideReachableBounds") {
-        return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [] };
+        return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [], ...(detail !== undefined && { detail }) };
       }
       // ADR-029 Phase 2a: same reasoning for a cursor that could not be placed
       // at all. Its recovery (free the cursor, reconnect the session) shares
       // nothing with either executor_failed or the unreachable-coordinate
       // advice, so it must not be folded into them.
       if (err instanceof Error && err.name === "CursorPlacementBlocked") {
-        return { ok: false, reason: "cursor_placement_blocked", diff: [] };
+        return { ok: false, reason: "cursor_placement_blocked", diff: [], ...(detail !== undefined && { detail }) };
       }
       // ADR-036 — the window the action was aimed at is gone, and this is the third refusal that
       // must not become `executor_failed` for exactly the reason written above: that reason's
@@ -556,20 +596,19 @@ export class GuardedTouchLoop {
       // here, so the advice arrived unchanged (measured on Windows 2026-09-09: an excluded window
       // and a closed one produced identical envelopes down to all four `try_next` items).
       if (err instanceof Error && err.name === "AimedWindowGoneError") {
-        return { ok: false, reason: "aim_window_gone", diff: [] };
+        return { ok: false, reason: "aim_window_gone", diff: [], ...(detail !== undefined && { detail }) };
       }
       // ADR-036 item 2 — the handle now belongs to a different process. The specification calls
       // this invalidation rather than an ordinary update, and the distinction is the whole point:
       // an action addressed to this aim would not fail, it would succeed against a stranger.
       if (err instanceof Error && err.name === "AimIdentityChangedError") {
-        // The engine's message names the field that decided (`describeIdentityChange` in `aim.ts`),
-        // and it stops here: the reason is all `TouchResult` carries, and `desktop-register.ts`
-        // renders its own text from the reason alone. So the published advice must NOT promise that
-        // the message says which of the three happened — it did, and the caller never saw one
-        // (PR 側 codex on #608, P2). Carrying the detail through would mean widening `TouchResult`;
-        // recorded as an open question rather than done here, because the recovery is identical for
-        // all three and the detail is diagnostic, not actionable. `act.identity` has it either way.
-        return { ok: false, reason: "aim_identity_changed", diff: [] };
+        // The engine's message names the field that decided (`describeIdentityChange` in `aim.ts`).
+        // It used to stop here — the reason was all `TouchResult` carried, and `desktop-register.ts`
+        // rendered its own text from the reason alone, so the published advice had to be stripped of
+        // any promise that the message said WHICH of the three happened (PR 側 codex on #608, P2).
+        // **ADR-036 item 13 carries it now**: `detail` above is that sentence, and the envelope puts
+        // it in `if_unexpected.detail`. The open question recorded here is closed.
+        return { ok: false, reason: "aim_identity_changed", diff: [], ...(detail !== undefined && { detail }) };
       }
       // PR 側 codex 2026-09-09 — the three refusals below reached this catch as plain errors, so
       // all three arrived as `executor_failed`, whose first suggestion names the coordinate click
@@ -580,26 +619,34 @@ export class GuardedTouchLoop {
       // Its own reason because re-discovering does not help: the coordinates are correct and the
       // press would still land in the window on top.
       if (err instanceof Error && err.name === "AimOccludedError") {
-        return { ok: false, reason: "aim_occluded", diff: [] };
+        return { ok: false, reason: "aim_occluded", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // R3 tool exclusion, met at a COORDINATE rather than at a target. `window_excluded` is the
+      // other half of the same registry and says the opposite thing about the caller's own window
+      // — "the one you addressed is out of bounds" against "yours is fine, something else is over
+      // the point" — so they do not share a reason. The advice for the first is false for this one
+      // in two of its four lines (gate 2, Opus sandbox review, 2026-09-10).
+      if (err instanceof Error && err.name === "AimBlockedByExcludedWindowError") {
+        return { ok: false, reason: "aim_blocked_by_excluded_window", diff: [], ...(detail !== undefined && { detail }) };
       }
       // The point the press would land on is no longer inside the window this call named. Unlike
       // `aim_window_gone` the window is alive, so re-discovering returns a rect that works.
       if (err instanceof Error && err.name === "AimedPointOutsideWindowError") {
-        return { ok: false, reason: "aim_point_outside_window", diff: [] };
+        return { ok: false, reason: "aim_point_outside_window", diff: [], ...(detail !== undefined && { detail }) };
       }
       // Every route to the named window failed and the blind coordinate press is refused —
       // ADR-036's whole subject arriving as the recovery is what this stops. Click and type end
       // here alike; they were giving opposite advice about the same aim.
       if (err instanceof Error && err.name === "AimedRouteFailedError") {
-        return { ok: false, reason: "aim_route_failed", diff: [] };
+        return { ok: false, reason: "aim_route_failed", diff: [], ...(detail !== undefined && { detail }) };
       }
       // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
       // it told the caller to press the rect the excluded window occupies, which is the one
       // outcome the exclusion exists to prevent (`tool-exclusion.ts` R3).
       if (err instanceof Error && err.name === "WindowExcludedError") {
-        return { ok: false, reason: "window_excluded", diff: [] };
+        return { ok: false, reason: "window_excluded", diff: [], ...(detail !== undefined && { detail }) };
       }
-      return { ok: false, reason: "executor_failed", diff: [] };
+      return { ok: false, reason: "executor_failed", diff: [], ...(detail !== undefined && { detail }) };
     }
     // Issue #327 item C: normalise bare-kind / rich-outcome return shapes so
     // downstream stays single-shape.

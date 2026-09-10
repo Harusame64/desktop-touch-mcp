@@ -390,6 +390,49 @@ describe("GuardedTouchLoop — pre-touch checks", () => {
     if (!result.ok) expect(result.reason).toBe("aim_window_gone");
   });
 
+  // ADR-036 item 13 — the refusal reaches the caller with what the engine knew, or it does not
+  // reach them at all. Measured before the fix (win2, 2026-09-10, `dev/item13-envelope/`): a real
+  // opaque window over the point produced `{ok:false, reason:"aim_occluded", diff:[]}` and the
+  // blocker's title and handle appeared NOWHERE in the response — the engine had both, and the
+  // loop kept only the code.
+  it("carries the engine's own sentence out of the loop, not just the reason code", async () => {
+    const { AimOccludedError } = await import("../../src/engine/aim.js");
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      execute: async () => { throw new AimOccludedError(4919n, 777n, "BLOCKER-CELL", 426, 287); },
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("aim_occluded");
+      // The two facts a caller cannot get anywhere else: WHICH window is on top, and where.
+      expect(result.detail).toContain("BLOCKER-CELL");
+      expect(result.detail).toContain("777");
+      expect(result.detail).toContain("(426, 287)");
+    }
+  });
+
+  it("says nothing rather than an empty something when the throw carried no message", async () => {
+    // A silence and an answer must not share a representation — the rule this ADR keeps rediscovering.
+    // `detail: ""` would read as "the engine had nothing to say"; absent says "there was no message".
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      execute: async () => { throw new Error(""); },
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("executor_failed");
+      expect("detail" in result).toBe(false);
+    }
+  });
+
   // The three refusals the catch keeps are matched by NAME. That is deliberate — the error
   // crosses module boundaries where a duplicated class identity would fail `instanceof` — but it
   // means the string and the class are joined by nothing except these assertions. Rename either

@@ -61,9 +61,16 @@
  *     catches this error, which is its own change.
  */
 export class WindowExcludedError extends Error {
+  /**
+   * ADR-036 item 13 — this sentence is fit to publish, and says so (see `CallerFacingRefusal` in
+   * `aim.ts`). Structurally duck-typed rather than imported: this module is below the engine and an
+   * import for one field would be a cycle for a four-line contract.
+   */
+  readonly callerDetail: string;
   constructor(message: string) {
     super(message);
     this.name = "WindowExcludedError";
+    this.callerDetail = message;
   }
 }
 

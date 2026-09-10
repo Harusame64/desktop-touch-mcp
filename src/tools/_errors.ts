@@ -276,20 +276,21 @@ const SUGGESTS: Record<string, string[]> = {
   // desktop_discover as its first move: the coordinates are already right, and a fresh lease
   // returns them unchanged with the same window on top.
   //
-  // And it must not say the message names the covering window, which it did until this line was
-  // removed. The engine's `AimOccludedError` DOES name it — title, handle and point — and
-  // `desktop-register.ts` rebuilds the error with fixed text that names nothing, keeping only the
-  // class. The advice survives that rebuild and the message does not, so an advice line that says
-  // "read the message" points at text the caller never receives (win2, 2026-09-10). Paired with
-  // the next line, which says to pass that name to `focus_window`, it told the caller to use a
-  // title the envelope withholds — the same family as the refusal that recommended the press it
-  // had just refused (ADR-036 item 13, and #605 before it).
+  // **And the line that names the covering window is back, because item 13 landed.** It was removed
+  // on 2026-09-10: the engine's `AimOccludedError` named the window — title, handle and point — and
+  // `desktop-register.ts` rebuilt the error with fixed text that named nothing, keeping only the
+  // class. The advice survived that rebuild and the message did not, so a line saying "read the
+  // message" pointed at text the caller never receives (win2). Paired with the next line, which
+  // says to pass that name to `focus_window`, it told the caller to use a title the envelope
+  // withholds — the same family as the refusal that recommended the press it had just refused.
   //
-  // Removed rather than repaired here because repairing it means carrying the engine's message
-  // through all NINE reasons the register rebuilds, which is item 13's own change. This line comes
-  // back, true, when that lands.
+  // What changed: the engine's sentence now travels as `TouchResult.detail` and lands in
+  // `if_unexpected.detail`. **The line below points at that field by name rather than at "the
+  // message"** — a caller cannot read a field that is not in the response, and the previous version
+  // of this line was a promise about a field that did not exist.
   AimOccluded: [
     "Another window is on top of the point this act would have pressed, so nothing was done. Whether it would REALLY have taken the press is not something this build can ask — that needs the OS hit test — so a window on top counts as being in the way. Some overlays pass presses straight through and are still reported here: measured 2026-09-10 on a full-screen monitor-utility overlay with per-pixel transparency, which no window style distinguishes from one that blocks.",
+    "The detail field in if_unexpected names the window that is on top — its handle always, its title when it has one — as the engine saw it at the moment of the refusal. That is the window in the way; the window you named is the one to bring forward. (Under include:[\"envelope\"] the failure hint sits at data.if_unexpected.)",
     "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
     "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top — and is also the way past an overlay that this build cannot tell is click-through.",
     "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
@@ -314,7 +315,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
     "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator.",
     "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
-    "If the control supports no pattern for this action (a custom-drawn button, a canvas), the message says so — act on a different affordance or reach it by keyboard navigation.",
+    "If the control supports no pattern for this action (a custom-drawn button, a canvas), that is one of the things this failure can be — act on a different affordance or reach it by keyboard navigation. WHICH of them it was is not published: if_unexpected.detail names the window, the entity and which routes were spent, and stops there. The backend's own sentence is withheld because on this road it is a shell rejection carrying the command that produced it.",
   ],
   // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
   // advice is deliberately short on alternatives — every "try the other tool" line would be an
@@ -322,6 +323,23 @@ const SUGGESTS: Record<string, string[]> = {
   // envelope reaches it through `reason:"window_excluded"`, and the two producers that spell
   // `WindowExcluded: …` into the message (`_resolve-window.ts`) reach it through the declared-code
   // arm of `classify`, so it must not claim a click was attempted.
+  // ADR-036 item 6 — the same registry met at a COORDINATE. Its own key, because sharing
+  // `WindowExcluded`'s meant publishing two lines that are false here: that the caller's own window
+  // is excluded ("Nothing was done to it"), and that the recovery is to act on a different window —
+  // when their window is fine and perfectly touchable. A third named the key locker in prose, which
+  // handed back the identification the refusal's own detail was written to withhold (gate 2, Opus
+  // sandbox review, 2026-09-10).
+  //
+  // **Nothing here describes the covering window.** Not its title, not its handle, not what it
+  // belongs to. A caller told only "something is over the point" can still act; a caller told what
+  // it is has been given the thing the registry exists to keep.
+  AimBlockedByExcludedWindow: [
+    "A window this server may not act through is over the point this act would have pressed, so nothing was done. Your window is NOT the excluded one — it is still there and still actionable; something else is drawn over that point right now.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the same point would reach that window through a route that does not check this, which is the press being refused here.",
+    "Act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which does not move the cursor and does not press whatever is on top.",
+    "Or wait for the point to clear and act again — a window that covers it now need not cover it in a moment. Re-running desktop_discover does not help by itself: the entity's coordinates are correct; what is wrong is what is drawn over them.",
+    "Nothing in this response describes the window in the way, by design.",
+  ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
@@ -332,7 +350,7 @@ const SUGGESTS: Record<string, string[]> = {
     "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
     "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
-    "If the message says the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates.",
+    "If the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates. Where the failure says which, it is in if_unexpected.detail on the act path and in error on a flat tool result.",
   ],
   // Reserved (currently unreachable): the producers (the keyboard.ts /
   // terminal.ts flash paths) reject with this compact code when the resolver

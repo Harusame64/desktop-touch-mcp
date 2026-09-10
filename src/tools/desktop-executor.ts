@@ -36,6 +36,7 @@ import {
   type WindowIdentity,
   AimIdentityChangedError,
   AimOccludedError,
+  AimBlockedByExcludedWindowError,
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
@@ -450,6 +451,37 @@ async function resolvePressPoint(
     identityBaseline: aim.identity !== undefined && aimHwnd === aim.hwnd ? "compared" : "none",
     label,
   });
+  if (owner?.kind === "blocked") {
+    // A security refusal, and it is asked before every rung below. Those rungs change what the
+    // caller should do next — restore a minimised window, re-discover after a resize — and none of
+    // them changes whether THIS press may go out. Answering one of them first would also make the
+    // ladder's order the thing that decides whether a locker dialog is pressed.
+    //
+    // **Nothing about the covering window is said**: not its handle, not its title, not its
+    // process. Naming it would hand back what the exclusion registry exists to withhold, and would
+    // confirm by naming that the window over the point IS the locker (gate 2, Opus sandbox review).
+    // What the caller gets is the coordinates it already had and the fact that something there is
+    // out of bounds — the least that can be said while still refusing.
+    //
+    // Its own class and its own reason, NOT `WindowExcludedError`. The first version of this rung
+    // reused that one because `reason:"window_excluded"` already carried the line this case needs —
+    // "Do NOT retry by coordinate ... a route that does not check the exclusion". It carries three
+    // others, and two of them are false here: they tell the caller that THEIR window is excluded and
+    // that they should go act on a different one, when their window is fine and something else is
+    // over the point. One apt line out of four is not "the advice this case needs" (gate 2, Opus
+    // sandbox review, 2026-09-10) — and the fourth line names the key locker, delivering in prose
+    // the identification the detail was carefully written not to give.
+    //
+    // **The residual, stated rather than hidden**: a caller that presses point after point still
+    // learns WHERE something out of bounds is, because a refusal is an answer. All three options
+    // leak that much; the other two add the window's title, or the keystroke itself.
+    throw new AimBlockedByExcludedWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": a window this server may not act through is ` +
+      `over that point. Nothing was clicked. Nothing about that window is named here — not its ` +
+      `title, not its handle — and it is not the window these coordinates were measured in.`,
+      because,
+    );
+  }
   if (!homing.applied && homing.why === "window_off_desktop") {
     // Refused HERE, not left to the containment check below. Between the two sits the occlusion
     // rung, and `whoIsUnderPoint` filters minimised windows out of its own candidate list — so on
@@ -921,6 +953,11 @@ export function createDesktopExecutor(
                 `Re-run desktop_discover.`,
                 aimHwnd,
                 { cause: kbErr },
+                // What the caller is shown: the ladder that was spent, without the backend's own
+                // text. `ladder` is written here for a reader; `kbErr.message` is not (item 13).
+                `Every write route to window ${aimHwnd} was spent for "${entity.label ?? entity.entityId}" — ` +
+                `the UIA value route and the background write both failed — and the act was not ` +
+                `finished as a coordinate press.`,
               );
             }
             throw new Error(ladder, { cause: kbErr });
@@ -972,6 +1009,10 @@ export function createDesktopExecutor(
             `entity's rect is a screen point that any window can be under. Re-run desktop_discover.`,
             aimHwnd,
             { cause: uiaErr },
+            // The message above quotes the UIA failure, which on this road is a PowerShell rejection
+            // carrying the whole script; the caller-facing sentence says the same thing without it.
+            `The UIA route to window ${aimHwnd} failed for "${entity.label ?? entity.entityId}", and ` +
+            `the act was not finished as a coordinate click.`,
           );
         }
         // UIA click failed (element not found, stale tree, etc.).

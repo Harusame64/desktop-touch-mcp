@@ -19,13 +19,19 @@ import { describe, it, expect } from "vitest";
 import {
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
+  AimBlockedByExcludedWindowError,
 } from "../../src/engine/aim.js";
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
 import {
   AimPointOutsideWindowError,
   AimRouteFailedError,
   WindowExcludedRefusalError,
+  AimBlockedByExcludedRefusalError,
+  CursorPlacementBlockedError,
+  CoordinateOutsideReachableBoundsError,
 } from "../../src/errors/typed-errors.js";
+import { toFailureEnvelope } from "../../src/tools/_envelope.js";
+import { Err } from "../../src/types/result.js";
 import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import { detectUiaBlind } from "../../src/engine/uia-bridge.js";
@@ -94,6 +100,66 @@ describe("the loop keeps each refusal's own name", () => {
     if (!result.ok) expect(result.reason).toBe("window_excluded");
   });
 
+  it("keeps the coordinate case apart from the target case, because the advice differs", async () => {
+    // Same registry, opposite statements about the window the CALLER named: `window_excluded` means
+    // "the one you addressed is out of bounds", this means "yours is fine, something else is over
+    // the point". They shared a reason for one commit, and the caller was then told their own
+    // window was excluded and to go act on a different one (gate 2, Opus sandbox review).
+    const { loop, lease } = loopThatThrows(
+      new AimBlockedByExcludedWindowError("Refusing to click (140, 215) for \"Save\": a window this server may not act through is over that point."),
+    );
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("aim_blocked_by_excluded_window");
+      // The sentence travels — that is item 13 — and it is the one the thrower chose to publish.
+      expect(result.detail).toMatch(/may not act through/);
+      // …and it is not the other refusal's sentence.
+      expect(result.detail).not.toMatch(/key locker/i);
+    }
+  });
+
+  it("publishes the same reason the loop reported, which the class name alone decides", async () => {
+    // Two surfaces, one refusal. `desktop_act`'s catalogue documents the reason the loop reports,
+    // while the RAW (non-opt-in) shape derives its `reason` from the typed error's name through
+    // `pascalToSnake`. A class named one word short of the reason published two different strings
+    // for one failure, and a client following the documented contract would not recognise the
+    // short one (PR 側 codex on #618, P2).
+    const raw = (e: Error) => (toFailureEnvelope(Err(e), { optIn: false }) as { reason?: string }).reason;
+    expect(raw(new AimBlockedByExcludedRefusalError("x"))).toBe("aim_blocked_by_excluded_window");
+    // The control: the same derivation on the refusals that were already right. Without these the
+    // assertion above could be satisfied by a special case rather than by the naming rule.
+    expect(raw(new WindowExcludedRefusalError("x"))).toBe("window_excluded");
+    expect(raw(new AimPointOutsideWindowError("x"))).toBe("aim_point_outside_window");
+    expect(raw(new AimRouteFailedError("x"))).toBe("aim_route_failed");
+  });
+
+  it("carries a detail for the two pointer refusals, whose advice already points at the field", async () => {
+    // Both classes are purpose-written and engine-authored — coordinates, a monitor layout, and
+    // which of the named cases applies — so there is nothing foreign to leak and the opt-in should
+    // have covered them from the start. It did not, and the advice this branch added tells the
+    // caller to read `if_unexpected.detail`: an envelope naming a field that never appears, which
+    // is the defect item 13 exists to close, reintroduced by the line describing the fix.
+    const cursor = new CursorPlacementBlockedError(
+      "CursorPlacementBlocked: the cursor could not be moved to (140, 215), which is on a connected monitor.",
+    );
+    const cursorResult = await loopThatThrows(cursor).loop.touch({ lease: loopThatThrows(cursor).lease });
+    expect(cursorResult.ok).toBe(false);
+    if (!cursorResult.ok) {
+      expect(cursorResult.reason).toBe("cursor_placement_blocked");
+      expect(cursorResult.detail).toMatch(/on a connected monitor/);
+    }
+    const bounds = new CoordinateOutsideReachableBoundsError(
+      "CoordinateOutsideReachableBounds: (9999, 9999) is on no connected monitor.",
+    );
+    const boundsResult = await loopThatThrows(bounds).loop.touch({ lease: loopThatThrows(bounds).lease });
+    expect(boundsResult.ok).toBe(false);
+    if (!boundsResult.ok) {
+      expect(boundsResult.reason).toBe("coordinate_outside_reachable_bounds");
+      expect(boundsResult.detail).toMatch(/no connected monitor/);
+    }
+  });
+
   it("matches names the classes actually carry", () => {
     // Same seam as the existing arm in `guarded-touch.test.ts`: the catch arms hold a string, the
     // classes hold a string, and nothing but this joins them. Rename one side and every refusal
@@ -101,6 +167,7 @@ describe("the loop keeps each refusal's own name", () => {
     expect(new AimedPointOutsideWindowError("x").name).toBe("AimedPointOutsideWindowError");
     expect(new AimedRouteFailedError("x").name).toBe("AimedRouteFailedError");
     expect(new WindowExcludedError("x").name).toBe("WindowExcludedError");
+    expect(new AimBlockedByExcludedWindowError("x").name).toBe("AimBlockedByExcludedWindowError");
   });
 });
 
@@ -128,7 +195,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(generic.join(" ")).toMatch(/mouse_click/);
   });
 
-  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded"]) {
+  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcludedWindow"]) {
     it(`${name} never tells the caller to press the coordinate it just refused`, async () => {
       const advice = await adviceFor(name);
       const joined = advice.join(" ");
@@ -145,12 +212,49 @@ describe("the advice for a refusal does not name the press it refused", () => {
     });
   }
 
+  it("does not promise a distinction the detail does not carry", async () => {
+    // The advice for this reason listed "the control supports no pattern" as THE failure and sent
+    // the caller to `if_unexpected.detail` for the specifics. The detail is written by the executor
+    // and is deliberately generic — it names the window, the entity and which routes were spent —
+    // because the backend's own sentence is a shell rejection carrying the command that produced
+    // it. So the caller could not tell "no pattern" from "element not found", which have different
+    // recoveries (PR 側 codex on #618, P2).
+    //
+    // Narrowed rather than filled: the sanitised classification that would let the advice keep its
+    // promise has to be written against the real backend messages, and those live on Windows. An
+    // expression written by the side without the runtime is unchecked until the side with it runs
+    // it — twice today that produced a fix that failed into the bug's own path.
+    const advice = (await adviceFor("AimRouteFailed")).join(" ");
+    expect(advice).toMatch(/WHICH of them it was is not published/);
+    // The control: a reason whose detail DOES carry the specifics still says so, so this cell is
+    // about honesty per reason and not a blanket ban on pointing at the field.
+    expect((await adviceFor("AimOccluded")).join(" ")).toMatch(/detail field in if_unexpected names the window/);
+  });
+
   it("renders each envelope-side class under the name its advice is filed under", () => {
     // `toFailureEnvelope` looks the advice up by `name`; a class whose name drifts gets the
     // generic entry and no test would notice, because the envelope still has a `try_next`.
     expect(new AimPointOutsideWindowError("x").name).toBe("AimPointOutsideWindow");
     expect(new AimRouteFailedError("x").name).toBe("AimRouteFailed");
     expect(new WindowExcludedRefusalError("x").name).toBe("WindowExcluded");
+    expect(new AimBlockedByExcludedRefusalError("x").name).toBe("AimBlockedByExcludedWindow");
+  });
+
+  it("does not tell a caller whose window is fine that their window is the excluded one", async () => {
+    // The half a shared code got wrong. `WindowExcluded`'s advice opens with "This window is
+    // excluded ... Nothing was done to it" and closes by naming the key locker's own dialog — true
+    // for a caller who addressed the locker, false for one whose own window is merely covered, and
+    // the identification is exactly what the refusal's detail is written to withhold.
+    const covered = await adviceFor("AimBlockedByExcludedWindow");
+    const joined = covered.join(" ");
+    expect(joined).not.toMatch(/key locker/i);
+    expect(joined).toMatch(/NOT the excluded one/i);
+    // A recovery that works on a window that is fine, rather than "go act on a different window".
+    expect(joined).toMatch(/click_element/);
+    // The control: the target case still says both of the things this one must not.
+    const addressed = await adviceFor("WindowExcluded");
+    expect(addressed.join(" ")).toMatch(/key locker/i);
+    expect(addressed.join(" ")).toMatch(/Act on another window/i);
   });
 });
 
@@ -198,5 +302,106 @@ describe("a truncated UIA walk is not evidence of a sparse window", () => {
     const finished = result({ elementCount: 6, truncated: false, elements: [pane], windowRect } as never);
     expect(detectUiaBlind(finished)).toEqual({ blind: true, reason: "single-giant-pane" });
     expect(detectUiaBlind(cutShort)).toEqual({ blind: false, undecided: "truncated_tree" });
+  });
+});
+
+/**
+ * ADR-036 item 13 — the envelope carries what the layer that refused knew, or the refusal is a code.
+ *
+ * The nine act-path refusals are REBUILT in `desktop-register.ts` from the reason alone, so the
+ * engine's sentence — which names the covering window, the identity field that changed, the
+ * rectangle the point left — stopped at `GuardedTouchLoop`. Measured on the real machine before
+ * the fix (win2, 2026-09-10, `dev/item13-envelope/`): an `aim_occluded` response carried neither
+ * the blocker's title nor its handle, and had no message field at all.
+ *
+ * These cells pin the two halves that make the sentence reach a caller: the envelope has a place
+ * to put it, and an absent detail stays absent rather than becoming an empty string.
+ */
+describe("the envelope carries the refusing layer's own words", () => {
+  it("puts the detail where the advice says to look", async () => {
+    const { toFailureEnvelope } = await import("../../src/tools/_envelope.js");
+    const detail = 'Refusing to press (426, 287) for the window this act named (hwnd 4919): the window on top at that point is "BLOCKER-CELL" (hwnd 777), so the press would go there.';
+    const failure = toFailureEnvelope(
+      { ok: false, error: new AimPointOutsideWindowError("AimPointOutsideWindow: …") },
+      { optIn: true, detail },
+    ) as { if_unexpected: { most_likely_cause: string; detail?: string } };
+    expect(failure.if_unexpected.detail).toBe(detail);
+    // The code still decides the advice — the detail is additive, not a replacement for either.
+    expect(failure.if_unexpected.most_likely_cause).toBe("AimPointOutsideWindow");
+  });
+
+  it("omits the field rather than carrying an empty one", async () => {
+    const { toFailureEnvelope } = await import("../../src/tools/_envelope.js");
+    for (const detail of [undefined, "", "   "]) {
+      const failure = toFailureEnvelope(
+        { ok: false, error: new AimPointOutsideWindowError("AimPointOutsideWindow: …") },
+        { optIn: true, detail },
+      ) as { if_unexpected: Record<string, unknown> };
+      expect("detail" in failure.if_unexpected).toBe(false);
+    }
+  });
+
+  it("the advice for an occluded aim points at the field by name", async () => {
+    // The line that names the covering window was REMOVED on 2026-09-10 because it pointed at a
+    // message the caller never receives, with a note that it comes back when item 13 lands. It is
+    // back — and it names `if_unexpected.detail`, not "the message", because a caller can only
+    // read a field that is in the response.
+    const { getSuggestsForCode } = await import("../../src/tools/_errors.js");
+    const advice = getSuggestsForCode("AimOccluded");
+    expect(advice.some((a) => /detail field in if_unexpected/.test(a))).toBe(true);
+    expect(advice.some((a) => /read the message|the message names/i.test(a))).toBe(false);
+    // And it does not promise a title the detail sometimes cannot give: the OS road can answer with
+    // a captionless window, where the engine's sentence says "an untitled window" (gate 2).
+    expect(advice.some((a) => /its handle always, its title when it has one/.test(a))).toBe(true);
+  });
+});
+
+/**
+ * ADR-036 item 13 — what a caller-facing sentence may contain.
+ *
+ * Two rounds found the same shape on two roads: a message written when nothing outside the process
+ * read it, published the moment `detail` existed. win2's round caught `keyboardTypeBg` — an internal
+ * dep name — inside a `type` ladder's text (2026-09-10, `dev/item13-detail/`), and their scan for
+ * paths, PowerShell, HRESULTs and stack frames matched none of it: **a regex list finds the shapes
+ * someone thought of.** So these cells check the rule instead — a caller sentence is written on
+ * purpose, and the branches that dump internal records stay in `message`.
+ */
+describe("a published sentence carries no developer-facing text", () => {
+  it("does not put the identity records in the caller's copy", async () => {
+    const { AimIdentityChangedError } = await import("../../src/engine/aim.js");
+    const then = { pid: 100, processName: "notepad.exe", processStartTimeMs: 1, className: "Notepad" };
+    // Same pid, same start time, same class: the comparator would have to have decided on something
+    // this build does not name — the branch that prints both records whole.
+    const now = { pid: 100, processName: "notepad.exe", processStartTimeMs: 1, className: "Notepad" };
+    const e = new AimIdentityChangedError(4919n, then, now);
+    expect(e.message).toContain("processStartTimeMs");   // the log keeps the dump
+    expect(e.callerDetail).not.toContain("processStartTimeMs");
+    expect(e.callerDetail).not.toContain("{");
+    expect(e.callerDetail).toContain("does not name yet");
+  });
+
+  it("names the process and class when it can, because that is what the advice promises", async () => {
+    const { AimIdentityChangedError } = await import("../../src/engine/aim.js");
+    const then = { pid: 100, processName: "notepad.exe", processStartTimeMs: 1, className: "Notepad" };
+    const now  = { pid: 250, processName: "explorer.exe", processStartTimeMs: 2, className: "CabinetWClass" };
+    const e = new AimIdentityChangedError(4919n, then, now);
+    expect(e.callerDetail).toContain("notepad.exe");
+    expect(e.callerDetail).toContain("explorer.exe");
+  });
+
+  it("the route-failure publishes its own sentence, not the backend's", async () => {
+    // The leak gate 2 found: this error's message quotes the failure it reports, and on the UIA road
+    // that is a PowerShell rejection carrying the whole script — with the typed text interpolated
+    // into it on the `type` road.
+    const { AimedRouteFailedError } = await import("../../src/engine/aim.js");
+    const e = new AimedRouteFailedError(
+      'UIA click failed: Command failed: powershell.exe -NoProfile -Command "…$secret…"',
+      4919n,
+      undefined,
+      "The UIA route to window 4919 failed, and the act was not finished as a coordinate click.",
+    );
+    expect(e.message).toContain("powershell.exe");
+    expect(e.callerDetail).not.toContain("powershell.exe");
+    expect(e.callerDetail).not.toContain("Command failed");
   });
 });

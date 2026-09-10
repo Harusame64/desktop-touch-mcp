@@ -80,7 +80,7 @@
  * before it is compared with a top-level handle, or the aim's own control reads as another window.
  */
 
-import { enumWindowsInZOrder, getWindowTitleW, getWindowThreadId, windowFromPoint, type WindowZInfo } from "./win32.js";
+import { enumWindowsInZOrder, getWindowTitleW, getWindowThreadId, windowFromPoint, isExcludedWindowHandle, isExcludedWindowAtPoint, type WindowZInfo } from "./win32.js";
 import type { NativeWindowAtPoint } from "./native-types.js";
 
 /**
@@ -176,6 +176,13 @@ export type PointOwner =
   | { kind: "aim" }
   | { kind: "owned"; hwnd: bigint; title: string; via?: PointOwnerVia }
   | { kind: "other"; hwnd: bigint; title: string; via?: PointOwnerVia }
+  /**
+   * A window that must stop the press and must not be described. `other` and `blocked` both refuse;
+   * they differ in what the refusal is allowed to say, and that is exactly why `blocked` cannot be
+   * a flavour of `unknown` — `unknown` means "no evidence", and every caller treats no evidence as
+   * a reason to keep going (PR 側 codex on #618, P1).
+   */
+  | { kind: "blocked"; why: "excluded_window" }
   | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" | "unattributable_window" };
 
 /** Injectable so the classification can be tested without a desktop. */
@@ -194,6 +201,19 @@ export interface PointOwnerDeps {
   titleOf?: (hwnd: bigint) => string;
   /** The aim's own thread, for the one comparison that is about "cannot tell" rather than ownership. */
   threadOf?: (hwnd: bigint) => number;
+  /**
+   * R3 tool exclusion, on the hit-test road. Injectable so a cell can say WHICH window is excluded
+   * instead of leaning on a fake handle's PID read failing — with the real predicate, "excluded" and
+   * "unreadable while armed" are the same answer on a machine with no addon, so a build that
+   * refused every press while a locker was armed passed the cells that were meant to pin this
+   * (gate 2, Opus sandbox review, 2026-09-10).
+   */
+  isExcluded?: (hwnd: bigint) => boolean;
+  /**
+   * R3 tool exclusion, on the ENUMERATION road, where the excluded window is not in the list at all.
+   * See `isExcludedWindowAtPoint` for why this is a separate question rather than a filter.
+   */
+  excludedAtPoint?: (x: number, y: number) => boolean;
 }
 
 /** 0 means "could not read", and the caller treats it as no evidence rather than as a match. */
@@ -266,6 +286,34 @@ export function whoIsUnderPoint(
   if (at !== undefined) {
     // An answer, not a silence: Windows looked and found nothing there.
     if (at === null) return { kind: "unknown", why: "no_window_at_point" };
+    // **An excluded window stops the press and is not described.** The enumeration below never sees
+    // one — `enumWindowsInZOrder` filters by the same predicate — but `WindowFromPoint` asks the OS,
+    // and the OS does not know about this server's registry. Until ADR-036 item 13 the difference
+    // stayed inside the loop; now the covering window's title and handle are published in the
+    // refusal, so the key locker's secure dialog would hand back exactly what the registry exists to
+    // withhold — and confirm, by naming it, that the window over the point IS the locker (gate 2,
+    // Opus sandbox review, 2026-09-10).
+    //
+    // **The first answer to that was `unknown`, and it was wrong** — with a sentence beside it
+    // claiming "the press is refused by containment where it would have been refused anyway". It is
+    // not: `unknown` means no evidence, the ladder falls through to containment, and a locker dialog
+    // drawn INSIDE its owner's rectangle leaves the point `inside` — so the press went out, into the
+    // secure dialog, on the one road the exclusion exists to close. Before item 13 this answered
+    // `other` and refused (PR 側 codex on #618, P1). Two things a verdict can be — "refuse" and
+    // "say nothing about it" — were collapsed into one word.
+    //
+    // Asked BEFORE `at.root === aim`, and it can only answer yes while a locker is armed (an empty
+    // registry short-circuits inside the predicate, with no syscall). So a handle recycled onto the
+    // locker's own window is refused here too, which is the press this registry exists to prevent —
+    // and on an ordinary desktop the test runs and never returns.
+    //
+    // **The one false refusal this order can produce**: an aimed window destroyed between the hit
+    // test and the PID read reads as unreadable-while-armed, so the caller gets this refusal instead
+    // of `aim_window_gone`. Wrong sentence, right outcome — nothing should be pressed there either.
+    // The alternative order opens a real hole: a handle recycled onto the locker would answer `aim`
+    // and be pressed. Recorded so a reader debugging that envelope is not hunting a locker that was
+    // never over the point (gate 2, Opus sandbox review, 2026-09-10).
+    if ((deps.isExcluded ?? isExcludedWindowHandle)(at.root)) return { kind: "blocked", why: "excluded_window" };
     // The primitive returns the CHILD under the point — the aim's own button is not another window.
     if (at.root === aim) return { kind: "aim" };
     // Ownership by `GW_OWNER`, every hop. This is the one field that was measured to separate an
@@ -319,6 +367,19 @@ export function whoIsUnderPoint(
       return { kind: "unknown", why: "unattributable_window" };
     }
     return { kind: "other", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "", via: "os_hit_test" };
+  }
+
+  // **The excluded window is not in the list below, and that is not safety.** `enumWindowsInZOrder`
+  // filters it out, so the reconstruction answers about whatever is BEHIND it — on an ordinary
+  // desktop, the caller's own window — and returns `aim`, which allows the press. The locker dialog
+  // then takes it. The same defect the hit-test road had, reached through the other door, and the
+  // door every build without `win32WindowFromPoint` uses (gate 2, Opus sandbox review, 2026-09-10).
+  //
+  // Asked before the enumeration rather than folded into it, because the answer has to come from the
+  // RAW list: a predicate applied to a filtered list can only confirm what the filter already
+  // removed. Same reason `isExcludedTitle` enumerates raw, written a year earlier.
+  if ((deps.excludedAtPoint ?? isExcludedWindowAtPoint)(x, y)) {
+    return { kind: "blocked", why: "excluded_window" };
   }
 
   let windows: WindowZInfo[];
