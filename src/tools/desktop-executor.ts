@@ -297,20 +297,23 @@ async function resolvePressPoint(
   if (aimHwnd === undefined) return { x, y };
   // ADR-036 item 12 — where this handle came from, written into every row and every refusal below.
   //
-  // Without it a title-only run produces `act.aim{aimHwnd:null}` followed by
-  // `act.route{route:"homing", aimHwnd:"4919"}` — the same field name carrying two different facts
-  // in one trace, and a handle appearing from nowhere for whoever reads the log without the source
-  // beside it (gate 2, 2026-09-10). The refusals have the same problem in prose: they said "the
-  // window this call named" about a window the call never named, and on this road the call named a
-  // TITLE. The handle is the executor's inference from `entity.origin`, and a reader debugging from
-  // a refusal has to be able to see that it is.
+  // Without a source field, a title-only run produces a handle that appears from nowhere: one act
+  // says the call named none, the next row shows one, and nothing in the trace says the executor
+  // inferred it from `entity.origin` (gate 2, 2026-09-10). The refusals had the same problem in
+  // prose — they said "the window this call named" about a window the call never named, and on this
+  // road the call named a TITLE.
   //
-  // **And the rows say `coordHwnd`, not `aimHwnd`** (gate 2, 2026-09-10). The ladder's rows used the
-  // same field name as `act.aim` for a different fact: one act produced `act.aim{aimHwnd:null}` and
-  // `act.route{aimHwnd:"4919"}`, which is the defect `hwndFrom` was added to fix, still present in
-  // the name beside it. `aimHwnd` now means "the handle the CALL named" in every row; the
-  // coordinate handle and its source travel as `coordHwnd` / `coordHwndFrom`, the names the mouse
-  // rows already used.
+  // **The row's NAME was half of that defect, and it survived the first fix** (gate 2, same day).
+  // The ladder wrote its handle as `aimHwnd`, the field `act.aim` uses for the handle the CALL
+  // named, so one act produced `act.aim{aimHwnd:null}` and then `act.route{aimHwnd:"4919"}` — one
+  // name carrying two facts, beside the `hwndFrom` that had just been added to separate them. From
+  // `df2b4d4` the ladder writes `coordHwnd` / `coordHwndFrom` (the names the mouse rows already
+  // used) and `aimHwnd` means "the handle the call named" in every row.
+  //
+  // **Sweeps taken before that commit quote the old names**, and they are not wrong — they are what
+  // the build wrote. Read `act.route{aimHwnd:"4919", hwndFrom:"entity_origin"}` from an older
+  // record as today's `coordHwnd` / `coordHwndFrom`. Records are annotated rather than rewritten,
+  // because rewriting a record makes it agree with code that never produced it (win2, 2026-09-10).
   const handleFrom = aimHwnd === aim.hwnd ? "aim" : "entity_origin";
   /** Named the way the caller would recognise it, which is not the same sentence on both roads. */
   const theWindow = handleFrom === "aim"
