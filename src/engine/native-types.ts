@@ -259,6 +259,25 @@ export interface NativeSsimResidualResult {
 
 /** Rust `RECT` mirror — left/top/right/bottom in screen pixels. The TS wrapper
  *  in `src/engine/win32.ts` converts to `{ x, y, width, height }` for callers. */
+/** ADR-036 item 6 — the three handles `WindowFromPoint` leads to.
+ *
+ *  The primitive returns the CHILD window under the point (a button, not its frame), so a caller
+ *  comparing it with a top-level handle would report the aim's own control as another window.
+ *  Both ancestor walks are done in the same native call: `root` (`GA_ROOT`) is the top-level
+ *  window that would take the press, `rootOwner` (`GA_ROOTOWNER`) follows the owner chain too, so
+ *  a dialog maps to whatever raised it. They differ exactly for the popups ADR-036 is about. */
+export interface NativeWindowAtPoint {
+  child: bigint
+  root: bigint
+  /** `GetWindow(GW_OWNER)` walked up from `root`, bounded at eight hops. Every hop, not just the
+   *  last: the aim itself can be an owned window, and a chain passing THROUGH it would otherwise
+   *  read as unrelated. NOT `GA_ROOTOWNER`, which was measured and is strictly worse. */
+  ownerChain: bigint[]
+  rootThreadId: number
+  rootProcessId: number
+  rootHasCaption: boolean
+}
+
 export interface NativeWin32Rect {
   left: number
   top: number

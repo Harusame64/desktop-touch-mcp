@@ -87,6 +87,18 @@ export interface NativeElementBounds {
 
 // ─── Win32 hot-path bindings (ADR-007 P1) ────────────────────────────────────
 
+export interface NativeWindowAtPoint {
+  /** The window under the point — a CHILD control, not its frame. */
+  child: bigint
+  /** `GA_ROOT`: the top-level window containing that child. This is what would take the press. */
+  root: bigint
+  /** `GetWindow(GW_OWNER)` walked up from `root`, bounded at eight hops. */
+  ownerChain: bigint[]
+  rootThreadId: number
+  rootProcessId: number
+  rootHasCaption: boolean
+}
+
 export interface NativeWin32Rect {
   left: number
   top: number
@@ -404,6 +416,7 @@ export declare function win32IsWindowVisible(hwnd: bigint): boolean
 export declare function win32IsIconic(hwnd: bigint): boolean
 export declare function win32IsZoomed(hwnd: bigint): boolean
 export declare function win32GetClassName(hwnd: bigint): string
+export declare function win32WindowFromPoint(x: number, y: number): NativeWindowAtPoint | null
 /**
  * ADR-018 Phase 5+N: resolve a top-level HWND to the descendant HWND that
  * actually receives WM_MOUSEWHEEL for MDI / OLE apps (Excel: XLMAIN →
