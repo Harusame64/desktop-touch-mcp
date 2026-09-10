@@ -49,6 +49,7 @@ import {
   targetKeyToWarmTarget,
 } from "../../src/engine/vision-gpu/runtime.js";
 import { fetchVisualCandidates } from "../../src/tools/desktop-providers/visual-provider.js";
+import { deriveViewConstraints } from "../../src/tools/desktop-constraints.js";
 import {
   onDirtySignal,
   pushDirtySignal,
@@ -237,6 +238,16 @@ describe("C. visual-provider warning taxonomy", () => {
     // The user-visible "visual_attempted_empty" is set by compose-providers.ts
     // in applyVisualEscalation() when a UIA-blind target's visual lane is
     // warm-but-empty. That path is verified in the next test.
+  });
+
+  it("keeps the specific reason when the general one arrives after it", () => {
+    // PR 側 codex (2026-09-10). A blind backend produces BOTH warnings, in this order, and
+    // `visual_not_attempted` was the only case in that switch writing unconditionally — so it
+    // overwrote the specific reason on the next iteration and the caller was told to wait and retry
+    // about a state that never becomes ready by waiting.
+    const c = deriveViewConstraints(["uia_blind_single_pane", "visual_backend_cannot_recognise", "visual_not_attempted"], 0);
+    expect(c?.visual).toBe("backend_cannot_recognise");
+    expect(c?.entityZeroReason).toBe("uia_blind_visual_incapable");
   });
 
   it("the shipped default says it cannot look, instead of answering like a warm pipeline", async () => {

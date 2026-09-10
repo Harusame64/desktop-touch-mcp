@@ -58,6 +58,9 @@ export interface ViewConstraints {
    * Fallback guidance by value:
    *   foreground_unresolved    → add target.windowTitle or wait for focus
    *   ingress_fetch_error      → retry desktop_discover
+   *   uia_blind_visual_incapable → the attached visual backend recognises nothing (the default
+   *                              build). Waiting never changes it: enable a recognising backend, or
+   *                              use screenshot(ocrFallback=always) / V1 tools
    *   uia_blind_visual_unready → retry when visual backend is ready, or use screenshot(ocrFallback=always)
    *   uia_blind_visual_empty   → use screenshot(ocrFallback=always) or V1 tools
    *   cdp_failed_visual_empty  → check --remote-debugging-port=9222 and retry
@@ -65,6 +68,7 @@ export interface ViewConstraints {
    *                              also covers terminal-only failure (terminal(action='send'/'read') as recovery)
    */
   entityZeroReason?:
+    | "uia_blind_visual_incapable"
     | "uia_blind_visual_unready"
     | "uia_blind_visual_empty"
     | "cdp_failed_visual_empty"
@@ -136,8 +140,13 @@ export function deriveViewConstraints(
         break;
       // Visual
       case "visual_not_attempted":
-        c.visual = "not_attempted";
-        hasConstraint = true;
+        // Guarded like every other visual case, and it was the only one that was not. The warnings
+        // for a blind backend arrive as [visual_backend_cannot_recognise, visual_not_attempted], so
+        // an unconditional write here overwrote the specific reason with the general one on the very
+        // next iteration — the caller was told `not_attempted`, and `entityZeroReason` then said
+        // `uia_blind_visual_unready`, which means "wait and retry" about a state that never becomes
+        // ready by waiting (PR 側 codex, 2026-09-10).
+        if (!c.visual) { c.visual = "not_attempted"; hasConstraint = true; }
         break;
       case "visual_attempted_empty":
         if (!c.visual) { c.visual = "attempted_empty"; hasConstraint = true; }
@@ -195,9 +204,14 @@ function deriveEntityZeroReason(c: ViewConstraints): ViewConstraints["entityZero
   if (c.ingress === "fetch_error") return "ingress_fetch_error";
 
   const uiaBlind = c.uia === "blind_single_pane" || c.uia === "blind_too_few_elements";
+  // `backend_cannot_recognise` is deliberately NOT here. Every value in this list means "not ready
+  // yet", and the advice attached to `uia_blind_visual_unready` is to retry or wait; a backend that
+  // recognises nothing is ready and will answer the same way forever. It gets its own reason below.
   const visualUnready = c.visual === "not_attempted" || c.visual === "provider_unavailable" || c.visual === "provider_warming";
+  const visualBlind   = c.visual === "backend_cannot_recognise";
   const visualEmpty = c.visual === "attempted_empty";
 
+  if (uiaBlind && visualBlind)   return "uia_blind_visual_incapable";
   if (uiaBlind && visualUnready) return "uia_blind_visual_unready";
   if (uiaBlind && visualEmpty)   return "uia_blind_visual_empty";
   if (c.cdp === "provider_failed" && visualEmpty) return "cdp_failed_visual_empty";

@@ -1505,6 +1505,7 @@ export function registerDesktopTools(server: McpServer): void {
       "If response.warnings[] is non-empty, results may be partial.",
       "response.constraints (when present) is a structured summary of provider limitations — use it to decide fallback without parsing warnings[] strings.",
       "constraints.entityZeroReason (when entities is empty) explains WHY: foreground_unresolved → add target.windowTitle;",
+      "uia_blind_visual_incapable → the attached visual backend recognises nothing (the default build); waiting never changes it, so enable a recognising backend or use screenshot(ocrFallback=always) / V1 tools;",
       "uia_blind_visual_unready → retry when visual backend is ready or use screenshot(ocrFallback=always);",
       "uia_blind_visual_empty → use screenshot(ocrFallback=always) or V1 click_element;",
       "cdp_failed_visual_empty → check --remote-debugging-port=9222 and retry;",
