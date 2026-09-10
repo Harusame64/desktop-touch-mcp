@@ -181,21 +181,29 @@ const CLICK_THROUGH     = WS_EX_TRANSPARENT | WS_EX_LAYERED;
  * The rule this follows: **a field the decision needs and a field the RECORD needs are different
  * questions**, and the second one is answered by whoever reads the log, months later, without the
  * run. Absence here is not neutral — it makes two mechanisms print the same row.
+ *
+ * **REQUIRED, not optional, on every member.** Optional would have left the guarantee at "the
+ * producers written today all set it": a new branch, or an injected `pointOwner` in a fixture,
+ * could omit it and compile, and the serializer would drop the key and print the ambiguous row
+ * again (PR 側 codex on #620, P2). A record the type system does not require is a record that
+ * decays. It costs every test double one word — and that word is the road the double is standing
+ * in for, which a double that refuses on the OS answer and one that allows on the enumeration's
+ * genuinely have to state.
  */
 export type PointOwnerVia = "os_hit_test" | "enumeration";
 
 export type PointOwner =
-  | { kind: "aim"; via?: PointOwnerVia }
-  | { kind: "owned"; hwnd: bigint; title: string; via?: PointOwnerVia }
-  | { kind: "other"; hwnd: bigint; title: string; via?: PointOwnerVia }
+  | { kind: "aim"; via: PointOwnerVia }
+  | { kind: "owned"; hwnd: bigint; title: string; via: PointOwnerVia }
+  | { kind: "other"; hwnd: bigint; title: string; via: PointOwnerVia }
   /**
    * A window that must stop the press and must not be described. `other` and `blocked` both refuse;
    * they differ in what the refusal is allowed to say, and that is exactly why `blocked` cannot be
    * a flavour of `unknown` — `unknown` means "no evidence", and every caller treats no evidence as
    * a reason to keep going (PR 側 codex on #618, P1).
    */
-  | { kind: "blocked"; why: "excluded_window"; via?: PointOwnerVia }
-  | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" | "unattributable_window"; via?: PointOwnerVia };
+  | { kind: "blocked"; why: "excluded_window"; via: PointOwnerVia }
+  | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" | "unattributable_window"; via: PointOwnerVia };
 
 /** Injectable so the classification can be tested without a desktop. */
 export interface PointOwnerDeps {
