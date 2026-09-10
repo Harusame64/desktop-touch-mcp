@@ -47,6 +47,7 @@
     "access": "public"
   },
   "overrides": {
+    "hono": "^4.13.5",
     "ip-address": "^10.2.2",
     "postcss": "^8.5.18"
   },
