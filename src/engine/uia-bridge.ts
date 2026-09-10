@@ -312,13 +312,19 @@ try {
 # UNSIGNED, deliberately. NativeWindowHandle is an Int32 on the managed side, so a handle with the
 # high bit set arrives NEGATIVE, and a plain [int64] cast would sign-extend it into a negative
 # decimal string. parseWindowHandle rejects non-positive handles, so such a window would record no
-# handle and silently keep the behaviour this item exists to end — the failure being invisible is
-# what makes it worth two casts (PR 側 codex on #619, P2). Masked through Int64 first because a
-# direct [uint32] cast of a negative Int32 throws in PowerShell rather than wrapping.
+# handle and silently keep the behaviour this item exists to end (PR 側 codex on #619, P2).
+#
+# **The mask is [uint32]::MaxValue and NOT 0xFFFFFFFF.** PowerShell types the hex literal
+# 0xFFFFFFFF as Int32 -1, in 5.1 and in 7 alike, so -band 0xFFFFFFFF is the IDENTITY on a negative
+# value: the cast below then receives the negative number and THROWS, straight into the catch,
+# leaving $winHwnd null. That is the same silent no-handle outcome the mask was added to prevent —
+# the fix failing into the bug's own path, for exactly the windows it was written for. Measured on
+# Windows 2026-09-10 (win2, dev/item15-handle-width/), the shipped expression against three working
+# forms, identical in 5.1.26100.9444 and 7.6.5.
 $winHwnd = $null
 try {
     $h = $target.Current.NativeWindowHandle
-    if ($h -ne 0) { $winHwnd = [string][uint32]([int64]$h -band 0xFFFFFFFF) }
+    if ($h -ne 0) { $winHwnd = [string][uint32]([int64]$h -band [uint32]::MaxValue) }
 } catch {}
 
 # Capture window bounding rect for the caller
