@@ -308,10 +308,17 @@ try {
 # a title and a tree worth returning, and the caller treats an absent handle as "this read cannot
 # say" — which is what every consumer did before this field existed. Zero is dropped for the same
 # reason the native road drops it: "no window" and "window 0" are different facts.
+#
+# UNSIGNED, deliberately. NativeWindowHandle is an Int32 on the managed side, so a handle with the
+# high bit set arrives NEGATIVE, and a plain [int64] cast would sign-extend it into a negative
+# decimal string. parseWindowHandle rejects non-positive handles, so such a window would record no
+# handle and silently keep the behaviour this item exists to end — the failure being invisible is
+# what makes it worth two casts (PR 側 codex on #619, P2). Masked through Int64 first because a
+# direct [uint32] cast of a negative Int32 throws in PowerShell rather than wrapping.
 $winHwnd = $null
 try {
     $h = $target.Current.NativeWindowHandle
-    if ($h -ne 0) { $winHwnd = [string][int64]$h }
+    if ($h -ne 0) { $winHwnd = [string][uint32]([int64]$h -band 0xFFFFFFFF) }
 } catch {}
 
 # Capture window bounding rect for the caller
