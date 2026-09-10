@@ -759,9 +759,15 @@ export const desktopActRawHandler = async (
         // diff clips to a padded region around the expected change rather than
         // diluting a small localized repaint across the whole window (→ false
         // `indeterminate`). Resolved before the touch from the discover snapshot.
+        //
+        // ADR-036 item 5 — `wr` is passed so the centre gets the SAME homing correction the press
+        // gets. Without it the region is centred where the entity WAS and the repaint happens
+        // where the press went, which for a drag past the padding is a correct press reported as
+        // unverified (gate 2, second pass).
         frameDiffPoint = facade.resolveEntityCenterForViewId(
           input.lease.viewId,
           input.lease.entityId,
+          wr,
         );
         preFrame = await captureFrame(frameDiffHwnd, wr);
       }
@@ -1013,7 +1019,7 @@ export const desktopActRawHandler = async (
   if (!result.ok && result.reason === "aim_occluded") {
     const failure = toFailureEnvelope(
       Err(new AimOccludedError(
-        "AimOccluded: another window is drawn over the point this act would have pressed, and it would have taken the press — nothing was done. " +
+        "AimOccluded: another window is drawn over the point this act would have pressed — nothing was done. Whether that window would really have taken the press cannot be asked here (it needs the OS hit test), so anything on top counts as in the way, including overlays that presses pass through. " +
         "Bring the intended window forward, or use click_element, which does not press a coordinate"
       )),
       { optIn: false },
@@ -1023,13 +1029,18 @@ export const desktopActRawHandler = async (
     };
   }
 
-  // The aim went stale: the window is alive but has moved or been minimised, so the remembered
-  // point is no longer inside it. Re-discovering is the fix, not a consolation.
+  // The aim went stale in a way the homing correction cannot repair: the window is alive, but it
+  // was minimised, or it RESIZED — and a resize may have reflowed the contents, so translating the
+  // point through it would be inventing a layout — or it moved while it was being read, or these
+  // coordinates came from a lane the bracketed origin cannot describe. A window that moved without
+  // resizing reaches here too, whenever the correction declined for one of the last two reasons:
+  // the point then stays where it was and leaves the window. Re-discovering is the fix, not a
+  // consolation.
   if (!result.ok && result.reason === "aim_point_outside_window") {
     const failure = toFailureEnvelope(
       Err(new AimPointOutsideWindowError(
-        "AimPointOutsideWindow: the point this act would have pressed is no longer inside the window it named — nothing was clicked. " +
-        "Re-run desktop_discover; the window has moved or been minimised since the lease was taken"
+        "AimPointOutsideWindow: the point this act would have pressed can no longer be followed to the window it named — nothing was clicked. " +
+        "Re-run desktop_discover; among the reasons, the window was minimised, was resized so its contents may have moved independently of its origin, was moving while it was being read, the coordinates came from a lane whose measurement moment cannot be established — a stored visual snapshot may have been captured while the window was somewhere else — or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point"
       )),
       { optIn: false },
     );
@@ -1544,8 +1555,8 @@ export function registerDesktopTools(server: McpServer): void {
       "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
       "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
       "  aim_identity_changed → the window this act named has gone and its handle now names a different window (another process, or another window of the same program); nothing was done, and the lease describes a window that is gone. Re-call desktop_discover — do NOT retry with the same handle or by coordinate;",
-      "  aim_occluded → another window is drawn over the point; it would have taken the press, so nothing was done. Bring the intended window forward, or use V1 click_element — re-calling desktop_discover alone does not help, the coordinates are already right;",
-      "  aim_point_outside_window → the window is still open but has moved or been minimised, so the remembered point is no longer inside it; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate;",
+      "  aim_occluded → another window is drawn over the point, so nothing was done. Whether it would really have taken the press cannot be asked here (that needs the OS hit test), so anything on top counts as in the way — an overlay presses pass through is reported the same. Bring the intended window forward, or use V1 click_element, which is also the way past such an overlay — re-calling desktop_discover alone does not help, the coordinates are already right;",
+      "  aim_point_outside_window → the window is still open but its coordinates can no longer be followed (among them: minimised; resized, so the contents may have reflowed — refused even where the point still falls inside; moved while it was being read, so that snapshot has no single origin; measured by a lane whose moment cannot be established, such as a stored visual snapshot; or captured in a window other than the one this act named — a menu or dropdown has an origin of its own and is followed only while it is still what sits under the point); nothing was clicked. A window that moved WITHOUT resizing is followed automatically when the coordinates were measured in the same read that measured the window; a move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport (that check does not look at uia / cdp / terminal entities). Re-call desktop_discover — do NOT retry by coordinate;",
       "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. Re-call desktop_discover, or try V1 click_element(name=…) on the same entity;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",

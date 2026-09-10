@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+- **A click aimed at a window now checks that it is still that window, and follows it when it moves.**
+  A `desktop_discover` returns coordinates, and `desktop_act` used to press them
+  without asking whether anything had changed in between. Three things can have
+  changed, and each of them produced a click that looked like it worked: the
+  window can have closed and left its number to another one, something can have
+  been drawn over the point, and the window can have moved with the point still
+  inside it — so the press landed on whatever had arrived there and came back
+  `ok: true`. The last one was measured on a window with five stacked buttons:
+  the lease named the title bar, the window moved 71 pixels up, and the button
+  that logged the press was one the lease had never mentioned.
+
+  Coordinates now travel with the position they were measured in, and a press
+  that would go somewhere else is refused rather than made. Three refusal
+  reasons carry that:
+
+  - `aim_identity_changed` — the handle names a different window now. Usually
+    another process took it; it can also be the same program putting a different
+    kind of window on the same number, which is why the window's class is
+    compared as well as the process. Nothing was done, and the recovery is the
+    same for all of them: discover again and act on what comes back.
+  - `aim_occluded` — another window is drawn over the point. Bring your window
+    forward, or act through `click_element`, which does not use coordinates. A
+    dropdown or menu your own window owns is *not* treated as being in the way.
+    Whether the covering window would really have taken the click is not
+    something this build can ask — that needs the OS hit test, which the native
+    bindings do not expose yet — so anything on top counts as in the way. Some
+    overlays are drawn over everything and let presses through; those are
+    reported here too, and `click_element` is the way past them.
+  - `aim_point_outside_window` — the coordinates can no longer be followed to the
+    window they were measured in. Among the reasons: it was minimised; it was
+    resized (the contents may have been laid out differently, so this is refused
+    even where the point still falls inside); it moved while it was being read;
+    the coordinates came from a stored visual snapshot whose moment cannot be
+    established; or they were captured in a window other than the one the call
+    named. A menu or dialog your window owns has an origin of its own and does
+    not move with its owner, so it is pressed while it is still what sits under
+    the point, and refused once something else is.
+
+  **A window that only moved is followed instead of refused** — the point is
+  carried by the same offset, so a press after a drag lands on the control you
+  discovered. That applies when the coordinates were measured in the same read
+  that measured the window; a move large enough to take the point off the window
+  is answered earlier, by the existing viewport check.
+
+  If your window has not moved and nothing is on top of it, nothing about your
+  calls changes.
+
 - **Passing `hwnd` now really reaches that window when several share a title.**
   When two open windows have matching titles, the safety guard stops a keyboard
   or UI-element write with `ambiguous_target` and tells you to name the window

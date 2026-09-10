@@ -289,9 +289,9 @@ const SUGGESTS: Record<string, string[]> = {
   // through all NINE reasons the register rebuilds, which is item 13's own change. This line comes
   // back, true, when that lands.
   AimOccluded: [
-    "Another window is on top of the point this act would have pressed, and it would have taken the press. Nothing was done.",
+    "Another window is on top of the point this act would have pressed, so nothing was done. Whether it would REALLY have taken the press is not something this build can ask — that needs the OS hit test — so a window on top counts as being in the way. Some overlays pass presses straight through and are still reported here: measured 2026-09-10 on a full-screen monitor-utility overlay with per-pixel transparency, which no window style distinguishes from one that blocks.",
     "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
-    "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top.",
+    "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top — and is also the way past an overlay that this build cannot tell is click-through.",
     "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
   ],
   // ADR-036 — the aimed press would land outside the window the call named. Every line here has
@@ -299,8 +299,9 @@ const SUGGESTS: Record<string, string[]> = {
   // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone
   // the window is still there, so re-discovering is not a consolation — it is the fix.
   AimPointOutsideWindow: [
-    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but it has moved or been minimised since the lease was taken, so the remembered rectangle points somewhere else.",
-    "Do NOT retry by coordinate. The point was refused because it is no longer inside that window — whatever is under it now would take the press.",
+    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but the coordinates taken from it can no longer be trusted.",
+    "A window that moved WITHOUT resizing does not reach here — the point is carried with it by the same offset, when the coordinates were measured in the same read that measured the window. Among the reasons that do reach here: the window was minimised; it changed SIZE, and a resize may have reflowed the contents, so it is refused even where the point still falls inside; it moved WHILE it was being discovered, in which case that snapshot's coordinates were measured against more than one position and no correction can describe them — discover again once the window has settled; the coordinates came from a lane whose measurement moment cannot be established, such as a stored visual snapshot captured while the window was somewhere else; or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point. A move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport — that check passes uia / cdp / terminal entities without looking, so it is not a second guarantee.",
+    "Do NOT retry by coordinate. Whatever is under that point now would take the press.",
     "If the window was minimised, restore it first (focus_window), then re-run desktop_discover: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
     "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way.",
   ],

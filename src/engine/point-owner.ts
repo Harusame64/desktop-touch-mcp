@@ -21,20 +21,63 @@
  * answer from `enumWindowsInZOrder`: the frontmost enumerated window whose rectangle contains the
  * point. That is right in the ordinary case and blind in three named ways:
  *
- *   - **The enumeration drops windows.** Invisible, untitled and sub-50 px windows never appear, so
- *     a covering window with no caption is not seen. The failure direction is "looks clear when it
- *     is not", which is the dangerous one, and it is why this returns `unknown` rather than `aim`
- *     when it cannot enumerate at all.
+ *   - **The enumeration drops windows.** The cause is the TITLE filter, isolated by measurement
+ *     rather than inferred: two owned windows of the same size, same owner and same visibility,
+ *     differing only in whether they had a caption — the titled one is listed, the untitled one is
+ *     not (win2, 2026-09-10, `dev/adr036-items56-popups/`). So a `ComboLBox` dropdown, a
+ *     `tooltips_class32` tip and any untitled popup are invisible here.
  *   - **A rectangle is not a hit region.** Rounded corners, custom regions and per-pixel-alpha
  *     layered windows all take presses on some of their rectangle and not the rest.
- *   - **Click-through is decided by style, not by a hit test.** A window is passed over only when
- *     it carries `WS_EX_TRANSPARENT` **and** `WS_EX_LAYERED`, the documented combination; a
- *     transparent non-layered window can still take the press, so it is treated as occluding. The
- *     error therefore falls on the side of a visible refusal rather than a silent press into an
- *     overlay.
+ *   - **Click-through is decided by style, not by a hit test.** See the mask below, and the
+ *     measured overlay that this module reports as occluding while presses go straight through it.
+ *
+ * ## What `owned` really covers, measured
+ *
+ * The branch is NOT dead — the same round asked this function about five real popups. **Read the
+ * verdict column with its condition**: it was asked with the desktop's own full-screen overlay
+ * removed from the enumeration, because **asked as it ships, on a machine carrying one, every row
+ * answers `other`** and says nothing about popups at all (the overlay is the subject of the mask
+ * below; the raw record is `RESULTS-adr039-overlay.md` beside the table's own).
+ *
+ * So the column is what this logic decides ABOUT POPUPS, not what the build returns on that
+ * desktop. Anyone reproducing it on a machine with such an overlay gets `other` everywhere, and
+ * without this sentence would read that as the table being wrong rather than as the overlay
+ * answering first.
+ *
+ *   | popup                        | class                                    | title | owner    | `owned`? |
+ *   |------------------------------|------------------------------------------|-------|----------|----------|
+ *   | modal `ShowDialog`           | WinForms                                 | yes   | the host | **yes**  |
+ *   | modeless owned form          | WinForms                                 | yes   | the host | **yes**  |
+ *   | ComboBox dropdown            | `ComboLBox`                              | none  | **none** | no       |
+ *   | tooltip                      | `tooltips_class32`                       | none  | the host | no       |
+ *   | Windows 11 context menu      | `Microsoft.UI.Content.PopupWindowSiteBridge` | yes | **the shell's XAML island** | no |
+ *
+ *   (verdicts with the overlay removed, as above — not the shipped answer on that desktop)
+ *
+ * So `owned` answers for **titled owned windows — dialogs** — which is exactly the case it was
+ * written for: a dialog drawn INSIDE its owner's rectangle, whose remembered point must not be
+ * moved by the owner's delta. What it cannot see:
+ *
+ *   - **An untitled popup never reaches the ownership test at all.** The answer is then about
+ *     whatever is BEHIND it: a dropdown or tooltip drawn over its owner yields `aim` (and the press
+ *     is allowed, correct, without this module ever seeing the popup), while one drawn OUTSIDE its
+ *     owner yields `other` — a false refusal naming a window that is not in the way.
+ *   - **`ComboLBox` has no owner at all** (`ownerHwnd` is 0). Removing the title filter is
+ *     therefore necessary and NOT sufficient — and on its own it would make things worse: the
+ *     dropdown would arrive as an unowned window on top and turn today's correct `aim` into a false
+ *     `other`. Do not touch that filter before the hit test below exists.
+ *   - **A Windows 11 context menu is owned by a shell island**, not by the application. It IS
+ *     enumerated and it still answers `other`. No owner-chain rule can recognise it — neither
+ *     review round predicted this, and it is not a filter that can be widened to fix.
+ *
+ * **Therefore `aim` is not evidence that a popup is absent.** It is what this function returns when
+ * a popup it cannot see is sitting on top, so no rung may read it as "the entity's window is not
+ * there" (see `measured_in_another_window` in the executor).
  *
  * When the native side gains `WindowFromPoint`, this becomes a fallback for builds without it
- * rather than the primary answer.
+ * rather than the primary answer. **Note for that work**: `WindowFromPoint` returns the CHILD
+ * window under the point — a button, not its frame — so the result has to be walked up to its root
+ * before it is compared with a top-level handle, or the aim's own control reads as another window.
  */
 
 import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
@@ -68,9 +111,35 @@ import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
  *   | `TRANSPARENT \| LAYERED`           | `0x000D0128`      | lands |
  *   | `LAYERED` only                     | `0x000D0108`      | blocked |
  *
- * So `TRANSPARENT` alone behaves exactly like a plain opaque window, and the mask below is not the
- * cautious choice — it is the correct one. An overlay carrying only that bit really does take the
- * press, so refusing under it is not a false refusal.
+ * So `TRANSPARENT` alone behaves exactly like a plain opaque window: for THOSE five overlays, the
+ * mask below is not the cautious choice, it is the correct one.
+ *
+ * **And the sentence that used to follow was a false generalisation, measured false the same day.**
+ * It read: *"An overlay carrying only that bit really does take the press, so refusing under it is
+ * not a false refusal."* The round above built its `LAYERED`-only arm with
+ * `SetLayeredWindowAttributes` — a whole-window alpha — and that one does take the press. A second
+ * kind exists. `EAWorkWindow` (Dell DDPM) on the same machine is `WS_EX_LAYERED |
+ * WS_EX_TOOLWINDOW | WS_EX_TOPMOST` — **no `TRANSPARENT`** — sits at z=0 over the whole 1920x1032
+ * screen, titled and visible, and **presses go straight through it into the window below**,
+ * measured with the fixture's own log (win2, 2026-09-10). `GetLayeredWindowAttributes` answers
+ * `false` for it, because it is built with `UpdateLayeredWindow`: per-pixel alpha, which that API
+ * cannot report.
+ *
+ * **So this mask produces a false refusal on any desktop carrying such an overlay** — and one of
+ * them ships with a common monitor utility, covering the entire screen, so `whoIsUnderPoint`
+ * answers `other` at EVERY point and every coordinate press is refused with "bring the intended
+ * window forward" about a window that was never in the way.
+ *
+ * **No attribute distinguishes the two kinds.** `TRANSPARENT` is not set on either. `LAYERED`
+ * alone is set on both, and the item 11 round proves it cannot mean "passes through".
+ * `GetLayeredWindowAttributes` cannot read the one that does. What separates them is the pixel
+ * alpha under the point, which only the OS holds — so the answer needs `WindowFromPoint` /
+ * `WM_NCHITTEST`, and the note above about the native bindings stops being a footnote and becomes
+ * the fix. Until then the mask stays as it is: widening it on a bit that means two things would
+ * trade a visible false refusal for a silent press into an overlay.
+ *
+ * The reusable part is not about window styles. **One arm measured is not a kind measured** — the
+ * round measured `SetLayeredWindowAttributes` windows and the comment spoke about layered windows.
  */
 const WS_EX_TRANSPARENT = 0x00000020;
 const WS_EX_LAYERED     = 0x00080000;
