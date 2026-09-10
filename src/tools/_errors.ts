@@ -275,8 +275,21 @@ const SUGGESTS: Record<string, string[]> = {
   // ADR-036 item 6 — the point is covered. The advice must not send the caller back to
   // desktop_discover as its first move: the coordinates are already right, and a fresh lease
   // returns them unchanged with the same window on top.
+  //
+  // And it must not say the message names the covering window, which it did until this line was
+  // removed. The engine's `AimOccludedError` DOES name it — title, handle and point — and
+  // `desktop-register.ts` rebuilds the error with fixed text that names nothing, keeping only the
+  // class. The advice survives that rebuild and the message does not, so an advice line that says
+  // "read the message" points at text the caller never receives (win2, 2026-09-10). Paired with
+  // the next line, which says to pass that name to `focus_window`, it told the caller to use a
+  // title the envelope withholds — the same family as the refusal that recommended the press it
+  // had just refused (ADR-036 item 13, and #605 before it).
+  //
+  // Removed rather than repaired here because repairing it means carrying the engine's message
+  // through all NINE reasons the register rebuilds, which is item 13's own change. This line comes
+  // back, true, when that lands.
   AimOccluded: [
-    "Another window is on top of the point this act would have pressed, and it would have taken the press. Nothing was done. The message names the window in the way.",
+    "Another window is on top of the point this act would have pressed, and it would have taken the press. Nothing was done.",
     "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
     "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top.",
     "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
