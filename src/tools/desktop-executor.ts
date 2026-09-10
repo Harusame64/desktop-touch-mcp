@@ -908,6 +908,9 @@ export function createDesktopExecutor(
         // ADR-036 item 14c — the refusal, spelled the way the envelope spells it, so one search for
         // `refused` finds every refusal in a record. `null` when this row let the act through.
         refused: verdict === "changed" ? "aim_identity_changed" : null,
+        // …and named like every other refusal, so a reader who takes every row with a `refused` also
+        // gets its rung (PR 側 codex on #621). This one is decided here, not on a route.
+        rung: verdict === "changed" ? "identity_changed" : null,
       });
       if (verdict === "changed") {
         throw new AimIdentityChangedError(aim.hwnd, aim.identity, now);

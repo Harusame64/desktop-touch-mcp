@@ -756,7 +756,10 @@ describe("a refusal says which rung made it (14c)", () => {
     expect(thrown).toBeInstanceOf(Error);
 
     const identityRows = rows().filter((r) => r.seam === "act.identity");
-    expect(identityRows.map((r) => [r.verdict === "changed", r.refused])).toEqual([[false, null], [true, "aim_identity_changed"]]);
+    // The rung too (PR 側 codex on #621): every row that carries a `refused` names the rung that made it.
+    expect(identityRows.map((r) => [r.verdict === "changed", r.refused, r.rung])).toEqual([
+      [false, null, null], [true, "aim_identity_changed", "identity_changed"],
+    ]);
     expect(identityRows[1]!.refused).toBe(await publishedReason(thrown));
   });
 });
