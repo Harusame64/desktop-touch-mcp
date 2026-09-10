@@ -169,11 +169,23 @@ const CLICK_THROUGH     = WS_EX_TRANSPARENT | WS_EX_LAYERED;
  * and on the enumeration's answer that would invent a refusal out of a known blind spot, which is
  * the one thing this ladder may not do (gate: Opus sandbox review, 2026-09-10). Refusals ride on
  * `os_hit_test` only; the enumeration's answer still ALLOWS, exactly as before.
+ *
+ * **On EVERY verdict, not only the two that name a window.** It was first added where the decision
+ * used it, which left the field absent exactly where a round needed it to read the record: the
+ * real-machine cell for the excluded-window refusal asked which mechanism answered and could not be
+ * told, because `blocked` and `aim` carried no `via` (win2, 2026-09-10,
+ * `dev/pr618-excluded-window/`). The two roads now BOTH refuse on an excluded window, so "which
+ * road refused" stopped being derivable from the verdict's shape — and the same round had to fall
+ * back to a cross-reference from another day's file to say which mechanism its addon used.
+ *
+ * The rule this follows: **a field the decision needs and a field the RECORD needs are different
+ * questions**, and the second one is answered by whoever reads the log, months later, without the
+ * run. Absence here is not neutral — it makes two mechanisms print the same row.
  */
 export type PointOwnerVia = "os_hit_test" | "enumeration";
 
 export type PointOwner =
-  | { kind: "aim" }
+  | { kind: "aim"; via?: PointOwnerVia }
   | { kind: "owned"; hwnd: bigint; title: string; via?: PointOwnerVia }
   | { kind: "other"; hwnd: bigint; title: string; via?: PointOwnerVia }
   /**
@@ -182,8 +194,8 @@ export type PointOwner =
    * a flavour of `unknown` — `unknown` means "no evidence", and every caller treats no evidence as
    * a reason to keep going (PR 側 codex on #618, P1).
    */
-  | { kind: "blocked"; why: "excluded_window" }
-  | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" | "unattributable_window" };
+  | { kind: "blocked"; why: "excluded_window"; via?: PointOwnerVia }
+  | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" | "unattributable_window"; via?: PointOwnerVia };
 
 /** Injectable so the classification can be tested without a desktop. */
 export interface PointOwnerDeps {
@@ -285,7 +297,7 @@ export function whoIsUnderPoint(
   const at = deps.fromPoint?.(x, y);
   if (at !== undefined) {
     // An answer, not a silence: Windows looked and found nothing there.
-    if (at === null) return { kind: "unknown", why: "no_window_at_point" };
+    if (at === null) return { kind: "unknown", why: "no_window_at_point", via: "os_hit_test" };
     // **An excluded window stops the press and is not described.** The enumeration below never sees
     // one — `enumWindowsInZOrder` filters by the same predicate — but `WindowFromPoint` asks the OS,
     // and the OS does not know about this server's registry. Until ADR-036 item 13 the difference
@@ -313,9 +325,9 @@ export function whoIsUnderPoint(
     // The alternative order opens a real hole: a handle recycled onto the locker would answer `aim`
     // and be pressed. Recorded so a reader debugging that envelope is not hunting a locker that was
     // never over the point (gate 2, Opus sandbox review, 2026-09-10).
-    if ((deps.isExcluded ?? isExcludedWindowHandle)(at.root)) return { kind: "blocked", why: "excluded_window" };
+    if ((deps.isExcluded ?? isExcludedWindowHandle)(at.root)) return { kind: "blocked", why: "excluded_window", via: "os_hit_test" };
     // The primitive returns the CHILD under the point — the aim's own button is not another window.
-    if (at.root === aim) return { kind: "aim" };
+    if (at.root === aim) return { kind: "aim", via: "os_hit_test" };
     // Ownership by `GW_OWNER`, every hop. This is the one field that was measured to separate an
     // owned modal from an ordinary second window of the same application — the two were identical
     // in thread, in process, in `GA_ROOTOWNER` and in their whole window style (win2, 2026-09-10).
@@ -364,7 +376,7 @@ export function whoIsUnderPoint(
     // was aimed at. Recorded because the correction is more useful than the claim was.
     const aimThread = deps.threadOf?.(aim);
     if (!at.rootHasCaption && aimThread !== undefined && aimThread !== 0 && at.rootThreadId === aimThread) {
-      return { kind: "unknown", why: "unattributable_window" };
+      return { kind: "unknown", why: "unattributable_window", via: "os_hit_test" };
     }
     return { kind: "other", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "", via: "os_hit_test" };
   }
@@ -379,16 +391,16 @@ export function whoIsUnderPoint(
   // RAW list: a predicate applied to a filtered list can only confirm what the filter already
   // removed. Same reason `isExcludedTitle` enumerates raw, written a year earlier.
   if ((deps.excludedAtPoint ?? isExcludedWindowAtPoint)(x, y)) {
-    return { kind: "blocked", why: "excluded_window" };
+    return { kind: "blocked", why: "excluded_window", via: "enumeration" };
   }
 
   let windows: WindowZInfo[];
   try {
     windows = deps.enumerate();
   } catch {
-    return { kind: "unknown", why: "enumeration_failed" };
+    return { kind: "unknown", why: "enumeration_failed", via: "enumeration" };
   }
-  if (windows.length === 0) return { kind: "unknown", why: "enumeration_failed" };
+  if (windows.length === 0) return { kind: "unknown", why: "enumeration_failed", via: "enumeration" };
 
   const byHwnd = new Map(windows.map((w) => [String(w.hwnd), w]));
   const candidates = windows
@@ -398,8 +410,8 @@ export function whoIsUnderPoint(
     .sort((a, b) => a.zOrder - b.zOrder);
 
   const top = candidates[0];
-  if (!top) return { kind: "unknown", why: "no_window_at_point" };
-  if (top.hwnd === aim) return { kind: "aim" };
+  if (!top) return { kind: "unknown", why: "no_window_at_point", via: "enumeration" };
+  if (top.hwnd === aim) return { kind: "aim", via: "enumeration" };
   if (isOwnedBy(top, aim, byHwnd)) return { kind: "owned", hwnd: top.hwnd, title: top.title, via: "enumeration" };
   return { kind: "other", hwnd: top.hwnd, title: top.title, via: "enumeration" };
 }

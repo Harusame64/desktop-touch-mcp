@@ -83,7 +83,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     expect(whoIsUnderPoint(AIM, 500, 500, enumerating(overlay, aimed)))
       .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "enumeration" });
     expect(whoIsUnderPoint(AIM, 500, 500, hitting(at({ root: AIM }), overlay, aimed)))
-      .toEqual({ kind: "aim" });
+      .toEqual({ kind: "aim", via: "os_hit_test" });
   });
 
   it("walks the child up to its root, so the aim's own button is not another window", () => {
@@ -91,7 +91,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // 2026-09-10). Compared with a top-level handle as-is, every press on the aim's own control
     // would read as an occlusion.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ child: 12345n, root: AIM }))))
-      .toEqual({ kind: "aim" });
+      .toEqual({ kind: "aim", via: "os_hit_test" });
   });
 
   it("calls a dialog owned when the GW_OWNER chain reaches the aim", () => {
@@ -113,7 +113,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // first time, so calling it `other` would turn every combo-box press into a refusal: a rung
     // breaking what worked. `unknown` keeps the caller's behaviour and claims nothing.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: false, rootThreadId: AIM_THREAD }))))
-      .toEqual({ kind: "unknown", why: "unattributable_window" });
+      .toEqual({ kind: "unknown", why: "unattributable_window", via: "os_hit_test" });
   });
 
   it("does not extend that to the app's other windows, which carry captions", () => {
@@ -134,7 +134,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // The application's own menu is the classic `#32768`: its own thread, no caption. Ten
     // right-clicks on a fixture's text box produced it ten times out of ten.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: false, rootThreadId: AIM_THREAD }))))
-      .toEqual({ kind: "unknown", why: "unattributable_window" });
+      .toEqual({ kind: "unknown", why: "unattributable_window", via: "os_hit_test" });
     // A shell menu — the desktop's, Explorer's — is another thread and another process, owned by
     // the shell's XAML island. Refusing there is correct: it is not the application's window.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: POPUP, rootHasCaption: true, rootThreadId: 4242, rootProcessId: 4242 }))))
@@ -151,7 +151,7 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ ...sibling, rootHasCaption: true }))))
       .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "os_hit_test" });
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(at({ ...sibling, rootHasCaption: false }))))
-      .toEqual({ kind: "unknown", why: "unattributable_window" });
+      .toEqual({ kind: "unknown", why: "unattributable_window", via: "os_hit_test" });
   });
 
   it("stops the press at a tool-excluded window without describing it", () => {
@@ -174,12 +174,39 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     registerExcludedPid(999_999);
     try {
       const verdict = whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: OTHER })));
-      expect(verdict).toEqual({ kind: "blocked", why: "excluded_window" });
+      expect(verdict).toEqual({ kind: "blocked", why: "excluded_window", via: "os_hit_test" });
       // Says nothing about the window it stopped the press at — not its handle, not its title.
-      expect(Object.keys(verdict)).toEqual(["kind", "why"]);
+      expect(Object.keys(verdict)).toEqual(["kind", "why", "via"]);
     } finally {
       _resetExcludedPidsForTest();
     }
+  });
+
+  it("says which mechanism answered, on every verdict and not only the two that name a window", () => {
+    // `via` was added where the DECISION used it — refusals ride on the OS answer only — which left
+    // it absent exactly where a reader needed it. Both roads now refuse on an excluded window, so
+    // "which road refused" stopped being derivable from the verdict's shape, and the real-machine
+    // round for that refusal could not say which mechanism its build had used: `blocked` and `aim`
+    // carried no `via` at all (win2, 2026-09-10, `dev/pr618-excluded-window/`). It had to
+    // cross-reference another day's file, about the addon rather than about that cell.
+    //
+    // A field the decision needs and a field the RECORD needs are different questions. Absence is
+    // not neutral here: two mechanisms print the same row.
+    const only = (h: bigint) => h === LOCKER;
+    const road = (v: { via?: string }) => v.via;
+    expect(road(whoIsUnderPoint(AIM, 5, 5, hitting(at({ root: AIM }))))).toBe("os_hit_test");
+    expect(road(whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: LOCKER })), isExcluded: only }))).toBe("os_hit_test");
+    expect(road(whoIsUnderPoint(AIM, 5, 5, hitting(null)))).toBe("os_hit_test");
+    const enumerated = enumerating(win({ hwnd: AIM, zOrder: 0 }));
+    expect(road(whoIsUnderPoint(AIM, 500, 500, enumerated))).toBe("enumeration");
+    expect(road(whoIsUnderPoint(AIM, 500, 500, { ...enumerated, excludedAtPoint: () => true }))).toBe("enumeration");
+    expect(road(whoIsUnderPoint(AIM, 5, 5, enumerating()))).toBe("enumeration");
+    // The pair that makes this a cell rather than a spelling check: the SAME verdict kind, from the
+    // two roads, distinguishable only by this field.
+    const osBlocked = whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: LOCKER })), isExcluded: only });
+    const enumBlocked = whoIsUnderPoint(AIM, 500, 500, { ...enumerated, excludedAtPoint: () => true });
+    expect(osBlocked.kind).toBe(enumBlocked.kind);
+    expect(osBlocked).not.toEqual(enumBlocked);
   });
 
   it("costs nothing, and blocks nothing, while no locker is armed", () => {
@@ -198,13 +225,13 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // dialog is open. So the predicate is injected, and this cell says WHICH window is excluded.
     const only = (h: bigint) => h === LOCKER;
     expect(whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: LOCKER })), isExcluded: only }))
-      .toEqual({ kind: "blocked", why: "excluded_window" });
+      .toEqual({ kind: "blocked", why: "excluded_window", via: "os_hit_test" });
     expect(whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: OTHER })), isExcluded: only }))
       .toEqual({ kind: "other", hwnd: OTHER, title: `w${OTHER}`, via: "os_hit_test" });
     // And the aim itself still answers `aim` — the branch above it does not sweep in the window the
     // caller is aiming at just because a locker is open somewhere.
     expect(whoIsUnderPoint(AIM, 5, 5, { ...hitting(at({ root: AIM })), isExcluded: only }))
-      .toEqual({ kind: "aim" });
+      .toEqual({ kind: "aim", via: "os_hit_test" });
   });
 
   it("blocks on the enumeration road too, where the excluded window is not in the list", () => {
@@ -213,13 +240,13 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // press, into the locker. Every build without `win32WindowFromPoint` uses this road.
     const covered = enumerating(win({ hwnd: AIM, zOrder: 0 }));
     expect(whoIsUnderPoint(AIM, 500, 500, { ...covered, excludedAtPoint: () => true }))
-      .toEqual({ kind: "blocked", why: "excluded_window" });
+      .toEqual({ kind: "blocked", why: "excluded_window", via: "enumeration" });
     // Asked about the POINT, not about the windows the enumeration can see. A verdict that consulted
     // the by-handle predicate here would be asking a filtered list to confirm what the filter
     // removed, and would answer `blocked` for any excluded window ANYWHERE while allowing the press
     // that matters.
     expect(whoIsUnderPoint(AIM, 500, 500, { ...covered, excludedAtPoint: () => false, isExcluded: () => true }))
-      .toEqual({ kind: "aim" });
+      .toEqual({ kind: "aim", via: "enumeration" });
   });
 
   it("keeps `nothing is there` apart from `could not ask`", () => {
@@ -227,16 +254,16 @@ describe("Windows answers, and the enumeration is what is left when it cannot", 
     // an answer and one is a missing instrument, and collapsing them is the mistake this ADR keeps
     // finding elsewhere — so the second falls back to the enumeration rather than answering.
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(null, win({ hwnd: AIM, zOrder: 0 }))))
-      .toEqual({ kind: "unknown", why: "no_window_at_point" });
+      .toEqual({ kind: "unknown", why: "no_window_at_point", via: "os_hit_test" });
     expect(whoIsUnderPoint(AIM, 5, 5, hitting(undefined, win({ hwnd: AIM, zOrder: 0 }))))
-      .toEqual({ kind: "aim" });
+      .toEqual({ kind: "aim", via: "enumeration" });
   });
 });
 
 describe("who would take the press", () => {
   it("says the aim when the aim is on top at that point", () => {
     const deps = enumerating(win({ hwnd: AIM, zOrder: 0 }), win({ hwnd: OTHER, zOrder: 1 }));
-    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "aim" });
+    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "aim", via: "enumeration" });
   });
 
   it("names the stranger that covers it", () => {
@@ -284,7 +311,7 @@ describe("who would take the press", () => {
       win({ hwnd: 13n, zOrder: 2, exStyle: 0x00000020 | 0x00080000 }),
       win({ hwnd: AIM, zOrder: 3 }),
     );
-    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "aim" });
+    expect(whoIsUnderPoint(AIM, 500, 500, deps)).toEqual({ kind: "aim", via: "enumeration" });
   });
 
   it("does not pass over a transparent window that is not layered", () => {
@@ -305,11 +332,11 @@ describe("who would take the press", () => {
     // The dangerous direction is "looks clear when it is not", so an enumeration that fails or
     // returns nothing is not allowed to read as "the aim is on top".
     const threw = { enumerate: () => { throw new Error("enum failed"); } };
-    expect(whoIsUnderPoint(AIM, 5, 5, threw)).toEqual({ kind: "unknown", why: "enumeration_failed" });
-    expect(whoIsUnderPoint(AIM, 5, 5, enumerating())).toEqual({ kind: "unknown", why: "enumeration_failed" });
+    expect(whoIsUnderPoint(AIM, 5, 5, threw)).toEqual({ kind: "unknown", why: "enumeration_failed", via: "enumeration" });
+    expect(whoIsUnderPoint(AIM, 5, 5, enumerating())).toEqual({ kind: "unknown", why: "enumeration_failed", via: "enumeration" });
     // A point on no window at all: the desktop, or a window the enumeration drops.
     const elsewhere = enumerating(win({ hwnd: AIM, zOrder: 0, region: { x: 0, y: 0, width: 10, height: 10 } }));
-    expect(whoIsUnderPoint(AIM, 5000, 5000, elsewhere)).toEqual({ kind: "unknown", why: "no_window_at_point" });
+    expect(whoIsUnderPoint(AIM, 5000, 5000, elsewhere)).toEqual({ kind: "unknown", why: "no_window_at_point", via: "enumeration" });
   });
 });
 
