@@ -497,9 +497,6 @@ function identityRow(id: WindowIdentity): Record<string, unknown> {
   };
 }
 
-/** What a minimised window's rectangle looks like, for the message that has to explain one. */
-const OFF_DESKTOP_HINT = "-32000, -32000";
-
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
   return {
     x: Math.round(rect.x + rect.width / 2),
