@@ -33,7 +33,16 @@
  *
  * ## What `owned` really covers, measured
  *
- * The branch is NOT dead — the same round asked the shipped function about five real popups:
+ * The branch is NOT dead — the same round asked this function about five real popups. **Read the
+ * verdict column with its condition**: it was asked with the desktop's own full-screen overlay
+ * removed from the enumeration, because **asked as it ships, on a machine carrying one, every row
+ * answers `other`** and says nothing about popups at all (the overlay is the subject of the mask
+ * below; the raw record is `RESULTS-adr039-overlay.md` beside the table's own).
+ *
+ * So the column is what this logic decides ABOUT POPUPS, not what the build returns on that
+ * desktop. Anyone reproducing it on a machine with such an overlay gets `other` everywhere, and
+ * without this sentence would read that as the table being wrong rather than as the overlay
+ * answering first.
  *
  *   | popup                        | class                                    | title | owner    | `owned`? |
  *   |------------------------------|------------------------------------------|-------|----------|----------|
@@ -42,6 +51,8 @@
  *   | ComboBox dropdown            | `ComboLBox`                              | none  | **none** | no       |
  *   | tooltip                      | `tooltips_class32`                       | none  | the host | no       |
  *   | Windows 11 context menu      | `Microsoft.UI.Content.PopupWindowSiteBridge` | yes | **the shell's XAML island** | no |
+ *
+ *   (verdicts with the overlay removed, as above — not the shipped answer on that desktop)
  *
  * So `owned` answers for **titled owned windows — dialogs** — which is exactly the case it was
  * written for: a dialog drawn INSIDE its owner's rectangle, whose remembered point must not be
