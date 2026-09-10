@@ -834,7 +834,8 @@ export class DesktopFacade {
     // No rectangle to compare against means the caller could not read one; every non-applied
     // branch of the correction hands the point back unchanged, so this is the old behaviour.
     if (!windowRect) return { x, y };
-    // Through the SAME entry point as the press, not `homingCorrection` directly. This caller is
+    // Through the SAME entry point as the press — there is only the one, which is why the policy
+    // now lives inside it rather than in front of it. This caller is
     // how the defect got reproduced inside its own fix: the press path learned to decline for
     // coordinates the bracketed origin cannot describe, and this one went on correcting them
     // (win2, auditing the review, 2026-09-10).

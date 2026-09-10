@@ -361,7 +361,7 @@ async function resolvePressPoint(
   //
   // Asked before this rung's own refusals are acted on, and the reason is a regression the resize
   // refusal introduced (gate 2, third pass): a dropdown or a modal drawn OVER its owner has its
-  // centre INSIDE the owner's rectangle, so `homingCorrection` gets past `point_was_outside_origin`
+  // centre INSIDE the owner's rectangle, so the correction gets past `point_was_outside_origin`
   // and answers `window_resized` about a window the entity does not live on. The entity is on a
   // separate top-level window that did not resize, and before this commit `owned` let it through.
   const owner = deps.pointOwner?.(aimHwnd, x, y);

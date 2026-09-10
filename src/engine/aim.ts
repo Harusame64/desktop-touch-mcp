@@ -453,26 +453,6 @@ const OFF_DESKTOP = -32000;
 const BRACKETED_SOURCES: ReadonlySet<string> = new Set(["uia", "ocr"]);
 
 /**
- * ADR-036 item 5 — the correction with the policy that decides whether it may run at all.
- *
- * **Every caller goes through here, and that is the point.** The first version put the policy in
- * the executor and left {@link homingCorrection} unconditional, so the frame-diff focal point —
- * the second caller — kept applying a correction the press path had already learned to decline
- * (found by win2 auditing the review, 2026-09-10). A guard added in one of two callers is the
- * defect this branch keeps re-finding, and that time it was reproduced INSIDE the fix for it.
- *
- * `homingCorrection` itself is module-private, so this is not a convention a third caller can
- * quietly step around — the previous version of this comment said "cannot miss it" while the bare
- * function was still exported and nothing stopped anyone importing it, which is the same kind of
- * claim-without-a-check the rest of this file is about (win2, 2026-09-10).
- *
- * What stays out of here is the one signal that needs the screen: an owned popup sitting on the
- * remembered point. Only the press path can ask (it holds the `pointOwner` dep), so only the press
- * path declines for it — which means a diagnostic region can still be corrected where the press was
- * not. That costs an off-centre SSIM window and never a press, and it is written down rather than
- * silently uneven.
- */
-/**
  * ADR-036 — the handle of the window an entity was actually observed in, when it is one.
  *
  * `origin.id` is provider-defined and is usually the caller's QUERY — a title, or `"@active"` — so
@@ -491,6 +471,38 @@ export function observedHwndOfOrigin(
   return parseHandle(raw);
 }
 
+/**
+ * ADR-036 item 5 — the correction, and every policy that decides whether it may run.
+ *
+ * **One function, and that is the fix for a defect this branch has now made three times.** Twice a
+ * new policy arrived as a wrapper in FRONT of the ladder, and both times it became a third
+ * short-circuit ahead of the rung the ladder's own first comment says is asked "FIRST":
+ *
+ *   - the sources gate, which answered `measurement_moment_unknown` for a `visual_gpu` entity on a
+ *     MINIMISED window, so the minimise refusal never fired and the caller was told to bring a
+ *     minimised window forward (gate 2, 2026-09-10);
+ *   - the capture-window guard below, which answered `measured_in_another_window` for an entity
+ *     captured in an owned popup while the aim was minimised or smeared — and `resolvePressPoint`
+ *     switches on this reason, so BOTH whole-snapshot refusals were skipped and the `owned`
+ *     allowance pressed the remembered point of a snapshot known to be unusable (PR 側 codex,
+ *     2026-09-10).
+ *
+ * A wrapper is where the next policy would go as well, so there is no longer a function to wrap.
+ * Every verdict is a RUNG here, in the order it is asked, and a new one has to be given a place in
+ * that order rather than a place in front of it.
+ *
+ * **Every caller goes through here, and that is the point.** The first version put the policy in
+ * the executor and left the correction unconditional, so the frame-diff focal point — the second
+ * caller — kept applying a correction the press path had already learned to decline (found by win2
+ * auditing the review, 2026-09-10). A guard added in one of two callers is the defect this branch
+ * keeps re-finding, and that time it was reproduced INSIDE the fix for it.
+ *
+ * What stays out of here is the one signal that needs the screen: an owned popup sitting on the
+ * remembered point. Only the press path can ask (it holds the `pointOwner` dep), so only the press
+ * path declines for it — which means a diagnostic region can still be corrected where the press was
+ * not. That costs an off-centre SSIM window and never a press, and it is written down rather than
+ * silently uneven.
+ */
 export function homingCorrectionForSources(
   sources: readonly string[],
   aimOrigin: AimOrigin | undefined,
@@ -512,26 +524,13 @@ export function homingCorrectionForSources(
    */
   window?: { capturedIn?: bigint; originOf?: bigint },
 ): Homing {
-  if (window?.capturedIn !== undefined && window.originOf !== undefined
-      && window.capturedIn !== window.originOf) {
-    return { applied: false, x, y, why: "measured_in_another_window" };
-  }
-  return homingCorrection(aimOrigin, current, x, y, sources);
-}
-
-function homingCorrection(
-  aimOrigin: AimOrigin | undefined,
-  current: WindowRect,
-  x: number,
-  y: number,
-  sources: readonly string[],
-): Homing {
-  // Asked FIRST, before the two origin short-circuits, because "parked off the desktop" is a
-  // property of the current rectangle alone and needs no origin to establish. Asked after them, an
-  // aim with no origin — the direct `candidateProvider` road, or a bracket read that could not
-  // answer — fell through to the occlusion rung, which filters minimised windows out of its own
-  // candidates and named whatever was over the remembered point: the caller was told to bring a
-  // MINIMISED window forward (gate 2, third pass). The rung was closed for measured origins only.
+  // Asked FIRST, before the origin short-circuits and before either question about whose
+  // measurement these coordinates are, because "parked off the desktop" is a property of the
+  // current rectangle alone and needs no origin to establish. Asked after them, an aim with no
+  // origin — the direct `candidateProvider` road, or a bracket read that could not answer — fell
+  // through to the occlusion rung, which filters minimised windows out of its own candidates and
+  // named whatever was over the remembered point: the caller was told to bring a MINIMISED window
+  // forward (gate 2, third pass). The rung was closed for measured origins only.
   if (current.x <= OFF_DESKTOP || current.y <= OFF_DESKTOP) {
     return { applied: false, x, y, why: "window_off_desktop" };
   }
@@ -543,16 +542,20 @@ function homingCorrection(
   // ONLY NOW the question of whose measurement these coordinates are.
   //
   // The three verdicts above do not depend on it: `window_off_desktop` is a property of the
-  // current rectangle alone, and the two origin verdicts are properties of the origin value. The
-  // ones below all compare the origin to the current rectangle FOR THESE COORDINATES, so they do.
+  // current rectangle alone, and the two origin verdicts are properties of the origin value. They
+  // are also statements about the WHOLE SNAPSHOT — a minimised aim and a smeared read make every
+  // coordinate in it unusable, an owned popup's included — and the executor turns exactly those
+  // two into refusals. A verdict about one entity's provenance must not be able to answer in their
+  // place, which is what both of the next two did while they sat in front of this function.
   //
-  // The first version of this gate sat in a wrapper in front of the whole function, which made it
-  // a third short-circuit ahead of the one the comment above says is asked "FIRST" — so a
-  // `visual_gpu` entity on a MINIMISED window answered `measurement_moment_unknown`, the minimise
-  // refusal never fired, and the caller was told by the occlusion rung to bring a minimised window
-  // forward. Exactly the defect that comment records closing, re-made one layer up (gate 2,
-  // 2026-09-10). Merging the two functions is what keeps the order in one readable place.
-  //
+  // The capture handle first, because it is evidence rather than inference: ADR-029 records the
+  // window each candidate was actually observed in, where the sources gate below reasons from a
+  // lane's NAME. Both decline the same correction; the more specific reason is the better one to
+  // hand a caller.
+  if (window?.capturedIn !== undefined && window.originOf !== undefined
+      && window.capturedIn !== window.originOf) {
+    return { applied: false, x, y, why: "measured_in_another_window" };
+  }
   // Every source, not any: a merged entity is only as trustworthy as its least-dated lane.
   if (sources.length === 0 || !sources.every((src) => BRACKETED_SOURCES.has(src))) {
     return { applied: false, x, y, why: "measurement_moment_unknown" };

@@ -27,10 +27,12 @@
     does not use coordinates. A dropdown or menu your own window owns is *not*
     treated as being in the way.
   - `aim_point_outside_window` — the coordinates can no longer be followed to the
-    window they were measured in: it was minimised, or it was resized (the
-    contents may have been laid out differently, so this is refused even where
-    the point still falls inside), or it moved while it was being read, or they
-    came from a stored visual snapshot whose moment cannot be established.
+    window they were measured in. Among the reasons: it was minimised; it was
+    resized (the contents may have been laid out differently, so this is refused
+    even where the point still falls inside); it moved while it was being read;
+    the coordinates came from a stored visual snapshot whose moment cannot be
+    established; or they were captured in a different window from the one the
+    call named — a menu or dialog your window owns has an origin of its own.
 
   **A window that only moved is followed instead of refused** — the point is
   carried by the same offset, so a press after a drag lands on the control you
