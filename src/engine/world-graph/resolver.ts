@@ -158,15 +158,29 @@ export function resolveCandidates(
     //
     // A ROUND OF THIS CARRIED A FOURTH CASE, and it is deleted rather than kept as insurance. It
     // marked "the lanes named two different windows" as a conflict so the executor could refuse
-    // instead of pressing blind. The state cannot occur (gate 2, 2026-09-10, re-derived here):
-    // `originHwnd` is written by ONE road — `ocr-adapter` stamps a single resolved handle onto
-    // every candidate of a read — and `compose-providers` calls that road once per pass, so every
-    // candidate in a group that has a handle has the SAME handle. Two distinct handles in one group
-    // needs two OCR reads in one pass, which nothing calls. Dead code that only a hand-built
-    // fixture could reach is worse than absent: it reads as a case that happens, and the refusal it
-    // threw was flattened to `aim_point_outside_window` by `guarded-touch` anyway, so its recovery
-    // advice never reached a caller (PR 側 codex, 2026-09-10). If a second handle-recording lane is
-    // ever added, this is the line that has to answer for it again.
+    // instead of pressing blind.
+    //
+    // **The first version of this paragraph gave the wrong reason, and a gate caught it** (gate 2,
+    // 2026-09-10). It said `originHwnd` has one writer. It has TWO, resolved independently:
+    // `ocr-provider.ts` stamps the handle `runSomPipeline` resolved in THIS pass, and
+    // `ocr-adapter.ts` stamps the one ITS own `runSomPipeline` resolved — a separate call, which
+    // `desktop-register.ts` makes with no pre-fetched handle. Two title resolutions can name
+    // different windows.
+    //
+    // The state is still unreachable, for a reason about the KEY rather than about the writers:
+    // those two writers' candidates cannot land in the same group. `candidateKey` returns the
+    // producer's `digest` when there is one, and `CandidateProducer` — the adapter's road — always
+    // sets it, over a string that starts with the literal source `visual_gpu`. Every other lane has
+    // no digest and falls to the source-OMITTING fallback key. A `visual_gpu` candidate and an
+    // `ocr` one therefore key differently by construction, and those two sources are the only ones
+    // that record a handle at all. Within one group, then, every handle comes from one
+    // `fetchOcrCandidates` call, which stamps a single resolved handle onto all of its candidates.
+    //
+    // Dead code that only a hand-built fixture could reach is worse than absent: it reads as a case
+    // that happens, and the refusal it threw was flattened to `aim_point_outside_window` by
+    // `guarded-touch` anyway, so its recovery advice never reached a caller (PR 側 codex,
+    // 2026-09-10). **What has to answer for this again** is any change that gives a second lane a
+    // handle, or that makes two lanes share a key — the digest is the load-bearing half.
     //
     // WHAT NAMES A WINDOW is the ADR's rule, not `!== undefined` (gate 2, 2026-09-10). `"0"` counted
     // as a handle here and stopped counting as one in `observedHwndOfOrigin` two files away: a `"0"`

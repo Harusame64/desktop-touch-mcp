@@ -107,6 +107,11 @@ describe("resolveCandidates — basic resolution", () => {
     // The entity's rect and locator come from the primary, so its handle is the one that certainly
     // describes them. A borrowed handle assumes both lanes resolved the same window, and a
     // title-only query against two overlapping same-titled windows is where that fails.
+    //
+    // The two-handle group below is a FIXTURE state, deliberately: in production the two lanes that
+    // record a handle key differently (`visual_gpu` carries the producer's digest, `ocr` falls to
+    // the source-omitting key), so they never merge. The rule is pinned anyway because it is the
+    // rule the resolver applies, and the next lane to record a handle inherits it.
     const older = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "777" });
     const primary = candidate("Play", { source: "visual_gpu", observedAtMs: 2000, originHwnd: "4919" });
     const [e] = resolveCandidates([older, primary], GEN);

@@ -31,10 +31,19 @@ export const AIM_WINDOW_GONE = "aim_window_gone";
  */
 export class AimedWindowGoneError extends Error {
   readonly hwnd?: bigint;
-  /** `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}. */
-  constructor(hwnd?: bigint, detail?: string, options?: ErrorOptions) {
+  /**
+   * `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}.
+   *
+   * `describedAs` names the window the way the caller would recognise it. The default — "the window
+   * this action was aimed at" — is right for a call that named a handle and wrong for one that
+   * named a title, where the handle comes from the entity's provenance. Left as one sentence rather
+   * than appended to `detail`, because the two used to contradict each other inside a single
+   * message: "The window this action was aimed at (hwnd 4919) is gone: no rectangle for the window
+   * these coordinates were measured in (hwnd 4919, from the entity's origin)" (gate 2, 2026-09-10).
+   */
+  constructor(hwnd?: bigint, detail?: string, options?: ErrorOptions, describedAs?: string) {
     super(
-      `The window this action was aimed at${hwnd !== undefined ? ` (hwnd ${hwnd})` : ""} is gone` +
+      `${describedAs ?? `The window this action was aimed at${hwnd !== undefined ? ` (hwnd ${hwnd})` : ""}`} is gone` +
       `${detail ? `: ${detail}` : ""}. Run desktop_discover again to see what is there now.`,
       options,
     );
@@ -68,10 +77,16 @@ export class AimedPointOutsideWindowError extends Error {
   /**
    * `options` carries the failure this refusal happened DURING, when there was one (gate 2,
    * 2026-09-10). On the UIA downgrade road the caller is already holding a UIA error and is
-   * refusing the coordinate press that would have covered for it; without a cause the envelope
-   * shows only the second failure, and the first — the reason the coordinate road was taken at
-   * all — is not recoverable from anywhere. {@link AimedRouteFailedError} takes it for the same
-   * reason, on the pinned half of that same fork.
+   * refusing the coordinate press that would have covered for it; without a cause, the first
+   * failure — the reason the coordinate road was taken at all — is gone at the throw site and
+   * nothing downstream could carry it. {@link AimedRouteFailedError} takes it for the same reason,
+   * on the pinned half of that same fork.
+   *
+   * **It does not reach the caller yet, and that is a different defect.** `GuardedTouchLoop`
+   * reduces the throw to a reason code and `desktop-register.ts` builds fresh text from that
+   * reason, so today the cause stops at the loop — ADR-036 item 13, a live defect on `main` that
+   * covers all nine refusals. This half is what gives item 13 something to project; the two are
+   * useless separately (gate 2 raised the same point, correctly, 2026-09-10).
    */
   constructor(message: string, hwnd?: bigint, options?: ErrorOptions) {
     super(message, options);
@@ -191,10 +206,18 @@ function replaceHandle(_key: string, value: unknown): unknown {
  */
 export class AimOccludedError extends Error {
   readonly hwnd: bigint;
-  /** `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}. */
-  constructor(hwnd: bigint, byHwnd: bigint, byTitle: string, x: number, y: number, options?: ErrorOptions) {
+  /**
+   * `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}.
+   *
+   * `describedAs` is how the WINDOW should be named to the caller. It defaults to "the window this
+   * act named", which is a lie on the entity-origin road: there the call named a TITLE and the
+   * handle is the executor's inference from the entity's provenance (ADR-036 item 12). The sibling
+   * refusals in `desktop-executor.ts` were re-worded for that and these two were missed — a reader
+   * debugging from the message would look for a handle they never passed (gate 2, 2026-09-10).
+   */
+  constructor(hwnd: bigint, byHwnd: bigint, byTitle: string, x: number, y: number, options?: ErrorOptions, describedAs?: string) {
     super(
-      `Refusing to press (${x}, ${y}) for the window this act named (hwnd ${hwnd}): the window on top at ` +
+      `Refusing to press (${x}, ${y}) for ${describedAs ?? `the window this act named (hwnd ${hwnd})`}: the window on top at ` +
       `that point is ${byTitle ? `"${byTitle}"` : "another window"} (hwnd ${byHwnd}), so the press would go there. ` +
       `Bring the intended window forward, or act through a route that does not use coordinates.`,
       options,

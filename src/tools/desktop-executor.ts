@@ -304,6 +304,13 @@ async function resolvePressPoint(
   // window this call named" about a window the call never named, and on this road the call named a
   // TITLE. The handle is the executor's inference from `entity.origin`, and a reader debugging from
   // a refusal has to be able to see that it is.
+  //
+  // **And the rows say `coordHwnd`, not `aimHwnd`** (gate 2, 2026-09-10). The ladder's rows used the
+  // same field name as `act.aim` for a different fact: one act produced `act.aim{aimHwnd:null}` and
+  // `act.route{aimHwnd:"4919"}`, which is the defect `hwndFrom` was added to fix, still present in
+  // the name beside it. `aimHwnd` now means "the handle the CALL named" in every row; the
+  // coordinate handle and its source travel as `coordHwnd` / `coordHwndFrom`, the names the mouse
+  // rows already used.
   const handleFrom = aimHwnd === aim.hwnd ? "aim" : "entity_origin";
   /** Named the way the caller would recognise it, which is not the same sentence on both roads. */
   const theWindow = handleFrom === "aim"
@@ -315,8 +322,8 @@ async function resolvePressPoint(
     // Both rows, because both rungs were skipped. A press with an aim and no `homing` row reads
     // exactly like a build that never reached the rung — the failure the reasons in that row were
     // written to prevent, one level up.
-    probeAim("act.route", { route: "homing", checked: false, why: "no_aim_rect_dep", aimHwnd: aimHwnd.toString(), hwndFrom: handleFrom, from: { x, y }, label });
-    probeAim("act.route", { route: "containment_check", checked: false, why: "no_aim_rect_dep", aimHwnd: aimHwnd.toString(), hwndFrom: handleFrom, point: { x, y }, label });
+    probeAim("act.route", { route: "homing", checked: false, why: "no_aim_rect_dep", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, from: { x, y }, label });
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_aim_rect_dep", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
     return { x, y };
   }
   const rect = await deps.aimRect(aimHwnd);
@@ -325,10 +332,11 @@ async function resolvePressPoint(
     // everything else is "cannot tell", and a check that cannot be made is skipped rather than
     // turned into a refusal about a window that may well be on screen (see the deps' JSDoc).
     if (await deps.aimIsGone?.(aimHwnd)) {
-      throw new AimedWindowGoneError(aimHwnd, `no rectangle for ${theWindow}`, because);
+      throw new AimedWindowGoneError(aimHwnd, `no rectangle for it`, because,
+        `${theWindow.charAt(0).toUpperCase()}${theWindow.slice(1)}`);
     }
-    probeAim("act.route", { route: "homing", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), hwndFrom: handleFrom, from: { x, y }, label });
-    probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", aimHwnd: aimHwnd.toString(), hwndFrom: handleFrom, point: { x, y }, label });
+    probeAim("act.route", { route: "homing", checked: false, why: "no_rectangle_and_not_gone", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, from: { x, y }, label });
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
     return { x, y };
   }
 
@@ -384,8 +392,8 @@ async function resolvePressPoint(
   }
   probeAim("act.route", {
     route: "homing",
-    aimHwnd: aimHwnd.toString(),
-    hwndFrom: handleFrom,
+    coordHwnd: aimHwnd.toString(),
+    coordHwndFrom: handleFrom,
     // The origin as the aim holds it, so a row can be read without the run that produced it.
     // `null` for one that was never taken, and `{kind:"moved_during_read"}` for one that was taken
     // and says the coordinates are unusable: "nobody looked", "the correction declined to move it"
@@ -424,8 +432,8 @@ async function resolvePressPoint(
   probeAim("act.route", {
     route: "containment_check",
     checked: true,
-    aimHwnd: aimHwnd.toString(),
-    hwndFrom: handleFrom,
+    coordHwnd: aimHwnd.toString(),
+    coordHwndFrom: handleFrom,
     point: { x, y },
     windowRect: rect,
     inside,
@@ -538,7 +546,7 @@ async function resolvePressPoint(
   // Now the stranger on top — after this rung's verdicts, because "bring the intended window
   // forward" is not the recovery for a window that resized or is minimised.
   if (owner?.kind === "other") {
-    throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y, because);
+    throw new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y, because, theWindow);
   }
   if (!inside) {
     // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
