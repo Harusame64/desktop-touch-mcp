@@ -141,6 +141,13 @@ export function resolveCandidates(
       patterns = [...set];
     }
 
+    // Disagreement is not a vote. Two lanes naming different windows for one element is exactly
+    // the case where picking one presses into the other, so it answers "no handle" — the same
+    // reading every other "cannot tell" in this ADR gets, and the ladder then declines rather than
+    // aiming somewhere nobody measured.
+    const groupHwnds = [...new Set(group.map((c) => c.originHwnd).filter((h) => h !== undefined))];
+    const groupHwnd = groupHwnds.length === 1 ? groupHwnds[0] : undefined;
+
     const entity: UiEntity = {
       entityId: stableEntityId(key),
       role: normalizeRole(primary.role),
@@ -157,8 +164,15 @@ export function resolveCandidates(
       // through to the entity so the viewport gate can compare against the
       // origin window's current rect. `target` is required on
       // UiEntityCandidate, so `primary.target` is always present.
-      origin: primary.originHwnd !== undefined
-        ? { ...primary.target, hwnd: primary.originHwnd }
+      //
+      // ADR-036 item 12 — the HANDLE, though, is a fact about the group rather than about whichever
+      // lane happened to observe last. `primary` is the most recent candidate and the UIA lane
+      // records no handle at all, so a merged uia+ocr entity dropped the handle the OCR capture had
+      // resolved whenever the UIA candidate arrived later — a race deciding whether the coordinate
+      // ladder runs at all (PR 側 codex, 2026-09-10). Every candidate in a group describes the same
+      // element, so any one that resolved a handle answers for all of them.
+      origin: groupHwnd !== undefined
+        ? { ...primary.target, hwnd: groupHwnd }
         : primary.target,
     };
     if (controlType !== undefined) entity.controlType = controlType;

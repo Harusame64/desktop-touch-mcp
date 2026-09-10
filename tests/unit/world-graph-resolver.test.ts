@@ -71,6 +71,26 @@ describe("resolveCandidates — basic resolution", () => {
     expect(e.origin).toEqual({ kind: "window", id: "2000" });
   });
 
+  it("keeps the handle a lane resolved even when a lane without one observed later", () => {
+    // ADR-036 item 12 (PR 側 codex, 2026-09-10). The UIA lane records no `originHwnd`, so a merged
+    // uia+ocr entity lost the handle the OCR capture HAD resolved whenever the UIA candidate
+    // happened to arrive later — and with it the whole coordinate ladder, decided by a race
+    // between two lanes. Every candidate in a group describes the same element in the same window.
+    const ocr = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "4919" });
+    const uia = candidate("Play", { source: "uia", observedAtMs: 2000 });
+    const [e] = resolveCandidates([ocr, uia], GEN);
+    expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
+  });
+
+  it("answers no handle when two lanes resolved different windows", () => {
+    // Disagreement is not a vote: picking one of them is how a press lands in the other. The same
+    // reading every "cannot tell" in this ADR gets — the ladder declines rather than aims.
+    const a = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "4919" });
+    const b = candidate("Play", { source: "visual_gpu", observedAtMs: 2000, originHwnd: "777" });
+    const [e] = resolveCandidates([a, b], GEN);
+    expect(e.origin).toEqual(TARGET);
+  });
+
   it("evidenceDigest is always set (required for lease issuance)", () => {
     const [e] = resolveCandidates([candidate("Start")], GEN);
     expect(e.evidenceDigest).toBeTruthy();
