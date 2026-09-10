@@ -317,13 +317,46 @@ describe("the press lands where the control went", () => {
     // says the pixels were captured in the AIM, that "might" is answered — the entity is the aim's
     // own control, the correction is valid, and dropping it presses into whatever popup happens to
     // be sitting on the stale point instead of following the control to where it went.
-    const d = deps({ pointOwner: () => ({ kind: "owned" as const, hwnd: 888n, title: "" }) });
+    //
+    // The popup answers only at the REMEMBERED point here. It used to answer everywhere, which made
+    // this cell assert about two rungs at once — the suppression above and the owned allowance
+    // below — and the allowance later learned to read the same provenance (PR 側 codex P1,
+    // 2026-09-10). One cell, one rung: the case where the dialog is on the CORRECTED point is the
+    // next cell.
+    const d = deps({
+      pointOwner: (_h, _x, y) => y === 215
+        ? { kind: "owned" as const, hwnd: 888n, title: "" }
+        : { kind: "aim" as const },
+    });
     const fromTheAim: UiEntity = {
       ...entity(),
       origin: { kind: "window", id: "CELL BUTTONS", hwnd: HWND.toString() },
     };
     await createDesktopExecutor(aimed, d)(fromTheAim, "click");
     expect(d.mouseClick).toHaveBeenCalledWith(458, 144);   // corrected, not left on the popup
+  });
+
+  it("refuses when the dialog is on the corrected point and the pixels came from the aim", async () => {
+    // PR 側 codex P1 (2026-09-10), on the pinned road. Following the window puts the point where
+    // the control went — and if a TITLED owned dialog is sitting there, the press lands in the
+    // dialog while the caller is told their control was clicked. The entity's own origin says the
+    // pixels came from the aim, so the dialog is an occluder, and this is the same decision the
+    // `measured_in_another_window` rung already made.
+    //
+    // An UNTITLED popup does not reach this: the enumeration cannot see one and answers `aim`,
+    // which is measured (win2, 2026-09-10) and is why the allowance is not simply removed.
+    const d = deps({
+      pointOwner: (_h, _x, y) => y === 144
+        ? { kind: "owned" as const, hwnd: 888n, title: "名前を付けて保存" }
+        : { kind: "aim" as const },
+    });
+    const fromTheAim: UiEntity = {
+      ...entity(),
+      origin: { kind: "window", id: "CELL BUTTONS", hwnd: HWND.toString() },
+    };
+    await expect(createDesktopExecutor(aimed, d)(fromTheAim, "click"))
+      .rejects.toThrow(/measured in window 4919/);
+    expect(d.mouseClick).not.toHaveBeenCalled();
   });
 
   it("still follows the window when the point belongs to the aim itself", async () => {

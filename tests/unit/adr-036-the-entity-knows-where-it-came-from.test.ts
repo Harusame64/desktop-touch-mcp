@@ -67,6 +67,40 @@ describe("a title-only discover still gets the coordinate ladder", () => {
     expect(pointOwner).toHaveBeenCalledWith(OBSERVED, 140, 215);
   });
 
+  it("refuses an owned dialog that is not the window the pixels came from", async () => {
+    // PR 側 codex, 2026-09-10 (P1). The popup allowance let ANY owned window take the press — the
+    // rung that consults the entity's provenance lived only inside the `measured_in_another_window`
+    // branch, and on this road the verdict is `no_origin_rect`. So a titled dialog that had opened
+    // over the remembered point was pressed although the entity's own origin says the pixels came
+    // from the PARENT. Both rungs ask the same question now.
+    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: STRANGER, title: "名前を付けて保存" }));
+    const d = deps({ pointOwner });
+    await expect(createDesktopExecutor(titleOnly, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click"))
+      .rejects.toThrow(/measured in window 4919/);
+    expect(d.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("presses an owned dropdown when that is the window the pixels came from", async () => {
+    // The other half, and the reason the allowance exists at all: an entity discovered INSIDE a
+    // dropdown records that dropdown's handle, and the press belongs there. Refusing this was the
+    // mistake of an earlier round (gate 2, 2026-09-10) — a false refusal for the commonest popup on
+    // Windows.
+    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: OBSERVED, title: "" }));
+    const d = deps({ pointOwner });
+    await createDesktopExecutor(titleOnly, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
+  });
+
+  it("keeps the allowance for an entity that recorded no window at all", async () => {
+    // Absence is not evidence. An entity with no `origin.hwnd` has nothing to contradict the
+    // screen, and it keeps the behaviour it had before this item existed.
+    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: STRANGER, title: "名前を付けて保存" }));
+    const d = deps({ pointOwner, aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 1000, height: 1000 })) });
+    const pinned: Aim = { kind: "aim", title: "Notepad", hwnd: OBSERVED };
+    await createDesktopExecutor(pinned, d)(entity(), "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
+  });
+
   it("refuses a press that has left the window it was measured in", async () => {
     const d = deps({ aimRect: vi.fn(async () => ({ x: 5000, y: 5000, width: 100, height: 100 })) });
     const exec = createDesktopExecutor(titleOnly, d);

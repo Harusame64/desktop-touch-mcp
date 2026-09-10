@@ -497,19 +497,31 @@ async function resolvePressPoint(
   //
   // `unknown` and a missing dep stay out of it for the same reason, and `other` falls through to
   // the occlusion refusal below, which names the covering window and says what to do about it.
+  //
+  // **ONE decision, asked at two rungs.** This test used to live only inside the
+  // `measured_in_another_window` branch, and the general allowance below accepted ANY owned window
+  // — so on the title-only road, where the verdict is `no_origin_rect` rather than
+  // `measured_in_another_window`, a titled dialog that had opened over the remembered point was
+  // pressed although the entity's own provenance said the pixels came from the parent (PR 側 codex,
+  // 2026-09-10, P1). The evidence was in hand and only one of the two rungs was reading it.
+  const ownedWindowVerdict = (): { x: number; y: number } | undefined => {
+    if (owner?.kind !== "owned") return undefined;
+    // Absence is not evidence: an entity with no recorded origin keeps the allowance it always had.
+    if (capturedIn === undefined || owner.hwnd === capturedIn) return { x, y };
+    throw new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
+      `${capturedIn}, and the window under that point now is ${owner.hwnd} ("${owner.title}") — ` +
+      `a different window that ${aimHwnd} also owns. A menu, dialog or dropdown has an origin of ` +
+      `its own and does not move with the window that owns it, so nothing here can follow these ` +
+      `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
+      aimHwnd,
+      because,
+    );
+  };
+
   if (!homing.applied && homing.why === "measured_in_another_window" && capturedIn !== undefined) {
-    if (owner?.kind === "owned") {
-      if (owner.hwnd === capturedIn) return { x, y };
-      throw new AimedPointOutsideWindowError(
-        `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
-        `${capturedIn}, and the window under that point now is ${owner.hwnd} ("${owner.title}") — ` +
-        `a different window that ${aimHwnd} also owns. A menu, dialog or dropdown has an origin of ` +
-        `its own and does not move with the window that owns it, so nothing here can follow these ` +
-        `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
-        aimHwnd,
-        because,
-      );
-    }
+    const allowed = ownedWindowVerdict();
+    if (allowed) return allowed;
   }
 
   // Only now the popup allowance. The press is on a window this one owns: allowed, and allowed
@@ -522,7 +534,11 @@ async function resolvePressPoint(
   // `owned` says which top-level window is under the point NOW — not that the leased entity came
   // from it — so letting it past those two reports success after pressing an unrelated dropdown
   // (PR 側 codex on #609). The previous round moved this line one rung too far up.
-  if (owner?.kind === "owned") return { x, y };
+  //
+  // And it is the same decision as the one above, not a laxer copy of it: an owned window that is
+  // not the one the pixels came from is an OCCLUDER, whichever rung notices it.
+  const allowedOwned = ownedWindowVerdict();
+  if (allowedOwned) return allowedOwned;
 
   if (!homing.applied && homing.why === "window_resized" && origin?.kind === "measured") {
     // The point WAS inside this window, and the window has relaid out since. Nothing here can say
