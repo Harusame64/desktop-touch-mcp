@@ -595,6 +595,32 @@ describe("the row says which of the two silences it is", () => {
     expect(row).toMatchObject({ checked: false, why: "no_aim_rect_dep" });
   });
 
+  it("writes a row when it REFUSES, and not only when it skips or presses", async () => {
+    // Measured on Windows (win2, 2026-09-10, the D2 re-run that closed the blind press): the
+    // refusal is correct, the detail is correct, and `act.route` carried NOT ONE ROW. The ladder
+    // stops above every rung that writes one, so the trace shows a refusal with no ladder in it —
+    // and `provider.read` is written in the same run, so the probe path is alive. The record was
+    // missing, not the mechanism.
+    //
+    // It matters most on THIS branch: it is the one that used to press blind, so a silent trace
+    // reads exactly like the defect it replaced.
+    process.env.DESKTOP_TOUCH_AIM_PROBE = "1";
+    process.env.DESKTOP_TOUCH_AIM_PROBE_PATH = logPath;
+    vi.resetModules();
+    const { createDesktopExecutor: create } = await import("../../src/tools/desktop-executor.js");
+    const d = deps({ aimRect: vi.fn(async () => null), aimIsGone: vi.fn(async () => true) });
+    await expect(create(aimed, d)(entity(), "click")).rejects.toThrow(/is gone/);
+    const rows = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const row = rows.find((r) => r.route === "aim_check");
+    expect(row, "a refusal with no ladder row is indistinguishable from a ladder that never ran").toMatchObject({
+      checked: true,
+      alive: false,
+      refused: "aim_window_gone",
+      coordHwnd: String(HWND),
+    });
+    expect(d.mouseClick).not.toHaveBeenCalled();
+  });
+
   it("separates 'declined to move it' from 'never had an origin'", async () => {
     // Both press the remembered point, and a log that showed only the press could not tell a
     // window that stood still from an aim that never carried an origin.

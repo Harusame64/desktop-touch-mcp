@@ -336,6 +336,26 @@ async function resolvePressPoint(
     // everything else is "cannot tell", and a check that cannot be made is skipped rather than
     // turned into a refusal about a window that may well be on screen (see the deps' JSDoc).
     if (await deps.aimIsGone?.(aimHwnd)) {
+      // A refusal writes a row too, and this one did not. Measured (win2, 2026-09-10, D2 re-run):
+      // the refusal is correct, the detail is correct, and `act.route` carries NOT ONE ROW — the
+      // ladder stops above every rung that writes one, so the trace shows a refusal with no ladder
+      // in it. `provider.read` is written in the same run, so the probe path is alive; what is
+      // missing is the record, not the mechanism.
+      //
+      // Same shape as `via` on a verdict, found by the same round: a field the DECISION does not
+      // need and the RECORD does. Whoever reads this months later, without the run, cannot tell
+      // "the ladder refused here" from "the ladder never ran" — and this branch is exactly the one
+      // that used to press blind, so its silence reads like the defect it replaced.
+      probeAim("act.route", {
+        route: "aim_check",
+        checked: true,
+        coordHwnd: aimHwnd.toString(),
+        coordHwndFrom: handleFrom,
+        point: { x, y },
+        alive: false,
+        refused: "aim_window_gone",
+        label,
+      });
       throw new AimedWindowGoneError(aimHwnd, `no rectangle for it`, because,
         `${theWindow.charAt(0).toUpperCase()}${theWindow.slice(1)}`);
     }
