@@ -456,6 +456,21 @@ async function resolvePressPoint(
   // live — and allowed before the verdicts BELOW, which are statements about the AIM's layout and
   // say nothing about a window that merely hangs off it.
   //
+  // **`unknown` does NOT get this allowance, and that is a decision rather than an oversight**
+  // (PR 側 codex, 2026-09-10). A `ComboLBox` dropdown answers `unattributable_window`, so an item
+  // of it that hangs OUTSIDE the owner's rectangle still ends at the containment refusal below.
+  // That is a residual and not a regression: before the hit test existed, an untitled popup was
+  // invisible to the enumeration, so a point outside the aim's rectangle found either a stranger
+  // (`other`, refused) or nothing (`unknown`, refused by containment). The press was refused then
+  // and is refused now; what changed is only that we can see why.
+  //
+  // Widening the allowance to `unknown` would be a NEW press in a case that was refused, and the
+  // measurement says what would come with it: the rung answers on "captionless, same thread", which
+  // a splash screen and a custom-chrome frame satisfy too. Pressing outside the aim's rectangle
+  // into one of those is exactly what item 6 exists to stop. What would close it honestly is
+  // knowing the popup belongs to the aim — and no rule on ownership, thread or process establishes
+  // that for a `ComboLBox`, which is the open question this ADR carries.
+  //
   // Deliberately NOT before the two above. Those are statements about the whole SNAPSHOT: a
   // minimised aim and a smeared read make every coordinate in it unusable, the popup's included.
   // `owned` says which top-level window is under the point NOW — not that the leased entity came
