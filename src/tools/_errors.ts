@@ -289,9 +289,9 @@ const SUGGESTS: Record<string, string[]> = {
   // through all NINE reasons the register rebuilds, which is item 13's own change. This line comes
   // back, true, when that lands.
   AimOccluded: [
-    "Another window is on top of the point this act would have pressed, and it would have taken the press. Nothing was done.",
+    "Another window is on top of the point this act would have pressed, so nothing was done. Whether it would REALLY have taken the press is not something this build can ask — that needs the OS hit test — so a window on top counts as being in the way. Some overlays pass presses straight through and are still reported here: measured 2026-09-10 on a full-screen monitor-utility overlay with per-pixel transparency, which no window style distinguishes from one that blocks.",
     "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
-    "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top.",
+    "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top — and is also the way past an overlay that this build cannot tell is click-through.",
     "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
   ],
   // ADR-036 — the aimed press would land outside the window the call named. Every line here has

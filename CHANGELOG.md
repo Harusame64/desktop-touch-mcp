@@ -22,10 +22,14 @@
     kind of window on the same number, which is why the window's class is
     compared as well as the process. Nothing was done, and the recovery is the
     same for all of them: discover again and act on what comes back.
-  - `aim_occluded` — another window is drawn over the point and would have taken
-    the click. Bring your window forward, or act through `click_element`, which
-    does not use coordinates. A dropdown or menu your own window owns is *not*
-    treated as being in the way.
+  - `aim_occluded` — another window is drawn over the point. Bring your window
+    forward, or act through `click_element`, which does not use coordinates. A
+    dropdown or menu your own window owns is *not* treated as being in the way.
+    Whether the covering window would really have taken the click is not
+    something this build can ask — that needs the OS hit test, which the native
+    bindings do not expose yet — so anything on top counts as in the way. Some
+    overlays are drawn over everything and let presses through; those are
+    reported here too, and `click_element` is the way past them.
   - `aim_point_outside_window` — the coordinates can no longer be followed to the
     window they were measured in. Among the reasons: it was minimised; it was
     resized (the contents may have been laid out differently, so this is refused

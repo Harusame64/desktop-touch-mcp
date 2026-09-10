@@ -68,9 +68,35 @@ import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
  *   | `TRANSPARENT \| LAYERED`           | `0x000D0128`      | lands |
  *   | `LAYERED` only                     | `0x000D0108`      | blocked |
  *
- * So `TRANSPARENT` alone behaves exactly like a plain opaque window, and the mask below is not the
- * cautious choice — it is the correct one. An overlay carrying only that bit really does take the
- * press, so refusing under it is not a false refusal.
+ * So `TRANSPARENT` alone behaves exactly like a plain opaque window: for THOSE five overlays, the
+ * mask below is not the cautious choice, it is the correct one.
+ *
+ * **And the sentence that used to follow was a false generalisation, measured false the same day.**
+ * It read: *"An overlay carrying only that bit really does take the press, so refusing under it is
+ * not a false refusal."* The round above built its `LAYERED`-only arm with
+ * `SetLayeredWindowAttributes` — a whole-window alpha — and that one does take the press. A second
+ * kind exists. `EAWorkWindow` (Dell DDPM) on the same machine is `WS_EX_LAYERED |
+ * WS_EX_TOOLWINDOW | WS_EX_TOPMOST` — **no `TRANSPARENT`** — sits at z=0 over the whole 1920x1032
+ * screen, titled and visible, and **presses go straight through it into the window below**,
+ * measured with the fixture's own log (win2, 2026-09-10). `GetLayeredWindowAttributes` answers
+ * `false` for it, because it is built with `UpdateLayeredWindow`: per-pixel alpha, which that API
+ * cannot report.
+ *
+ * **So this mask produces a false refusal on any desktop carrying such an overlay** — and one of
+ * them ships with a common monitor utility, covering the entire screen, so `whoIsUnderPoint`
+ * answers `other` at EVERY point and every coordinate press is refused with "bring the intended
+ * window forward" about a window that was never in the way.
+ *
+ * **No attribute distinguishes the two kinds.** `TRANSPARENT` is not set on either. `LAYERED`
+ * alone is set on both, and the item 11 round proves it cannot mean "passes through".
+ * `GetLayeredWindowAttributes` cannot read the one that does. What separates them is the pixel
+ * alpha under the point, which only the OS holds — so the answer needs `WindowFromPoint` /
+ * `WM_NCHITTEST`, and the note above about the native bindings stops being a footnote and becomes
+ * the fix. Until then the mask stays as it is: widening it on a bit that means two things would
+ * trade a visible false refusal for a silent press into an overlay.
+ *
+ * The reusable part is not about window styles. **One arm measured is not a kind measured** — the
+ * round measured `SetLayeredWindowAttributes` windows and the comment spoke about layered windows.
  */
 const WS_EX_TRANSPARENT = 0x00000020;
 const WS_EX_LAYERED     = 0x00080000;
