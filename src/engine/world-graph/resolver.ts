@@ -160,21 +160,35 @@ export function resolveCandidates(
     // marked "the lanes named two different windows" as a conflict so the executor could refuse
     // instead of pressing blind.
     //
-    // **The first version of this paragraph gave the wrong reason, and a gate caught it** (gate 2,
-    // 2026-09-10). It said `originHwnd` has one writer. It has TWO, resolved independently:
-    // `ocr-provider.ts` stamps the handle `runSomPipeline` resolved in THIS pass, and
-    // `ocr-adapter.ts` stamps the one ITS own `runSomPipeline` resolved — a separate call, which
-    // `desktop-register.ts` makes with no pre-fetched handle. Two title resolutions can name
-    // different windows.
+    // **THE WRITER COUNT IN THIS PARAGRAPH HAS BEEN WRONG TWICE**, and each time a different gate
+    // caught it (2026-09-10). It first said ONE writer; corrected to TWO; the answer is THREE, and
+    // the third is the one that matters most because it is designed to share the second's key:
     //
-    // The state is still unreachable, for a reason about the KEY rather than about the writers:
-    // those two writers' candidates cannot land in the same group. `candidateKey` returns the
-    // producer's `digest` when there is one, and `CandidateProducer` — the adapter's road — always
-    // sets it, over a string that starts with the literal source `visual_gpu`. Every other lane has
-    // no digest and falls to the source-OMITTING fallback key. A `visual_gpu` candidate and an
-    // `ocr` one therefore key differently by construction, and those two sources are the only ones
-    // that record a handle at all. Within one group, then, every handle comes from one
-    // `fetchOcrCandidates` call, which stamps a single resolved handle onto all of its candidates.
+    //   1. `ocr-provider.ts` — stamps the handle `runSomPipeline` resolved in THIS discovery pass.
+    //   2. `ocr-adapter.ts` — stamps the one ITS own `runSomPipeline` resolved, a separate call
+    //      that `desktop-register.ts` makes with no pre-fetched handle.
+    //   3. `_roi-preview.ts` `somElementsToCandidates` — stamps `String(hwnd)` for the ROI
+    //      carry-forward, and is written to mirror the discover OCR lane FIELD FOR FIELD so that an
+    //      unchanged element yields the same `entityId`. It therefore produces the SAME fallback
+    //      key as (1) on purpose.
+    //
+    // Three independent title resolutions, any two of which can name different windows. The state
+    // is still unreachable, and the reason is different for each pair:
+    //
+    // (1) vs (2): they cannot land in the same group. `candidateKey` returns the producer's
+    // `digest` when there is one, and `CandidateProducer` — the adapter's road — always sets it,
+    // over a string that starts with the literal source `visual_gpu`. Every other lane has no
+    // digest and falls to the source-OMITTING fallback key, so those two key differently by
+    // construction.
+    //
+    // (1) vs (3): they never meet in one call. The ROI candidates reach `resolveCandidates` only as
+    // a standalone list (`buildFoldPostSnapshot` → `guarded-touch.ts`), every member stamped with
+    // the same `String(hwnd)`, and the ingress cache REPLACES per pass rather than accumulating.
+    //
+    // So within one group every handle comes from a single stamping call, which writes one resolved
+    // handle onto all of its candidates. **What has to answer for this again** is any change that
+    // gives a fourth lane a handle, that makes two of these share a key, or that lets the ingress
+    // cache accumulate across passes.
     //
     // Dead code that only a hand-built fixture could reach is worse than absent: it reads as a case
     // that happens, and the refusal it threw was flattened to `aim_point_outside_window` by
