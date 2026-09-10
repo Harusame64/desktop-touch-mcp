@@ -49,6 +49,7 @@ import {
   targetKeyToWarmTarget,
 } from "../../src/engine/vision-gpu/runtime.js";
 import { fetchVisualCandidates } from "../../src/tools/desktop-providers/visual-provider.js";
+import { deriveViewConstraints } from "../../src/tools/desktop-constraints.js";
 import {
   onDirtySignal,
   pushDirtySignal,
@@ -217,19 +218,72 @@ describe("C. visual-provider warning taxonomy", () => {
 
   it("warm backend with no snapshot → empty candidates, no warning (THE Outlook case)", async () => {
     const rt = getVisualRuntime();
-    const backend = new PocVisualBackend({ coldWarmupMs: 5 });
-    await rt.attach(backend);
-    // Eagerly warm it so the provider does not see 'warming'.
-    await rt.ensureWarm({ kind: "game", id: "hwnd-outlook" });
+    // A backend that RECOGNISES and found nothing — which is what this case is about. It used to
+    // be played by `PocVisualBackend`, and that stand-in stopped being neutral: the stub replays
+    // injected snapshots and looks at nothing, so its empty answer is a different fact and now
+    // says so. The double has to be the thing being described.
+    await rt.attach({
+      ensureWarm:           async () => "warm" as const,
+      getStableCandidates:  async () => [] as UiEntityCandidate[],
+      onDirty:              () => () => {},
+      dispose:              async () => {},
+      recognitionCapability: () => "recognises" as const,
+    });
 
     const r = await fetchVisualCandidates({ hwnd: "hwnd-outlook" });
-    // Provider itself emits NO warning when warm+empty — see visual-provider.ts:71.
+    // Provider itself emits NO warning when warm+empty — see visual-provider.ts.
     expect(r.candidates).toHaveLength(0);
     expect(r.warnings).toEqual([]);
 
     // The user-visible "visual_attempted_empty" is set by compose-providers.ts
     // in applyVisualEscalation() when a UIA-blind target's visual lane is
     // warm-but-empty. That path is verified in the next test.
+  });
+
+  it("keeps the specific reason when the general one arrives after it", () => {
+    // PR 側 codex (2026-09-10). A blind backend produces BOTH warnings, in this order, and
+    // `visual_not_attempted` was the only case in that switch writing unconditionally — so it
+    // overwrote the specific reason on the next iteration and the caller was told to wait and retry
+    // about a state that never becomes ready by waiting.
+    const c = deriveViewConstraints(["uia_blind_single_pane", "visual_backend_cannot_recognise", "visual_not_attempted"], 0);
+    expect(c?.visual).toBe("backend_cannot_recognise");
+    expect(c?.entityZeroReason).toBe("uia_blind_visual_incapable");
+  });
+
+  it("the shipped default says it cannot look, instead of answering like a warm pipeline", async () => {
+    // `PocVisualBackend` is what `initVisualRuntime` attaches unless the ONNX opt-in is set, and
+    // its whole candidate road is `snapshots.get(key) ?? []` — it recognises nothing. It still
+    // warms in milliseconds and answers `[]`, exactly like a real pipeline with no stable track,
+    // so "this window has no visual candidates" and "nothing here ever looks at a window" reached
+    // the caller as the same silence. The case where it matters is the one the lane exists for: a
+    // window whose buttons are PAINTED came back with the title bar's four elements and no note
+    // (win2, 2026-09-10).
+    const rt = getVisualRuntime();
+    const backend = new PocVisualBackend({ coldWarmupMs: 5 });
+    await rt.attach(backend);
+    await rt.ensureWarm({ kind: "game", id: "hwnd-outlook" });
+
+    const r = await fetchVisualCandidates({ hwnd: "hwnd-outlook" });
+    expect(r.candidates).toHaveLength(0);
+    expect(r.warnings).toEqual(["visual_backend_cannot_recognise"]);
+  });
+
+  it("stays quiet when that same backend does have something to replay", async () => {
+    // Only an EMPTY answer is evidence of not looking. A snapshot in hand is candidates the caller
+    // can act on, and calling that "cannot recognise" would be false about the answer given.
+    const rt = getVisualRuntime();
+    const backend = new PocVisualBackend({ coldWarmupMs: 5 });
+    await rt.attach(backend);
+    await rt.ensureWarm({ kind: "game", id: "hwnd-outlook" });
+    backend.updateSnapshot("window:hwnd-outlook", [{
+      source: "visual_gpu", target: { kind: "window", id: "hwnd-outlook" },
+      label: "Send", role: "button", actionability: ["click"],
+      confidence: 0.9, observedAtMs: Date.now(), provisional: false, digest: "d1",
+    }]);
+
+    const r = await fetchVisualCandidates({ hwnd: "hwnd-outlook" });
+    expect(r.candidates).toHaveLength(1);
+    expect(r.warnings).toEqual([]);
   });
 
   it("composer escalation: uia_blind + warm+empty visual → 'visual_attempted_empty'", async () => {

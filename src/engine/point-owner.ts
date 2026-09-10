@@ -80,7 +80,8 @@
  * before it is compared with a top-level handle, or the aim's own control reads as another window.
  */
 
-import { enumWindowsInZOrder, type WindowZInfo } from "./win32.js";
+import { enumWindowsInZOrder, getWindowTitleW, getWindowThreadId, windowFromPoint, type WindowZInfo } from "./win32.js";
+import type { NativeWindowAtPoint } from "./native-types.js";
 
 /**
  * `WS_EX_TRANSPARENT` + `WS_EX_LAYERED` — the documented combination for a click-through window.
@@ -158,11 +159,42 @@ export type PointOwner =
   | { kind: "aim" }
   | { kind: "owned"; hwnd: bigint; title: string }
   | { kind: "other"; hwnd: bigint; title: string }
-  | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" };
+  | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" | "unattributable_window" };
 
 /** Injectable so the classification can be tested without a desktop. */
 export interface PointOwnerDeps {
   enumerate: () => WindowZInfo[];
+  /**
+   * ADR-036 item 6 — the OS hit test, when the addon has it.
+   *
+   * `undefined` means the question could not be asked (an addon built before it, or a failed call)
+   * and the enumeration below answers instead. `null` means Windows says nothing is there, which is
+   * an ANSWER and not a missing instrument — the two must not collapse into one value, which is the
+   * mistake this ADR keeps finding elsewhere.
+   */
+  fromPoint?: (x: number, y: number) => NativeWindowAtPoint | null | undefined;
+  /** Only used on the hit-test road, to name a window the caller is being told about. */
+  titleOf?: (hwnd: bigint) => string;
+  /** The aim's own thread, for the one comparison that is about "cannot tell" rather than ownership. */
+  threadOf?: (hwnd: bigint) => number;
+}
+
+/** 0 means "could not read", and the caller treats it as no evidence rather than as a match. */
+function threadOrZero(hwnd: bigint): number {
+  try {
+    return getWindowThreadId(hwnd);
+  } catch {
+    return 0;
+  }
+}
+
+/** A window that has gone between the hit test and the read has no name, not a failed call. */
+function titleOrEmpty(hwnd: bigint): string {
+  try {
+    return getWindowTitleW(hwnd);
+  } catch {
+    return "";
+  }
 }
 
 function contains(w: WindowZInfo, x: number, y: number): boolean {
@@ -200,8 +232,78 @@ export function whoIsUnderPoint(
   aim: bigint,
   x: number,
   y: number,
-  deps: PointOwnerDeps = { enumerate: enumWindowsInZOrder },
+  deps: PointOwnerDeps = {
+    enumerate: enumWindowsInZOrder,
+    fromPoint: windowFromPoint,
+    titleOf: titleOrEmpty,
+    threadOf: threadOrZero,
+  },
 ): PointOwner {
+  // ADR-036 item 6 — the OS first, because it is the question this module is a reconstruction OF.
+  //
+  // `WindowFromPoint` resolves real hit regions: rounded corners, custom regions, and per-pixel
+  // alpha, which is where a layered overlay's transparency actually lives. The enumeration below
+  // cannot see any of that, and on a desktop carrying a full-screen `UpdateLayeredWindow` overlay
+  // it answers `other` at EVERY point while presses go straight through (measured 2026-09-10).
+  const at = deps.fromPoint?.(x, y);
+  if (at !== undefined) {
+    // An answer, not a silence: Windows looked and found nothing there.
+    if (at === null) return { kind: "unknown", why: "no_window_at_point" };
+    // The primitive returns the CHILD under the point — the aim's own button is not another window.
+    if (at.root === aim) return { kind: "aim" };
+    // Ownership by `GW_OWNER`, every hop. This is the one field that was measured to separate an
+    // owned modal from an ordinary second window of the same application — the two were identical
+    // in thread, in process, in `GA_ROOTOWNER` and in their whole window style (win2, 2026-09-10).
+    if (at.ownerChain.some((h) => h === aim)) {
+      return { kind: "owned", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "" };
+    }
+    // **Cannot attribute, which is not the same as "a stranger".**
+    //
+    // A `ComboLBox` dropdown has NO owner at all, so no ownership rule reaches it — and until this
+    // road existed it was INVISIBLE to us (untitled, so the enumeration dropped it) and the answer
+    // came back `aim`, letting the press through, correctly. Asking Windows makes the dropdown
+    // visible for the first time, and calling it `other` would turn every combo-box press on every
+    // desktop into a refusal: a rung that breaks what worked, which this ladder may not do.
+    //
+    // So a captionless window on the aim's own thread answers `unknown`. **And the rule is about
+    // the CAPTION, not about popups** — measured, and the decisive arm was an ordinary second
+    // window of the application with nothing changed but its title erased: `other` with a caption,
+    // `unknown` without one (win2, 2026-09-10). A splash screen and a custom-chrome frame answer
+    // `unknown` too.
+    //
+    // That is the cost of this rung, stated plainly: an application's own untitled second window —
+    // a tool palette, a custom frame, a window opened before its document — takes a press here as
+    // though it were the aim's dropdown. `unknown` is chosen anyway, because the alternative is
+    // `other`, and `other` refuses every combo-box press on every desktop: a rung breaking what
+    // worked. What it claims is only "no evidence either way"; the caller keeps the behaviour it
+    // had before this road existed, which for all of these windows was to press.
+    //
+    // **Two kinds of context menu, and they are different things rather than two implementations
+    // of one** (win2, 2026-09-10, re-measured after the first reading turned out to be an
+    // instrument fault — see below):
+    //
+    //   - the APPLICATION's own menu is the classic `#32768`: its own thread, no caption. It
+    //     reaches the rung above and answers `unknown`, so the press goes through. Ten right-clicks
+    //     on a fixture's text box produced it ten times out of ten.
+    //   - a SHELL menu — the desktop's, Explorer's — is `Microsoft.UI.Content.PopupWindowSiteBridge`
+    //     on a different thread and a different process, owned by the shell's XAML island. Nothing
+    //     here can attribute it to the aimed application, and it answers `other`. That is correct:
+    //     it really is not the application's window.
+    //
+    // **A claim this file carried for one commit is withdrawn**: that the same right-click on the
+    // same control raises either kind, so a user pressing an item in their own menu would be
+    // refused at random. The round that appeared to show it was clicking (0, 0) — a lookup returned
+    // null and the driver right-clicked the desktop — so the WinUI menu observed was the SHELL's,
+    // at `[-10, 0]`, nowhere near the fixture. The control in force checked that the fixture was
+    // alive and logging presses; it did not check that the arm's click landed inside the window it
+    // was aimed at. Recorded because the correction is more useful than the claim was.
+    const aimThread = deps.threadOf?.(aim);
+    if (!at.rootHasCaption && aimThread !== undefined && aimThread !== 0 && at.rootThreadId === aimThread) {
+      return { kind: "unknown", why: "unattributable_window" };
+    }
+    return { kind: "other", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "" };
+  }
+
   let windows: WindowZInfo[];
   try {
     windows = deps.enumerate();

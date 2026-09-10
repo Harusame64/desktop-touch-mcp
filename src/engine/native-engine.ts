@@ -33,6 +33,7 @@ import type {
   NativeSessionInit,
   NativeSessionResult,
   NativeWin32Rect,
+  NativeWindowAtPoint,
   NativeThreadProcessId,
   NativePrintWindowResult,
   NativeWgcResult,
@@ -139,6 +140,13 @@ export interface NativeWin32 {
   win32IsIconic?(hwnd: bigint): boolean;
   win32IsZoomed?(hwnd: bigint): boolean;
   win32GetClassName?(hwnd: bigint): string;
+  /**
+   * ADR-036 item 6 — who Windows says is under a screen point, hit regions and per-pixel alpha
+   * included. Optional like every other member here: a build without it falls back to the
+   * enumeration in `point-owner.ts`, which is a reconstruction and is measurably wrong under a
+   * full-screen layered overlay.
+   */
+  win32WindowFromPoint?(x: number, y: number): NativeWindowAtPoint | null;
   /**
    * ADR-018 Phase 5+N: resolve a top-level HWND to the descendant HWND that
    * actually receives WM_MOUSEWHEEL for MDI / OLE apps (Excel:
