@@ -347,7 +347,7 @@ describe("the press lands where the control went", () => {
     // which is measured (win2, 2026-09-10) and is why the allowance is not simply removed.
     const d = deps({
       pointOwner: (_h, _x, y) => y === 144
-        ? { kind: "owned" as const, hwnd: 888n, title: "名前を付けて保存" }
+        ? { kind: "owned" as const, hwnd: 888n, title: "名前を付けて保存", via: "os_hit_test" as const }
         : { kind: "aim" as const },
     });
     const fromTheAim: UiEntity = {
@@ -422,7 +422,10 @@ describe("the press lands where the control went", () => {
     // dropdown that happens to sit under the stale point is not the dropdown the entity came from,
     // and pressing it reports success for something nobody discovered. The recorded capture handle
     // is what tells the two apart — before it, both answered `owned` and both were pressed.
-    const d = deps({ pointOwner: () => ({ kind: "owned" as const, hwnd: 999n, title: "Recent files" }) });
+    // `via: "os_hit_test"`: the refusal rides on Windows' own answer only. The enumeration's answer
+    // still allows, because it names windows a press falls through (Opus sandbox review,
+    // 2026-09-10) — the cell for that is in the entity-origin file.
+    const d = deps({ pointOwner: () => ({ kind: "owned" as const, hwnd: 999n, title: "Recent files", via: "os_hit_test" as const }) });
     const unstable: Aim = { kind: "aim", title: "CELL BUTTONS", hwnd: HWND, origin: { kind: "moved_during_read" } };
     const fromTheDropdown: UiEntity = {
       ...entity(),

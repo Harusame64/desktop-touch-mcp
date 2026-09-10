@@ -440,7 +440,14 @@ async function resolvePressPoint(
     point: { x, y },
     windowRect: rect,
     inside,
-    pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title } : {}), ...("why" in owner ? { why: owner.why } : {}) } : null,
+    // WHOSE window it was checked against, said out loud. `checked:true` alone claims the point was
+    // validated against the entity's window, and on this road nothing has verified that the handle
+    // still NAMES that window: identity invalidation is gated on `aim.hwnd`, and a title-only act
+    // has none, so a recycled handle produces a row that says "checked" about a stranger (Opus
+    // sandbox review, 2026-09-10 — a residual, since the pre-ADR code pressed there with no row at
+    // all). "Checked" and "checked against the right window" must not share a representation.
+    identityBaseline: aim.identity !== undefined && aimHwnd === aim.hwnd ? "compared" : "none",
+    pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title, ...(owner.via ? { via: owner.via } : {}) } : {}), ...("why" in owner ? { why: owner.why } : {}) } : null,
     label,
   });
   if (!homing.applied && homing.why === "window_off_desktop") {
@@ -479,13 +486,14 @@ async function resolvePressPoint(
   // `measured_in_another_window` is the one verdict that invalidates every comparison the ladder
   // makes: the origin, the current rectangle, the resize and the containment are all about the aim,
   // and these pixels are not. That leaves exactly one usable piece of evidence — who is under the
-  // point NOW — and it is the caller who holds it.
+  // point NOW.
   //
-  // So the press is allowed where that answer is the window the pixels came from, and refused where
-  // it is a DIFFERENT one. Both halves are corrections of a round that got the other half wrong:
-  // letting any owned window through pressed a dropdown nobody discovered (PR 側 codex on #609), and
-  // refusing the whole case pressed nothing where the entity's own dropdown was sitting right there
-  // (gate 2, 2026-09-10).
+  // **It had its own copy of that test until the review below.** The press is allowed where the
+  // answer is the window the pixels came from and refused where it is a DIFFERENT one — and that
+  // sentence is now written once, at the allowance a few lines down, which every road reaches.
+  // Two copies had already drifted apart: this one refused on any answer, the other allowed any
+  // owned window at all (PR 側 codex on #609 and on #612; Opus sandbox review, 2026-09-10). Both
+  // halves of the rule are corrections of a round that got the other half wrong.
   //
   // **`aim` is NOT the third answer, and that is measured.** The version of this that shipped for a
   // few hours also refused when the enumeration said the aim itself was on top — reading that as
@@ -497,33 +505,6 @@ async function resolvePressPoint(
   //
   // `unknown` and a missing dep stay out of it for the same reason, and `other` falls through to
   // the occlusion refusal below, which names the covering window and says what to do about it.
-  //
-  // **ONE decision, asked at two rungs.** This test used to live only inside the
-  // `measured_in_another_window` branch, and the general allowance below accepted ANY owned window
-  // — so on the title-only road, where the verdict is `no_origin_rect` rather than
-  // `measured_in_another_window`, a titled dialog that had opened over the remembered point was
-  // pressed although the entity's own provenance said the pixels came from the parent (PR 側 codex,
-  // 2026-09-10, P1). The evidence was in hand and only one of the two rungs was reading it.
-  const ownedWindowVerdict = (): { x: number; y: number } | undefined => {
-    if (owner?.kind !== "owned") return undefined;
-    // Absence is not evidence: an entity with no recorded origin keeps the allowance it always had.
-    if (capturedIn === undefined || owner.hwnd === capturedIn) return { x, y };
-    throw new AimedPointOutsideWindowError(
-      `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
-      `${capturedIn}, and the window under that point now is ${owner.hwnd} ("${owner.title}") — ` +
-      `a different window that ${aimHwnd} also owns. A menu, dialog or dropdown has an origin of ` +
-      `its own and does not move with the window that owns it, so nothing here can follow these ` +
-      `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
-      aimHwnd,
-      because,
-    );
-  };
-
-  if (!homing.applied && homing.why === "measured_in_another_window" && capturedIn !== undefined) {
-    const allowed = ownedWindowVerdict();
-    if (allowed) return allowed;
-  }
-
   // Only now the popup allowance. The press is on a window this one owns: allowed, and allowed
   // even where the aim's own rectangle does not contain the point, because that is where dropdowns
   // live — and allowed before the verdicts BELOW, which are statements about the AIM's layout and
@@ -550,10 +531,37 @@ async function resolvePressPoint(
   // from it — so letting it past those two reports success after pressing an unrelated dropdown
   // (PR 側 codex on #609). The previous round moved this line one rung too far up.
   //
-  // And it is the same decision as the one above, not a laxer copy of it: an owned window that is
-  // not the one the pixels came from is an OCCLUDER, whichever rung notices it.
-  const allowedOwned = ownedWindowVerdict();
-  if (allowedOwned) return allowedOwned;
+  // **The allowance is not unconditional, and the narrowing has a condition of its own.** An owned
+  // window that is NOT where the pixels came from is an occluder: the entity's own origin says the
+  // control is in another window, so the press would land in a dialog while the caller is told
+  // their control was clicked (PR 側 codex, 2026-09-10, P1).
+  //
+  // Refused only on the OS's answer. `whoIsUnderPoint` has two mechanisms and they do not deserve
+  // the same trust: `WindowFromPoint` resolves real hit regions, while the ENUMERATION reads
+  // rectangles and is measured blind to a click-through overlay's transparency — it names a window
+  // presses fall straight through. Refusing on that would invent a refusal out of a known blind
+  // spot, which is the same mistake as reading `aim` as evidence of absence, and it would break
+  // presses that work today on every build without the native addon (Opus sandbox review,
+  // 2026-09-10). On the enumeration's answer the allowance stands, exactly as before.
+  //
+  // Both earlier rungs consult the same verdict on their way past — `measured_in_another_window`
+  // used to carry its own copy of this test, which is one rule in two places (and the two drifted:
+  // one refused on any answer). It reads it here now, once.
+  if (owner?.kind === "owned") {
+    // Absence is not evidence: an entity that recorded no origin keeps the allowance it always had.
+    if (capturedIn === undefined || owner.hwnd === capturedIn || owner.via !== "os_hit_test") {
+      return { x, y };
+    }
+    throw new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
+      `${capturedIn}, and the window under that point now is ${owner.hwnd} ("${owner.title}") — ` +
+      `a different window that ${aimHwnd} also owns. A menu, dialog or dropdown has an origin of ` +
+      `its own and does not move with the window that owns it, so nothing here can follow these ` +
+      `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
+      aimHwnd,
+      because,
+    );
+  }
 
   if (!homing.applied && homing.why === "window_resized" && origin?.kind === "measured") {
     // The point WAS inside this window, and the window has relaid out since. Nothing here can say
@@ -691,8 +699,15 @@ export function createDesktopExecutor(
     // The homing correction cannot: it subtracts the delta between the window's rectangle at
     // discover time and its rectangle now, and the first of those is `aim.origin` — measured around
     // the window `toAim` resolved. This road has no such window, so `origin` is `undefined` below
-    // and the verdict is `no_origin_rect` every time. What the entity records is a HANDLE, not the
-    // rectangle it was measured against, and the correction needs the rectangle. (Do not "fix" that
+    // and the correction is declined with `no_origin_rect`. What the entity records is a HANDLE, not
+    // the rectangle it was measured against, and the correction needs the rectangle.
+    //
+    // **Declined is not "the only verdict this road can produce"** — an earlier version of this
+    // paragraph said the latter and it is false (Opus sandbox review, 2026-09-10).
+    // `homingCorrectionForSources` asks `window_off_desktop` FIRST, before it looks at any origin,
+    // so a MINIMISED window on this road answers that instead and the act refuses with the message
+    // that names the minimise. The window-gone refusal is reached the same way. Only the verdicts
+    // that need the origin RECTANGLE are out of reach here. (Do not "fix" that
     // by passing `aim.origin` anyway: it belongs to a different window, and the cell above this
     // one exists because doing so displaced a press by 100 px in each direction.)
     //
@@ -726,11 +741,15 @@ export function createDesktopExecutor(
     const coordHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
 
     // A round of item 12 also carried a `hwndConflict` refusal here, for an entity whose lanes had
-    // named different windows. Deleted with the state that produced it: one road writes
-    // `originHwnd` and it is called once per discovery pass, so the handles in a group cannot
-    // disagree (gate 2, 2026-09-10 — see `world-graph/resolver.ts`). Only a hand-built entity could
-    // reach the refusal, and `guarded-touch` flattened its recovery advice to
-    // `aim_point_outside_window` on the way out, so nothing it said reached a caller either.
+    // named different windows. Deleted with the state that produced it — and **the derivation lives
+    // in `world-graph/resolver.ts` alone.** This comment carried a second copy of it; the copy was
+    // wrong about how many lanes write `originHwnd`, and it was still wrong after the other copy
+    // had been corrected (Opus sandbox review, 2026-09-10). One rule, one place.
+    //
+    // What matters here is only the consequence: no entity reaches this line carrying "the lanes
+    // disagreed". Only a hand-built entity could reach the refusal that used to be here, and
+    // `guarded-touch` flattened its recovery advice to `aim_point_outside_window` on the way out,
+    // so nothing it said reached a caller either.
 
     // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
     // checked: after the lease was taken and before anything is done about it.

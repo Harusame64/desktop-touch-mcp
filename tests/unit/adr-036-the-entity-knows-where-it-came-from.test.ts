@@ -27,6 +27,8 @@ import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 const OBSERVED = 4919n;
 const STRANGER = 777n;
+/** A window the aim owns — a dropdown or dialog, which is what the allowance is for. */
+const POPUP = 555n;
 
 /** A visual entity from a title-only discover: no handle on the aim, one on the entity. */
 function entity(origin?: UiEntity["origin"]): UiEntity {
@@ -73,19 +75,40 @@ describe("a title-only discover still gets the coordinate ladder", () => {
     // branch, and on this road the verdict is `no_origin_rect`. So a titled dialog that had opened
     // over the remembered point was pressed although the entity's own origin says the pixels came
     // from the PARENT. Both rungs ask the same question now.
-    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: STRANGER, title: "名前を付けて保存" }));
+    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: STRANGER, title: "名前を付けて保存", via: "os_hit_test" as const }));
     const d = deps({ pointOwner });
     await expect(createDesktopExecutor(titleOnly, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click"))
       .rejects.toThrow(/measured in window 4919/);
     expect(d.mouseClick).not.toHaveBeenCalled();
   });
 
-  it("presses an owned dropdown when that is the window the pixels came from", async () => {
+  it("presses an owned dropdown when that is the window the pixels came from — on the PINNED road", async () => {
     // The other half, and the reason the allowance exists at all: an entity discovered INSIDE a
     // dropdown records that dropdown's handle, and the press belongs there. Refusing this was the
     // mistake of an earlier round (gate 2, 2026-09-10) — a false refusal for the commonest popup on
     // Windows.
-    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: OBSERVED, title: "" }));
+    //
+    // **Pinned deliberately, because on the title-only road this state cannot occur** (Opus sandbox
+    // review, 2026-09-10). There the coordinate handle IS the entity's own, so an owned window
+    // under the point is by definition a different handle — `whoIsUnderPoint` answers `aim` when
+    // the top window is the one it was asked about. The cell that stood here pinned a state
+    // production cannot reach and passed under a reversion of the rule it claimed to defend.
+    // A pinned call is the real shape: the caller names the parent, the entity was captured in the
+    // dropdown the parent owns.
+    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: POPUP, title: "", via: "os_hit_test" as const }));
+    const d = deps({ pointOwner });
+    const pinned: Aim = { kind: "aim", title: "Notepad", hwnd: OBSERVED };
+    await createDesktopExecutor(pinned, d)(entity({ kind: "window", id: "Notepad", hwnd: POPUP.toString() }), "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
+  });
+
+  it("keeps the allowance when the ENUMERATION named the owned window, not the OS", async () => {
+    // The narrowing rides on the OS hit test alone. The enumeration reads rectangles and is
+    // measured blind to a click-through overlay's transparency, so it names windows a press falls
+    // straight through — refusing on that would invent a refusal out of a known blind spot and
+    // break presses that work today on every build without the native addon (Opus sandbox review,
+    // 2026-09-10). Same inputs as the refusal cell above, one field different.
+    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: STRANGER, title: "名前を付けて保存", via: "enumeration" as const }));
     const d = deps({ pointOwner });
     await createDesktopExecutor(titleOnly, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click");
     expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
@@ -94,7 +117,7 @@ describe("a title-only discover still gets the coordinate ladder", () => {
   it("keeps the allowance for an entity that recorded no window at all", async () => {
     // Absence is not evidence. An entity with no `origin.hwnd` has nothing to contradict the
     // screen, and it keeps the behaviour it had before this item existed.
-    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: STRANGER, title: "名前を付けて保存" }));
+    const pointOwner = vi.fn(() => ({ kind: "owned" as const, hwnd: STRANGER, title: "名前を付けて保存", via: "os_hit_test" as const }));
     const d = deps({ pointOwner, aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 1000, height: 1000 })) });
     const pinned: Aim = { kind: "aim", title: "Notepad", hwnd: OBSERVED };
     await createDesktopExecutor(pinned, d)(entity(), "click");

@@ -155,10 +155,27 @@ const CLICK_THROUGH     = WS_EX_TRANSPARENT | WS_EX_LAYERED;
  * strangers would refuse the ordinary case (gate 2 raised this against the containment check,
  * which refuses them today).
  */
+/**
+ * WHICH MECHANISM ANSWERED, because the two do not deserve the same trust.
+ *
+ * `os_hit_test` is Windows' own answer and resolves real hit regions — rounded corners, custom
+ * regions, per-pixel alpha. `enumeration` is this module's reconstruction from rectangles, and its
+ * blind spots are measured and written at the top of this file: it cannot see a click-through
+ * overlay's transparency, and a window whose rectangle is not its hit region reads as covering a
+ * point that presses fall through.
+ *
+ * A caller that REFUSES on this answer has to know which one it got. ADR-036 item 12 narrowed the
+ * owned-window allowance — an owned window that is not where the pixels came from is an occluder —
+ * and on the enumeration's answer that would invent a refusal out of a known blind spot, which is
+ * the one thing this ladder may not do (gate: Opus sandbox review, 2026-09-10). Refusals ride on
+ * `os_hit_test` only; the enumeration's answer still ALLOWS, exactly as before.
+ */
+export type PointOwnerVia = "os_hit_test" | "enumeration";
+
 export type PointOwner =
   | { kind: "aim" }
-  | { kind: "owned"; hwnd: bigint; title: string }
-  | { kind: "other"; hwnd: bigint; title: string }
+  | { kind: "owned"; hwnd: bigint; title: string; via?: PointOwnerVia }
+  | { kind: "other"; hwnd: bigint; title: string; via?: PointOwnerVia }
   | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point" | "unattributable_window" };
 
 /** Injectable so the classification can be tested without a desktop. */
@@ -255,7 +272,7 @@ export function whoIsUnderPoint(
     // owned modal from an ordinary second window of the same application — the two were identical
     // in thread, in process, in `GA_ROOTOWNER` and in their whole window style (win2, 2026-09-10).
     if (at.ownerChain.some((h) => h === aim)) {
-      return { kind: "owned", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "" };
+      return { kind: "owned", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "", via: "os_hit_test" };
     }
     // **Cannot attribute, which is not the same as "a stranger".**
     //
@@ -301,7 +318,7 @@ export function whoIsUnderPoint(
     if (!at.rootHasCaption && aimThread !== undefined && aimThread !== 0 && at.rootThreadId === aimThread) {
       return { kind: "unknown", why: "unattributable_window" };
     }
-    return { kind: "other", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "" };
+    return { kind: "other", hwnd: at.root, title: deps.titleOf?.(at.root) ?? "", via: "os_hit_test" };
   }
 
   let windows: WindowZInfo[];
@@ -322,6 +339,6 @@ export function whoIsUnderPoint(
   const top = candidates[0];
   if (!top) return { kind: "unknown", why: "no_window_at_point" };
   if (top.hwnd === aim) return { kind: "aim" };
-  if (isOwnedBy(top, aim, byHwnd)) return { kind: "owned", hwnd: top.hwnd, title: top.title };
-  return { kind: "other", hwnd: top.hwnd, title: top.title };
+  if (isOwnedBy(top, aim, byHwnd)) return { kind: "owned", hwnd: top.hwnd, title: top.title, via: "enumeration" };
+  return { kind: "other", hwnd: top.hwnd, title: top.title, via: "enumeration" };
 }
