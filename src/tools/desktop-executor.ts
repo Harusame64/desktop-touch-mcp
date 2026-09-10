@@ -921,6 +921,11 @@ export function createDesktopExecutor(
                 `Re-run desktop_discover.`,
                 aimHwnd,
                 { cause: kbErr },
+                // What the caller is shown: the ladder that was spent, without the backend's own
+                // text. `ladder` is written here for a reader; `kbErr.message` is not (item 13).
+                `Every write route to window ${aimHwnd} was spent for "${entity.label ?? entity.entityId}" — ` +
+                `the UIA value route and the background write both failed — and the act was not ` +
+                `finished as a coordinate press.`,
               );
             }
             throw new Error(ladder, { cause: kbErr });
@@ -972,6 +977,10 @@ export function createDesktopExecutor(
             `entity's rect is a screen point that any window can be under. Re-run desktop_discover.`,
             aimHwnd,
             { cause: uiaErr },
+            // The message above quotes the UIA failure, which on this road is a PowerShell rejection
+            // carrying the whole script; the caller-facing sentence says the same thing without it.
+            `The UIA route to window ${aimHwnd} failed for "${entity.label ?? entity.entityId}", and ` +
+            `the act was not finished as a coordinate click.`,
           );
         }
         // UIA click failed (element not found, stale tree, etc.).

@@ -232,7 +232,7 @@ export type TouchResult =
        * ADR-036 item 13 — WHAT THE ENGINE KNEW, carried instead of rebuilt.
        *
        * The refusal that reaches this loop is a typed error whose message names the specifics: the
-       * window drawn over the point and its handle, which of the four identity fields changed, the
+       * window drawn over the point and its handle, which of the three identity fields changed, the
        * rectangle the point left. The loop used to keep only the reason code, and
        * `desktop-register.ts` then wrote fresh text from that code alone — so a caller was told
        * "another window is drawn over the point" and never which window (measured 2026-09-10, win2,
@@ -548,14 +548,29 @@ export class GuardedTouchLoop {
       outcome = await this.env.execute(entity, concreteAction, text);
     } catch (err) {
       /**
-       * ADR-036 item 13 — the engine's own sentence, verbatim, or nothing.
+       * ADR-036 item 13 — the sentence the thrower declared fit to publish, or nothing.
        *
-       * Verbatim rather than re-worded: the executor writes these messages for a caller, with the
-       * handles and titles it had in hand, and every re-wording so far has been a chance to promise
-       * something the envelope does not deliver (`_errors.ts` claimed "the message names the
-       * window" while nothing carried a message at all).
+       * **Not `err.message`, and the first version of this line was.** Reading any throw's message
+       * publishes whatever a backend happened to say: the UIA road runs a ~2.5 KB PowerShell script
+       * through `execFileAsync`, whose rejection message is `Command failed:` plus the whole
+       * command line and stderr — and on the `type` road the script carries the text being typed
+       * (gate 2, Opus sandbox review, 2026-09-10). A caller-facing field is not a place to forward
+       * an exception to.
+       *
+       * So the contract is opt-in: `CallerFacingRefusal.callerDetail` (`aim.ts`) is a class saying
+       * "this sentence is written for a caller". Anything else — every backend exception, every
+       * `throw "string"` — produces no detail, and that reason arrives exactly as it did before
+       * this item. Duck-typed rather than `instanceof`, for the same module-identity reason the
+       * catch below matches on `name`.
+       *
+       * Capped as defence in depth: the longest sentence any of these classes writes is under 600
+       * characters, so a value past the cap means something unexpected is being published, and a
+       * truncated field is easier to notice than a page of text.
        */
-      const detail = err instanceof Error && err.message.trim() !== "" ? err.message : undefined;
+      const declared = (err as { callerDetail?: unknown } | null)?.callerDetail;
+      const detail = typeof declared === "string" && declared.trim() !== ""
+        ? declared.slice(0, 1000)
+        : undefined;
       // ADR-029 Phase 1: an unreachable-coordinate refusal keeps its own reason.
       // Collapsing it into executor_failed would hand the caller that reason's
       // recovery advice — "fall back to mouse_click" — which walks straight back

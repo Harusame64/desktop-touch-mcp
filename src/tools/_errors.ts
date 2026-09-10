@@ -290,7 +290,7 @@ const SUGGESTS: Record<string, string[]> = {
   // of this line was a promise about a field that did not exist.
   AimOccluded: [
     "Another window is on top of the point this act would have pressed, so nothing was done. Whether it would REALLY have taken the press is not something this build can ask — that needs the OS hit test — so a window on top counts as being in the way. Some overlays pass presses straight through and are still reported here: measured 2026-09-10 on a full-screen monitor-utility overlay with per-pixel transparency, which no window style distinguishes from one that blocks.",
-    "if_unexpected.detail names the window that is on top — its title, its handle and the point — as the engine saw it at the moment of the refusal. That is the window in the way; the window you named is the one to bring forward.",
+    "The detail field in if_unexpected names the window that is on top — its handle always, its title when it has one — as the engine saw it at the moment of the refusal. That is the window in the way; the window you named is the one to bring forward. (Under include:[\"envelope\"] the failure hint sits at data.if_unexpected.)",
     "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
     "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top — and is also the way past an overlay that this build cannot tell is click-through.",
     "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
@@ -315,7 +315,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
     "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator.",
     "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
-    "If the control supports no pattern for this action (a custom-drawn button, a canvas), the message says so — act on a different affordance or reach it by keyboard navigation.",
+    "If the control supports no pattern for this action (a custom-drawn button, a canvas), that is what the failure was — act on a different affordance or reach it by keyboard navigation. On the act path the specifics are in if_unexpected.detail; on a flat tool result they are in error.",
   ],
   // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
   // advice is deliberately short on alternatives — every "try the other tool" line would be an
@@ -333,7 +333,7 @@ const SUGGESTS: Record<string, string[]> = {
     "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
     "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
-    "If the message says the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates.",
+    "If the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates. Where the failure says which, it is in if_unexpected.detail on the act path and in error on a flat tool result.",
   ],
   // Reserved (currently unreachable): the producers (the keyboard.ts /
   // terminal.ts flash paths) reject with this compact code when the resolver

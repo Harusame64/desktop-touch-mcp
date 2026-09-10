@@ -13,6 +13,26 @@
  */
 
 /**
+ * ADR-036 item 13 — WHAT MAY BE SHOWN TO A CALLER, declared by the thrower.
+ *
+ * The envelope carries `if_unexpected.detail` so an act's refusal arrives with the specifics the
+ * engine had. The first version of that carrier read `err.message` from ANY throw, and that is a
+ * leak rather than a feature (gate 2, Opus sandbox review, 2026-09-10): the UIA road runs a ~2.5 KB
+ * PowerShell script through `execFileAsync`, whose rejection message is `Command failed: <file>
+ * <every arg joined>` plus stderr — the whole script, its local paths, and on the `type` road **the
+ * text being typed**, since `escapePS(value)` is interpolated into it.
+ *
+ * So a detail is OPT-IN and written FOR a caller. A class that carries `callerDetail` is saying
+ * "this sentence is fit to publish"; everything else — every backend exception, every
+ * `throw "string"` — produces no detail at all and the caller gets the reason code and its advice,
+ * exactly as before this item.
+ */
+export interface CallerFacingRefusal {
+  /** The sentence this refusal is willing to publish. Never a wrapped foreign error message. */
+  readonly callerDetail: string;
+}
+
+/**
  * Backend code for "the handle names a window that is no longer there".
  *
  * `AutomationElement.FromHandle` THROWS for a dead handle rather than returning null, so both
@@ -29,8 +49,9 @@ export const AIM_WINDOW_GONE = "aim_window_gone";
  * would take the click. That is window drift, one of the five failures the perception graph
  * exists to stop, so this arrives as a refusal rather than as a rung (2ゲート目の指摘).
  */
-export class AimedWindowGoneError extends Error {
+export class AimedWindowGoneError extends Error implements CallerFacingRefusal {
   readonly hwnd?: bigint;
+  readonly callerDetail: string;
   /**
    * `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}.
    *
@@ -49,6 +70,7 @@ export class AimedWindowGoneError extends Error {
     );
     this.name = "AimedWindowGoneError";
     this.hwnd = hwnd;
+    this.callerDetail = this.message;
   }
 }
 
@@ -72,8 +94,9 @@ export class AimedWindowGoneError extends Error {
  * it can succeed; here the window is alive and the coordinate is stale, so a fresh
  * `desktop_discover` returns a rect that works.
  */
-export class AimedPointOutsideWindowError extends Error {
+export class AimedPointOutsideWindowError extends Error implements CallerFacingRefusal {
   readonly hwnd?: bigint;
+  readonly callerDetail: string;
   /**
    * `options` carries the failure this refusal happened DURING, when there was one (gate 2,
    * 2026-09-10). On the UIA downgrade road the caller is already holding a UIA error and is
@@ -92,6 +115,7 @@ export class AimedPointOutsideWindowError extends Error {
     super(message, options);
     this.name = "AimedPointOutsideWindowError";
     this.hwnd = hwnd;
+    this.callerDetail = this.message;
   }
 }
 
@@ -111,12 +135,21 @@ export class AimedPointOutsideWindowError extends Error {
  * Same shape as {@link AimedPointOutsideWindowError}, different cause — there the aim went stale,
  * here the aim is current and the attempt on it failed.
  */
-export class AimedRouteFailedError extends Error {
+export class AimedRouteFailedError extends Error implements CallerFacingRefusal {
   readonly hwnd?: bigint;
-  constructor(message: string, hwnd?: bigint, options?: ErrorOptions) {
+  /**
+   * **Deliberately not `this.message`.** This error's message quotes the failure it is reporting —
+   * on the UIA road that is a PowerShell rejection whose text is `Command failed:` plus the entire
+   * script and its stderr, and on the `type` road the script has the typed text interpolated into
+   * it (gate 2, 2026-09-10). The message stays as it is, because it is the diagnostic a log wants;
+   * what a caller is shown is this sentence, which the executor writes without the quote.
+   */
+  readonly callerDetail: string;
+  constructor(message: string, hwnd?: bigint, options?: ErrorOptions, callerDetail?: string) {
     super(message, options);
     this.name = "AimedRouteFailedError";
     this.hwnd = hwnd;
+    this.callerDetail = callerDetail ?? "";
   }
 }
 
@@ -132,8 +165,9 @@ export class AimedRouteFailedError extends Error {
  * an action fails and the screen is honest about why; here, an action would have SUCCEEDED against
  * a stranger.
  */
-export class AimIdentityChangedError extends Error {
+export class AimIdentityChangedError extends Error implements CallerFacingRefusal {
   readonly hwnd: bigint;
+  readonly callerDetail: string;
   constructor(hwnd: bigint, then: WindowIdentity, now: WindowIdentity | undefined) {
     super(
       `The window this action was aimed at (hwnd ${hwnd}) is not the window the lease was taken on: ` +
@@ -142,6 +176,9 @@ export class AimIdentityChangedError extends Error {
     );
     this.name = "AimIdentityChangedError";
     this.hwnd = hwnd;
+    // The sentence names WHICH of the three fields decided — the fact the published advice was
+    // stripped of, because nothing carried it to a caller (PR 側 codex on #608).
+    this.callerDetail = this.message;
   }
 }
 
@@ -204,8 +241,9 @@ function replaceHandle(_key: string, value: unknown): unknown {
  * covers the point, and re-discovering fixes it. Here the rectangle is right and something else is
  * on top, so re-discovering returns the same coordinates and the press lands in the same stranger.
  */
-export class AimOccludedError extends Error {
+export class AimOccludedError extends Error implements CallerFacingRefusal {
   readonly hwnd: bigint;
+  readonly callerDetail: string;
   /**
    * `options` carries the failure this refusal happened during — see {@link AimedPointOutsideWindowError}.
    *
@@ -218,12 +256,19 @@ export class AimOccludedError extends Error {
   constructor(hwnd: bigint, byHwnd: bigint, byTitle: string, x: number, y: number, options?: ErrorOptions, describedAs?: string) {
     super(
       `Refusing to press (${x}, ${y}) for ${describedAs ?? `the window this act named (hwnd ${hwnd})`}: the window on top at ` +
-      `that point is ${byTitle ? `"${byTitle}"` : "another window"} (hwnd ${byHwnd}), so the press would go there. ` +
+      `that point is ${byTitle ? `"${byTitle}" (hwnd ${byHwnd})` : `an untitled window (hwnd ${byHwnd})`}. ` +
+      // NOT "so the press would go there". Whether that window would really take the press is the
+      // one thing this check cannot answer — a per-pixel-alpha overlay is reported here and presses
+      // pass straight through it (measured, item 11) — and the published advice says so in the same
+      // envelope. The sentence claimed it anyway, and item 13 is what would have published the
+      // contradiction (gate 2, Opus sandbox review, 2026-09-10).
+      `Anything on top counts as being in the way here, including overlays a press would pass through. ` +
       `Bring the intended window forward, or act through a route that does not use coordinates.`,
       options,
     );
     this.name = "AimOccludedError";
     this.hwnd = hwnd;
+    this.callerDetail = this.message;
   }
 }
 

@@ -244,7 +244,10 @@ describe("the envelope carries the refusing layer's own words", () => {
     // read a field that is in the response.
     const { getSuggestsForCode } = await import("../../src/tools/_errors.js");
     const advice = getSuggestsForCode("AimOccluded");
-    expect(advice.some((a) => a.includes("if_unexpected.detail"))).toBe(true);
+    expect(advice.some((a) => /detail field in if_unexpected/.test(a))).toBe(true);
     expect(advice.some((a) => /read the message|the message names/i.test(a))).toBe(false);
+    // And it does not promise a title the detail sometimes cannot give: the OS road can answer with
+    // a captionless window, where the engine's sentence says "an untitled window" (gate 2).
+    expect(advice.some((a) => /its handle always, its title when it has one/.test(a))).toBe(true);
   });
 });

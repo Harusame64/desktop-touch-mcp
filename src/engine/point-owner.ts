@@ -80,7 +80,7 @@
  * before it is compared with a top-level handle, or the aim's own control reads as another window.
  */
 
-import { enumWindowsInZOrder, getWindowTitleW, getWindowThreadId, windowFromPoint, type WindowZInfo } from "./win32.js";
+import { enumWindowsInZOrder, getWindowTitleW, getWindowThreadId, windowFromPoint, isExcludedWindowHandle, type WindowZInfo } from "./win32.js";
 import type { NativeWindowAtPoint } from "./native-types.js";
 
 /**
@@ -266,6 +266,16 @@ export function whoIsUnderPoint(
   if (at !== undefined) {
     // An answer, not a silence: Windows looked and found nothing there.
     if (at === null) return { kind: "unknown", why: "no_window_at_point" };
+    // **An excluded window is not named on this road either.** The enumeration below never sees one
+    // — `enumWindowsInZOrder` filters by the same predicate — but `WindowFromPoint` asks the OS, and
+    // the OS does not know about this server's registry. Until ADR-036 item 13 the difference stayed
+    // inside the loop; now the covering window's title and handle are published in the refusal, so
+    // the key locker's secure dialog would hand back exactly what the registry exists to withhold —
+    // and confirm, by naming it, that the window over the point IS the locker (gate 2, Opus sandbox
+    // review, 2026-09-10). Answered as `unknown`, which every caller already treats as "no
+    // evidence": the press is refused by containment where it would have been refused anyway, and
+    // nothing about the excluded window is said.
+    if (isExcludedWindowHandle(at.root)) return { kind: "unknown", why: "unattributable_window" };
     // The primitive returns the CHILD under the point — the aim's own button is not another window.
     if (at.root === aim) return { kind: "aim" };
     // Ownership by `GW_OWNER`, every hop. This is the one field that was measured to separate an

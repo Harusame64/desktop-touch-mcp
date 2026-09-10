@@ -343,6 +343,40 @@ describe("PR-P1-1 site 7: desktopActRawHandler executor_failed (DATA-level — h
     });
   });
 
+  // ADR-036 item 13 — THE SEAM THIS ITEM IS ABOUT, end to end. The nine act-path refusals are
+  // rebuilt here from the reason code, and the engine's sentence used to stop at the loop: measured
+  // on the real machine (win2, 2026-09-10) as an `aim_occluded` response carrying neither the
+  // blocker's title nor its handle, with no message field anywhere in it.
+  //
+  // Pinned at the HANDLER, not at `toFailureEnvelope`, because that is where the loss happened: the
+  // first version of this change was covered only by cells that called the converter directly and
+  // by cells that stopped inside the loop, so deleting `detail: result.detail` from all nine sites
+  // left every one of them green (gate 2, Opus sandbox review, 2026-09-10). This one goes through
+  // `desktopActRawHandler` in the mode `desktop_act` actually uses.
+  it("carries the refusal's own sentence to the caller, in the shape desktop_act returns", async () => {
+    const facade = getDesktopFacade();
+    const detail = 'Refusing to press (426, 287) for the window this act named (hwnd 4919): the window on top at that point is "BLOCKER-CELL" (hwnd 777).';
+    vi.spyOn(facade, "touch").mockResolvedValue({ ok: false, reason: "aim_occluded", diff: [], detail });
+
+    const result = await desktopActRawHandler({ lease: fakeLease, action: "click" });
+    const parsed = parseContent(result.content) as { if_unexpected: { detail?: string; most_likely_cause: string } };
+
+    expect(parsed.if_unexpected.detail).toBe(detail);
+    expect(parsed.if_unexpected.most_likely_cause).toBe("AimOccluded");
+  });
+
+  it("leaves the field out when the refusal had nothing of its own to say", async () => {
+    // A silence and an answer must not share a representation: `detail: ""` would read as "the
+    // engine had nothing to say", and a missing field says "there was no sentence".
+    const facade = getDesktopFacade();
+    vi.spyOn(facade, "touch").mockResolvedValue({ ok: false, reason: "aim_occluded", diff: [] });
+
+    const result = await desktopActRawHandler({ lease: fakeLease, action: "click" });
+    const parsed = parseContent(result.content) as { if_unexpected: Record<string, unknown> };
+
+    expect("detail" in parsed.if_unexpected).toBe(false);
+  });
+
   it("serialises pretty-printed (2-space indent) — current format pin", async () => {
     const facade = getDesktopFacade();
     vi.spyOn(facade, "touch").mockResolvedValue({ ok: false, reason: "executor_failed", diff: [] });
