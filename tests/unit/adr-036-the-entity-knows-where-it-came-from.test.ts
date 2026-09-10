@@ -182,16 +182,15 @@ describe("the handle from the entity never addresses a backend", () => {
   });
 
   it("still prefers the aim's own handle when the call named one", async () => {
-    // The two handles are deliberately different, because that is the only way to see WHICH one
-    // the ladder ran on. The refusal is the rest of the same fact: the call named 1234, these
-    // pixels were captured in 4919, and 1234 is what is under the point — so the window the
-    // coordinates belong to is not there, and item 5 declines to press into whatever is.
+    // The two handles are deliberately different, because that is the only way to see WHICH one the
+    // ladder ran on. `aim` under the point does NOT refuse the press: the enumeration cannot see an
+    // untitled popup, so it answers `aim` exactly when a dropdown or tooltip is sitting on top of
+    // its owner — and the press that follows is correct (win2, 2026-09-10).
     const pointOwner = vi.fn(() => ({ kind: "aim" as const }));
     const d = deps({ pointOwner });
     const pinned: Aim = { kind: "aim", title: "Notepad", hwnd: 1234n };
-    await expect(createDesktopExecutor(pinned, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click"))
-      .rejects.toThrow(/measured in window 4919/);
+    await createDesktopExecutor(pinned, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click");
     expect(pointOwner).toHaveBeenCalledWith(1234n, 140, 215);
-    expect(d.mouseClick).not.toHaveBeenCalled();
+    expect(d.mouseClick).toHaveBeenCalled();
   });
 });
