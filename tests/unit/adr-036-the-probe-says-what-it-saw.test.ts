@@ -24,6 +24,7 @@ import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 /** Every module a cell below replaces, unmocked after each cell so none leaks into the next. */
 const MOCKED = [
+  "node:fs",
   "../../src/engine/native-engine.js",
   "../../src/engine/uia-bridge.js",
   "../../src/engine/ocr-bridge.js",
@@ -151,6 +152,58 @@ describe("row zero says what the process is running on (14b)", () => {
     probeAim("see.enter", {});
     expect(seen).toEqual([true]);
     expect(settings.excludeNetwork).toBe(before);
+  });
+
+  it("does not ask for the report on a runtime that cannot skip the socket names", async () => {
+    // PR 側 codex on #621: `excludeNetwork` is missing on Node 20.0–20.12, which the package still
+    // admits, and setting it there only makes an ignored property — the lookups would run anyway.
+    // Not asking keeps the run being measured unslowed, and the row says why it has no list.
+    const { addonFilesFromReport } = await probeOn(["uiaGetElements"]);
+    const older = { getReport: vi.fn(() => ({ sharedObjects: [] })) };
+    expect(addonFilesFromReport(older)).toEqual({
+      addonFilesFrom: "process.report.sharedObjects",
+      addonFiles: null,
+      addonFilesError: expect.stringContaining("excludeNetwork"),
+    });
+    expect(older.getReport).not.toHaveBeenCalled();
+
+    // The pair: a runtime that has the setting is asked, and gets its setting back.
+    const current = { getReport: vi.fn(() => ({ sharedObjects: [] })), excludeNetwork: false };
+    expect(addonFilesFromReport(current)).toEqual({ addonFilesFrom: "process.report.sharedObjects", addonFiles: [] });
+    expect(current.getReport).toHaveBeenCalledOnce();
+    expect(current.excludeNetwork).toBe(false);
+  });
+
+  it("takes the size from the bytes it hashed, and says when the file moved under the read", async () => {
+    // PR 側 codex on #621, the CodeQL race one layer down: a single descriptor does not freeze a file
+    // rewritten in place, so a stat's size beside a hash of later bytes could still describe two
+    // states of one file.
+    const node = join(dir, "moving.node");
+    const bytes = Buffer.from("the bytes that were actually hashed");
+    writeFileSync(node, bytes);
+    vi.doMock("node:fs", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs")>();
+      let looks = 0;
+      return {
+        ...actual,
+        // The second look at the descriptor sees a different file — what a rewrite in place between
+        // the two would show.
+        fstatSync: (fd: number) => {
+          const st = actual.fstatSync(fd);
+          return ++looks === 1 ? st : { ...st, size: st.size + 7, mtimeMs: st.mtimeMs + 1000 };
+        },
+      };
+    });
+    vi.spyOn(process.report, "getReport").mockReturnValue({ sharedObjects: [node] } as never);
+    const { probeAim } = await probeOn(["uiaGetElements"]);
+    probeAim("see.enter", {});
+    expect(rows()[0]!.addonFiles).toEqual([{
+      path: node,
+      bytes: bytes.length,
+      mtimeMs: expect.any(Number),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      changedWhileRead: true,
+    }]);
   });
 
   it("still writes the header, and the rows after it, when the process cannot say what it loaded", async () => {

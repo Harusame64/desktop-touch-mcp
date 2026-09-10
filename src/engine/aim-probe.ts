@@ -262,23 +262,48 @@ function runHeader(): Record<string, unknown> {
  * is what settles it.
  */
 function loadedAddonFiles(): Record<string, unknown> {
+  return addonFilesFromReport(process.report);
+}
+
+/** The two members of `process.report` this reads — a parameter, so a cell can hand it an older runtime's. */
+export interface ReportSource {
+  getReport(): unknown;
+  excludeNetwork?: boolean;
+}
+
+/**
+ * By default the report resolves every open socket's address to a host name, synchronously, on the
+ * event loop — and this runs inside the first seam of a measured run. A connection with no
+ * reverse-DNS entry would stall the run being measured until the lookup timed out (gate 2 on #621:
+ * 19.0 ms against 8.7 ms on a loopback connection alone). The list this needs is not network
+ * information, so the lookups are switched off for the one call and the setting put back.
+ *
+ * A runtime that cannot switch them off is not asked at all. `excludeNetwork` is missing on Node
+ * 20.0–20.12, which `engines` still admits (`>=20.0.0`), and setting it there only makes an ignored
+ * property (PR 側 codex on #621). The row then says why it has no file list, rather than slowing the
+ * run to get one.
+ */
+export function addonFilesFromReport(report: ReportSource): Record<string, unknown> {
   const addonFilesFrom = "process.report.sharedObjects";
+  if (!("excludeNetwork" in report)) {
+    return {
+      addonFilesFrom,
+      addonFiles: null,
+      addonFilesError:
+        `not requested: this runtime (${process.version}) has no process.report.excludeNetwork, and the ` +
+        `report would resolve a host name for every open socket inside the run being measured`,
+    };
+  }
   try {
-    // By default the report resolves every open socket's address to a host name, synchronously, on
-    // the event loop — and this runs inside the first seam of a measured run. A connection with no
-    // reverse-DNS entry would stall the run being measured until the lookup timed out (gate 2 on
-    // #621: 19.0 ms against 8.7 ms on a loopback connection alone). The list this needs is not
-    // network information, so the lookups are switched off for the one call and the setting put back.
-    const settings = process.report as typeof process.report & { excludeNetwork?: boolean };
-    const previous = settings.excludeNetwork;
-    settings.excludeNetwork = true;
-    let report: { sharedObjects?: unknown };
+    const previous = report.excludeNetwork;
+    report.excludeNetwork = true;
+    let got: { sharedObjects?: unknown };
     try {
-      report = process.report.getReport() as { sharedObjects?: unknown };
+      got = report.getReport() as { sharedObjects?: unknown };
     } finally {
-      settings.excludeNetwork = previous;
+      report.excludeNetwork = previous;
     }
-    const shared = report.sharedObjects;
+    const shared = got.sharedObjects;
     if (!Array.isArray(shared)) {
       return { addonFilesFrom, addonFiles: null, addonFilesError: "the report carries no sharedObjects list" };
     }
@@ -294,17 +319,27 @@ function loadedAddonFiles(): Record<string, unknown> {
 /**
  * A listed file this cannot read is named with the failure, not dropped from the list.
  *
- * One descriptor for all three readings. A `stat` of the path and a later read of the path can
- * describe two different files if the addon is replaced in between (CodeQL, on #621), and the size
- * and the hash in one row have to be about one file — the header exists because two notes about
- * "the same" build turned out to be about two.
+ * One descriptor, and the size taken from the bytes that were hashed. A `stat` of the path and a
+ * later read of the path can describe two different files if the addon is replaced in between
+ * (CodeQL, on #621) — and one descriptor still does not freeze a file rewritten in place, so a
+ * stat's size beside a hash of later bytes could describe two states of one file (PR 側 codex on
+ * #621). The descriptor is looked at before and after the read, and a file that moved between the
+ * two says so. The header exists because two notes about "the same" build turned out to be about two.
  */
 function fileIdentity(path: string): Record<string, unknown> {
   let fd: number | undefined;
   try {
     fd = openSync(path, "r");
-    const st = fstatSync(fd);
-    return { path, bytes: st.size, mtimeMs: st.mtimeMs, sha256: createHash("sha256").update(readFileSync(fd)).digest("hex") };
+    const before = fstatSync(fd);
+    const content = readFileSync(fd);
+    const after = fstatSync(fd);
+    return {
+      path,
+      bytes: content.length,
+      mtimeMs: after.mtimeMs,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      ...((before.size !== after.size || before.mtimeMs !== after.mtimeMs) && { changedWhileRead: true }),
+    };
   } catch (err) {
     return { path, error: messageOf(err) };
   } finally {
