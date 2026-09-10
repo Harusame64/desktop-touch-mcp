@@ -81,6 +81,49 @@ describe("a title-only discover still gets the coordinate ladder", () => {
     const d = deps();
     await createDesktopExecutor(titleOnly, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click");
     expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
+    // The coordinate alone cannot tell "the ladder ran and declined" from "the ladder never ran" —
+    // both press the remembered point, and this cell stayed green under a full reversion of the
+    // item (gate 2, 2026-09-10). That distinction is the file's whole subject, so the cell has to
+    // read the rectangle the ladder went and fetched.
+    expect(d.aimRect).toHaveBeenCalledWith(OBSERVED);
+  });
+
+  it("does not move the point by a delta measured in another window", async () => {
+    // Gate 2 (2026-09-10), reproduced by construction. The rectangle in `aim.origin` was measured
+    // around the window `toAim` resolved; the rectangle the ladder compares it against is now read
+    // from the ENTITY's handle. An `Aim` carrying an origin but no handle makes those two different
+    // windows, and the correction then moves the point by a delta nothing here has a reason for —
+    // 100 px in each direction below, silently. Production never records such an aim, but the
+    // invariant that stops it lives in `compose-providers.ts`, and a ladder that presses
+    // coordinates must not depend on a caller it does not control.
+    const originWithoutHandle: Aim = {
+      kind: "aim", title: "Notepad",
+      origin: { kind: "measured", rect: { x: 0, y: 0, width: 1000, height: 1000 } },
+    };
+    const d = deps({ aimRect: vi.fn(async () => ({ x: 100, y: 100, width: 1000, height: 1000 })) });
+    await createDesktopExecutor(originWithoutHandle, d)(entity({ kind: "window", id: "Notepad", hwnd: "4919" }), "click");
+    expect(d.mouseClick).toHaveBeenCalledWith(140, 215);   // not (240, 315)
+  });
+
+  it("checks the UIA downgrade against that window too, not only the mouse road", async () => {
+    // Gate 2 (2026-09-10): the ladder was given `coordHwnd` at one of the two coordinate presses in
+    // this closure. When UIA fails and the call downgrades to the mouse, the point came from the
+    // same entity and went out unchecked — with a `設定` window over it, `mouseClick` was issued and
+    // `pointOwner` was never asked. Merged uia+ocr entities are the ladder's real traffic, so this
+    // was the road that mattered.
+    const pointOwner = vi.fn(() => ({ kind: "other" as const, hwnd: STRANGER, title: "設定" }));
+    const d = deps({
+      uiaClick: vi.fn(async () => { throw new Error("Element not found"); }),
+      pointOwner,
+    });
+    const uiaEntity = {
+      ...entity({ kind: "window", id: "Notepad", hwnd: "4919" }),
+      sources: ["uia", "ocr"],
+      affordances: [{ verb: "click" as const, executors: ["uia" as const, "mouse" as const], confidence: 0.9, preconditions: [], postconditions: [] }],
+    };
+    await expect(createDesktopExecutor(titleOnly, d)(uiaEntity, "click")).rejects.toThrow(/設定/);
+    expect(pointOwner).toHaveBeenCalledWith(OBSERVED, 140, 215);
+    expect(d.mouseClick).not.toHaveBeenCalled();
   });
 });
 
