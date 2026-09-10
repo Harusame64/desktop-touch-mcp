@@ -129,6 +129,6 @@ export async function fetchTerminalCandidates(
     return probeLane("terminal", "read", { ...asked, bufferRead: Boolean(raw) }, { candidates, warnings });
   } catch (err) {
     console.error(`[terminal-provider] Error for "${windowTitle}":`, err);
-    return probeLane("terminal", "failed", asked, { candidates: [], warnings: ["terminal_provider_failed"] });
+    return probeLane("terminal", "failed", { ...asked, why: "threw" }, { candidates: [], warnings: ["terminal_provider_failed"] });
   }
 }

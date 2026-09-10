@@ -376,6 +376,9 @@ async function resolvePressPoint(
         alive: false,
         refused: "aim_window_gone",
         label,
+        // ADR-036 item 14c — named like every other refusal row, so "the rung that refused" is one
+        // field in every record (win, 2026-09-11: this row, the oldest, was the one without it).
+        rung: "window_gone",
       });
       throw new AimedWindowGoneError(aimHwnd, `no rectangle for it`, because,
         `${theWindow.charAt(0).toUpperCase()}${theWindow.slice(1)}`);
@@ -722,6 +725,36 @@ function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity
  */
 function probeRefusal(rung: string, refused: string, aimHwnd: bigint | undefined, entity: UiEntity): void {
   probeRoute("refusal", aimHwnd, entity, { rung, refused });
+}
+
+/**
+ * ADR-036 item 14c — the two ADR-029 refusals, by the names `guarded-touch.ts` matches them on.
+ *
+ * They are thrown below the routes, by the reachability check and by the cursor itself, so they
+ * reached the caller as refusals and left the record with no row that said so (win, 2026-09-11,
+ * counting every typed throw the executor can let out).
+ */
+function adr029Refusal(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  if (err.name === "CoordinateOutsideReachableBounds") return "coordinate_outside_reachable_bounds";
+  if (err.name === "CursorPlacementBlocked") return "cursor_placement_blocked";
+  return undefined;
+}
+
+/** Run one step; if it throws an ADR-029 refusal, write that refusal's row before letting it go. */
+async function probedStep<T>(
+  rung: string,
+  aimHwnd: bigint | undefined,
+  entity: UiEntity,
+  step: () => T | Promise<T>,
+): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    const refused = adr029Refusal(err);
+    if (refused !== undefined) probeRefusal(rung, refused, aimHwnd, entity);
+    throw err;
+  }
 }
 
 /**
@@ -1135,7 +1168,7 @@ export function createDesktopExecutor(
         // reaches every monitor too since Phase 2a, but the point still has to
         // BE on one — a stale rect that now sits off-screen is refused here
         // rather than clicked somewhere else.
-        assertCoordinateReachable(x, y);
+        await probedStep("reachable_bounds", undefined, entity, () => assertCoordinateReachable(x, y));
         // ADR-036 probe — the downgrade press. Recorded so the two mouse roads can be told apart in
         // the log. `aimHwnd` is always null here: the pinned case threw four branches up, so this
         // road is unreachable with an aim — but `coordHwnd` is not, and a row where it is set is
@@ -1147,7 +1180,7 @@ export function createDesktopExecutor(
           coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
           coordHwndFrom: coordHwnd !== undefined ? "entity_origin" : null,
         });
-        await d.mouseClick(x, y);
+        await probedStep("mouse_press", undefined, entity, () => d.mouseClick(x, y));
         // Issue #327 item C: signal the silent downgrade so the LLM sees
         // `executor: "mouse"` AND `downgrade: { from: "uia", reason: ... }`
         // — without the marker the dogfood envelope cannot distinguish
@@ -1168,7 +1201,7 @@ export function createDesktopExecutor(
         probeRoute("cdp", aimHwnd, entity, { why: "cdp_fill", tabId: cdpTabId ?? null });
         return "cdp";
       }
-      await d.cdpClick(cdpSelector, cdpTabId);
+      await probedStep("cdp_click", aimHwnd, entity, () => d.cdpClick(cdpSelector, cdpTabId));
       probeRoute("cdp", aimHwnd, entity, { why: "cdp_click", tabId: cdpTabId ?? null });
       return "cdp";
     }
@@ -1294,7 +1327,7 @@ export function createDesktopExecutor(
     // unplugged leaves the REMEMBERED point on no screen at all, and refusing there would report an
     // unreachable coordinate about a window the correction had just followed to a perfectly
     // reachable one (gate 2, 2026-09-09).
-    assertCoordinateReachable(x, y);
+    await probedStep("reachable_bounds", aimHwnd, entity, () => assertCoordinateReachable(x, y));
     // ADR-036 probe — the press this ADR is about: a coordinate taken from a rect remembered at
     // discover time. Both points are written: `point` is where it went, `remembered` is where the
     // snapshot said it was, and a row where they differ is the homing correction doing its work.
@@ -1308,7 +1341,7 @@ export function createDesktopExecutor(
       coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
       coordHwndFrom: aimHwnd !== undefined ? "aim" : coordHwnd !== undefined ? "entity_origin" : null,
     });
-    await d.mouseClick(x, y);
+    await probedStep("mouse_press", aimHwnd, entity, () => d.mouseClick(x, y));
     return "mouse";
   };
 }

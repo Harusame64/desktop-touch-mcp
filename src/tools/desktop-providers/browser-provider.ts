@@ -121,6 +121,6 @@ export async function fetchBrowserCandidates(
     return probeLane("cdp", "read", { tabId, elementCount: elements.length }, { candidates, warnings });
   } catch (err) {
     console.error(`[browser-provider] CDP error for tab "${tabId}":`, err);
-    return probeLane("cdp", "failed", { tabId }, { candidates: [], warnings: ["cdp_provider_failed"] });
+    return probeLane("cdp", "failed", { tabId, why: "threw" }, { candidates: [], warnings: ["cdp_provider_failed"] });
   }
 }

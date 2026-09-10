@@ -57,7 +57,7 @@ async function fetchVisualCandidatesWithRetry(
   if (!isTransient) return first;
 
   await new Promise<void>((resolve) => setTimeout(resolve, VISUAL_RETRY_DELAY_MS));
-  return fetchVisualCandidates(target);
+  return fetchVisualCandidates(target, 2);
 }
 
 /**

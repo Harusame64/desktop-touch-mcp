@@ -11,11 +11,12 @@
  *     addon measured the enumeration road while its source had the OS hit test, and only
  *     `pointOwner.via` noticed.
  *   - 14c — seven rungs refuse, five of them with one class and one published reason, and the rows
- *     could not say which of them had (win2, 2026-09-11 — a reading of the code, measured next).
+ *     could not say which of them had (win2, 2026-09-11 — measured on `main`: zero rows).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Aim, WindowIdentity, WindowRect } from "../../src/engine/aim.js";
@@ -25,7 +26,9 @@ import type { UiEntity } from "../../src/engine/world-graph/types.js";
 /** Every module a cell below replaces, unmocked after each cell so none leaks into the next. */
 const MOCKED = [
   "node:fs",
+  "node:module",
   "../../src/engine/native-engine.js",
+  "../../src/engine/reachable-bounds.js",
   "../../src/engine/uia-bridge.js",
   "../../src/engine/ocr-bridge.js",
   "../../src/engine/vision-gpu/ocr-adapter-registry.js",
@@ -111,67 +114,48 @@ describe("row zero says what the process is running on (14b)", () => {
     expect(header.boundExports).toBeNull();
   });
 
-  it("identifies each .node the process has loaded, from the process's own list", async () => {
+  it("identifies each .node in the loader's registry, and only those", async () => {
     const node = join(dir, "desktop-touch-engine.win32-x64-msvc.node");
     const bytes = Buffer.from("not an addon, only a file whose hash is known");
     writeFileSync(node, bytes);
-    vi.spyOn(process.report, "getReport").mockReturnValue(
-      { sharedObjects: ["/usr/lib/libc.so.6", node, "C:\\Windows\\System32\\user32.dll"] } as never,
-    );
-    const { probeAim } = await probeOn(["uiaGetElements"]);
-    probeAim("see.enter", {});
-    const header = rows()[0]!;
-    expect(header.addonFilesFrom).toBe("process.report.sharedObjects");
-    expect(header.addonFiles).toEqual([{
-      path: node,
-      bytes: bytes.length,
-      mtimeMs: expect.any(Number),
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-    }]);
+    const { addonFilesFromLoader } = await probeOn(["uiaGetElements"]);
+    expect(addonFilesFromLoader({ [node]: {}, [join(dir, "index.js")]: {} })).toEqual({
+      addonFilesFrom: "require.cache",
+      addonFiles: [{
+        path: node,
+        bytes: bytes.length,
+        mtimeMs: expect.any(Number),
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      }],
+    });
+  });
+
+  it("reads the process's own registry, where any createRequire files what it loaded", async () => {
+    // The wiring. `index.js` loads the addon through its own `createRequire`, and every
+    // `createRequire` shares one registry — so a `.node` filed there by another module is in row zero.
+    const node = join(dir, "filed-by-another-module.node");
+    const bytes = Buffer.from("filed by another createRequire");
+    writeFileSync(node, bytes);
+    const cache = createRequire(import.meta.url).cache;
+    cache[node] = {} as never;
+    try {
+      const { probeAim } = await probeOn(["uiaGetElements"]);
+      probeAim("see.enter", {});
+      const header = rows()[0]!;
+      expect(header.addonFilesFrom).toBe("require.cache");
+      expect(header.addonFiles).toContainEqual(expect.objectContaining({
+        path: node,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      }));
+    } finally {
+      delete cache[node];
+    }
   });
 
   it("names a listed file it could not read, rather than dropping it from the list", async () => {
     const vanished = join(dir, "vanished.node");
-    vi.spyOn(process.report, "getReport").mockReturnValue({ sharedObjects: [vanished] } as never);
-    const { probeAim } = await probeOn(["uiaGetElements"]);
-    probeAim("see.enter", {});
-    expect(rows()[0]!.addonFiles).toEqual([{ path: vanished, error: expect.any(String) }]);
-  });
-
-  it("asks for the report without resolving socket names, and puts the setting back", async () => {
-    // Gate 2 on #621: the report looks up a host name for every open socket by default, on the
-    // event loop, inside the first seam of the run being measured.
-    const settings = process.report as typeof process.report & { excludeNetwork?: boolean };
-    const before = settings.excludeNetwork;
-    const seen: unknown[] = [];
-    vi.spyOn(process.report, "getReport").mockImplementation(() => {
-      seen.push(settings.excludeNetwork);
-      return { sharedObjects: [] } as never;
-    });
-    const { probeAim } = await probeOn(["uiaGetElements"]);
-    probeAim("see.enter", {});
-    expect(seen).toEqual([true]);
-    expect(settings.excludeNetwork).toBe(before);
-  });
-
-  it("does not ask for the report on a runtime that cannot skip the socket names", async () => {
-    // PR 側 codex on #621: `excludeNetwork` is missing on Node 20.0–20.12, which the package still
-    // admits, and setting it there only makes an ignored property — the lookups would run anyway.
-    // Not asking keeps the run being measured unslowed, and the row says why it has no list.
-    const { addonFilesFromReport } = await probeOn(["uiaGetElements"]);
-    const older = { getReport: vi.fn(() => ({ sharedObjects: [] })) };
-    expect(addonFilesFromReport(older)).toEqual({
-      addonFilesFrom: "process.report.sharedObjects",
-      addonFiles: null,
-      addonFilesError: expect.stringContaining("excludeNetwork"),
-    });
-    expect(older.getReport).not.toHaveBeenCalled();
-
-    // The pair: a runtime that has the setting is asked, and gets its setting back.
-    const current = { getReport: vi.fn(() => ({ sharedObjects: [] })), excludeNetwork: false };
-    expect(addonFilesFromReport(current)).toEqual({ addonFilesFrom: "process.report.sharedObjects", addonFiles: [] });
-    expect(current.getReport).toHaveBeenCalledOnce();
-    expect(current.excludeNetwork).toBe(false);
+    const { addonFilesFromLoader } = await probeOn(["uiaGetElements"]);
+    expect(addonFilesFromLoader({ [vanished]: {} }).addonFiles).toEqual([{ path: vanished, error: expect.any(String) }]);
   });
 
   it("takes the size from the bytes it hashed, and says when the file moved under the read", async () => {
@@ -194,10 +178,8 @@ describe("row zero says what the process is running on (14b)", () => {
         },
       };
     });
-    vi.spyOn(process.report, "getReport").mockReturnValue({ sharedObjects: [node] } as never);
-    const { probeAim } = await probeOn(["uiaGetElements"]);
-    probeAim("see.enter", {});
-    expect(rows()[0]!.addonFiles).toEqual([{
+    const { addonFilesFromLoader } = await probeOn(["uiaGetElements"]);
+    expect(addonFilesFromLoader({ [node]: {} }).addonFiles).toEqual([{
       path: node,
       bytes: bytes.length,
       mtimeMs: expect.any(Number),
@@ -206,14 +188,27 @@ describe("row zero says what the process is running on (14b)", () => {
     }]);
   });
 
-  it("still writes the header, and the rows after it, when the process cannot say what it loaded", async () => {
-    vi.spyOn(process.report, "getReport").mockImplementation(() => {
-      throw new Error("report unavailable");
+  it("records a registry it cannot enumerate as the failure", async () => {
+    const { addonFilesFromLoader } = await probeOn(["uiaGetElements"]);
+    const unreadable = new Proxy({}, {
+      ownKeys: () => {
+        throw new Error("cannot list");
+      },
     });
+    expect(addonFilesFromLoader(unreadable)).toEqual({ addonFilesFrom: "require.cache", addonFiles: null, addonFilesError: "cannot list" });
+  });
+
+  it("still writes the header, and the rows after it, when the loader cannot be asked", async () => {
+    vi.doMock("node:module", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("node:module")>()),
+      createRequire: () => {
+        throw new Error("loader unavailable");
+      },
+    }));
     const { probeAim } = await probeOn(["uiaGetElements"]);
     probeAim("see.enter", { key: "window:1" });
     const [header, first] = rows();
-    expect(header).toMatchObject({ seq: 0, seam: "probe.start", addonFiles: null, addonFilesError: "report unavailable" });
+    expect(header).toMatchObject({ seq: 0, seam: "probe.start", addonFiles: null, addonFilesError: "loader unavailable" });
     expect(first).toMatchObject({ seq: 1, seam: "see.enter", key: "window:1" });
   });
 });
@@ -236,7 +231,7 @@ describe("every lane says what it did with the read (14a)", () => {
       expect(readFileSync(logPath, "utf8")).not.toContain("hunter2-in-the-buffer");
     });
 
-    it("tells an empty buffer from a read that failed", async () => {
+    it("tells an empty buffer from a read that failed, and says why it failed", async () => {
       const empty = await terminalReading(async () => null);
       await empty({ windowTitle: "Windows PowerShell" });
       vi.resetModules();
@@ -246,7 +241,8 @@ describe("every lane says what it did with the read (14a)", () => {
       await failing({ windowTitle: "Windows PowerShell" });
       const [a, b] = laneRows("terminal");
       expect(a).toMatchObject({ outcome: "read", bufferRead: false, warnings: ["terminal_buffer_empty"] });
-      expect(b).toMatchObject({ outcome: "failed", warnings: ["terminal_provider_failed"] });
+      // win2's P2 round: a lane that failed in its own catch wrote `failed` with no `why`.
+      expect(b).toMatchObject({ outcome: "failed", why: "threw", warnings: ["terminal_provider_failed"] });
     });
 
     it("says it did not look when there was no window to read", async () => {
@@ -288,7 +284,7 @@ describe("every lane says what it did with the read (14a)", () => {
       await failing({ windowTitle: "Blind" });
       const [a, b] = laneRows("ocr");
       expect(a).toMatchObject({ outcome: "read", elementCount: 0, warnings: ["ocr_attempted_empty"] });
-      expect(b).toMatchObject({ outcome: "failed", warnings: ["ocr_provider_failed"] });
+      expect(b).toMatchObject({ outcome: "failed", why: "threw", warnings: ["ocr_provider_failed"] });
     });
   });
 
@@ -317,7 +313,14 @@ describe("every lane says what it did with the read (14a)", () => {
       vi.resetModules();
       const notAList = await cdpAnswering(async () => ({ error: "Target closed" }));
       await notAList({ tabId: "T1" });
-      expect(laneRows("cdp").map((r) => [r.outcome, r.why])).toEqual([["skipped", "no_tab"], ["failed", "not_an_array"]]);
+      vi.resetModules();
+      const throwing = await cdpAnswering(async () => {
+        throw new Error("CDP unavailable");
+      });
+      await throwing({ tabId: "T1" });
+      expect(laneRows("cdp").map((r) => [r.outcome, r.why])).toEqual([
+        ["skipped", "no_tab"], ["failed", "not_an_array"], ["failed", "threw"],
+      ]);
     });
   });
 
@@ -342,8 +345,8 @@ describe("every lane says what it did with the read (14a)", () => {
       process.env.DESKTOP_TOUCH_DISABLE_VISUAL_GPU = "1";
       const off = await visualWith({ isAvailable: () => true });
       await off({ windowTitle: "W" });
-      expect(laneRows("visual_gpu").map((r) => [r.outcome, r.why])).toEqual([
-        ["skipped", "no_backend"], ["skipped", "warming"], ["skipped", "disabled_by_env"],
+      expect(laneRows("visual_gpu").map((r) => [r.outcome, r.why, r.attempt])).toEqual([
+        ["skipped", "no_backend", 1], ["skipped", "warming", 1], ["skipped", "disabled_by_env", 1],
       ]);
     });
 
@@ -392,6 +395,38 @@ describe("every lane says what it did with the read (14a)", () => {
         candidateCount: 1, warnings: [],
       });
     });
+
+    it("counts the retry as the second attempt of one discover", async () => {
+      // win2's P2 round: a transient first answer makes compose call the lane twice, and the two
+      // rows read like two discovers.
+      let calls = 0;
+      vi.doMock("../../src/engine/vision-gpu/runtime.js", () => ({
+        getVisualRuntime: () => ({
+          isAvailable: () => true,
+          ensureWarm: async () => (++calls === 1 ? "warming" : "warm"),
+          getStableCandidates: async () => [],
+          recognitionCapability: () => "recognises",
+        }),
+        targetKeyToWarmTarget: (key: string) => key,
+      }));
+      vi.doMock("../../src/tools/desktop-providers/uia-provider.js", () => ({
+        fetchUiaCandidates: vi.fn(async () => ({ candidates: [], warnings: [] })),
+      }));
+      vi.doMock("../../src/tools/desktop-providers/ocr-provider.js", () => ({
+        fetchOcrCandidates: vi.fn(async () => ({ candidates: [], warnings: [] })),
+      }));
+      vi.doMock("../../src/tools/desktop-providers/browser-provider.js", () => ({ fetchBrowserCandidates: vi.fn() }));
+      vi.doMock("../../src/tools/desktop-providers/terminal-provider.js", () => ({ fetchTerminalCandidates: vi.fn() }));
+      vi.doMock("../../src/engine/uia-bridge.js", () => ({
+        getUiElements: vi.fn().mockResolvedValue({ elements: [], elementCount: 0, windowRect: null }),
+        detectUiaBlind: vi.fn().mockReturnValue({ blind: false }),
+      }));
+      const { composeCandidates } = await import("../../src/tools/desktop-providers/compose-providers.js");
+      await composeCandidates({ windowTitle: "Outlook (PWA)" });
+      expect(laneRows("visual_gpu").map((r) => [r.attempt, r.outcome, r.why])).toEqual([
+        [1, "skipped", "warming"], [2, "read", undefined],
+      ]);
+    });
   });
 
   describe("uia", () => {
@@ -431,7 +466,7 @@ describe("every lane says what it did with the read (14a)", () => {
       });
       await fetch({ windowTitle: "Dialog", hwnd: "4919" });
       expect(laneRows("uia")).toEqual([expect.objectContaining({
-        outcome: "failed", windowTitle: "Dialog", scoped: true, pinnedHwnd: "4919", warnings: ["uia_provider_failed"],
+        outcome: "failed", why: "threw", windowTitle: "Dialog", scoped: true, pinnedHwnd: "4919", warnings: ["uia_provider_failed"],
       })]);
     });
   });
@@ -508,6 +543,8 @@ describe("a refusal says which rung made it (14c)", () => {
 
   const stranger = () => ({ kind: "other" as const, hwnd: 777n, title: "設定", via: "os_hit_test" as const });
   const fromTheDropdown = () => entity({ origin: { kind: "window", id: "CELL BUTTONS", hwnd: "888" } });
+  /** A typed refusal as `guarded-touch.ts` recognises it: by name. */
+  const named = (name: string) => Object.assign(new Error(name), { name });
 
   /** What the envelope calls a refusal — asked of the real loop, not of a table kept in this file. */
   async function publishedReason(err: unknown): Promise<string | undefined> {
@@ -563,6 +600,16 @@ describe("a refusal says which rung made it (14c)", () => {
     });
   }
 
+  it("names the rung on the window-gone row too, the oldest of them", async () => {
+    // win, 2026-09-11: `aim_check` came from #620 and was the one refusal row with no `rung`.
+    const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+    const d = deps({ aimRect: vi.fn(async () => null), aimIsGone: vi.fn(async () => true) });
+    const thrown = await createDesktopExecutor(aimed, d)(entity(), "click").then(() => undefined, (e: unknown) => e);
+    const row = rows().find((r) => r.route === "aim_check");
+    expect(row).toMatchObject({ rung: "window_gone", refused: "aim_window_gone" });
+    expect(row!.refused).toBe(await publishedReason(thrown));
+  });
+
   it("writes no refusal row for a press that went through", async () => {
     // The pair that makes the cells above mean something: the same ladder, one press allowed.
     const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
@@ -570,6 +617,48 @@ describe("a refusal says which rung made it (14c)", () => {
     await createDesktopExecutor(aimed, d)(entity(), "click");
     expect(d.mouseClick).toHaveBeenCalledWith(458, 144);
     expect(refusals()).toEqual([]);
+  });
+
+  describe("the ADR-029 refusals, thrown below the routes", () => {
+    it("records a point no monitor holds, on the coordinate road", async () => {
+      vi.doMock("../../src/engine/reachable-bounds.js", async (importOriginal) => ({
+        ...(await importOriginal<typeof import("../../src/engine/reachable-bounds.js")>()),
+        assertCoordinateReachable: () => {
+          throw named("CoordinateOutsideReachableBounds");
+        },
+      }));
+      const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+      const d = deps();
+      const thrown = await createDesktopExecutor(aimed, d)(entity(), "click").then(() => undefined, (e: unknown) => e);
+      expect(d.mouseClick).not.toHaveBeenCalled();
+      expect(refusals()).toEqual([expect.objectContaining({ rung: "reachable_bounds", refused: "coordinate_outside_reachable_bounds" })]);
+      expect(refusals()[0]!.refused).toBe(await publishedReason(thrown));
+    });
+
+    it("records a cursor that could not be placed, after the press row that tried", async () => {
+      const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+      const d = deps({ mouseClick: vi.fn(async () => { throw named("CursorPlacementBlocked"); }) });
+      const thrown = await createDesktopExecutor(aimed, d)(entity(), "click").then(() => undefined, (e: unknown) => e);
+      const routes = rows().filter((r) => r.seam === "act.route").map((r) => r.route);
+      expect(routes.slice(-2)).toEqual(["mouse", "refusal"]);
+      expect(refusals()).toEqual([expect.objectContaining({ rung: "mouse_press", refused: "cursor_placement_blocked" })]);
+      expect(refusals()[0]!.refused).toBe(await publishedReason(thrown));
+    });
+
+    it("records the CDP route's refusal of a point no monitor holds", async () => {
+      const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+      const page: UiEntity = {
+        entityId: "c1", role: "button", label: "Go", confidence: 1, sources: ["cdp"],
+        locator: { cdp: { selector: "#go", tabId: "T1" } },
+        affordances: [{ verb: "click", executors: ["cdp"], confidence: 1, preconditions: [], postconditions: [] }],
+        generation: "gen-1", evidenceDigest: "d", rect: { x: 1, y: 2, width: 3, height: 4 },
+      };
+      const d = deps({ cdpClick: vi.fn(async () => { throw named("CoordinateOutsideReachableBounds"); }) });
+      const aim = { kind: "aim", title: "Page", tabId: "T1" } as Aim;
+      const thrown = await createDesktopExecutor(aim, d)(page, "click").then(() => undefined, (e: unknown) => e);
+      expect(refusals()).toEqual([expect.objectContaining({ rung: "cdp_click", refused: "coordinate_outside_reachable_bounds" })]);
+      expect(refusals()[0]!.refused).toBe(await publishedReason(thrown));
+    });
   });
 
   describe("on the UIA route", () => {

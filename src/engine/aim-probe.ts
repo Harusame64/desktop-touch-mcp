@@ -29,6 +29,7 @@
 
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -225,9 +226,10 @@ export function probeLane<R extends { candidates: readonly unknown[]; warnings: 
  *
  * Two readings, from two places, so that they can disagree:
  *   - `boundExports` — what the binding this module imported actually exposes, by name.
- *   - `addonFiles` — which `.node` files the PROCESS has mapped, asked of the process itself, each
- *     with its size, mtime and sha256. Not recomputed from `index.js`'s candidate list: a second
- *     lookup names the file that SHOULD have loaded, which is the note this replaces.
+ *   - `addonFiles` — which `.node` files the process's module loader has loaded, from its own
+ *     registry, each with its sha256, the size of the bytes hashed and its mtime. Not recomputed from
+ *     `index.js`'s candidate list: a second lookup names the file that SHOULD have loaded, which is
+ *     the note this replaces.
  *
  * Every field is total. A reading that fails is recorded as the failure, and the header never throws
  * into the row it precedes.
@@ -254,61 +256,40 @@ function runHeader(): Record<string, unknown> {
 }
 
 /**
- * The `.node` files mapped into this process, as the process reports them.
+ * The `.node` files this process's module loader has loaded, from the loader's own registry.
  *
- * ASSUMED: that `process.report`'s `sharedObjects` lists a loaded `.node` on Windows — it is Node's
- * own list of loaded libraries, and no machine has shown it for this addon yet. An empty list beside
- * a non-null `boundExports` is the answer that says it does not, and the first round on this build
- * is what settles it.
+ * `require.cache` is where Node's CommonJS loader files every module it has loaded, and `index.js`
+ * loads the addon through `createRequire` — so the addon is filed there under the path it was
+ * actually loaded from, whichever of `index.js`'s candidates that turned out to be. The registry is
+ * one object shared by every `createRequire`, so this module's view of it is the whole process's.
+ *
+ * It replaced `process.report`'s `sharedObjects`, which a real-machine round had just shown to be
+ * right on Windows (win2, 2026-09-11, `dev/probe-rows-621/`). The reason was cost, not correctness:
+ * the report looks up a host name for every open socket, synchronously, inside the first seam of the
+ * run being measured, and the switch that stops it is missing before Node 20.13 and did not reach
+ * the libuv section until 22.12 (nodejs/node#55602) — both inside `engines` (win, 2026-09-11).
+ * Reading an object asks nobody.
+ *
+ * ASSUMED on Windows: that the path the loader files is the one Get-FileHash would be pointed at.
+ * The round on this commit settles it, with the 2026-08-29 and 2026-09-10 addons as the pair.
  */
 function loadedAddonFiles(): Record<string, unknown> {
-  return addonFilesFromReport(process.report);
-}
-
-/** The two members of `process.report` this reads — a parameter, so a cell can hand it an older runtime's. */
-export interface ReportSource {
-  getReport(): unknown;
-  excludeNetwork?: boolean;
+  try {
+    return addonFilesFromLoader(createRequire(import.meta.url).cache);
+  } catch (err) {
+    return { addonFilesFrom: "require.cache", addonFiles: null, addonFilesError: messageOf(err) };
+  }
 }
 
 /**
- * By default the report resolves every open socket's address to a host name, synchronously, on the
- * event loop — and this runs inside the first seam of a measured run. A connection with no
- * reverse-DNS entry would stall the run being measured until the lookup timed out (gate 2 on #621:
- * 19.0 ms against 8.7 ms on a loopback connection alone). The list this needs is not network
- * information, so the lookups are switched off for the one call and the setting put back.
- *
- * A runtime that cannot switch them off is not asked at all. `excludeNetwork` is missing on Node
- * 20.0–20.12, which `engines` still admits (`>=20.0.0`), and setting it there only makes an ignored
- * property (PR 側 codex on #621). The row then says why it has no file list, rather than slowing the
- * run to get one.
+ * The file list, from any registry shaped like `require.cache` — a parameter, so a cell can hand it
+ * one. Every failure is recorded as the failure; nothing here throws into the row it feeds.
  */
-export function addonFilesFromReport(report: ReportSource): Record<string, unknown> {
-  const addonFilesFrom = "process.report.sharedObjects";
-  if (!("excludeNetwork" in report)) {
-    return {
-      addonFilesFrom,
-      addonFiles: null,
-      addonFilesError:
-        `not requested: this runtime (${process.version}) has no process.report.excludeNetwork, and the ` +
-        `report would resolve a host name for every open socket inside the run being measured`,
-    };
-  }
+export function addonFilesFromLoader(cache: Record<string, unknown>): Record<string, unknown> {
+  const addonFilesFrom = "require.cache";
   try {
-    const previous = report.excludeNetwork;
-    report.excludeNetwork = true;
-    let got: { sharedObjects?: unknown };
-    try {
-      got = report.getReport() as { sharedObjects?: unknown };
-    } finally {
-      report.excludeNetwork = previous;
-    }
-    const shared = got.sharedObjects;
-    if (!Array.isArray(shared)) {
-      return { addonFilesFrom, addonFiles: null, addonFilesError: "the report carries no sharedObjects list" };
-    }
-    const addonFiles = shared
-      .filter((s): s is string => typeof s === "string" && /\.node$/i.test(s))
+    const addonFiles = Object.keys(cache)
+      .filter((p) => /\.node$/i.test(p))
       .map(fileIdentity);
     return { addonFilesFrom, addonFiles };
   } catch (err) {

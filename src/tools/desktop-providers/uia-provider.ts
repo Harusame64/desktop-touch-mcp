@@ -185,6 +185,6 @@ export async function fetchUiaCandidates(
   } catch (err) {
     console.error(`[uia-provider] Error for target "${targetId}":`, err);
     // What was read, when the throw came after the read; what was asked, when it came before.
-    return probeLane("uia", "failed", read ?? asked, { candidates: [], warnings: [...hwndWarnings, "uia_provider_failed"] });
+    return probeLane("uia", "failed", { ...(read ?? asked), why: "threw" }, { candidates: [], warnings: [...hwndWarnings, "uia_provider_failed"] });
   }
 }

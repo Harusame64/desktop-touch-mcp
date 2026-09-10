@@ -108,6 +108,6 @@ export async function fetchOcrCandidates(
     return probeLane("ocr", "read", read, { candidates, warnings: [...hwndWarnings] });
   } catch (err) {
     console.error("[ocr-provider] fetchOcrCandidates failed:", err);
-    return probeLane("ocr", "failed", asked, { candidates: [], warnings: [...hwndWarnings, "ocr_provider_failed"] });
+    return probeLane("ocr", "failed", { ...asked, why: "threw" }, { candidates: [], warnings: [...hwndWarnings, "ocr_provider_failed"] });
   }
 }
