@@ -129,6 +129,31 @@ impl Drop for UiaThreadHandle {
 
 static UIA_SLOT: OnceLock<Mutex<Option<Arc<UiaThreadHandle>>>> = OnceLock::new();
 
+// ─── ADR-036 H2: what the engine has done in this process ────────────────────
+//
+// `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` keeps the TypeScript side from calling this engine. Until now the
+// only record of that was the switch itself: `server_status` and the probe's row zero both read the same
+// env var, so a build where native UIA still ran under the switch reported "disabled" all the same.
+// #626's second gate found exactly that. foreground_flash's paste-warning scan started this thread from
+// inside a win32 call.
+//
+// These counts are kept by the engine, at the one place its COM thread is started and the one place a
+// task is sent to it. So they answer from what happened, not from what was configured.
+static COM_THREAD_STARTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TASKS_SENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Saturating, so a long-lived process can never wrap back round to the 0 that means "never ran".
+fn bump(counter: &std::sync::atomic::AtomicU32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _ = counter.fetch_update(Relaxed, Relaxed, |v| Some(v.saturating_add(1)));
+}
+
+/// How many times the UIA COM thread was started in this process, and how many tasks were sent to it.
+pub(crate) fn engine_evidence() -> (u32, u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (COM_THREAD_STARTS.load(Relaxed), TASKS_SENT.load(Relaxed))
+}
+
 pub(crate) fn ensure_uia_thread() -> Arc<UiaThreadHandle> {
     let cell = UIA_SLOT.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
@@ -200,6 +225,7 @@ pub(crate) fn shutdown_uia_for_test(timeout: Duration) -> Result<(), &'static st
 }
 
 fn spawn_uia_thread() -> UiaThreadHandle {
+    bump(&COM_THREAD_STARTS);
     let (tx, rx) = unbounded::<UiaTask>();
     let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
 
@@ -355,6 +381,7 @@ where
         let result = f(ctx);
         let _ = reply_tx.send(result);
     });
+    bump(&TASKS_SENT);
     ensure_uia_thread()
         .send(task)
         .map_err(|_| napi::Error::from_reason("UIA COM thread unavailable"))?;

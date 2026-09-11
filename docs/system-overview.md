@@ -680,6 +680,14 @@ to test the fallback road: UIA calls that have a PowerShell version go through i
 that have none are skipped, and `foreground_flash` skips its paste-warning dialog scan — or
 `unavailable` when the addon has no UIA engine. The aim probe's first row
 (`DESKTOP_TOUCH_AIM_PROBE=1`) records the same field.
+`engine.nativeUiaEvidence` says whether the native UIA engine actually ran in the process. The engine
+and the OS answer it, not the switch:
+- `comThreadStarts` and `tasksSent` are the engine's own counts.
+- `uiaCoreLoaded` says whether Windows has `UIAutomationCore.dll` loaded.
+
+Under the switch, a thread start or a task means native UIA ran anyway. The field is read on every
+call, so a `server_status` taken after an act sees what that act did. `null` means the addon cannot
+say. The probe's first row records it too.
 
 #### Diagnostic log — resolution and dispatch trail
 `%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (JSONL, on by default; rolls to
