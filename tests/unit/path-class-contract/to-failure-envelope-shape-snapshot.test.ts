@@ -247,9 +247,10 @@ describe("PR-P1-1 site 5a: lease validation 'expired' (RICH try_next — hazard 
 });
 
 describe("PR-P1-1 site 5b: lease validation residual reasons (empty try_next — hazard B)", () => {
-  // generation_mismatch / entity_not_found / digest_mismatch all collapse to
-  // Unknown with try_next: [] in S4 trunk (mapLeaseValidationToTypedReason).
-  const RESIDUAL_REASONS = ["generation_mismatch", "entity_not_found", "digest_mismatch"] as const;
+  // generation_mismatch / digest_mismatch collapse to Unknown with try_next: []
+  // in S4 trunk (mapLeaseValidationToTypedReason). entity_not_found left this
+  // list in ADR-036 item 16 — site 5c.
+  const RESIDUAL_REASONS = ["generation_mismatch", "digest_mismatch"] as const;
 
   for (const reason of RESIDUAL_REASONS) {
     function wrapResidual() {
@@ -274,6 +275,31 @@ describe("PR-P1-1 site 5b: lease validation residual reasons (empty try_next —
       });
     });
   }
+});
+
+describe("PR-P1-1 site 5c: lease validation 'entity_not_found' (ADR-036 item 16)", () => {
+  // Promoted out of 5b. The touch returns the same reason and desktop_act rebuilds it as
+  // EntityNotFound with the advice table's lines, so this path answers with the same lines.
+  it("raw-compat shape frozen", async () => {
+    const { getSuggestsForCode } = await import("../../../src/tools/_errors.js");
+    const result = await makeCommitWrapper(
+      async () => ({ content: [{ type: "text", text: '{"ok":true}' }] }),
+      "snapshot_lease_entity_not_found",
+      {
+        leaseValidator: async () => ({ ok: false, reason: "entity_not_found" }),
+        getEnvValue: () => undefined,
+        l1Emitter: NOOP_L1,
+      },
+    )({} as Record<string, unknown>);
+    const tryNext = getSuggestsForCode("EntityNotFound").map((action) => ({ action }));
+    expect(tryNext.length).toBeGreaterThan(0);
+    expect(parseContent(result.content)).toEqual({
+      ok: false,
+      reason: "entity_not_found",
+      diff: [],
+      if_unexpected: { most_likely_cause: "EntityNotFound", try_next: tryNext },
+    });
+  });
 });
 
 // ── Site 6: handler throw fallback (buildFailureEnvelope("Unknown", [], ...)) ──

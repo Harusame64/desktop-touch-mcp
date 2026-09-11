@@ -41,6 +41,7 @@ import {
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
+  TargetGoneError,
   AIM_WINDOW_GONE,
 } from "../engine/aim.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
@@ -1163,7 +1164,36 @@ export function createDesktopExecutor(
             `, and the act was not finished as a coordinate click.`,
           );
         }
-        // UIA click failed (element not found, stale tree, etc.).
+        // ADR-036 item 16 — the Guard `target.exists`. When UIA says the element is not in the
+        // window, the point below is where it WAS: whatever is there now takes the press, and the
+        // act reports success (MEASURED 2026-09-11 win2, arm Pii-a: the press landed on the empty
+        // form, `ok:true`). So "not found" ends the ladder here, nothing pressed. "No pattern for this
+        // action" is the case the downgrade exists for and keeps it (arm Pii-b pressed the label,
+        // correctly); so does an answer the classifier does not recognise, since it cannot say the
+        // element is gone.
+        //
+        // What is given up, said plainly. The press refused here was not blind: a title-only UIA
+        // entity carries the window it was read from (item 15), so the point below is checked
+        // against that window (item 12). "Not found" on this road is also the answer for a control
+        // whose name changed since discover (a counter, Play → Pause) — pressed before, refused now,
+        // re-discovered and pressed after — and for another window with the same title answering.
+        // Neither answer proves which window UIA looked in: a refusal is not evidence of the right
+        // window, and a success is not either (a same-titled window with a same-named element takes
+        // the UIA press and reports it). That ends when UIA presses by handle (item 4).
+        const routeFailure = classifyUiaRouteFailure(uiaErr);
+        if (routeFailure === "element_not_found") {
+          probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found" });
+          throw new TargetGoneError(
+            `UIA found no element for "${entity.label ?? entity.entityId}" on the title-only road: ` +
+            `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing where it used to be.`,
+            { cause: uiaErr },
+            // The engine's own words — the message above quotes the backend (item 13).
+            `UIA found no element for "${quotedLabel(entity)}" in the window this act named by title ` +
+            `(it may have gone, been renamed, or moved), and the act was not finished as a press where ` +
+            `the element used to be.`,
+          );
+        }
+        // UIA click failed (stale tree, no pattern, an answer not recognised, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
         // which may be stale (captured at recognition time, before the element moved).
         const rect = entity.rect ?? entity.locator?.visual?.rect;
@@ -1209,6 +1239,10 @@ export function createDesktopExecutor(
         // the ladder having run on the window the entity came from.
         probeRoute("mouse", undefined, entity, {
           why: "uia_downgrade",
+          // The class of the UIA answer that let the downgrade through, `null` when the classifier
+          // did not recognise it — so the unrecognised answers collect in the log, where the next
+          // class to add can be read from. Never the answer's own text.
+          routeFailure: routeFailure ?? null,
           point: { x, y },
           remembered,
           coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,

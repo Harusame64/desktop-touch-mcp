@@ -50,6 +50,7 @@ import {
   AimRouteFailedError,
   WindowExcludedRefusalError,
   AimBlockedByExcludedRefusalError,
+  EntityNotFoundRefusalError,
 } from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
@@ -1050,6 +1051,22 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // ADR-036 item 16 — the entity is not there: missing from the live view, or answered "not found"
+  // by UIA on the title-only road, where the press at its remembered point is now refused. Both went
+  // out as the raw result, with no advice at all.
+  if (!result.ok && result.reason === "entity_not_found") {
+    const failure = toFailureEnvelope(
+      Err(new EntityNotFoundRefusalError(
+        "EntityNotFound: the element this act was for is not there any more — nothing was clicked or typed. " +
+        "Re-run desktop_discover and act on the fresh entity"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // The aim is current and every route to it failed. The ladder stops rather than finishing the
   // aimed act as a blind coordinate press — which is ADR-036's subject arriving as its own cure.
   // Click and write end here alike.
@@ -1565,7 +1582,7 @@ export function registerDesktopTools(server: McpServer): void {
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
       "If ok=false, read 'reason':",
-      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
+      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title learns from UIA that the element is gone — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",

@@ -186,8 +186,10 @@ describe("a title-only discover still gets the coordinate ladder", () => {
     // `pointOwner` was never asked. Merged uia+ocr entities are the ladder's real traffic, so this
     // was the road that mattered.
     const pointOwner = vi.fn(() => ({ kind: "other" as const, hwnd: STRANGER, title: "設定" }));
+    // The failure is one the downgrade still exists for — the element is there and cannot be
+    // invoked. `Element not found` ends the ladder before this rung now (ADR-036 item 16).
     const d = deps({
-      uiaClick: vi.fn(async () => { throw new Error("Element not found"); }),
+      uiaClick: vi.fn(async () => { throw new Error("InvokePattern not supported by this element"); }),
       pointOwner,
     });
     const uiaEntity = {

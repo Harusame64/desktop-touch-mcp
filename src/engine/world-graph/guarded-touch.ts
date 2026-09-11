@@ -640,6 +640,12 @@ export class GuardedTouchLoop {
       if (err instanceof Error && err.name === "AimedRouteFailedError") {
         return { ok: false, reason: "aim_route_failed", diff: [], ...(detail !== undefined && { detail }) };
       }
+      // ADR-036 item 16 — UIA says the element is gone, and the press where it was is refused. The
+      // fact the lease check reports when the entity is missing from the live view, found one step
+      // later: the same reason, and the same recovery — re-discover.
+      if (err instanceof Error && err.name === "TargetGoneError") {
+        return { ok: false, reason: "entity_not_found", diff: [], ...(detail !== undefined && { detail }) };
+      }
       // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
       // it told the caller to press the rect the excluded window occupies, which is the one
       // outcome the exclusion exists to prevent (`tool-exclusion.ts` R3).

@@ -127,7 +127,7 @@ function createMcpServer(): McpServer {
         "",
         "## When desktop_act returns ok:false",
         "Read reason and follow the recovery path:",
-        "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
+        "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title learns from UIA that the element is gone — nothing was pressed where it used to be;",
         "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via click_element(name=blockingElement.name), then retry;",
         "  entity_outside_viewport → the element moved off screen: scroll it back via scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
         "  origin_window_not_visible → the window the element came from is minimised or hidden: focus_window(windowTitle) to restore it, then re-call desktop_discover;",
