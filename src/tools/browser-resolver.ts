@@ -16,6 +16,7 @@
  */
 
 import { evaluateInTab } from "../engine/cdp-bridge.js";
+import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 
 export interface CandidateCollectionArgs {
   by: "text" | "regex" | "role" | "ariaLabel" | "selector";
@@ -126,12 +127,9 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
     if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
     return 'other';
   }
-  function elText(el) {
-    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-    if (!t && el.tagName === 'INPUT')
-      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
-    return t;
-  }
+  // An input's name, never its value — the one definition every CDP script shares.
+${ELEMENT_NAME_JS}
+  const elText = __elText;
   function score(matched, visible) {
     let s = matched;
     if (!visible) s = Math.max(0, s - 0.3);
@@ -440,16 +438,17 @@ ${occluderIndexHelperJs()}`
       const s = t.trim().replace(/\\s+/g, ' ').slice(0, 40);
       if (s && !seen.has(s)) { seen.add(s); out.push(s); }
     }
+    // Each label's text without the fields inside it: a <textarea>'s text is its value.
     const lb = el.getAttribute('aria-labelledby');
-    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(n.textContent); }
-    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(lab.textContent); } catch (e) {} }
+    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(__textWithoutFields(n)); }
+    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(__textWithoutFields(lab)); } catch (e) {} }
     const wrapLabel = el.closest && el.closest('label');
-    if (wrapLabel) add(wrapLabel.textContent);
+    if (wrapLabel) add(__textWithoutFields(wrapLabel));
     let prev = el.previousElementSibling;
     let hops = 0;
     while (prev && hops < 3 && out.length < 3) {
       const tg = prev.tagName.toLowerCase();
-      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(prev.textContent);
+      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(__textWithoutFields(prev));
       prev = prev.previousElementSibling; hops++;
     }
     return out.slice(0, 3);
@@ -571,7 +570,9 @@ export function buildFillActJs(
     el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     const fullActual = el.value !== undefined ? el.value : '';
-    return { ok: true, actual: (fullActual || '').slice(0, 100), fullActualLen: fullActual.length, fullMatches: fullActual === val };
+    // A masked field's value never leaves the page; the comparison is made here, in the page.
+    const masked = __isMasked(el);
+    return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
   }
   // contenteditable
   el.textContent = val;

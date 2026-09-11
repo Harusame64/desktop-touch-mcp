@@ -24,6 +24,7 @@ import type {
   NativeUiaFocusInfo,
 } from "../engine/native-types.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
+import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
 import type { HotTargetSlot } from "../engine/perception/hot-target-cache.js";
 
@@ -226,6 +227,23 @@ export function buildElementInfoFromCdp(cdp: {
     ...(cdp.value ? { value: cdp.value } : {}),
   };
 }
+
+/**
+ * The CDP read of `document.activeElement`, for when neither the view nor UIA could name the focus.
+ * A masked field's value is not read, and a field's own text is not offered as its name — a
+ * <textarea>'s text node is its initial value — so `buildElementInfoFromCdp` falls back to the name
+ * attribute, the id or the tag. MEASURED 2026-09-11 win2 (internal `dev/cdp-password/`): a password
+ * field UIA could not name came back through here with its value.
+ */
+export const CDP_FOCUSED_ELEMENT_SCRIPT = `(function(){
+${ELEMENT_NAME_JS}
+  var el=document.activeElement;
+  if(!el||el===document.body)return null;
+  var field=el.tagName==='INPUT'||el.tagName==='TEXTAREA';
+  return {tag:el.tagName,id:el.id,name:el.name||el.getAttribute('name')||'',
+          value:(el.value===undefined||__isMasked(el))?'':String(el.value).slice(0,60),
+          text:field?'':(el.innerText||el.textContent||'').slice(0,60)};
+})()`;
 
 /**
  * Read the engine-perception `latest_focus` view. Returns `null`
@@ -761,13 +779,7 @@ export const desktopStateHandler = async (args: {
         // CDP fallback
         try {
           const cdpInfo = await evaluateInTab(
-            `(function(){
-              var el=document.activeElement;
-              if(!el||el===document.body)return null;
-              return {tag:el.tagName,id:el.id,name:el.name||el.getAttribute('name')||'',
-                      value:(el.value!==undefined?String(el.value).slice(0,60):''),
-                      text:(el.innerText||el.textContent||'').slice(0,60)};
-            })()`,
+            CDP_FOCUSED_ELEMENT_SCRIPT,
             null,
             _defaultPort
           ) as { tag?: string; id?: string; name?: string; value?: string; text?: string } | null;

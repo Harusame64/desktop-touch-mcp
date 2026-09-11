@@ -341,12 +341,58 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
     return 'other';
   }
-  function elText(el) {
-    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-    if (!t && el.tagName === 'INPUT')
-      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
-    return t;
+  // An input's name, never its value — the one definition every CDP script shares.
+
+  function __textWithoutFields(node) {
+    let out = '';
+    (function walk(n) {
+      for (const c of n.childNodes) {
+        if (c.nodeType === 3) out += c.nodeValue;
+        else if (c.nodeType === 1 && !/^(INPUT|TEXTAREA|SELECT)$/.test(c.tagName)) walk(c);
+      }
+    })(node);
+    return out.trim().replace(/\\s+/g, ' ');
   }
+  function __fieldName(el) {
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.trim().split(/\\s+/).map(function(id) {
+        const n = document.getElementById(id);
+        return n ? __textWithoutFields(n) : '';
+      }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 80);
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (el.tagName === 'INPUT' && /^(button|submit|reset|image)$/.test(type)) {
+      const caption = ((type === 'image' ? el.getAttribute('alt') : '') || el.value || '').trim();
+      if (caption) return caption.slice(0, 80);
+    } else if (el.labels && el.labels.length) {
+      const t = Array.from(el.labels).map(function(l) { return __textWithoutFields(l); }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    for (const attr of ['title', 'placeholder', 'aria-placeholder']) {
+      const v = (el.getAttribute(attr) || '').trim();
+      if (v) return v.slice(0, 80);
+    }
+    return '';
+  }
+  function __isMasked(el) {
+    if (el.tagName !== 'INPUT') return false;
+    if ((el.type || '').toLowerCase() === 'password') return true;
+    try {
+      const s = window.getComputedStyle(el);
+      const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
+      return !!sec && sec !== 'none';
+    } catch (e) { return false; }
+  }
+  function __elText(el) {
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return __fieldName(el);
+    return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+  }
+
+  const elText = __elText;
   function score(matched, visible) {
     let s = matched;
     if (!visible) s = Math.max(0, s - 0.3);
@@ -725,16 +771,17 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const s = t.trim().replace(/\\s+/g, ' ').slice(0, 40);
       if (s && !seen.has(s)) { seen.add(s); out.push(s); }
     }
+    // Each label's text without the fields inside it: a <textarea>'s text is its value.
     const lb = el.getAttribute('aria-labelledby');
-    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(n.textContent); }
-    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(lab.textContent); } catch (e) {} }
+    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(__textWithoutFields(n)); }
+    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(__textWithoutFields(lab)); } catch (e) {} }
     const wrapLabel = el.closest && el.closest('label');
-    if (wrapLabel) add(wrapLabel.textContent);
+    if (wrapLabel) add(__textWithoutFields(wrapLabel));
     let prev = el.previousElementSibling;
     let hops = 0;
     while (prev && hops < 3 && out.length < 3) {
       const tg = prev.tagName.toLowerCase();
-      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(prev.textContent);
+      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(__textWithoutFields(prev));
       prev = prev.previousElementSibling; hops++;
     }
     return out.slice(0, 3);
