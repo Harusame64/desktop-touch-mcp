@@ -674,6 +674,12 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })  // passwo
 Reports native-engine health and feature activation — whether the Rust UIA / image
 engine loaded, which fallbacks are active, and version / capability flags. Use it to
 confirm the native path is live (vs the PowerShell fallback) when latency looks off.
+`engine.nativeUia` says why UIA is on PowerShell: `disabled` when `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` —
+a diagnostic switch that takes the native UIA engine out and keeps the rest of the native addon, used
+to test the fallback road: UIA calls that have a PowerShell version go through it, the two scroll reads
+that have none are skipped, and `foreground_flash` skips its paste-warning dialog scan — or
+`unavailable` when the addon has no UIA engine. The aim probe's first row
+(`DESKTOP_TOUCH_AIM_PROBE=1`) records the same field.
 
 #### Diagnostic log — resolution and dispatch trail
 `%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (JSONL, on by default; rolls to

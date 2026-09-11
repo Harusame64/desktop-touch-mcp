@@ -114,6 +114,19 @@ describe("row zero says what the process is running on (14b)", () => {
     expect(header.boundExports).toBeNull();
   });
 
+  it("says whether the UIA engine in that list is the one answering (DESKTOP_TOUCH_DISABLE_NATIVE_UIA)", async () => {
+    // With the switch on the addon stays loaded, so its list still names `uiaGetElements`; a record
+    // showing only the list would read as a native run.
+    vi.doMock("../../src/engine/native-engine.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../../src/engine/native-engine.js")>()),
+      nativeExportNames: () => ["uiaGetElements"],
+      nativeUiaState: () => "disabled" as const,
+    }));
+    const { probeAim } = await import("../../src/engine/aim-probe.js");
+    probeAim("see.enter", {});
+    expect(rows()[0]).toMatchObject({ seam: "probe.start", boundExports: ["uiaGetElements"], nativeUia: "disabled" });
+  });
+
   it("identifies each .node in the loader's registry, and only those", async () => {
     const node = join(dir, "desktop-touch-engine.win32-x64-msvc.node");
     const bytes = Buffer.from("not an addon, only a file whose hash is known");
