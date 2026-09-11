@@ -442,10 +442,36 @@ export const nativeEngine: NativeEngine | null =
     ? (nativeBinding as unknown as NativeEngine)
     : null;
 
+/**
+ * `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` sends every UIA call down the PowerShell scripts even when the
+ * addon carries the native UIA engine; the rest of the binding (win32, capture, image diff, …) stays
+ * loaded. Only "1" turns it on. Read once at load, like `DESKTOP_TOUCH_DISABLE_VISUAL_GPU`.
+ *
+ * It exists so the native-absent configuration is a switch rather than a patched build. ADR-036's
+ * all-route check runs every road with the native UIA engine present and absent, because a defect
+ * lived only in the second — item 16's first cut refused a control that was there, on every retry,
+ * whenever the read and the click went through PowerShell (gate 2 on public PR #624) — and the rounds
+ * that measured it had to patch `dist` to get there (win2, internal PRs #73 and #74).
+ */
+const NATIVE_UIA_DISABLED = process.env["DESKTOP_TOUCH_DISABLE_NATIVE_UIA"] === "1";
+
+const bindingHasUia = nativeBinding !== null && typeof nativeBinding.uiaGetElements === "function";
+
 export const nativeUia: NativeUia | null =
-  nativeBinding && typeof nativeBinding.uiaGetElements === "function"
-    ? (nativeBinding as unknown as NativeUia)
-    : null;
+  bindingHasUia && !NATIVE_UIA_DISABLED ? (nativeBinding as unknown as NativeUia) : null;
+
+/** Which of the three this process is: the native UIA engine in use, switched off, or not in the addon. */
+export type NativeUiaState = "native" | "disabled" | "unavailable";
+
+/**
+ * The one answer `server_status` and the probe's row zero both give. The addon's export list alone
+ * cannot say it: with the switch on, the binding is loaded and still names `uiaGetElements`, so a
+ * record showing only that list would read as a native run.
+ */
+export function nativeUiaState(): NativeUiaState {
+  if (!bindingHasUia) return "unavailable";
+  return NATIVE_UIA_DISABLED ? "disabled" : "native";
+}
 
 // Treat the binding as "vision available" when EITHER end of the surface is
 // callable. `detectCapability` is exported even when `vision-gpu` cargo

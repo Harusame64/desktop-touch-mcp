@@ -33,7 +33,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { nativeExportNames } from "./native-engine.js";
+import { nativeExportNames, nativeUiaState } from "./native-engine.js";
 import { getWindowIdentity } from "./win32.js";
 
 /** The seams, in the order one `desktop_discover` → `desktop_act` pair passes through them. */
@@ -251,6 +251,9 @@ function runHeader(): Record<string, unknown> {
     probeModule: moduleFile(),
     boundExports,
     ...(boundExportsError !== undefined && { boundExportsError }),
+    // Whether the UIA engine in that list is the one answering. `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`
+    // keeps the addon loaded, so the list above still names it on a run that went through PowerShell.
+    nativeUia: nativeUiaState(),
     ...loadedAddonFiles(),
   };
 }
