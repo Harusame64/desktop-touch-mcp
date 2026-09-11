@@ -1063,6 +1063,9 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       name: elText(el),
       role: roleAttr || null,
       ariaLabel: el.getAttribute('aria-label') || null,
+      // Stable and not secret — for the by-axis fill's identity gate (buildFillActJs).
+      id: el.id || null,
+      formName: el.getAttribute('name') || null,
       matchedBy: matchedByMap.get(el),
       score: score(matchScore.get(el) || 0, entry.visible),
       nearestLabels: labelsOf(el),
