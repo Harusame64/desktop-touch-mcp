@@ -229,6 +229,15 @@ describe("the advice for a refusal does not name the press it refused", () => {
     }
   });
 
+  it("does not send a caller whose window was named by handle to a click that has no route there (gate 2)", async () => {
+    // desktop_act's click on a text field has no UIA invoke, and on a window named by handle the
+    // ladder stops there, as aim_route_failed, with nothing pressed. Advice that said "click the
+    // field" without that condition was a dead end on the road ADR-036 exists for.
+    const advice = (await adviceFor("KeyboardTargetUnsafe")).join(" ");
+    expect(advice).toMatch(/named its window by title[^.]*desktop_act action='click'/);
+    expect(advice).toMatch(/named its window by handle, no route here moves the focus to a text field/);
+  });
+
   it("documents keyboard_target_unsafe in both catalogues, with the foreground type forbidden", () => {
     for (const file of ["../../src/server-windows.ts", "../../src/tools/desktop-register.ts"]) {
       const source = readFileSync(new URL(file, import.meta.url), "utf8");

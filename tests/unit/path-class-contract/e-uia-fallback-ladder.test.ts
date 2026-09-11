@@ -104,9 +104,10 @@ describe("E contract (b) — uiaSetValue ladder (real production-invoke, PR #330
 
     const outcome = await exec(entity, "type", "hello");
 
-    // PR #330 contract: keyboard fallback returns "keyboard" ExecutorKind
-    const kind = typeof outcome === "string" ? outcome : outcome.kind;
-    expect(kind).toBe("keyboard");
+    // PR #330 contract: keyboard fallback returns "keyboard" ExecutorKind. Since ADR-036 family 2 the
+    // bare "keyboard" is kept only for a write the rung confirmed. This double cannot resolve the
+    // receiver (no keyboardResolve / keyboardPost), so the success is marked as unconfirmed.
+    expect(outcome).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
   });
 
   it("uiaSetValue + keyboardTypeBg both throw → ladder exhausted error (PR #330)", async () => {

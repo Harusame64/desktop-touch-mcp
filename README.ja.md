@@ -312,7 +312,7 @@ mouse_click(x, y, origin?, scale?)    → 最終手段。dotByDot screenshot の
 - `origin_window_not_visible` → 要素の由来ウィンドウが最小化 / 非表示で、発見時の座標には何も描画されていない: `focus_window(windowTitle)` で復元してから `desktop_discover` 再実行
 - `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い。座標ベースのマウス入力（`mouse_click` / `mouse_drag` / `scroll` / `browser_click`、および `desktop_act` の mouse route）は**全モニタで動作する**ようになった（プライマリの左 / 上に置いたモニタを含む）ため、このエラーは通常「座標が古い」ことを意味する — 読み取った後にウィンドウが移動 / 閉じた場合。`desktop_discover` を再実行して新しい座標で操作する。サーバが内蔵の Windows 入力モジュール無しで動いている場合はプライマリモニタのみに fallback する（その旨がエラーメッセージに出る）。対処はウィンドウをプライマリへ移すか、サーバの再インストール
 - `cursor_placement_blocked` → 座標はモニタ上にあるが、ポインタをそこへ置けなかったためクリックは送られていない。他のアプリがカーソルを自分のウィンドウ内に拘束している（全画面ゲームで多い）/ リモートデスクトップのセッションが切断・ロックされている / 他のプログラムがポインタを動かし続けている / モニタを着脱した直後、といった場合に起きる。カーソルを掴んでいるアプリから離れる、セッションに再接続する、モニタ構成を変えた場合は `desktop_discover` を取り直してから再試行する。カーソルを動かさない `click_element`（UIA invoke）はその間も使える
-- `keyboard_target_unsafe` → 文字が指定した欄に届かないため `type` を拒否した。キーボードのフォーカスが別のコントロールか別のウィンドウにある、または受け取るコントロールが読み取り専用。何も入力されておらず、どれかは `if_unexpected.detail` に出る。別のコントロール / ウィンドウなら、指定した欄をクリックしてから入力し直す。前面の `keyboard` で打ち直さないこと: フォーカスを持っているものが文字を受け取ってしまう
+- `keyboard_target_unsafe` → 文字が指定した欄に届かないため `type` を拒否した。キーボードのフォーカスが別のコントロールか別のウィンドウにある、または受け取るコントロールが読み取り専用。何も入力されておらず、どれかは `if_unexpected.detail` に出る。別のコントロール / ウィンドウなら、指定した欄にフォーカスを移してから入力し直す。タイトルで指定したウィンドウなら同じ entity への `desktop_act`（`action='click'`）で移せる。ハンドルで指定したウィンドウでは、テキスト欄へフォーカスを移す道がまだ無いので、ウィンドウのタイトルで `desktop_discover` し直し、そこから欄をクリックする。前面の `keyboard` で打ち直さないこと: フォーカスを持っているものが文字を受け取ってしまう
 - `executor_failed` → V1 (`click_element` / `mouse_click` / `browser_click`) にフォールバック
 
 成功した `type` に `landing: { confirmed: false, why }` が付くことがある。文字はバックグラウンドで送られたが、指定した欄に届いたことをサーバが確かめられなかった、という意味である（例: WPF のウィンドウは欄ごとのウィンドウを持たない）。その値に頼る前に欄を読み返すこと。
@@ -659,7 +659,7 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 - `origin_window_not_visible` → `focus_window(windowTitle)` で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
 - `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い（通常は座標が古い）: `desktop_discover` を再実行する。内蔵 Windows 入力モジュール無しの構成ではプライマリモニタのみ到達可（その旨がメッセージに出る）
 - `cursor_placement_blocked` → ポインタをそこへ置けずクリックは送られていない（アプリがカーソルを掴んでいる / セッションが非対話）: カーソルを解放するかセッションに再接続する、または `click_element`（UIA invoke、カーソル非使用）を使う
-- `keyboard_target_unsafe` → 何も入力されていない: 文字が別のコントロール / ウィンドウ、または読み取り専用のコントロールへ行くところだった（どれかは `if_unexpected.detail`）。指定した欄をクリックしてから入力し直す——前面の `keyboard` では打ち直さない
+- `keyboard_target_unsafe` → 何も入力されていない: 文字が別のコントロール / ウィンドウ、または読み取り専用のコントロールへ行くところだった（どれかは `if_unexpected.detail`）。指定した欄にフォーカスを移してから入力し直す（タイトル指定なら `desktop_act` の `action='click'`、ハンドル指定ならタイトルで discover し直してから）——前面の `keyboard` では打ち直さない
 - `executor_failed` → `click_element` / `mouse_click` / `browser_click` にフォールバック
 
 `desktop_discover` が warnings（`visual_provider_unavailable`、`visual_provider_warming`、`cdp_provider_failed` 等）を返した場合も、V1 ツール（`screenshot`、`click_element`、`get_ui_elements`、`terminal(action='send')` など）がエスケープハッチとして使えます。

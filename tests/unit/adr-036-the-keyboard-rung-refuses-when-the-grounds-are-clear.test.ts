@@ -381,28 +381,39 @@ describe("the real backend resolves once, looks the window up in the low 32 bits
    * whose top-level window is `receiverRoot`; and an owner chain the test draws.
    */
   async function typeThroughTheRealBackend(opts: {
-    aimHwnd: bigint; enumerated: bigint; receiver: bigint; receiverRoot: bigint; owners: Map<bigint, bigint>; entity: UiEntity;
+    /** The window the act named by handle; left out, the act names it by title. */
+    aimHwnd?: bigint; enumerated: bigint; receiver: bigint; receiverRoot: bigint; owners: Map<bigint, bigint>; entity: UiEntity;
+    /** Handles whose window has closed: GA_ROOT answers nothing for them. */
+    dead?: readonly bigint[];
+    /** Whether the post sends every character. */
+    full?: boolean;
   }) {
-    const postCharsToResolvedTarget = vi.fn((_t: unknown, text: string) => ({ sent: text.length, full: true, target: opts.receiver }));
+    const dead = opts.dead ?? [];
+    const postCharsToResolvedTarget = vi.fn((_t: unknown, text: string) => ({
+      sent: opts.full === false ? 0 : text.length, full: opts.full !== false, target: opts.receiver,
+    }));
+    const canInjectViaPostMessage = vi.fn((_h: unknown) => ({ supported: true }));
     vi.doMock("../../src/engine/win32.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../src/engine/win32.js")>()),
       enumWindowsInZOrder: () => [{ hwnd: opts.enumerated, title: "RFS-CELL" }],
       getWindowClassName: () => "Edit",
       getWindowRectByHwnd: () => RECT,
       getWindowStyle: () => WRITABLE,
-      getWindowRoot: (h: unknown) => (h === opts.receiver ? opts.receiverRoot : opts.enumerated),
+      getWindowRoot: (h: unknown) =>
+        (dead.includes(h as bigint) ? null : h === opts.receiver ? opts.receiverRoot : opts.enumerated),
       getWindowParent: () => opts.receiverRoot,
       getWindowOwner: (h: unknown) => opts.owners.get(h as bigint) ?? null,
     }));
     vi.doMock("../../src/engine/bg-input.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../src/engine/bg-input.js")>()),
-      canInjectViaPostMessage: () => ({ supported: true }),
+      canInjectViaPostMessage,
       resolveKeyTarget: () => opts.receiver,
       postCharsToResolvedTarget,
     }));
     const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
-    const result = await createDesktopExecutor({ kind: "aim", title: "RFS-CELL", hwnd: opts.aimHwnd })(opts.entity, "type", "PROBE-R");
-    return { result, postCharsToResolvedTarget };
+    const target = opts.aimHwnd !== undefined ? { kind: "aim" as const, title: "RFS-CELL", hwnd: opts.aimHwnd } : { windowTitle: "RFS-CELL" };
+    const result = await createDesktopExecutor(target)(opts.entity, "type", "PROBE-R");
+    return { result, postCharsToResolvedTarget, canInjectViaPostMessage };
   }
 
   const keyboardOnly = (h: string | null): UiEntity => field(h, { unsupportedExecutors: ["uia"], preferredExecutors: ["keyboard"] });
@@ -434,6 +445,49 @@ describe("the real backend resolves once, looks the window up in the low 32 bits
       }),
     });
     expect(result).toMatchObject({ kind: "keyboard", landing: { why: "receiver_is_window", referenceFrom: "origin" } });
+  });
+
+  for (const [road, aimHwnd] of [["handle road", HWND], ["title road", undefined]] as const) {
+    it(`checks inject support on the handle it resolved, and posts exactly there — ${road}`, async () => {
+      const { result, postCharsToResolvedTarget, canInjectViaPostMessage } = await typeThroughTheRealBackend({
+        aimHwnd, enumerated: HWND, receiver: CTRL, receiverRoot: HWND, owners: new Map(), entity: keyboardOnly("5001"),
+      });
+      expect(result).toBe("keyboard");
+      expect(canInjectViaPostMessage).toHaveBeenCalledWith(CTRL);
+      expect(postCharsToResolvedTarget).toHaveBeenCalledWith(CTRL, "PROBE-R");
+    });
+  }
+
+  it("reads a named handle whose window has closed as stale: it posts, marked, and refuses nothing (G2-1)", async () => {
+    const { result, postCharsToResolvedTarget } = await typeThroughTheRealBackend({
+      aimHwnd: HWND, enumerated: HWND, receiver: OTHER, receiverRoot: HWND, owners: new Map(), dead: [CTRL], entity: keyboardOnly("5001"),
+    });
+    expect(result).toMatchObject({ kind: "keyboard", landing: { why: "entity_handle_stale", referenceFrom: "aim" } });
+    expect(postCharsToResolvedTarget).toHaveBeenCalledOnce();
+  });
+
+  it("skips a capture window that has closed, and takes the next live reference (G2-1)", async () => {
+    const { result } = await typeThroughTheRealBackend({
+      aimHwnd: HWND, enumerated: HWND, receiver: HWND, receiverRoot: HWND, owners: new Map(), dead: [SIBLING],
+      entity: field(null, {
+        unsupportedExecutors: ["uia"], preferredExecutors: ["keyboard"], origin: { kind: "window", id: "8888", hwnd: "8888" },
+      }),
+    });
+    expect(result).toMatchObject({ kind: "keyboard", landing: { why: "receiver_is_window", referenceFrom: "aim" } });
+  });
+
+  it("fails, rather than answering success, when the post does not send every character", async () => {
+    await expect(typeThroughTheRealBackend({
+      aimHwnd: HWND, enumerated: HWND, receiver: CTRL, receiverRoot: HWND, owners: new Map(), entity: keyboardOnly("5001"), full: false,
+    })).rejects.toThrow(/incomplete: sent 0\/7/);
+  });
+
+  it("bounds the owner walk, so an owner chain that loops ends as 'cannot say' (G2-2)", async () => {
+    const { result } = await typeThroughTheRealBackend({
+      aimHwnd: HWND, enumerated: HWND, receiver: OTHER, receiverRoot: DIALOG,
+      owners: new Map([[DIALOG, SIBLING], [SIBLING, DIALOG]]), entity: keyboardOnly(null),
+    });
+    expect(result).toMatchObject({ kind: "keyboard", landing: { why: "receiver_in_other_window" } });
   });
 
   it("refuses when the named control's receiver is in another top-level window (dlg)", async () => {
