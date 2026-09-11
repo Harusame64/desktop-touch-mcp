@@ -34,8 +34,10 @@
  *
  * An editable region is its host — the element whose parent is not editable. The elements inside an
  * editor are not entries: they are named by the text the screen shows, and that includes typed text,
- * since a rich editor puts what is typed into child paragraphs. Only what the page masks stays out
- * (win's outside read on #623 — the rule is written for the host, and says so).
+ * since a rich editor puts what is typed into child paragraphs. What the page masks stays out, and
+ * so does any entry nested inside — a field, an ARIA textbox, another host in a non-editable island
+ * (win's outside reads on #623 — the rule is written for the host, and says so). An element with the
+ * ARIA role textbox or searchbox is an entry wherever it sits; the host rule is contenteditable's.
  *
  * The helpers are prefixed `__` because they share an IIFE with each script's own functions.
  */

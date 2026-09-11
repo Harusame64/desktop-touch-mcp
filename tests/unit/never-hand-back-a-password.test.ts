@@ -434,8 +434,12 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       const found = run(buildCandidateCollectionJs({
         by, pattern, maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
       }), page);
-      // The one PROBE allowed is the typed paragraph inside the editor, named by the text it shows.
+      // The one PROBE allowed is the typed paragraph inside the editor, named by the text it shows —
+      // and only as that paragraph's whole name, never inside a longer one (win's outside read).
       expect(leaked(JSON.stringify(found), ["PROBE-TYPED-15"]), by).toEqual([]);
+      for (const r of (found as { results?: Array<{ text: string }> }).results ?? []) {
+        if (r.text.includes("PROBE-TYPED-15")) expect(r.text, by).toBe("PROBE-TYPED-15");
+      }
     }
     // The decision, pinned: inside an editor a paragraph's name is its text, typed or not.
     const typed = run(buildCandidateCollectionJs({
