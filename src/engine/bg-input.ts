@@ -24,7 +24,7 @@ import {
   vkToScanCode,
   WM_CHAR, WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_CONTROL, VK_SHIFT, VK_MENU,
 } from "./win32.js";
-import { nativeWin32 } from "./native-engine.js";
+import { nativeWin32, nativeUiaState } from "./native-engine.js";
 import { logDispatchSink } from "../tools/_resolve-log.js";
 import type {
   NativeForegroundFlashOptions,
@@ -491,8 +491,14 @@ export function injectViaForegroundFlash(
         "[bg-input] desktop-touch-engine native addon missing win32_foreground_flash_inject (rebuild with `npm run build:rs`)",
     };
   }
+  // DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1 takes the native UIA engine out, and the paste-warning dialog
+  // scan is that engine: it runs on the UIA thread (`wt_dialog_scan.rs`), and once that thread is up
+  // it keeps the focus view fed, so later focus reads would come from native UIA while
+  // `server_status` says "disabled" (gate 2 on public PR #626). An addon without the engine has no
+  // scan either, so under the switch the flash runs without it.
+  const effective = nativeUiaState() === "disabled" ? { ...options, scanPasteWarningDialog: false } : options;
   try {
-    const result = nativeWin32.win32ForegroundFlashInject(hwnd, pid, text, options);
+    const result = nativeWin32.win32ForegroundFlashInject(hwnd, pid, text, effective);
     return { ok: true, result };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

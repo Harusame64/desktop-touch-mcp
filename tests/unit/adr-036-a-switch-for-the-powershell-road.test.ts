@@ -13,13 +13,21 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 
-/** A stand-in addon: the image-diff trio and, unless told otherwise, the UIA engine — counting UIA clicks. */
+/**
+ * A stand-in addon: the image-diff trio, win32 with the foreground flash, and, unless told otherwise,
+ * the UIA engine — counting UIA clicks and keeping the options each flash was given.
+ */
 function standInAddon(withUia = true) {
-  const calls = { uiaClick: 0 };
+  const calls = { uiaClick: 0, flashOptions: [] as unknown[] };
   const binding: Record<string, unknown> = {
     computeChangeFraction: () => 0,
     dhashFromRaw: () => 0n,
     hammingDistance: () => 0,
+    win32EnumTopLevelWindows: () => [],
+    win32ForegroundFlashInject: (_hwnd: bigint, _pid: number, _text: string, options: unknown) => {
+      calls.flashOptions.push(options);
+      return { pasted: true };
+    },
     ...(withUia && {
       uiaGetElements: async () => ({ windowTitle: "T", elementCount: 0, elements: [] }),
       uiaClickElement: async () => { calls.uiaClick++; return { ok: true, element: "OK", error: null, code: null }; },
@@ -33,7 +41,9 @@ async function engineWith(env: string | undefined, withUia = true) {
   const addon = standInAddon(withUia);
   vi.resetModules();
   vi.doMock("../../index.js", () => ({ default: addon.binding }));
-  if (env !== undefined) vi.stubEnv("DESKTOP_TOUCH_DISABLE_NATIVE_UIA", env);
+  // Stubbed every time, `undefined` included — vitest deletes the variable then — so a switch left set
+  // in the shell cannot turn an "unset" cell red (gate 2 on #626).
+  vi.stubEnv("DESKTOP_TOUCH_DISABLE_NATIVE_UIA", env);
   const engine = await import("../../src/engine/native-engine.js");
   return { calls: addon.calls, engine };
 }
@@ -92,5 +102,19 @@ describe("DESKTOP_TOUCH_DISABLE_NATIVE_UIA", () => {
     expect(calls.uiaClick).toBe(0);
     expect(scripts).toHaveLength(1);
     expect(answer).toMatchObject({ ok: true, via: "powershell" });
+  });
+
+  it("keeps foreground_flash from starting the native UIA thread: no paste-warning dialog scan (gate 2 on #626)", async () => {
+    // The scan runs on the UIA thread, and once that thread is up it feeds the focus view that
+    // desktop_state reads first — native UIA answering while server_status says "disabled".
+    const on = await engineWith("1");
+    const { injectViaForegroundFlash } = await import("../../src/engine/bg-input.js");
+    injectViaForegroundFlash(1n, 1, "x", { pressEnter: false });
+    expect(on.calls.flashOptions).toEqual([{ pressEnter: false, scanPasteWarningDialog: false }]);
+    // The control: without the switch, the options go through untouched and the scan keeps its default.
+    const off = await engineWith(undefined);
+    const again = await import("../../src/engine/bg-input.js");
+    again.injectViaForegroundFlash(1n, 1, "x", { pressEnter: false });
+    expect(off.calls.flashOptions).toEqual([{ pressEnter: false }]);
   });
 });

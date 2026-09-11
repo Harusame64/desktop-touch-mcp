@@ -443,9 +443,13 @@ export const nativeEngine: NativeEngine | null =
     : null;
 
 /**
- * `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` sends every UIA call down the PowerShell scripts even when the
- * addon carries the native UIA engine; the rest of the binding (win32, capture, image diff, …) stays
- * loaded. Only "1" turns it on. Read once at load, like `DESKTOP_TOUCH_DISABLE_VISUAL_GPU`.
+ * `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` takes the native UIA engine out even when the addon carries it,
+ * and leaves the rest of the binding (win32, capture, image diff, …) loaded — the state of an addon
+ * built without the engine. UIA calls that have a PowerShell version go through it; the two scroll
+ * reads that have none (`_input-pipeline.ts`) are skipped; and `foreground_flash` does not scan for
+ * the paste-warning dialog, which only the engine can do (`bg-input.ts`), so the UIA thread never
+ * starts and the focus view it feeds stays empty. Only "1" turns it on. Read once at load, like
+ * `DESKTOP_TOUCH_DISABLE_VISUAL_GPU`.
  *
  * It exists so the native-absent configuration is a switch rather than a patched build. ADR-036's
  * all-route check runs every road with the native UIA engine present and absent, because a defect
