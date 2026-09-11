@@ -406,17 +406,30 @@ where
 mod tests {
     use super::*;
 
-    /// ADR-036 H2 — a task sent to the thread is counted, and so is the thread's start. The counters are
-    /// process-wide and other tests run in parallel, so this compares before with after rather than
-    /// checking absolute values.
+    /// The tests in this module that start, stop or use the one UIA thread take this lock, so they run
+    /// one at a time. `cargo test` runs tests in parallel, and a shutdown landing while another test's
+    /// task is queued can drop that task: the thread's `select!` picks among ready arms at random. That
+    /// would redden the evidence test for a reason that has nothing to do with the count (2ゲート目,
+    /// second read). No other module's tests touch this thread.
+    static THREAD_TESTS: Mutex<()> = Mutex::new(());
+
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        THREAD_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// ADR-036 H2 — a task sent to the thread is counted exactly once, and so is the thread's start. The
+    /// counters are process-wide, so this compares before with after. With the thread tests serialized,
+    /// the task count can be checked exactly: a count taken twice (in `execute_with_timeout` and in
+    /// `send`) would read +2 and fail.
     #[test]
     fn engine_evidence_counts_a_task_and_the_thread_that_ran_it() {
+        let _serial = one_at_a_time();
         let (_, tasks_before) = engine_evidence();
         let r: napi::Result<()> = execute_with_timeout(|_ctx| Ok(()), 5000);
         assert!(r.is_ok(), "the no-op task should run: {r:?}");
         let (starts, tasks_after) = engine_evidence();
         assert!(starts >= 1, "the thread that ran the task was started, so its start was counted");
-        assert!(tasks_after > tasks_before, "the task was counted: {tasks_before} -> {tasks_after}");
+        assert_eq!(tasks_after, tasks_before + 1, "the task was counted exactly once");
     }
 
     /// ADR-036 H2 — the counts stop at the top rather than wrapping round to the 0 that means "never ran".
@@ -435,6 +448,7 @@ mod tests {
     /// "graceful shutdown 3s" acceptance in P5a).
     #[test]
     fn shutdown_and_restart_5_cycles() {
+        let _serial = one_at_a_time();
         for _ in 0..5 {
             let _handle = ensure_uia_thread();
             shutdown_uia_for_test(Duration::from_secs(3))
@@ -446,6 +460,7 @@ mod tests {
     /// repeated calls return the same `Arc<UiaThreadHandle>` until shutdown.
     #[test]
     fn ensure_uia_thread_returns_same_instance() {
+        let _serial = one_at_a_time();
         let _ = shutdown_uia_for_test(Duration::from_secs(3));
         let a = ensure_uia_thread();
         let b = ensure_uia_thread();
