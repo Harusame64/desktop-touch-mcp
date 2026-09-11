@@ -287,6 +287,19 @@ describe("the rung judges before it posts", () => {
     });
   }
 
+  // The caller is told to read if_unexpected.detail, so the way back has to be right in THAT sentence,
+  // not only in the advice table: a text field cannot be clicked through UIA, and on a window named by
+  // handle the ladder stops rather than pressing (gate 2's verification round).
+  for (const [road, target, expected] of [
+    ["title road", titleRoad, /Click the field this act named \(desktop_act action='click'/],
+    ["handle road", handleRoad, /named its window by handle[^.]*cannot be clicked through UI Automation/],
+  ] as const) {
+    it(`publishes the way back for the road the act took — ${road}`, async () => {
+      const d = depsFor(receiptOf({ receiverHwnd: OTHER }));
+      await expect(type(target, field(), d)).rejects.toMatchObject({ callerDetail: expect.stringMatching(expected) });
+    });
+  }
+
   it("keeps the refusal when the value road said the window was gone (G2-5)", async () => {
     const { AimedWindowGoneError } = await import("../../src/engine/aim.js");
     const d = depsFor(receiptOf({ receiverHwnd: OTHER }), {
@@ -346,7 +359,7 @@ describe("the refusal reaches the caller under its own name", () => {
   }
 
   it("is keyboard_target_unsafe in the loop, with the ground in the published detail", async () => {
-    const result = await loopWith(async () => { throw new KeyboardTargetUnsafeError("other_control", "named", "internal: receiver 5002"); });
+    const result = await loopWith(async () => { throw new KeyboardTargetUnsafeError("other_control", "named", "title", "internal: receiver 5002"); });
     expect(result).toMatchObject({ ok: false, reason: "keyboard_target_unsafe" });
     const detail = (result as { detail?: string }).detail ?? "";
     expect(detail).toMatch(/^Nothing was typed \(other_control\)/);

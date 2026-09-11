@@ -41,6 +41,14 @@ export type LandingWhy =
 export type RefusalSubject = "named" | "focused_inside_named" | "focused";
 
 /**
+ * How the act named its window. The way back differs: a text field has no UIA invoke, so the click
+ * that moves the focus to it is only reached on the title road, where the ladder downgrades to a
+ * checked press. On the handle road that click ends as `aim_route_failed` with nothing pressed, so a
+ * sentence that tells such a caller to click the field is a dead end (gate 2).
+ */
+export type KeyboardRoad = "handle" | "title";
+
+/**
  * The facts §3 reads. Every handle is compared in its unsigned low 32 bits: UIA writes the named
  * control's handle that way, while `GetFocus` hands the receiver over widened to 64.
  */
@@ -194,12 +202,19 @@ export function parseHandle(value: string | undefined): bigint | null {
   return h === 0n ? null : h;
 }
 
-function callerSentence(ground: KeyboardGround, subject: RefusalSubject): string {
+function callerSentence(ground: KeyboardGround, subject: RefusalSubject, road: KeyboardRoad): string {
+  const byHandle = road === "handle";
   switch (ground) {
     case "other_window":
-      return "Nothing was typed (other_window): the focus is in a different window from the field this act named, so the characters would have gone there. Click the field you named, or bring its window forward, and retry.";
+      return "Nothing was typed (other_window): the focus is in a different window from the field this act named, so the characters would have gone there. " +
+        (byHandle
+          ? "Bring the field's window forward (focus_window) and retry — it comes forward with the focus it last had. This act named its window by handle, and a text field cannot be clicked through UI Automation, so if the focus is still elsewhere, re-run desktop_discover by the window's title and click the field from there."
+          : "Click the field this act named, or bring its window forward (focus_window), and retry.");
     case "other_control":
-      return "Nothing was typed (other_control): the focus is on a different control in the same window, so the characters would have gone there. Click the field you named, then type again.";
+      return "Nothing was typed (other_control): the focus is on a different control in the same window, so the characters would have gone there. " +
+        (byHandle
+          ? "This act named its window by handle, and a text field cannot be clicked through UI Automation — that click answers aim_route_failed — so re-run desktop_discover by the window's title and click the field from there, then type again."
+          : "Click the field this act named (desktop_act action='click' on the same entity), then type again.");
     case "read_only":
       return subject === "named"
         ? "Nothing was typed (read_only): the field this act named is read-only and does not take typed text."
@@ -220,10 +235,10 @@ function callerSentence(ground: KeyboardGround, subject: RefusalSubject): string
 export class KeyboardTargetUnsafeError extends Error implements CallerFacingRefusal {
   readonly ground: KeyboardGround;
   readonly callerDetail: string;
-  constructor(ground: KeyboardGround, subject: RefusalSubject, message: string) {
+  constructor(ground: KeyboardGround, subject: RefusalSubject, road: KeyboardRoad, message: string) {
     super(message);
     this.name = "KeyboardTargetUnsafeError";
     this.ground = ground;
-    this.callerDetail = callerSentence(ground, subject);
+    this.callerDetail = callerSentence(ground, subject, road);
   }
 }

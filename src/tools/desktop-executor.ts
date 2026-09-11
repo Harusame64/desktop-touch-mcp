@@ -1068,6 +1068,9 @@ async function keyboardRung(
     throw new KeyboardTargetUnsafeError(
       verdict.ground,
       verdict.subject,
+      // Which way back the caller has: only the title road reaches a click that can focus a text
+      // field (the UIA route has no invoke for one, and the aimed ladder stops rather than pressing).
+      aimHwnd !== undefined ? "handle" : "title",
       `Refusing to type for entity ${entity.entityId}: ${verdict.ground}, receiver ${receipt.receiverHwnd ?? "unknown"}, ` +
         `reference window from ${verdict.referenceFrom}`,
     );

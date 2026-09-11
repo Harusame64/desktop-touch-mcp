@@ -652,7 +652,7 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
   // mapping has its own tests; these pin the handler's branch, which a mutation could drop unnoticed.
   it("publishes keyboard_target_unsafe under its own cause, with the ground's sentence and no foreground type in the advice", async () => {
     const detail =
-      "Nothing was typed (other_control): the focus is on a different control in the same window, so the characters would have gone there. Click the field you named, then type again.";
+      "Nothing was typed (other_control): the focus is on a different control in the same window, so the characters would have gone there. Click the field this act named (desktop_act action='click' on the same entity), then type again.";
     vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: false, reason: "keyboard_target_unsafe", diff: [], detail });
     const parsed = parseHandlerResult((await desktopActRawHandler({ lease: fakeLease, action: "type", text: "PROBE-R" })).content);
 

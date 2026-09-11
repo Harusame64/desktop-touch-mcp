@@ -125,7 +125,7 @@ describe("the loop keeps each refusal's own name", () => {
   it("says the keyboard rung refused to post, not that the executor failed", async () => {
     // ADR-036 family 2 — flattened to `executor_failed`, its advice is a foreground type, and the
     // characters would go to the very control the rung refused.
-    const { loop, lease } = loopThatThrows(new KeyboardTargetUnsafeError("other_control", "named", "internal: receiver 5002"));
+    const { loop, lease } = loopThatThrows(new KeyboardTargetUnsafeError("other_control", "named", "title", "internal: receiver 5002"));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -185,7 +185,7 @@ describe("the loop keeps each refusal's own name", () => {
     expect(new AimedRouteFailedError("x").name).toBe("AimedRouteFailedError");
     expect(new WindowExcludedError("x").name).toBe("WindowExcludedError");
     expect(new AimBlockedByExcludedWindowError("x").name).toBe("AimBlockedByExcludedWindowError");
-    expect(new KeyboardTargetUnsafeError("read_only", "named", "x").name).toBe("KeyboardTargetUnsafeError");
+    expect(new KeyboardTargetUnsafeError("read_only", "named", "title", "x").name).toBe("KeyboardTargetUnsafeError");
   });
 });
 
@@ -236,6 +236,12 @@ describe("the advice for a refusal does not name the press it refused", () => {
     const advice = (await adviceFor("KeyboardTargetUnsafe")).join(" ");
     expect(advice).toMatch(/named its window by title[^.]*desktop_act action='click'/);
     expect(advice).toMatch(/named its window by handle, no route here moves the focus to a text field/);
+    // …and the escape hatch is not offered where it closes: a common dialog's title resolves to a
+    // handle as well, so re-discovering by title lands on the same road (gate 2, verification round).
+    expect(advice).toMatch(/common dialog[^.]*resolves to a handle/);
+    // For other_window the focusing window is usually over the field, so the click is refused as
+    // aim_occluded unless the field's window comes forward first.
+    expect(advice).toMatch(/focus_window[^.]*aim_occluded|aim_occluded[^.]*focus_window/s);
   });
 
   it("documents keyboard_target_unsafe in both catalogues, with the foreground type forbidden", () => {
