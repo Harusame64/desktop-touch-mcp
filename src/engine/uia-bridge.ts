@@ -1145,11 +1145,12 @@ export async function getUiElements(
         windowHwnd: result.windowHwnd ?? undefined,
         windowRect: result.windowRect ?? null,
         elementCount: result.elementCount,
-        elements: result.elements.map((el: NativeUiElement) => ({
+        elements: result.elements.map(({ nativeWindowHandle, ...el }: NativeUiElement) => ({
           ...el,
           boundingRect: el.boundingRect ?? null,
-          // Rust's `None` arrives as null; this type says "absent", like the PowerShell road.
-          nativeWindowHandle: el.nativeWindowHandle ?? undefined,
+          // Rust's `None` arrives as null. This type says "absent", as the PowerShell road does, so the
+          // key is left out rather than set to undefined.
+          ...(nativeWindowHandle != null && { nativeWindowHandle }),
         })),
         via: "native",
       };
@@ -1648,11 +1649,21 @@ function Collect($el, $depth) {
         $rect = @{ x=[int]$r.X; y=[int]$r.Y; width=[int]$r.Width; height=[int]$r.Height }
     }
     $pats = @($el.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName -replace 'Identifiers\\.Pattern','' })
-    $script:results.Add(@{
+    # ADR-036 family 2 — the element's own window, written as the get-elements script writes it
+    # (unsigned through [uint32]::MaxValue, zero dropped), so the native road, which shares
+    # extract_element with the element read, and this one give scope_element the same shape.
+    $elHwnd = $null
+    try {
+        $eh = $c.NativeWindowHandle
+        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue) }
+    } catch {}
+    $item = @{
         name=$c.Name; controlType=($c.ControlType.ProgrammaticName -replace 'ControlType\\.','')
         automationId=$c.AutomationId; isEnabled=$c.IsEnabled
         boundingRect=$rect; patterns=$pats; depth=$depth
-    })
+    }
+    if ($null -ne $elHwnd) { $item['nativeWindowHandle'] = $elHwnd }
+    $script:results.Add($item)
     $script:count++
     $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
     foreach ($k in $kids) { Collect $k ($depth+1) }
@@ -1689,11 +1700,12 @@ export async function getElementChildren(
         timeoutMs,
       });
       // Normalise boundingRect: Rust Option → null
-      return result.map((el: NativeUiElement) => ({
+      return result.map(({ nativeWindowHandle, ...el }: NativeUiElement) => ({
         ...el,
         boundingRect: el.boundingRect ?? null,
-        // Rust's `None` arrives as null; this type says "absent", as `getUiElements` does.
-        nativeWindowHandle: el.nativeWindowHandle ?? undefined,
+        // Rust's `None` arrives as null. This type says "absent", as `getUiElements` does, so the key is
+        // left out rather than set to undefined.
+        ...(nativeWindowHandle != null && { nativeWindowHandle }),
       }));
     } catch (e) {
       console.warn("[uia-bridge] Native uiaGetElementChildren failed, falling back to PowerShell:", e);

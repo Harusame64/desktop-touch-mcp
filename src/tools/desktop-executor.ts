@@ -73,6 +73,13 @@ export interface KeyboardReceipt {
   receiverRect?: { x: number; y: number; width: number; height: number } | null;
   receiverRootHwnd?: bigint | null;
   receiverStyle?: number | null;
+  /**
+   * The receiver's parents, nearest first, up to but not including its top-level window (GA_PARENT
+   * repeatedly, bounded). A compound control keeps the focus in a child window of its own, so this is
+   * what tells "the receiver is inside the named control" from "the receiver is another control".
+   * Read only while the aim probe is on.
+   */
+  receiverAncestors?: bigint[] | null;
 }
 
 export interface ExecutorDeps {
@@ -839,6 +846,26 @@ const ES_READONLY = 0x0800;
  */
 const EDIT_CONTROL_CLASS = /^(?:WindowsForms10\.)?(?:Edit|RichEdit\w*)(?:\.|$)/i;
 
+/**
+ * A window handle as this record writes it and compares it: the unsigned low 32 bits.
+ *
+ * USER handles are 32-bit values sign-extended for interop, so the low 32 bits are the whole handle.
+ * The two sides compared below do not arrive in one width:
+ *   - the named control's handle is written from UIA as unsigned 32-bit (`tree.rs`, and the PowerShell
+ *     script);
+ *   - the receiver comes from `GetFocus` as the native pointer widened to 64 bits.
+ * A handle with bit 31 set would then read as two different numbers for the same control, and the
+ * refusal that is built on this comparison would refuse the right control (2ゲート目). So both sides
+ * are written and compared in one form.
+ */
+function hwnd32(h: bigint): string {
+  return BigInt.asUintN(32, h).toString();
+}
+
+function sameHwnd(a: bigint, b: bigint): boolean {
+  return BigInt.asUintN(32, a) === BigInt.asUintN(32, b);
+}
+
 function receiverFacts(
   receipt: KeyboardReceipt | void,
   entityRect: { x: number; y: number; width: number; height: number } | null,
@@ -846,31 +873,48 @@ function receiverFacts(
   entityHwnd: string | null,
 ): Record<string, unknown> {
   // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
-  if (!receipt) return { receiver: null, receiverIsEntity: null, entityCenterInReceiver: null };
+  if (!receipt) {
+    return { receiver: null, receiverIsEntity: null, receiverInEntity: null, entityCenterInReceiver: null };
+  }
   const hwnd = receipt.receiverHwnd;
   const root = receipt.receiverRootHwnd ?? null;
+  const ancestors = receipt.receiverAncestors ?? null;
   const className = receipt.receiverClass ?? null;
   const style = receipt.receiverStyle ?? null;
   const rect = receipt.receiverRect ?? null;
-  const isWindowItself = hwnd !== null ? hwnd === receipt.windowHwnd : null;
-  const inWindow = root !== null ? root === receipt.windowHwnd : null;
+  const isWindowItself = hwnd !== null ? sameHwnd(hwnd, receipt.windowHwnd) : null;
+  const inWindow = root !== null ? sameHwnd(root, receipt.windowHwnd) : null;
+  // ADR-036 family 2 — whether the receiver IS the named element, by handle. Positions cannot say it
+  // on the title road, where no window position is recorded, and a handle does not move with the
+  // window. `null` when either handle is unknown: a windowless element, or a read that could not say.
+  // A control whose handle was recreated after discover (WinForms `RecreateHandle`, a dialog opened
+  // again) reads `false` here, though it is the same control (2ゲート目).
+  const receiverIsEntity = hwnd !== null && entityHwnd !== null ? hwnd32(hwnd) === entityHwnd : null;
   return {
     receiver: {
-      hwnd: hwnd !== null ? hwnd.toString() : null,
-      windowHwnd: receipt.windowHwnd.toString(),
+      hwnd: hwnd !== null ? hwnd32(hwnd) : null,
+      windowHwnd: hwnd32(receipt.windowHwnd),
       isWindowItself,
-      rootHwnd: root !== null ? root.toString() : null,
+      rootHwnd: root !== null ? hwnd32(root) : null,
       inWindow,
       className,
       rect,
       style,
       editReadOnly:
         style !== null && className !== null && EDIT_CONTROL_CLASS.test(className) ? (style & ES_READONLY) !== 0 : null,
+      ancestors: ancestors !== null ? ancestors.map(hwnd32) : null,
     },
-    // ADR-036 family 2 — whether the receiver IS the named element, by handle. Positions cannot say
-    // it on the title road, where no window position is recorded, and a handle does not move with the
-    // window. `null` when either handle is unknown: a windowless element, or a read that could not say.
-    receiverIsEntity: hwnd !== null && entityHwnd !== null ? hwnd.toString() === entityHwnd : null,
+    receiverIsEntity,
+    // Whether the receiver is the named control or a window INSIDE it. A compound control keeps the
+    // focus in a child window of its own: an editable ComboBox, a NumericUpDown, an IP-address box, a
+    // grid's editing cell. There `receiverIsEntity` is `false` while the characters went into the
+    // control named (2ゲート目). `null` when that cannot be said.
+    receiverInEntity:
+      receiverIsEntity === true
+        ? true
+        : hwnd !== null && entityHwnd !== null && ancestors !== null
+          ? ancestors.some((a) => hwnd32(a) === entityHwnd)
+          : null,
     // Only a receiver known to be a child inside the aimed window is compared. In two cases the
     // reading would say "inside" whatever happened, so it is null there:
     //   - the window itself holds every field;
@@ -1793,11 +1837,32 @@ function getSharedRealDeps(): ExecutorDeps {
         receiverHwnd: typeof r.target === "bigint" ? r.target : null,
       };
       if (receipt.receiverHwnd !== null && aimProbeEnabled()) {
-        const { getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle } = await import("../engine/win32.js");
+        const { getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle, getWindowParent } = await import("../engine/win32.js");
         receipt.receiverClass = getWindowClassName(receipt.receiverHwnd);
         receipt.receiverRect = getWindowRectByHwnd(receipt.receiverHwnd);
         receipt.receiverRootHwnd = getWindowRoot(receipt.receiverHwnd);
         receipt.receiverStyle = getWindowStyle(receipt.receiverHwnd);
+        // The receiver's parents up to its top-level window, nearest first. Bounded, so a chain that
+        // loops cannot hang the act. `null` when the chain breaks before the root: that cannot be said.
+        const root = receipt.receiverRootHwnd;
+        if (root !== null) {
+          const chain: bigint[] = [];
+          let cur: bigint = receipt.receiverHwnd;
+          let reached = sameHwnd(cur, root);
+          for (let i = 0; i < 16 && !reached; i++) {
+            const parent = getWindowParent(cur);
+            if (parent === null) break;
+            if (sameHwnd(parent, root)) {
+              reached = true;
+              break;
+            }
+            chain.push(parent);
+            cur = parent;
+          }
+          receipt.receiverAncestors = reached ? chain : null;
+        } else {
+          receipt.receiverAncestors = null;
+        }
       }
       return receipt;
     },

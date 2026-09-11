@@ -27,6 +27,7 @@ const GWL_EXSTYLE   = -20;
 const GWL_STYLE     = -16;
 const WS_EX_TOPMOST = 0x00000008;
 const GW_OWNER      = 4;
+const GA_PARENT     = 1;
 const GA_ROOT       = 2;
 const GA_ROOTOWNER  = 3;
 
@@ -843,6 +844,19 @@ export function getWindowRoot(hwnd: unknown): bigint | null {
   if (typeof hwnd !== "bigint") return null;
   try {
     return requireNativeWin32().win32GetAncestor!(hwnd, GA_ROOT);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the window's parent (GetAncestor GA_PARENT=1), or null when it has none or the call fails.
+ * The parent of a top-level window is the desktop window, so a walk up the chain stops at the root.
+ */
+export function getWindowParent(hwnd: unknown): bigint | null {
+  if (typeof hwnd !== "bigint") return null;
+  try {
+    return requireNativeWin32().win32GetAncestor!(hwnd, GA_PARENT);
   } catch {
     return null;
   }

@@ -28,6 +28,10 @@ export interface EntityLocator {
      * lets it tell whether that is the element named. A handle does not move with the window, so it
      * answers on the title road too, where no window position is recorded. Absent for a windowless
      * element, and on a read that could not say.
+     *
+     * Written as the unsigned low 32 bits, in decimal. A handle can be RECREATED while the control
+     * lives (WinForms `RecreateHandle`, a dialog opened again), so the value describes the control as
+     * it was when the read ran, and can go stale.
      */
     nativeWindowHandle?: string;
   };
