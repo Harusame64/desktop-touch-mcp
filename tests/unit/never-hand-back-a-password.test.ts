@@ -649,6 +649,9 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       // whose value attribute is empty draws nothing (PR 側 codex on e83cb56).
       new FakeEl("input", { id: "ms2", type: "submit", style: "-webkit-text-security: disc" }),
       new FakeEl("input", { id: "mr1", type: "reset", style: "-webkit-text-security: disc", value: "" }),
+      // A button input has no default caption: with no value attribute it draws an empty button
+      // (win's outside read of 27878c1).
+      new FakeEl("input", { id: "mbt", type: "button", style: "-webkit-text-security: disc" }),
     ]));
     const text = textOf(await browserGetFormHandler({
       selector: "#form", includeHidden: false, maxResults: 50, port: 9222, includeContext: false,
@@ -658,6 +661,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     expect(fields.mb2).toMatchObject({ value: null, valueWithheld: "masked", hasValue: false });
     expect(fields.ms2).toMatchObject({ value: null, valueWithheld: "masked", hasValue: true });
     expect(fields.mr1).toMatchObject({ value: null, valueWithheld: "masked", hasValue: false });
+    expect(fields.mbt).toMatchObject({ value: null, valueWithheld: "masked", hasValue: false });
     expect(leaked(text, TEXT_VALUES)).toEqual([]);
   });
 
