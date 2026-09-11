@@ -815,7 +815,10 @@ function keyboardLanding(
       valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified");
     facts.entityRect = entity.rect ?? null;
     facts.entityControlType = entity.controlType ?? null;
-    Object.assign(facts, receiverFacts(receipt, entity.rect ?? null));
+    // The named element's own window handle, when the read recorded one — the other half of
+    // `receiverIsEntity` below.
+    facts.entityHwnd = entity.locator?.uia?.nativeWindowHandle ?? null;
+    Object.assign(facts, receiverFacts(receipt, entity.rect ?? null, entity.locator?.uia?.nativeWindowHandle ?? null));
   } catch {
     facts.landingError = true;
   }
@@ -839,9 +842,11 @@ const EDIT_CONTROL_CLASS = /^(?:WindowsForms10\.)?(?:Edit|RichEdit\w*)(?:\.|$)/i
 function receiverFacts(
   receipt: KeyboardReceipt | void,
   entityRect: { x: number; y: number; width: number; height: number } | null,
+  /** The named element's own window handle, when the read recorded one (`locator.uia.nativeWindowHandle`). */
+  entityHwnd: string | null,
 ): Record<string, unknown> {
   // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
-  if (!receipt) return { receiver: null, entityCenterInReceiver: null };
+  if (!receipt) return { receiver: null, receiverIsEntity: null, entityCenterInReceiver: null };
   const hwnd = receipt.receiverHwnd;
   const root = receipt.receiverRootHwnd ?? null;
   const className = receipt.receiverClass ?? null;
@@ -862,6 +867,10 @@ function receiverFacts(
       editReadOnly:
         style !== null && className !== null && EDIT_CONTROL_CLASS.test(className) ? (style & ES_READONLY) !== 0 : null,
     },
+    // ADR-036 family 2 — whether the receiver IS the named element, by handle. Positions cannot say
+    // it on the title road, where no window position is recorded, and a handle does not move with the
+    // window. `null` when either handle is unknown: a windowless element, or a read that could not say.
+    receiverIsEntity: hwnd !== null && entityHwnd !== null ? hwnd.toString() === entityHwnd : null,
     // Only a receiver known to be a child inside the aimed window is compared. In two cases the
     // reading would say "inside" whatever happened, so it is null there:
     //   - the window itself holds every field;

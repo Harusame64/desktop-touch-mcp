@@ -119,7 +119,16 @@ export async function fetchUiaCandidates(
         source: "uia",
         target: { kind: "window", id: targetId },
         // `via` — which client read it, so a click's "not found" can be weighed (ADR-036 item 16).
-        locator: { uia: { automationId: el.automationId || undefined, name: el.name, ...(result.via !== undefined && { via: result.via }) } },
+        // `nativeWindowHandle` — the element's own window, when it is one, so the keyboard rung can
+        // tell whether its receiver is this element (ADR-036 family 2).
+        locator: {
+          uia: {
+            automationId: el.automationId || undefined,
+            name: el.name,
+            ...(result.via !== undefined && { via: result.via }),
+            ...(el.nativeWindowHandle !== undefined && { nativeWindowHandle: el.nativeWindowHandle }),
+          },
+        },
         role: uiaRoleFromControlType(el.controlType),
         // ADR-036 item 15 — the window this element was READ from, carried so the coordinate
         // ladder has a handle on this road at all. Before this line a UIA entity recorded no

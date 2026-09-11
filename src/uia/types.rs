@@ -28,6 +28,11 @@ pub struct UiElement {
     pub patterns: Vec<String>,
     pub depth: u32,
     pub value: Option<String>,
+    /// ADR-036 family 2 — this element's own window handle, as a decimal string, when it has one
+    /// (UIA `NativeWindowHandle`). A Win32 or WinForms control is a window of its own, so this is the
+    /// handle a keyboard rung's WM_CHAR reaches when the control holds the focus. A windowless element
+    /// (WPF, most of a browser) has none, and is left out rather than reported as 0.
+    pub native_window_handle: Option<String>,
 }
 
 #[napi(object)]

@@ -444,6 +444,14 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     $elAid  = ''; try { $elAid  = $el.Current.AutomationId } catch {}
     $elCls  = ''; try { $elCls  = $el.Current.ClassName } catch {}
     $elEna  = $false; try { $elEna = $el.Current.IsEnabled } catch {}
+    # ADR-036 family 2 — the element's own window, when it is one. Written exactly as $winHwnd is
+    # above (unsigned through [uint32]::MaxValue, zero dropped), so this road and the native one
+    # give the same string for the same control, and the keyboard rung's receiver compares with it.
+    $elHwnd = $null
+    try {
+        $eh = $el.Current.NativeWindowHandle
+        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue) }
+    } catch {}
 
     ${fetchValuesBlock}
     $elObj = @{
@@ -457,6 +465,7 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
         depth        = $depth
     }
     if ($null -ne $elVal) { $elObj['value'] = $elVal }
+    if ($null -ne $elHwnd) { $elObj['nativeWindowHandle'] = $elHwnd }
     $results.Add($elObj)
     $count++
     if ($count -ge ${maxElements}) { break bfs }
@@ -797,6 +806,13 @@ export interface UiElement {
   depth: number;
   /** Present only when getUiElements was called with fetchValues:true. */
   value?: string;
+  /**
+   * ADR-036 family 2 — the element's own window handle, as a decimal string, when it is a window of
+   * its own (UIA `NativeWindowHandle`; Win32 and WinForms controls are). Absent for a windowless
+   * element, and on a read that could not say. Both roads write it the way they write `windowHwnd`:
+   * unsigned 32-bit, zero dropped.
+   */
+  nativeWindowHandle?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1132,6 +1148,8 @@ export async function getUiElements(
         elements: result.elements.map((el: NativeUiElement) => ({
           ...el,
           boundingRect: el.boundingRect ?? null,
+          // Rust's `None` arrives as null; this type says "absent", like the PowerShell road.
+          nativeWindowHandle: el.nativeWindowHandle ?? undefined,
         })),
         via: "native",
       };
@@ -1671,7 +1689,12 @@ export async function getElementChildren(
         timeoutMs,
       });
       // Normalise boundingRect: Rust Option → null
-      return result.map((el: NativeUiElement) => ({ ...el, boundingRect: el.boundingRect ?? null }));
+      return result.map((el: NativeUiElement) => ({
+        ...el,
+        boundingRect: el.boundingRect ?? null,
+        // Rust's `None` arrives as null; this type says "absent", as `getUiElements` does.
+        nativeWindowHandle: el.nativeWindowHandle ?? undefined,
+      }));
     } catch (e) {
       console.warn("[uia-bridge] Native uiaGetElementChildren failed, falling back to PowerShell:", e);
     }

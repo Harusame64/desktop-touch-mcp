@@ -22,6 +22,14 @@ export interface EntityLocator {
      * when the read could not say.
      */
     via?: "native" | "powershell";
+    /**
+     * ADR-036 family 2 — the element's own window handle, when it is one (UIA `NativeWindowHandle`).
+     * The keyboard rung posts to whatever holds the focus of the window's thread, and this is what
+     * lets it tell whether that is the element named. A handle does not move with the window, so it
+     * answers on the title road too, where no window position is recorded. Absent for a windowless
+     * element, and on a read that could not say.
+     */
+    nativeWindowHandle?: string;
   };
   /** CDP: element identified by CSS selector, optionally scoped to a tab. */
   cdp?: { selector?: string; tabId?: string };
