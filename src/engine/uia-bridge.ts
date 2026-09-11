@@ -1032,6 +1032,14 @@ export interface UiElementsResult {
    */
   clientProviders?: "registered" | "noop" | "failed" | "unavailable";
   elements: UiElement[];
+  /**
+   * Which client read this tree — ADR-036 item 16. The two name one element in different
+   * vocabularies (above), and without the native engine the title-road click script, which does
+   * not register the clientside providers, sees fewer elements than this read (gate 2 on #624). So
+   * a click's "not found" says an element has gone only when the same client read it and looked
+   * for it. Absent on a result that cannot say — a cache entry written from a PowerShell read.
+   */
+  via?: "native" | "powershell";
 }
 
 export async function getUiElements(
@@ -1125,6 +1133,7 @@ export async function getUiElements(
           ...el,
           boundingRect: el.boundingRect ?? null,
         })),
+        via: "native",
       };
       if (cacheKey !== undefined) {
         try { updateUiaCache(cacheKey, JSON.stringify(normalised)); } catch { /* ignore */ }
@@ -1158,7 +1167,7 @@ export async function getUiElements(
   if (cacheKey !== undefined && !result.truncated) {
     try { updateUiaCache(cacheKey, output); } catch { /* ignore */ }
   }
-  return result as UiElementsResult;
+  return { ...(result as UiElementsResult), via: "powershell" };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1331,7 +1340,7 @@ export async function clickElement(
   controlType?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
-): Promise<{ ok: boolean; element?: string; error?: string; code?: string }> {
+): Promise<{ ok: boolean; element?: string; error?: string; code?: string; via?: "native" | "powershell" }> {
   refuseUiaTitleIfExcluded(windowTitle);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // ADR-036 — on the WRITE path a handle is authoritative and is never traded for a title.
@@ -1365,6 +1374,7 @@ export async function clickElement(
         element: result.element ?? undefined,
         error: result.error ?? undefined,
         code: result.code ?? undefined,
+        via: "native",
       };
     } catch (e) {
       console.warn("[uia-bridge] Native uiaClickElement failed, falling back to PowerShell:", e);
@@ -1376,7 +1386,8 @@ export async function clickElement(
     ? makeClickElementScriptByHwnd(options.hwnd, name, automationId, controlType)
     : makeClickElementScript(windowTitle, name, automationId, controlType);
   const output = await runPS(script, 8000);
-  return JSON.parse(output);
+  // Which client answered — ADR-036 item 16 weighs a "not found" by it (see `UiElementsResult.via`).
+  return { ...JSON.parse(output), via: "powershell" };
 }
 
 export async function setElementValue(

@@ -319,11 +319,13 @@ const SUGGESTS: Record<string, string[]> = {
     "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator, and controlType narrows it when the route matched another element by the same text. It runs the same enabled and pattern checks, so a disabled element gives it the same answer.",
     "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
   ],
-  // ADR-036 item 16 — the entity is not there: missing from the live view, or answered "not found"
-  // by UIA on an act that named its window by title, whose press where it used to be is refused.
-  // Re-discovering is the recovery, and a coordinate is exactly what must not be tried.
+  // ADR-036 item 16 — the entity could not be found: missing from the live view (or the view has
+  // expired), or answered "not found" by the UIA client that read it, on an act that named its
+  // window by title, whose press where it used to be is refused. The cause is not known, so none is
+  // asserted (gate 2 on #624). Re-discovering is the recovery, and a coordinate is exactly what
+  // must not be tried.
   EntityNotFound: [
-    "Re-run desktop_discover and act on the fresh entity: the element this lease described is not in the window any more — removed, renamed or moved; or, for an act that named its window by title, another window with that title answered.",
+    "Re-run desktop_discover and act on the fresh entity: the element this lease described could not be found — it may have been removed, renamed or moved, another window with the same title may have answered, or the view it came from may have expired.",
     "Do NOT retry by coordinate: the entity's rect is where the element used to be, and whatever is there now would take the press.",
     "If the element should still be there, let the page or dialog settle and discover again — a list that is re-rendering can drop an element for a moment.",
   ],

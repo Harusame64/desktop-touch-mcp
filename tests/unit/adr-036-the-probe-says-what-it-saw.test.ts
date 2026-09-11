@@ -458,6 +458,21 @@ describe("every lane says what it did with the read (14a)", () => {
       expect(row).toMatchObject({ outcome: "read", scoped: true, pinnedHwnd: "4919", windowHwnd: "4919", candidateCount: 1, warnings: [] });
     });
 
+    it("stamps which client read each element on its locator, and nothing when the read cannot say (ADR-036 item 16)", async () => {
+      const element = {
+        name: "OK", controlType: "Button", isEnabled: true, automationId: "ok",
+        boundingRect: { x: 1, y: 2, width: 3, height: 4 }, patterns: ["Invoke"],
+      };
+      for (const via of ["native", "powershell", undefined] as const) {
+        vi.resetModules();
+        const fetch = await uiaAnswering(async () => ({
+          elements: [element], elementCount: 1, windowHwnd: "4919", ...(via !== undefined && { via }),
+        }));
+        const out = await fetch({ windowTitle: "Dialog", hwnd: "4919" }) as { candidates: Array<{ locator?: { uia?: Record<string, unknown> } }> };
+        expect(out.candidates[0]?.locator?.uia, String(via)).toEqual({ automationId: "ok", name: "OK", ...(via !== undefined && { via }) });
+      }
+    });
+
     it("writes a row for a read that threw, saying what it had asked for", async () => {
       // Before item 14a this lane wrote its row only after a successful read, so a failing UIA read
       // left the same trace as a lane that was never called.

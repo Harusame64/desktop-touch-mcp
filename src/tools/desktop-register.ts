@@ -1057,7 +1057,7 @@ export const desktopActRawHandler = async (
   if (!result.ok && result.reason === "entity_not_found") {
     const failure = toFailureEnvelope(
       Err(new EntityNotFoundRefusalError(
-        "EntityNotFound: the element this act was for is not there any more — nothing was clicked or typed. " +
+        "EntityNotFound: the element this act was for could not be found — nothing was clicked or typed. " +
         "Re-run desktop_discover and act on the fresh entity"
       )),
       { optIn: false, detail: result.detail },
@@ -1582,7 +1582,7 @@ export function registerDesktopTools(server: McpServer): void {
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
       "If ok=false, read 'reason':",
-      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title learns from UIA that the element is gone — nothing was pressed where it used to be;",
+      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told by UIA, through the client that read the element, that it cannot be found — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",

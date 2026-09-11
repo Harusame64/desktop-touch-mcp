@@ -222,11 +222,11 @@ export interface EnvelopeMinimalShape<T = unknown> {
  *
  * `most_likely_cause` is a typed-enum code (PascalCase) drawn from
  * ADR-010 §5.4. S4 trunk wires `LeaseExpired` end-to-end (sub-plan
- * §1.1 F); the other lease-direct codes (`LeaseGenerationMismatch` /
- * `EntityNotFound` / `LeaseDigestMismatch`) are name-pinned in
- * `LEASE_REASON_TO_TYPED_CODE` for expansion mechanical-copy work,
- * but the runtime path for them collapses to `"Unknown"` (sub-plan
- * §7 R4).
+ * §1.1 F), and ADR-036 item 16 wires `EntityNotFound`; the other
+ * lease-direct codes (`LeaseGenerationMismatch` / `LeaseDigestMismatch`)
+ * are name-pinned in `LEASE_REASON_TO_TYPED_CODE` for expansion
+ * mechanical-copy work, but the runtime path for them collapses to
+ * `"Unknown"` (sub-plan §7 R4).
  */
 export interface IfUnexpectedShape {
   most_likely_cause: string;

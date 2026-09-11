@@ -8,7 +8,9 @@
  * specification's Guard `target.exists` ("The tracked entity has not disappeared") and "RPG should
  * fail closed for actions" say it should have been refused. The same arm with the control present but
  * lacking Invoke (Pii-b) is what the downgrade exists for, and it pressed the label correctly — so
- * the refusal is for "not found" only.
+ * the refusal is for "not found" only — and only when the native client both read the entity and
+ * answered the click. Another client can see another tree, where a present element is "not found"
+ * (gate 2 on #624).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -21,10 +23,15 @@ import type { UiEntity } from "../../src/engine/world-graph/types.js";
 /** What a title-only discover leaves behind: a title, and nothing else. */
 const titleOnly: Aim = { kind: "aim", title: "RFS-CELL" };
 
-function uiaEntity(): UiEntity {
+/**
+ * `via` — which client read it, as the UIA provider stamps it. Omitted means native; an explicit
+ * `undefined` means no mark (a default parameter would turn that back into native).
+ */
+function uiaEntity(...mark: [via: "native" | "powershell" | undefined] | []): UiEntity {
+  const via = mark.length ? mark[0] : "native";
   return {
     entityId: "u1", role: "button", label: "ALPHA", confidence: 0.9, sources: ["uia"],
-    locator: { uia: { name: "ALPHA", automationId: "ALPHA" } },
+    locator: { uia: { name: "ALPHA", automationId: "ALPHA", ...(via !== undefined && { via }) } },
     affordances: [{ verb: "invoke", executors: ["uia", "mouse"], confidence: 0.9, preconditions: [], postconditions: [] }],
     generation: "gen-1", evidenceDigest: "d", rect: { x: 100, y: 200, width: 80, height: 30 },
   };
@@ -40,7 +47,12 @@ function deps(over: Partial<ExecutorDeps> = {}): ExecutorDeps {
   };
 }
 
-const failingWith = (text: string) => vi.fn(async () => { throw new Error(text); });
+/**
+ * A UIA click that fails with this text, answered by this client — the mark the real adapter puts
+ * on. Omitted means native; an explicit `undefined` means no mark.
+ */
+const failingWith = (text: string, ...mark: [uiaVia: "native" | "powershell" | undefined] | []) =>
+  vi.fn(async () => { throw Object.assign(new Error(text), { uiaVia: mark.length ? mark[0] : "native" }); });
 
 describe("a title-only click whose element UIA reports gone", () => {
   let dir: string;
@@ -61,9 +73,9 @@ describe("a title-only click whose element UIA reports gone", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function act(d: ExecutorDeps): Promise<unknown> {
+  async function act(d: ExecutorDeps, e: UiEntity = uiaEntity()): Promise<unknown> {
     const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
-    return createDesktopExecutor(titleOnly, d)(uiaEntity(), "click").then((outcome) => outcome, (e: unknown) => e);
+    return createDesktopExecutor(titleOnly, d)(e, "click").then((outcome) => outcome, (err: unknown) => err);
   }
 
   it("is refused, and nothing is pressed where it used to be", async () => {
@@ -92,11 +104,50 @@ describe("a title-only click whose element UIA reports gone", () => {
     expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
   });
 
+  it("keeps the downgrade when another client read the entity, or answered the click (gate 2 on #624)", async () => {
+    // Without the native engine the read registers the clientside providers and the title-road
+    // click does not (2 elements against 26 on Notepad); a native read that fell back once names
+    // elements in the MSAA vocabulary; a native click that threw falls back to that script. A
+    // present element answers "not found" in each, so none of them may say it has gone.
+    for (const [readVia, clickVia] of [["powershell", "native"], ["native", "powershell"], ["powershell", "powershell"]] as const) {
+      const d = deps({ uiaClick: failingWith("Element not found", clickVia) });
+      await act(d, uiaEntity(readVia));
+      expect(d.mouseClick, `${readVia} read, ${clickVia} click`).toHaveBeenCalledWith(140, 215);
+    }
+  });
+
+  it("keeps it when either half carries no mark — an entity or an answer from before the mark", async () => {
+    for (const [readVia, clickVia] of [[undefined, "native"], ["native", undefined]] as const) {
+      const d = deps({ uiaClick: failingWith("Element not found", clickVia) });
+      await act(d, uiaEntity(readVia));
+      expect(d.mouseClick, `${readVia} read, ${clickVia} click`).toHaveBeenCalledWith(140, 215);
+    }
+  });
+
+  it("gets the click's mark from the real adapter — without it the refusal could never fire", async () => {
+    // Every cell above hands the executor a fake `uiaClick` that marks its own error. The real one
+    // has to carry the bridge's `via` across, or production would downgrade every "not found" and
+    // no cell here would notice. No rect: the mouse must not be reachable from this cell.
+    vi.doMock("../../src/engine/uia-bridge.js", async (importOriginal) => ({
+      ...(await importOriginal<object>()),
+      clickElement: vi.fn(async () => ({ ok: false, error: "Element not found", via: "native" })),
+    }));
+    try {
+      const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+      const { rect: _rect, ...noRect } = uiaEntity();
+      const thrown = await createDesktopExecutor(titleOnly)(noRect as UiEntity, "click").then(() => undefined, (e: unknown) => e);
+      expect((thrown as Error | undefined)?.name).toBe("TargetGoneError");
+    } finally {
+      vi.doUnmock("../../src/engine/uia-bridge.js");
+    }
+  });
+
   it("writes a refusal row that names the rung, the reason and the class — and no backend text", async () => {
     await act(deps({ uiaClick: failingWith("Element not found") }));
     const rows = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
     const refusals = rows.filter((r) => r.route === "refusal");
-    expect(refusals.map((r) => [r.rung, r.refused, r.routeFailure])).toEqual([["uia_downgrade", "entity_not_found", "element_not_found"]]);
+    expect(refusals.map((r) => [r.rung, r.refused, r.routeFailure, r.readVia, r.clickVia]))
+      .toEqual([["uia_downgrade", "entity_not_found", "element_not_found", "native", "native"]]);
     expect(rows.some((r) => r.route === "mouse")).toBe(false);
   });
 
@@ -106,7 +157,8 @@ describe("a title-only click whose element UIA reports gone", () => {
     await act(deps({ uiaClick: failingWith("Command failed: powershell.exe -NoProfile -Command \"RFS-SCRIPT\"") }));
     const rows = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
     const downgrades = rows.filter((r) => r.route === "mouse");
-    expect(downgrades.map((r) => r.routeFailure)).toEqual(["pattern_not_supported", null]);
+    expect(downgrades.map((r) => [r.routeFailure, r.readVia, r.clickVia]))
+      .toEqual([["pattern_not_supported", "native", "native"], [null, "native", "native"]]);
     expect(JSON.stringify(rows)).not.toContain("RFS-SCRIPT");
   });
 

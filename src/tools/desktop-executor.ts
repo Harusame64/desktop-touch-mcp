@@ -1180,9 +1180,22 @@ export function createDesktopExecutor(
         // Neither answer proves which window UIA looked in: a refusal is not evidence of the right
         // window, and a success is not either (a same-titled window with a same-named element takes
         // the UIA press and reports it). That ends when UIA presses by handle (item 4).
+        //
+        // And only where "not found" came from the client that read the entity (gate 2 on #624).
+        // Without the native engine, discover reads through a PowerShell script that registers the
+        // clientside providers and the title-road PowerShell click does not — 2 elements against 26
+        // on Notepad, measured once (`uia-bridge.ts`) — so an element discover returned answers "not
+        // found" to the click; and a native read that fell back once names elements in the MSAA
+        // vocabulary while a native click searches COM names. Each tells a present element it has
+        // gone, and the refusal would come back on every re-discover. So both halves must be
+        // native, the combination measured (win2, Pii-a); anything else keeps the downgrade it had
+        // before item 16, and its probe row says which halves it saw.
         const routeFailure = classifyUiaRouteFailure(uiaErr);
-        if (routeFailure === "element_not_found") {
-          probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found" });
+        const readVia = entity.locator?.uia?.via;
+        const clickViaRaw = (uiaErr as { uiaVia?: unknown } | null)?.uiaVia;
+        const clickVia = clickViaRaw === "native" || clickViaRaw === "powershell" ? clickViaRaw : undefined;
+        if (routeFailure === "element_not_found" && readVia === "native" && clickVia === "native") {
+          probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found", readVia, clickVia });
           throw new TargetGoneError(
             `UIA found no element for "${entity.label ?? entity.entityId}" on the title-only road: ` +
             `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing where it used to be.`,
@@ -1243,6 +1256,10 @@ export function createDesktopExecutor(
           // did not recognise it — so the unrecognised answers collect in the log, where the next
           // class to add can be read from. Never the answer's own text.
           routeFailure: routeFailure ?? null,
+          // Which client read the entity and which answered the click — a "not found" that came
+          // down this road, rather than being refused, is a mismatch (or an unmarked half) here.
+          readVia: readVia ?? null,
+          clickVia: clickVia ?? null,
           point: { x, y },
           remembered,
           coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
@@ -1434,7 +1451,9 @@ function getSharedRealDeps(): ExecutorDeps {
       const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
       // ADR-036 — "the window is gone" is not "UIA could not do it": see `aim.ts`.
       if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
-      if (!r.ok) throw new Error(r.error ?? "UIA click failed");
+      // Which client answered, carried on the error: item 16 believes a "not found" only from the
+      // native client, about an entity the native client read.
+      if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA click failed"), { uiaVia: r.via });
     },
 
     async uiaSetValue(windowTitle, value, name, automationId, hwnd) {
