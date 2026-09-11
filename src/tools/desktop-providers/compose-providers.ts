@@ -33,7 +33,7 @@ import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
-import { probeAim }               from "../../engine/aim-probe.js";
+import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
 import { toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
 import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd } from "../../engine/win32.js";
 
@@ -57,7 +57,18 @@ async function fetchVisualCandidatesWithRetry(
   if (!isTransient) return first;
 
   await new Promise<void>((resolve) => setTimeout(resolve, VISUAL_RETRY_DELAY_MS));
-  return fetchVisualCandidates(target);
+  return fetchVisualCandidates(target, 2);
+}
+
+/**
+ * ADR-036 item 14a — a lane that REJECTED never reached its own return, so its row was never
+ * written. Every provider catches inside its body; this is the one road around those catches, and
+ * it used to answer with a warning and no row — the same "nothing here" a lane nobody called prints.
+ * The fallback warning is the one each call site always carried.
+ */
+function settledLane(lane: ProbeLane, s: PromiseSettledResult<ProviderResult>, fallbackWarning: string): ProviderResult {
+  if (s.status === "fulfilled") return s.value;
+  return probeLane(lane, "failed", { why: "rejected" }, { candidates: [], warnings: [fallbackWarning] });
 }
 
 /**
@@ -428,12 +439,8 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
       fetchBrowserCandidates(target),
       fetchVisualCandidatesWithRetry(target),
     ]);
-    const browserResult = browser.status === "fulfilled"
-      ? browser.value
-      : { candidates: [], warnings: ["cdp_provider_failed"] };
-    const visualResult  = visual.status  === "fulfilled"
-      ? visual.value
-      : { candidates: [], warnings: ["visual_provider_unavailable"] };
+    const browserResult = settledLane("cdp", browser, "cdp_provider_failed");
+    const visualResult  = settledLane("visual_gpu", visual, "visual_provider_unavailable");
 
     // The visual lane is the FALLBACK here, so its incapacity is news exactly when CDP failed —
     // the same test Rule-C uses below. A successful CDP discovery does not need to hear about it,
@@ -457,9 +464,9 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
       fetchUiaCandidates(target),
       fetchVisualCandidatesWithRetry(target),
     ]);
-    const termResult   = terminal.status === "fulfilled" ? terminal.value : { candidates: [], warnings: ["terminal_provider_failed"] };
-    const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
-    const visualResult = visual.status   === "fulfilled" ? visual.value   : { candidates: [], warnings: ["visual_provider_unavailable"] };
+    const termResult   = settledLane("terminal", terminal, "terminal_provider_failed");
+    const uiaResult    = settledLane("uia", uia, "uia_provider_failed");
+    const visualResult = settledLane("visual_gpu", visual, "visual_provider_unavailable");
 
     // Terminal reads its own buffer; the visual lane is additive and nobody falls back to it here,
     // so its incapacity is never news on this road. Left out of the first version of the filter for
@@ -479,8 +486,8 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
     fetchUiaCandidates(target),
     fetchVisualCandidatesWithRetry(target),
   ]);
-  const uiaResult    = uia.status    === "fulfilled" ? uia.value    : { candidates: [], warnings: ["uia_provider_failed"] };
-  const visualResult = visual.status === "fulfilled" ? visual.value : { candidates: [], warnings: ["visual_provider_unavailable"] };
+  const uiaResult    = settledLane("uia", uia, "uia_provider_failed");
+  const visualResult = settledLane("visual_gpu", visual, "visual_provider_unavailable");
 
   // OCR lane: additive, UIA-blind targets only.
   // Builds a label dictionary from UIA candidates for snap-correction inside runSomPipeline.
@@ -491,8 +498,10 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
         uiaResult.candidates
           .filter((c) => c.label && c.rect)
           .map((c) => ({ label: c.label!, rect: c.rect })),
-      ).catch((): ProviderResult => ({ candidates: [], warnings: ["ocr_provider_failed"] }))
-    : { candidates: [], warnings: [] };
+      ).catch((): ProviderResult => probeLane("ocr", "failed", { why: "rejected" }, { candidates: [], warnings: ["ocr_provider_failed"] }))
+    // Not called, and said so: on this road "OCR did not look" is a decision about THIS window, and
+    // without a row it prints like a lane nobody instrumented (item 14a).
+    : probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
 
   const merged     = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaBlindForOcr);
   const escalation = applyVisualEscalation(uiaResult, visualResult, "uia");

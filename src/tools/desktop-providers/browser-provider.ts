@@ -12,6 +12,7 @@
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
+import { probeLane } from "../../engine/aim-probe.js";
 
 interface BrowserElement {
   type: string;
@@ -87,7 +88,9 @@ const INTERACTIVE_SCRIPT = `
 export async function fetchBrowserCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
-  if (!target?.tabId) return { candidates: [], warnings: [] };
+  if (!target?.tabId) {
+    return probeLane("cdp", "skipped", { why: "no_tab" }, { candidates: [], warnings: [] });
+  }
   const tabId = target.tabId;
 
   try {
@@ -95,7 +98,7 @@ export async function fetchBrowserCandidates(
     const elements = await evaluateInTab(INTERACTIVE_SCRIPT, tabId, DEFAULT_CDP_PORT) as BrowserElement[];
 
     if (!Array.isArray(elements)) {
-      return { candidates: [], warnings: ["cdp_provider_failed"] };
+      return probeLane("cdp", "failed", { tabId, why: "not_an_array" }, { candidates: [], warnings: ["cdp_provider_failed"] });
     }
 
     const candidates: UiEntityCandidate[] = elements
@@ -114,9 +117,10 @@ export async function fetchBrowserCandidates(
       }));
 
     const warnings = candidates.length === 0 ? ["cdp_no_elements"] : [];
-    return { candidates, warnings };
+    // Counts only: a label on a page can carry anything the user has in front of them.
+    return probeLane("cdp", "read", { tabId, elementCount: elements.length }, { candidates, warnings });
   } catch (err) {
     console.error(`[browser-provider] CDP error for tab "${tabId}":`, err);
-    return { candidates: [], warnings: ["cdp_provider_failed"] };
+    return probeLane("cdp", "failed", { tabId, why: "threw" }, { candidates: [], warnings: ["cdp_provider_failed"] });
   }
 }

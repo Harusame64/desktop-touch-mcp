@@ -50,12 +50,14 @@ describe("the probe is off unless it is asked for", () => {
     probeAim("act.aim", { aimHwnd: "4919", winTitle: "Untitled - Notepad" });
 
     const lines = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toMatchObject({ seq: 1, seam: "see.enter", key: "window:4919" });
-    expect(lines[1]).toMatchObject({ seq: 2, seam: "act.aim", aimHwnd: "4919" });
+    // Row zero is the header every process writes first (item 14b); the seams keep numbers 1 and 2.
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatchObject({ seq: 0, seam: "probe.start" });
+    expect(lines[1]).toMatchObject({ seq: 1, seam: "see.enter", key: "window:4919" });
+    expect(lines[2]).toMatchObject({ seq: 2, seam: "act.aim", aimHwnd: "4919" });
     // The directory did not exist: a probe that needs the operator to prepare a path is a probe
     // that does not run on the machine where the interesting failure happens.
-    expect(lines[0]!.tsMs).toBeGreaterThan(0);
+    expect(lines[1]!.tsMs).toBeGreaterThan(0);
   });
 
   it("records an absent aim as a field, not as a missing row", async () => {
@@ -67,7 +69,8 @@ describe("the probe is off unless it is asked for", () => {
 
     probeAim("act.aim", { aimHwnd: null, winTitle: "@active" });
 
-    const row = JSON.parse(readFileSync(logPath, "utf8").trim());
+    // The last row: row zero is the header every process writes first (item 14b).
+    const row = JSON.parse(readFileSync(logPath, "utf8").trim().split("\n").at(-1)!);
     expect(Object.hasOwn(row, "aimHwnd")).toBe(true);
     expect(row.aimHwnd).toBeNull();
   });
@@ -97,7 +100,8 @@ describe("the probe cannot break what it observes", () => {
 
     probeAim("act.aim", { aimHwnd: 4919n, aim: { kind: "aim", hwnd: 4919n, title: "App" } });
 
-    const row = JSON.parse(readFileSync(logPath, "utf8").trim());
+    // The last row: row zero is the header every process writes first (item 14b).
+    const row = JSON.parse(readFileSync(logPath, "utf8").trim().split("\n").at(-1)!);
     expect(row.aimHwnd).toBe("4919");
     expect(row.aim).toEqual({ kind: "aim", hwnd: "4919", title: "App" });
   });
@@ -116,9 +120,9 @@ describe("the probe cannot break what it observes", () => {
     probeAim("act.route", { route: "uia" });
 
     const rows = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(rows.map((r) => r.seq)).toEqual([1, 2, 3]);        // no gap to count
-    expect(rows[1]).toMatchObject({ seam: "act.aim" });
-    expect(typeof rows[1]!.probeError).toBe("string");
+    expect(rows.map((r) => r.seq)).toEqual([0, 1, 2, 3]);     // row zero is the header; no gap to count
+    expect(rows[2]).toMatchObject({ seam: "act.aim" });
+    expect(typeof rows[2]!.probeError).toBe("string");
   });
 
   it("swallows a payload that cannot be serialised", async () => {
