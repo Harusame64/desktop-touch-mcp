@@ -914,6 +914,9 @@ ${ELEMENT_NAME_JS}
   if (!el) return { ok: false, error: 'Element not found after focus' };
   // Read before any page handler runs: one can replace the element, and a detached element has no
   // computed style left to show that it was masked (PR 側 codex on #623).
+  // The focus evaluate above has already let the page's focus handlers run, so a mask one of them
+  // adds is in place by this read. The by-axis road focuses inside one script, and reads again
+  // after its focus (browser-resolver.ts).
   const maskedBefore = __isMasked(el);
   el.focus();
   // Select all existing content before replacing
@@ -1061,7 +1064,9 @@ ${ELEMENT_NAME_JS}
       readOnly: !!el.readOnly,
       label,
     };
-    if (withheld) { field.valueWithheld = 'masked'; field.hasValue = !!el.value; }
+    // A button's value is its caption, and el.value is only its value attribute (PR 側 codex on
+    // #623's 122185e). One bit either way: the dots are on the screen.
+    if (withheld) { field.valueWithheld = 'masked'; field.hasValue = tagName === 'button' ? (el.textContent || '').trim() !== '' : !!el.value; }
     fields.push(field);
   }
   return { ok: true, selector: ${JSON.stringify(selector)}, count: fields.length, fields };

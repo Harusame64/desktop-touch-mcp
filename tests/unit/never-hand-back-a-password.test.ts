@@ -44,6 +44,8 @@ class FakeEl {
   rejectsWrites = false;
   /** A keyed controlled component that replaces the element when its input event fires. */
   detachOnInput = false;
+  /** A page whose focus handler masks the field — its own style, set as focus arrives. */
+  maskOnFocus = false;
   private current: string;
 
   constructor(tag: string, public attrs: Record<string, string> = {}, children: Array<Child | string> = [], value?: string) {
@@ -117,11 +119,11 @@ class FakeEl {
     const p = this.parentElement;
     if (p) { p.childNodes = p.childNodes.filter((c) => c !== this); this.parentElement = null; }
   }
-  focus(): void {}
+  focus(): void { if (this.maskOnFocus) this.attrs.style = "-webkit-text-security: disc"; }
   select(): void {}
   scrollIntoView(): void {}
   dispatchEvent(event?: { type?: string }): boolean {
-    // Detached, it keeps only its own style: an inherited mask is gone, as a class's would be.
+    // Detached, it shows no mask at all — not even its own style (see `pageWith`).
     if (this.detachOnInput && event?.type === "input") this.remove();
     return true;
   }
@@ -186,9 +188,13 @@ interface Page {
 function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
   const all = (): FakeEl[] => [body, ...body.descendants()];
   const style = (el: { attrs?: Record<string, string> }) => {
-    // -webkit-text-security is inherited, as in a real computed style.
+    // -webkit-text-security is inherited, as in a real computed style. A node that has left the
+    // document has no computed style: in Chrome its values read empty (win's outside read on #623 —
+    // a reading, not measured), so a detached node shows no mask, its own style included.
+    let attached = false;
+    for (let e = el as FakeEl | null; e; e = e.parentElement) if (e === body) { attached = true; break; }
     let masked = false;
-    for (let e = el as FakeEl | null; e?.attrs; e = e.parentElement) {
+    for (let e = el as FakeEl | null; attached && e?.attrs; e = e.parentElement) {
       if (e.attrs.style?.includes("-webkit-text-security: disc")) { masked = true; break; }
     }
     const mask = masked ? "disc" : "none";
@@ -585,6 +591,68 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     ), page);
     expect(byAxis).toMatchObject({ ok: true, actualWithheld: true });
     expect(JSON.stringify(byAxis)).not.toContain("PROBE-SECRET-15");
+  });
+
+  it("browser_fill reads the mask again once the field has focus — a focus handler can put it there", async () => {
+    // Plain before focus, masked by the page's focus handler, replaced on `input`: by axis, the read
+    // before focus sees no mask, and the read after the events looks at a detached node that shows
+    // none (PR 側 codex on #623's 122185e). By selector the focus runs in an evaluate of its own
+    // before the fill's first read, so the mask is already there — the first half keeps that order.
+    const { browserFillInputHandler } = await import("../../src/tools/browser.js");
+    const { buildFillActJs } = await import("../../src/tools/browser-resolver.js");
+    const place = () => {
+      const pin = new FakeEl("input", { id: "pin", type: "text", "aria-label": "One-time code" }, [], "PROBE-SECRET-16");
+      pin.rejectsWrites = true;
+      pin.maskOnFocus = true;
+      pin.detachOnInput = true;
+      fixture.body.append(new FakeEl("p", {}, [pin]));
+      pin.rect = { left: 10, top: 900, width: 160, height: 20 };
+    };
+    place();
+    const bySelector = JSON.stringify(await browserFillInputHandler({ selector: "#pin", value: "PROBE-NEW-16", port: 9222, includeContext: false }));
+    expect(bySelector).toContain("valueWithheld");
+    expect(bySelector).not.toContain("PROBE-SECRET-16");
+    fixture = loginPage();
+    page = pageWith(fixture.body);
+    place();
+    const byAxis = run(buildFillActJs(
+      { by: "ariaLabel", pattern: "One-time code", caseSensitive: false },
+      0, 0, "PROBE-NEW-16",
+      { name: "One-time code", role: null, ariaLabel: "One-time code", tag: "input", total: 1 },
+    ), page);
+    expect(byAxis).toMatchObject({ ok: true, actualWithheld: true });
+    expect(JSON.stringify(byAxis)).not.toContain("PROBE-SECRET-16");
+    // …and a contenteditable pad the same page masks on focus.
+    const pad = new FakeEl("div", { id: "pad", contenteditable: "true", role: "textbox", "aria-label": "Unlock code" }, ["PROBE-SECRET-19"]);
+    pad.rejectsWrites = true;
+    pad.maskOnFocus = true;
+    pad.detachOnInput = true;
+    fixture.body.append(new FakeEl("p", {}, [pad]));
+    pad.rect = { left: 10, top: 940, width: 160, height: 20 };
+    const byAxisPad = run(buildFillActJs(
+      { by: "ariaLabel", pattern: "Unlock code", caseSensitive: false },
+      0, 0, "PROBE-NEW-19",
+      { name: "Unlock code", role: "textbox", ariaLabel: "Unlock code", tag: "div", total: 1 },
+    ), page);
+    expect(byAxisPad).toMatchObject({ ok: true, actualWithheld: true });
+    expect(JSON.stringify(byAxisPad)).not.toContain("PROBE-SECRET-19");
+  });
+
+  it("browser_form says whether a masked button holds a caption, not whether it has a value attribute", async () => {
+    // A button's value is its caption; `el.value` is its value attribute, which says nothing about
+    // the caption (PR 側 codex on #623's 122185e).
+    const { browserGetFormHandler } = await import("../../src/tools/browser.js");
+    fixture.body.querySelector("#form")!.append(new FakeEl("p", {}, [
+      new FakeEl("button", { id: "mb1", style: "-webkit-text-security: disc" }, ["PROBE-SECRET-17"]),
+      new FakeEl("button", { id: "mb2", style: "-webkit-text-security: disc", value: "PROBE-SECRET-18" }),
+    ]));
+    const text = textOf(await browserGetFormHandler({
+      selector: "#form", includeHidden: false, maxResults: 50, port: 9222, includeContext: false,
+    }));
+    const fields = Object.fromEntries((JSON.parse(text) as { fields: Array<Record<string, unknown>> }).fields.map((f) => [f.id, f]));
+    expect(fields.mb1).toMatchObject({ value: null, valueWithheld: "masked", hasValue: true });
+    expect(fields.mb2).toMatchObject({ value: null, valueWithheld: "masked", hasValue: false });
+    expect(leaked(text, TEXT_VALUES)).toEqual([]);
   });
 
   it("scroll(action='to_element') reports the element's name, not an entry's text or a masked one's", async () => {
