@@ -42,6 +42,8 @@ class FakeEl {
   rect = { left: 10, top: 10, width: 160, height: 20 };
   /** A page script that refuses programmatic writes, the way a guarded or controlled input can. */
   rejectsWrites = false;
+  /** A keyed controlled component that replaces the element when its input event fires. */
+  detachOnInput = false;
   private current: string;
 
   constructor(tag: string, public attrs: Record<string, string> = {}, children: Array<Child | string> = [], value?: string) {
@@ -118,7 +120,11 @@ class FakeEl {
   focus(): void {}
   select(): void {}
   scrollIntoView(): void {}
-  dispatchEvent(): boolean { return true; }
+  dispatchEvent(event?: { type?: string }): boolean {
+    // Detached, it keeps only its own style: an inherited mask is gone, as a class's would be.
+    if (this.detachOnInput && event?.type === "input") this.remove();
+    return true;
+  }
 }
 
 /** Split on a separator that is not inside brackets or parentheses. */
@@ -549,6 +555,36 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const text = JSON.stringify(await browserFillInputHandler({ selector: "#t1", value: "PROBE-NEW-9", port: 9222, includeContext: false }));
     expect(text).toContain("PROBE-NEW-9");
     expect(text).not.toContain("valueWithheld");
+  });
+
+  it("browser_fill decides masking before the page's handlers run, which can replace the field", async () => {
+    // A field masked by its container, replaced by a keyed controlled component on `input`: after
+    // the event the old node is detached and shows no mask, so a check made only then read the
+    // field as plain and returned what the page kept (PR 側 codex on #623).
+    const { browserFillInputHandler } = await import("../../src/tools/browser.js");
+    const { buildFillActJs } = await import("../../src/tools/browser-resolver.js");
+    const place = () => {
+      const card = new FakeEl("input", { id: "card", type: "text", "aria-label": "Card number" }, [], "PROBE-SECRET-15");
+      card.rejectsWrites = true;
+      card.detachOnInput = true;
+      fixture.body.append(new FakeEl("p", { style: "-webkit-text-security: disc" }, [card]));
+      card.rect = { left: 10, top: 900, width: 160, height: 20 };
+      return card;
+    };
+    place();
+    const bySelector = JSON.stringify(await browserFillInputHandler({ selector: "#card", value: "PROBE-NEW-15", port: 9222, includeContext: false }));
+    expect(bySelector).toContain("valueWithheld");
+    expect(bySelector).not.toContain("PROBE-SECRET-15");
+    fixture = loginPage();
+    page = pageWith(fixture.body);
+    place();
+    const byAxis = run(buildFillActJs(
+      { by: "ariaLabel", pattern: "Card number", caseSensitive: false },
+      0, 0, "PROBE-NEW-15",
+      { name: "Card number", role: null, ariaLabel: "Card number", tag: "input", total: 1 },
+    ), page);
+    expect(byAxis).toMatchObject({ ok: true, actualWithheld: true });
+    expect(JSON.stringify(byAxis)).not.toContain("PROBE-SECRET-15");
   });
 
   it("scroll(action='to_element') reports the element's name, not an entry's text or a masked one's", async () => {

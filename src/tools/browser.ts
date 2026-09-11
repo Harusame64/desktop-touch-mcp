@@ -912,6 +912,9 @@ export const browserFillInputHandler = async ({
 ${ELEMENT_NAME_JS}
   const el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return { ok: false, error: 'Element not found after focus' };
+  // Read before any page handler runs: one can replace the element, and a detached element has no
+  // computed style left to show that it was masked (PR 側 codex on #623).
+  const maskedBefore = __isMasked(el);
   el.focus();
   // Select all existing content before replacing
   if (typeof el.select === 'function') {
@@ -938,7 +941,7 @@ ${ELEMENT_NAME_JS}
   // verification (matrix doc §3.1 browser_fill).
   const fullActual = el.value !== undefined ? el.value : (el.textContent || '');
   // A masked field's value never leaves the page; the comparison is made here, in the page.
-  const masked = __isMasked(el);
+  const masked = maskedBefore || __isMasked(el);
   return {
     ok: true,
     actual: masked ? undefined : (fullActual || '').slice(0, 100),

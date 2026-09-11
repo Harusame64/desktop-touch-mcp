@@ -562,6 +562,9 @@ export function buildFillActJs(
     return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : '') };
   }
 
+  // Read before any page handler runs: one can replace the element, and a detached element has no
+  // computed style left to show that it was masked (PR 側 codex on #623).
+  const maskedBefore = __isMasked(el);
   el.focus();
   const val = ${JSON.stringify(value)};
   if (isTextInput || isTextArea) {
@@ -576,7 +579,7 @@ export function buildFillActJs(
     el.dispatchEvent(new Event('change', { bubbles: true }));
     const fullActual = el.value !== undefined ? el.value : '';
     // A masked field's value never leaves the page; the comparison is made here, in the page.
-    const masked = __isMasked(el);
+    const masked = maskedBefore || __isMasked(el);
     return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
   }
   // contenteditable
@@ -584,7 +587,7 @@ export function buildFillActJs(
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
   const fullActual = el.textContent || '';
   // A PIN pad can be a contenteditable the page masks; its text stays in the page as well.
-  const maskedEditable = __isMasked(el);
+  const maskedEditable = maskedBefore || __isMasked(el);
   return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
 })()
 `;
