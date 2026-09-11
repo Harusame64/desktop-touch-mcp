@@ -28,9 +28,13 @@
  * 2. **What the page masks is never read out of the page** — a password input, or any element under
  *    `-webkit-text-security`: an input, a <textarea>, a contenteditable PIN pad, a span. Its value is
  *    withheld, its text is not taken for a name, and the text axes do not match it. The rule is about
- *    what the page draws as dots: a hidden input, a checkbox or another input that draws no text, or a
- *    field under display:none, is not masked, and a tool that returns values returns theirs when
- *    asked to (PR 側 codex and win's outside read on #623 — the first version checked inputs only).
+ *    what the page draws, or would draw, as dots: a hidden input, a checkbox or another input that
+ *    draws no text is not masked, and a tool that returns values returns theirs when asked to (PR 側
+ *    codex and win's outside read on #623 — the first version checked inputs only). A field inside a
+ *    display:none subtree that inherits the style is withheld: its computed style still carries it,
+ *    and what it holds is what the page would draw as dots once the section is shown. That fails
+ *    closed on purpose — PR 側 codex on 5b60380 asked for the opposite, and this sentence used to
+ *    promise the opposite without the code doing it.
  *
  * An editable region is its host — the element whose parent is not editable. The elements inside an
  * editor are not entries: they are named by the text the screen shows, and that includes typed text,
