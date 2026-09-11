@@ -6,29 +6,57 @@
  * password: the entity's label in `desktop_discover`, the item's text in `browser_overview`, a
  * candidate's name in `browser_click` (MEASURED 2026-09-11 win2, internal `dev/cdp-password/RESULTS.md`
  * and `RESULTS-retake-before.md`, on `befc1e8b` — an aria-label and a `<label for>` did not help, and
- * a typed value came back the same way). This is the one definition, spliced into each script, so a
- * fourth copy cannot drift from it.
+ * a typed value came back the same way). This is the one definition, spliced into every CDP script
+ * that names an element, so no copy drifts from it.
  *
  * Two rules:
  *
- * 1. **A field's value is never its name**, whatever its type. A text field's value is what the user
- *    typed, and a <textarea>'s text node is its initial value. A field is named the way HTML-AAM names
- *    a text input (§4.1.1, read 2026-09-11 at https://w3c.github.io/html-aam/): aria-labelledby, then
- *    aria-label; then its label elements' text, without the text of any field inside them; then
- *    title; then placeholder; then aria-placeholder. The exception is a button-type input, whose
- *    value is the caption drawn on it (§4.1.2) — page text, not an entry.
- * 2. **A masked field's value is never read out of the page** — a field the page draws as dots:
- *    type=password, or an input under `-webkit-text-security`. What the screen hides, no tool returns.
+ * 1. **An entry is never a name.** An entry is what the user types into: a form field (<input>,
+ *    <textarea>, <select>) or an editable region (contenteditable, an ARIA textbox or searchbox). Its
+ *    value, or its text — a <textarea>'s text node is its initial value, an editor's is what was
+ *    typed — is not taken for its name, whatever its type. A field is named the way HTML-AAM names a
+ *    text input (§4.1.1, read 2026-09-11 at https://w3c.github.io/html-aam/): aria-labelledby, then
+ *    aria-label; then its label elements' text; then title; then placeholder; then aria-placeholder.
+ *    A button-type input takes its labels, then its value — the caption drawn on it, page text rather
+ *    than an entry — then title (§4.1.2); an image input takes its labels, then alt, then title
+ *    (§4.1.3). The localised default captions ("Submit", "Reset", "Submit Query") are not supplied:
+ *    a script in the page cannot know the language the screen shows them in. Any text taken for a
+ *    name — a label's, a referenced element's, an element's own — leaves out every entry inside it,
+ *    which is stricter than the spec (it leaves out only the labelled control's own value), and a
+ *    reference that points at an entry itself gives nothing. Text inside a label that aria-hidden or
+ *    display:none hides is still read: a difference from the spec, not a leak of an entry.
+ * 2. **What the page masks is never read out of the page** — a password input, or any element under
+ *    `-webkit-text-security`: an input, a <textarea>, a contenteditable PIN pad, a span. Its value is
+ *    withheld, its text is not taken for a name, and the text axes do not match it. The rule is about
+ *    what the page draws as dots: a hidden input, or a field under display:none, is not masked, and a
+ *    tool that returns values returns theirs when asked to (PR 側 codex and win's outside read on
+ *    #623 — the first version checked inputs only).
  *
  * The helpers are prefixed `__` because they share an IIFE with each script's own functions.
  */
 export const ELEMENT_NAME_JS = `
+  function __isMasked(el) {
+    if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'password') return true;
+    try {
+      const s = window.getComputedStyle(el);
+      const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
+      return !!sec && sec !== 'none';
+    } catch (e) { return false; }
+  }
+  function __isEntry(el) {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
+    if (el.isContentEditable) return true;
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return role === 'textbox' || role === 'searchbox';
+  }
   function __textWithoutFields(node) {
+    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node))) return '';
     let out = '';
     (function walk(n) {
       for (const c of n.childNodes) {
+        if (out.length > 400) return;
         if (c.nodeType === 3) out += c.nodeValue;
-        else if (c.nodeType === 1 && !/^(INPUT|TEXTAREA|SELECT)$/.test(c.tagName)) walk(c);
+        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c)) walk(c);
       }
     })(node);
     return out.trim().replace(/\\s+/g, ' ');
@@ -44,31 +72,29 @@ export const ELEMENT_NAME_JS = `
     }
     const aria = (el.getAttribute('aria-label') || '').trim();
     if (aria) return aria.slice(0, 80);
-    const type = (el.getAttribute('type') || '').toLowerCase();
-    if (el.tagName === 'INPUT' && /^(button|submit|reset|image)$/.test(type)) {
-      const caption = ((type === 'image' ? el.getAttribute('alt') : '') || el.value || '').trim();
-      if (caption) return caption.slice(0, 80);
-    } else if (el.labels && el.labels.length) {
+    if (el.labels && el.labels.length) {
       const t = Array.from(el.labels).map(function(l) { return __textWithoutFields(l); }).filter(Boolean).join(' ');
       if (t) return t.slice(0, 80);
     }
-    for (const attr of ['title', 'placeholder', 'aria-placeholder']) {
+    const type = el.tagName === 'INPUT' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    const pressable = /^(button|submit|reset|image)$/.test(type);
+    if (type === 'image') {
+      const alt = (el.getAttribute('alt') || '').trim();
+      if (alt) return alt.slice(0, 80);
+    } else if (pressable) {
+      const caption = (el.value || '').trim();
+      if (caption) return caption.slice(0, 80);
+    }
+    for (const attr of pressable ? ['title'] : ['title', 'placeholder', 'aria-placeholder']) {
       const v = (el.getAttribute(attr) || '').trim();
       if (v) return v.slice(0, 80);
     }
     return '';
   }
-  function __isMasked(el) {
-    if (el.tagName !== 'INPUT') return false;
-    if ((el.type || '').toLowerCase() === 'password') return true;
-    try {
-      const s = window.getComputedStyle(el);
-      const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
-      return !!sec && sec !== 'none';
-    } catch (e) { return false; }
-  }
   function __elText(el) {
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return __fieldName(el);
-    return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    // A <select>'s text is its options, which the page wrote; it keeps the name it had.
+    if (el.tagName === 'SELECT' && !__isMasked(el)) return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
+    return __textWithoutFields(el).slice(0, 80);
   }
 `;

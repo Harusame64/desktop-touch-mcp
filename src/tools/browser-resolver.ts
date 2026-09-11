@@ -179,8 +179,10 @@ ${ELEMENT_NAME_JS}
         .join('').trim();
       if (!direct) continue;
       const hay = cs ? direct : direct.toLowerCase();
+      // What the page masks is not matched: a hit on hidden text would answer what the text says.
+      if (!hay.includes(needle) || __isMasked(el)) continue;
       if (hay === needle) record(el, 1.0, 'text');
-      else if (hay.includes(needle)) record(el, 0.8, 'text');
+      else record(el, 0.8, 'text');
     }
   } else if (by === 'regex') {
     let re;
@@ -191,7 +193,7 @@ ${ELEMENT_NAME_JS}
       if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
-      if (re.test(direct)) record(el, 0.9, 'regex');
+      if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();
@@ -578,7 +580,9 @@ export function buildFillActJs(
   el.textContent = val;
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
   const fullActual = el.textContent || '';
-  return { ok: true, actual: (fullActual || '').slice(0, 100), fullActualLen: fullActual.length, fullMatches: fullActual === val };
+  // A PIN pad can be a contenteditable the page masks; its text stays in the page as well.
+  const maskedEditable = __isMasked(el);
+  return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
 })()
 `;
 }

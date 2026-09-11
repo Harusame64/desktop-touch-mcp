@@ -105,15 +105,17 @@ export async function fetchBrowserCandidates(
     }
 
     const candidates: UiEntityCandidate[] = elements
-      // A field with no name keeps its place under its type. It used to borrow its value for a
-      // name, which is how a password became a label.
+      // A field with no name keeps its place under its type and selector. It used to borrow its
+      // value for a name, which is how a password became a label. The selector is part of the label
+      // because a CDP candidate has no rect: two unnamed password fields labelled by type alone
+      // resolved to one entity, and the second could not be reached (2ゲート目 on #623).
       .filter((el) => el.text || el.href || isField(el.type))
       .map((el): UiEntityCandidate => ({
         source: "cdp",
         target: { kind: "browserTab", id: tabId },
         locator: { cdp: { selector: el.selector, tabId } },
         role: cdpRoleFromType(el.type),
-        label: el.text || el.href || el.type,
+        label: el.text || el.href || `${el.type} ${el.selector}`,
         value: el.value,
         actionability: cdpActionability(el.type),
         confidence: el.inViewport ? 1.0 : 0.7,

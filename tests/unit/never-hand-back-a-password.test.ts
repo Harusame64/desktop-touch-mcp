@@ -56,14 +56,25 @@ class FakeEl {
   set value(v: string) { if (!this.rejectsWrites) this.current = String(v); }
   get id(): string { return this.attrs.id ?? ""; }
   get name(): string { return this.attrs.name ?? ""; }
-  get type(): string { return this.tagName === "INPUT" ? (this.attrs.type ?? "text").toLowerCase() : ""; }
+  get type(): string {
+    if (this.tagName === "INPUT") return (this.attrs.type ?? "text").toLowerCase();
+    if (this.tagName === "TEXTAREA") return "textarea";
+    if (this.tagName === "SELECT") return "select-one";
+    if (this.tagName === "BUTTON") return (this.attrs.type ?? "submit").toLowerCase();
+    return "";
+  }
   get placeholder(): string { return this.attrs.placeholder ?? ""; }
   get href(): string { return this.attrs.href ?? ""; }
   get disabled(): boolean { return "disabled" in this.attrs; }
   get readOnly(): boolean { return "readonly" in this.attrs; }
   get checked(): boolean { return "checked" in this.attrs; }
-  get isContentEditable(): boolean { return false; }
+  get isContentEditable(): boolean { return "contenteditable" in this.attrs; }
   get textContent(): string { return this.childNodes.map((c) => c.textContent).join(""); }
+  set textContent(v: string) {
+    if (this.rejectsWrites) return;
+    this.childNodes = [];
+    this.append(new FakeText(String(v)));
+  }
   get innerText(): string { return this.textContent; }
   get children(): FakeEl[] { return this.childNodes.filter((c): c is FakeEl => c instanceof FakeEl); }
   get previousElementSibling(): FakeEl | null {
@@ -100,6 +111,7 @@ class FakeEl {
   }
   focus(): void {}
   select(): void {}
+  scrollIntoView(): void {}
   dispatchEvent(): boolean { return true; }
 }
 
@@ -144,7 +156,7 @@ function matchesCompound(el: FakeEl, compound: string): boolean {
       if (matchesCompound(el, m[1])) return false;
     } else if ((m = /^:disabled/.exec(rest))) {
       if (!el.disabled) return false;
-    } else if ((m = /^:modal/.exec(rest))) {
+    } else if (/^:modal/.test(rest)) {
       return false;
     } else {
       throw new Error(`fake page: selector not supported — ${compound}`);
@@ -162,7 +174,12 @@ interface Page {
 function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
   const all = (): FakeEl[] => [body, ...body.descendants()];
   const style = (el: { attrs?: Record<string, string> }) => {
-    const mask = el?.attrs?.style?.includes("-webkit-text-security: disc") ? "disc" : "none";
+    // -webkit-text-security is inherited, as in a real computed style.
+    let masked = false;
+    for (let e = el as FakeEl | null; e?.attrs; e = e.parentElement) {
+      if (e.attrs.style?.includes("-webkit-text-security: disc")) { masked = true; break; }
+    }
+    const mask = masked ? "disc" : "none";
     return {
       display: "block", visibility: "visible", opacity: "1", position: "static", cursor: "auto",
       transform: "none", zIndex: "auto", overflow: "visible", overflowY: "visible",
@@ -192,13 +209,18 @@ class FakeEvent {
   constructor(public type: string, public init?: object) {}
 }
 
-/** Evaluate a shipped expression against the page, and hand back what CDP's returnByValue would. */
-function run(expression: string, page: Page): unknown {
+/**
+ * Evaluate a shipped expression against the page, and hand back what CDP's returnByValue would.
+ * `extra` binds more names for the expression — values go in as parameters, never into the code.
+ */
+function run(expression: string, page: Page, extra: Record<string, unknown> = {}): unknown {
   const fn = new Function(
-    "window", "document", "CSS", "HTMLInputElement", "HTMLTextAreaElement", "InputEvent", "Event",
+    "window", "document", "CSS", "HTMLInputElement", "HTMLTextAreaElement", "InputEvent", "Event", ...Object.keys(extra),
     `return ${expression.trim()}`,
   );
-  const value = fn(page.window, page.document, { escape: (s: string) => s }, class {}, class {}, FakeEvent, FakeEvent);
+  const value = fn(
+    page.window, page.document, { escape: (s: string) => s }, class {}, class {}, FakeEvent, FakeEvent, ...Object.values(extra),
+  );
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
@@ -220,18 +242,35 @@ function loginPage() {
   const m1 = el("input", { id: "m1", type: "text", title: "PIN", style: "-webkit-text-security: disc" }, [], "PROBE-SECRET-5");
   const s1 = el("input", { id: "s1", type: "submit" }, [], "Log in");
   const go = el("button", { id: "go" }, ["GO"]);
+  // After PR 側 codex on #623: masking is not only an input's. A textarea the page masks, a
+  // contenteditable PIN pad, a masked span inside a button, and a textarea whose aria-labelledby
+  // points at itself (spec-legal).
+  const m2 = el("textarea", { id: "m2", "aria-label": "Recovery code", style: "-webkit-text-security: disc" }, ["PROBE-SECRET-6"]);
+  const ce = el("div", { id: "ce", contenteditable: "true", role: "textbox", "aria-label": "PIN entry", style: "-webkit-text-security: disc" }, ["PROBE-SECRET-7"]);
+  const reveal = el("button", { id: "reveal" }, ["Code: ", el("span", { style: "-webkit-text-security: disc" }, ["PROBE-SECRET-8"])]);
+  const n2 = el("textarea", { id: "n2", "aria-labelledby": "n2" }, ["PROBE-AREA-SELF"]);
   const form = el("form", { id: "form" }, [
     el("p", {}, [p1]), el("p", {}, [p2]), el("p", {}, [t1]), el("p", {}, [p3]), el("p", {}, [l4, " ", p4]),
-    el("p", {}, [t2]), el("p", {}, [a1]), el("p", {}, [m1]), el("p", {}, [go, s1]),
+    el("p", {}, [t2]), el("p", {}, [a1]), el("p", {}, [m1]), el("p", {}, [m2]), el("p", {}, [go, s1]),
   ]);
-  const body = el("body", {}, [el("h1", {}, ["RFS PW PAGE 2"]), form]);
+  // Editable regions: what was typed into them is an entry, not a name (win's outside read on #623).
+  const ed = el("div", { id: "ed", contenteditable: "true" }, ["PROBE-TYPED-8"]);
+  const tb = el("div", { id: "tb", role: "textbox" }, ["PROBE-TYPED-9"]);
+  // A second unnamed password field — "confirm password" — which must stay a separate entity, and a
+  // label wrapping a textarea, whose name must not carry the textarea's text (2ゲート目 on #623).
+  const p5 = el("input", { id: "p5", type: "password" }, [], "PROBE-SECRET-11");
+  form.append(el("p", {}, [p5]));
+  const c1 = el("textarea", { id: "c1" }, ["PROBE-AREA-C1"]);
+  const lc = el("label", { id: "lc" }, ["Comment ", c1]);
+  c1.labels = [lc];
+  const body = el("body", {}, [el("h1", {}, ["RFS PW PAGE 2"]), form, ce, reveal, n2, ed, tb, lc]);
   body.descendants().forEach((e, i) => { e.rect = { left: 10, top: 10 + i * 24, width: 160, height: 20 }; });
-  return { body, p1, p2, p3, p4, t1, t2, a1, m1 };
+  return { body, p1, p2, p3, p4, p5, t1, t2, a1, m1, m2, ce, n2, ed, tb, c1 };
 }
 
 const PROBE = /PROBE-[A-Z0-9-]*[A-Z0-9]/g;
 /** A text field's value may still come back as its VALUE — so each cell names what it allows. */
-const TEXT_VALUES = ["PROBE-TEXT-9", "PROBE-TYPED-7", "PROBE-AREA-NOW"];
+const TEXT_VALUES = ["PROBE-TEXT-9", "PROBE-TYPED-7", "PROBE-AREA-NOW", "PROBE-AREA-SELF", "PROBE-AREA-C1"];
 
 function leaked(text: string, allowed: string[] = []): string[] {
   return [...new Set(text.match(PROBE) ?? [])].filter((t) => !allowed.includes(t)).sort();
@@ -255,7 +294,7 @@ describe("a field is named by its name, never by its value", () => {
   async function nameOf(el: FakeEl): Promise<string> {
     const { ELEMENT_NAME_JS } = await import("../../src/tools/_element-name-js.js");
     el.attrs.id ||= "subject";
-    return run(`(function(){ ${ELEMENT_NAME_JS} return __fieldName(document.getElementById(${JSON.stringify(el.attrs.id)})); })()`, page) as string;
+    return run(`(function(){ ${ELEMENT_NAME_JS} return __fieldName(document.getElementById(subjectId)); })()`, page, { subjectId: el.attrs.id }) as string;
   }
 
   it("takes the HTML-AAM order: aria-labelledby, aria-label, label, title, placeholder", async () => {
@@ -284,17 +323,35 @@ describe("a field is named by its name, never by its value", () => {
     const wrap = new FakeEl("label", {}, ["Notes ", area]);
     area.labels = [wrap];
     const self = new FakeEl("input", { id: "amt", "aria-labelledby": "amt" }, [], "PROBE-TEXT-42");
-    fixture.body.append(wrap).append(self);
+    // A textarea pointing at itself: its own text node is its value (PR 側 codex on #623, P2).
+    const selfArea = new FakeEl("textarea", { id: "sa", "aria-labelledby": "sa" }, ["PROBE-AREA-SELF2"]);
+    // A reference to something the page masks gives nothing either.
+    const hidden = new FakeEl("span", { id: "hs", style: "-webkit-text-security: disc" }, ["PROBE-SECRET-10"]);
+    const toHidden = new FakeEl("input", { id: "rh", "aria-labelledby": "hs" });
+    // An editor inside a label is an entry too: its typed text stays out of the label's name.
+    const bio = new FakeEl("input", { id: "bio" });
+    bio.labels = [new FakeEl("label", {}, ["Bio ", new FakeEl("div", { contenteditable: "true" }, ["PROBE-TYPED-10"])])];
+    fixture.body.append(wrap).append(self).append(selfArea).append(hidden).append(toHidden).append(bio);
     expect(await nameOf(area)).toBe("Notes");
     expect(await nameOf(self)).toBe("");
+    expect(await nameOf(selfArea)).toBe("");
+    expect(await nameOf(toHidden)).toBe("");
+    expect(await nameOf(bio)).toBe("Bio");
   });
 
-  it("keeps a button-type input's value as its name — it is the caption, not an entry", async () => {
+  it("names a button-type input by its labels, then its caption; an image input by alt, never its value", async () => {
+    // HTML-AAM §4.1.2 and §4.1.3 (win's outside read on #623): labels come first for these too,
+    // and an image input's value is not its name.
     const submit = new FakeEl("input", { id: "b1", type: "submit" }, [], "Log in");
     const image = new FakeEl("input", { id: "b2", type: "image", alt: "Search" }, [], "PROBE-IMG");
-    fixture.body.append(submit).append(image);
+    const labelled = new FakeEl("input", { id: "b3", type: "submit" }, [], "Submit");
+    labelled.labels = [new FakeEl("label", {}, ["Pay now"])];
+    const bare = new FakeEl("input", { id: "b4", type: "image" }, [], "PROBE-IMG2");
+    fixture.body.append(submit).append(image).append(labelled).append(bare);
     expect(await nameOf(submit)).toBe("Log in");
     expect(await nameOf(image)).toBe("Search");
+    expect(await nameOf(labelled)).toBe("Pay now");
+    expect(await nameOf(bare)).toBe("");
   });
 });
 
@@ -304,9 +361,14 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const result = await fetchBrowserCandidates({ tabId: "tab-1" } as TargetSpec);
     const labels = Object.fromEntries(result.candidates.map((c) => [c.locator?.cdp?.selector, c.label]));
     expect(labels).toMatchObject({
-      "#p1": "input[password]", "#p2": "Password", "#t1": "input[text]", "#p3": "Account password",
-      "#p4": "PASSCODE-LABEL", "#t2": "Search", "#a1": "textarea", "#m1": "PIN", "#s1": "Log in",
+      "#p1": "input[password] #p1", "#p2": "Password", "#t1": "input[text] #t1", "#p3": "Account password",
+      "#p4": "PASSCODE-LABEL", "#t2": "Search", "#a1": "textarea #a1", "#m1": "PIN", "#s1": "Log in",
+      "#m2": "Recovery code", "#reveal": "Code:", "#n2": "textarea #n2", "#p5": "input[password] #p5",
+      "#c1": "Comment",
     });
+    // Two unnamed fields of one type stay two: a CDP candidate has no rect, so the label is the key.
+    const allLabels = result.candidates.map((c) => c.label);
+    expect(new Set(allLabels).size).toBe(allLabels.length);
     expect(leaked(JSON.stringify(result.candidates.map((c) => c.label)))).toEqual([]);
     // A text field's value stays on its candidate as its value; a masked field's is never read.
     expect(leaked(JSON.stringify(result), TEXT_VALUES)).toEqual([]);
@@ -318,7 +380,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       types: ["all"], inViewportOnly: false, maxResults: 50, port: 9222, includeContext: false,
     }));
     expect(leaked(text)).toEqual([]);
-    for (const name of ["Account password", "PASSCODE-LABEL", "Search", "Password", "PIN", "Log in"]) {
+    for (const name of ["Account password", "PASSCODE-LABEL", "Search", "Password", "PIN", "Log in", "Recovery code", "Code:"]) {
       expect(text).toContain(`"text": "${name}"`);
     }
   });
@@ -342,6 +404,18 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       }), page);
       expect(leaked(JSON.stringify(found)), by).toEqual([]);
     }
+    // A label found by its text is named without the textarea inside it (2ゲート目 on #623).
+    const comment = run(buildCandidateCollectionJs({
+      by: "text", pattern: "Comment", maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
+    }), page) as { results: Array<{ text: string }> };
+    expect(comment.results.map((r) => r.text)).toEqual(["Comment"]);
+    // The text axes do not match what the page masks: a hit would answer what the hidden text says.
+    for (const by of ["text", "regex"] as const) {
+      const found = run(buildCandidateCollectionJs({
+        by, pattern: "SECRET", maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
+      }), page) as { total: number };
+      expect(found.total, by).toBe(0);
+    }
   });
 
   it("browser_form withholds a masked field's value, says whether it holds one, and keeps the rest", async () => {
@@ -350,7 +424,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       selector: "#form", includeHidden: false, maxResults: 50, port: 9222, includeContext: false,
     }));
     const fields = Object.fromEntries((JSON.parse(text) as { fields: Array<Record<string, unknown>> }).fields.map((f) => [f.id, f]));
-    for (const id of ["p1", "p2", "p3", "p4", "m1"]) {
+    for (const id of ["p1", "p2", "p3", "p4", "p5", "m1", "m2"]) {
       expect(fields[id], id).toMatchObject({ value: null, valueWithheld: "masked", hasValue: true });
     }
     expect(fields.t1).toMatchObject({ value: "PROBE-TEXT-9" });
@@ -364,6 +438,19 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const focus = (el: FakeEl) => buildElementInfoFromCdp(run(CDP_FOCUSED_ELEMENT_SCRIPT, pageWith(fixture.body, el)) as object);
     expect(focus(fixture.p1)).toEqual({ name: "p1", type: "INPUT" });
     expect(focus(fixture.m1)).toEqual({ name: "m1", type: "INPUT" });
+    expect(focus(fixture.m2)).toEqual({ name: "m2", type: "TEXTAREA" });
+    // A masked contenteditable has no value, and its text is not offered as its name.
+    expect(focus(fixture.ce)).toEqual({ name: "ce", type: "DIV" });
+    // An editor's typed text is not offered as its name either (win's outside read on #623).
+    expect(focus(fixture.ed)).toEqual({ name: "ed", type: "DIV" });
+    expect(focus(fixture.tb)).toEqual({ name: "tb", type: "DIV" });
+    // With no id and no name the text is next in line, so only an unnamed editor shows the leak
+    // (win's note on the arm's design).
+    const bare = new FakeEl("div", { contenteditable: "true" }, ["PROBE-TYPED-12"]);
+    const bareBox = new FakeEl("div", { role: "textbox" }, ["PROBE-TYPED-13"]);
+    fixture.body.append(bare).append(bareBox);
+    expect(focus(bare)).toEqual({ name: "DIV", type: "DIV" });
+    expect(focus(bareBox)).toEqual({ name: "DIV", type: "DIV" });
     // A text field keeps its value — the field is named, and the value is the value.
     expect(focus(fixture.t2)).toEqual({ name: "t2", type: "INPUT", value: "PROBE-TYPED-7" });
     const unnamed = new FakeEl("textarea", {}, ["PROBE-AREA-INIT"], "PROBE-AREA-NOW");
@@ -375,11 +462,35 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const { browserFillInputHandler } = await import("../../src/tools/browser.js");
     fixture.p1.rejectsWrites = true;
     const refused = JSON.stringify(await browserFillInputHandler({ selector: "#p1", value: "PROBE-NEW-1", port: 9222, includeContext: false }));
-    expect(refused).toContain("actualWithheld");
+    expect(refused).toContain("valueWithheld");
     expect(refused).not.toContain("PROBE-SECRET-1");
+    // …nor the value the caller passed: a copy in a transcript is still a copy (win2's round on #623).
+    expect(refused).not.toContain("PROBE-NEW-1");
     const filled = JSON.stringify(await browserFillInputHandler({ selector: "#p2", value: "PROBE-NEW-2", port: 9222, includeContext: false }));
-    expect(filled).toContain("actualWithheld");
+    expect(filled).toContain("valueWithheld");
+    expect(filled).not.toContain("PROBE-NEW-2");
     expect(filled).not.toContain('\\"actual\\"');
+    fixture.m2.rejectsWrites = true;
+    const area = JSON.stringify(await browserFillInputHandler({ selector: "#m2", value: "PROBE-NEW-6", port: 9222, includeContext: false }));
+    expect(area).toContain("valueWithheld");
+    expect(area).not.toContain("PROBE-SECRET-6");
+    expect(area).not.toContain("PROBE-NEW-6");
+    // The control: a text field still echoes what was filled, and what the page kept.
+    const text = JSON.stringify(await browserFillInputHandler({ selector: "#t1", value: "PROBE-NEW-9", port: 9222, includeContext: false }));
+    expect(text).toContain("PROBE-NEW-9");
+    expect(text).not.toContain("valueWithheld");
+  });
+
+  it("scroll(action='to_element') reports the element's name, not an entry's text or a masked one's", async () => {
+    // A fourth naming site that read textContent (win's outside read on #623).
+    const { scrollToElementHandler } = await import("../../src/tools/scroll-to-element.js");
+    const said = async (selector: string) => textOf(await scrollToElementHandler({ selector, block: "center", port: 9222 }));
+    for (const selector of ["#a1", "#ed", "#tb", "#m2", "#ce", "#n2"]) {
+      expect(leaked(await said(selector)), selector).toEqual([]);
+    }
+    const button = await said("#reveal");
+    expect(button).toContain("Code:");
+    expect(leaked(button)).toEqual([]);
   });
 
   it("browser_fill by axis does not read back a masked field either", async () => {
@@ -392,5 +503,14 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     ), page);
     expect(acted).toMatchObject({ ok: true, actualWithheld: true, fullMatches: false });
     expect(JSON.stringify(acted)).not.toContain("PROBE-SECRET-3");
+    // A contenteditable PIN pad the page masks (PR 側 codex on #623, P1).
+    fixture.ce.rejectsWrites = true;
+    const pad = run(buildFillActJs(
+      { by: "ariaLabel", pattern: "PIN entry", caseSensitive: false },
+      0, 0, "PROBE-NEW-7",
+      { name: "PIN entry", role: "textbox", ariaLabel: "PIN entry", tag: "div", total: 1 },
+    ), page);
+    expect(pad).toMatchObject({ ok: true, actualWithheld: true, fullMatches: false });
+    expect(JSON.stringify(pad)).not.toContain("PROBE-SECRET-7");
   });
 });
