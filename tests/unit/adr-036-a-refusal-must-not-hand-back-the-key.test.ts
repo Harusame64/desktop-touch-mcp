@@ -231,6 +231,16 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect((await adviceFor("AimOccluded")).join(" ")).toMatch(/detail field in if_unexpected names the window/);
   });
 
+  it("puts the detail before the re-discover, which helps only one of the failures it names", async () => {
+    // For three of the four failures the detail can name, a fresh discover finds the same element
+    // giving the same answer. Advice that opens with "re-run desktop_discover" spends the caller's
+    // first round trip on it anyway (win の外からの読み, #622).
+    const advice = await adviceFor("AimRouteFailed");
+    expect(advice[0]).toMatch(/^if_unexpected\.detail says which failure it was/);
+    const rediscover = advice.find((line) => /re-run desktop_discover/i.test(line));
+    expect(rediscover).toMatch(/^When the detail names no failure, or says the element was not found/);
+  });
+
   it("renders each envelope-side class under the name its advice is filed under", () => {
     // `toFailureEnvelope` looks the advice up by `name`; a class whose name drifts gets the
     // generic entry and no test would notice, because the envelope still has a `try_next`.
