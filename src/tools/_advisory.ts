@@ -117,7 +117,7 @@ function buildHint(
   // `_post.ts::snapshotFocusedElement`). UIA-blind targets and non-text controls
   // fail here (suppression is definitional, ADR-022 §5.3):
   //  - `type` is the UIA controlType (PostElementInfo.type)
-  //  - `hasValue` ⇒ UIA exposed a value on it (ValuePattern), an empty one included.
+  //  - `hasValuePattern` ⇒ UIA exposed a value on it (ValuePattern), an empty one included.
   //    The post carries this bit and not the value (ADR-036, option c), which is all
   //    this gate ever read from it.
   //  - automationId !== RootWebArea ⇒ not an embedded web-area root (a Chromium
@@ -125,7 +125,7 @@ function buildHint(
   //    belt with the browser-process check above for Electron/embedded Chromium).
   if (!focusedElement) return null;
   if (!TEXT_INPUT_CONTROL_TYPES.has(focusedElement.type)) return null;
-  if (!focusedElement.hasValue) return null;
+  if (!focusedElement.hasValuePattern) return null;
   if (focusedElement.automationId === WEB_AREA_AUTOMATION_ID) return null;
 
   const windowTitle = typeof args["windowTitle"] === "string" ? (args["windowTitle"] as string) : undefined;

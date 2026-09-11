@@ -29,7 +29,10 @@ export interface PostElementInfo {
   type: string;
   /**
    * Whether UIA exposes a value on the focused element (it may be empty). By default this bit is
-   * all the post carries — ADR-036, the user's decision of 2026-09-11 (option c).
+   * all the post carries — ADR-036, the user's decision of 2026-09-11 (option c). Named for the
+   * pattern, not `hasValue`: `browser_form` already says `hasValue` for a field holding a non-empty
+   * value, and here an empty one counts, so one name would have meant two things (gate 2 on #625;
+   * the maintainer chose the name).
    *
    * Why the value was carried: so an agent could check in one short cycle, without taking another
    * screenshot, what it had typed and where — at a time when input often failed to reach the
@@ -44,7 +47,7 @@ export interface PostElementInfo {
    * terminal input the value did not serve that purpose there (internal
    * `dev/post-focusedelement/RESULTS.md`).
    */
-  hasValue: boolean;
+  hasValuePattern: boolean;
   /**
    * The value itself — only when `DESKTOP_TOUCH_POST_FOCUSED_VALUE=1` (`postCarriesFocusedValue`),
    * which brings back every exposure described above. Kept for checking where input landed when
@@ -112,8 +115,10 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
 /**
  * `DESKTOP_TOUCH_POST_FOCUSED_VALUE=1` puts the focused element's value back into every post, and
  * so into the history ring — the behaviour before option c, with every exposure it had (see
- * `PostElementInfo`). Any other value, or none, keeps it off. Read on every call, so it can be
- * flipped without a restart.
+ * `PostElementInfo`). Any other value, or none, keeps it off. Read on every call, which is how the
+ * tests flip it; a running server reads the environment it was started with, so the variable goes
+ * into the MCP client's config and takes effect on restart. Turning it off does not clear the
+ * values already in the history ring (up to 20), which no public tool reads.
  */
 function postCarriesFocusedValue(): boolean {
   return process.env.DESKTOP_TOUCH_POST_FOCUSED_VALUE === "1";
@@ -135,9 +140,9 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
     // degenerate no-name-no-controlType rows under includeUnnamed). A name-empty
     // editable element flows through with name:"" so the #352 advisory can fire.
     if (!focused) return null;
-    // Whether there is a value, and by default not what it is (see `PostElementInfo.hasValue`). The
+    // Whether there is a value, and by default not what it is (see `PostElementInfo.hasValuePattern`). The
     // history ring stores this same object, so it holds a value only under the switch as well.
-    const info: PostElementInfo = { name: focused.name, type: focused.controlType, hasValue: focused.value != null };
+    const info: PostElementInfo = { name: focused.name, type: focused.controlType, hasValuePattern: focused.value != null };
     if (focused.automationId) info.automationId = focused.automationId;
     if (postCarriesFocusedValue() && focused.value != null) info.value = focused.value;
     return info;

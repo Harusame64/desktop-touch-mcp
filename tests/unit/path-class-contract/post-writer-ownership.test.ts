@@ -215,7 +215,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect(fe!.name).toBe(""); // survived G4 relax with empty name (was → null before)
     expect(fe!.type).toBe("Edit");
     // An empty value still says a value is there; the value itself never leaves (ADR-036, option c).
-    expect(fe!.hasValue).toBe(true);
+    expect(fe!.hasValuePattern).toBe(true);
     expect(fe).not.toHaveProperty("value");
     const advisory = parsed.advisory as Record<string, unknown> | undefined;
     expect(advisory).toBeDefined();
@@ -230,12 +230,12 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     );
     const result = await withPostState("clipboard", async () => ok({ ok: true }))({ action: "read" });
     expect(JSON.stringify(result)).not.toContain("PROBE-SECRET-POST-1");
-    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ name: "Notes", type: "Edit", hasValue: true });
+    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true });
     expect(JSON.stringify(getHistorySnapshot(20))).not.toContain("PROBE-SECRET-POST-1");
     // …and an element with no value says so.
     vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Canvas", controlType: "Pane" } } as never);
     const none = await withPostState("mouse_click", async () => ok({ ok: true }))({});
-    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ name: "Canvas", type: "Pane", hasValue: false });
+    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ name: "Canvas", type: "Pane", hasValuePattern: false });
   });
 
   it("gives the value back only under DESKTOP_TOUCH_POST_FOCUSED_VALUE=1 — the way back the user asked to keep", async () => {
@@ -246,11 +246,11 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     try {
       vi.stubEnv("DESKTOP_TOUCH_POST_FOCUSED_VALUE", "1");
       focusedWith("PROBE-TYPED-POST-2");
-      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValue: true, value: "PROBE-TYPED-POST-2" });
+      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true, value: "PROBE-TYPED-POST-2" });
       // Anything but "1" keeps it off.
       vi.stubEnv("DESKTOP_TOUCH_POST_FOCUSED_VALUE", "0");
       focusedWith("PROBE-TYPED-POST-3");
-      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValue: true });
+      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true });
     } finally {
       vi.unstubAllEnvs();
     }
