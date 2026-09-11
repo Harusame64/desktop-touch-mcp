@@ -92,7 +92,8 @@ export const ELEMENT_NAME_JS = `
     if (type === 'image') {
       const alt = (el.getAttribute('alt') || '').trim();
       if (alt) return alt.slice(0, 80);
-    } else if (pressable) {
+    } else if (pressable && !__isMasked(el)) {
+      // A caption the page draws as dots is withheld like any other masked text (PR 側 codex on #623).
       const caption = (el.value || '').trim();
       if (caption) return caption.slice(0, 80);
     }

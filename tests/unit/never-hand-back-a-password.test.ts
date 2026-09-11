@@ -260,6 +260,8 @@ function loginPage() {
     el("p", {}, [t2]), el("p", {}, [a1]), el("p", {}, [m1]), el("p", {}, [m2]), el("p", {}, [go, s1]),
     // Inside the form, so browser_form reads the button too (win's outside read on #623).
     el("p", {}, [reveal]),
+    // A submit input the page masks: its caption is drawn as dots, so it is no name (PR 側 codex on #623).
+    el("p", {}, [el("input", { id: "ms", type: "submit", style: "-webkit-text-security: disc" }, [], "PROBE-SECRET-14")]),
     // A checkbox and a hidden input under a masked container: neither draws text for the style to hide.
     el("p", { style: "-webkit-text-security: disc" }, [
       el("input", { id: "cb", type: "checkbox", checked: "" }),
@@ -387,7 +389,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       "#p1": "input[password] #p1", "#p2": "Password", "#t1": "input[text] #t1", "#p3": "Account password",
       "#p4": "PASSCODE-LABEL", "#t2": "Search", "#a1": "textarea #a1", "#m1": "PIN", "#s1": "Log in",
       "#m2": "Recovery code", "#reveal": "Code:", "#n2": "textarea #n2", "#p5": "input[password] #p5",
-      "#c1": "Comment",
+      "#c1": "Comment", "#ms": "input[submit] #ms",
     });
     // Two unnamed fields of one type stay two: a CDP candidate has no rect, so the label is the key.
     const allLabels = result.candidates.map((c) => c.label);
@@ -454,7 +456,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       selector: "#form", includeHidden: false, maxResults: 50, port: 9222, includeContext: false,
     }));
     const fields = Object.fromEntries((JSON.parse(text) as { fields: Array<Record<string, unknown>> }).fields.map((f) => [f.id, f]));
-    for (const id of ["p1", "p2", "p3", "p4", "p5", "m1", "m2"]) {
+    for (const id of ["p1", "p2", "p3", "p4", "p5", "m1", "m2", "ms"]) {
       expect(fields[id], id).toMatchObject({ value: null, valueWithheld: "masked", hasValue: true });
     }
     expect(fields.t1).toMatchObject({ value: "PROBE-TEXT-9" });
