@@ -46,6 +46,13 @@ import {
 } from "../engine/aim.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
+import {
+  judgeKeyboardTarget,
+  readKeyboardRungSwitch,
+  parseHandle,
+  KeyboardTargetUnsafeError,
+  type KeyboardFacts,
+} from "../engine/keyboard-target.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -64,7 +71,8 @@ export interface KeyboardReceipt {
    */
   receiverHwnd: bigint | null;
   /**
-   * Read only while the aim probe is on. Each costs a native call, and only the record uses them.
+   * Read by {@link ExecutorDeps.keyboardResolve} on every keyboard write, because the rule needs them.
+   * {@link ExecutorDeps.keyboardTypeBg}, the switch's path, reads them only while the aim probe is on.
    * `receiverRootHwnd` is the top-level window that holds the receiver (GA_ROOT). `receiverStyle` is
    * its style bits (GWL_STYLE): on an edit control, ES_READONLY marks a field that will not take the
    * characters, whichever road the value went by.
@@ -77,9 +85,25 @@ export interface KeyboardReceipt {
    * The receiver's parents, nearest first, up to but not including its top-level window (GA_PARENT
    * repeatedly, bounded). A compound control keeps the focus in a child window of its own, so this is
    * what tells "the receiver is inside the named control" from "the receiver is another control".
-   * Read only while the aim probe is on.
+   * The walk can stop short: a chain longer than 16, or a parent that cannot be read. Then
+   * `ancestorsComplete` is false, and the list holds what was walked, which can still show "inside"
+   * but never "not inside". `null` when the receiver's top-level window could not be read.
    */
   receiverAncestors?: bigint[] | null;
+  /** Whether the parent walk reached the receiver's top-level window. */
+  ancestorsComplete?: boolean;
+  /**
+   * ADR-036 family 2 — what the rule (`engine/keyboard-target.ts`) compares against. They are read by
+   * {@link ExecutorDeps.keyboardResolve} before anything is posted:
+   *   - GA_ROOT of the named control's own window, of the window it was captured in, of the aimed
+   *     window and of the window looked up. Each is null when its window is not alive;
+   *   - the owners of the receiver's top-level window, nearest first (GW_OWNER, bounded).
+   */
+  entityRootHwnd?: bigint | null;
+  originRootHwnd?: bigint | null;
+  aimRootHwnd?: bigint | null;
+  lookupRootHwnd?: bigint | null;
+  ownerChain?: bigint[];
 }
 
 export interface ExecutorDeps {
@@ -126,6 +150,26 @@ export interface ExecutorDeps {
    * then says the receiver is unknown.
    */
   keyboardTypeBg(windowTitle: string, text: string, hwnd?: bigint): Promise<KeyboardReceipt | void>;
+  /**
+   * ADR-036 family 2 — resolve the handle the keyboard rung would post to, and read what the rule
+   * needs about it, without posting anything.
+   *   - `refs` names the windows the rule compares against: the named control's own window, and the
+   *     window the entity was captured in.
+   *   - The window is looked up as {@link ExecutorDeps.keyboardTypeBg} looks it up: by handle when the
+   *     act named one (compared in the low 32 bits), by title otherwise.
+   *   - The same inject check runs on the resolved handle.
+   *
+   * Optional only so a double written before it still loads. A backend without it and
+   * {@link ExecutorDeps.keyboardPost} cannot say where the characters would go. The rung then posts
+   * through `keyboardTypeBg` and marks the success, never returning a plain one unchecked.
+   */
+  keyboardResolve?(
+    windowTitle: string,
+    hwnd: bigint | undefined,
+    refs: { entityHwnd?: bigint; originHwnd?: bigint },
+  ): Promise<KeyboardReceipt>;
+  /** Post `text` to exactly `receipt.receiverHwnd`, the handle that was judged, without asking the focus again. */
+  keyboardPost?(receipt: KeyboardReceipt, text: string): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
   /**
@@ -879,6 +923,8 @@ function receiverFacts(
   const hwnd = receipt.receiverHwnd;
   const root = receipt.receiverRootHwnd ?? null;
   const ancestors = receipt.receiverAncestors ?? null;
+  // A receipt from before the walk could stop short carried a list only when it was complete.
+  const ancestorsComplete = receipt.ancestorsComplete ?? ancestors !== null;
   const className = receipt.receiverClass ?? null;
   const style = receipt.receiverStyle ?? null;
   const rect = receipt.receiverRect ?? null;
@@ -901,12 +947,12 @@ function receiverFacts(
       className,
       rect,
       style,
-      editReadOnly:
-        style !== null && className !== null && EDIT_CONTROL_CLASS.test(className) ? (style & ES_READONLY) !== 0 : null,
+      editReadOnly: editReadOnlyOf(className, style),
       ancestors: ancestors !== null ? ancestors.map(hwnd32) : null,
+      ancestorsComplete: ancestors !== null ? ancestorsComplete : null,
     },
     receiverIsEntity,
-    receiverInEntity: insideEntity(hwnd, root, ancestors, entityHwnd),
+    receiverInEntity: insideEntity(hwnd, root, ancestors, ancestorsComplete, entityHwnd),
     // Only a receiver known to be a child inside the aimed window is compared. In two cases the
     // reading would say "inside" whatever happened, so it is null there:
     //   - the window itself holds every field;
@@ -931,6 +977,8 @@ function insideEntity(
   hwnd: bigint | null,
   root: bigint | null,
   ancestors: bigint[] | null,
+  /** Whether the walk reached the top-level window. A partial walk can show "inside", never "not". */
+  ancestorsComplete: boolean,
   entityHwnd: string | null,
 ): boolean | null {
   if (hwnd === null || entityHwnd === null) return null;
@@ -938,7 +986,102 @@ function insideEntity(
   // `ancestors` stops short of the top-level window, so the root is checked on its own. UIA lists an
   // owned dialog as a child of its owner, so a dialog can be the element named (2ゲート目, second read).
   if (root !== null && hwnd32(root) === entityHwnd) return true;
-  return ancestors !== null ? ancestors.some((a) => hwnd32(a) === entityHwnd) : null;
+  if (ancestors === null) return null;
+  if (ancestors.some((a) => hwnd32(a) === entityHwnd)) return true;
+  return ancestorsComplete ? false : null;
+}
+
+/** `editReadOnly` as the row writes it and the rule reads it: only an Edit-family class's bit answers. */
+function editReadOnlyOf(className: string | null, style: number | null): boolean | null {
+  return style !== null && className !== null && EDIT_CONTROL_CLASS.test(className) ? (style & ES_READONLY) !== 0 : null;
+}
+
+/** The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read. */
+function keyboardFactsOf(entity: UiEntity, receipt: KeyboardReceipt): KeyboardFacts {
+  const ancestors = receipt.receiverAncestors ?? null;
+  return {
+    entityHwnd: parseHandle(entity.locator?.uia?.nativeWindowHandle),
+    entityRoot: receipt.entityRootHwnd ?? null,
+    originRoot: receipt.originRootHwnd ?? null,
+    aimRoot: receipt.aimRootHwnd ?? null,
+    lookupRoot: receipt.lookupRootHwnd ?? null,
+    receiver: receipt.receiverHwnd,
+    receiverRoot: receipt.receiverRootHwnd ?? null,
+    receiverAncestors: ancestors ?? [],
+    ancestorsComplete: receipt.ancestorsComplete ?? ancestors !== null,
+    receiverReadOnly: editReadOnlyOf(receipt.receiverClass ?? null, receipt.receiverStyle ?? null),
+    ownerChain: receipt.ownerChain ?? [],
+  };
+}
+
+/**
+ * ADR-036 family 2 — the keyboard rung: resolve where the characters would go, judge it, and then post
+ * to exactly that handle, or refuse (internal `dev/fam2-refusal/DESIGN.md` §4).
+ *
+ * Both roads that reach the rung come here: the fallback after the value road, and the keyboard-only
+ * entity. The rule itself is `judgeKeyboardTarget`, and nothing here second-guesses it:
+ *   - a refusal throws `KeyboardTargetUnsafeError` before any character is posted;
+ *   - "cannot say" posts and returns the `landing` marker;
+ *   - a confirmed write returns the bare `"keyboard"`, as today.
+ */
+async function keyboardRung(
+  d: ExecutorDeps,
+  entity: UiEntity,
+  winTitle: string,
+  aimHwnd: bigint | undefined,
+  text: string,
+  why: "uia_set_value_failed" | "keyboard_only_entity",
+  valueRoadError?: unknown,
+): Promise<ExecutorKind | ExecutorOutcome> {
+  const sw = readKeyboardRungSwitch();
+  // The switch's whole form: today's path exactly — no check, a bare "keyboard".
+  if (sw.unchecked) {
+    const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
+    probeRoute("keyboard", aimHwnd, entity, { why, verdict: "unchecked", ...keyboardLanding(entity, receipt, valueRoadError) });
+    return "keyboard";
+  }
+  // A backend that cannot resolve the receiver before posting. It posts as before, and the success says
+  // it could not be confirmed.
+  if (!d.keyboardResolve || !d.keyboardPost) {
+    const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
+    probeRoute("keyboard", aimHwnd, entity, {
+      why,
+      verdict: "unconfirmed:receiver_unknown",
+      referenceFrom: "none",
+      ...keyboardLanding(entity, receipt, valueRoadError),
+    });
+    return { kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } };
+  }
+  const receipt = await d.keyboardResolve(winTitle, aimHwnd, {
+    entityHwnd: parseHandle(entity.locator?.uia?.nativeWindowHandle) ?? undefined,
+    originHwnd: observedHwndOfOrigin(entity.origin),
+  });
+  const verdict = judgeKeyboardTarget(keyboardFactsOf(entity, receipt), sw.disabled);
+  if (verdict.kind === "refuse") {
+    // One row, the refusal, carrying the facts it was decided on: nothing was posted, so no route row.
+    probeRefusal("keyboard", "keyboard_target_unsafe", aimHwnd, entity, {
+      why,
+      ground: verdict.ground,
+      referenceFrom: verdict.referenceFrom,
+      ...keyboardLanding(entity, receipt, valueRoadError),
+    });
+    throw new KeyboardTargetUnsafeError(
+      verdict.ground,
+      verdict.subject,
+      `Refusing to type for entity ${entity.entityId}: ${verdict.ground}, receiver ${receipt.receiverHwnd ?? "unknown"}, ` +
+        `reference window from ${verdict.referenceFrom}`,
+    );
+  }
+  await d.keyboardPost(receipt, text);
+  probeRoute("keyboard", aimHwnd, entity, {
+    why,
+    verdict: verdict.confirmed ? "posted" : `unconfirmed:${verdict.why}`,
+    referenceFrom: verdict.referenceFrom,
+    ...keyboardLanding(entity, receipt, valueRoadError),
+  });
+  return verdict.confirmed
+    ? "keyboard"
+    : { kind: "keyboard", landing: { confirmed: false, why: verdict.why, referenceFrom: verdict.referenceFrom } };
 }
 
 function centerInside(
@@ -1258,10 +1401,14 @@ export function createDesktopExecutor(
           // injection was added for. The click path's downgrade is blind by coordinate; this one
           // is not.
           try {
-            const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
-            probeRoute("keyboard", aimHwnd, entity, { why: "uia_set_value_failed", ...keyboardLanding(entity, receipt, uiaErr) });
-            return "keyboard";
+            return await keyboardRung(d, entity, winTitle, aimHwnd, text, "uia_set_value_failed", uiaErr);
           } catch (kbErr) {
+            // ADR-036 family 2 — a refusal is the rung's answer, not its failure. It is re-thrown
+            // before anything below can rename it. The window-gone check would make it
+            // `aim_window_gone`. The ladder's own ending would make it `aim_route_failed` or
+            // `executor_failed`, whose advice is a foreground type into the control this refused
+            // (gate 2, F2 and its second read).
+            if (kbErr instanceof Error && kbErr.name === "KeyboardTargetUnsafeError") throw kbErr;
             // Both rungs are spent, so the refusal that was let through above is now the whole
             // answer: a window that has gone gets the same typed refusal here as it does on the
             // click path, instead of an `executor_failed` that reads like a UIA hiccup
@@ -1567,9 +1714,7 @@ export function createDesktopExecutor(
       text !== undefined &&
       (action === "type" || action === "setValue")
     ) {
-      const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
-      probeRoute("keyboard", aimHwnd, entity, { why: "keyboard_only_entity", ...keyboardLanding(entity, receipt) });
-      return "keyboard";
+      return await keyboardRung(d, entity, winTitle, aimHwnd, text, "keyboard_only_entity");
     }
 
     // ── Mouse fallback ───────────────────────────────────────────────────────
@@ -1646,6 +1791,44 @@ export function createDesktopExecutor(
 }
 
 // ── Real deps (Windows native) ────────────────────────────────────────────────
+
+/**
+ * ADR-036 family 2 — what the keyboard rung reads about the handle it would post to:
+ *   - its class, rect and style;
+ *   - its top-level window (GA_ROOT);
+ *   - its parents up to that window, nearest first.
+ *
+ * The walk is bounded, so a chain that loops cannot hang the act. When it stops short, the list keeps
+ * what was walked and `ancestorsComplete` says so.
+ */
+async function readReceiverFacts(receiver: bigint): Promise<Partial<KeyboardReceipt>> {
+  const { getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle, getWindowParent } = await import("../engine/win32.js");
+  const root = getWindowRoot(receiver);
+  const chain: bigint[] = [];
+  let complete = false;
+  if (root !== null) {
+    let cur: bigint = receiver;
+    complete = sameHwnd(cur, root);
+    for (let i = 0; i < 16 && !complete; i++) {
+      const parent = getWindowParent(cur);
+      if (parent === null) break;
+      if (sameHwnd(parent, root)) {
+        complete = true;
+        break;
+      }
+      chain.push(parent);
+      cur = parent;
+    }
+  }
+  return {
+    receiverClass: getWindowClassName(receiver),
+    receiverRect: getWindowRectByHwnd(receiver),
+    receiverRootHwnd: root,
+    receiverStyle: getWindowStyle(receiver),
+    receiverAncestors: root !== null ? chain : null,
+    ancestorsComplete: root !== null ? complete : false,
+  };
+}
 
 /**
  * Module-level cache so all sessions share one set of native handles
@@ -1852,34 +2035,78 @@ function getSharedRealDeps(): ExecutorDeps {
         receiverHwnd: typeof r.target === "bigint" ? r.target : null,
       };
       if (receipt.receiverHwnd !== null && aimProbeEnabled()) {
-        const { getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle, getWindowParent } = await import("../engine/win32.js");
-        receipt.receiverClass = getWindowClassName(receipt.receiverHwnd);
-        receipt.receiverRect = getWindowRectByHwnd(receipt.receiverHwnd);
-        receipt.receiverRootHwnd = getWindowRoot(receipt.receiverHwnd);
-        receipt.receiverStyle = getWindowStyle(receipt.receiverHwnd);
-        // The receiver's parents up to its top-level window, nearest first. Bounded, so a chain that
-        // loops cannot hang the act. `null` when the chain breaks before the root: that cannot be said.
-        const root = receipt.receiverRootHwnd;
-        if (root !== null) {
-          const chain: bigint[] = [];
-          let cur: bigint = receipt.receiverHwnd;
-          let reached = sameHwnd(cur, root);
-          for (let i = 0; i < 16 && !reached; i++) {
-            const parent = getWindowParent(cur);
-            if (parent === null) break;
-            if (sameHwnd(parent, root)) {
-              reached = true;
-              break;
-            }
-            chain.push(parent);
-            cur = parent;
-          }
-          receipt.receiverAncestors = reached ? chain : null;
-        } else {
-          receipt.receiverAncestors = null;
-        }
+        Object.assign(receipt, await readReceiverFacts(receipt.receiverHwnd));
       }
       return receipt;
+    },
+
+    async keyboardResolve(windowTitle, hwnd, refs) {
+      const { enumWindowsInZOrder, getWindowRoot, getWindowOwner } = await import("../engine/win32.js");
+      const { resolveKeyTarget, canInjectViaPostMessage } = await import("../engine/bg-input.js");
+      const wins = enumWindowsInZOrder();
+      // As `keyboardTypeBg` looks the window up, except that a handle is compared in its low 32 bits
+      // (remaining-work §B, "HWND width"). `keyboardTypeBg` keeps its own lookup, so the switch
+      // restores today exactly.
+      const byHandle = hwnd !== undefined;
+      const matches = byHandle
+        ? wins.filter((w) => sameHwnd(w.hwnd, hwnd))
+        : wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      const win = matches[0];
+      // The same act's lookup, under the name the resolve log already knows it by.
+      logResolve({
+        resolver: "desktopActKeyboardType",
+        query: windowTitle,
+        matches,
+        ...(byHandle && { pinnedByHwnd: true }),
+        identity: "lookup",
+        intent: "write",
+      });
+      if (!win) {
+        throw new Error(
+          byHandle
+            ? `Window not found for keyboardResolve: hwnd ${hwnd} is not in the enumeration (title was "${windowTitle}")`
+            : `Window not found for keyboardResolve: "${windowTitle}"`,
+        );
+      }
+      // Resolved once: this is the handle the rule judges and `keyboardPost` posts to.
+      const resolved = resolveKeyTarget(win.hwnd);
+      const receiver = typeof resolved === "bigint" ? resolved : null;
+      const check = canInjectViaPostMessage(receiver ?? win.hwnd);
+      if (!check.supported) {
+        throw new Error(
+          `Background keyboard type not supported for "${windowTitle}" ` +
+          `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).`,
+        );
+      }
+      const receipt: KeyboardReceipt = { windowHwnd: win.hwnd, receiverHwnd: receiver };
+      if (receiver !== null) Object.assign(receipt, await readReceiverFacts(receiver));
+      const rootOf = (h: bigint | undefined): bigint | null => (h === undefined ? null : getWindowRoot(h));
+      receipt.entityRootHwnd = rootOf(refs.entityHwnd);
+      receipt.originRootHwnd = rootOf(refs.originHwnd);
+      receipt.aimRootHwnd = rootOf(hwnd);
+      receipt.lookupRootHwnd = getWindowRoot(win.hwnd);
+      // The owners of the receiver's top-level window, nearest first. Bounded, and a null ends the walk:
+      // `getWindowOwner` answers null both for "no owner" and for "the call failed".
+      const owners: bigint[] = [];
+      let cur = receipt.receiverRootHwnd ?? null;
+      for (let i = 0; i < 8 && cur !== null; i++) {
+        const owner = getWindowOwner(cur);
+        if (owner === null) break;
+        owners.push(owner);
+        cur = owner;
+      }
+      receipt.ownerChain = owners;
+      return receipt;
+    },
+
+    async keyboardPost(receipt, text) {
+      const { postCharsToResolvedTarget } = await import("../engine/bg-input.js");
+      const target = receipt.receiverHwnd ?? receipt.windowHwnd;
+      logDispatchSink({ sink: "wm_char", tool: "desktop_act:keyboard_type", targetHwnd: receipt.windowHwnd, payloadChars: text.length });
+      const r = postCharsToResolvedTarget(target, text);
+      if (!r.full) {
+        throw new Error(`Background keyboard type incomplete: sent ${r.sent}/${text.length} chars to hwnd ${target}`);
+      }
     },
 
     async aimRect(hwnd) {

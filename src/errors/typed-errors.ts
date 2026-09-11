@@ -261,6 +261,23 @@ export class AimBlockedByExcludedRefusalError extends HandlerError {
 }
 
 /**
+ * ADR-036 family 2 — the keyboard rung would have posted to something other than the field the act
+ * named, on a ground its rule could state (`engine/keyboard-target.ts`): another window, another
+ * control, or a control that does not take typed text. Nothing was typed.
+ *
+ * Its own code because `executor_failed`'s advice is to type through the foreground, which would put
+ * the characters exactly where this refused to. `name` is `"KeyboardTargetUnsafe"`, so the raw shape's
+ * `reason` (derived by `pascalToSnake`) is the `keyboard_target_unsafe` the catalogue documents, and
+ * the SUGGESTS key matches. The engine-side throw is `KeyboardTargetUnsafeError`.
+ */
+export class KeyboardTargetUnsafeRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "KeyboardTargetUnsafe";
+  }
+}
+
+/**
  * R3 tool exclusion — the window may not be touched by this server at all.
  *
  * The engine-side throw is `WindowExcludedError` (`engine/tool-exclusion.ts`), whose module header

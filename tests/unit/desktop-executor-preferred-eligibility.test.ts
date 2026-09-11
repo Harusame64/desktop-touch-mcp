@@ -178,7 +178,7 @@ describe("preferredExecutors block entry eligibility (ADR-020 SR-1 PR-SR1-2)", (
   });
 
   describe("(4) 内部 keyboard fallback は bare 'keyboard' return を維持 (北極星 9 (4))", () => {
-    it("preferredExecutors=['uia','mouse'] + UIA setValue throws + keyboardTypeBg succeeds → bare 'keyboard'", async () => {
+    it("preferredExecutors=['uia','mouse'] + UIA setValue throws + keyboardTypeBg succeeds → 'keyboard', no downgrade, marked when the backend cannot say where it typed", async () => {
       const deps = mockDeps({
         uiaSetValue: vi.fn(async () => {
           throw new Error("UIA setValue failed");
@@ -191,8 +191,11 @@ describe("preferredExecutors block entry eligibility (ADR-020 SR-1 PR-SR1-2)", (
         "setValue",
         "hello",
       );
-      // PR #330 contract: bare "keyboard" return, no downgrade marker emit
-      expect(result).toBe("keyboard");
+      // PR #330 contract: no downgrade marker. ADR-036 family 2 — this double has no
+      // `keyboardResolve` / `keyboardPost`, so the success carries the `landing` marker instead of
+      // being bare; a confirmed write keeps the bare "keyboard" (dev/fam2-refusal §5).
+      expect(result).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
+      expect(result).not.toHaveProperty("downgrade");
       expect(deps.keyboardTypeBg).toHaveBeenCalledOnce();
     });
   });

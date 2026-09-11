@@ -64,6 +64,14 @@ const delta: UiEntity = {
 };
 const keyboardOnly: UiEntity = { ...delta, unsupportedExecutors: ["uia"], preferredExecutors: ["keyboard"] };
 
+/**
+ * What these doubles now answer. They implement `keyboardTypeBg` only, with no `keyboardResolve` /
+ * `keyboardPost`, so nothing can say where the characters went. Since the family-2 refusal the rung
+ * posts through `keyboardTypeBg` as before and marks the success, never a plain one
+ * (internal dev/fam2-refusal/DESIGN.md §4). The row's facts are written as they were.
+ */
+const MARKED = { kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } };
+
 /** The PowerShell road's own words for a read-only field, as win2 collected them (`RESULTS-622.md`). */
 const READ_ONLY_PS = new Error('Exception calling "SetValue" with "1" argument(s): "Value is read-only."');
 
@@ -102,7 +110,7 @@ async function typeInto(entity: UiEntity, d: ExecutorDeps) {
 describe("the rung that falls back from the value road", () => {
   it("names the failure the value road met, and the handle its characters went to (a1ii)", async () => {
     const d = deps({ keyboardTypeBg: writesTo(receipt(BESIDE, BESIDE_RECT)) });
-    expect(await typeInto(delta, d)).toBe("keyboard");
+    expect(await typeInto(delta, d)).toEqual(MARKED);
     expect(keyboardRows()).toHaveLength(1);
     expect(keyboardRows()[0]).toMatchObject({
       why: "uia_set_value_failed",
@@ -187,7 +195,7 @@ describe("the rung that falls back from the value road", () => {
 
   it("records the receiver as null when the backend did not say, rather than leaving it out", async () => {
     const d = deps(); // resolves to nothing, as every backend did before this
-    expect(await typeInto(delta, d)).toBe("keyboard");
+    expect(await typeInto(delta, d)).toEqual(MARKED);
     const row = keyboardRows()[0]!;
     expect(row).toHaveProperty("receiver", null);
     expect(row).toHaveProperty("entityCenterInReceiver", null);
@@ -199,7 +207,7 @@ describe("the rung that falls back from the value road", () => {
     // and answer "background write failed too".
     const malformed = { receiverHwnd: BESIDE } as unknown as KeyboardReceipt;
     const d = deps({ keyboardTypeBg: writesTo(malformed) });
-    expect(await typeInto(delta, d)).toBe("keyboard");
+    expect(await typeInto(delta, d)).toEqual(MARKED);
     expect(keyboardRows()[0]).toMatchObject({
       why: "uia_set_value_failed",
       landingError: true,
@@ -246,7 +254,7 @@ describe("the receiver's read-only bit is read only on an edit control", () => {
 describe("the keyboard-only road", () => {
   it("carries the same facts, with no value road to name", async () => {
     const d = deps({ keyboardTypeBg: writesTo(receipt(BESIDE, BESIDE_RECT)) });
-    expect(await typeInto(keyboardOnly, d)).toBe("keyboard");
+    expect(await typeInto(keyboardOnly, d)).toEqual(MARKED);
     expect(d.uiaSetValue).not.toHaveBeenCalled();
     expect(keyboardRows()[0]).toMatchObject({
       why: "keyboard_only_entity",
@@ -258,19 +266,24 @@ describe("the keyboard-only road", () => {
 
   it("answers the same when the record cannot be read", async () => {
     const d = deps({ keyboardTypeBg: writesTo({ receiverHwnd: BESIDE } as unknown as KeyboardReceipt) });
-    expect(await typeInto(keyboardOnly, d)).toBe("keyboard");
+    expect(await typeInto(keyboardOnly, d)).toEqual(MARKED);
     expect(keyboardRows()[0]).toMatchObject({ why: "keyboard_only_entity", landingError: true, entityRect: DELTA_RECT });
   });
 });
 
 describe("the real backend", () => {
-  /** The window, a post that resolved the focus, and the reads the record costs. */
-  async function typeThroughTheRealBackend() {
+  /**
+   * The window, the focus the rung resolved once, and the reads the rule costs. Since the family-2
+   * refusal the rung resolves the receiver, judges it and then posts to exactly that handle
+   * (`keyboardResolve` / `keyboardPost`), so the reads happen whether or not the probe is on.
+   */
+  async function typeThroughTheRealBackend(style: number) {
     const getWindowClassName = vi.fn(() => EDIT_CLASS);
     const getWindowRectByHwnd = vi.fn(() => BESIDE_RECT);
     const getWindowRoot = vi.fn(() => HWND);
-    const getWindowStyle = vi.fn(() => READ_ONLY_STYLE);
-    const postCharsToHwnd = vi.fn((_hwnd: unknown, text: string) => ({ sent: text.length, full: true, target: BESIDE }));
+    const getWindowStyle = vi.fn(() => style);
+    const resolveKeyTarget = vi.fn(() => BESIDE);
+    const postCharsToResolvedTarget = vi.fn((_target: unknown, text: string) => ({ sent: text.length, full: true, target: BESIDE }));
     vi.doMock("../../src/engine/win32.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../src/engine/win32.js")>()),
       enumWindowsInZOrder: () => [{ hwnd: HWND, title: "RFS-CELL" }],
@@ -278,37 +291,64 @@ describe("the real backend", () => {
       getWindowRectByHwnd,
       getWindowRoot,
       getWindowStyle,
+      getWindowParent: () => null,
+      getWindowOwner: () => null,
     }));
     vi.doMock("../../src/engine/bg-input.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../src/engine/bg-input.js")>()),
-      canInjectAtTarget: () => ({ supported: true }),
-      postCharsToHwnd,
+      canInjectViaPostMessage: () => ({ supported: true }),
+      resolveKeyTarget,
+      postCharsToResolvedTarget,
     }));
     const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
-    const result = await createDesktopExecutor(aim)(keyboardOnly, "type", "PROBE-F2");
-    return { result, reads: [getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle], postCharsToHwnd };
+    const act = createDesktopExecutor(aim)(keyboardOnly, "type", "PROBE-F2");
+    return { act, reads: [getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle], resolveKeyTarget, postCharsToResolvedTarget };
   }
 
-  it("names the handle the post resolved, not a second reading of the focus", async () => {
-    const { result, reads } = await typeThroughTheRealBackend();
-    expect(result).toBe("keyboard");
+  function refusalRows(): Array<Record<string, unknown>> {
+    if (!existsSync(logPath)) return [];
+    return readFileSync(logPath, "utf8").trim().split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((r) => r.seam === "act.route" && r.route === "refusal");
+  }
+
+  it("judges the handle it resolved once, and posts to exactly that handle", async () => {
+    const { act, reads, resolveKeyTarget, postCharsToResolvedTarget } = await typeThroughTheRealBackend(WRITABLE);
+    // DELTA has no handle of its own in this fixture, so the rule cannot say: posted, and marked.
+    expect(await act).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "entity_windowless", referenceFrom: "aim" } });
+    expect(resolveKeyTarget).toHaveBeenCalledOnce();
+    expect(resolveKeyTarget).toHaveBeenCalledWith(HWND);
+    expect(postCharsToResolvedTarget).toHaveBeenCalledWith(BESIDE, "PROBE-F2");
     for (const read of reads) expect(read).toHaveBeenCalledWith(BESIDE);
     expect(keyboardRows()[0]).toMatchObject({
+      verdict: "unconfirmed:entity_windowless",
       receiver: {
         hwnd: BESIDE.toString(), windowHwnd: HWND.toString(), isWindowItself: false,
         rootHwnd: HWND.toString(), inWindow: true,
-        className: EDIT_CLASS, rect: BESIDE_RECT, style: READ_ONLY_STYLE, editReadOnly: true,
+        className: EDIT_CLASS, rect: BESIDE_RECT, style: WRITABLE, editReadOnly: false,
       },
     });
   });
 
-  it("with the probe off, reads nothing more and answers the same", async () => {
+  it("refuses before anything is posted when the focused control does not take typing", async () => {
+    const { act, postCharsToResolvedTarget } = await typeThroughTheRealBackend(READ_ONLY_STYLE);
+    await expect(act).rejects.toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "read_only" });
+    expect(postCharsToResolvedTarget).not.toHaveBeenCalled();
+    // Nothing was posted, so there is no route row — only the refusal, with the facts it was decided on.
+    expect(keyboardRows()).toEqual([]);
+    expect(refusalRows()[0]).toMatchObject({
+      rung: "keyboard", refused: "keyboard_target_unsafe", ground: "read_only",
+      receiver: { hwnd: BESIDE.toString(), editReadOnly: true },
+    });
+  });
+
+  it("with the probe off, still reads what the rule needs, and writes no row", async () => {
     delete process.env.DESKTOP_TOUCH_AIM_PROBE;
     delete process.env.DESKTOP_TOUCH_AIM_PROBE_PATH;
-    const { result, reads, postCharsToHwnd } = await typeThroughTheRealBackend();
-    expect(result).toBe("keyboard");
-    expect(postCharsToHwnd).toHaveBeenCalledWith(HWND, "PROBE-F2");
-    for (const read of reads) expect(read).not.toHaveBeenCalled();
+    const { act, reads, postCharsToResolvedTarget } = await typeThroughTheRealBackend(WRITABLE);
+    expect(await act).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
+    expect(postCharsToResolvedTarget).toHaveBeenCalledWith(BESIDE, "PROBE-F2");
+    for (const read of reads) expect(read).toHaveBeenCalledWith(BESIDE);
     expect(keyboardRows()).toEqual([]);
   });
 });

@@ -57,6 +57,7 @@ export type TouchFailReason =
   | "aim_occluded"
   | "aim_blocked_by_excluded_window"
   | "aim_route_failed"
+  | "keyboard_target_unsafe"
   | "window_excluded"
   | "executor_failed";
 
@@ -206,6 +207,11 @@ export type TouchResult =
        * undefined) when no fallback happened.
        */
       downgrade?: ExecutorOutcome["downgrade"];
+      /**
+       * ADR-036 family 2 — the keyboard rung posted, but could not confirm the characters reached the
+       * element named; see {@link ExecutorOutcome.landing}. Absent on a confirmed write.
+       */
+      landing?: ExecutorOutcome["landing"];
       /**
        * ADR-024 Seed-2 — post-action ROI capture (diff-region crop + lease-less
        * entity preview) attached by the registration wrapper when the target is
@@ -640,6 +646,12 @@ export class GuardedTouchLoop {
       if (err instanceof Error && err.name === "AimedRouteFailedError") {
         return { ok: false, reason: "aim_route_failed", diff: [], ...(detail !== undefined && { detail }) };
       }
+      // ADR-036 family 2 — the keyboard rung refused to post, on a ground its rule could state
+      // (`engine/keyboard-target.ts`). Flattened, it would arrive as `executor_failed`, whose advice
+      // is a foreground type: the characters would go to the control this refused.
+      if (err instanceof Error && err.name === "KeyboardTargetUnsafeError") {
+        return { ok: false, reason: "keyboard_target_unsafe", diff: [], ...(detail !== undefined && { detail }) };
+      }
       // ADR-036 item 16 — UIA says the element is gone, and the press where it was is refused. The
       // fact the lease check reports when the entity is missing from the live view, found one step
       // later: the same reason, and the same recovery — re-discover.
@@ -659,6 +671,8 @@ export class GuardedTouchLoop {
     const executor: ExecutorKind = typeof outcome === "string" ? outcome : outcome.kind;
     const downgrade: ExecutorOutcome["downgrade"] | undefined =
       typeof outcome === "string" ? undefined : outcome.downgrade;
+    const landing: ExecutorOutcome["landing"] | undefined =
+      typeof outcome === "string" ? undefined : outcome.landing;
 
     // 6. Compute semantic diff against the pre-touch snapshot.
     //
@@ -695,6 +709,7 @@ export class GuardedTouchLoop {
       diff,
       next: diff.length > 0 ? "refresh_view" : "none",
       ...(downgrade ? { downgrade } : {}),
+      ...(landing ? { landing } : {}),
       ...(roiMaterial ? { roiMaterial } : {}),
     };
   }

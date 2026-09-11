@@ -180,6 +180,11 @@ const aim: Aim = { kind: "aim", title: "RFS-CELL", hwnd: HWND };
 const RECT = { x: 100, y: 200, width: 120, height: 24 };
 const WRITABLE = 0x50010080;
 const READ_ONLY_PS = new Error('Exception calling "SetValue" with "1" argument(s): "Value is read-only."');
+/**
+ * What a double with only `keyboardTypeBg` answers since the family-2 refusal: it cannot say where it
+ * typed, so the rung posts and marks the success (internal dev/fam2-refusal/DESIGN.md §4).
+ */
+const MARKED = { kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } };
 
 function delta(ownHandle?: string): UiEntity {
   return {
@@ -238,7 +243,7 @@ describe("the keyboard rung's row says whether its receiver is the named control
 
   it("says yes when the receiver's handle is the named control's own", async () => {
     const { answer, row } = await rowFor(delta("5001"), writingTo(CTRL));
-    expect(answer).toBe("keyboard"); // an observation: the act answers as it did
+    expect(answer).toEqual(MARKED); // the row is an observation; this double cannot say where it typed
     expect(row).toMatchObject({ entityHwnd: "5001", receiverIsEntity: true, receiverInEntity: true, receiver: { hwnd: "5001" } });
   });
 
@@ -324,20 +329,25 @@ describe("the keyboard rung's row says whether its receiver is the named control
 
   it("cannot say when the backend handed back no receipt at all", async () => {
     const { answer, row } = await rowFor(delta("5001"), deps(async () => {}));
-    expect(answer).toBe("keyboard");
+    expect(answer).toEqual(MARKED);
     expect(row).toMatchObject({ entityHwnd: "5001", receiver: null, receiverIsEntity: null, receiverInEntity: null });
   });
 });
 
-describe("the real backend reads the receiver's parents, and only while the probe is on", () => {
+describe("the real backend reads the receiver's parents before it posts", () => {
   beforeEach(probeOn);
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const keyboardOnly = (h: string): UiEntity => ({ ...delta(h), unsupportedExecutors: ["uia"], preferredExecutors: ["keyboard"] });
 
-  /** The window, a post whose focus landed on `target`, and a parent chain the test draws. */
+  /**
+   * The window, the focus the rung resolved once (`target`), and a parent chain the test draws. Since
+   * the family-2 refusal the rung judges the receiver before posting, so the walk runs whether or not
+   * the probe is on, and the post goes to exactly the handle that was judged.
+   */
   async function typeThroughTheRealBackend(target: bigint, parentOf: (h: bigint) => bigint | null) {
     const getWindowParent = vi.fn((h: unknown) => parentOf(h as bigint));
+    const postCharsToResolvedTarget = vi.fn((_t: unknown, text: string) => ({ sent: text.length, full: true, target }));
     vi.doMock("../../src/engine/win32.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../src/engine/win32.js")>()),
       enumWindowsInZOrder: () => [{ hwnd: HWND, title: "RFS-CELL" }],
@@ -346,50 +356,62 @@ describe("the real backend reads the receiver's parents, and only while the prob
       getWindowRoot: () => HWND,
       getWindowStyle: () => WRITABLE,
       getWindowParent,
+      getWindowOwner: () => null,
     }));
     vi.doMock("../../src/engine/bg-input.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../src/engine/bg-input.js")>()),
-      canInjectAtTarget: () => ({ supported: true }),
-      postCharsToHwnd: (_hwnd: unknown, text: string) => ({ sent: text.length, full: true, target }),
+      canInjectViaPostMessage: () => ({ supported: true }),
+      resolveKeyTarget: () => target,
+      postCharsToResolvedTarget,
     }));
     const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
     const result = await createDesktopExecutor(aim)(keyboardOnly("5001"), "type", "PROBE-OH");
-    return { result, getWindowParent, row: keyboardRow() };
+    return { result, getWindowParent, postCharsToResolvedTarget, row: keyboardRow() };
   }
 
   const chain = new Map<bigint, bigint>([[INNER, CTRL], [CTRL, PANEL], [PANEL, HWND]]);
 
   it("walks up to the window, nearest first, and stops there", async () => {
-    const { result, getWindowParent, row } = await typeThroughTheRealBackend(INNER, (h) => chain.get(h) ?? null);
+    const { result, getWindowParent, postCharsToResolvedTarget, row } = await typeThroughTheRealBackend(INNER, (h) => chain.get(h) ?? null);
+    // The named control is among the receiver's parents: confirmed, so the bare "keyboard".
     expect(result).toBe("keyboard");
+    expect(postCharsToResolvedTarget).toHaveBeenCalledWith(INNER, "PROBE-OH");
     expect(getWindowParent.mock.calls.map((c) => c[0])).toEqual([INNER, CTRL, PANEL]);
-    expect(row).toMatchObject({ receiverIsEntity: false, receiverInEntity: true, receiver: { hwnd: "5003", ancestors: ["5001", "6000"] } });
+    expect(row).toMatchObject({
+      verdict: "posted",
+      receiverIsEntity: false,
+      receiverInEntity: true,
+      receiver: { hwnd: "5003", ancestors: ["5001", "6000"], ancestorsComplete: true },
+    });
   });
 
   it("reads no parents for the window itself: an empty chain, not an unknown one", async () => {
-    const { getWindowParent, row } = await typeThroughTheRealBackend(HWND, (h) => chain.get(h) ?? null);
+    const { result, getWindowParent, row } = await typeThroughTheRealBackend(HWND, (h) => chain.get(h) ?? null);
     expect(getWindowParent).not.toHaveBeenCalled();
-    expect(row).toMatchObject({ receiver: { isWindowItself: true, ancestors: [] } });
+    expect(result).toMatchObject({ kind: "keyboard", landing: { why: "receiver_is_window" } });
+    expect(row).toMatchObject({ receiver: { isWindowItself: true, ancestors: [], ancestorsComplete: true } });
   });
 
-  it("says nothing — null — when the chain breaks before the window", async () => {
-    const { row } = await typeThroughTheRealBackend(INNER, () => null);
-    expect(row).toMatchObject({ receiverInEntity: null, receiver: { ancestors: null } });
+  it("keeps what it walked when the chain breaks before the window, and cannot say 'not inside'", async () => {
+    const { result, row } = await typeThroughTheRealBackend(INNER, () => null);
+    expect(result).toMatchObject({ kind: "keyboard", landing: { why: "parents_unread" } });
+    expect(row).toMatchObject({ receiverInEntity: null, receiver: { ancestors: [], ancestorsComplete: false } });
   });
 
-  it("gives up on a chain that never reaches the window, after a bounded walk, and says nothing", async () => {
+  it("gives up on a chain that never reaches the window, after a bounded walk, and cannot say", async () => {
     const { result, getWindowParent, row } = await typeThroughTheRealBackend(INNER, (h) => h + 1n);
-    expect(result).toBe("keyboard");
+    expect(result).toMatchObject({ kind: "keyboard", landing: { why: "parents_unread" } });
     expect(getWindowParent).toHaveBeenCalledTimes(16);
-    expect(row).toMatchObject({ receiverInEntity: null, receiver: { ancestors: null } });
+    expect(row).toMatchObject({ receiverInEntity: null, receiver: { ancestorsComplete: false } });
+    expect((row!.receiver as { ancestors: unknown[] }).ancestors).toHaveLength(16);
   });
 
-  it("with the probe off, walks nothing and answers the same", async () => {
+  it("with the probe off, still walks what the rule needs, and writes no row", async () => {
     vi.stubEnv("DESKTOP_TOUCH_AIM_PROBE", undefined);
     vi.stubEnv("DESKTOP_TOUCH_AIM_PROBE_PATH", undefined);
     const { result, getWindowParent, row } = await typeThroughTheRealBackend(INNER, (h) => chain.get(h) ?? null);
     expect(result).toBe("keyboard");
-    expect(getWindowParent).not.toHaveBeenCalled();
+    expect(getWindowParent.mock.calls.map((c) => c[0])).toEqual([INNER, CTRL, PANEL]);
     expect(row).toBeUndefined();
   });
 });

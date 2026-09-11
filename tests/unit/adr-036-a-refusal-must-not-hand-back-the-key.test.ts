@@ -23,11 +23,13 @@ import {
   AimBlockedByExcludedWindowError,
 } from "../../src/engine/aim.js";
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
+import { KeyboardTargetUnsafeError } from "../../src/engine/keyboard-target.js";
 import {
   AimPointOutsideWindowError,
   AimRouteFailedError,
   WindowExcludedRefusalError,
   AimBlockedByExcludedRefusalError,
+  KeyboardTargetUnsafeRefusalError,
   CursorPlacementBlockedError,
   CoordinateOutsideReachableBoundsError,
 } from "../../src/errors/typed-errors.js";
@@ -120,6 +122,19 @@ describe("the loop keeps each refusal's own name", () => {
     }
   });
 
+  it("says the keyboard rung refused to post, not that the executor failed", async () => {
+    // ADR-036 family 2 — flattened to `executor_failed`, its advice is a foreground type, and the
+    // characters would go to the very control the rung refused.
+    const { loop, lease } = loopThatThrows(new KeyboardTargetUnsafeError("other_control", "named", "internal: receiver 5002"));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("keyboard_target_unsafe");
+      expect(result.detail).toMatch(/other_control/);
+      expect(result.detail).not.toContain("5002");
+    }
+  });
+
   it("publishes the same reason the loop reported, which the class name alone decides", async () => {
     // Two surfaces, one refusal. `desktop_act`'s catalogue documents the reason the loop reports,
     // while the RAW (non-opt-in) shape derives its `reason` from the typed error's name through
@@ -128,6 +143,7 @@ describe("the loop keeps each refusal's own name", () => {
     // short one (PR 側 codex on #618, P2).
     const raw = (e: Error) => (toFailureEnvelope(Err(e), { optIn: false }) as { reason?: string }).reason;
     expect(raw(new AimBlockedByExcludedRefusalError("x"))).toBe("aim_blocked_by_excluded_window");
+    expect(raw(new KeyboardTargetUnsafeRefusalError("x"))).toBe("keyboard_target_unsafe");
     // The control: the same derivation on the refusals that were already right. Without these the
     // assertion above could be satisfied by a special case rather than by the naming rule.
     expect(raw(new WindowExcludedRefusalError("x"))).toBe("window_excluded");
@@ -169,6 +185,7 @@ describe("the loop keeps each refusal's own name", () => {
     expect(new AimedRouteFailedError("x").name).toBe("AimedRouteFailedError");
     expect(new WindowExcludedError("x").name).toBe("WindowExcludedError");
     expect(new AimBlockedByExcludedWindowError("x").name).toBe("AimBlockedByExcludedWindowError");
+    expect(new KeyboardTargetUnsafeError("read_only", "named", "x").name).toBe("KeyboardTargetUnsafeError");
   });
 });
 
@@ -196,7 +213,28 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(generic.join(" ")).toMatch(/mouse_click/);
   });
 
-  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcludedWindow"]) {
+  it("no refusal's advice recommends typing through the foreground, which reaches whatever holds the focus", async () => {
+    // The control: the generic advice does recommend it, and that is the key a flattened refusal
+    // would hand back (gate 2's second read of the family-2 design).
+    expect((await adviceFor("ExecutorFailed")).join(" ")).toMatch(/method:'foreground'/);
+    for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcludedWindow", "KeyboardTargetUnsafe"]) {
+      for (const line of await adviceFor(name)) {
+        if (!/method:\s*'foreground'|keyboard\(\{/.test(line)) continue;
+        expect(line, `${name} recommends a foreground type: ${line}`).toMatch(/do not|never|cannot/i);
+      }
+    }
+  });
+
+  it("documents keyboard_target_unsafe in both catalogues, with the foreground type forbidden", () => {
+    for (const file of ["../../src/server-windows.ts", "../../src/tools/desktop-register.ts"]) {
+      const source = readFileSync(new URL(file, import.meta.url), "utf8");
+      const entry = source.split("\n").find((line) => line.includes("keyboard_target_unsafe →")) ?? "";
+      expect(entry, file).toMatch(/nothing was typed/);
+      expect(entry, file).toMatch(/do NOT type through the foreground/);
+    }
+  });
+
+  for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcludedWindow", "KeyboardTargetUnsafe"]) {
     it(`${name} never tells the caller to press the coordinate it just refused`, async () => {
       const advice = await adviceFor(name);
       const joined = advice.join(" ");
@@ -265,6 +303,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(new AimRouteFailedError("x").name).toBe("AimRouteFailed");
     expect(new WindowExcludedRefusalError("x").name).toBe("WindowExcluded");
     expect(new AimBlockedByExcludedRefusalError("x").name).toBe("AimBlockedByExcludedWindow");
+    expect(new KeyboardTargetUnsafeRefusalError("x").name).toBe("KeyboardTargetUnsafe");
   });
 
   it("does not tell a caller whose window is fine that their window is the excluded one", async () => {

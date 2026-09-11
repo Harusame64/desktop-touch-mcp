@@ -77,6 +77,20 @@ export interface ExecutorOutcome {
     /** Short human-readable reason — the underlying error message is the canonical source. */
     reason: string;
   };
+  /**
+   * ADR-036 family 2 — the keyboard rung posted, but could not confirm that the characters reached
+   * the element named: the rule (`engine/keyboard-target.ts`) could not say, and the user's contract
+   * is to post and mark the success ("分からないときは2"). `why` says what could not be read, and
+   * `referenceFrom` which window was taken to be the named control's. Absent on a confirmed write.
+   */
+  landing?: LandingUnconfirmed;
+}
+
+/** See {@link ExecutorOutcome.landing}. */
+export interface LandingUnconfirmed {
+  confirmed: false;
+  why: string;
+  referenceFrom: string;
 }
 
 export interface UiAffordance {
