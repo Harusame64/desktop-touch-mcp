@@ -202,18 +202,34 @@ export function parseHandle(value: string | undefined): bigint | null {
   return h === 0n ? null : h;
 }
 
+/**
+ * The way back on a window this act addresses by handle, in one place because both grounds end here.
+ *
+ * A text field has no UIA invoke, so the click that would move the focus to it answers
+ * `aim_route_failed` with nothing pressed — only the title road downgrades to a checked press (gate 2,
+ * first read). And the by-title escape hatch closes for a common dialog: a title that resolves to one
+ * is pinned to its handle, so re-discovering by title lands on this same road, which would send the
+ * caller round in a circle (gate 2, third read). Saying there is no route is the honest end; adding a
+ * focus route is a change to the rung's contract and the maintainer's to decide.
+ */
+const BY_HANDLE_WAY_BACK =
+  "This act addresses its window by handle — a title that resolves to a common dialog (Save As, Open) is pinned to one too — " +
+  "and a text field cannot be clicked through UI Automation, so that click answers aim_route_failed. Re-run desktop_discover " +
+  "by the window's title and click the field from there; for a common dialog, which resolves to the same handle, nothing here " +
+  "can move the focus to its text field yet.";
+
 function callerSentence(ground: KeyboardGround, subject: RefusalSubject, road: KeyboardRoad): string {
   const byHandle = road === "handle";
   switch (ground) {
     case "other_window":
       return "Nothing was typed (other_window): the focus is in a different window from the field this act named, so the characters would have gone there. " +
         (byHandle
-          ? "Bring the field's window forward (focus_window) and retry — it comes forward with the focus it last had. This act named its window by handle, and a text field cannot be clicked through UI Automation, so if the focus is still elsewhere, re-run desktop_discover by the window's title and click the field from there."
+          ? `Bring the field's window forward (focus_window) and retry — it comes forward with the focus it last had. ${BY_HANDLE_WAY_BACK}`
           : "Click the field this act named, or bring its window forward (focus_window), and retry.");
     case "other_control":
       return "Nothing was typed (other_control): the focus is on a different control in the same window, so the characters would have gone there. " +
         (byHandle
-          ? "This act named its window by handle, and a text field cannot be clicked through UI Automation — that click answers aim_route_failed — so re-run desktop_discover by the window's title and click the field from there, then type again."
+          ? BY_HANDLE_WAY_BACK
           : "Click the field this act named (desktop_act action='click' on the same entity), then type again.");
     case "read_only":
       return subject === "named"

@@ -291,12 +291,21 @@ describe("the rung judges before it posts", () => {
   // not only in the advice table: a text field cannot be clicked through UIA, and on a window named by
   // handle the ladder stops rather than pressing (gate 2's verification round).
   for (const [road, target, expected] of [
-    ["title road", titleRoad, /Click the field this act named \(desktop_act action='click'/],
-    ["handle road", handleRoad, /named its window by handle[^.]*cannot be clicked through UI Automation/],
+    ["title road", titleRoad, [/Click the field this act named \(desktop_act action='click'/]],
+    ["handle road", handleRoad, [
+      /addresses its window by handle[^.]*cannot be clicked through UI Automation/,
+      // A title that resolves to a common dialog is pinned to its handle, so the by-title way back
+      // would land on this same road: the sentence has to say so, or it sends the caller in a circle
+      // (gate 2, third read). Both halves are pinned, so dropping either one is caught.
+      /common dialog[^.]*pinned to one too/,
+      /for a common dialog[^.]*nothing here[^.]*can move the focus/,
+    ]],
   ] as const) {
     it(`publishes the way back for the road the act took — ${road}`, async () => {
       const d = depsFor(receiptOf({ receiverHwnd: OTHER }));
-      await expect(type(target, field(), d)).rejects.toMatchObject({ callerDetail: expect.stringMatching(expected) });
+      const err = await type(target, field(), d).then(() => null, (e: unknown) => e as { callerDetail?: string });
+      expect(err?.callerDetail ?? "", `${road}: no refusal`).not.toBe("");
+      for (const pattern of expected) expect(err?.callerDetail ?? "").toMatch(pattern);
     });
   }
 

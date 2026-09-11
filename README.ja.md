@@ -659,7 +659,7 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 - `origin_window_not_visible` → `focus_window(windowTitle)` で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
 - `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い（通常は座標が古い）: `desktop_discover` を再実行する。内蔵 Windows 入力モジュール無しの構成ではプライマリモニタのみ到達可（その旨がメッセージに出る）
 - `cursor_placement_blocked` → ポインタをそこへ置けずクリックは送られていない（アプリがカーソルを掴んでいる / セッションが非対話）: カーソルを解放するかセッションに再接続する、または `click_element`（UIA invoke、カーソル非使用）を使う
-- `keyboard_target_unsafe` → 何も入力されていない: 文字が別のコントロール / ウィンドウ、または読み取り専用のコントロールへ行くところだった（どれかは `if_unexpected.detail`）。指定した欄にフォーカスを移してから入力し直す（タイトル指定なら `desktop_act` の `action='click'`、ハンドル指定ならタイトルで discover し直してから）——前面の `keyboard` では打ち直さない
+- `keyboard_target_unsafe` → 何も入力されていない: 文字が別のコントロール / ウィンドウ、または読み取り専用のコントロールへ行くところだった（どれかは `if_unexpected.detail`）。指定した欄にフォーカスを移してから入力し直す——前面の `keyboard` では打ち直さない。タイトル指定なら `desktop_act` の `action='click'`、ハンドル指定ならタイトルで discover し直してから（ただし共通ダイアログはタイトルもハンドルに解決するので、そこではテキスト欄にフォーカスを移す道が無い）。別のウィンドウのときは先に `focus_window`
 - `executor_failed` → `click_element` / `mouse_click` / `browser_click` にフォールバック
 
 `desktop_discover` が warnings（`visual_provider_unavailable`、`visual_provider_warming`、`cdp_provider_failed` 等）を返した場合も、V1 ツール（`screenshot`、`click_element`、`get_ui_elements`、`terminal(action='send')` など）がエスケープハッチとして使えます。

@@ -241,7 +241,11 @@ describe("the advice for a refusal does not name the press it refused", () => {
     expect(advice).toMatch(/common dialog[^.]*resolves to a handle/);
     // For other_window the focusing window is usually over the field, so the click is refused as
     // aim_occluded unless the field's window comes forward first.
-    expect(advice).toMatch(/focus_window[^.]*aim_occluded|aim_occluded[^.]*focus_window/s);
+    // In ONE line: split across two, the pair would read as a coincidence rather than as the order
+    // the caller has to take (gate 2, third read).
+    const occluded = (await adviceFor("KeyboardTargetUnsafe")).filter((line) => /aim_occluded/.test(line));
+    expect(occluded.length, "no advice line names aim_occluded").toBeGreaterThan(0);
+    for (const line of occluded) expect(line).toMatch(/focus_window/);
   });
 
   it("documents keyboard_target_unsafe in both catalogues, with the foreground type forbidden", () => {
