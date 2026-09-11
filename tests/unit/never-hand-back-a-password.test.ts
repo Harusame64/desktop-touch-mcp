@@ -266,6 +266,8 @@ function loginPage() {
     el("p", { style: "-webkit-text-security: disc" }, [
       el("input", { id: "cb", type: "checkbox", checked: "" }),
       el("input", { id: "hid", type: "hidden" }, [], "PAGE-TOKEN"),
+      // A file input draws the chosen file's name, so the style covers it.
+      el("input", { id: "fi", type: "file" }, [], "C:\\fakepath\\PROBE-FILE-1"),
     ]),
   ]);
   // Editable regions: what was typed into them is an entry, not a name (win's outside read on #623).
@@ -284,9 +286,12 @@ function loginPage() {
   ]);
   // A draft in an editor: the host is the entry, and its heading and link keep their names
   // (2ゲート目 on #623: every descendant of an editing host had been an entry).
+  // A typed paragraph inside it is named by its text as well — the text the screen shows, which is
+  // what rule 1 says for the inside of an editor (win's outside read on #623).
   const doc = el("div", { id: "doc", contenteditable: "true" }, [
     el("h2", {}, ["Draft title"]),
     el("a", { href: "https://example.com/more" }, ["Read more"]),
+    el("p", {}, ["PROBE-TYPED-15"]),
   ]);
   const body = el("body", {}, [el("h1", {}, ["RFS PW PAGE 2"]), form, ce, n2, ed, tb, lc, dialog, doc]);
   body.descendants().forEach((e, i) => { e.rect = { left: 10, top: 10 + i * 24, width: 160, height: 20 }; });
@@ -429,8 +434,14 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       const found = run(buildCandidateCollectionJs({
         by, pattern, maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
       }), page);
-      expect(leaked(JSON.stringify(found)), by).toEqual([]);
+      // The one PROBE allowed is the typed paragraph inside the editor, named by the text it shows.
+      expect(leaked(JSON.stringify(found), ["PROBE-TYPED-15"]), by).toEqual([]);
     }
+    // The decision, pinned: inside an editor a paragraph's name is its text, typed or not.
+    const typed = run(buildCandidateCollectionJs({
+      by: "text", pattern: "TYPED-15", maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
+    }), page) as { results: Array<{ text: string }> };
+    expect(typed.results.map((r) => r.text)).toEqual(["PROBE-TYPED-15"]);
     // A label found by its text is named without the textarea inside it (2ゲート目 on #623).
     const comment = run(buildCandidateCollectionJs({
       by: "text", pattern: "Comment", maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
@@ -469,8 +480,10 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const withHidden = textOf(await browserGetFormHandler({
       selector: "#form", includeHidden: true, maxResults: 50, port: 9222, includeContext: false,
     }));
-    const hidden = (JSON.parse(withHidden) as { fields: Array<Record<string, unknown>> }).fields.find((f) => f.id === "hid");
-    expect(hidden).toMatchObject({ value: "PAGE-TOKEN" });
+    const hiddenFields = (JSON.parse(withHidden) as { fields: Array<Record<string, unknown>> }).fields;
+    expect(hiddenFields.find((f) => f.id === "hid")).toMatchObject({ value: "PAGE-TOKEN" });
+    // …while a file input under it, which draws the chosen file's name, is withheld.
+    expect(hiddenFields.find((f) => f.id === "fi")).toMatchObject({ value: null, valueWithheld: "masked" });
     expect(leaked(withHidden, TEXT_VALUES)).toEqual([]);
     expect(fields.t1).not.toHaveProperty("valueWithheld");
     expect(fields.p4.label).toBe("PASSCODE-LABEL");

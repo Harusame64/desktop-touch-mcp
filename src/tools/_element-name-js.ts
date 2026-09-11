@@ -12,9 +12,9 @@
  * Two rules:
  *
  * 1. **An entry is never a name.** An entry is what the user types into: a form field (<input>,
- *    <textarea>, <select>) or an editable region (contenteditable, an ARIA textbox or searchbox). Its
- *    value, or its text — a <textarea>'s text node is its initial value, an editor's is what was
- *    typed — is not taken for its name, whatever its type. A field is named the way HTML-AAM names a
+ *    <textarea>, <select>) or the host of an editable region (contenteditable, an ARIA textbox or
+ *    searchbox). Its value, or its own text — a <textarea>'s text node is its initial value — is not
+ *    taken for its name, whatever its type. A field is named the way HTML-AAM names a
  *    text input (§4.1.1, read 2026-09-11 at https://w3c.github.io/html-aam/): aria-labelledby, then
  *    aria-label; then its label elements' text; then title; then placeholder; then aria-placeholder.
  *    A button-type input takes its labels, then its value — the caption drawn on it, page text rather
@@ -32,8 +32,10 @@
  *    field under display:none, is not masked, and a tool that returns values returns theirs when
  *    asked to (PR 側 codex and win's outside read on #623 — the first version checked inputs only).
  *
- * An editable region is its host — the element whose parent is not editable. The headings and links
- * inside a draft are not entries: they are named by their text, which is what the screen shows.
+ * An editable region is its host — the element whose parent is not editable. The elements inside an
+ * editor are not entries: they are named by the text the screen shows, and that includes typed text,
+ * since a rich editor puts what is typed into child paragraphs. Only what the page masks stays out
+ * (win's outside read on #623 — the rule is written for the host, and says so).
  *
  * The helpers are prefixed `__` because they share an IIFE with each script's own functions.
  */
@@ -43,8 +45,9 @@ export const ELEMENT_NAME_JS = `
       const t = (el.type || '').toLowerCase();
       if (t === 'password') return true;
       // An input that draws no text has nothing for the style to hide; an inherited one had
-      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
-      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
     }
     try {
       const s = window.getComputedStyle(el);

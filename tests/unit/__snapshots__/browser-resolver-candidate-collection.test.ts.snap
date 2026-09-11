@@ -62,8 +62,9 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       const t = (el.type || '').toLowerCase();
       if (t === 'password') return true;
       // An input that draws no text has nothing for the style to hide; an inherited one had
-      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
-      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
     }
     try {
       const s = window.getComputedStyle(el);
@@ -326,8 +327,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       const t = (el.type || '').toLowerCase();
       if (t === 'password') return true;
       // An input that draws no text has nothing for the style to hide; an inherited one had
-      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
-      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
     }
     try {
       const s = window.getComputedStyle(el);
@@ -740,8 +742,9 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       const t = (el.type || '').toLowerCase();
       if (t === 'password') return true;
       // An input that draws no text has nothing for the style to hide; an inherited one had
-      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
-      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
     }
     try {
       const s = window.getComputedStyle(el);
