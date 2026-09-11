@@ -24,8 +24,10 @@ function requireNativeWin32(): NonNullable<typeof nativeWin32> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const GWL_EXSTYLE   = -20;
+const GWL_STYLE     = -16;
 const WS_EX_TOPMOST = 0x00000008;
 const GW_OWNER      = 4;
+const GA_ROOT       = 2;
 const GA_ROOTOWNER  = 3;
 
 /**
@@ -827,6 +829,38 @@ export function getWindowRootOwner(hwnd: unknown): bigint | null {
   if (typeof hwnd !== "bigint") return null;
   try {
     return requireNativeWin32().win32GetAncestor!(hwnd, GA_ROOTOWNER);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the top-level window that contains `hwnd` (GetAncestor GA_ROOT=2), or `hwnd` itself when it
+ * is top-level. Unlike {@link getWindowRootOwner} it does not follow the owner chain, so a dialog is
+ * its own root. Returns null on failure.
+ */
+export function getWindowRoot(hwnd: unknown): bigint | null {
+  if (typeof hwnd !== "bigint") return null;
+  try {
+    return requireNativeWin32().win32GetAncestor!(hwnd, GA_ROOT);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the window's style bits (GetWindowLongPtr GWL_STYLE), as an unsigned 32-bit value. Returns
+ * null on failure.
+ *
+ * The native call does not read GetLastError, so a handle that has gone answers 0. A window this
+ * reads has style bits in practice: a child carries WS_CHILD, a popup WS_POPUP, and CreateWindow gives
+ * an overlapped window WS_CAPTION. So 0 is read as "could not say", not as a window with no style.
+ */
+export function getWindowStyle(hwnd: unknown): number | null {
+  if (typeof hwnd !== "bigint") return null;
+  try {
+    const style = requireNativeWin32().win32GetWindowLongPtrW!(hwnd, GWL_STYLE) >>> 0;
+    return style === 0 ? null : style;
   } catch {
     return null;
   }
