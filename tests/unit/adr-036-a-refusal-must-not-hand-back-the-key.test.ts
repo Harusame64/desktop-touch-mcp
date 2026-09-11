@@ -16,6 +16,7 @@
  * round (see `every-typed-error-tells-you-what-to-do.test.ts`).
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
@@ -232,13 +233,25 @@ describe("the advice for a refusal does not name the press it refused", () => {
   });
 
   it("puts the detail before the re-discover, which helps only one of the failures it names", async () => {
-    // For three of the four failures the detail can name, a fresh discover finds the same element
-    // giving the same answer. Advice that opens with "re-run desktop_discover" spends the caller's
-    // first round trip on it anyway (win の外からの読み, #622).
+    // For three of the four failures the detail can name, re-discovering alone finds the same
+    // element giving the same answer until its state changes. Advice that opens with "re-run
+    // desktop_discover" spends the caller's first round trip on it anyway (win の外からの読み, #622).
     const advice = await adviceFor("AimRouteFailed");
     expect(advice[0]).toMatch(/^if_unexpected\.detail says which failure it was/);
     const rediscover = advice.find((line) => /re-run desktop_discover/i.test(line));
     expect(rediscover).toMatch(/^When the detail names no failure, or says the element was not found/);
+  });
+
+  it("sends the caller back to discover only when the detail says not found or names nothing", () => {
+    // The server's instructions and desktop_act's description both said "re-call desktop_discover,
+    // or try click_element" for every route failure. For a disabled element, or one without the
+    // pattern, both meet the same element and the same answer (2ゲート目, round 2 on #622).
+    for (const file of ["../../src/server-windows.ts", "../../src/tools/desktop-register.ts"]) {
+      const source = readFileSync(new URL(file, import.meta.url), "utf8");
+      const entry = source.split("\n").find((line) => line.includes("aim_route_failed →")) ?? "";
+      expect(entry, file).toMatch(/if_unexpected\.detail names the failure/);
+      expect(entry, file).toMatch(/When it says not found or names none: re-call desktop_discover/);
+    }
   });
 
   it("renders each envelope-side class under the name its advice is filed under", () => {

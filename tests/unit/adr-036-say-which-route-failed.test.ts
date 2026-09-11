@@ -18,14 +18,18 @@ import type { Aim } from "../../src/engine/aim.js";
 import type { ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
-/** Every string the backend returned in that round, verbatim, with the class it belongs to. */
+/**
+ * Every string the backend returned in win2's two rounds (`RESULTS.md` on `5b5b4d58`, and
+ * `RESULTS-622.md` on `90633009` for the read-only one), verbatim, with the class it belongs to.
+ */
 const MEASURED: Array<[string, string]> = [
   ["Element not found", "element_not_found"],
   ["InvokePattern not supported by this element", "pattern_not_supported"],
   ["ValuePattern not supported by this element", "pattern_not_supported"],
   ['Exception calling "GetCurrentPattern" with "1" argument(s): "Unsupported Pattern."', "pattern_not_supported"],
   ["Element is disabled", "element_disabled"],
-  ['Exception calling "SetValue" with "1" argument(s): "The operation is not allowed on a nonenabled element."', "element_disabled_or_read_only"],
+  ['Exception calling "SetValue" with "1" argument(s): "The operation is not allowed on a nonenabled element."', "element_disabled"],
+  ['Exception calling "SetValue" with "1" argument(s): "Value is read-only."', "element_read_only"],
 ];
 
 describe("the classifier knows the answers the backend gave, and only those", () => {
@@ -55,17 +59,21 @@ describe("the classifier knows the answers the backend gave, and only those", ()
     expect(classifyUiaRouteFailure("Element not found")).toBeUndefined();
   });
 
-  it("does not call a refused write disabled, because a read-only field is refused the same way", () => {
-    // `Element is disabled` is the bridge's own, written after reading IsEnabled as false. The
-    // `nonenabled element` text is the provider refusing SetValue, and WPF's TextBox and Chromium
-    // refuse a read-only field with the same exception — so this text may not send the caller to
-    // find what enables a field that is already enabled (2ゲート目の指摘).
-    const refused = classifyUiaRouteFailure(
+  it("tells a read-only field from a disabled one, because the client checks both before the provider", () => {
+    // The managed client's ValuePattern.SetValue reads IsEnabled, then IsReadOnly, before it asks the
+    // provider. MEASURED on `90633009` (RESULTS-622.md): a disabled field gave `nonenabled element`,
+    // and a read-only WinForms Edit and WPF TextBox both gave `Value is read-only.`. `00d1109` had
+    // reasoned from two providers' source that `nonenabled element` also meant read-only; on this
+    // road it does not, and a real read-only field went unrecognised.
+    const disabled = classifyUiaRouteFailure(
       new Error('Exception calling "SetValue" with "1" argument(s): "The operation is not allowed on a nonenabled element."'),
     );
-    expect(refused).toBeDefined();
-    expect(refused).not.toBe(classifyUiaRouteFailure(new Error("Element is disabled")));
-    expect(describeUiaRouteFailure(refused!)).toContain("read-only");
+    const readOnly = classifyUiaRouteFailure(new Error('Exception calling "SetValue" with "1" argument(s): "Value is read-only."'));
+    expect(disabled).toBe(classifyUiaRouteFailure(new Error("Element is disabled")));
+    expect(readOnly).toBeDefined();
+    expect(readOnly).not.toBe(disabled);
+    expect(describeUiaRouteFailure(readOnly!)).toContain("read-only");
+    expect(describeUiaRouteFailure(readOnly!)).not.toContain("disabled");
   });
 });
 
@@ -149,10 +157,23 @@ describe("the refusal says which failure it was", () => {
       keyboardTypeBg: vi.fn(async () => { throw new Error("background write refused for PROBE-TYPED-TEXT"); }),
     }), "PROBE-TYPED-TEXT");
     expect(e.callerDetail).toContain(
-      "the UIA value route failed because the element refused the write as not enabled (it is disabled, or it is a read-only field), and the background write failed too",
+      "the UIA value route failed because the element the route matched is disabled, and the background write failed too",
     );
     expect(e.callerDetail).not.toContain("PROBE-TYPED-TEXT");
     expect(e.callerDetail).not.toContain("Exception calling");
+  });
+
+  it("names a read-only field on a write", async () => {
+    const e = await refusalOn("type", deps({
+      uiaSetValue: vi.fn(async () => {
+        throw new Error('Exception calling "SetValue" with "1" argument(s): "Value is read-only."');
+      }),
+      keyboardTypeBg: vi.fn(async () => { throw new Error("background write refused"); }),
+    }), "PROBE-TYPED-TEXT");
+    expect(e.callerDetail).toContain(
+      "the UIA value route failed because the element the route matched is read-only, and the background write failed too",
+    );
+    expect(e.callerDetail).not.toContain("Value is read-only.");
   });
 
   it("writes the class into the refusal row, and never the backend's text", async () => {
@@ -184,7 +205,7 @@ describe("the refusal says which failure it was", () => {
     if (!result.ok) {
       expect(result.reason).toBe("aim_route_failed");
       expect(result.detail).toBe(e.callerDetail);
-      expect(result.detail).toContain("the element is disabled");
+      expect(result.detail).toContain("the element the route matched is disabled");
     }
   });
 });

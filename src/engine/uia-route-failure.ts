@@ -34,15 +34,25 @@
  * read on the same road, so "not found" is the right name here; it would not be for a reader that
  * builds locators some other way.
  *
- * **The two "disabled" texts are not the same answer.** `Element is disabled` is the bridge's own:
- * every place that writes it has just read `IsEnabled` as false. The `nonenabled element` text is
- * the element's provider refusing `SetValue`, and providers refuse a READ-ONLY field with that same
- * exception — READ 2026-09-11 in source, not measured: WPF's `TextBoxAutomationPeer.SetValue`
- * throws `ElementNotEnabledException` when `IsReadOnly`, after its enabled check passes; Chromium's
- * `AXPlatformNodeWin::SetValue` returns `UIA_E_ELEMENTNOTENABLED` for `IsReadOnlyOrDisabled()`. The
- * by-handle setValue script reads nothing before the write, so on that road the text is the only
- * signal, and it cannot tell the two apart. Calling it "disabled" would send the caller looking for
- * what enables a field that is already enabled (2ゲート目の指摘).
+ * **A read-only field is its own answer, and the client gives it before any provider is asked.**
+ * The managed client's `ValuePattern.SetValue` reads `IsEnabled` and throws
+ * `ElementNotEnabledException` (the `nonenabled element` text), then reads `IsReadOnly` and throws
+ * `InvalidOperationException` (`Value is read-only.`), both before it calls the provider (dotnet/wpf,
+ * `UIAutomationClient/System/Windows/Automation/ValuePattern.cs`). MEASURED 2026-09-11 win2
+ * `dev/route-failure-strings/RESULTS-622.md`, on `90633009`: a disabled field typed through the
+ * by-handle road gave the `nonenabled element` text, and a read-only WinForms Edit and a read-only
+ * WPF TextBox both gave `Exception calling "SetValue" with "1" argument(s): "Value is read-only."`.
+ * So on this road `nonenabled element` means disabled. Two providers do refuse a read-only field as
+ * not enabled (WPF's `TextBoxAutomationPeer`, Chromium's `AXPlatformNodeWin`), but the client's
+ * check comes first — reasoning from their source got this backwards once, in `00d1109`. A read-only
+ * field in Chrome is not measured.
+ *
+ * **"The element" is the one the route matched, which need not be the entity.** The by-handle
+ * scripts take the first descendant whose name contains the entity's label, narrowed by
+ * AutomationId only when the entity has one, and the executor passes no control type. On a page
+ * where a heading "Save changes" comes before the button "Save", a click on "Save" can be answered
+ * for the heading. So the words say "the element the route matched" (2ゲート目, round 2; read in
+ * the scripts, not reproduced).
  */
 
 /** The failures this server can name. */
@@ -50,7 +60,7 @@ export type UiaRouteFailure =
   | "element_not_found"
   | "pattern_not_supported"
   | "element_disabled"
-  | "element_disabled_or_read_only";
+  | "element_read_only";
 
 /** Written by the bridge itself (script and native), so they arrive as the whole message. */
 const WHOLE: ReadonlyMap<string, UiaRouteFailure> = new Map([
@@ -63,7 +73,8 @@ const WHOLE: ReadonlyMap<string, UiaRouteFailure> = new Map([
 /** .NET's text inside PowerShell's method-invocation wrapper — the wrapper names the method. */
 const WRAPPED: ReadonlyArray<{ readonly re: RegExp; readonly kind: UiaRouteFailure }> = [
   { re: /^Exception calling "GetCurrentPattern" with "\d+" argument\(s\): ".*Unsupported Pattern/, kind: "pattern_not_supported" },
-  { re: /^Exception calling "SetValue" with "\d+" argument\(s\): ".*nonenabled element/, kind: "element_disabled_or_read_only" },
+  { re: /^Exception calling "SetValue" with "\d+" argument\(s\): ".*nonenabled element/, kind: "element_disabled" },
+  { re: /^Exception calling "SetValue" with "\d+" argument\(s\): "Value is read-only\./, kind: "element_read_only" },
 ];
 
 /** The failure an aimed UIA route ran into, when the backend's answer is one of the known ones. */
@@ -81,10 +92,10 @@ export function describeUiaRouteFailure(kind: UiaRouteFailure): string {
     case "element_not_found":
       return "the element was not found in that window's accessibility tree (it may have gone, been renamed, or moved)";
     case "pattern_not_supported":
-      return "the element does not support this action through UI Automation";
+      return "the element the route matched does not support this action through UI Automation";
     case "element_disabled":
-      return "the element is disabled";
-    case "element_disabled_or_read_only":
-      return "the element refused the write as not enabled (it is disabled, or it is a read-only field)";
+      return "the element the route matched is disabled";
+    case "element_read_only":
+      return "the element the route matched is read-only";
   }
 }
