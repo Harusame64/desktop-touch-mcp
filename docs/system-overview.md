@@ -137,7 +137,7 @@ Every action tool (`mouse_click`, `keyboard(action='press')`, `click_element`, â
   "ok": true,
   "post": {
     "focusedWindow": "Notepad",
-    "focusedElement": { "name": "Text editor", "type": "Document", "value": "Hello" },
+    "focusedElement": { "name": "Text editor", "type": "Document", "hasValuePattern": true },
     "windowChanged": false,
     "elapsedMs": 42,
     "rich": {
@@ -163,7 +163,7 @@ Every action tool (`mouse_click`, `keyboard(action='press')`, `click_element`, â
 | Field | Meaning |
 |---|---|
 | `focusedWindow` | Foreground window title after the action |
-| `focusedElement` | UIA focused element (name / control type / value). `null` when UIA is unavailable |
+| `focusedElement` | UIA focused element: name, control type, and `hasValuePattern` â€” whether UIA exposes a value on it, an empty one included (unlike `browser_form`'s `hasValue`, which means a non-empty value). The value itself is not returned: the focused element is whatever holds keyboard focus when the tool returns, which need not be what the tool acted on. Set `DESKTOP_TOUCH_POST_FOCUSED_VALUE=1` to add `value` back, for checking where input landed â€” it then carries whatever field has focus, another application's included. `null` when UIA is unavailable |
 | `windowChanged` | Whether the foreground window changed between before and after |
 | `elapsedMs` | Wall-clock duration of the action |
 | `rich` | **Opt-in** â€” present only when the caller passed `narrate:"rich"`. UIA diff block |

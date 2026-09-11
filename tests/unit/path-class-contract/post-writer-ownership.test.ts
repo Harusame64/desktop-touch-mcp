@@ -43,7 +43,7 @@ vi.mock("../../../src/engine/uia-bridge.js", () => ({
   getFocusedAndPointInfo: vi.fn().mockResolvedValue(null),
 }));
 
-import { withPostState } from "../../../src/tools/_post.js";
+import { withPostState, getHistorySnapshot } from "../../../src/tools/_post.js";
 import { ok, fail } from "../../../src/tools/_types.js";
 import { errorFromMessage, toToolFailure, failWith } from "../../../src/tools/_errors.js";
 import { getFocusedAndPointInfo } from "../../../src/engine/uia-bridge.js";
@@ -214,10 +214,46 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect(fe).not.toBeNull();
     expect(fe!.name).toBe(""); // survived G4 relax with empty name (was → null before)
     expect(fe!.type).toBe("Edit");
-    expect(fe!.value).toBe("");
+    // An empty value still says a value is there; the value itself never leaves (ADR-036, option c).
+    expect(fe!.hasValuePattern).toBe(true);
+    expect(fe).not.toHaveProperty("value");
     const advisory = parsed.advisory as Record<string, unknown> | undefined;
     expect(advisory).toBeDefined();
     expect(advisory!.preferredPath).toBe("desktop_act");
+  });
+
+  it("carries whether the focused field has a value, never the value — and keeps none in the history (ADR-036, option c)", async () => {
+    // Measured on a real machine: the focused field is whatever holds focus when the tool returns,
+    // so a tool that never touched it carried its whole value (internal dev/post-focusedelement).
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(
+      { focused: { name: "Notes", controlType: "Edit", value: "PROBE-SECRET-POST-1" } } as never,
+    );
+    const result = await withPostState("clipboard", async () => ok({ ok: true }))({ action: "read" });
+    expect(JSON.stringify(result)).not.toContain("PROBE-SECRET-POST-1");
+    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true });
+    expect(JSON.stringify(getHistorySnapshot(20))).not.toContain("PROBE-SECRET-POST-1");
+    // …and an element with no value says so.
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Canvas", controlType: "Pane" } } as never);
+    const none = await withPostState("mouse_click", async () => ok({ ok: true }))({});
+    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ name: "Canvas", type: "Pane", hasValuePattern: false });
+  });
+
+  it("gives the value back only under DESKTOP_TOUCH_POST_FOCUSED_VALUE=1 — the way back the user asked to keep", async () => {
+    const focusedWith = (value: string) =>
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Notes", controlType: "Edit", value } } as never);
+    const focusedElementOf = async () =>
+      (parse(await withPostState("keyboard", async () => ok({ ok: true }))({ action: "type", text: "x" })).post as Record<string, unknown>).focusedElement;
+    try {
+      vi.stubEnv("DESKTOP_TOUCH_POST_FOCUSED_VALUE", "1");
+      focusedWith("PROBE-TYPED-POST-2");
+      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true, value: "PROBE-TYPED-POST-2" });
+      // Anything but "1" keeps it off.
+      vi.stubEnv("DESKTOP_TOUCH_POST_FOCUSED_VALUE", "0");
+      focusedWith("PROBE-TYPED-POST-3");
+      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("does NOT set advisory when the focused element is not a text input", async () => {
