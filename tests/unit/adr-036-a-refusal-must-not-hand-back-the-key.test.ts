@@ -212,20 +212,20 @@ describe("the advice for a refusal does not name the press it refused", () => {
     });
   }
 
-  it("does not promise a distinction the detail does not carry", async () => {
+  it("promises the distinction only where the detail carries it", async () => {
     // The advice for this reason listed "the control supports no pattern" as THE failure and sent
-    // the caller to `if_unexpected.detail` for the specifics. The detail is written by the executor
-    // and is deliberately generic — it names the window, the entity and which routes were spent —
-    // because the backend's own sentence is a shell rejection carrying the command that produced
-    // it. So the caller could not tell "no pattern" from "element not found", which have different
-    // recoveries (PR 側 codex on #618, P2).
+    // the caller to `if_unexpected.detail` for the specifics, while the detail was deliberately
+    // generic — so the caller could not tell "no pattern" from "element not found", which have
+    // different recoveries (PR 側 codex on #618, P2). It was narrowed then rather than filled: the
+    // classification that would let the advice keep its promise had to be written against the real
+    // backend messages, and those live on Windows.
     //
-    // Narrowed rather than filled: the sanitised classification that would let the advice keep its
-    // promise has to be written against the real backend messages, and those live on Windows. An
-    // expression written by the side without the runtime is unchecked until the side with it runs
-    // it — twice today that produced a fix that failed into the bug's own path.
+    // win2 collected them (2026-09-11, `dev/route-failure-strings/RESULTS.md`), and the detail now
+    // names the failure when the answer is a known one. The advice promises exactly that and no
+    // more: an answer the classifier does not recognise is still withheld, and the line says so.
     const advice = (await adviceFor("AimRouteFailed")).join(" ");
-    expect(advice).toMatch(/WHICH of them it was is not published/);
+    expect(advice).toMatch(/when the backend's answer is one this server recognises/);
+    expect(advice).toMatch(/says nothing more when it is not/);
     // The control: a reason whose detail DOES carry the specifics still says so, so this cell is
     // about honesty per reason and not a blanket ban on pointing at the field.
     expect((await adviceFor("AimOccluded")).join(" ")).toMatch(/detail field in if_unexpected names the window/);
