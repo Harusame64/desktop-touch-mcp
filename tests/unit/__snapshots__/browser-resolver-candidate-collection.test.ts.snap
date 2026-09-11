@@ -663,6 +663,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       name: elText(el),
       role: roleAttr || null,
       ariaLabel: el.getAttribute('aria-label') || null,
+      // Stable and not secret — for the by-axis fill's identity gate (buildFillActJs).
+      id: el.id || null,
+      formName: el.getAttribute('name') || null,
       matchedBy: matchedByMap.get(el),
       score: score(matchScore.get(el) || 0, entry.visible),
       nearestLabels: labelsOf(el),
@@ -979,7 +982,12 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   const mRole = matched.getAttribute('role') || null;
   const mAria = matched.getAttribute('aria-label') || null;
   const mTag = matched.tagName.toLowerCase();
-  if (mName !== "Email address" || mRole !== null || mAria !== "Email address" || mTag !== "input") {
+  // A field is named by its name, never by its value, so two fields that share an accessible name,
+  // role and tag no longer differ in mName; the id and the form name still tell them apart, and
+  // neither is secret (PR 側 codex on #623's e83cb56).
+  const mId = matched.id || null;
+  const mForm = matched.getAttribute('name') || null;
+  if (mName !== "Email address" || mRole !== null || mAria !== "Email address" || mTag !== "input" || mId !== null || mForm !== null) {
     return { ok: false, error: 'identity_changed', detail: 'signature' };
   }
   let el = matched;

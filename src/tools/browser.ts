@@ -1065,8 +1065,13 @@ ${ELEMENT_NAME_JS}
       label,
     };
     // A button's value is its caption, and el.value is only its value attribute (PR 側 codex on
-    // #623's 122185e). One bit either way: the dots are on the screen.
-    if (withheld) { field.valueWithheld = 'masked'; field.hasValue = tagName === 'button' ? (el.textContent || '').trim() !== '' : !!el.value; }
+    // #623's 122185e). A submit or reset input with no value attribute draws the browser's default
+    // caption (PR 側 codex on e83cb56). One bit either way: the dots are on the screen.
+    if (withheld) {
+      field.valueWithheld = 'masked';
+      field.hasValue = tagName === 'button' ? (el.textContent || '').trim() !== ''
+        : (tagName === 'input' && (el.type === 'submit' || el.type === 'reset') && !el.hasAttribute('value')) || !!el.value;
+    }
     fields.push(field);
   }
   return { ok: true, selector: ${JSON.stringify(selector)}, count: fields.length, fields };

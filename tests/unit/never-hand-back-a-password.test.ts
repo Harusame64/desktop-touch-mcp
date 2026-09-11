@@ -587,7 +587,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const byAxis = run(buildFillActJs(
       { by: "ariaLabel", pattern: "Card number", caseSensitive: false },
       0, 0, "PROBE-NEW-15",
-      { name: "Card number", role: null, ariaLabel: "Card number", tag: "input", total: 1 },
+      { name: "Card number", role: null, ariaLabel: "Card number", tag: "input", id: "card", formName: null, total: 1 },
     ), page);
     expect(byAxis).toMatchObject({ ok: true, actualWithheld: true });
     expect(JSON.stringify(byAxis)).not.toContain("PROBE-SECRET-15");
@@ -618,7 +618,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const byAxis = run(buildFillActJs(
       { by: "ariaLabel", pattern: "One-time code", caseSensitive: false },
       0, 0, "PROBE-NEW-16",
-      { name: "One-time code", role: null, ariaLabel: "One-time code", tag: "input", total: 1 },
+      { name: "One-time code", role: null, ariaLabel: "One-time code", tag: "input", id: "pin", formName: null, total: 1 },
     ), page);
     expect(byAxis).toMatchObject({ ok: true, actualWithheld: true });
     expect(JSON.stringify(byAxis)).not.toContain("PROBE-SECRET-16");
@@ -632,7 +632,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const byAxisPad = run(buildFillActJs(
       { by: "ariaLabel", pattern: "Unlock code", caseSensitive: false },
       0, 0, "PROBE-NEW-19",
-      { name: "Unlock code", role: "textbox", ariaLabel: "Unlock code", tag: "div", total: 1 },
+      { name: "Unlock code", role: "textbox", ariaLabel: "Unlock code", tag: "div", id: "pad", formName: null, total: 1 },
     ), page);
     expect(byAxisPad).toMatchObject({ ok: true, actualWithheld: true });
     expect(JSON.stringify(byAxisPad)).not.toContain("PROBE-SECRET-19");
@@ -645,6 +645,10 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     fixture.body.querySelector("#form")!.append(new FakeEl("p", {}, [
       new FakeEl("button", { id: "mb1", style: "-webkit-text-security: disc" }, ["PROBE-SECRET-17"]),
       new FakeEl("button", { id: "mb2", style: "-webkit-text-security: disc", value: "PROBE-SECRET-18" }),
+      // A submit input with no value attribute draws the browser's default caption; a reset input
+      // whose value attribute is empty draws nothing (PR 側 codex on e83cb56).
+      new FakeEl("input", { id: "ms2", type: "submit", style: "-webkit-text-security: disc" }),
+      new FakeEl("input", { id: "mr1", type: "reset", style: "-webkit-text-security: disc", value: "" }),
     ]));
     const text = textOf(await browserGetFormHandler({
       selector: "#form", includeHidden: false, maxResults: 50, port: 9222, includeContext: false,
@@ -652,6 +656,8 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const fields = Object.fromEntries((JSON.parse(text) as { fields: Array<Record<string, unknown>> }).fields.map((f) => [f.id, f]));
     expect(fields.mb1).toMatchObject({ value: null, valueWithheld: "masked", hasValue: true });
     expect(fields.mb2).toMatchObject({ value: null, valueWithheld: "masked", hasValue: false });
+    expect(fields.ms2).toMatchObject({ value: null, valueWithheld: "masked", hasValue: true });
+    expect(fields.mr1).toMatchObject({ value: null, valueWithheld: "masked", hasValue: false });
     expect(leaked(text, TEXT_VALUES)).toEqual([]);
   });
 
@@ -673,7 +679,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const acted = run(buildFillActJs(
       { by: "ariaLabel", pattern: "Account password", caseSensitive: false },
       0, 0, "PROBE-NEW-3",
-      { name: "Account password", role: null, ariaLabel: "Account password", tag: "input", total: 1 },
+      { name: "Account password", role: null, ariaLabel: "Account password", tag: "input", id: "p3", formName: null, total: 1 },
     ), page);
     expect(acted).toMatchObject({ ok: true, actualWithheld: true, fullMatches: false });
     expect(JSON.stringify(acted)).not.toContain("PROBE-SECRET-3");
@@ -682,9 +688,38 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const pad = run(buildFillActJs(
       { by: "ariaLabel", pattern: "PIN entry", caseSensitive: false },
       0, 0, "PROBE-NEW-7",
-      { name: "PIN entry", role: "textbox", ariaLabel: "PIN entry", tag: "div", total: 1 },
+      { name: "PIN entry", role: "textbox", ariaLabel: "PIN entry", tag: "div", id: "ce", formName: null, total: 1 },
     ), page);
     expect(pad).toMatchObject({ ok: true, actualWithheld: true, fullMatches: false });
     expect(JSON.stringify(pad)).not.toContain("PROBE-SECRET-7");
+  });
+
+  it("browser_fill by axis refuses a field that took the resolved one's name but not its id or form name", async () => {
+    // Named by name, never by value, two fields that share an accessible name, role and tag differ
+    // only in what is not secret — the id and the form name (PR 側 codex on #623's e83cb56).
+    const { buildFillActJs } = await import("../../src/tools/browser-resolver.js");
+    const query = { by: "ariaLabel" as const, pattern: "Account password", caseSensitive: false };
+    const resolved = { name: "Account password", role: null, ariaLabel: "Account password", tag: "input", id: "p3", formName: "current", total: 1 };
+    // The resolve reads both from the page, where the act's gate compares them.
+    const { buildActionCandidateFactsJs } = await import("../../src/tools/browser-resolver.js");
+    fixture.p3.attrs.name = "current";
+    const facts = run(buildActionCandidateFactsJs(query), page) as { candidates: Array<Record<string, unknown>> };
+    expect(facts.candidates[0]).toMatchObject({ id: "p3", formName: "current" });
+    // The control: the field the resolve saw passes the gate.
+    expect(run(buildFillActJs(query, 0, 0, "PROBE-NEW-20", resolved), page)).toMatchObject({ ok: true });
+    // Between the resolve and the act, the page put a same-named field in its place.
+    fixture = loginPage();
+    page = pageWith(fixture.body);
+    const stand = new FakeEl("input", { id: "p3-new", name: "current", type: "password", "aria-label": "Account password" }, [], "PROBE-SECRET-20");
+    fixture.p3.parentElement!.append(stand);
+    fixture.p3.remove();
+    expect(run(buildFillActJs(query, 0, 0, "PROBE-NEW-20", resolved), page)).toMatchObject({ ok: false, error: "identity_changed", detail: "signature" });
+    expect(stand.value).toBe("PROBE-SECRET-20");
+    // …or kept the id and changed the form name.
+    fixture = loginPage();
+    page = pageWith(fixture.body);
+    fixture.p3.attrs.name = "new";
+    expect(run(buildFillActJs(query, 0, 0, "PROBE-NEW-20", resolved), page)).toMatchObject({ ok: false, error: "identity_changed", detail: "signature" });
+    expect(fixture.p3.value).toBe("PROBE-SECRET-3");
   });
 });

@@ -487,6 +487,9 @@ ${occluderIndexHelperJs()}`
       name: elText(el),
       role: roleAttr || null,
       ariaLabel: el.getAttribute('aria-label') || null,
+      // Stable and not secret — for the by-axis fill's identity gate (buildFillActJs).
+      id: el.id || null,
+      formName: el.getAttribute('name') || null,
       matchedBy: matchedByMap.get(el),
       score: score(matchScore.get(el) || 0, entry.visible),
       nearestLabels: labelsOf(el),
@@ -525,7 +528,7 @@ export function buildFillActJs(
   index: number,
   climbDepth: number,
   value: string,
-  expect: { name: string; role: string | null; ariaLabel: string | null; tag: string; total: number },
+  expect: { name: string; role: string | null; ariaLabel: string | null; tag: string; id: string | null; formName: string | null; total: number },
 ): string {
   return `${candidatePoolJs(args)}
   // ── ADR-023 Phase 1 PR4: by-axis fill ACT (deterministic re-gather + index). ──
@@ -542,7 +545,12 @@ export function buildFillActJs(
   const mRole = matched.getAttribute('role') || null;
   const mAria = matched.getAttribute('aria-label') || null;
   const mTag = matched.tagName.toLowerCase();
-  if (mName !== ${JSON.stringify(expect.name)} || mRole !== ${JSON.stringify(expect.role)} || mAria !== ${JSON.stringify(expect.ariaLabel)} || mTag !== ${JSON.stringify(expect.tag)}) {
+  // A field is named by its name, never by its value, so two fields that share an accessible name,
+  // role and tag no longer differ in mName; the id and the form name still tell them apart, and
+  // neither is secret (PR 側 codex on #623's e83cb56).
+  const mId = matched.id || null;
+  const mForm = matched.getAttribute('name') || null;
+  if (mName !== ${JSON.stringify(expect.name)} || mRole !== ${JSON.stringify(expect.role)} || mAria !== ${JSON.stringify(expect.ariaLabel)} || mTag !== ${JSON.stringify(expect.tag)} || mId !== ${JSON.stringify(expect.id)} || mForm !== ${JSON.stringify(expect.formName)}) {
     return { ok: false, error: 'identity_changed', detail: 'signature' };
   }
   let el = matched;
@@ -674,6 +682,9 @@ export interface CandidateFacts {
   name: string;
   role: string | null;
   ariaLabel: string | null;
+  /** The element's id and form `name` attribute — stable, not secret; the by-axis fill's identity gate */
+  id: string | null;
+  formName: string | null;
   /** whyMatched — reuses browser_search's `matchedBy` */
   matchedBy: string;
   /** confidence score from collection */
@@ -971,7 +982,7 @@ export type ResolveActionOutcome =
        * DOM mutation between resolve and act could silently mis-fill a different
        * field (Codex PR4 P1). Click does not need it (it acts by physical coords).
        */
-      matched: { name: string; role: string | null; ariaLabel: string | null; tag: string; total: number };
+      matched: { name: string; role: string | null; ariaLabel: string | null; tag: string; id: string | null; formName: string | null; total: number };
     }
   | { kind: "ambiguous"; total: number; returned: number; truncated: boolean; candidates: AmbiguityCandidate[]; next: string[] }
   | {
@@ -1074,6 +1085,8 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
         role: f?.role ?? null,
         ariaLabel: f?.ariaLabel ?? null,
         tag: f?.chain?.[0]?.tag ?? "",
+        id: f?.id ?? null,
+        formName: f?.formName ?? null,
         total: gathered.total,
       },
     };
