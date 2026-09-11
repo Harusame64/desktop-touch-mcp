@@ -100,10 +100,12 @@ describe("mapLeaseValidationToTypedReason — runtime path (sub-plan §7 R4)", (
     expect(m.code).toBe("Unknown");
     expect(m.tryNext).toEqual([]);
   });
-  it("entity_not_found → Unknown with empty try_next (S4 trunk)", () => {
+  it("entity_not_found → EntityNotFound with the table's advice (ADR-036 item 16)", () => {
+    // Promoted: the touch returns the same reason and desktop_act rebuilds it as EntityNotFound, so
+    // the lease check that catches it first has to answer the same.
     const m = mapLeaseValidationToTypedReason("entity_not_found");
-    expect(m.code).toBe("Unknown");
-    expect(m.tryNext).toEqual([]);
+    expect(m.code).toBe("EntityNotFound");
+    expect(m.tryNext.map((t) => t.action).join(" ")).toMatch(/desktop_discover/);
   });
   it("digest_mismatch → Unknown with empty try_next (S4 trunk)", () => {
     const m = mapLeaseValidationToTypedReason("digest_mismatch");
@@ -337,7 +339,8 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
   });
 
   it("G3-S4-2b: residual lease reasons → Unknown typed code (sub-plan §7 R4)", async () => {
-    for (const reason of ["generation_mismatch", "entity_not_found", "digest_mismatch"] as const) {
+    // entity_not_found left this list in ADR-036 item 16 (G3-S4-2c).
+    for (const reason of ["generation_mismatch", "digest_mismatch"] as const) {
       _resetToolCallSeqForTest();
       const { wrapped } = buildCommitWrapped({
         validation: { ok: false, reason },
@@ -351,6 +354,22 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
       expect(ifUnexp.most_likely_cause).toBe("Unknown");
       expect(ifUnexp.try_next).toEqual([]);
     }
+  });
+
+  it("G3-S4-2c: entity_not_found → EntityNotFound with the advice table's lines (ADR-036 item 16)", async () => {
+    const { getSuggestsForCode } = await import("../../src/tools/_errors.js");
+    _resetToolCallSeqForTest();
+    const { wrapped } = buildCommitWrapped({
+      validation: { ok: false, reason: "entity_not_found" },
+    });
+    const result = (await wrapped({
+      include: ["envelope"],
+      lease: { entityId: "ent_1" },
+    } as never)) as ToolResultLike;
+    const parsed = parseResult(result) as Record<string, unknown>;
+    const ifUnexp = parsed.if_unexpected as { most_likely_cause: string; try_next: Array<{ action: string }> };
+    expect(ifUnexp.most_likely_cause).toBe("EntityNotFound");
+    expect(ifUnexp.try_next.map((t) => t.action)).toEqual(getSuggestsForCode("EntityNotFound"));
   });
 
   it("G3-S4-3: lease ok → ToolCallStarted carries lease_token, ToolCallCompleted carries elapsed_ms", async () => {

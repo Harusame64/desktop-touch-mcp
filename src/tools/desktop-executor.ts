@@ -41,6 +41,7 @@ import {
   AimedWindowGoneError,
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
+  TargetGoneError,
   AIM_WINDOW_GONE,
 } from "../engine/aim.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
@@ -1163,7 +1164,49 @@ export function createDesktopExecutor(
             `, and the act was not finished as a coordinate click.`,
           );
         }
-        // UIA click failed (element not found, stale tree, etc.).
+        // ADR-036 item 16 — the Guard `target.exists`. When UIA says the element is not in the
+        // window, the point below is where it WAS: whatever is there now takes the press, and the
+        // act reports success (MEASURED 2026-09-11 win2, arm Pii-a: the press landed on the empty
+        // form, `ok:true`). So "not found" ends the ladder here, nothing pressed. "No pattern for this
+        // action" is the case the downgrade exists for and keeps it (arm Pii-b pressed the label,
+        // correctly); so does an answer the classifier does not recognise, since it cannot say the
+        // element is gone.
+        //
+        // What is given up, said plainly. The press refused here was not blind: a title-only UIA
+        // entity carries the window it was read from (item 15), so the point below is checked
+        // against that window (item 12). "Not found" on this road is also the answer for a control
+        // whose name changed since discover (a counter, Play → Pause) — pressed before, refused now,
+        // re-discovered and pressed after — and for another window with the same title answering.
+        // Neither answer proves which window UIA looked in: a refusal is not evidence of the right
+        // window, and a success is not either (a same-titled window with a same-named element takes
+        // the UIA press and reports it). That ends when UIA presses by handle (item 4).
+        //
+        // And only where "not found" came from the client that read the entity (gate 2 on #624).
+        // Without the native engine, discover reads through a PowerShell script that registers the
+        // clientside providers and the title-road PowerShell click does not — 2 elements against 26
+        // on Notepad, measured once (`uia-bridge.ts`) — so an element discover returned answers "not
+        // found" to the click; and a native read that fell back once names elements in the MSAA
+        // vocabulary while a native click searches COM names. Each tells a present element it has
+        // gone, and the refusal would come back on every re-discover. So both halves must be
+        // native, the combination measured (win2, Pii-a); anything else keeps the downgrade it had
+        // before item 16, and its probe row says which halves it saw.
+        const routeFailure = classifyUiaRouteFailure(uiaErr);
+        const readVia = entity.locator?.uia?.via;
+        const clickViaRaw = (uiaErr as { uiaVia?: unknown } | null)?.uiaVia;
+        const clickVia = clickViaRaw === "native" || clickViaRaw === "powershell" ? clickViaRaw : undefined;
+        if (routeFailure === "element_not_found" && readVia === "native" && clickVia === "native") {
+          probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found", readVia, clickVia });
+          throw new TargetGoneError(
+            `UIA found no element for "${entity.label ?? entity.entityId}" on the title-only road: ` +
+            `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing where it used to be.`,
+            { cause: uiaErr },
+            // The engine's own words — the message above quotes the backend (item 13).
+            `UIA found no element for "${quotedLabel(entity)}" in the window this act named by title ` +
+            `(it may have gone, been renamed, or moved), and the act was not finished as a press where ` +
+            `the element used to be.`,
+          );
+        }
+        // UIA click failed (stale tree, no pattern, an answer not recognised, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
         // which may be stale (captured at recognition time, before the element moved).
         const rect = entity.rect ?? entity.locator?.visual?.rect;
@@ -1209,6 +1252,14 @@ export function createDesktopExecutor(
         // the ladder having run on the window the entity came from.
         probeRoute("mouse", undefined, entity, {
           why: "uia_downgrade",
+          // The class of the UIA answer that let the downgrade through, `null` when the classifier
+          // did not recognise it — so the unrecognised answers collect in the log, where the next
+          // class to add can be read from. Never the answer's own text.
+          routeFailure: routeFailure ?? null,
+          // Which client read the entity and which answered the click — a "not found" that came
+          // down this road, rather than being refused, is a mismatch (or an unmarked half) here.
+          readVia: readVia ?? null,
+          clickVia: clickVia ?? null,
           point: { x, y },
           remembered,
           coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
@@ -1400,7 +1451,9 @@ function getSharedRealDeps(): ExecutorDeps {
       const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
       // ADR-036 — "the window is gone" is not "UIA could not do it": see `aim.ts`.
       if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
-      if (!r.ok) throw new Error(r.error ?? "UIA click failed");
+      // Which client answered, carried on the error: item 16 believes a "not found" only from the
+      // native client, about an entity the native client read.
+      if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA click failed"), { uiaVia: r.via });
     },
 
     async uiaSetValue(windowTitle, value, name, automationId, hwnd) {

@@ -257,6 +257,12 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
   });
 
   it("uiaSetValue throws + keyboardTypeBg succeeds → returns 'keyboard' (the E1 fix)", async () => {
+    // Pinned on purpose with `Element not found`: on the WRITE ladder "not found" still falls to the
+    // keyboard, unlike the click ladder since ADR-036 item 16. This rung exists for exactly that
+    // answer (an edit UIA cannot re-find by name, Notepad's RichEditD2DPT), so copying item 16's
+    // rule here breaks what it was built for. The keys go to the input focus of the window chosen
+    // by title, with no downgrade marker — which is the open question of item 16's family (a write
+    // that did nothing still reports ok), not settled here.
     const deps = mockDeps({
       uiaSetValue: vi.fn(async () => { throw new Error("Element not found"); }),
     });

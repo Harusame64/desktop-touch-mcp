@@ -253,8 +253,10 @@ describe("ADR-036 — the handle reaches the backend", () => {
   });
 
   it("but an unpinned click still downgrades — a title never promised which window", async () => {
+    // The failure is one the downgrade still exists for — the element is there and cannot be
+    // invoked. `Element not found` ends the ladder before this rung now (ADR-036 item 16).
     const deps = mockDeps({
-      uiaClick: vi.fn(async () => { throw new Error("Element not found"); }),
+      uiaClick: vi.fn(async () => { throw new Error("InvokePattern not supported by this element"); }),
     });
     const exec = createDesktopExecutor({ windowTitle: "Untitled - Notepad" }, deps);
     const outcome = await exec(entity(), "click");

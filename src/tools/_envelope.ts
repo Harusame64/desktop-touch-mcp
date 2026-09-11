@@ -222,11 +222,11 @@ export interface EnvelopeMinimalShape<T = unknown> {
  *
  * `most_likely_cause` is a typed-enum code (PascalCase) drawn from
  * ADR-010 §5.4. S4 trunk wires `LeaseExpired` end-to-end (sub-plan
- * §1.1 F); the other lease-direct codes (`LeaseGenerationMismatch` /
- * `EntityNotFound` / `LeaseDigestMismatch`) are name-pinned in
- * `LEASE_REASON_TO_TYPED_CODE` for expansion mechanical-copy work,
- * but the runtime path for them collapses to `"Unknown"` (sub-plan
- * §7 R4).
+ * §1.1 F), and ADR-036 item 16 wires `EntityNotFound`; the other
+ * lease-direct codes (`LeaseGenerationMismatch` / `LeaseDigestMismatch`)
+ * are name-pinned in `LEASE_REASON_TO_TYPED_CODE` for expansion
+ * mechanical-copy work, but the runtime path for them collapses to
+ * `"Unknown"` (sub-plan §7 R4).
  */
 export interface IfUnexpectedShape {
   most_likely_cause: string;
@@ -1026,12 +1026,12 @@ export type LeaseValidationLike = LeaseValidationResult;
  *
  *   `expired`              → `LeaseExpired`              ← S4 trunk: full runtime
  *   `generation_mismatch`  → `LeaseGenerationMismatch`   ← contract pin only
- *   `entity_not_found`     → `EntityNotFound`            ← contract pin only
+ *   `entity_not_found`     → `EntityNotFound`            ← full runtime (ADR-036 item 16)
  *   `digest_mismatch`      → `LeaseDigestMismatch`       ← contract pin only
  *
  * **Contract pin**: typed-code names live here in source for expansion
- * mechanical-copy work. **Runtime**: only `LeaseExpired` is emitted
- * end-to-end with `try_next`; the residual 3 reasons collapse to
+ * mechanical-copy work. **Runtime**: `LeaseExpired` and `EntityNotFound` are
+ * emitted end-to-end with `try_next`; the residual 2 reasons collapse to
  * `"Unknown"` at runtime (sub-plan §7 R4) so trunk skeleton stays
  * minimal — expansion lifts each into its own try_next path
  * mechanically.
@@ -1052,8 +1052,9 @@ export const LEASE_REASON_TO_TYPED_CODE = {
  * Map a `LeaseStore.validate()` reason to the runtime typed code +
  * `try_next` shape carried in the failure envelope (sub-plan §2.4).
  *
- * S4 trunk only fully wires `expired → LeaseExpired` with `try_next:
- * [{action: "desktop_discover"}]` — the other 3 reasons map to
+ * S4 trunk fully wired `expired → LeaseExpired` with `try_next:
+ * [{action: "desktop_discover"}]`, and ADR-036 item 16 wires
+ * `entity_not_found → EntityNotFound` — the other 2 reasons map to
  * `Unknown` with empty `try_next` per sub-plan §7 R4. Expansion
  * promotes each to its own typed code via a mechanical change here.
  *
@@ -1070,7 +1071,18 @@ export function mapLeaseValidationToTypedReason(
       tryNext: [{ action: "desktop_discover", args: {}, confidence: "high" }],
     };
   }
-  // Sub-plan §7 R4: residual 3 reasons collapse to `Unknown` at runtime
+  // ADR-036 item 16 — promoted. The same reason comes back from the touch itself (the entity
+  // missing from the live view, or UIA answering "not found" on the title-only road), and
+  // `desktop_act` rebuilds that one as `EntityNotFound`. Left here, one condition had two answers
+  // — `Unknown` with no advice when this check caught it first, `EntityNotFound` when the touch did.
+  // The advice is the table's, as the touch path derives it, so the two envelopes are the same.
+  if (reason === "entity_not_found") {
+    return {
+      code: "EntityNotFound",
+      tryNext: getSuggestsForCode("EntityNotFound").map((action) => ({ action })),
+    };
+  }
+  // Sub-plan §7 R4: residual 2 reasons collapse to `Unknown` at runtime
   // in S4 trunk. The PascalCase names are pinned in
   // `LEASE_REASON_TO_TYPED_CODE` so expansion can mechanically promote
   // each branch into its own typed code without re-deriving the mapping.

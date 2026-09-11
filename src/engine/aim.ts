@@ -154,6 +154,32 @@ export class AimedRouteFailedError extends Error implements CallerFacingRefusal 
 }
 
 /**
+ * ADR-036 item 16 — UIA says the element this act was for is not there, so the act does not press
+ * where it used to be.
+ *
+ * The specification guards an action with `target.exists` — "The tracked entity has not
+ * disappeared" — and says an action fails closed when a guard fails and no safe correction exists.
+ * On the title-only road a failed UIA click downgraded to the mouse whatever the failure was: a
+ * control removed after discover was pressed at its remembered point, the press landed on the empty
+ * form, and the act reported `ok:true` (MEASURED 2026-09-11 win2, `dev/route-failure-strings/
+ * RESULTS.md`, arm Pii-a). The `aim_route_failed` classifier now reads the failure first, and this is
+ * what `element_not_found` throws. The touch loop reports it as `entity_not_found` — the reason it
+ * already gives when the lease's entity is missing from the live view — because it is the same fact,
+ * found one step later.
+ *
+ * Like {@link AimedRouteFailedError}, the message may quote the backend and the caller sees only
+ * `callerDetail`, which the executor writes.
+ */
+export class TargetGoneError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  constructor(message: string, options?: ErrorOptions, callerDetail?: string) {
+    super(message, options);
+    this.name = "TargetGoneError";
+    this.callerDetail = callerDetail ?? "";
+  }
+}
+
+/**
  * ADR-036 — the handle now belongs to somebody else.
  *
  * The specification's word for this is **invalidation**, and it is deliberately not an ordinary

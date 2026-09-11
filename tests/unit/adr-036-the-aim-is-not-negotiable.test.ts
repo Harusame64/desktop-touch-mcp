@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   windows: [] as { hwnd: bigint; title: string }[],
   native: {
     click: { ok: true, element: "Start", error: null, code: null } as Record<string, unknown>,
+    /** Make the native click throw, so a title click reaches the PowerShell fallback. */
+    clickThrows: false,
     setValue: { ok: true, error: null, code: null } as Record<string, unknown>,
     elements: {
       windowTitle: "Untitled - Notepad",
@@ -83,7 +85,11 @@ vi.mock("../../src/engine/layer-buffer.js", () => ({
 
 vi.mock("../../src/engine/native-engine.js", () => ({
   nativeUia: {
-    async uiaClickElement() { h.calls.nativeClick++; return h.native.click; },
+    async uiaClickElement() {
+      h.calls.nativeClick++;
+      if (h.native.clickThrows) throw new Error("native click failed");
+      return h.native.click;
+    },
     async uiaSetValue() { h.calls.nativeSetValue++; return h.native.setValue; },
     async uiaGetElements() { h.calls.nativeElements++; return h.native.elements; },
     async uiaGetTextViaTextPattern() {
@@ -133,7 +139,30 @@ beforeEach(() => {
   h.native.setValue = { ok: true, error: null, code: null };
   h.psOutput = '{"ok":true}';
   h.native.textThrows = false;
+  h.native.clickThrows = false;
   unambiguous();
+});
+
+describe("each answer says which client gave it (ADR-036 item 16, gate 2 on #624)", () => {
+  // The two clients can see different trees and name one element differently, so a click's
+  // "not found" is weighed by who read the element and who looked for it.
+  it("a title click answered by the native engine says native, even when it failed", async () => {
+    h.native.click = { ok: false, element: null, error: "Element not found", code: null };
+    expect(await clickElement("Untitled - Notepad", "Start")).toMatchObject({ ok: false, via: "native" });
+  });
+
+  it("a native click that threw, finished by the PowerShell script, says powershell", async () => {
+    h.native.clickThrows = true;
+    h.psOutput = '{"ok":false,"error":"Element not found"}';
+    expect(await clickElement("Untitled - Notepad", "Start")).toMatchObject({ ok: false, error: "Element not found", via: "powershell" });
+    expect(h.calls.ps).toHaveLength(1);
+  });
+
+  it("a read says which client read it", async () => {
+    expect(await getUiElements("Untitled - Notepad")).toMatchObject({ via: "native" });
+    h.psOutput = '{"elements":[],"elementCount":0,"windowRect":null,"clientProviders":"registered"}';
+    expect(await getUiElements("Untitled - Notepad", 3, 50, 10000, { pinnedHwnd: NOTEPAD })).toMatchObject({ via: "powershell" });
+  });
 });
 
 describe("a handle on the write path is never traded for a title", () => {
@@ -183,7 +212,7 @@ describe("a handle on the write path is never traded for a title", () => {
     const r = await clickElement("Save As", "Save", undefined, undefined, { hwnd: DIALOG });
     expect(h.calls.nativeClick).toBe(0);
     expect(h.calls.ps[0]!.script).toContain(DIALOG.toString());
-    expect(r).toEqual({ ok: true, element: "Save" });
+    expect(r).toEqual({ ok: true, element: "Save", via: "powershell" });
   });
 });
 
@@ -284,7 +313,7 @@ describe("a dead handle is said out loud, not parsed as a crash", () => {
     // empty, and `JSON.parse` throws — which the executor reads as an ordinary UIA failure.
     expect(h.calls.ps[0]!.script).toMatch(/try \{ \$target = .*FromHandle/);
     expect(h.calls.ps[0]!.script).toContain('"code":"aim_window_gone"');
-    expect(r).toEqual({ ok: false, error: "Window not found by hwnd", code: "aim_window_gone" });
+    expect(r).toEqual({ ok: false, error: "Window not found by hwnd", code: "aim_window_gone", via: "powershell" });
   });
 
   it("both write scripts register the providers too, or discover shows what act cannot press", async () => {

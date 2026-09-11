@@ -224,6 +224,21 @@ export class AimRouteFailedError extends HandlerError {
 }
 
 /**
+ * ADR-036 item 16 — the element this act was for is not there: missing from the live view, or
+ * answered "not found" by UIA on the title-only road, where the press at its remembered point is
+ * refused. Before this it went out as the raw result, with no advice.
+ *
+ * `name` is `"EntityNotFound"` so the raw shape's `reason`, derived by `pascalToSnake`, is the
+ * `entity_not_found` that `desktop_act`'s catalogue documents, and so the SUGGESTS key matches.
+ */
+export class EntityNotFoundRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "EntityNotFound";
+  }
+}
+
+/**
  * ADR-036 item 6 — the point a coordinate press would land on is covered by a window this server
  * may not act through (R3 tool exclusion, met at a coordinate rather than at a target).
  *

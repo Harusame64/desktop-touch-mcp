@@ -12,7 +12,17 @@ export type UiEntityRole = "button" | "textbox" | "link" | "menuitem" | "label" 
  */
 export interface EntityLocator {
   /** UIA: element identified by AutomationId and/or accessible name. */
-  uia?: { automationId?: string; name?: string };
+  uia?: {
+    automationId?: string;
+    name?: string;
+    /**
+     * Which client read the element (ADR-036 item 16). The native engine and the PowerShell script
+     * can see different trees and name one element differently, so a click's "not found" is
+     * believed only when the native engine both read the element and answered the click. Absent
+     * when the read could not say.
+     */
+    via?: "native" | "powershell";
+  };
   /** CDP: element identified by CSS selector, optionally scoped to a tab. */
   cdp?: { selector?: string; tabId?: string };
   /** Terminal: identified by containing window title. */

@@ -118,7 +118,8 @@ export async function fetchUiaCandidates(
       .map((el): UiEntityCandidate => ({
         source: "uia",
         target: { kind: "window", id: targetId },
-        locator: { uia: { automationId: el.automationId || undefined, name: el.name } },
+        // `via` — which client read it, so a click's "not found" can be weighed (ADR-036 item 16).
+        locator: { uia: { automationId: el.automationId || undefined, name: el.name, ...(result.via !== undefined && { via: result.via }) } },
         role: uiaRoleFromControlType(el.controlType),
         // ADR-036 item 15 — the window this element was READ from, carried so the coordinate
         // ladder has a handle on this road at all. Before this line a UIA entity recorded no
