@@ -22,6 +22,7 @@ import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-gr
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
+import { classifyUiaRouteFailure, describeUiaRouteFailure } from "../engine/uia-route-failure.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { probeAim, aimProbeEnabled, readWindowIdentity } from "../engine/aim-probe.js";
 import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
@@ -723,8 +724,25 @@ function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity
  * `type` road it carries the text being typed (item 13) — a probe file is still a file on the user's
  * disk. A reader who needs the message needs the fixture's record, not this one.
  */
-function probeRefusal(rung: string, refused: string, aimHwnd: bigint | undefined, entity: UiEntity): void {
-  probeRoute("refusal", aimHwnd, entity, { rung, refused });
+function probeRefusal(
+  rung: string,
+  refused: string,
+  aimHwnd: bigint | undefined,
+  entity: UiEntity,
+  /** Engine-written fields only — a class name, never a backend's text. */
+  extra: Record<string, unknown> = {},
+): void {
+  probeRoute("refusal", aimHwnd, entity, { rung, refused, ...extra });
+}
+
+/**
+ * The entity's label as a caller's sentence quotes it. A label has no bound (a UIA Name can be a
+ * paragraph) and the envelope cuts `detail` at 1000 characters, so an uncut label could push out the
+ * class the sentence exists to name, and the caller would read "no class" (2ゲート目, round 3 on #622).
+ */
+function quotedLabel(entity: UiEntity): string {
+  const label = entity.label ?? entity.entityId;
+  return label.length > 200 ? `${label.slice(0, 200)}…` : label;
 }
 
 /**
@@ -1056,7 +1074,11 @@ export function createDesktopExecutor(
               `uia=${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)} / ` +
               `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`;
             if (aimHwnd !== undefined) {
-              probeRefusal("uia_set_value_then_keyboard", "aim_route_failed", aimHwnd, entity);
+              // Which failure the UIA value route ran into, when it is one the backend is known to
+              // give — in the classifier's words, never the backend's (`uia-route-failure.ts`). The
+              // keyboard rung is not classified: none of its failures has a measured shape.
+              const failure = classifyUiaRouteFailure(uiaErr);
+              probeRefusal("uia_set_value_then_keyboard", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null });
               throw new AimedRouteFailedError(
                 `${ladder}. Not falling back to a coordinate press — this call named its window, ` +
                 `and the entity's rect is a screen point that any window can be under. ` +
@@ -1065,9 +1087,11 @@ export function createDesktopExecutor(
                 { cause: kbErr },
                 // What the caller is shown: the ladder that was spent, without the backend's own
                 // text. `ladder` is written here for a reader; `kbErr.message` is not (item 13).
-                `Every write route to window ${aimHwnd} was spent for "${entity.label ?? entity.entityId}" — ` +
-                `the UIA value route and the background write both failed — and the act was not ` +
-                `finished as a coordinate press.`,
+                `Every write route to window ${aimHwnd} was spent for "${quotedLabel(entity)}" — ` +
+                (failure !== undefined
+                  ? `the UIA value route failed because ${describeUiaRouteFailure(failure)}, and the background write failed too`
+                  : `the UIA value route and the background write both failed`) +
+                ` — and the act was not finished as a coordinate press.`,
               );
             }
             throw new Error(ladder, { cause: kbErr });
@@ -1114,7 +1138,12 @@ export function createDesktopExecutor(
         // re-discover; a blind press lets it believe. Unpinned calls keep the downgrade — a title
         // was never a promise about which window — but it is no longer BLIND: see below.
         if (aimHwnd !== undefined) {
-          probeRefusal("uia_click", "aim_route_failed", aimHwnd, entity);
+          // Which failure it was, when the backend's answer is a known one (`uia-route-failure.ts`).
+          // An element that has gone and one that cannot be invoked have opposite recoveries, and
+          // they reached the caller as the same sentence, word for word (win2, 2026-09-11,
+          // `dev/route-failure-strings/RESULTS.md`, arms Pi-a and Pi-b).
+          const failure = classifyUiaRouteFailure(uiaErr);
+          probeRefusal("uia_click", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null });
           // Typed for the same reason the two refusals above are: an untyped throw arrives as
           // `executor_failed`, and that reason's published first suggestion is "fall back to
           // mouse_click using the entity rect center" — the blind press this branch exists to
@@ -1126,10 +1155,12 @@ export function createDesktopExecutor(
             `entity's rect is a screen point that any window can be under. Re-run desktop_discover.`,
             aimHwnd,
             { cause: uiaErr },
-            // The message above quotes the UIA failure, which on this road is a PowerShell rejection
-            // carrying the whole script; the caller-facing sentence says the same thing without it.
-            `The UIA route to window ${aimHwnd} failed for "${entity.label ?? entity.entityId}", and ` +
-            `the act was not finished as a coordinate click.`,
+            // The message above quotes the UIA failure, which on this road can be a PowerShell
+            // rejection carrying the whole script. The caller-facing sentence names the failure in
+            // the engine's words when it is a known one, and says nothing more when it is not.
+            `The UIA route to window ${aimHwnd} failed for "${quotedLabel(entity)}"` +
+            (failure !== undefined ? ` because ${describeUiaRouteFailure(failure)}` : "") +
+            `, and the act was not finished as a coordinate click.`,
           );
         }
         // UIA click failed (element not found, stale tree, etc.).
