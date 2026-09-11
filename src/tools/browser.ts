@@ -1001,14 +1001,16 @@ ${ELEMENT_NAME_JS}
     let value = null;
     let checked = null;
     let withheld = false;
-    if (__isMasked(el)) {
+    if (tagName === 'input' && (type === 'checkbox' || type === 'radio')) {
+      // A check mark is not what -webkit-text-security hides, so these stay readable.
+      checked = el.checked;
+      value = el.getAttribute('value');
+    } else if (__isMasked(el)) {
       // What the page draws as dots does not leave the page; hasValue says whether it holds one.
       withheld = true;
     } else if (tagName === 'button') {
-      value = el.textContent.trim() || null;
-    } else if (tagName === 'input' && (type === 'checkbox' || type === 'radio')) {
-      checked = el.checked;
-      value = el.getAttribute('value');
+      // Its text without the entries or masked text inside it (win's outside read on #623).
+      value = __textWithoutFields(el) || null;
     } else if (tagName === 'input' || tagName === 'textarea') {
       const raw = el.value || '';
       value = raw ? (raw.length > MAX_VALUE_LEN ? raw.slice(0, MAX_VALUE_LEN) + '\u2026' : raw) : null;

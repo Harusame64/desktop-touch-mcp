@@ -1277,7 +1277,10 @@ export const MODAL_DRAWER_MAX_COVERAGE = 0.35;
  * §2.2 P1-R2-1). Returns `ModalFacts`. Structural signals only.
  */
 export function buildPageLevelModalFactsJs(): string {
+  // The dialog's name comes from the shared definition too, spliced here rather than borrowed from
+  // the host script: this IIFE is also embedded where no outer copy exists (win's outside read on #623).
   return `(function() {
+${ELEMENT_NAME_JS}
   try {
   const VW = window.innerWidth, VH = window.innerHeight;
   const vpArea = Math.max(1, VW * VH);
@@ -1292,9 +1295,9 @@ export function buildPageLevelModalFactsJs(): string {
     let n = (el.getAttribute('aria-label') || '').trim();
     if (!n) {
       const lb = el.getAttribute('aria-labelledby');
-      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = (ref.textContent || '').trim(); }
+      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = __textWithoutFields(ref); }
     }
-    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = (h.textContent || '').trim(); }
+    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = __textWithoutFields(h); }
     return n.replace(/\\s+/g, ' ').slice(0, 80);
   }
   const LANDMARK_RE = /^(navigation|complementary|main|banner|contentinfo|search|form|region)$/;

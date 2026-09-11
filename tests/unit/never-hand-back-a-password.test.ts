@@ -252,6 +252,10 @@ function loginPage() {
   const form = el("form", { id: "form" }, [
     el("p", {}, [p1]), el("p", {}, [p2]), el("p", {}, [t1]), el("p", {}, [p3]), el("p", {}, [l4, " ", p4]),
     el("p", {}, [t2]), el("p", {}, [a1]), el("p", {}, [m1]), el("p", {}, [m2]), el("p", {}, [go, s1]),
+    // Inside the form, so browser_form reads the button too (win's outside read on #623).
+    el("p", {}, [reveal]),
+    // A checkbox under a masked container: a check mark is not what the style hides.
+    el("p", { style: "-webkit-text-security: disc" }, [el("input", { id: "cb", type: "checkbox", checked: "" })]),
   ]);
   // Editable regions: what was typed into them is an entry, not a name (win's outside read on #623).
   const ed = el("div", { id: "ed", contenteditable: "true" }, ["PROBE-TYPED-8"]);
@@ -263,7 +267,11 @@ function loginPage() {
   const c1 = el("textarea", { id: "c1" }, ["PROBE-AREA-C1"]);
   const lc = el("label", { id: "lc" }, ["Comment ", c1]);
   c1.labels = [lc];
-  const body = el("body", {}, [el("h1", {}, ["RFS PW PAGE 2"]), form, ce, reveal, n2, ed, tb, lc]);
+  // A dialog named by a heading that holds masked text: the modal facts name it too.
+  const dialog = el("div", { id: "dlg", role: "dialog", "aria-modal": "true", "aria-labelledby": "dlgt" }, [
+    el("h2", { id: "dlgt" }, ["Verify ", el("span", { style: "-webkit-text-security: disc" }, ["PROBE-SECRET-13"])]),
+  ]);
+  const body = el("body", {}, [el("h1", {}, ["RFS PW PAGE 2"]), form, ce, n2, ed, tb, lc, dialog]);
   body.descendants().forEach((e, i) => { e.rect = { left: 10, top: 10 + i * 24, width: 160, height: 20 }; });
   return { body, p1, p2, p3, p4, p5, t1, t2, a1, m1, m2, ce, n2, ed, tb, c1 };
 }
@@ -394,6 +402,8 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     };
     expect(facts.candidates.map((c) => c.name).sort()).toEqual(["Account password", "Search"]);
     expect(leaked(JSON.stringify(facts))).toEqual([]);
+    // The modal facts name the dialog from its heading, without the masked text in it.
+    expect(JSON.stringify(facts)).toContain('"name":"Verify"');
   });
 
   it("browser_search's results carry no value, on the axis that lists every field", async () => {
@@ -428,6 +438,11 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       expect(fields[id], id).toMatchObject({ value: null, valueWithheld: "masked", hasValue: true });
     }
     expect(fields.t1).toMatchObject({ value: "PROBE-TEXT-9" });
+    // A button's value is its text, without the masked span inside it.
+    expect(fields.reveal).toMatchObject({ value: "Code:" });
+    // A checkbox keeps its checked state under a masked container.
+    expect(fields.cb).toMatchObject({ checked: true });
+    expect(fields.cb).not.toHaveProperty("valueWithheld");
     expect(fields.t1).not.toHaveProperty("valueWithheld");
     expect(fields.p4.label).toBe("PASSCODE-LABEL");
     expect(leaked(text, TEXT_VALUES)).toEqual([]);
@@ -451,6 +466,15 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     fixture.body.append(bare).append(bareBox);
     expect(focus(bare)).toEqual({ name: "DIV", type: "DIV" });
     expect(focus(bareBox)).toEqual({ name: "DIV", type: "DIV" });
+    // An unnamed element that is not an entry is named by its text — without the masked text or
+    // the editor inside it (win's outside read on #623: this read innerText).
+    const box = new FakeEl("div", {}, [
+      "Card ",
+      new FakeEl("span", { style: "-webkit-text-security: disc" }, ["PROBE-SECRET-12"]),
+      new FakeEl("div", { contenteditable: "true" }, ["PROBE-TYPED-14"]),
+    ]);
+    fixture.body.append(box);
+    expect(focus(box)).toEqual({ name: "Card", type: "DIV" });
     // A text field keeps its value — the field is named, and the value is the value.
     expect(focus(fixture.t2)).toEqual({ name: "t2", type: "INPUT", value: "PROBE-TYPED-7" });
     const unnamed = new FakeEl("textarea", {}, ["PROBE-AREA-INIT"], "PROBE-AREA-NOW");
