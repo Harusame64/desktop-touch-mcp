@@ -55,12 +55,82 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
     if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
     return 'other';
   }
-  function elText(el) {
-    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-    if (!t && el.tagName === 'INPUT')
-      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
-    return t;
+  // An input's name, never its value — the one definition every CDP script shares.
+
+  function __isMasked(el) {
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
+    }
+    try {
+      const s = window.getComputedStyle(el);
+      const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
+      return !!sec && sec !== 'none';
+    } catch (e) { return false; }
   }
+  function __isEntry(el) {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return role === 'textbox' || role === 'searchbox';
+  }
+  function __textWithoutFields(node) {
+    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node))) return '';
+    let out = '';
+    (function walk(n) {
+      for (const c of n.childNodes) {
+        if (out.length > 400) return;
+        if (c.nodeType === 3) out += c.nodeValue;
+        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c)) walk(c);
+      }
+    })(node);
+    return out.trim().replace(/\\s+/g, ' ');
+  }
+  function __fieldName(el) {
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.trim().split(/\\s+/).map(function(id) {
+        const n = document.getElementById(id);
+        return n ? __textWithoutFields(n) : '';
+      }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 80);
+    if (el.labels && el.labels.length) {
+      const t = Array.from(el.labels).map(function(l) { return __textWithoutFields(l); }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const type = el.tagName === 'INPUT' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    const pressable = /^(button|submit|reset|image)$/.test(type);
+    if (type === 'image') {
+      const alt = (el.getAttribute('alt') || '').trim();
+      if (alt) return alt.slice(0, 80);
+    } else if (pressable && !__isMasked(el)) {
+      // A caption the page draws as dots is withheld like any other masked text (PR 側 codex on #623).
+      const caption = (el.value || '').trim();
+      if (caption) return caption.slice(0, 80);
+    }
+    for (const attr of pressable ? ['title'] : ['title', 'placeholder', 'aria-placeholder']) {
+      const v = (el.getAttribute(attr) || '').trim();
+      if (v) return v.slice(0, 80);
+    }
+    return '';
+  }
+  function __elText(el) {
+    // A <select>'s text is its options, which the page wrote; it keeps the name it had.
+    if (el.tagName === 'SELECT' && !__isMasked(el)) return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
+    return __textWithoutFields(el).slice(0, 80);
+  }
+
+  const elText = __elText;
   function score(matched, visible) {
     let s = matched;
     if (!visible) s = Math.max(0, s - 0.3);
@@ -110,8 +180,10 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
         .join('').trim();
       if (!direct) continue;
       const hay = cs ? direct : direct.toLowerCase();
+      // What the page masks is not matched: a hit on hidden text would answer what the text says.
+      if (!hay.includes(needle) || __isMasked(el)) continue;
       if (hay === needle) record(el, 1.0, 'text');
-      else if (hay.includes(needle)) record(el, 0.8, 'text');
+      else record(el, 0.8, 'text');
     }
   } else if (by === 'regex') {
     let re;
@@ -122,7 +194,7 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
-      if (re.test(direct)) record(el, 0.9, 'regex');
+      if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();
@@ -248,12 +320,82 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
     return 'other';
   }
-  function elText(el) {
-    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-    if (!t && el.tagName === 'INPUT')
-      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
-    return t;
+  // An input's name, never its value — the one definition every CDP script shares.
+
+  function __isMasked(el) {
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
+    }
+    try {
+      const s = window.getComputedStyle(el);
+      const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
+      return !!sec && sec !== 'none';
+    } catch (e) { return false; }
   }
+  function __isEntry(el) {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return role === 'textbox' || role === 'searchbox';
+  }
+  function __textWithoutFields(node) {
+    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node))) return '';
+    let out = '';
+    (function walk(n) {
+      for (const c of n.childNodes) {
+        if (out.length > 400) return;
+        if (c.nodeType === 3) out += c.nodeValue;
+        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c)) walk(c);
+      }
+    })(node);
+    return out.trim().replace(/\\s+/g, ' ');
+  }
+  function __fieldName(el) {
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.trim().split(/\\s+/).map(function(id) {
+        const n = document.getElementById(id);
+        return n ? __textWithoutFields(n) : '';
+      }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 80);
+    if (el.labels && el.labels.length) {
+      const t = Array.from(el.labels).map(function(l) { return __textWithoutFields(l); }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const type = el.tagName === 'INPUT' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    const pressable = /^(button|submit|reset|image)$/.test(type);
+    if (type === 'image') {
+      const alt = (el.getAttribute('alt') || '').trim();
+      if (alt) return alt.slice(0, 80);
+    } else if (pressable && !__isMasked(el)) {
+      // A caption the page draws as dots is withheld like any other masked text (PR 側 codex on #623).
+      const caption = (el.value || '').trim();
+      if (caption) return caption.slice(0, 80);
+    }
+    for (const attr of pressable ? ['title'] : ['title', 'placeholder', 'aria-placeholder']) {
+      const v = (el.getAttribute(attr) || '').trim();
+      if (v) return v.slice(0, 80);
+    }
+    return '';
+  }
+  function __elText(el) {
+    // A <select>'s text is its options, which the page wrote; it keeps the name it had.
+    if (el.tagName === 'SELECT' && !__isMasked(el)) return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
+    return __textWithoutFields(el).slice(0, 80);
+  }
+
+  const elText = __elText;
   function score(matched, visible) {
     let s = matched;
     if (!visible) s = Math.max(0, s - 0.3);
@@ -303,8 +445,10 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
         .join('').trim();
       if (!direct) continue;
       const hay = cs ? direct : direct.toLowerCase();
+      // What the page masks is not matched: a hit on hidden text would answer what the text says.
+      if (!hay.includes(needle) || __isMasked(el)) continue;
       if (hay === needle) record(el, 1.0, 'text');
-      else if (hay.includes(needle)) record(el, 0.8, 'text');
+      else record(el, 0.8, 'text');
     }
   } else if (by === 'regex') {
     let re;
@@ -315,7 +459,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
-      if (re.test(direct)) record(el, 0.9, 'regex');
+      if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();
@@ -475,16 +619,17 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       const s = t.trim().replace(/\\s+/g, ' ').slice(0, 40);
       if (s && !seen.has(s)) { seen.add(s); out.push(s); }
     }
+    // Each label's text without the fields inside it: a <textarea>'s text is its value.
     const lb = el.getAttribute('aria-labelledby');
-    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(n.textContent); }
-    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(lab.textContent); } catch (e) {} }
+    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(__textWithoutFields(n)); }
+    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(__textWithoutFields(lab)); } catch (e) {} }
     const wrapLabel = el.closest && el.closest('label');
-    if (wrapLabel) add(wrapLabel.textContent);
+    if (wrapLabel) add(__textWithoutFields(wrapLabel));
     let prev = el.previousElementSibling;
     let hops = 0;
     while (prev && hops < 3 && out.length < 3) {
       const tg = prev.tagName.toLowerCase();
-      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(prev.textContent);
+      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(__textWithoutFields(prev));
       prev = prev.previousElementSibling; hops++;
     }
     return out.slice(0, 3);
@@ -518,6 +663,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       name: elText(el),
       role: roleAttr || null,
       ariaLabel: el.getAttribute('aria-label') || null,
+      // Stable and not secret — for the by-axis fill's identity gate (buildFillActJs).
+      id: el.id || null,
+      formName: el.getAttribute('name') || null,
       matchedBy: matchedByMap.get(el),
       score: score(matchScore.get(el) || 0, entry.visible),
       nearestLabels: labelsOf(el),
@@ -590,12 +738,82 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
     return 'other';
   }
-  function elText(el) {
-    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-    if (!t && el.tagName === 'INPUT')
-      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
-    return t;
+  // An input's name, never its value — the one definition every CDP script shares.
+
+  function __isMasked(el) {
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
+    }
+    try {
+      const s = window.getComputedStyle(el);
+      const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
+      return !!sec && sec !== 'none';
+    } catch (e) { return false; }
   }
+  function __isEntry(el) {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return role === 'textbox' || role === 'searchbox';
+  }
+  function __textWithoutFields(node) {
+    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node))) return '';
+    let out = '';
+    (function walk(n) {
+      for (const c of n.childNodes) {
+        if (out.length > 400) return;
+        if (c.nodeType === 3) out += c.nodeValue;
+        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c)) walk(c);
+      }
+    })(node);
+    return out.trim().replace(/\\s+/g, ' ');
+  }
+  function __fieldName(el) {
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.trim().split(/\\s+/).map(function(id) {
+        const n = document.getElementById(id);
+        return n ? __textWithoutFields(n) : '';
+      }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 80);
+    if (el.labels && el.labels.length) {
+      const t = Array.from(el.labels).map(function(l) { return __textWithoutFields(l); }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const type = el.tagName === 'INPUT' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    const pressable = /^(button|submit|reset|image)$/.test(type);
+    if (type === 'image') {
+      const alt = (el.getAttribute('alt') || '').trim();
+      if (alt) return alt.slice(0, 80);
+    } else if (pressable && !__isMasked(el)) {
+      // A caption the page draws as dots is withheld like any other masked text (PR 側 codex on #623).
+      const caption = (el.value || '').trim();
+      if (caption) return caption.slice(0, 80);
+    }
+    for (const attr of pressable ? ['title'] : ['title', 'placeholder', 'aria-placeholder']) {
+      const v = (el.getAttribute(attr) || '').trim();
+      if (v) return v.slice(0, 80);
+    }
+    return '';
+  }
+  function __elText(el) {
+    // A <select>'s text is its options, which the page wrote; it keeps the name it had.
+    if (el.tagName === 'SELECT' && !__isMasked(el)) return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
+    return __textWithoutFields(el).slice(0, 80);
+  }
+
+  const elText = __elText;
   function score(matched, visible) {
     let s = matched;
     if (!visible) s = Math.max(0, s - 0.3);
@@ -645,8 +863,10 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
         .join('').trim();
       if (!direct) continue;
       const hay = cs ? direct : direct.toLowerCase();
+      // What the page masks is not matched: a hit on hidden text would answer what the text says.
+      if (!hay.includes(needle) || __isMasked(el)) continue;
       if (hay === needle) record(el, 1.0, 'text');
-      else if (hay.includes(needle)) record(el, 0.8, 'text');
+      else record(el, 0.8, 'text');
     }
   } else if (by === 'regex') {
     let re;
@@ -657,7 +877,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
-      if (re.test(direct)) record(el, 0.9, 'regex');
+      if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();
@@ -762,7 +982,12 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   const mRole = matched.getAttribute('role') || null;
   const mAria = matched.getAttribute('aria-label') || null;
   const mTag = matched.tagName.toLowerCase();
-  if (mName !== "Email address" || mRole !== null || mAria !== "Email address" || mTag !== "input") {
+  // A field is named by its name, never by its value, so two fields that share an accessible name,
+  // role and tag no longer differ in mName; the id and the form name still tell them apart, and
+  // neither is secret (PR 側 codex on #623's e83cb56).
+  const mId = matched.id || null;
+  const mForm = matched.getAttribute('name') || null;
+  if (mName !== "Email address" || mRole !== null || mAria !== "Email address" || mTag !== "input" || mId !== null || mForm !== null) {
     return { ok: false, error: 'identity_changed', detail: 'signature' };
   }
   let el = matched;
@@ -782,7 +1007,15 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : '') };
   }
 
+  // Read before any page handler runs: one can replace the element, and a detached element has no
+  // computed style left to show that it was masked (PR 側 codex on #623).
+  const maskedBefore = __isMasked(el);
   el.focus();
+  // ...and again once focus has arrived. A focus handler can mask the field and an input handler
+  // can then replace it, and neither the read above nor the one after the events would see that
+  // mask (PR 側 codex on #623's 122185e). browser_fill by selector focuses in an evaluate of its own
+  // before its first read, so this is the road that needed it.
+  const maskedAfterFocus = __isMasked(el);
   const val = "user@example.com";
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();
@@ -795,13 +1028,17 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     const fullActual = el.value !== undefined ? el.value : '';
-    return { ok: true, actual: (fullActual || '').slice(0, 100), fullActualLen: fullActual.length, fullMatches: fullActual === val };
+    // A masked field's value never leaves the page; the comparison is made here, in the page.
+    const masked = maskedBefore || maskedAfterFocus || __isMasked(el);
+    return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
   }
   // contenteditable
   el.textContent = val;
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
   const fullActual = el.textContent || '';
-  return { ok: true, actual: (fullActual || '').slice(0, 100), fullActualLen: fullActual.length, fullMatches: fullActual === val };
+  // A PIN pad can be a contenteditable the page masks; its text stays in the page as well.
+  const maskedEditable = maskedBefore || maskedAfterFocus || __isMasked(el);
+  return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
 })()
 "
 `;

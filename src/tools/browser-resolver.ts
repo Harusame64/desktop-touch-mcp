@@ -16,6 +16,7 @@
  */
 
 import { evaluateInTab } from "../engine/cdp-bridge.js";
+import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 
 export interface CandidateCollectionArgs {
   by: "text" | "regex" | "role" | "ariaLabel" | "selector";
@@ -68,7 +69,9 @@ export interface ActionFactsArgs {
  *
  * The two public builders' snapshot tests pin the COMPOSED output byte-for-byte,
  * so the `browser_search` IIFE stays bit-equal (NFR-1 / AC-9): do not change the
- * emitted JS here without updating both snapshots.
+ * emitted JS here without updating both snapshots. Public PR #623 changed it on
+ * purpose — an element's name, and which values never leave the page, come from
+ * `_element-name-js.ts` — and the snapshots were updated with it.
  */
 function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive } = args;
@@ -126,12 +129,9 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
     if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
     return 'other';
   }
-  function elText(el) {
-    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-    if (!t && el.tagName === 'INPUT')
-      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
-    return t;
-  }
+  // An input's name, never its value — the one definition every CDP script shares.
+${ELEMENT_NAME_JS}
+  const elText = __elText;
   function score(matched, visible) {
     let s = matched;
     if (!visible) s = Math.max(0, s - 0.3);
@@ -181,8 +181,10 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
         .join('').trim();
       if (!direct) continue;
       const hay = cs ? direct : direct.toLowerCase();
+      // What the page masks is not matched: a hit on hidden text would answer what the text says.
+      if (!hay.includes(needle) || __isMasked(el)) continue;
       if (hay === needle) record(el, 1.0, 'text');
-      else if (hay.includes(needle)) record(el, 0.8, 'text');
+      else record(el, 0.8, 'text');
     }
   } else if (by === 'regex') {
     let re;
@@ -193,7 +195,7 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
       if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
-      if (re.test(direct)) record(el, 0.9, 'regex');
+      if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();
@@ -249,10 +251,11 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
 /**
  * Build the injected-JS IIFE that collects, scores, filters and shapes candidate
  * elements for `browser_search`. Composes the shared `candidateMatchingBodyJs`
- * with the search serialization tail. The generated string is byte-equal with
+ * with the search serialization tail. The generated string was byte-equal with
  * the former inline template (pinned by snapshot) so the public `browser_search`
- * contract is unchanged (NFR-1 / AC-9). Do not change the emitted JS without
- * updating the snapshot.
+ * contract was unchanged (NFR-1 / AC-9), until public PR #623 changed what an
+ * input's `text` is — its name, never its value. Do not change the emitted JS
+ * without updating the snapshot.
  */
 export function buildCandidateCollectionJs(args: CandidateCollectionArgs): string {
   return `${candidateMatchingBodyJs(args)}
@@ -440,16 +443,17 @@ ${occluderIndexHelperJs()}`
       const s = t.trim().replace(/\\s+/g, ' ').slice(0, 40);
       if (s && !seen.has(s)) { seen.add(s); out.push(s); }
     }
+    // Each label's text without the fields inside it: a <textarea>'s text is its value.
     const lb = el.getAttribute('aria-labelledby');
-    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(n.textContent); }
-    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(lab.textContent); } catch (e) {} }
+    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(__textWithoutFields(n)); }
+    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(__textWithoutFields(lab)); } catch (e) {} }
     const wrapLabel = el.closest && el.closest('label');
-    if (wrapLabel) add(wrapLabel.textContent);
+    if (wrapLabel) add(__textWithoutFields(wrapLabel));
     let prev = el.previousElementSibling;
     let hops = 0;
     while (prev && hops < 3 && out.length < 3) {
       const tg = prev.tagName.toLowerCase();
-      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(prev.textContent);
+      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(__textWithoutFields(prev));
       prev = prev.previousElementSibling; hops++;
     }
     return out.slice(0, 3);
@@ -483,6 +487,9 @@ ${occluderIndexHelperJs()}`
       name: elText(el),
       role: roleAttr || null,
       ariaLabel: el.getAttribute('aria-label') || null,
+      // Stable and not secret — for the by-axis fill's identity gate (buildFillActJs).
+      id: el.id || null,
+      formName: el.getAttribute('name') || null,
       matchedBy: matchedByMap.get(el),
       score: score(matchScore.get(el) || 0, entry.visible),
       nearestLabels: labelsOf(el),
@@ -521,7 +528,7 @@ export function buildFillActJs(
   index: number,
   climbDepth: number,
   value: string,
-  expect: { name: string; role: string | null; ariaLabel: string | null; tag: string; total: number },
+  expect: { name: string; role: string | null; ariaLabel: string | null; tag: string; id: string | null; formName: string | null; total: number },
 ): string {
   return `${candidatePoolJs(args)}
   // ── ADR-023 Phase 1 PR4: by-axis fill ACT (deterministic re-gather + index). ──
@@ -538,7 +545,12 @@ export function buildFillActJs(
   const mRole = matched.getAttribute('role') || null;
   const mAria = matched.getAttribute('aria-label') || null;
   const mTag = matched.tagName.toLowerCase();
-  if (mName !== ${JSON.stringify(expect.name)} || mRole !== ${JSON.stringify(expect.role)} || mAria !== ${JSON.stringify(expect.ariaLabel)} || mTag !== ${JSON.stringify(expect.tag)}) {
+  // A field is named by its name, never by its value, so two fields that share an accessible name,
+  // role and tag no longer differ in mName; the id and the form name still tell them apart, and
+  // neither is secret (PR 側 codex on #623's e83cb56).
+  const mId = matched.id || null;
+  const mForm = matched.getAttribute('name') || null;
+  if (mName !== ${JSON.stringify(expect.name)} || mRole !== ${JSON.stringify(expect.role)} || mAria !== ${JSON.stringify(expect.ariaLabel)} || mTag !== ${JSON.stringify(expect.tag)} || mId !== ${JSON.stringify(expect.id)} || mForm !== ${JSON.stringify(expect.formName)}) {
     return { ok: false, error: 'identity_changed', detail: 'signature' };
   }
   let el = matched;
@@ -558,7 +570,15 @@ export function buildFillActJs(
     return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : '') };
   }
 
+  // Read before any page handler runs: one can replace the element, and a detached element has no
+  // computed style left to show that it was masked (PR 側 codex on #623).
+  const maskedBefore = __isMasked(el);
   el.focus();
+  // ...and again once focus has arrived. A focus handler can mask the field and an input handler
+  // can then replace it, and neither the read above nor the one after the events would see that
+  // mask (PR 側 codex on #623's 122185e). browser_fill by selector focuses in an evaluate of its own
+  // before its first read, so this is the road that needed it.
+  const maskedAfterFocus = __isMasked(el);
   const val = ${JSON.stringify(value)};
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();
@@ -571,13 +591,17 @@ export function buildFillActJs(
     el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     const fullActual = el.value !== undefined ? el.value : '';
-    return { ok: true, actual: (fullActual || '').slice(0, 100), fullActualLen: fullActual.length, fullMatches: fullActual === val };
+    // A masked field's value never leaves the page; the comparison is made here, in the page.
+    const masked = maskedBefore || maskedAfterFocus || __isMasked(el);
+    return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
   }
   // contenteditable
   el.textContent = val;
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
   const fullActual = el.textContent || '';
-  return { ok: true, actual: (fullActual || '').slice(0, 100), fullActualLen: fullActual.length, fullMatches: fullActual === val };
+  // A PIN pad can be a contenteditable the page masks; its text stays in the page as well.
+  const maskedEditable = maskedBefore || maskedAfterFocus || __isMasked(el);
+  return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
 })()
 `;
 }
@@ -658,6 +682,9 @@ export interface CandidateFacts {
   name: string;
   role: string | null;
   ariaLabel: string | null;
+  /** The element's id and form `name` attribute — stable, not secret; the by-axis fill's identity gate */
+  id: string | null;
+  formName: string | null;
   /** whyMatched — reuses browser_search's `matchedBy` */
   matchedBy: string;
   /** confidence score from collection */
@@ -955,7 +982,7 @@ export type ResolveActionOutcome =
        * DOM mutation between resolve and act could silently mis-fill a different
        * field (Codex PR4 P1). Click does not need it (it acts by physical coords).
        */
-      matched: { name: string; role: string | null; ariaLabel: string | null; tag: string; total: number };
+      matched: { name: string; role: string | null; ariaLabel: string | null; tag: string; id: string | null; formName: string | null; total: number };
     }
   | { kind: "ambiguous"; total: number; returned: number; truncated: boolean; candidates: AmbiguityCandidate[]; next: string[] }
   | {
@@ -1058,6 +1085,8 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
         role: f?.role ?? null,
         ariaLabel: f?.ariaLabel ?? null,
         tag: f?.chain?.[0]?.tag ?? "",
+        id: f?.id ?? null,
+        formName: f?.formName ?? null,
         total: gathered.total,
       },
     };
@@ -1272,7 +1301,10 @@ export const MODAL_DRAWER_MAX_COVERAGE = 0.35;
  * §2.2 P1-R2-1). Returns `ModalFacts`. Structural signals only.
  */
 export function buildPageLevelModalFactsJs(): string {
+  // The dialog's name comes from the shared definition too, spliced here rather than borrowed from
+  // the host script: this IIFE is also embedded where no outer copy exists (win's outside read on #623).
   return `(function() {
+${ELEMENT_NAME_JS}
   try {
   const VW = window.innerWidth, VH = window.innerHeight;
   const vpArea = Math.max(1, VW * VH);
@@ -1287,9 +1319,9 @@ export function buildPageLevelModalFactsJs(): string {
     let n = (el.getAttribute('aria-label') || '').trim();
     if (!n) {
       const lb = el.getAttribute('aria-labelledby');
-      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = (ref.textContent || '').trim(); }
+      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = __textWithoutFields(ref); }
     }
-    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = (h.textContent || '').trim(); }
+    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = __textWithoutFields(h); }
     return n.replace(/\\s+/g, ' ').slice(0, 80);
   }
   const LANDMARK_RE = /^(navigation|complementary|main|banner|contentinfo|search|form|region)$/;

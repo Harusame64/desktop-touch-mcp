@@ -5,6 +5,7 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
+import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 
 const _defaultPort = getCdpPort();
 
@@ -61,12 +62,15 @@ export const scrollToElementHandler = async ({
     try {
       const expr = `
 (function() {
+${ELEMENT_NAME_JS}
   const el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
   // Use 'instant' for automation — 'smooth' takes 300-500ms before coords stabilize
   el.scrollIntoView({ block: ${JSON.stringify(block)}, inline: 'nearest', behavior: 'instant' });
   const r = el.getBoundingClientRect();
-  return { ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 80), viewportTop: Math.round(r.top), viewportBottom: Math.round(r.bottom) };
+  // The element's name, never an entry's text or a masked element's — the definition every CDP
+  // script shares (win's outside read on #623: this was a fourth copy, reading textContent).
+  return { ok: true, tag: el.tagName.toLowerCase(), text: __elText(el), viewportTop: Math.round(r.top), viewportBottom: Math.round(r.bottom) };
 })()`;
       const result = await evaluateInTab(expr, tabId ?? null, port);
       const res = result as { ok: boolean; error?: string; tag?: string; text?: string; viewportTop?: number; viewportBottom?: number };

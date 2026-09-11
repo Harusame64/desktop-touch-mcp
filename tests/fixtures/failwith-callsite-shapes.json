@@ -90,112 +90,112 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 723,
+      "line": 724,
       "tool": "browser_fill",
       "errKind": "member",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 730,
+      "line": 735,
       "tool": "browser_fill",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1052,
+      "line": 1085,
       "tool": "browser_form",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1066,
+      "line": 1099,
       "tool": "browser_form",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1118,
+      "line": 1151,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1170,
+      "line": 1203,
       "tool": "browser_locate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1667,
+      "line": 1700,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1719,
+      "line": 1752,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1928,
+      "line": 1961,
       "tool": "browser_eval",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2077,
+      "line": 2110,
       "tool": "browser_eval",
       "errKind": "identifier",
       "contextShape": "dynamic"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2124,
+      "line": 2157,
       "tool": "browser_navigate",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2215,
+      "line": 2248,
       "tool": "browser_navigate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2431,
+      "line": 2461,
       "tool": "browser_overview",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2583,
+      "line": 2613,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2714,
+      "line": 2744,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2862,
+      "line": 2892,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"
@@ -230,21 +230,21 @@
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 912,
+      "line": 924,
       "tool": "desktop_state",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 927,
+      "line": 939,
       "tool": "get_history",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 952,
+      "line": 964,
       "tool": "get_document_state",
       "errKind": "identifier",
       "contextShape": "none"
@@ -489,14 +489,14 @@
     },
     {
       "file": "src/tools/scroll-to-element.ts",
-      "line": 79,
+      "line": 83,
       "tool": "scroll(action='to_element')",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/scroll-to-element.ts",
-      "line": 92,
+      "line": 96,
       "tool": "scroll(action='to_element')",
       "errKind": "identifier",
       "contextShape": "object-plain"
