@@ -171,8 +171,12 @@ export function canInjectAtTarget(hwnd: unknown): InjectCheckResult {
  * judges this handle and then posts to exactly it with {@link postCharsToResolvedTarget}, so the
  * check and the post cannot look at two different answers.
  */
-export function resolveKeyTarget(hwnd: unknown): unknown {
-  return resolveTarget(hwnd);
+export function resolveKeyTarget(hwnd: bigint): bigint {
+  try {
+    return getFocusedChildHwnd(hwnd) ?? hwnd;
+  } catch {
+    return hwnd;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

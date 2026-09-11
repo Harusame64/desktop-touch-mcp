@@ -2071,10 +2071,11 @@ function getSharedRealDeps(): ExecutorDeps {
             : `Window not found for keyboardResolve: "${windowTitle}"`,
         );
       }
-      // Resolved once: this is the handle the rule judges and `keyboardPost` posts to.
-      const resolved = resolveKeyTarget(win.hwnd);
-      const receiver = typeof resolved === "bigint" ? resolved : null;
-      const check = canInjectViaPostMessage(receiver ?? win.hwnd);
+      // Resolved once: this is the handle the rule judges and `keyboardPost` posts to. It is always a
+      // handle — the window itself when its thread has no focus, or when the question could not be
+      // asked — which the rule reads as "cannot say" (step 4), not as an unknown receiver.
+      const receiver = resolveKeyTarget(win.hwnd);
+      const check = canInjectViaPostMessage(receiver);
       if (!check.supported) {
         throw new Error(
           `Background keyboard type not supported for "${windowTitle}" ` +
@@ -2082,7 +2083,7 @@ function getSharedRealDeps(): ExecutorDeps {
         );
       }
       const receipt: KeyboardReceipt = { windowHwnd: win.hwnd, receiverHwnd: receiver };
-      if (receiver !== null) Object.assign(receipt, await readReceiverFacts(receiver));
+      Object.assign(receipt, await readReceiverFacts(receiver));
       const rootOf = (h: bigint | undefined): bigint | null => (h === undefined ? null : getWindowRoot(h));
       receipt.entityRootHwnd = rootOf(refs.entityHwnd);
       receipt.originRootHwnd = rootOf(refs.originHwnd);
