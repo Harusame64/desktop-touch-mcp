@@ -570,9 +570,11 @@ export class GuardedTouchLoop {
        * this item. Duck-typed rather than `instanceof`, for the same module-identity reason the
        * catch below matches on `name`.
        *
-       * Capped as defence in depth: the longest sentence any of these classes writes is under 600
-       * characters, so a value past the cap means something unexpected is being published, and a
-       * truncated field is easier to notice than a page of text.
+       * Capped as defence in depth: the longest sentence any of these classes writes was 654
+       * characters when they were last counted (2026-09-12, the keyboard rung's by-handle recovery),
+       * so a value past the cap means something unexpected is being published, and a truncated field
+       * is easier to notice than a page of text. The number is a measurement, not a budget — it
+       * moves when a sentence is reworded; the cap is what holds.
        */
       const declared = (err as { callerDetail?: unknown } | null)?.callerDetail;
       const detail = typeof declared === "string" && declared.trim() !== ""
