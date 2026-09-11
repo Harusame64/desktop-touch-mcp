@@ -18,7 +18,8 @@ export interface EntityLocator {
     /**
      * Which client read the element (ADR-036 item 16). The native engine and the PowerShell script
      * can see different trees and name one element differently, so a click's "not found" is
-     * believed only from the client that read it. Absent when the read could not say.
+     * believed only when the native engine both read the element and answered the click. Absent
+     * when the read could not say.
      */
     via?: "native" | "powershell";
   };

@@ -320,7 +320,7 @@ const SUGGESTS: Record<string, string[]> = {
     "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
   ],
   // ADR-036 item 16 — the entity could not be found: missing from the live view (or the view has
-  // expired), or answered "not found" by the UIA client that read it, on an act that named its
+  // expired), or answered "not found" by the native UIA engine that also read it, on an act that named its
   // window by title, whose press where it used to be is refused. The cause is not known, so none is
   // asserted (gate 2 on #624). Re-discovering is the recovery, and a coordinate is exactly what
   // must not be tried.

@@ -1036,8 +1036,8 @@ export interface UiElementsResult {
    * Which client read this tree — ADR-036 item 16. The two name one element in different
    * vocabularies (above), and without the native engine the title-road click script, which does
    * not register the clientside providers, sees fewer elements than this read (gate 2 on #624). So
-   * a click's "not found" says an element has gone only when the same client read it and looked
-   * for it. Absent on a result that cannot say — a cache entry written from a PowerShell read.
+   * a click's "not found" is believed only when the native engine both read the element and looked
+   * for it — a PowerShell pair is not measured, and is not believed either. Absent on a result that cannot say — a cache entry written from a PowerShell read.
    */
   via?: "native" | "powershell";
 }

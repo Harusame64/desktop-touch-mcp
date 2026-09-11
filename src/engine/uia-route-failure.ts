@@ -30,9 +30,12 @@
  * this had before.
  *
  * One more limit, measured the same day: `Element not found` is also what a lookup with an id from
- * another UIA vocabulary returns (win2's void first bridge run). In production the id comes from a
- * read on the same road, so "not found" is the right name here; it would not be for a reader that
- * builds locators some other way.
+ * another UIA vocabulary returns (win2's void first bridge run). The id does not always come from a
+ * read on the same road: without the native engine, or when a native read or click falls back to
+ * PowerShell, the read and the click go through clients that see different trees and name one
+ * element differently (gate 2 on #624). So this class names what the click was told, not that the
+ * element has gone — the executor believes it only when the native client both read the entity and
+ * answered the click (ADR-036 item 16, `locator.uia.via`).
  *
  * **A read-only field is its own answer, and the client gives it before any provider is asked.**
  * The managed client's `ValuePattern.SetValue` reads `IsEnabled` and throws

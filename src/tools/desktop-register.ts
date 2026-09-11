@@ -1582,7 +1582,7 @@ export function registerDesktopTools(server: McpServer): void {
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
       "If ok=false, read 'reason':",
-      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told by UIA, through the client that read the element, that it cannot be found — nothing was pressed where it used to be;",
+      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
