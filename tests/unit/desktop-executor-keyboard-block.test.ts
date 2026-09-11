@@ -75,7 +75,7 @@ describe("5th keyboard block (ADR-020 SR-5 PR-SR5-2)", () => {
   });
 
   describe("(2) preferredExecutors=['keyboard'] 単独 set → 新 block entry", () => {
-    it("UIA-blocked entity + preferredExecutors=['keyboard'] + setValue + text → keyboardTypeBg direct, bare 'keyboard'", async () => {
+    it("UIA-blocked entity + preferredExecutors=['keyboard'] + setValue + text → keyboardTypeBg direct, 'keyboard' marked when the backend cannot say where it typed", async () => {
       const deps = mockDeps();
       const exec = createDesktopExecutor({ hwnd: "h" }, deps);
       const result = await exec(
@@ -87,7 +87,10 @@ describe("5th keyboard block (ADR-020 SR-5 PR-SR5-2)", () => {
         "setValue",
         "hello",
       );
-      expect(result).toBe("keyboard"); // bare ExecutorKind (PR #330 contract、OQ-SR5-1 (1))
+      // ADR-036 family 2 — this double has no `keyboardResolve` / `keyboardPost`, so the rung cannot
+      // say where the characters went: it posts through `keyboardTypeBg` and marks the success. The
+      // bare "keyboard" of PR #330 remains the answer for a CONFIRMED write (dev/fam2-refusal §5).
+      expect(result).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
       expect(deps.keyboardTypeBg).toHaveBeenCalledOnce();
       // ADR-036: `"h"` is not a handle, so nothing is aimed by handle and the title falls back
       // to "@active" rather than becoming the string "h".
@@ -135,7 +138,7 @@ describe("5th keyboard block (ADR-020 SR-5 PR-SR5-2)", () => {
   });
 
   describe("(4) preferredExecutors=['uia','keyboard'] + UIA setValue throws → UIA route 内 keyboardTypeBg recovery (PR #330 contract 維持、新 block 到達せず)", () => {
-    it("UIA setValue throws + keyboardTypeBg succeeds → bare 'keyboard' (UIA route 内 fallback、北極星 2)", async () => {
+    it("UIA setValue throws + keyboardTypeBg succeeds → 'keyboard', marked when the backend cannot say where it typed (UIA route 内 fallback)", async () => {
       const deps = mockDeps({
         uiaSetValue: vi.fn(async () => {
           throw new Error("UIA setValue failed");
@@ -151,9 +154,10 @@ describe("5th keyboard block (ADR-020 SR-5 PR-SR5-2)", () => {
         "setValue",
         "hello",
       );
-      // PR #330 contract: UIA route 内 keyboardTypeBg recovery で bare "keyboard"
-      // 新 block (top-level) は到達せず、UIA block 内 fallback で完結
-      expect(result).toBe("keyboard");
+      // PR #330 contract: UIA route 内 keyboardTypeBg recovery。新 block (top-level) は到達せず、
+      // UIA block 内 fallback で完結。ADR-036 family 2 — the double cannot say where it typed, so
+      // the success is marked; a confirmed write keeps the bare "keyboard" (dev/fam2-refusal §5).
+      expect(result).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
       expect(deps.uiaSetValue).toHaveBeenCalledOnce();
       expect(deps.keyboardTypeBg).toHaveBeenCalledOnce();
     });

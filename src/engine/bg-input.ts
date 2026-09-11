@@ -165,6 +165,20 @@ export function canInjectAtTarget(hwnd: unknown): InjectCheckResult {
   return canInjectViaPostMessage(resolveTarget(hwnd));
 }
 
+/**
+ * ADR-036 family 2 — the handle `hwnd`'s keystrokes would go to, resolved once: the focus of its
+ * thread, or `hwnd` itself when there is none or the question could not be asked. The keyboard rung
+ * judges this handle and then posts to exactly it with {@link postCharsToResolvedTarget}, so the
+ * check and the post cannot look at two different answers.
+ */
+export function resolveKeyTarget(hwnd: bigint): bigint {
+  try {
+    return getFocusedChildHwnd(hwnd) ?? hwnd;
+  } catch {
+    return hwnd;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Character injection
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,7 +206,14 @@ export interface PostCharsResult {
  * Does NOT change the foreground window.
  */
 export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
-  const target = resolveTarget(hwnd);
+  return postCharsToResolvedTarget(resolveTarget(hwnd), text);
+}
+
+/**
+ * Send `text` to `target` as {@link postCharsToHwnd} does, to that handle and no other: the focus is
+ * not asked again. ADR-036 family 2 — the keyboard rung posts here after judging `target`.
+ */
+export function postCharsToResolvedTarget(target: unknown, text: string): PostCharsResult {
   let sent = 0;
   const total = text.length; // UTF-16 code unit count
 

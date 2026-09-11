@@ -268,7 +268,10 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
     });
     const exec = createDesktopExecutor({ windowTitle: "Notepad" }, deps);
     const result = await exec(entity({ sources: ["uia"] }), "type", "hello");
-    expect(result).toBe("keyboard");
+    // ADR-036 family 2 — this double has no `keyboardResolve` / `keyboardPost`, so nothing can say
+    // where the characters went. The rung posts through `keyboardTypeBg` as before and marks the
+    // success, never a plain one (internal dev/fam2-refusal/DESIGN.md §4).
+    expect(result).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
     expect(deps.uiaSetValue).toHaveBeenCalledOnce();
     expect(deps.keyboardTypeBg).toHaveBeenCalledWith("Notepad", "hello", undefined);
   });
@@ -279,7 +282,7 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
     });
     const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(entity({ sources: ["uia"] }), "setValue", "x");
-    expect(result).toBe("keyboard");
+    expect(result).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
     expect(deps.keyboardTypeBg).toHaveBeenCalledWith("App", "x", undefined);
   });
 

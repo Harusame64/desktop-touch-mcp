@@ -51,6 +51,7 @@ import {
   WindowExcludedRefusalError,
   AimBlockedByExcludedRefusalError,
   EntityNotFoundRefusalError,
+  KeyboardTargetUnsafeRefusalError,
 } from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
@@ -1099,6 +1100,22 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // ADR-036 family 2 — the keyboard rung would have posted to something other than the field this
+  // act named, and its rule could say so. Its own reason: `executor_failed` would advise a foreground
+  // type, which puts the characters exactly where this refused to.
+  if (!result.ok && result.reason === "keyboard_target_unsafe") {
+    const failure = toFailureEnvelope(
+      Err(new KeyboardTargetUnsafeRefusalError(
+        "KeyboardTargetUnsafe: the characters would not have reached the field this act named — nothing was typed. " +
+        "if_unexpected.detail names the ground"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // A security refusal, not a failed route. `tool-exclusion.ts` has claimed since it was written
   // that this error is wired into `_errors.ts`; it was not, so the one refusal that must never
   // suggest a coordinate press was the loudest about it.
@@ -1581,6 +1598,7 @@ export function registerDesktopTools(server: McpServer): void {
       "[EXPERIMENTAL] Act on a discovered entity (click/type/setValue/scroll). Use desktop_act.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
+      "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} was sent by the background keyboard write but not confirmed to have reached the field named: read the field back before relying on it.",
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
@@ -1593,6 +1611,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  aim_occluded → another window is drawn over the point, so nothing was done. Whether it would really have taken the press cannot be asked here (that needs the OS hit test), so anything on top counts as in the way — an overlay presses pass through is reported the same. Bring the intended window forward, or use V1 click_element, which is also the way past such an overlay — re-calling desktop_discover alone does not help, the coordinates are already right;",
       "  aim_point_outside_window → the window is still open but its coordinates can no longer be followed (among them: minimised; resized, so the contents may have reflowed — refused even where the point still falls inside; moved while it was being read, so that snapshot has no single origin; measured by a lane whose moment cannot be established, such as a stored visual snapshot; or captured in a window other than the one this act named — a menu or dropdown has an origin of its own and is followed only while it is still what sits under the point); nothing was clicked. A window that moved WITHOUT resizing is followed automatically when the coordinates were measured in the same read that measured the window; a move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport (that check does not look at uia / cdp / terminal entities). Re-call desktop_discover — do NOT retry by coordinate;",
       "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. if_unexpected.detail names the failure when this server recognises it (not found, no pattern, disabled, read-only). When it says not found or names none: re-call desktop_discover, or try V1 click_element(name=…) on the same entity; when the route may have matched another element by the same text, click_element with controlType narrows it;",
+      "  keyboard_target_unsafe → the background write would not have reached the field this act named (the focus is on a different control or in a different window, or the receiving control does not take typed text); nothing was typed. if_unexpected.detail names which. Put the focus on the field you named, then type again — if_unexpected.detail names the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle too, so that road does not open there). For other_window, V1 focus_window on the field's window first — it comes forward with the focus it last had, and a window over the field makes a click answer aim_occluded — do NOT type through the foreground instead;",
       "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
