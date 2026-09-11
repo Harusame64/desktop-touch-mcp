@@ -736,6 +736,16 @@ function probeRefusal(
 }
 
 /**
+ * The entity's label as a caller's sentence quotes it. A label has no bound (a UIA Name can be a
+ * paragraph) and the envelope cuts `detail` at 1000 characters, so an uncut label could push out the
+ * class the sentence exists to name, and the caller would read "no class" (2ゲート目, round 3 on #622).
+ */
+function quotedLabel(entity: UiEntity): string {
+  const label = entity.label ?? entity.entityId;
+  return label.length > 200 ? `${label.slice(0, 200)}…` : label;
+}
+
+/**
  * ADR-036 item 14c — the two ADR-029 refusals, by the names `guarded-touch.ts` matches them on.
  *
  * They are thrown below the routes, by the reachability check and by the cursor itself, so they
@@ -1077,7 +1087,7 @@ export function createDesktopExecutor(
                 { cause: kbErr },
                 // What the caller is shown: the ladder that was spent, without the backend's own
                 // text. `ladder` is written here for a reader; `kbErr.message` is not (item 13).
-                `Every write route to window ${aimHwnd} was spent for "${entity.label ?? entity.entityId}" — ` +
+                `Every write route to window ${aimHwnd} was spent for "${quotedLabel(entity)}" — ` +
                 (failure !== undefined
                   ? `the UIA value route failed because ${describeUiaRouteFailure(failure)}, and the background write failed too`
                   : `the UIA value route and the background write both failed`) +
@@ -1148,7 +1158,7 @@ export function createDesktopExecutor(
             // The message above quotes the UIA failure, which on this road can be a PowerShell
             // rejection carrying the whole script. The caller-facing sentence names the failure in
             // the engine's words when it is a known one, and says nothing more when it is not.
-            `The UIA route to window ${aimHwnd} failed for "${entity.label ?? entity.entityId}"` +
+            `The UIA route to window ${aimHwnd} failed for "${quotedLabel(entity)}"` +
             (failure !== undefined ? ` because ${describeUiaRouteFailure(failure)}` : "") +
             `, and the act was not finished as a coordinate click.`,
           );

@@ -176,6 +176,16 @@ describe("the refusal says which failure it was", () => {
     expect(e.callerDetail).not.toContain("Value is read-only.");
   });
 
+  it("keeps the class inside the detail when the label is long", async () => {
+    // The envelope cuts `detail` at 1000 characters and a UIA Name has no bound. The class comes
+    // after the label, so a long one cut it off and the caller read "no class" (2ゲート目, round 3).
+    const long: UiEntity = { ...alpha, label: "L".repeat(1200) };
+    const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+    const d = deps({ uiaClick: vi.fn(async () => { throw new Error("Element is disabled"); }) });
+    const e = await createDesktopExecutor(aim, d)(long, "click").then(() => undefined, (x: unknown) => x) as Refusal;
+    expect(e.callerDetail.slice(0, 1000)).toContain("because the element the route matched is disabled");
+  });
+
   it("writes the class into the refusal row, and never the backend's text", async () => {
     await clickFailingWith(new Error("InvokePattern not supported by this element"));
     await clickFailingWith(new Error('Command failed: powershell.exe "…SECRET-SCRIPT-BODY…"'));

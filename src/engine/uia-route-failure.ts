@@ -37,22 +37,25 @@
  * **A read-only field is its own answer, and the client gives it before any provider is asked.**
  * The managed client's `ValuePattern.SetValue` reads `IsEnabled` and throws
  * `ElementNotEnabledException` (the `nonenabled element` text), then reads `IsReadOnly` and throws
- * `InvalidOperationException` (`Value is read-only.`), both before it calls the provider (dotnet/wpf,
- * `UIAutomationClient/System/Windows/Automation/ValuePattern.cs`). MEASURED 2026-09-11 win2
- * `dev/route-failure-strings/RESULTS-622.md`, on `90633009`: a disabled field typed through the
- * by-handle road gave the `nonenabled element` text, and a read-only WinForms Edit and a read-only
- * WPF TextBox both gave `Exception calling "SetValue" with "1" argument(s): "Value is read-only."`.
- * So on this road `nonenabled element` means disabled. Two providers do refuse a read-only field as
- * not enabled (WPF's `TextBoxAutomationPeer`, Chromium's `AXPlatformNodeWin`), but the client's
- * check comes first — reasoning from their source got this backwards once, in `00d1109`. A read-only
- * field in Chrome is not measured.
+ * `InvalidOperationException` (`Value is read-only.`), both before it calls the provider — READ in
+ * dotnet/wpf (`UIAutomationClient/System/Windows/Automation/ValuePattern.cs`); this road runs the
+ * .NET Framework build of that client, and the measurement is what shows it behaves the same.
+ * MEASURED 2026-09-11 win2 `dev/route-failure-strings/RESULTS-622.md` (on internal PR #70's branch
+ * until it merges), on `90633009`: a disabled field typed through the by-handle road gave the
+ * `nonenabled element` text, and a read-only WinForms Edit and a read-only WPF TextBox both gave
+ * `Exception calling "SetValue" with "1" argument(s): "Value is read-only."`. So on this road
+ * `nonenabled element` means disabled. Two providers refuse a read-only field as not enabled when
+ * they are asked (WPF's `TextBoxAutomationPeer`, Chromium's `AXPlatformNodeWin` — READ in their
+ * source), but the client's check comes first; reasoning from their source got this backwards once,
+ * in `00d1109`. A read-only field in Chrome is not measured.
  *
  * **"The element" is the one the route matched, which need not be the entity.** The by-handle
  * scripts take the first descendant whose name contains the entity's label, narrowed by
  * AutomationId only when the entity has one, and the executor passes no control type. On a page
  * where a heading "Save changes" comes before the button "Save", a click on "Save" can be answered
- * for the heading. So the words say "the element the route matched" (2ゲート目, round 2; read in
- * the scripts, not reproduced).
+ * for the heading. So the words say "the element the route matched" (2ゲート目, round 2 — read in
+ * the scripts; inferred once and not confirmed: win2's Chrome arm 6c was void, its match almost
+ * certainly a heading, `RESULTS-622.md`).
  */
 
 /** The failures this server can name. */

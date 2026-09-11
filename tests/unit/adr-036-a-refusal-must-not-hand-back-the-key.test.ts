@@ -251,6 +251,10 @@ describe("the advice for a refusal does not name the press it refused", () => {
       const entry = source.split("\n").find((line) => line.includes("aim_route_failed →")) ?? "";
       expect(entry, file).toMatch(/if_unexpected\.detail names the failure/);
       expect(entry, file).toMatch(/When it says not found or names none: re-call desktop_discover/);
+      // …and it still names the road try_next gives a wrong match (2ゲート目, round 3), while the
+      // old unconditional form is gone rather than merely joined by a conditional one.
+      expect(entry, file).toMatch(/controlType/);
+      expect(entry, file).not.toMatch(/nothing was clicked or typed\. Re-call desktop_discover/);
     }
   });
 
