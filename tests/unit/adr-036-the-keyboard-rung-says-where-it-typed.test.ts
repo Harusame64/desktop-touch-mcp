@@ -19,7 +19,7 @@ import type { ExecutorDeps, KeyboardReceipt } from "../../src/tools/desktop-exec
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 /** Every module a cell below replaces, unmocked after each cell so none leaks into the next. */
-const MOCKED = ["../../src/engine/win32.js", "../../src/engine/bg-input.js"];
+const MOCKED = ["../../src/engine/win32.js", "../../src/engine/bg-input.js", "../../src/engine/native-engine.js"];
 
 let dir: string;
 let logPath: string;
@@ -131,10 +131,10 @@ describe("the rung that falls back from the value road", () => {
   });
 
   it("says so on the title road too, where the native road's words are ones the classifier does not know (a1i)", async () => {
-    // The native road answers a read-only field with an HRESULT's text, which the classifier does not
-    // name. Without the style this row read like a rescue that landed (2ゲート目の指摘).
+    // The native road answers a read-only field in words the classifier does not name. Without the
+    // style this row read like a rescue that landed (2ゲート目の指摘).
     const d = deps({
-      uiaSetValue: vi.fn(async () => { throw new Error("Operation is not valid due to the current state of the object. (0x80131509)"); }),
+      uiaSetValue: vi.fn(async () => { throw new Error("a native-road answer the classifier does not know (a stand-in, not a measured string)"); }),
       keyboardTypeBg: writesTo(receipt(DELTA, DELTA_RECT, { style: READ_ONLY_STYLE })),
     });
     await typeInto(delta, d);
@@ -143,12 +143,6 @@ describe("the rung that falls back from the value road", () => {
       receiver: { editReadOnly: true },
       entityCenterInReceiver: true,
     });
-  });
-
-  it("does not call a style read-only on a window that is not an edit control", async () => {
-    const d = deps({ keyboardTypeBg: writesTo(receipt(BESIDE, BESIDE_RECT, { cls: "Button", style: READ_ONLY_STYLE })) });
-    await typeInto(delta, d);
-    expect(keyboardRows()[0]).toMatchObject({ receiver: { style: READ_ONLY_STYLE, editReadOnly: null } });
   });
 
   it("writes a failure the classifier does not know as unclassified, not as nothing", async () => {
@@ -160,11 +154,14 @@ describe("the rung that falls back from the value road", () => {
     expect(keyboardRows()[0]).toHaveProperty("valueRoadFailure", "unclassified");
   });
 
-  it("says when the receiver is in another top-level window — a dialog on the same thread", async () => {
-    const d = deps({ keyboardTypeBg: writesTo(receipt(BESIDE, BESIDE_RECT, { root: DIALOG })) });
+  it("says when the receiver is in another top-level window, and does not read it as inside the field though it sits over it", async () => {
+    // A dialog on the same thread, over the field on screen: the rects would agree, and it is still
+    // not the field.
+    const d = deps({ keyboardTypeBg: writesTo(receipt(BESIDE, DELTA_RECT, { root: DIALOG })) });
     await typeInto(delta, d);
     expect(keyboardRows()[0]).toMatchObject({
       receiver: { hwnd: BESIDE.toString(), isWindowItself: false, rootHwnd: DIALOG.toString(), inWindow: false },
+      entityCenterInReceiver: null,
     });
   });
 
@@ -197,13 +194,19 @@ describe("the rung that falls back from the value road", () => {
     expect(row).toHaveProperty("entityRect", DELTA_RECT);
   });
 
-  it("does not turn a write that happened into a failure when the record cannot be read", async () => {
+  it("does not turn a write that happened into a failure when the record cannot be read, and keeps what it did read", async () => {
     // The characters are already posted. A throw while writing the row would reach the rung's catch
     // and answer "background write failed too".
     const malformed = { receiverHwnd: BESIDE } as unknown as KeyboardReceipt;
     const d = deps({ keyboardTypeBg: writesTo(malformed) });
     expect(await typeInto(delta, d)).toBe("keyboard");
-    expect(keyboardRows()[0]).toMatchObject({ why: "uia_set_value_failed", landingError: true });
+    expect(keyboardRows()[0]).toMatchObject({
+      why: "uia_set_value_failed",
+      landingError: true,
+      valueRoadFailure: "element_read_only",
+      entityRect: DELTA_RECT,
+      entityControlType: "Edit",
+    });
   });
 
   it("writes neither the typed text nor the backend's message", async () => {
@@ -212,6 +215,31 @@ describe("the rung that falls back from the value road", () => {
     const raw = readFileSync(logPath, "utf8");
     expect(raw).not.toContain("PROBE-F2");
     expect(raw).not.toContain("read-only.");
+  });
+});
+
+describe("the receiver's read-only bit is read only on an edit control", () => {
+  it.each([
+    "Edit",
+    "RichEdit20W",
+    "RICHEDIT50W",
+    "RichEditD2DPT",
+    "WindowsForms10.EDIT.app.0.1",
+    "WindowsForms10.RichEdit20W.app.0.1",
+  ])("reads ES_READONLY on %s", async (cls) => {
+    await typeInto(delta, deps({ keyboardTypeBg: writesTo(receipt(DELTA, DELTA_RECT, { cls, style: READ_ONLY_STYLE })) }));
+    await typeInto(delta, deps({ keyboardTypeBg: writesTo(receipt(DELTA, DELTA_RECT, { cls, style: WRITABLE })) }));
+    expect(keyboardRows().map((r) => (r.receiver as { editReadOnly: unknown }).editReadOnly)).toEqual([true, false]);
+  });
+
+  it.each([
+    "HwndWrapper[NotEditor.exe;;5d2c]", // a WPF window whose program's name says "edit"
+    "TSynEdit", // a custom editor that keeps ReadOnly as a property
+    "VsTextEditPane",
+    "Button", // 0x0800 is BS_BOTTOM here
+  ])("writes null for %s, whose bit 0x0800 does not mean read-only", async (cls) => {
+    await typeInto(delta, deps({ keyboardTypeBg: writesTo(receipt(BESIDE, BESIDE_RECT, { cls, style: READ_ONLY_STYLE })) }));
+    expect(keyboardRows()[0]).toMatchObject({ receiver: { className: cls, style: READ_ONLY_STYLE, editReadOnly: null } });
   });
 });
 
@@ -231,7 +259,7 @@ describe("the keyboard-only road", () => {
   it("answers the same when the record cannot be read", async () => {
     const d = deps({ keyboardTypeBg: writesTo({ receiverHwnd: BESIDE } as unknown as KeyboardReceipt) });
     expect(await typeInto(keyboardOnly, d)).toBe("keyboard");
-    expect(keyboardRows()[0]).toMatchObject({ why: "keyboard_only_entity", landingError: true });
+    expect(keyboardRows()[0]).toMatchObject({ why: "keyboard_only_entity", landingError: true, entityRect: DELTA_RECT });
   });
 });
 
@@ -282,5 +310,28 @@ describe("the real backend", () => {
     expect(postCharsToHwnd).toHaveBeenCalledWith(HWND, "PROBE-F2");
     for (const read of reads) expect(read).not.toHaveBeenCalled();
     expect(keyboardRows()).toEqual([]);
+  });
+});
+
+describe("getWindowStyle", () => {
+  async function styleWhenNativeAnswers(answer: () => number) {
+    vi.doMock("../../src/engine/native-engine.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../../src/engine/native-engine.js")>()),
+      nativeWin32: { win32GetWindowLongPtrW: vi.fn(answer) },
+    }));
+    const { getWindowStyle } = await import("../../src/engine/win32.js");
+    return getWindowStyle(HWND);
+  }
+
+  it("reads the native i32 as unsigned, so a popup's WS_POPUP is not a negative number", async () => {
+    expect(await styleWhenNativeAnswers(() => -2147483648)).toBe(0x80000000);
+  });
+
+  it("reads 0 as 'could not say': the native call answers 0 for a handle that has gone", async () => {
+    expect(await styleWhenNativeAnswers(() => 0)).toBeNull();
+  });
+
+  it("reads a throw as 'could not say'", async () => {
+    expect(await styleWhenNativeAnswers(() => { throw new Error("gone"); })).toBeNull();
   });
 });

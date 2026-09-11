@@ -808,49 +808,68 @@ function keyboardLanding(
   valueRoadError?: unknown,
 ): Record<string, unknown> {
   if (!aimProbeEnabled()) return {};
+  // Filled in order, so the facts read before a throw are still written beside `landingError`.
+  const facts: Record<string, unknown> = {};
   try {
-    return landingFacts(entity, receipt, valueRoadError);
+    facts.valueRoadFailure =
+      valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified");
+    facts.entityRect = entity.rect ?? null;
+    facts.entityControlType = entity.controlType ?? null;
+    Object.assign(facts, receiverFacts(receipt, entity.rect ?? null));
   } catch {
-    return { landingError: true };
+    facts.landingError = true;
   }
+  return facts;
 }
 
-/** ES_READONLY. On an edit control (Win32 `Edit`, WinForms `…EDIT…`, RichEdit), the field will not take typed characters. */
+/** ES_READONLY: on an edit control, the field will not take typed characters. */
 const ES_READONLY = 0x0800;
 
-function landingFacts(entity: UiEntity, receipt: KeyboardReceipt | void, valueRoadError: unknown): Record<string, unknown> {
-  const entityRect = entity.rect ?? null;
-  const entityControlType = entity.controlType ?? null;
-  const valueRoadFailure =
-    valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified");
-  if (!receipt) {
-    // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
-    return { valueRoadFailure, receiver: null, entityRect, entityControlType, entityCenterInReceiver: null };
-  }
+/**
+ * The window classes whose style bit 0x0800 is ES_READONLY: Win32 `Edit`, the RichEdit family, and the
+ * WinForms classes built on them (`WindowsForms10.EDIT.…`, `WindowsForms10.RichEdit20W.…`).
+ *
+ * In any other class the low style bits mean something else; on a Button, 0x0800 is BS_BOTTOM. And a
+ * class whose name merely contains "edit" keeps its read-only state somewhere else, so for it
+ * `editReadOnly` is `null` (2ゲート目, second read). Two examples are a WPF
+ * `HwndWrapper[SomeEditor.exe;;…]` and a custom editor pane.
+ */
+const EDIT_CONTROL_CLASS = /^(?:WindowsForms10\.)?(?:Edit|RichEdit\w*)(?:\.|$)/i;
+
+function receiverFacts(
+  receipt: KeyboardReceipt | void,
+  entityRect: { x: number; y: number; width: number; height: number } | null,
+): Record<string, unknown> {
+  // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
+  if (!receipt) return { receiver: null, entityCenterInReceiver: null };
   const hwnd = receipt.receiverHwnd;
   const root = receipt.receiverRootHwnd ?? null;
   const className = receipt.receiverClass ?? null;
   const style = receipt.receiverStyle ?? null;
   const rect = receipt.receiverRect ?? null;
   const isWindowItself = hwnd !== null ? hwnd === receipt.windowHwnd : null;
+  const inWindow = root !== null ? root === receipt.windowHwnd : null;
   return {
-    valueRoadFailure,
     receiver: {
       hwnd: hwnd !== null ? hwnd.toString() : null,
       windowHwnd: receipt.windowHwnd.toString(),
       isWindowItself,
       rootHwnd: root !== null ? root.toString() : null,
-      inWindow: root !== null ? root === receipt.windowHwnd : null,
+      inWindow,
       className,
       rect,
       style,
       editReadOnly:
-        style !== null && className !== null && /edit/i.test(className) ? (style & ES_READONLY) !== 0 : null,
+        style !== null && className !== null && EDIT_CONTROL_CLASS.test(className) ? (style & ES_READONLY) !== 0 : null,
     },
-    entityRect,
-    entityControlType,
+    // Only a receiver known to be a child inside the aimed window is compared. In two cases the
+    // reading would say "inside" whatever happened, so it is null there:
+    //   - the window itself holds every field;
+    //   - a dialog on the same thread can sit over the field on screen.
     entityCenterInReceiver:
-      isWindowItself === false && rect !== null && entityRect !== null ? centerInside(entityRect, rect) : null,
+      isWindowItself === false && inWindow === true && rect !== null && entityRect !== null
+        ? centerInside(entityRect, rect)
+        : null,
   };
 }
 

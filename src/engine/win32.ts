@@ -851,11 +851,16 @@ export function getWindowRoot(hwnd: unknown): bigint | null {
 /**
  * Return the window's style bits (GetWindowLongPtr GWL_STYLE), as an unsigned 32-bit value. Returns
  * null on failure.
+ *
+ * The native call does not read GetLastError, so a handle that has gone answers 0. A window this
+ * reads has style bits in practice: a child carries WS_CHILD, a popup WS_POPUP, and CreateWindow gives
+ * an overlapped window WS_CAPTION. So 0 is read as "could not say", not as a window with no style.
  */
 export function getWindowStyle(hwnd: unknown): number | null {
   if (typeof hwnd !== "bigint") return null;
   try {
-    return requireNativeWin32().win32GetWindowLongPtrW!(hwnd, GWL_STYLE) >>> 0;
+    const style = requireNativeWin32().win32GetWindowLongPtrW!(hwnd, GWL_STYLE) >>> 0;
+    return style === 0 ? null : style;
   } catch {
     return null;
   }
