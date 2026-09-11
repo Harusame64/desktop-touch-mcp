@@ -176,9 +176,10 @@ export interface PostCharsResult {
   /** true when all code units were sent. */
   full: boolean;
   /**
-   * The handle the characters were posted to — `hwnd`'s focused child when it has one, `hwnd` itself
-   * otherwise. ADR-036 family 2: a caller that records where a keystroke went reads it here, rather
-   * than resolving the focus a second time and perhaps getting a different answer.
+   * The handle the characters were posted to: the focus of `hwnd`'s thread when it has one, `hwnd`
+   * itself otherwise. That is usually a child of `hwnd`, but a dialog or another top-level window on
+   * the same thread can hold the focus. ADR-036 family 2: a caller that records where a keystroke went
+   * reads it here, rather than resolving the focus a second time and perhaps getting a different answer.
    */
   target: unknown;
 }

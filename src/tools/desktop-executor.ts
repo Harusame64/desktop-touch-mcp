@@ -57,13 +57,22 @@ export interface KeyboardReceipt {
   /** The window the rung looked up: by handle when the act was aimed, by title otherwise. */
   windowHwnd: bigint;
   /**
-   * The handle the characters were posted to: the window's focused child, or the window itself when
-   * it has none. `null` when the post did not say which.
+   * The handle the characters were posted to: the focus of the window's thread, or the window itself
+   * when that thread has no focus. Focus belongs to a thread, not a window, so it is usually a child
+   * of the window, but a dialog or another top-level window on the same thread can hold it. `null`
+   * when the post did not say which.
    */
   receiverHwnd: bigint | null;
-  /** Read only while the aim probe is on. Each costs a native call, and only the record uses them. */
+  /**
+   * Read only while the aim probe is on. Each costs a native call, and only the record uses them.
+   * `receiverRootHwnd` is the top-level window that holds the receiver (GA_ROOT). `receiverStyle` is
+   * its style bits (GWL_STYLE): on an edit control, ES_READONLY marks a field that will not take the
+   * characters, whichever road the value went by.
+   */
   receiverClass?: string;
   receiverRect?: { x: number; y: number; width: number; height: number } | null;
+  receiverRootHwnd?: bigint | null;
+  receiverStyle?: number | null;
 }
 
 export interface ExecutorDeps {
@@ -760,22 +769,37 @@ function probeRefusal(
 /**
  * ADR-036 family 2 — where a keyboard rung's characters went, next to where the caller asked for them.
  *
- * The keyboard rung posts WM_CHAR to whichever child of the window holds focus. It never asks whether
- * that child is the field the caller named. win2 measured what that does (internal #74, on `66219a1`):
+ * The keyboard rung posts WM_CHAR to whatever holds the focus of the window's thread. That is usually
+ * a child of the window, but a dialog or another top-level window on the same thread can hold it. The
+ * rung never asks whether it is the field the caller named. win2 measured what that does (internal
+ * #74, on `66219a1`):
  *   - a type aimed at a read-only field wrote into the field beside it;
  *   - a type at a field that had gone wrote into whichever field held focus;
  *   - both answered `ok:true`.
  * Whether to refuse those, or to say so, is the user's call, and the user asked for the facts first
  * (2026-09-11). This writes those facts and changes nothing.
  *
- * The facts are raw, not a verdict: the receiver's handle, class and rect, and the entity's rect, so a
- * later rule can be tried against the same record. `entityCenterInReceiver` is one reading of them,
- * not the rule.
+ * The facts are raw, not a verdict, so a later rule can be tried against the same record:
+ *   - the receiver's handle, class, rect and style, and the top-level window that holds it;
+ *   - the entity's rect and control type;
+ *   - the class of the value road's failure.
+ * `inWindow`, `editReadOnly` and `entityCenterInReceiver` are readings of those facts, not the rule.
+ * Each is `null`, never `false` or `true`, when the facts cannot answer it.
  *
- * A receiver that is the window itself means the window had no focused child. A WPF window, whose
+ * `editReadOnly` is there because the class of the value road's failure is not enough on its own. The
+ * classifier knows the PowerShell road's words for a read-only field, but the native road answers with
+ * an HRESULT it does not know. So on the title road, a type at a read-only field that held the focus
+ * wrote nothing, yet it read like a rescue that landed (2ゲート目の指摘).
+ *
+ * A receiver that is the window itself means the thread had no focused window. A WPF window, whose
  * controls have no handles, reads that way, and there a handle cannot say which field got the text.
+ * That rect holds every field in the window, so `entityCenterInReceiver` is `null` there, rather than
+ * a `true` that would hold whatever happened.
  *
- * Neither the typed text (item 13) nor any backend's message is written.
+ * Neither the typed text (item 13) nor any backend's message is written. And the record must not break
+ * the act it records. The characters are already posted when this runs, and a throw here would reach
+ * the rung's `catch` and report a write that happened as one that failed. A fact that cannot be read
+ * is written as `landingError`.
  */
 function keyboardLanding(
   entity: UiEntity,
@@ -784,24 +808,49 @@ function keyboardLanding(
   valueRoadError?: unknown,
 ): Record<string, unknown> {
   if (!aimProbeEnabled()) return {};
-  const receiverRect = receipt?.receiverRect ?? null;
+  try {
+    return landingFacts(entity, receipt, valueRoadError);
+  } catch {
+    return { landingError: true };
+  }
+}
+
+/** ES_READONLY. On an edit control (Win32 `Edit`, WinForms `…EDIT…`, RichEdit), the field will not take typed characters. */
+const ES_READONLY = 0x0800;
+
+function landingFacts(entity: UiEntity, receipt: KeyboardReceipt | void, valueRoadError: unknown): Record<string, unknown> {
   const entityRect = entity.rect ?? null;
-  return {
-    valueRoadFailure:
-      valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified"),
+  const entityControlType = entity.controlType ?? null;
+  const valueRoadFailure =
+    valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified");
+  if (!receipt) {
     // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
-    receiver: receipt
-      ? {
-          hwnd: receipt.receiverHwnd !== null ? receipt.receiverHwnd.toString() : null,
-          windowHwnd: receipt.windowHwnd.toString(),
-          isWindowItself: receipt.receiverHwnd !== null && receipt.receiverHwnd === receipt.windowHwnd,
-          className: receipt.receiverClass ?? null,
-          rect: receiverRect,
-        }
-      : null,
+    return { valueRoadFailure, receiver: null, entityRect, entityControlType, entityCenterInReceiver: null };
+  }
+  const hwnd = receipt.receiverHwnd;
+  const root = receipt.receiverRootHwnd ?? null;
+  const className = receipt.receiverClass ?? null;
+  const style = receipt.receiverStyle ?? null;
+  const rect = receipt.receiverRect ?? null;
+  const isWindowItself = hwnd !== null ? hwnd === receipt.windowHwnd : null;
+  return {
+    valueRoadFailure,
+    receiver: {
+      hwnd: hwnd !== null ? hwnd.toString() : null,
+      windowHwnd: receipt.windowHwnd.toString(),
+      isWindowItself,
+      rootHwnd: root !== null ? root.toString() : null,
+      inWindow: root !== null ? root === receipt.windowHwnd : null,
+      className,
+      rect,
+      style,
+      editReadOnly:
+        style !== null && className !== null && /edit/i.test(className) ? (style & ES_READONLY) !== 0 : null,
+    },
     entityRect,
-    entityControlType: entity.controlType ?? null,
-    entityCenterInReceiver: receiverRect !== null && entityRect !== null ? centerInside(entityRect, receiverRect) : null,
+    entityControlType,
+    entityCenterInReceiver:
+      isWindowItself === false && rect !== null && entityRect !== null ? centerInside(entityRect, rect) : null,
   };
 }
 
@@ -1708,17 +1757,19 @@ function getSharedRealDeps(): ExecutorDeps {
           `Background keyboard type incomplete: sent ${r.sent}/${text.length} chars to "${windowTitle}"`,
         );
       }
-      // ADR-036 family 2 — the handle the characters went to, as the post resolved it. Its class and
-      // rect cost a native call each and serve only the record, so they are read only while the probe
-      // is on.
+      // ADR-036 family 2 — the handle the characters went to, as the post resolved it. What the
+      // record says about it costs a native call per fact and serves only the record, so it is read
+      // only while the probe is on.
       const receipt: KeyboardReceipt = {
         windowHwnd: win.hwnd,
         receiverHwnd: typeof r.target === "bigint" ? r.target : null,
       };
       if (receipt.receiverHwnd !== null && aimProbeEnabled()) {
-        const { getWindowClassName, getWindowRectByHwnd } = await import("../engine/win32.js");
+        const { getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle } = await import("../engine/win32.js");
         receipt.receiverClass = getWindowClassName(receipt.receiverHwnd);
         receipt.receiverRect = getWindowRectByHwnd(receipt.receiverHwnd);
+        receipt.receiverRootHwnd = getWindowRoot(receipt.receiverHwnd);
+        receipt.receiverStyle = getWindowStyle(receipt.receiverHwnd);
       }
       return receipt;
     },
