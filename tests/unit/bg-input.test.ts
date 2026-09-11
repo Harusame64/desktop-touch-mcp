@@ -45,7 +45,7 @@ import {
   isBgAutoEnabled,
   pasteIntoConsoleNoFocus,
 } from "../../src/engine/bg-input.js";
-import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid } from "../../src/engine/win32.js";
+import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid, getFocusedChildHwnd } from "../../src/engine/win32.js";
 import { nativeWin32 } from "../../src/engine/native-engine.js";
 
 const HWND = 0x1234n;
@@ -129,6 +129,20 @@ describe("postCharsToHwnd", () => {
     expect(postMessageToHwnd).toHaveBeenCalledTimes(3);
     // テ = 0x30C6
     expect(postMessageToHwnd).toHaveBeenNthCalledWith(1, expect.anything(), 0x0102, 0x30C6, 0);
+  });
+
+  it("says which handle the characters went to: the focused child, when there is one (ADR-036 family 2)", () => {
+    vi.mocked(postMessageToHwnd).mockReturnValue(true);
+    vi.mocked(getFocusedChildHwnd).mockReturnValueOnce(0x5678n);
+    const result = postCharsToHwnd(HWND, "a");
+    expect(result.target).toBe(0x5678n);
+    expect(postMessageToHwnd).toHaveBeenCalledWith(0x5678n, 0x0102, 0x61, 0);
+  });
+
+  it("names the window itself when it has no focused child, on a post that stops short too", () => {
+    vi.mocked(getFocusedChildHwnd).mockReturnValueOnce(null);
+    vi.mocked(postMessageToHwnd).mockReturnValueOnce(false);
+    expect(postCharsToHwnd(HWND, "ab")).toEqual({ sent: 0, full: false, target: HWND });
   });
 });
 

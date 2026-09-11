@@ -175,6 +175,12 @@ export interface PostCharsResult {
   sent: number;
   /** true when all code units were sent. */
   full: boolean;
+  /**
+   * The handle the characters were posted to — `hwnd`'s focused child when it has one, `hwnd` itself
+   * otherwise. ADR-036 family 2: a caller that records where a keystroke went reads it here, rather
+   * than resolving the focus a second time and perhaps getting a different answer.
+   */
+  target: unknown;
 }
 
 /**
@@ -196,12 +202,12 @@ export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
     const wParam = ch === 0x0A ? 0x0D : ch;
 
     if (!postMessageToHwnd(target, WM_CHAR, wParam, 0)) {
-      return { sent, full: false };
+      return { sent, full: false, target };
     }
     sent++;
   }
 
-  return { sent, full: sent === total };
+  return { sent, full: sent === total, target };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

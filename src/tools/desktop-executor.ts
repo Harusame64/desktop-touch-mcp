@@ -49,6 +49,23 @@ import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
+/**
+ * ADR-036 family 2 — what the keyboard rung wrote to. {@link ExecutorDeps.keyboardTypeBg} resolves
+ * to it, and while the aim probe is on, the rung's route row carries it.
+ */
+export interface KeyboardReceipt {
+  /** The window the rung looked up: by handle when the act was aimed, by title otherwise. */
+  windowHwnd: bigint;
+  /**
+   * The handle the characters were posted to: the window's focused child, or the window itself when
+   * it has none. `null` when the post did not say which.
+   */
+  receiverHwnd: bigint | null;
+  /** Read only while the aim probe is on. Each costs a native call, and only the record uses them. */
+  receiverClass?: string;
+  receiverRect?: { x: number; y: number; width: number; height: number } | null;
+}
+
 export interface ExecutorDeps {
   /**
    * UIA Invoke: click/invoke by label (name) or automationId.
@@ -87,8 +104,12 @@ export interface ExecutorDeps {
    * `UiAffordance.executors` / `UiEntity.unsupportedExecutors` (both remain the
    * 4-executor union). See `types.ts::ExecutorKind` JSDoc for the
    * advertised-surface rationale.
+   *
+   * ADR-036 family 2 — resolves to a {@link KeyboardReceipt} that names where the characters went.
+   * A backend (or a test double) that resolves to nothing still satisfies the interface. The record
+   * then says the receiver is unknown.
    */
-  keyboardTypeBg(windowTitle: string, text: string, hwnd?: bigint): Promise<void>;
+  keyboardTypeBg(windowTitle: string, text: string, hwnd?: bigint): Promise<KeyboardReceipt | void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
   /**
@@ -737,6 +758,63 @@ function probeRefusal(
 }
 
 /**
+ * ADR-036 family 2 — where a keyboard rung's characters went, next to where the caller asked for them.
+ *
+ * The keyboard rung posts WM_CHAR to whichever child of the window holds focus. It never asks whether
+ * that child is the field the caller named. win2 measured what that does (internal #74, on `66219a1`):
+ *   - a type aimed at a read-only field wrote into the field beside it;
+ *   - a type at a field that had gone wrote into whichever field held focus;
+ *   - both answered `ok:true`.
+ * Whether to refuse those, or to say so, is the user's call, and the user asked for the facts first
+ * (2026-09-11). This writes those facts and changes nothing.
+ *
+ * The facts are raw, not a verdict: the receiver's handle, class and rect, and the entity's rect, so a
+ * later rule can be tried against the same record. `entityCenterInReceiver` is one reading of them,
+ * not the rule.
+ *
+ * A receiver that is the window itself means the window had no focused child. A WPF window, whose
+ * controls have no handles, reads that way, and there a handle cannot say which field got the text.
+ *
+ * Neither the typed text (item 13) nor any backend's message is written.
+ */
+function keyboardLanding(
+  entity: UiEntity,
+  receipt: KeyboardReceipt | void,
+  /** The value road's error, on the rung that falls back from it. Absent on the keyboard-only road. */
+  valueRoadError?: unknown,
+): Record<string, unknown> {
+  if (!aimProbeEnabled()) return {};
+  const receiverRect = receipt?.receiverRect ?? null;
+  const entityRect = entity.rect ?? null;
+  return {
+    valueRoadFailure:
+      valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified"),
+    // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
+    receiver: receipt
+      ? {
+          hwnd: receipt.receiverHwnd !== null ? receipt.receiverHwnd.toString() : null,
+          windowHwnd: receipt.windowHwnd.toString(),
+          isWindowItself: receipt.receiverHwnd !== null && receipt.receiverHwnd === receipt.windowHwnd,
+          className: receipt.receiverClass ?? null,
+          rect: receiverRect,
+        }
+      : null,
+    entityRect,
+    entityControlType: entity.controlType ?? null,
+    entityCenterInReceiver: receiverRect !== null && entityRect !== null ? centerInside(entityRect, receiverRect) : null,
+  };
+}
+
+function centerInside(
+  inner: { x: number; y: number; width: number; height: number },
+  outer: { x: number; y: number; width: number; height: number },
+): boolean {
+  const cx = inner.x + inner.width / 2;
+  const cy = inner.y + inner.height / 2;
+  return cx >= outer.x && cx < outer.x + outer.width && cy >= outer.y && cy < outer.y + outer.height;
+}
+
+/**
  * The entity's label as a caller's sentence quotes it. A label has no bound (a UIA Name can be a
  * paragraph) and the envelope cuts `detail` at 1000 characters, so an uncut label could push out the
  * class the sentence exists to name, and the caller would read "no class" (2ゲート目, round 3 on #622).
@@ -1044,8 +1122,8 @@ export function createDesktopExecutor(
           // injection was added for. The click path's downgrade is blind by coordinate; this one
           // is not.
           try {
-            await d.keyboardTypeBg(winTitle, text, aimHwnd);
-            probeRoute("keyboard", aimHwnd, entity, { why: "uia_set_value_failed" });
+            const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
+            probeRoute("keyboard", aimHwnd, entity, { why: "uia_set_value_failed", ...keyboardLanding(entity, receipt, uiaErr) });
             return "keyboard";
           } catch (kbErr) {
             // Both rungs are spent, so the refusal that was let through above is now the whole
@@ -1353,8 +1431,8 @@ export function createDesktopExecutor(
       text !== undefined &&
       (action === "type" || action === "setValue")
     ) {
-      await d.keyboardTypeBg(winTitle, text, aimHwnd);
-      probeRoute("keyboard", aimHwnd, entity, { why: "keyboard_only_entity" });
+      const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
+      probeRoute("keyboard", aimHwnd, entity, { why: "keyboard_only_entity", ...keyboardLanding(entity, receipt) });
       return "keyboard";
     }
 
@@ -1630,6 +1708,19 @@ function getSharedRealDeps(): ExecutorDeps {
           `Background keyboard type incomplete: sent ${r.sent}/${text.length} chars to "${windowTitle}"`,
         );
       }
+      // ADR-036 family 2 — the handle the characters went to, as the post resolved it. Its class and
+      // rect cost a native call each and serve only the record, so they are read only while the probe
+      // is on.
+      const receipt: KeyboardReceipt = {
+        windowHwnd: win.hwnd,
+        receiverHwnd: typeof r.target === "bigint" ? r.target : null,
+      };
+      if (receipt.receiverHwnd !== null && aimProbeEnabled()) {
+        const { getWindowClassName, getWindowRectByHwnd } = await import("../engine/win32.js");
+        receipt.receiverClass = getWindowClassName(receipt.receiverHwnd);
+        receipt.receiverRect = getWindowRectByHwnd(receipt.receiverHwnd);
+      }
+      return receipt;
     },
 
     async aimRect(hwnd) {
