@@ -70,6 +70,13 @@ export interface NativeUiaFocusInfo {
   value?: string
 }
 
+/** ADR-036 H2 — what the native UIA engine has done in this process (see `uia_engine_evidence`). */
+export interface NativeUiaEvidence {
+  comThreadStarts: number
+  tasksSent: number
+  uiaCoreLoaded: boolean
+}
+
 export interface NativeFocusAndPointResult {
   focused?: NativeUiaFocusInfo | null
   atPoint?: NativeUiaFocusInfo | null
@@ -391,6 +398,8 @@ export declare function computeSsimResidual(
 export declare function uiaGetElements(opts: { windowTitle: string; maxDepth?: number; maxElements?: number; fetchValues?: boolean }): Promise<NativeUiElementsResult>
 export declare function uiaGetFocusedAndPoint(opts: { cursorX: number; cursorY: number }): Promise<NativeFocusAndPointResult>
 export declare function uiaGetFocusedElement(): Promise<NativeUiaFocusInfo | null>
+/** ADR-036 H2 — whether the native UIA engine ran in this process, as the engine and the OS answer. */
+export declare function uiaEngineEvidence(): NativeUiaEvidence
 
 export declare function uiaClickElement(opts: { windowTitle: string; name?: string; automationId?: string; controlType?: string }): Promise<NativeActionResult>
 export declare function uiaSetValue(opts: { windowTitle: string; value: string; name?: string; automationId?: string }): Promise<NativeActionResult>

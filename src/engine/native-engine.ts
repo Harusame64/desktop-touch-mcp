@@ -477,6 +477,47 @@ export function nativeUiaState(): NativeUiaState {
   return NATIVE_UIA_DISABLED ? "disabled" : "native";
 }
 
+/** ADR-036 H2 — what the native UIA engine has done in this process, as the engine and the OS answer. */
+export interface NativeUiaEvidence {
+  /** How many times the engine's UIA COM thread was started. 0: the engine never ran here. */
+  comThreadStarts: number;
+  /** How many UIA tasks were sent to that thread. */
+  tasksSent: number;
+  /** Whether UIAutomationCore.dll is loaded in this process, as the OS answers. */
+  uiaCoreLoaded: boolean;
+}
+
+/**
+ * ADR-036 H2 — whether the native UIA engine actually ran in this process, answered by the engine and
+ * the OS rather than by the switch.
+ *
+ * `nativeUiaState()` says what the process was configured to do, and it reads the same env var the
+ * switch does. So a build where native UIA still ran under `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`
+ * reported "disabled" all the same. #626's second gate found that very case:
+ *   - `foreground_flash`'s paste-warning scan started the UIA thread from inside a win32 call;
+ *   - that thread then fed the focus view that `desktop_state` reads first.
+ * This reads what happened instead: the engine's own counts, kept where its COM thread is started and
+ * where a task is sent to it, and whether the OS has UIAutomationCore loaded.
+ *
+ * It is read from the binding, not from `nativeUia`. The switch nulls `nativeUia`, and a run under the
+ * switch is exactly where this has to answer. It is read on every call, so a check made after the act
+ * sees what the act did. It is `null` when the addon has no such export, the call throws, or the answer
+ * is not the expected shape — "could not say", never "did not run".
+ */
+export function nativeUiaEvidence(): NativeUiaEvidence | null {
+  const read = nativeBinding?.["uiaEngineEvidence"];
+  if (typeof read !== "function") return null;
+  try {
+    const e = (read as () => unknown)() as Partial<NativeUiaEvidence> | null;
+    if (!e || typeof e.comThreadStarts !== "number" || typeof e.tasksSent !== "number" || typeof e.uiaCoreLoaded !== "boolean") {
+      return null;
+    }
+    return { comThreadStarts: e.comThreadStarts, tasksSent: e.tasksSent, uiaCoreLoaded: e.uiaCoreLoaded };
+  } catch {
+    return null;
+  }
+}
+
 // Treat the binding as "vision available" when EITHER end of the surface is
 // callable. `detectCapability` is exported even when `vision-gpu` cargo
 // feature is OFF (returns `{ backendBuilt: false }`); `visionRecognizeRois`

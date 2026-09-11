@@ -33,7 +33,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { nativeExportNames, nativeUiaState } from "./native-engine.js";
+import { nativeExportNames, nativeUiaState, nativeUiaEvidence } from "./native-engine.js";
 import { getWindowIdentity } from "./win32.js";
 
 /** The seams, in the order one `desktop_discover` → `desktop_act` pair passes through them. */
@@ -254,6 +254,11 @@ function runHeader(): Record<string, unknown> {
     // Whether the UIA engine in that list is the one answering. `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`
     // keeps the addon loaded, so the list above still names it on a run that went through PowerShell.
     nativeUia: nativeUiaState(),
+    // ADR-036 H2 — and whether native UIA actually ran, as the engine and the OS answer, not the switch.
+    // Row zero is written at the run's first probe seam, so this is the state at that moment. Tools that
+    // write no probe row (keyboard, terminal, desktop_state) may already have run by then. The probe has
+    // no closing row, so what an act did is read afterwards from `server_status`.
+    nativeUiaEvidence: nativeUiaEvidence(),
     ...loadedAddonFiles(),
   };
 }

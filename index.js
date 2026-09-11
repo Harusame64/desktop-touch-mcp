@@ -54,6 +54,8 @@ export const computeSsimResidual = nativeBinding.computeSsimResidual;
 export const uiaGetElements = nativeBinding.uiaGetElements;
 export const uiaGetFocusedAndPoint = nativeBinding.uiaGetFocusedAndPoint;
 export const uiaGetFocusedElement = nativeBinding.uiaGetFocusedElement;
+// ADR-036 H2 — whether the native UIA engine ran in this process, from the engine and the OS
+export const uiaEngineEvidence = nativeBinding.uiaEngineEvidence;
 export const uiaScrollIntoView = nativeBinding.uiaScrollIntoView;
 export const uiaGetScrollAncestors = nativeBinding.uiaGetScrollAncestors;
 export const uiaScrollByPercent = nativeBinding.uiaScrollByPercent;

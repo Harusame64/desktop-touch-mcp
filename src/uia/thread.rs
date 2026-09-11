@@ -61,6 +61,10 @@ impl UiaThreadHandle {
     /// Send a `UiaTask` to the COM thread. Returns `Err` if the channel is
     /// closed (thread is shutting down or already exited).
     pub(crate) fn send(&self, task: UiaTask) -> Result<(), crossbeam_channel::SendError<UiaTask>> {
+        // ADR-036 H2 — counted here, at the only door to the thread, so a caller that sends without
+        // going through `execute_with_timeout` is still counted. It counts attempts: a send that fails
+        // because the thread is shutting down is still one.
+        bump(&TASKS_SENT);
         self.sender.send(task)
     }
 
@@ -128,6 +132,31 @@ impl Drop for UiaThreadHandle {
 }
 
 static UIA_SLOT: OnceLock<Mutex<Option<Arc<UiaThreadHandle>>>> = OnceLock::new();
+
+// ─── ADR-036 H2: what the engine has done in this process ────────────────────
+//
+// `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` keeps the TypeScript side from calling this engine. Until now the
+// only record of that was the switch itself: `server_status` and the probe's row zero both read the same
+// env var, so a build where native UIA still ran under the switch reported "disabled" all the same.
+// #626's second gate found exactly that. foreground_flash's paste-warning scan started this thread from
+// inside a win32 call.
+//
+// These counts are kept by the engine, at the one place its COM thread is started and the one place a
+// task is sent to it. So they answer from what happened, not from what was configured.
+static COM_THREAD_STARTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TASKS_SENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Saturating, so a long-lived process can never wrap back round to the 0 that means "never ran".
+fn bump(counter: &std::sync::atomic::AtomicU32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _ = counter.fetch_update(Relaxed, Relaxed, |v| Some(v.saturating_add(1)));
+}
+
+/// How many times the UIA COM thread was started in this process, and how many tasks were sent to it.
+pub(crate) fn engine_evidence() -> (u32, u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (COM_THREAD_STARTS.load(Relaxed), TASKS_SENT.load(Relaxed))
+}
 
 pub(crate) fn ensure_uia_thread() -> Arc<UiaThreadHandle> {
     let cell = UIA_SLOT.get_or_init(|| Mutex::new(None));
@@ -200,6 +229,7 @@ pub(crate) fn shutdown_uia_for_test(timeout: Duration) -> Result<(), &'static st
 }
 
 fn spawn_uia_thread() -> UiaThreadHandle {
+    bump(&COM_THREAD_STARTS);
     let (tx, rx) = unbounded::<UiaTask>();
     let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
 
@@ -376,6 +406,41 @@ where
 mod tests {
     use super::*;
 
+    /// The tests in this module that start, stop or use the one UIA thread take this lock, so they run
+    /// one at a time. `cargo test` runs tests in parallel, and a shutdown landing while another test's
+    /// task is queued can drop that task: the thread's `select!` picks among ready arms at random. That
+    /// would redden the evidence test for a reason that has nothing to do with the count (2ゲート目,
+    /// second read). No other module's tests touch this thread.
+    static THREAD_TESTS: Mutex<()> = Mutex::new(());
+
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        THREAD_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// ADR-036 H2 — a task sent to the thread is counted exactly once, and so is the thread's start. The
+    /// counters are process-wide, so this compares before with after. With the thread tests serialized,
+    /// the task count can be checked exactly: a count taken twice (in `execute_with_timeout` and in
+    /// `send`) would read +2 and fail.
+    #[test]
+    fn engine_evidence_counts_a_task_and_the_thread_that_ran_it() {
+        let _serial = one_at_a_time();
+        let (_, tasks_before) = engine_evidence();
+        let r: napi::Result<()> = execute_with_timeout(|_ctx| Ok(()), 5000);
+        assert!(r.is_ok(), "the no-op task should run: {r:?}");
+        let (starts, tasks_after) = engine_evidence();
+        assert!(starts >= 1, "the thread that ran the task was started, so its start was counted");
+        assert_eq!(tasks_after, tasks_before + 1, "the task was counted exactly once");
+    }
+
+    /// ADR-036 H2 — the counts stop at the top rather than wrapping round to the 0 that means "never ran".
+    #[test]
+    fn engine_evidence_saturates_rather_than_wrapping_to_zero() {
+        let c = std::sync::atomic::AtomicU32::new(u32::MAX - 1);
+        bump(&c);
+        bump(&c);
+        assert_eq!(c.load(std::sync::atomic::Ordering::Relaxed), u32::MAX);
+    }
+
     /// ADR-007 §3.4.3 acceptance, applied to the UIA thread in P5c-0b: the
     /// thread can be shut down and re-spawned through the `UIA_SLOT` and
     /// `shutdown_uia_for_test` API, mirroring the L1 worker's restart path.
@@ -383,6 +448,7 @@ mod tests {
     /// "graceful shutdown 3s" acceptance in P5a).
     #[test]
     fn shutdown_and_restart_5_cycles() {
+        let _serial = one_at_a_time();
         for _ in 0..5 {
             let _handle = ensure_uia_thread();
             shutdown_uia_for_test(Duration::from_secs(3))
@@ -394,6 +460,7 @@ mod tests {
     /// repeated calls return the same `Arc<UiaThreadHandle>` until shutdown.
     #[test]
     fn ensure_uia_thread_returns_same_instance() {
+        let _serial = one_at_a_time();
         let _ = shutdown_uia_for_test(Duration::from_secs(3));
         let a = ensure_uia_thread();
         let b = ensure_uia_thread();
