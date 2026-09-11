@@ -234,6 +234,7 @@ screenshot. On `ok:false` read `reason` and follow the recovery path:
 | `entity_outside_viewport` | `scroll(action='to_element' | 'raw')` then re-call `desktop_discover` (re-discover instead when the window itself moved or closed) |
 | `origin_window_not_visible` | the element's window is minimised / hidden → `focus_window(windowTitle)` to restore it, then re-call `desktop_discover` |
 | `coordinate_outside_reachable_bounds` | the element is off the primary monitor, which coordinate-based mouse input cannot reach yet → move its window to the primary monitor and re-call `desktop_discover`, or use `click_element` (UIA invoke, cursor-free). `browser_click` is refused by the same guard — it clicks through the OS cursor |
+| `keyboard_target_unsafe` | nothing was typed: the background write would have gone to a different control or window, or to a read-only control (`if_unexpected.detail` names which) → click the field you named, then type again; never a foreground `keyboard` type. A `type` that was sent but could not be confirmed answers `ok: true` with `landing: { confirmed: false, why }`. `DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED=1` turns the check off, and the background write goes wherever the focus is, as before; a comma-separated list of `other_control`, `other_window` and `read_only` turns only those grounds into marked successes |
 | `executor_failed` | fall back to `click_element` / `mouse_click` / `browser_click` |
 
 > **Kill switch:** `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` hides `desktop_discover` /

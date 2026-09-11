@@ -220,7 +220,11 @@ describe("the advice for a refusal does not name the press it refused", () => {
     for (const name of ["AimPointOutsideWindow", "AimRouteFailed", "WindowExcluded", "AimBlockedByExcludedWindow", "KeyboardTargetUnsafe"]) {
       for (const line of await adviceFor(name)) {
         if (!/method:\s*'foreground'|keyboard\(\{/.test(line)) continue;
-        expect(line, `${name} recommends a foreground type: ${line}`).toMatch(/do not|never|cannot/i);
+        // The negation has to govern the foreground type itself, in the same sentence. "Type through
+        // the foreground instead, and do NOT retry by coordinate" carries a "do not" and still
+        // recommends the type; a check for the word anywhere in the line let that through (mutation).
+        expect(line, `${name} recommends a foreground type: ${line}`)
+          .toMatch(/(?:do not|never|cannot)[^.]*?(?:foreground|keyboard\(\{)/i);
       }
     }
   });

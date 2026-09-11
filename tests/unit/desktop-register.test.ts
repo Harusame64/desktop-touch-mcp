@@ -648,6 +648,46 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
     expect(parsed["if_unexpected"]).toBeUndefined();
   });
 
+  // ADR-036 family 2 — the keyboard rung's two new answers, as the caller receives them. The loop's
+  // mapping has its own tests; these pin the handler's branch, which a mutation could drop unnoticed.
+  it("publishes keyboard_target_unsafe under its own cause, with the ground's sentence and no foreground type in the advice", async () => {
+    const detail =
+      "Nothing was typed (other_control): the focus is on a different control in the same window, so the characters would have gone there. Click the field you named, then type again.";
+    vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: false, reason: "keyboard_target_unsafe", diff: [], detail });
+    const parsed = parseHandlerResult((await desktopActRawHandler({ lease: fakeLease, action: "type", text: "PROBE-R" })).content);
+
+    expect(parsed["ok"]).toBe(false);
+    expect(parsed["reason"]).toBe("keyboard_target_unsafe");
+    const ifUnexpected = parsed["if_unexpected"] as { most_likely_cause?: unknown; try_next?: unknown } | undefined;
+    expect(ifUnexpected?.most_likely_cause).toBe("KeyboardTargetUnsafe");
+    expect(JSON.stringify(parsed)).toContain("Nothing was typed (other_control)");
+    const advice = (ifUnexpected?.try_next as Array<{ action?: unknown }> | undefined) ?? [];
+    expect(advice.length).toBeGreaterThan(0);
+    for (const step of advice) {
+      const line = String(step.action);
+      if (!/method:\s*'foreground'|keyboard\(\{/.test(line)) continue;
+      expect(line).toMatch(/(?:do not|never|cannot)[^.]*?(?:foreground|keyboard\(\{)/i);
+    }
+  });
+
+  it("carries the landing marker on a success the keyboard rung could not confirm", async () => {
+    const landing = { confirmed: false as const, why: "receiver_is_window" as const, referenceFrom: "entity" as const };
+    vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: true, executor: "keyboard", diff: [], next: "none", landing });
+    const previousStage5 = process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    process.env["DESKTOP_TOUCH_STAGE5_DXGI"] = "0";
+    try {
+      const parsed = parseHandlerResult((await desktopActRawHandler({ lease: fakeLease, action: "type", text: "PROBE-R" })).content);
+      expect(parsed["ok"]).toBe(true);
+      expect(parsed["landing"]).toEqual(landing);
+    } finally {
+      if (previousStage5 === undefined) {
+        delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+      } else {
+        process.env["DESKTOP_TOUCH_STAGE5_DXGI"] = previousStage5;
+      }
+    }
+  });
+
   it("does NOT attach if_unexpected when touch succeeds", async () => {
     const facade = getDesktopFacade();
     vi.spyOn(facade, "touch").mockResolvedValue({

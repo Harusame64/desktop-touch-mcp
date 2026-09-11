@@ -426,6 +426,16 @@ describe("the real backend resolves once, looks the window up in the low 32 bits
     expect(postCharsToResolvedTarget).toHaveBeenCalledOnce();
   });
 
+  it("reads the window the entity was captured in, and takes it as the reference before the aimed window (G2-1)", async () => {
+    const { result } = await typeThroughTheRealBackend({
+      aimHwnd: HWND, enumerated: HWND, receiver: HWND, receiverRoot: HWND, owners: new Map(),
+      entity: field(null, {
+        unsupportedExecutors: ["uia"], preferredExecutors: ["keyboard"], origin: { kind: "window", id: "4919", hwnd: "4919" },
+      }),
+    });
+    expect(result).toMatchObject({ kind: "keyboard", landing: { why: "receiver_is_window", referenceFrom: "origin" } });
+  });
+
   it("refuses when the named control's receiver is in another top-level window (dlg)", async () => {
     const { result } = await typeThroughTheRealBackend({
       aimHwnd: HWND, enumerated: HWND, receiver: OTHER, receiverRoot: DIALOG,
