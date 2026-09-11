@@ -68,7 +68,13 @@ class FakeEl {
   get disabled(): boolean { return "disabled" in this.attrs; }
   get readOnly(): boolean { return "readonly" in this.attrs; }
   get checked(): boolean { return "checked" in this.attrs; }
-  get isContentEditable(): boolean { return "contenteditable" in this.attrs; }
+  /** As in a real DOM: an element's own attribute, else its parent's editability ("false" stops it). */
+  get isContentEditable(): boolean {
+    const own = this.attrs.contenteditable;
+    if (own === "false") return false;
+    if (own !== undefined) return true;
+    return this.parentElement ? this.parentElement.isContentEditable : false;
+  }
   get textContent(): string { return this.childNodes.map((c) => c.textContent).join(""); }
   set textContent(v: string) {
     if (this.rejectsWrites) return;
@@ -254,8 +260,11 @@ function loginPage() {
     el("p", {}, [t2]), el("p", {}, [a1]), el("p", {}, [m1]), el("p", {}, [m2]), el("p", {}, [go, s1]),
     // Inside the form, so browser_form reads the button too (win's outside read on #623).
     el("p", {}, [reveal]),
-    // A checkbox under a masked container: a check mark is not what the style hides.
-    el("p", { style: "-webkit-text-security: disc" }, [el("input", { id: "cb", type: "checkbox", checked: "" })]),
+    // A checkbox and a hidden input under a masked container: neither draws text for the style to hide.
+    el("p", { style: "-webkit-text-security: disc" }, [
+      el("input", { id: "cb", type: "checkbox", checked: "" }),
+      el("input", { id: "hid", type: "hidden" }, [], "PAGE-TOKEN"),
+    ]),
   ]);
   // Editable regions: what was typed into them is an entry, not a name (win's outside read on #623).
   const ed = el("div", { id: "ed", contenteditable: "true" }, ["PROBE-TYPED-8"]);
@@ -271,7 +280,13 @@ function loginPage() {
   const dialog = el("div", { id: "dlg", role: "dialog", "aria-modal": "true", "aria-labelledby": "dlgt" }, [
     el("h2", { id: "dlgt" }, ["Verify ", el("span", { style: "-webkit-text-security: disc" }, ["PROBE-SECRET-13"])]),
   ]);
-  const body = el("body", {}, [el("h1", {}, ["RFS PW PAGE 2"]), form, ce, n2, ed, tb, lc, dialog]);
+  // A draft in an editor: the host is the entry, and its heading and link keep their names
+  // (2ゲート目 on #623: every descendant of an editing host had been an entry).
+  const doc = el("div", { id: "doc", contenteditable: "true" }, [
+    el("h2", {}, ["Draft title"]),
+    el("a", { href: "https://example.com/more" }, ["Read more"]),
+  ]);
+  const body = el("body", {}, [el("h1", {}, ["RFS PW PAGE 2"]), form, ce, n2, ed, tb, lc, dialog, doc]);
   body.descendants().forEach((e, i) => { e.rect = { left: 10, top: 10 + i * 24, width: 160, height: 20 }; });
   return { body, p1, p2, p3, p4, p5, t1, t2, a1, m1, m2, ce, n2, ed, tb, c1 };
 }
@@ -388,7 +403,7 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       types: ["all"], inViewportOnly: false, maxResults: 50, port: 9222, includeContext: false,
     }));
     expect(leaked(text)).toEqual([]);
-    for (const name of ["Account password", "PASSCODE-LABEL", "Search", "Password", "PIN", "Log in", "Recovery code", "Code:"]) {
+    for (const name of ["Account password", "PASSCODE-LABEL", "Search", "Password", "PIN", "Log in", "Recovery code", "Code:", "Read more"]) {
       expect(text).toContain(`"text": "${name}"`);
     }
   });
@@ -419,6 +434,11 @@ describe("the tools win2 measured leak nothing the page masks", () => {
       by: "text", pattern: "Comment", maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
     }), page) as { results: Array<{ text: string }> };
     expect(comment.results.map((r) => r.text)).toEqual(["Comment"]);
+    // A heading inside an editor keeps its name: only the editing host is an entry.
+    const draft = run(buildCandidateCollectionJs({
+      by: "text", pattern: "Draft", maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
+    }), page) as { results: Array<{ text: string }> };
+    expect(draft.results.map((r) => r.text)).toEqual(["Draft title"]);
     // The text axes do not match what the page masks: a hit would answer what the hidden text says.
     for (const by of ["text", "regex"] as const) {
       const found = run(buildCandidateCollectionJs({
@@ -443,6 +463,13 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     // A checkbox keeps its checked state under a masked container.
     expect(fields.cb).toMatchObject({ checked: true });
     expect(fields.cb).not.toHaveProperty("valueWithheld");
+    // …and a hidden input, when the caller asks for hidden ones, keeps its value.
+    const withHidden = textOf(await browserGetFormHandler({
+      selector: "#form", includeHidden: true, maxResults: 50, port: 9222, includeContext: false,
+    }));
+    const hidden = (JSON.parse(withHidden) as { fields: Array<Record<string, unknown>> }).fields.find((f) => f.id === "hid");
+    expect(hidden).toMatchObject({ value: "PAGE-TOKEN" });
+    expect(leaked(withHidden, TEXT_VALUES)).toEqual([]);
     expect(fields.t1).not.toHaveProperty("valueWithheld");
     expect(fields.p4.label).toBe("PASSCODE-LABEL");
     expect(leaked(text, TEXT_VALUES)).toEqual([]);

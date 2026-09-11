@@ -69,7 +69,9 @@ export interface ActionFactsArgs {
  *
  * The two public builders' snapshot tests pin the COMPOSED output byte-for-byte,
  * so the `browser_search` IIFE stays bit-equal (NFR-1 / AC-9): do not change the
- * emitted JS here without updating both snapshots.
+ * emitted JS here without updating both snapshots. Public PR #623 changed it on
+ * purpose — an element's name, and which values never leave the page, come from
+ * `_element-name-js.ts` — and the snapshots were updated with it.
  */
 function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive } = args;
@@ -249,10 +251,11 @@ ${ELEMENT_NAME_JS}
 /**
  * Build the injected-JS IIFE that collects, scores, filters and shapes candidate
  * elements for `browser_search`. Composes the shared `candidateMatchingBodyJs`
- * with the search serialization tail. The generated string is byte-equal with
+ * with the search serialization tail. The generated string was byte-equal with
  * the former inline template (pinned by snapshot) so the public `browser_search`
- * contract is unchanged (NFR-1 / AC-9). Do not change the emitted JS without
- * updating the snapshot.
+ * contract was unchanged (NFR-1 / AC-9), until public PR #623 changed what an
+ * input's `text` is — its name, never its value. Do not change the emitted JS
+ * without updating the snapshot.
  */
 export function buildCandidateCollectionJs(args: CandidateCollectionArgs): string {
   return `${candidateMatchingBodyJs(args)}

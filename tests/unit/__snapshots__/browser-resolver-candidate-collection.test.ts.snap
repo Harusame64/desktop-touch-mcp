@@ -58,7 +58,13 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   // An input's name, never its value — the one definition every CDP script shares.
 
   function __isMasked(el) {
-    if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'password') return true;
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
+      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+    }
     try {
       const s = window.getComputedStyle(el);
       const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
@@ -67,7 +73,9 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   }
   function __isEntry(el) {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
-    if (el.isContentEditable) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -313,7 +321,13 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // An input's name, never its value — the one definition every CDP script shares.
 
   function __isMasked(el) {
-    if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'password') return true;
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
+      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+    }
     try {
       const s = window.getComputedStyle(el);
       const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
@@ -322,7 +336,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   }
   function __isEntry(el) {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
-    if (el.isContentEditable) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -718,7 +734,13 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // An input's name, never its value — the one definition every CDP script shares.
 
   function __isMasked(el) {
-    if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'password') return true;
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
+      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+    }
     try {
       const s = window.getComputedStyle(el);
       const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
@@ -727,7 +749,9 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   }
   function __isEntry(el) {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
-    if (el.isContentEditable) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }

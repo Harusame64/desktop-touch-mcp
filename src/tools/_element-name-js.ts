@@ -28,15 +28,24 @@
  * 2. **What the page masks is never read out of the page** — a password input, or any element under
  *    `-webkit-text-security`: an input, a <textarea>, a contenteditable PIN pad, a span. Its value is
  *    withheld, its text is not taken for a name, and the text axes do not match it. The rule is about
- *    what the page draws as dots: a hidden input, or a field under display:none, is not masked, and a
- *    tool that returns values returns theirs when asked to (PR 側 codex and win's outside read on
- *    #623 — the first version checked inputs only).
+ *    what the page draws as dots: a hidden input, a checkbox or another input that draws no text, or a
+ *    field under display:none, is not masked, and a tool that returns values returns theirs when
+ *    asked to (PR 側 codex and win's outside read on #623 — the first version checked inputs only).
+ *
+ * An editable region is its host — the element whose parent is not editable. The headings and links
+ * inside a draft are not entries: they are named by their text, which is what the screen shows.
  *
  * The helpers are prefixed `__` because they share an IIFE with each script's own functions.
  */
 export const ELEMENT_NAME_JS = `
   function __isMasked(el) {
-    if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'password') return true;
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623).
+      if (/^(hidden|checkbox|radio|file|range|color|image)$/.test(t)) return false;
+    }
     try {
       const s = window.getComputedStyle(el);
       const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
@@ -45,7 +54,9 @@ export const ELEMENT_NAME_JS = `
   }
   function __isEntry(el) {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
-    if (el.isContentEditable) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
