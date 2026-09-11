@@ -55,6 +55,12 @@ export function clearShutdownPending(): void {
 }
 
 export interface ProcessHealth {
+  /**
+   * Which process these numbers are from. `engine.nativeUiaEvidence` counts per process, so a server
+   * that restarted between two readings starts again from zero. The pid is what tells a reader that the
+   * zero belongs to a new process, not to a run in which native UIA never ran (ADR-036 H2).
+   */
+  pid: number;
   uptimeSec: number;
   memory: {
     rssBytes: number;
@@ -80,6 +86,7 @@ export function getProcessHealth(): ProcessHealth {
   const mem = process.memoryUsage();
   const cpu = process.cpuUsage(_initialCpu);
   return {
+    pid: process.pid,
     uptimeSec: Math.floor(process.uptime()),
     memory: {
       rssBytes: mem.rss,

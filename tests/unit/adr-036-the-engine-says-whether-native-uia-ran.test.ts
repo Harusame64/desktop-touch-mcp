@@ -103,19 +103,26 @@ describe("where it is reported", () => {
     expect(getEngineStatus()).toHaveProperty("nativeUiaEvidence", null);
   });
 
-  it("the probe's row zero carries it, beside the switch it checks", async () => {
+  it("the probe's row zero carries what the engine answers, beside the switch it checks", async () => {
+    // RAN, not QUIET: a header that wrote a constant "never ran" would pass a QUIET cell (gate 2).
     const dir = mkdtempSync(join(tmpdir(), "uia-evidence-"));
     const path = join(dir, "aim-probe.jsonl");
     try {
       vi.stubEnv("DESKTOP_TOUCH_AIM_PROBE", "1");
       vi.stubEnv("DESKTOP_TOUCH_AIM_PROBE_PATH", path);
-      await engineWith(QUIET, "1");
+      await engineWith(RAN, "1");
       const { probeAim } = await import("../../src/engine/aim-probe.js");
       probeAim("see.enter", { key: "k" });
       const zero = JSON.parse(readFileSync(path, "utf8").split("\n")[0]!) as Record<string, unknown>;
-      expect(zero).toMatchObject({ seq: 0, seam: "probe.start", nativeUia: "disabled", nativeUiaEvidence: QUIET });
+      expect(zero).toMatchObject({ seq: 0, seam: "probe.start", nativeUia: "disabled", nativeUiaEvidence: RAN });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("server_status's health says which process the counts are from, so a restart's zero is not read as 'never ran'", async () => {
+    await engineWith(RAN, "1");
+    const { getProcessHealth } = await import("../../src/engine/process-health.js");
+    expect(getProcessHealth().pid).toBe(process.pid);
   });
 });

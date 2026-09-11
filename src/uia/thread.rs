@@ -61,6 +61,10 @@ impl UiaThreadHandle {
     /// Send a `UiaTask` to the COM thread. Returns `Err` if the channel is
     /// closed (thread is shutting down or already exited).
     pub(crate) fn send(&self, task: UiaTask) -> Result<(), crossbeam_channel::SendError<UiaTask>> {
+        // ADR-036 H2 — counted here, at the only door to the thread, so a caller that sends without
+        // going through `execute_with_timeout` is still counted. It counts attempts: a send that fails
+        // because the thread is shutting down is still one.
+        bump(&TASKS_SENT);
         self.sender.send(task)
     }
 
@@ -381,7 +385,6 @@ where
         let result = f(ctx);
         let _ = reply_tx.send(result);
     });
-    bump(&TASKS_SENT);
     ensure_uia_thread()
         .send(task)
         .map_err(|_| napi::Error::from_reason("UIA COM thread unavailable"))?;
@@ -402,6 +405,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-036 H2 — a task sent to the thread is counted, and so is the thread's start. The counters are
+    /// process-wide and other tests run in parallel, so this compares before with after rather than
+    /// checking absolute values.
+    #[test]
+    fn engine_evidence_counts_a_task_and_the_thread_that_ran_it() {
+        let (_, tasks_before) = engine_evidence();
+        let r: napi::Result<()> = execute_with_timeout(|_ctx| Ok(()), 5000);
+        assert!(r.is_ok(), "the no-op task should run: {r:?}");
+        let (starts, tasks_after) = engine_evidence();
+        assert!(starts >= 1, "the thread that ran the task was started, so its start was counted");
+        assert!(tasks_after > tasks_before, "the task was counted: {tasks_before} -> {tasks_after}");
+    }
+
+    /// ADR-036 H2 — the counts stop at the top rather than wrapping round to the 0 that means "never ran".
+    #[test]
+    fn engine_evidence_saturates_rather_than_wrapping_to_zero() {
+        let c = std::sync::atomic::AtomicU32::new(u32::MAX - 1);
+        bump(&c);
+        bump(&c);
+        assert_eq!(c.load(std::sync::atomic::Ordering::Relaxed), u32::MAX);
+    }
 
     /// ADR-007 §3.4.3 acceptance, applied to the UIA thread in P5c-0b: the
     /// thread can be shut down and re-spawned through the `UIA_SLOT` and

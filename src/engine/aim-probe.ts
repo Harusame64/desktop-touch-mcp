@@ -255,7 +255,9 @@ function runHeader(): Record<string, unknown> {
     // keeps the addon loaded, so the list above still names it on a run that went through PowerShell.
     nativeUia: nativeUiaState(),
     // ADR-036 H2 — and whether native UIA actually ran, as the engine and the OS answer, not the switch.
-    // At row zero it is the state before the run's first act; `server_status` reads it again later.
+    // Row zero is written at the run's first probe seam, so this is the state at that moment. Tools that
+    // write no probe row (keyboard, terminal, desktop_state) may already have run by then. The probe has
+    // no closing row, so what an act did is read afterwards from `server_status`.
     nativeUiaEvidence: nativeUiaEvidence(),
     ...loadedAddonFiles(),
   };
