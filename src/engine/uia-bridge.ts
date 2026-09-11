@@ -444,6 +444,14 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     $elAid  = ''; try { $elAid  = $el.Current.AutomationId } catch {}
     $elCls  = ''; try { $elCls  = $el.Current.ClassName } catch {}
     $elEna  = $false; try { $elEna = $el.Current.IsEnabled } catch {}
+    # ADR-036 family 2 — the element's own window, when it is one. Written exactly as $winHwnd is
+    # above (unsigned through [uint32]::MaxValue, zero dropped), so this road and the native one
+    # give the same string for the same control, and the keyboard rung's receiver compares with it.
+    $elHwnd = $null
+    try {
+        $eh = $el.Current.NativeWindowHandle
+        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue) }
+    } catch {}
 
     ${fetchValuesBlock}
     $elObj = @{
@@ -457,6 +465,7 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
         depth        = $depth
     }
     if ($null -ne $elVal) { $elObj['value'] = $elVal }
+    if ($null -ne $elHwnd) { $elObj['nativeWindowHandle'] = $elHwnd }
     $results.Add($elObj)
     $count++
     if ($count -ge ${maxElements}) { break bfs }
@@ -797,6 +806,13 @@ export interface UiElement {
   depth: number;
   /** Present only when getUiElements was called with fetchValues:true. */
   value?: string;
+  /**
+   * ADR-036 family 2 — the element's own window handle, as a decimal string, when it is a window of
+   * its own (UIA `NativeWindowHandle`; Win32 and WinForms controls are). Absent for a windowless
+   * element, and on a read that could not say. Both roads write it the way they write `windowHwnd`:
+   * unsigned 32-bit, zero dropped.
+   */
+  nativeWindowHandle?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1129,9 +1145,12 @@ export async function getUiElements(
         windowHwnd: result.windowHwnd ?? undefined,
         windowRect: result.windowRect ?? null,
         elementCount: result.elementCount,
-        elements: result.elements.map((el: NativeUiElement) => ({
+        elements: result.elements.map(({ nativeWindowHandle, ...el }: NativeUiElement) => ({
           ...el,
           boundingRect: el.boundingRect ?? null,
+          // Rust's `None` arrives as null. This type says "absent", as the PowerShell road does, so the
+          // key is left out rather than set to undefined.
+          ...(nativeWindowHandle != null && { nativeWindowHandle }),
         })),
         via: "native",
       };
@@ -1630,11 +1649,21 @@ function Collect($el, $depth) {
         $rect = @{ x=[int]$r.X; y=[int]$r.Y; width=[int]$r.Width; height=[int]$r.Height }
     }
     $pats = @($el.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName -replace 'Identifiers\\.Pattern','' })
-    $script:results.Add(@{
+    # ADR-036 family 2 — the element's own window, written as the get-elements script writes it
+    # (unsigned through [uint32]::MaxValue, zero dropped), so the native road, which shares
+    # extract_element with the element read, and this one give scope_element the same shape.
+    $elHwnd = $null
+    try {
+        $eh = $c.NativeWindowHandle
+        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue) }
+    } catch {}
+    $item = @{
         name=$c.Name; controlType=($c.ControlType.ProgrammaticName -replace 'ControlType\\.','')
         automationId=$c.AutomationId; isEnabled=$c.IsEnabled
         boundingRect=$rect; patterns=$pats; depth=$depth
-    })
+    }
+    if ($null -ne $elHwnd) { $item['nativeWindowHandle'] = $elHwnd }
+    $script:results.Add($item)
     $script:count++
     $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
     foreach ($k in $kids) { Collect $k ($depth+1) }
@@ -1671,7 +1700,13 @@ export async function getElementChildren(
         timeoutMs,
       });
       // Normalise boundingRect: Rust Option → null
-      return result.map((el: NativeUiElement) => ({ ...el, boundingRect: el.boundingRect ?? null }));
+      return result.map(({ nativeWindowHandle, ...el }: NativeUiElement) => ({
+        ...el,
+        boundingRect: el.boundingRect ?? null,
+        // Rust's `None` arrives as null. This type says "absent", as `getUiElements` does, so the key is
+        // left out rather than set to undefined.
+        ...(nativeWindowHandle != null && { nativeWindowHandle }),
+      }));
     } catch (e) {
       console.warn("[uia-bridge] Native uiaGetElementChildren failed, falling back to PowerShell:", e);
     }

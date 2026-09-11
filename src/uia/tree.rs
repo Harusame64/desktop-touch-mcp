@@ -198,6 +198,16 @@ fn extract_element(
         let class_name = elem.CachedClassName().ok().map(|b| b.to_string());
         let is_enabled = elem.CachedIsEnabled().map(|b| b == true).unwrap_or(true);
         let bounding_rect = cached_bounding_rect(elem).ok();
+        // ADR-036 family 2 — the element's own window, when it is one. Same reading and same width as
+        // the window's handle in `get_elements` (`as usize as u32`, zero dropped), so the two roads
+        // and the keyboard rung's receiver compare as the same string. The property is in the cache
+        // request already, so this costs no RPC.
+        let native_window_handle = elem
+            .CachedNativeWindowHandle()
+            .ok()
+            .map(|h| h.0 as usize as u32)
+            .filter(|h| *h != 0)
+            .map(|h| h.to_string());
 
         let mut patterns = Vec::with_capacity(6);
         if elem.GetCachedPattern(UIA_InvokePatternId).is_ok() {
@@ -236,6 +246,7 @@ fn extract_element(
             patterns,
             depth,
             value,
+            native_window_handle,
         })
     }
 }

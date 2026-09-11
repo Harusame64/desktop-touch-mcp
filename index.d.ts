@@ -24,6 +24,8 @@ export interface NativeUiElement {
   patterns: Array<string>
   depth: number
   value?: string
+  /** ADR-036 family 2 — the element's own window handle (decimal string), when it is a window of its own. */
+  nativeWindowHandle?: string | null
 }
 
 export interface NativeUiElementsResult {
