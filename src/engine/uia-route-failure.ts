@@ -33,10 +33,24 @@
  * another UIA vocabulary returns (win2's void first bridge run). In production the id comes from a
  * read on the same road, so "not found" is the right name here; it would not be for a reader that
  * builds locators some other way.
+ *
+ * **The two "disabled" texts are not the same answer.** `Element is disabled` is the bridge's own:
+ * every place that writes it has just read `IsEnabled` as false. The `nonenabled element` text is
+ * the element's provider refusing `SetValue`, and providers refuse a READ-ONLY field with that same
+ * exception — READ 2026-09-11 in source, not measured: WPF's `TextBoxAutomationPeer.SetValue`
+ * throws `ElementNotEnabledException` when `IsReadOnly`, after its enabled check passes; Chromium's
+ * `AXPlatformNodeWin::SetValue` returns `UIA_E_ELEMENTNOTENABLED` for `IsReadOnlyOrDisabled()`. The
+ * by-handle setValue script reads nothing before the write, so on that road the text is the only
+ * signal, and it cannot tell the two apart. Calling it "disabled" would send the caller looking for
+ * what enables a field that is already enabled (2ゲート目の指摘).
  */
 
 /** The failures this server can name. */
-export type UiaRouteFailure = "element_not_found" | "pattern_not_supported" | "element_disabled";
+export type UiaRouteFailure =
+  | "element_not_found"
+  | "pattern_not_supported"
+  | "element_disabled"
+  | "element_disabled_or_read_only";
 
 /** Written by the bridge itself (script and native), so they arrive as the whole message. */
 const WHOLE: ReadonlyMap<string, UiaRouteFailure> = new Map([
@@ -49,7 +63,7 @@ const WHOLE: ReadonlyMap<string, UiaRouteFailure> = new Map([
 /** .NET's text inside PowerShell's method-invocation wrapper — the wrapper names the method. */
 const WRAPPED: ReadonlyArray<{ readonly re: RegExp; readonly kind: UiaRouteFailure }> = [
   { re: /^Exception calling "GetCurrentPattern" with "\d+" argument\(s\): ".*Unsupported Pattern/, kind: "pattern_not_supported" },
-  { re: /^Exception calling "SetValue" with "\d+" argument\(s\): ".*nonenabled element/, kind: "element_disabled" },
+  { re: /^Exception calling "SetValue" with "\d+" argument\(s\): ".*nonenabled element/, kind: "element_disabled_or_read_only" },
 ];
 
 /** The failure an aimed UIA route ran into, when the backend's answer is one of the known ones. */
@@ -70,5 +84,7 @@ export function describeUiaRouteFailure(kind: UiaRouteFailure): string {
       return "the element does not support this action through UI Automation";
     case "element_disabled":
       return "the element is disabled";
+    case "element_disabled_or_read_only":
+      return "the element refused the write as not enabled (it is disabled, or it is a read-only field)";
   }
 }

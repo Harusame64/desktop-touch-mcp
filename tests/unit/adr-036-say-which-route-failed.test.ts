@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyUiaRouteFailure } from "../../src/engine/uia-route-failure.js";
+import { classifyUiaRouteFailure, describeUiaRouteFailure } from "../../src/engine/uia-route-failure.js";
 import type { Aim } from "../../src/engine/aim.js";
 import type { ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
@@ -25,7 +25,7 @@ const MEASURED: Array<[string, string]> = [
   ["ValuePattern not supported by this element", "pattern_not_supported"],
   ['Exception calling "GetCurrentPattern" with "1" argument(s): "Unsupported Pattern."', "pattern_not_supported"],
   ["Element is disabled", "element_disabled"],
-  ['Exception calling "SetValue" with "1" argument(s): "The operation is not allowed on a nonenabled element."', "element_disabled"],
+  ['Exception calling "SetValue" with "1" argument(s): "The operation is not allowed on a nonenabled element."', "element_disabled_or_read_only"],
 ];
 
 describe("the classifier knows the answers the backend gave, and only those", () => {
@@ -53,6 +53,19 @@ describe("the classifier knows the answers the backend gave, and only those", ()
       expect(classifyUiaRouteFailure(new Error(text)), text).toBeUndefined();
     }
     expect(classifyUiaRouteFailure("Element not found")).toBeUndefined();
+  });
+
+  it("does not call a refused write disabled, because a read-only field is refused the same way", () => {
+    // `Element is disabled` is the bridge's own, written after reading IsEnabled as false. The
+    // `nonenabled element` text is the provider refusing SetValue, and WPF's TextBox and Chromium
+    // refuse a read-only field with the same exception — so this text may not send the caller to
+    // find what enables a field that is already enabled (2ゲート目の指摘).
+    const refused = classifyUiaRouteFailure(
+      new Error('Exception calling "SetValue" with "1" argument(s): "The operation is not allowed on a nonenabled element."'),
+    );
+    expect(refused).toBeDefined();
+    expect(refused).not.toBe(classifyUiaRouteFailure(new Error("Element is disabled")));
+    expect(describeUiaRouteFailure(refused!)).toContain("read-only");
   });
 });
 
@@ -135,7 +148,9 @@ describe("the refusal says which failure it was", () => {
       }),
       keyboardTypeBg: vi.fn(async () => { throw new Error("background write refused for PROBE-TYPED-TEXT"); }),
     }), "PROBE-TYPED-TEXT");
-    expect(e.callerDetail).toContain("the UIA value route failed because the element is disabled, and the background write failed too");
+    expect(e.callerDetail).toContain(
+      "the UIA value route failed because the element refused the write as not enabled (it is disabled, or it is a read-only field), and the background write failed too",
+    );
     expect(e.callerDetail).not.toContain("PROBE-TYPED-TEXT");
     expect(e.callerDetail).not.toContain("Exception calling");
   });
