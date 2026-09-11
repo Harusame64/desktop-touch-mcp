@@ -275,6 +275,28 @@ describe("the keyboard rung's row says whether its receiver is the named control
     expect(row).toMatchObject({ receiverInEntity: true, receiver: { ancestors: ["6000", "2147488649"] } });
   });
 
+  it("counts the receiver's top-level window as holding it: UIA lists an owned dialog under its owner, so a dialog can be named", async () => {
+    // The walk stops short of the top-level window, so the root is checked on its own. A high-bit
+    // handle, so the root is compared in the one width too: 0x8000_1E61 is 2147491425.
+    const { row } = await rowFor(
+      delta("2147491425"),
+      writingTo(INNER, { receiverRootHwnd: 0xFFFF_FFFF_8000_1E61n, receiverAncestors: [] }),
+    );
+    expect(row).toMatchObject({
+      receiverIsEntity: false,
+      receiverInEntity: true,
+      receiver: { rootHwnd: "2147491425", inWindow: false },
+    });
+  });
+
+  it("says the receiver is the window itself across widths too", async () => {
+    const { row } = await rowFor(
+      delta("5001"),
+      writingTo(0xFFFF_FFFF_8000_1337n, { windowHwnd: 0x8000_1337n, receiverRootHwnd: 0x8000_1337n }),
+    );
+    expect(row).toMatchObject({ receiver: { hwnd: "2147488567", isWindowItself: true } });
+  });
+
   it("says no when the named control is not among the receiver's parents", async () => {
     const { row } = await rowFor(delta("5001"), writingTo(INNER, { receiverAncestors: [PANEL] }));
     expect(row).toMatchObject({ receiverIsEntity: false, receiverInEntity: false });

@@ -888,7 +888,8 @@ function receiverFacts(
   // on the title road, where no window position is recorded, and a handle does not move with the
   // window. `null` when either handle is unknown: a windowless element, or a read that could not say.
   // A control whose handle was recreated after discover (WinForms `RecreateHandle`, a dialog opened
-  // again) reads `false` here, though it is the same control (2ゲート目).
+  // again) reads `false` here, though it is the same control. So does `receiverInEntity`, because the
+  // receiver's parents carry the new handle too (2ゲート目).
   const receiverIsEntity = hwnd !== null && entityHwnd !== null ? hwnd32(hwnd) === entityHwnd : null;
   return {
     receiver: {
@@ -905,16 +906,7 @@ function receiverFacts(
       ancestors: ancestors !== null ? ancestors.map(hwnd32) : null,
     },
     receiverIsEntity,
-    // Whether the receiver is the named control or a window INSIDE it. A compound control keeps the
-    // focus in a child window of its own: an editable ComboBox, a NumericUpDown, an IP-address box, a
-    // grid's editing cell. There `receiverIsEntity` is `false` while the characters went into the
-    // control named (2ゲート目). `null` when that cannot be said.
-    receiverInEntity:
-      receiverIsEntity === true
-        ? true
-        : hwnd !== null && entityHwnd !== null && ancestors !== null
-          ? ancestors.some((a) => hwnd32(a) === entityHwnd)
-          : null,
+    receiverInEntity: insideEntity(hwnd, root, ancestors, entityHwnd),
     // Only a receiver known to be a child inside the aimed window is compared. In two cases the
     // reading would say "inside" whatever happened, so it is null there:
     //   - the window itself holds every field;
@@ -924,6 +916,29 @@ function receiverFacts(
         ? centerInside(entityRect, rect)
         : null,
   };
+}
+
+/**
+ * Whether the receiver is the named control or a window INSIDE it. A compound control keeps the focus
+ * in a child window of its own: an editable ComboBox, a NumericUpDown, an IP-address box, a grid's
+ * editing cell. There `receiverIsEntity` is `false` while the characters went into the control named
+ * (2ゲート目). `null` when that cannot be said: either handle unknown, or the parents not read.
+ *
+ * Only parents are followed, not owners. So an owned popup that holds the focus (a dropdown list)
+ * reads `false` against the control that opened it; it also reads `inWindow: false`, which says so.
+ */
+function insideEntity(
+  hwnd: bigint | null,
+  root: bigint | null,
+  ancestors: bigint[] | null,
+  entityHwnd: string | null,
+): boolean | null {
+  if (hwnd === null || entityHwnd === null) return null;
+  if (hwnd32(hwnd) === entityHwnd) return true;
+  // `ancestors` stops short of the top-level window, so the root is checked on its own. UIA lists an
+  // owned dialog as a child of its owner, so a dialog can be the element named (2ゲート目, second read).
+  if (root !== null && hwnd32(root) === entityHwnd) return true;
+  return ancestors !== null ? ancestors.some((a) => hwnd32(a) === entityHwnd) : null;
 }
 
 function centerInside(
