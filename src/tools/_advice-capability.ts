@@ -160,15 +160,48 @@ export function placeholderPattern(): RegExp {
  *                            (`macro.ts:274` — the same line that made the widened
  *                            count 21-vs-20 earlier in this file)
  *
- * The shipped pattern excludes the backslash and requires either a closing brace or
- * a non-empty run, which measures **0 false positives, 0 malformed missed, 0
- * negatives claimed**. A cell pins all three with the real strings.
+ * The shipped pattern requires either a closing brace or a non-empty run, and
+ * exempts **only `\"` and `\'`** rather than every backslash — see the last block
+ * below for why that distinction is load-bearing.
+ *
+ * **FIVE MORE SHAPES CAME FROM ASKING THE BUILT MODULE, NOT THE PATTERN** (win2, on
+ * `25f9bb3`, with positive controls: a well-formed placeholder is both detected and
+ * resolved away). Each is shipped VERBATIM by `renderAdvice` and was missed by the
+ * first lax detector:
+ *
+ *   `{tool :set_value}`    a space BEFORE the colon
+ *   `{TOOL:…}` / `{Tool:…}`  the keyword in capitals, or mixed
+ *   `｛tool:set_value｝`    **full-width braces** — the realistic one here, because
+ *                          these sources carry Japanese comments and a CJK IME
+ *                          emits `｛｝` without the writer noticing
+ *   `&#123;tool:…&#125;`   HTML-escaped, if the text ever passes a doc pipeline
+ *
+ * **The extra reach cost nothing, and that was measured rather than assumed.** The
+ * obvious way to reach it — allowing whitespace after the opening brace — matches
+ * TypeScript type literals (`{ tool: string; params: … }`, `{ tool:   ev.tool }`):
+ * **4 line-level / 15 whole-file false positives** in real product files. Keeping
+ * `{tool` ADJACENT and allowing space only before the colon catches all five at
+ * **0 false positives, line-by-line and whole-file**. So this is an improvement, not
+ * a trade — had it cost false positives it would have been a judgement call, and
+ * those get named as such in this file.
+ *
+ * **AND THE BACKSLASH EXEMPTION WAS TOO BROAD, which is the twentieth shape.**
+ * `{tool:\set_value}` is shipped verbatim and was NOT flagged, because a lookahead
+ * for `[\\]` excludes every backslash rather than the escaped quotes it was added
+ * for (PR-side codex P2 on `25f9bb3`). Exempting only `\"` and `\'` catches it —
+ * measured over 16 malformed shapes and 8 negatives: **0 missed, 0 false positives,
+ * 0 negatives claimed**, the product's own `{tool:\"sleep\"` still excluded.
+ *
+ * **The measuring side wrote "the twentieth shape is unobserved, not absent" while
+ * nineteen were tried. Gate 1 produced the twentieth within the hour.** That is the
+ * reason this file states no completeness claim about the malformed set.
  *
  * STATELESS because it is not global: without `/g`, `.test()` never advances
  * `lastIndex`, so the answer cannot depend on call order. That is the distinction
  * worth keeping visible rather than hiding behind another factory.
  */
-const DETECT_LEFTOVER = /\{tool:(?!["'\\])[^}"']*\}|\{tool:(?!["'\\])[^}"'\s]+/;
+const DETECT_LEFTOVER =
+  /(?:[{｛]|&#123;)tool\s*:(?!["']|\\["'])[^}｝"']*(?:[}｝]|&#125;)|(?:[{｛]|&#123;)tool\s*:(?!["']|\\["'])[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —

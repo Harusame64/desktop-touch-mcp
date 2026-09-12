@@ -342,6 +342,15 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(hasPlaceholder('  "Batch it: run_macro({tool:\\"screenshot\\"})"')).toBe(false);
     expect(hasPlaceholder("      // `z.object(schema).parse(args)`. Without this, `run_macro({tool:")).toBe(false);
 
+    // AND THE TWO SHAPES THAT PRICED THE OBVIOUS WAY OF REACHING THE FIVE ABOVE.
+    // Allowing whitespace after the opening brace catches `{tool :x}` — and also
+    // TypeScript type literals, 4 line-level / 15 whole-file false positives in real
+    // product files. Keeping `{tool` adjacent costs nothing, which is why the extra
+    // reach is an improvement rather than a trade; these two cells are what make
+    // that measurable instead of asserted.
+    expect(hasPlaceholder("const x: { tool: string; params: Record<string, unknown> } = y;")).toBe(false);
+    expect(hasPlaceholder("return { tool:   ev.tool   };")).toBe(false);
+
     // AND THE MALFORMED ONES, which is why this is not the replacement grammar
     // (PR-side codex P2 on `8375314`). None of these matches `[a-z_]+`, so
     // `renderAdvice` ships them VERBATIM — a strict detector answered `false` and
@@ -353,6 +362,20 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       "Re-call {tool:} to reuse the pane", // empty
       "Re-call {tool:set_value to reuse the pane", // truncated, no closing brace
       "Re-call {tool:set value} to reuse the pane", // space inside the braces
+      // The five found by asking the BUILT module instead of reading the pattern
+      // (win2, on `25f9bb3`). Each was shipped verbatim AND missed by the first lax
+      // detector — the same defect one layer down.
+      "use {tool :set_value} to do it", // space BEFORE the colon
+      "use {TOOL:set_value} to do it", // keyword in capitals
+      "use {Tool:set_value} to do it", // mixed case
+      "use ｛tool:set_value｝ to do it", // full-width braces (a CJK IME emits these)
+      "use &#123;tool:set_value&#125; to do it", // HTML-escaped
+      // The twentieth shape, from gate 1 on `25f9bb3`: the backslash exemption was
+      // added for the product's `{tool:\"sleep\"` and excluded EVERY backslash, so a
+      // leftover beginning with one was shipped verbatim and never flagged. Only
+      // `\"` and `\'` are exempt now.
+      "use {tool:\\set_value} to do it",
+      "use {tool:\\} to do it",
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
       expect(hasPlaceholder(bad), `the scan must flag ${bad}`).toBe(true);
