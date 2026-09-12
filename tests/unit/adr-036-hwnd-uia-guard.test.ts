@@ -719,7 +719,7 @@ describe("ADR-036 — hints report the named window, not the first title match",
 
 // ─── The report follows the channel that actually wrote ──────────────────────
 
-describe("ADR-036 — set_element_value's hints name the channel's window, not the caller's handle", () => {
+describe("ADR-036 — set_element_value's hints name the window the channel wrote to, whichever that is", () => {
   it("reports the handle when the write went through it (channel 1)", async () => {
     const r = parse(await setElementValueHandler({
       windowTitle: SHARED_TITLE, hwnd: String(LIVE), value: "x", name: "Field",
@@ -728,22 +728,29 @@ describe("ADR-036 — set_element_value's hints name the channel's window, not t
     expect(r.hints?.target?.hwnd).toBe(String(LIVE));
   });
 
-  it("does NOT report the handle when the write fell through to a title-resolved channel", async () => {
+  it("reports the handle when the write fell through to channel 2, which is addressed by it", async () => {
     // The guard's own gate (`mayPinHandle`) cannot cover this: `lensId` and
     // `DESKTOP_TOUCH_AUTO_GUARD=0` both skip `runActionGuard`, so with the chain
     // armed the fallbacks stay reachable and the refusal is never consulted.
+    //
+    // This cell read the other way while channel 2 resolved by title: with two same-titled windows
+    // open it pinned SIBLING — the window a title resolves to — for a write the caller had aimed at
+    // LIVE. Channel 2 takes the handle since #631 (PR 側 codex, P1), so the report names the window
+    // the text went into. "A title-resolved channel reports no handle" is still the rule; its cells
+    // are channel 3's, in `adr-036-set-value-observation.test.ts`, because this block has none.
     process.env.DTM_SET_VALUE_CHAIN = "1";
     process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";
     mockSetElementValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
     const r = parse(await setElementValueHandler({
       windowTitle: SHARED_TITLE, hwnd: String(LIVE), value: "x", name: "Field",
     } as never));
-    // Channel 2 ran, and it resolved its window by title — so the report says
-    // the window a title resolves to, not the one the caller named.
     expect(r.channel).toBe("text2");
     expect(mockInsertText).toHaveBeenCalled();
     expect(mockInsertText.mock.calls[0]![0]).toBe(SHARED_TITLE);
-    expect(r.hints?.target?.hwnd).toBe(String(SIBLING));
+    // The handle rides along with the title, and that is what makes the pin below a fact rather than
+    // a label: without this argument the write can land in SIBLING while the report names LIVE.
+    expect(mockInsertText.mock.calls[0]![4]).toEqual({ hwnd: LIVE });
+    expect(r.hints?.target?.hwnd).toBe(String(LIVE));
   });
 });
 

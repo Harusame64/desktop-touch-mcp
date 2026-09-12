@@ -207,16 +207,21 @@ function isSetValueChainEnabled(): boolean {
  * ADR-036 — can `set_element_value` be pinned to the caller's handle?
  *
  * Only when EVERY channel the call can still take is addressed by that handle.
- * Channel 1 (ValuePattern) is. Channels 2 and 3 are not: the TextPattern2
- * insert resolves by title, and the keyboard fallback does a foreground
+ * Channel 1 (ValuePattern) is. Channel 2 (TextPattern2) is too, since #631 —
+ * the bridge takes a handle and both of its roads, the engine and the script,
+ * resolve through it. Channel 3 is not: the keyboard fallback does a foreground
  * select-all-and-replace on a title-resolved window with the guard skipped. So
  * while the chain is armed the multi-match refusal has to stand — it is the
  * wrong answer, but overwriting the wrong window's field is a worse one.
  *
- * This function is the ONE place that has to change when those channels take a
- * handle (ADR-036 I-6): it becomes unconditionally true and then disappears,
- * along with the refusal it keeps alive. Named for the condition rather than
- * for the env flag so that is findable from the fix, not only from the ADR.
+ * Half of the condition this is named for is therefore met, and the body has
+ * not moved: ONE title-addressed channel is enough to keep the refusal alive,
+ * which is the whole point of naming it for "every channel" rather than for a
+ * count. What is left is channel 3 (ADR-036 I-6), and this is still the ONE
+ * place that has to change when it takes a handle: the function becomes
+ * unconditionally true and then disappears, along with the refusal it keeps
+ * alive. Named for the condition rather than for the env flag so that is
+ * findable from the fix, not only from the ADR.
  */
 function allSetValueChannelsAreHandleAddressed(): boolean {
   return !isSetValueChainEnabled();
@@ -487,11 +492,11 @@ export const setElementValueHandler = async ({
     // that observation is what keeps drift detection current — so the branches
     // that report no hints call it anyway, for the observation alone. The
     // single call this replaced took it for every path, failures included, and
-    // dropping it there would have been an unannounced change. Channel 1 goes through the handle, so its report may name it;
-    // channels 2 and 3 still find their window by title (R-36-5), so a pinned
-    // label there would name the requested window for a write that may have
-    // landed on its same-titled sibling — the defect Round 2 removed from
-    // `get_ui_elements`, reappearing one layer down. The guard's own gate
+    // dropping it there would have been an unannounced change. Channels 1 and 2 both go through the
+    // handle, so their reports may name it; channel 3 still finds its window by
+    // title (R-36-5), so a pinned label there would name the requested window
+    // for a write that may have landed on its same-titled sibling — the defect
+    // Round 2 removed from `get_ui_elements`, reappearing one layer down. The guard's own gate
     // (`mayPinHandle`) does not cover this: the `lensId` branch above and
     // `DESKTOP_TOUCH_AUTO_GUARD=0` both skip `runActionGuard` entirely, so the
     // chain stays reachable with the refusal never consulted.
@@ -585,17 +590,26 @@ export const setElementValueHandler = async ({
     attempts.push({ channel: "value", error: r1.error ?? "ValuePatternFailed" });
 
     if (chainEnabled) {
-      // The debt follows the channel about to run: from here on the write is
-      // addressed by title (R-36-5), so a failure owes the title's window and
-      // not the handle's — the same rule the success branches report under.
-      observationOwedFor = { title: effectiveTitle };
+      // The debt follows the channel about to run, and channel 2 is aimed at the
+      // handle since #631 — the bridge takes one and both of its roads resolve
+      // through it — so the debt names the handle here exactly as channel 1's
+      // does. It read `title` alone while this call dropped the handle on the
+      // floor (PR 側 codex, P1 on #631): the debt was right about the code of the
+      // day, and went wrong the moment the aim did. Channel 3 below puts the
+      // debt back on the title, because that channel really does search for one.
+      observationOwedFor = { title: effectiveTitle, ...(resolvedWin && { hwnd: resolvedWin.hwnd }) };
 
       // Channel 2: TextPattern2.InsertTextAtSelection (foreground-free)
-      const r2 = await insertTextViaTextPattern2(effectiveTitle, value, name, automationId);
+      const r2 = await insertTextViaTextPattern2(
+        effectiveTitle, value, name, automationId,
+        resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
+      );
       if (r2.ok) {
-        // Channel 2 resolved by title, so its report does too — the hints
-        // follow the write, they do not lead it.
-        const hintsBlock = observe(effectiveTitle);
+        // Channel 2 is aimed at the handle passed above, so its report may name
+        // that handle — the hints follow the write, they do not lead it. With no
+        // resolved window the channel searched by title and the report stays
+        // unpinned, which is the same rule channel 1 reports under.
+        const hintsBlock = observe(effectiveTitle, resolvedWin?.hwnd);
         const hints = {
           ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
           ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
@@ -664,9 +678,10 @@ export const setElementValueHandler = async ({
       }
 
       // All channels failed — suggest comes from _errors.ts SUGGESTS.SetValueAllChannelsFailed
-      // Unpinned on purpose: channels 2 and 3 both ran, and both found their
-      // window by title. Pinning here would name a handle for writes that were
-      // never addressed to it.
+      // Unpinned on purpose: channel 3 ran last and found its window by title,
+      // so pinning here would name a handle for a write that was never addressed
+      // to it. Channel 2 is aimed at the handle since #631, but this report is
+      // about the channel that ran after it, not the one that ran first.
       observe(effectiveTitle);   // observation only — see above
       return failWith(
         new Error("SetValueAllChannelsFailed"),

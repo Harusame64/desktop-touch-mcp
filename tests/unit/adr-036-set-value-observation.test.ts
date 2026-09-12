@@ -114,10 +114,27 @@ describe("ADR-036 — set_element_value observes its window exactly once, whiche
     mockInsertText.mockResolvedValue({ ok: true } as never);
     await call();
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
-    // NOT pinned: channel 2 found its window by title. Under the resolved
-    // title all the same — that is the string the channel searched with.
+    // Pinned since #631: channel 2 is addressed by the handle — the bridge takes
+    // one and both of its roads resolve through it — so the report may name the
+    // window the write went to. This cell asserted `undefined` while the handler
+    // dropped the handle on the floor (PR 側 codex, P1 on #631); the pin follows
+    // the aim, so inverting the aim inverts this.
     expect(mockBuildHints.mock.calls[0]![0]).toBe(RESOLVED);
-    expect(mockBuildHints.mock.calls[0]![1]).toBeUndefined();
+    expect(mockBuildHints.mock.calls[0]![1]).toBe(LIVE);
+  });
+
+  it("channel 2 is handed the resolved handle, which is what lets its report name one", async () => {
+    // The pin above is only honest if the write really went through the handle. Gate 2 found the
+    // bridge accepting a handle and dropping it; PR 側 codex then found the production call site
+    // still passing four arguments, so the parameter existed and nothing reached it. A cell on the
+    // report alone cannot tell those apart — this one names the argument.
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
+    mockInsertText.mockResolvedValue({ ok: true } as never);
+    mockInsertText.mockClear();   // `beforeEach` clears two mocks, and this is not one of them
+    await call();
+    expect(mockInsertText).toHaveBeenCalledTimes(1);
+    expect(mockInsertText.mock.calls[0]![4]).toEqual({ hwnd: LIVE });
   });
 
   it("channel 3 success — reports no hints, still owes the observation", async () => {
@@ -375,14 +392,18 @@ describe("ADR-036 — the keyboard channel's parse catch does not swallow the ob
 });
 
 describe("ADR-036 — the owed observation follows the channel that was about to run", () => {
-  it("channel 2 rejects — unpinned, because channels 2 and 3 find their window by title", async () => {
+  it("channel 2 rejects — the debt names the handle, because that is the channel that was about to run", async () => {
+    // The debt follows the channel, and channel 2 is addressed by the handle since #631. While this
+    // handler dropped the handle there, the debt read `title` alone and this cell pinned `undefined`
+    // — correct for the code of the day, wrong the moment the aim changed (PR 側 codex, P1 on #631).
+    // Channel 3 still puts the debt back on the title; the cells below that one pin it.
     process.env.DTM_SET_VALUE_CHAIN = "1";
     mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);
     mockInsertText.mockRejectedValue(new Error("MalformedRunnerJson") as never);
     await call();
     expect(mockBuildHints).toHaveBeenCalledTimes(1);
     expect(mockBuildHints.mock.calls[0]![0]).toBe(RESOLVED);
-    expect(mockBuildHints.mock.calls[0]![1]).toBeUndefined();
+    expect(mockBuildHints.mock.calls[0]![1]).toBe(LIVE);
   });
 
   it("the failure the catch reports names the resolved window, like the ones inside the try", async () => {

@@ -1481,8 +1481,10 @@ export async function insertTextViaTextPattern2(
    * ADR-036 — the window this call is about, when the caller resolved one. The engine and its
    * declaration have taken a handle since this branch; this parameter is what carries it, because
    * a road that accepts a handle and then resolves by title is the defect the ADR exists to remove
-   * (gate 2 found it accepted and dropped here). The PowerShell fallback below stays by title: it
-   * has no by-handle twin yet, and writing one is its own change.
+   * (gate 2 found it accepted and dropped here). The PowerShell fallback below resolves by handle
+   * too, and it is the half that actually inserts the text — the engine refuses when TextPattern2
+   * is the road — so leaving the script by title would have moved the defect one line down rather
+   * than removed it (PR 側 codex, P1 on #631).
    */
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; code?: string; error?: string }> {
@@ -1530,6 +1532,20 @@ foreach ($w in $allWins) {
 }
 if (-not $target) { Write-Output '{"ok":false,"code":"WindowNotFound"}'; exit }`;
 
+  // ADR-036 — the window can go between resolving the target and the walk, and everything in the
+  // stretch below throws ElementNotAvailableException when it does: `FindAll`, `$el.Current`. The
+  // click and the value write have caught that since their own gate-2 round; this road had only the
+  // `FromHandle` catch, so a window closing here died with a PowerShell exception, arrived as empty
+  // stdout, and came back as a parse error instead of the gone code (PR 側 codex, P2 on #631).
+  //
+  // The code differs by road on purpose. Only a call that named a handle may answer
+  // `aim_window_gone`: a title search is a search, and a window that stops matching a title is not
+  // a window that left — so the title road answers with the same `WindowNotFound` its own miss
+  // prints, and the executor's gone-code check stays blind to it by design.
+  const lookupCatchPs = options?.hwnd !== undefined
+    ? `} catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }`
+    : `} catch { Write-Output '{"ok":false,"code":"WindowNotFound"}'; exit }`;
+
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
@@ -1541,11 +1557,13 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${resolveTargetPs}
 
 $found = $null
+try {
 $all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
     if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
 }
+${lookupCatchPs}
 if (-not $found) { Write-Output '{"ok":false,"code":"ElementNotFound"}'; exit }
 
 try {

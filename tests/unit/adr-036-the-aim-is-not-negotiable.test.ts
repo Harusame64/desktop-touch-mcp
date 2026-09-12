@@ -247,8 +247,9 @@ describe("a handle on the write path is never traded for a title", () => {
   it("insertText carries the handle too, when the caller resolved one", async () => {
     // Gate 2: the engine and its declaration took a handle here, and the bridge dropped it — a road
     // that accepts a handle and then resolves by title is the defect this ADR exists to remove. The
-    // one production caller deliberately addresses by title from that channel on (`ui-elements.ts`
-    // R-36-5, where the debt follows the channel), so this pins the road, not that caller.
+    // one production caller now passes its resolved handle through this channel as well (PR 側
+    // codex, P1 on #631; `set_element_value` channel 2, where the debt follows the channel), so the
+    // road and that caller agree — this cell pins the road, and the observation suite pins the call.
     const { insertTextViaTextPattern2 } = await import("../../src/engine/uia-bridge.js");
     await insertTextViaTextPattern2("Untitled - Notepad", "hello", "Text", undefined, { hwnd: NOTEPAD });
     expect(h.calls.nativeHwnds).toEqual([NOTEPAD.toString()]);
@@ -270,6 +271,36 @@ describe("a handle on the write path is never traded for a title", () => {
     expect(script).toContain('"code":"aim_window_gone"');
     // …and it does not fall back to walking the root's children by title.
     expect(script).not.toContain("RootElement");
+  });
+
+  it("insertText's fallback guards the element walk, not just the handle lookup", async () => {
+    // PR 側 codex, P2 on #631: `FromHandle` was caught, but `FindAll` and `$el.Current` throw
+    // ElementNotAvailableException for the same reason — a window closing mid-lookup — and died
+    // with a PowerShell exception, so the caller got a parse error instead of the gone code. The
+    // click and the value write have caught the whole stretch since their own round; this is the
+    // road that did not.
+    const { insertTextViaTextPattern2 } = await import("../../src/engine/uia-bridge.js");
+    h.native.engineThrows = true;
+    ambiguous();
+    h.psOutput = '{"ok":true}';
+    await insertTextViaTextPattern2("Untitled - Notepad", "hello", "Text", undefined, { hwnd: NOTEPAD });
+    const script = h.calls.ps[0]!.script;
+    // The walk is inside a try whose catch answers the gone code — not merely the FromHandle line.
+    expect(script).toMatch(/try \{\n\$all = \$target\.FindAll[\s\S]*?\n\} catch \{[^\n]*aim_window_gone/);
+  });
+
+  it("the title road guards the same walk, and still does not claim the window left", async () => {
+    // The guard is not the sentinel. A title search that stops matching is a search that found
+    // nothing, so this road answers `WindowNotFound` — the same code its own miss prints — and the
+    // executor's gone-code check stays blind to it on purpose (a title call keeps no gone code).
+    const { insertTextViaTextPattern2 } = await import("../../src/engine/uia-bridge.js");
+    h.native.engineThrows = true;
+    ambiguous();
+    h.psOutput = '{"ok":true}';
+    await insertTextViaTextPattern2("Untitled - Notepad", "hello", "Text", undefined);
+    const script = h.calls.ps[0]!.script;
+    expect(script).toMatch(/try \{\n\$all = \$target\.FindAll[\s\S]*?\n\} catch \{[^\n]*WindowNotFound/);
+    expect(script).not.toContain("aim_window_gone");
   });
 
   it("setValue keeps the handle the same way", async () => {
