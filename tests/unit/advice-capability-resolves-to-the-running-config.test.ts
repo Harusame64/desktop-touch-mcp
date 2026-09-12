@@ -1,7 +1,10 @@
 /**
  * ADR-036 段階2 B1 — the capability resolver, before any advice line is converted.
  *
- * WHAT EACH CELL EXISTS FOR, since none of them is obvious:
+ * THE KINDS OF CELL HERE, and why each kind is not obvious. **Not a list of every
+ * cell** — it was written as one when there were five, and the file has grown past
+ * it twice; a header that claims completeness starts lying the next time someone
+ * adds a cell (gate 2, finding 6). The later cells carry their reason inline.
  *
  *  1. A line with no placeholder passes through BYTE-IDENTICAL. That is what lets
  *     the mechanism ship with zero lines converted.
@@ -16,8 +19,12 @@
  *     weaker one (gate 2, finding 11).
  *
  *     297 is the count of advice strings in the `SUGGESTS` dictionary alone, and it
- *     excludes the four named builders — including `paneIdMissSuggest`, which is
- *     the motivating case in the module header. An earlier count said 300; that was
+ *     excludes the four named builders — `getSuggestsForCode` (`_errors.ts:872`),
+ *     `nextStepFor` (`_action-guard.ts:258`), `tryBuildSuggestedFix`
+ *     (`_action-guard.ts:599`) and `paneIdMissSuggest` (`terminal.ts:731`), the last
+ *     being the motivating case in the module header. Two of the four are NOT
+ *     exported, so a sweep for exported builders finds two and a reader concludes
+ *     the claim is inflated (gate 2 did). An earlier count said 300; that was
  *     a quote-pairing counter meeting quotes inside comments, and the dictionary was
  *     re-counted per code on the Windows machine (94 of 94 agreeing).
  *
@@ -61,7 +68,8 @@ import { describe, it, expect } from "vitest";
 import {
   providerFor,
   renderAdvice,
-  PLACEHOLDER,
+  placeholderSource,
+  placeholderPattern,
   CAPABILITIES,
   type AdviceLine,
 } from "../../src/tools/_advice-capability.js";
@@ -223,20 +231,40 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(renderAdvice(["x {tool:nope} y"], KILL)).toEqual(["x {tool:nope} y"]);
   });
 
-  it("pins the pattern TEXT, because behaviour can no longer catch a widened one", () => {
-    // GATE 2, FINDING 2 — and it was a critical one. The cell above used to be
-    // described as "the cell that goes red if someone widens the capture". It does
-    // not, and the verbatim fallback in this very commit is why: widen the capture
-    // to `[^}]+` and `{tool:"screenshot", args:{…}` is captured, is not a
-    // capability, and is returned VERBATIM — byte-identical output, green cell.
+  it("pins the pattern TEXT, for the widenings behaviour cannot see", () => {
+    // GATE 2, FINDING 2 (a critical). The macro cell above used to be described as
+    // "the cell that goes red if someone widens the capture". It does not: widen to
+    // `[^}]+` and `{tool:"screenshot", args:{…}` is captured, is not a capability,
+    // and is returned VERBATIM — byte-identical output, green cell.
     //
-    // Generalised, and worth more than the specific case: after the verbatim
-    // fallback, **every mutation that makes this pattern match MORE is invisible
-    // behaviourally**; only mutations that make it match LESS can be observed. So
-    // the pattern's text is asserted directly. A safety net that the change it
-    // shipped with had quietly removed.
-    expect(PLACEHOLDER.source).toBe("\\{tool:([a-z_]+)\\}");
-    expect(PLACEHOLDER.flags).toBe("g");
+    // THE INVISIBLE CLASS IS NARROWER THAN "ANY WIDENING", and the broad version was
+    // written here and measured false (gate 2, finding 1, next round). A widening is
+    // invisible only while the match stays INSIDE ONE PLACEHOLDER — capture `}`-free,
+    // both braces intact. These two still redden cells, measured:
+    //   `\{tool:(.+)\}`    greedy: one match spans two placeholders, so the
+    //                      two-placeholder and mixed-precedence cells fail and the
+    //                      kill-switch corner stops dropping
+    //   `\{tool:([a-z_]+)` no closing brace: a stray `}` survives in the output
+    // So the text is pinned for the rest — the part no behaviour can distinguish.
+    expect(placeholderSource()).toBe("\\{tool:([a-z_]+)\\}");
+    expect(placeholderPattern().flags).toBe("g");
+  });
+
+  it("hands out a FRESH pattern each call, because a shared /g regex lies to .test()", () => {
+    // GATE 2, FINDING 3. A global RegExp carries `lastIndex`, so one shared instance
+    // answers `.test()` for the SAME input true, then false. The consumer this module
+    // names is the future gate that scans rendered advice for a leftover `{tool:` —
+    // a per-line `.test()` loop, which on a shared instance reports every other line
+    // clean. `String.replace` resets `lastIndex`, which is why `renderAdvice` was
+    // never affected and why no existing cell would have caught it.
+    const a = placeholderPattern();
+    const b = placeholderPattern();
+    expect(a).not.toBe(b);
+    expect(a.test("{tool:set_value}")).toBe(true);
+    expect(b.test("{tool:set_value}")).toBe(true);
+    // And the trap itself, so the reason this factory exists cannot be read as taste:
+    expect(a.test("{tool:set_value}")).toBe(false); // same instance, same input
+    expect(placeholderPattern().test("{tool:set_value}")).toBe(true);
   });
 
   it("keeps every capability name expressible by that pattern", () => {
@@ -246,7 +274,16 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // verbatim and be indistinguishable from a typo, with no gate firing.
     expect(CAPABILITIES.length).toBeGreaterThan(0);
     for (const cap of CAPABILITIES) {
-      expect(cap, `capability ${cap} cannot appear in a placeholder`).toMatch(/^[a-z_]+$/);
+      // Checked THROUGH THE REAL PATTERN, not against a re-typed `[a-z_]+`. The
+      // hand-copied class was the first version of this cell, and it reintroduced
+      // one level up exactly the drift `CAPABILITIES` is derived from `KNOWN` to
+      // avoid: widen the pattern to admit digits and the copy would redden a name
+      // the pattern now accepts — a false red — while the two could be edited apart
+      // in either direction (gate 2, finding 2).
+      expect(
+        `{tool:${cap}}`.replace(placeholderPattern(), "HIT"),
+        `capability ${cap} cannot appear in a placeholder`,
+      ).toBe("HIT");
       // And each one resolves to something at one corner or the other; a capability
       // with no provider at any corner is a promise that cannot be declared.
       const anywhere = providerFor(cap, V2) ?? providerFor(cap, KILL);
@@ -256,7 +293,11 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
 
   it("drops a line that mixes an unknown capability with one that has no provider", () => {
     // GATE 2, FINDING 9 — precedence was reachable but unpinned: drop beats
-    // verbatim, verbatim beats resolve. The consequence worth pinning is the second
+    // everything, and an unknown name stays verbatim while its line-mates still
+    // resolve (the second assertion below shows exactly that, which is why the
+    // earlier phrase "verbatim beats resolve" was wrong: they are per-placeholder
+    // and independent, and only drop is a whole-line fate — gate 2, finding 5).
+    // The consequence worth pinning is the second
     // line: a typo alone SHIPS, placeholder and all, which is the intended visible
     // breakage rather than an accident.
     const mixed: AdviceLine = "{tool:nope} then {tool:disambiguate_window_by_handle}";

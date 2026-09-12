@@ -89,7 +89,32 @@ export type Capability =
  * form also covers — so the capability lives IN the text and there is no separate
  * field to drift out of sync with it.
  */
-export const PLACEHOLDER = /\{tool:([a-z_]+)\}/g;
+const PLACEHOLDER_SOURCE = "\\{tool:([a-z_]+)\\}";
+
+/**
+ * The placeholder syntax, for gates and tests. **A string and a factory, not a
+ * shared regex** — and that is the whole point of the shape.
+ *
+ * A global (`/g`) `RegExp` carries `lastIndex`, so a shared instance answers
+ * `.test()` for the SAME input as `true`, then `false`, then `true`. Measured. The
+ * consumer this module names is the future gate that walks rendered advice looking
+ * for a leftover `{tool:` — i.e. exactly a per-line `.test()` loop, which on a
+ * shared instance would report **every other line clean** (gate 2, finding 3, on the
+ * commit that first exported it). `String.replace` happens to reset `lastIndex`,
+ * which is why `renderAdvice` was never affected and why nothing here would have
+ * caught it.
+ *
+ * So: build your own with `placeholderPattern()`, or read `placeholderSource()` and
+ * compile what you need. There is no shared instance to borrow.
+ */
+export function placeholderSource(): string {
+  return PLACEHOLDER_SOURCE;
+}
+
+/** A FRESH global pattern, every call. See {@link placeholderSource}. */
+export function placeholderPattern(): RegExp {
+  return new RegExp(PLACEHOLDER_SOURCE, "g");
+}
 
 /**
  * DO NOT LOOSEN THAT PATTERN. `{tool:` is already real syntax in this product —
@@ -116,14 +141,34 @@ export const PLACEHOLDER = /\{tool:([a-z_]+)\}/g;
  * pair is the cheapest available reminder — the Windows measurement said 21 and
  * gate 2 said 20 for the same mutation.
  *
- * **WIDENING IS NOT CAUGHT BY BEHAVIOUR.** It used to be, and the verbatim fallback
- * added alongside this comment is what removed it: widen the capture and
- * `{tool:"screenshot", args:{…}` is captured, fails `isCapability`, and is returned
- * VERBATIM — byte-identical output, green cells. Generally, **every mutation that
- * makes this pattern match MORE is now invisible behaviourally**, and only ones
- * that make it match LESS can be observed. So a cell asserts `PLACEHOLDER.source`
- * directly (gate 2, finding 2 — it found this comment claiming a guard the same
- * commit had destroyed).
+ * AND NONE OF THE 21 IS AN ADVICE STRING (gate 2, finding 4, which classified them):
+ * 14 sit in tool DESCRIPTION strings, 3 in source comments, 4 in `it(…)` titles, and
+ * **0 in `SUGGESTS` or in any advice builder**. So the number of advice strings a
+ * widened capture could corrupt today is **zero**; what it measures is the collision
+ * surface if a description or an example ever becomes advice. Worth keeping for that
+ * reason, worth not overstating.
+ *
+ * **ONE CLASS OF WIDENING IS NOT CAUGHT BY BEHAVIOUR**, and the verbatim fallback is
+ * what removed it: widen the capture to `[^}]+` and `{tool:"screenshot", args:{…}`
+ * is captured, fails `isCapability`, and is returned VERBATIM — byte-identical
+ * output, green cells.
+ *
+ * THE CLASS IS NARROWER THAN THE OBVIOUS GENERALISATION, and the obvious one was
+ * written here and measured false (gate 2, finding 1, with two counterexamples).
+ * A widening is invisible only while **the match stays inside one placeholder's
+ * boundary** — the capture stays `}`-free and both braces are intact. Widenings
+ * that break either half still redden cells:
+ *
+ *   `\{tool:(.+)\}`     greedy, so ONE match spans two placeholders → the
+ *                       two-placeholder cell and the mixed-precedence cell fail,
+ *                       and the kill-switch corner stops dropping
+ *   `\{tool:([a-z_]+)`  no closing brace → a stray `}` survives in the output, and
+ *                       nine assertions fail
+ *
+ * So the mutation table has two columns, and the loosening column is **partly**
+ * observable, not wholly blind — writing it from the false law would have marked
+ * every loosening unobservable. What behaviour cannot distinguish is pinned by
+ * asserting the pattern's text instead (gate 2, finding 2, on the round before).
  */
 
 /**
@@ -147,10 +192,14 @@ export const PLACEHOLDER = /\{tool:([a-z_]+)\}/g;
  * other advice lines — the fix failing into the shape of the bug it fixes. The
  * loud signal belongs in a gate — an advice line that still contains `{tool:` after
  * rendering is a defect, and that check is configuration-independent — rather than
- * in the failure path of a running server. **That gate does not exist yet**: it is
- * stage B4 in the spec, and until it is written a leftover placeholder is caught by
- * nobody. Stated in the future tense on purpose, because the present tense here
- * would tell a reader they are covered when they are not.
+ * in the failure path of a running server. **That gate does not exist anywhere in
+ * this repository yet** — no test and no script scans advice for a leftover
+ * `{tool:`, verified rather than assumed — so until one is written, a leftover
+ * placeholder is caught by nobody. Stated in the future tense on purpose: the
+ * present tense would tell a reader they are covered when they are not. (The
+ * sequencing that owes it lives in the internal ADR-036 spec, which this repo does
+ * not contain; naming a stage letter here would be a reference no reader can
+ * follow — gate 2, finding 9.)
  */
 const KNOWN: Record<Capability, true> = {
   reidentify_element: true,
@@ -249,11 +298,15 @@ export type AdviceLine = string;
  * surface does not have it.
  *
  * PRECEDENCE, for a line carrying more than one kind of placeholder: **drop beats
- * verbatim, verbatim beats resolve.** An unknown capability sharing a line with one
- * that has no provider here is dropped along with it, so the visible breakage never
- * reaches a caller; an unknown capability alone SHIPS, placeholder and all. Both are
- * reachable the moment a typo meets a kill switch, and both are now pinned — neither
- * was until gate 2 asked for it (finding 9).
+ * everything; an unknown name stays verbatim while its line-mates still resolve.**
+ * (An earlier wording said "verbatim beats resolve", which is not a relation this
+ * code has — verbatim and resolve are per-PLACEHOLDER and independent, and only
+ * drop is a whole-line fate. Gate 2 found the cell showing the opposite of the
+ * phrase it was meant to pin: finding 5.) An unknown capability sharing a line with
+ * one that has no provider here is dropped along with it, so the visible breakage
+ * never reaches a caller; an unknown capability alone SHIPS, placeholder and all.
+ * Both are reachable the moment a typo meets a kill switch, and both are pinned —
+ * neither was until gate 2 asked for it (finding 9).
  *
  * NOT HANDLED, and filed rather than guessed: two lines name a dependent tool as
  * one MEMBER OF A LIST of similar tools ("…(keyboard / desktop_act /
@@ -269,7 +322,7 @@ export function renderAdvice(
   const out: string[] = [];
   for (const line of lines) {
     let dropped = false;
-    const rendered = line.replace(PLACEHOLDER, (whole: string, cap: string) => {
+    const rendered = line.replace(placeholderPattern(), (whole: string, cap: string) => {
       // A capability this module does not know stays verbatim — visibly broken
       // beats a sentence that reads as advice. See the note on `KNOWN`.
       if (!isCapability(cap)) return whole;
