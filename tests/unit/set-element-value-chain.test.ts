@@ -185,7 +185,7 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     expect(keyboardTypeHandler).toHaveBeenCalled();
   });
 
-  it("names only tools that exist wherever this refusal can be reached", async () => {
+  it("names no tool the caller lacks — among the names it can recognize", async () => {
     // The advice used to name `desktop_discover`. That tool is registered by the v2
     // branch, and `set_element_value` — the only road this refusal reaches a caller
     // from — is registered in the kill-switch `else`. The two are MUTUALLY EXCLUSIVE
@@ -213,11 +213,16 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // `OLD_NAMES` — a different suite, for a different reason (gate 2 on
     // `b2ac009`). What the rewrite actually fixed was the five-prefix blindness,
     // not that mutant. The original failure was that `keyboard`, `screenshot`,
-    // `terminal`, `clipboard`,
-    // `focus_window`, `mouse_click`, `wait_until` and `key_locker` all match no
-    // prefix. So the cell pinned "every name matching five prefixes", not "every
-    // tool name" — and it therefore over-PERMITTED as well as over-rejecting, which
-    // contradicts what mac had filed about its failure direction.
+    // `terminal`, `clipboard`, `focus_window`, `mouse_click`, `wait_until` and
+    // `key_locker` all match no prefix. So the cell pinned "every name matching
+    // five prefixes", not "every tool name" — and it therefore over-PERMITTED as
+    // well as over-rejecting, which contradicts what mac had filed about its
+    // failure direction. Half-credit, stated exactly: of those eight, the rewrite
+    // made FOUR detectable. `keyboard`, `screenshot`, `terminal` and `clipboard`
+    // are in the catalog but carry no underscore, so the filter below still drops
+    // them and they remain undetected (gate 2 on `db9461d`, LOW). That is
+    // deliberate — see the bare-word argument further down — but "fixed the
+    // five-prefix blindness" would read as all eight if the count were left out.
     //
     // `key_locker` is the one with teeth: `registerKeyLockerTools` returns early
     // when `keyLockerDisabled()`, so it is genuinely conditional and advice naming
@@ -242,12 +247,27 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // scroll, excel — is registered unconditionally, so failing to detect one cannot
     // produce un-callable advice. The names that CAN be absent are all underscored.
     //
+    // THE LIMIT OF THAT ARGUMENT, because it is easy to read as more than it says
+    // (gate 2 on `db9461d`, MEDIUM). It is about REGISTRATION CONDITIONALITY — which
+    // real tools might not be installed — and says nothing about EXISTENCE. A name
+    // that is not a tool at all is invisible here: gate 2 put `window_list`
+    // (invented), `desktop_discovery` (typo) and `Desktop_Discover` (wrong case)
+    // into the shipped advice and this cell stayed GREEN, as did
+    // `tool-naming-phase4`. So this cell cannot answer "is this a real tool"; it
+    // answers "among the names I recognize, is any one of them absent here". The
+    // test name says exactly that much and no more. Closing the existence gap needs
+    // token-shape detection, which is a separate change with its own hazard (below).
+    //
     // Availability below remains narrower than reality (see the filed row): it is
-    // computed from one registrar plus the V1 trio, not the 25 registrars the server
-    // calls. Widening detection to the full catalog while availability stayed at
-    // four turned a known-narrow set into an active false rejection — so the two
-    // halves must be widened together, in a separate change, against a source whose
-    // scope is written down. win2's measured `tools/list` carries a SCOPE_WARNING
+    // computed from one registrar plus the V1 trio, not the 25 `register*(s)` calls
+    // the server makes — "25" counts registrars RECEIVING THE SERVER at
+    // `server-windows.ts:235-277`; the kill-switch branch runs 24 of them, and
+    // `registerKeyLockerWiring()` at 262 takes no server and installs nothing. The
+    // rule is stated because four different rules give four defensible counts, and
+    // the number was already wrong once (gate 2 on `db9461d`, LOW). Widening
+    // detection to the full catalog while availability stayed at four turned a
+    // known-narrow set into an active false rejection, against a source whose scope
+    // is written down. win2's measured `tools/list` carries a SCOPE_WARNING
     // precisely because `inBoth` meant "both fukuwarai configs, this machine's other
     // switches as-is" and would have licensed `key_locker` — the same
     // false-acceptance direction, moved from the regex into the data.
@@ -275,10 +295,24 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // the kill-switch branch cannot be invoked from a test; it is anchored to
     // win2's `tools/list` observation rather than to a reading of the branch.
     // This set is known-narrow and filed: it false-rejects 22 genuinely available
-    // tools. The fix needs availability = (registrar with no self-gate) INTERSECT
-    // (present in that config's `tools/list`), which excludes `key_locker`, and it
-    // must land WITH token-shape detection — widening either half alone has now
-    // made this cell worse twice.
+    // tools, and the rejection is ARMED, not theoretical — gate 2 took the positive
+    // control, adding the correct advice "Bring it forward with `focus_window`
+    // first" and turning this cell RED with a message that says `focus_window` is
+    // unavailable. It is installed by `registerWindowTools(s)` at
+    // `server-windows.ts:238`, unconditionally. The next person to write correct
+    // recovery advice gets a red suite that lies to them about why.
+    //
+    // The fix is availability = (registrar with no self-gate) INTERSECT (present in
+    // that config's `tools/list`), which excludes `key_locker`. An earlier version
+    // of this comment said it must land WITH token-shape detection because widening
+    // detection alone amplifies this gap. THAT REASON IS WRONG and gate 2 measured
+    // it: every catalog name is ALREADY detected, so token-shape adds zero
+    // rejections among the 22. The two halves are not symmetric. Widening
+    // availability is the safe half and DISARMS the trap above, so it goes first,
+    // alone. Token-shape is the risky half for a different reason, never stated
+    // before: it cannot tell a tool name from an error code or a parameter, so
+    // `aim_window_gone` and `_skipAutoGuard` would read as tools. It needs its own
+    // guard against non-tool tokens, and it follows separately.
     const probe = new McpServer({ name: "probe", version: "0" });
     registerUiElementTools(probe);
     const availableUnconditionally = new Set(
