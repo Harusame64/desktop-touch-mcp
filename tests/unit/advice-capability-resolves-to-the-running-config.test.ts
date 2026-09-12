@@ -76,6 +76,8 @@
 import { describe, it, expect } from "vitest";
 import {
   providerFor,
+  providerForName,
+  UNKNOWN_CAPABILITY,
   renderAdvice,
   placeholderSource,
   placeholderPattern,
@@ -366,6 +368,60 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // is where the change starts.
     expect(providerFor("reidentify_element", V2)).toBe("desktop_discover");
     expect(providerFor("reidentify_element", KILL)).toBe("get_ui_elements");
+  });
+
+  it("answers a name it does not know with a symbol, not with null and not by falling off", () => {
+    // GATE 2, 2026-09-13, SECOND ROUND. The two roads exist because one `null` cannot
+    // mean both "no provider in this configuration" (drop the line) and "no such
+    // capability" (a typo). A caller implementing the documented drop-on-null protocol
+    // would make `{tool:reidentify_elemnt}` VANISH — the silent outcome the verbatim
+    // policy exists to prevent.
+    //
+    // Pinned here because the previous round's evidence for the runtime answer was a
+    // probe outside the repo, and a probe is not a cell: a later refactor of
+    // `providerFor` to a lookup table would reopen the hole with a green suite.
+    expect(providerForName("credential_stores", V2)).toBe(UNKNOWN_CAPABILITY);
+    expect(providerForName("", V2)).toBe(UNKNOWN_CAPABILITY);
+    // A symbol cannot be spent as a tool name by accident: interpolation throws at the
+    // call site rather than shipping a word into a sentence.
+    const answer = providerForName("nope", V2);
+    expect(() => `use ${answer as unknown as string}`).toThrow(TypeError);
+    // And the known road agrees with the typed one, at both corners.
+    for (const cap of CAPABILITIES) {
+      expect(providerForName(cap, V2)).toBe(providerFor(cap, V2));
+      expect(providerForName(cap, KILL)).toBe(providerFor(cap, KILL));
+    }
+  });
+
+  it("throws on the TYPED road for a value from outside the union, rather than answering", () => {
+    // The typed road has no honest answer for this input, so it refuses to invent one.
+    // It used to return `undefined` (the exhaustive switch fell off its end), which is
+    // not the documented `null` protocol and reaches the sentence as a word.
+    //
+    // The throw cannot reach the failure road: `renderAdvice` screens with
+    // `isCapability` first, and the verbatim cell above reddens if that screen goes.
+    expect(() => providerFor("credential_stores" as never, V2)).toThrow(TypeError);
+    expect(() => providerFor("credential_stores" as never, V2)).toThrow(/not a capability/);
+  });
+
+  it("renders to an EMPTY array when every line drops — pinned, because it is a decision owed", () => {
+    // Not a wish: `paneIdMissSuggest`'s malformed-paneId branch is two lines and both
+    // name `key_locker`, so with the locker off the caller gets no advice at all. This
+    // cell pins today's answer so the change that converts the lines has to face it
+    // rather than discover it (gate 2, 2026-09-13, both rounds).
+    const bothDependent: AdviceLine[] = [
+      "Re-call {tool:credential_store} to get the paneId back",
+      "Lost it? {tool:credential_store} again",
+    ];
+    withLocker(true, () => {
+      expect(renderAdvice(bothDependent)).toEqual([]);
+    });
+    withLocker(false, () => {
+      expect(renderAdvice(bothDependent)).toEqual([
+        "Re-call key_locker to get the paneId back",
+        "Lost it? key_locker again",
+      ]);
+    });
   });
 
   it("keeps surviving lines in their original order", () => {

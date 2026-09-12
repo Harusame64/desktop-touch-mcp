@@ -77,7 +77,20 @@ export type Capability =
   | "disambiguate_window_by_handle"
   /** Set a value through UIA ValuePattern. Both corners, measured: the kill switch reports `channel: "value"`, v2 reports `channel: "uia"`, and neither fell through to the keyboard. */
   | "set_value"
-  /** Store a credential. Gone entirely when the locker switch is set — the one capability with no provider rather than a different one. */
+  /**
+   * The credential locker's own facilities: saving or listing a binding, and
+   * launching the anchored console pane that credential autofill keys off. Gone
+   * entirely when the locker switch is set — the one capability with no provider
+   * rather than a different one.
+   *
+   * **The name is narrower than the capability, and that is recorded rather than
+   * renamed here** (gate 2, 2026-09-13): every advice line that motivated this
+   * design recommends `key_locker({action:'launch_console'})` — opening a pane, not
+   * storing a secret (`terminal.ts:739`, `:747`, `:756`). Resolution is correct
+   * either way, since both roads are the same tool behind the same switch. The
+   * rename belongs with the change that converts the lines, because the capability
+   * tables that would have to move with it live beside those lines.
+   */
   | "credential_store";
 
 /**
@@ -244,10 +257,11 @@ export function placeholderPattern(): RegExp {
  * WHY A RUNTIME CHECK AT ALL, when `Capability` is a type. A placeholder is a
  * STRING, and the compiler never reads inside a string — so `{tool:reidentify_elemnt}`
  * is a typo no gate in this file can catch, and what it does at runtime is this
- * module's choice. Measured before choosing: with no check, an unknown name falls
- * off the end of `providerFor`'s exhaustive `switch`, the `=== null` guard cannot
- * fire, and the line renders the literal word `undefined` — `"x {tool:nope} y"`
- * came back as `"x undefined y"`. That is the WORST of the available outcomes,
+ * module's choice. Measured before choosing, on the tree of that day: with no check,
+ * an unknown name fell off the end of `providerFor`'s exhaustive `switch`, the
+ * `=== null` guard could not fire, and the line rendered the literal word
+ * `undefined` — `"x {tool:nope} y"` came back as `"x undefined y"`. That was the
+ * WORST of the available outcomes,
  * because "…use undefined to reopen the pane" still reads as a sentence, while an
  * unresolved `{tool:…}` reads as broken. So an unknown capability is left VERBATIM.
  *
@@ -255,8 +269,17 @@ export function placeholderPattern(): RegExp {
  * road: every caller is already building a refusal. Throwing here would turn a
  * tool failure into an unhandled error and cost the envelope, the code and the
  * other advice lines — the fix failing into the shape of the bug it fixes. The
- * loud signal belongs in a gate — an advice line still carrying a placeholder after
- * rendering is a defect, and that check is configuration-independent — rather
+ * **What that measurement says TODAY is different, and stronger** (gate 2,
+ * 2026-09-13, second round, which caught this paragraph still arguing from the old
+ * tree): `providerFor`'s typed road now THROWS on a value from outside the union,
+ * so removing this screen would not render `undefined` — it would throw while a
+ * refusal is being built, costing the envelope. The screen is what keeps the failure
+ * road non-throwing, and the cell that pins an unknown capability rendering verbatim
+ * is what reddens if someone removes it. **The claim is checkable now, which the
+ * earlier one was not.**
+ *
+ * The loud signal belongs in a gate — an advice line still carrying a placeholder
+ * after rendering is a defect, and that check is configuration-independent — rather
  * than in the failure path of a running server. **Stated as a detector, not as a
  * substring**: "still contains `{tool:`" was the earlier wording and it
  * disagrees with the one that was built, which deliberately passes the product's quoted
@@ -311,14 +334,35 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * The provider of `cap` in the configuration described by `env`, or `null` when
  * that configuration has no provider — in which case the line is dropped.
  *
- * THERE IS A THIRD RETURN THE SIGNATURE DOES NOT NAME. The `switch` is exhaustive
- * over `Capability`, so a `cap` from outside the union falls off its end and this
- * returns `undefined` (measured). TypeScript stops that at a typed call site, but
- * `tests/**` is outside `tsconfig.json`'s `include` and eslint here is not
- * type-aware, so a test-side or future caller can pass a string straight through.
- * **`renderAdvice` is the only placeholder-safe entry point** — it screens with
- * `isCapability` first. Call this directly only with a literal from the union
- * (gate 2, finding 7).
+ * THERE USED TO BE A THIRD RETURN THE SIGNATURE DID NOT NAME, and it is closed.
+ * The `switch` is exhaustive over `Capability`, so a `cap` from outside the union
+ * fell off its end and this returned `undefined` (measured) — not the documented
+ * `null`, so a caller's `=== null` never fired and the literal word `undefined`
+ * reached the sentence. TypeScript stops that at a typed call site, but `tests/**`
+ * is outside `tsconfig.json`'s `include` and eslint here is not type-aware, so a
+ * test-side or JS caller could pass a string straight through (gate 2, finding 7).
+ *
+ * **The two roads are now separate functions, because one `null` cannot mean both
+ * "no provider in this configuration" and "no such capability"** — a caller
+ * implementing the documented drop-on-null protocol would make a line carrying
+ * `{tool:reidentify_elemnt}` VANISH, which is the silent outcome this module's
+ * verbatim policy exists to prevent, and the opposite of what `renderAdvice` does
+ * with the same string (gate 2, 2026-09-13, second round):
+ *
+ *   `providerFor(cap: Capability)`  — typed road. `string` or `null`. A value from
+ *                                     outside the union is impossible by type, so
+ *                                     it THROWS rather than inventing an answer.
+ *                                     The throw cannot reach the failure road:
+ *                                     `renderAdvice` screens with `isCapability`
+ *                                     before calling, and a cell reddens if that
+ *                                     screen is removed.
+ *   `providerForName(name: string)` — untyped road, for text. `string`, `null`, or
+ *                                     `UNKNOWN_CAPABILITY`, which is a symbol: it
+ *                                     cannot be confused with `null` by a drop
+ *                                     protocol, and it cannot be interpolated into
+ *                                     a sentence without throwing at the call site.
+ *
+ * **`renderAdvice` is still the only placeholder-safe entry point.**
  *
  * The predicates are the ones REGISTRATION reads. Deliberate: resolution reading a
  * different source of truth than registration would drift silently the first time
@@ -411,23 +455,45 @@ export function providerFor(
       // widened rather than re-implemented here, so the switch keeps one reader.
       return keyLockerDisabled(env) ? null : "key_locker";
     default: {
-      // NOT reachable through the type system, and reachable in fact: this module is
-      // exported, `tests/**` is outside `tsconfig.json`'s `include: ["src/**/*"]`, and
-      // eslint here is not type-aware — so an untyped caller passing
-      // `"credential_stores"` used to fall off the end of an exhaustive switch and get
-      // `undefined`, which is NOT the documented `null` protocol: the caller's
-      // `=== null` never fires and the literal word `undefined` reaches the sentence.
-      // That is the outcome `KNOWN` exists to prevent for `renderAdvice`, left open on
-      // the direct road (gate 2, 2026-09-13).
+      // Impossible by type, and reachable in fact from `tests/**` (outside
+      // `tsconfig.json`'s include) or from JS. It THROWS rather than answering,
+      // because every answer available here is a lie a caller would act on: `null`
+      // means "dropped for this configuration" and would make a typo vanish
+      // silently, and `undefined` — what this used to return — reaches the sentence
+      // as the literal word. Text goes to `providerForName`, which has a third
+      // answer for exactly this. The throw cannot reach the failure road:
+      // `renderAdvice` screens with `isCapability` first.
       //
-      // `never` rather than a bare `return null`: the assignment is what keeps a
-      // MISSING arm a compile error. A trailing `return null` alone would close the
-      // runtime hole and silently swallow the next capability added to the union.
+      // `never` rather than a plain `throw`: the assignment is what keeps a MISSING
+      // arm a compile error. Without it, the next capability added to the union
+      // would compile and throw at runtime.
       const unhandled: never = cap;
-      void unhandled;
-      return null;
+      throw new TypeError(
+        `providerFor: ${String(unhandled)} is not a capability — use providerForName for text`,
+      );
     }
   }
+}
+
+/**
+ * The same question asked with a STRING, for callers whose input is text — a
+ * placeholder's capture, a line read from the dictionary, a gate walking rendered
+ * advice.
+ *
+ * Three answers, and the third is why this function exists: `UNKNOWN_CAPABILITY`
+ * for a name this module does not know. It is a symbol so that it cannot be
+ * mistaken for `null` by a drop-on-null protocol, and cannot be interpolated into a
+ * sentence — `` `use ${answer}` `` throws at the call site instead of shipping a
+ * word. `renderAdvice` does not use it: it screens and then takes the typed road,
+ * which is what keeps a typo VERBATIM rather than dropped (gate 2, 2026-09-13).
+ */
+export const UNKNOWN_CAPABILITY: unique symbol = Symbol("advice-capability:unknown");
+
+export function providerForName(
+  name: string,
+  env: Record<string, string | undefined> = process.env,
+): string | null | typeof UNKNOWN_CAPABILITY {
+  return isCapability(name) ? providerFor(name, env) : UNKNOWN_CAPABILITY;
 }
 
 /**
@@ -473,6 +539,32 @@ export type AdviceLine = string;
  * sentence is not telling the caller to use it, dropping is wrong because the
  * sentence stays true without it. Those need a third operation (remove one name
  * from a list, keep the sentence) and are left alone until the shape is decided.
+ *
+ * ---
+ *
+ * **WHAT THE CHANGE THAT CONVERTS THE LINES HAS TO DECIDE, written here because that
+ * is where its author will be reading** (gate 2, 2026-09-13, both rounds). Neither is
+ * a defect today — nothing calls this yet — and neither is answered by this module:
+ *
+ *   **1. There is no floor: an advice set can render to `[]`.** The case is not
+ *   hypothetical and it is this module's own motivating one. `paneIdMissSuggest`'s
+ *   malformed-`paneId` branch (`terminal.ts:742-750`) returns exactly two lines and
+ *   BOTH name `key_locker`, so once they carry `{tool:credential_store}` a server
+ *   started with the locker off drops both and the `TerminalWindowNotFound` refusal
+ *   ships with no suggestions at all. That is worse than the defect being fixed: a
+ *   wrong tool name is a recoverable answer, no answer is not. Decide it WITH the
+ *   conversion — a fallback line, a caller-visible count, or "zero is correct for
+ *   this code", per code. Note the shape: the advice most worth having is the advice
+ *   most likely to be configuration-dependent, so the empty set is not a rare corner.
+ *
+ *   **2. A whole-line drop throws away the part that had nothing to do with the
+ *   missing tool.** The same branch's first line is *"paneId is malformed. Valid
+ *   forms: a decimal console hwnd … or `wt:<pid>:<startMs>`. Use the `paneId` field
+ *   from key_locker(…) verbatim."* The format specification is the caller's actual
+ *   answer and is true whether or not the locker exists; only the last clause depends
+ *   on it. This is the LIST case above wearing different clothes — a sentence that is
+ *   mostly configuration-independent — and the converter meets it on the first line
+ *   it touches, so it is named here rather than left to be rediscovered.
  */
 export function renderAdvice(
   lines: readonly AdviceLine[],
