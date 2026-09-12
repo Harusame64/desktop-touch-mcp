@@ -111,9 +111,37 @@ export function placeholderSource(): string {
   return PLACEHOLDER_SOURCE;
 }
 
-/** A FRESH global pattern, every call. See {@link placeholderSource}. */
+/**
+ * A FRESH global pattern, every call — for REPLACING. See {@link placeholderSource}.
+ *
+ * **Not for scanning.** Freshness per call does not help a scanner: the shape this
+ * module's own note described — call the factory once, then `.test()` each line —
+ * reuses one `/g` instance, and `lastIndex` then makes **two consecutive identical
+ * lines alternate between detected and missed** (PR-side codex P2 on `6867088`,
+ * which also pointed out that the cell below dodged the real failure mode by
+ * calling the factory again each time). Use {@link hasPlaceholder}.
+ */
 export function placeholderPattern(): RegExp {
   return new RegExp(PLACEHOLDER_SOURCE, "g");
+}
+
+/**
+ * The detector, and it is STATELESS because it is not global.
+ *
+ * Sharing this one instance is safe for the reason the global one is not: without
+ * `/g`, `lastIndex` is never advanced by `.test()`, so the same input always gives
+ * the same answer no matter how many lines came before. That is the distinction
+ * worth keeping visible rather than hiding behind another factory — a scanner wants
+ * "does this line still carry a placeholder", not a regex it must handle carefully.
+ */
+const DETECT = new RegExp(PLACEHOLDER_SOURCE);
+
+/**
+ * True if `text` still carries a `{tool:…}` placeholder. **This is the entry point
+ * for a gate or any per-line scan**; the answer does not depend on call order.
+ */
+export function hasPlaceholder(text: string): boolean {
+  return DETECT.test(text);
 }
 
 /**
@@ -195,7 +223,9 @@ export function placeholderPattern(): RegExp {
  * in the failure path of a running server. **That gate does not exist anywhere in
  * this repository yet** — no test and no script scans advice for a leftover
  * `{tool:`, verified rather than assumed — so until one is written, a leftover
- * placeholder is caught by nobody. Stated in the future tense on purpose: the
+ * placeholder is caught by nobody. **When it is written, it calls
+ * {@link hasPlaceholder}**, not a pattern of its own and not the `/g` factory: the
+ * first version of this note described the trap it was trying to prevent. Stated in the future tense on purpose: the
  * present tense would tell a reader they are covered when they are not. (The
  * sequencing that owes it lives in the internal ADR-036 spec, which this repo does
  * not contain; naming a stage letter here would be a reference no reader can

@@ -70,6 +70,7 @@ import {
   renderAdvice,
   placeholderSource,
   placeholderPattern,
+  hasPlaceholder,
   CAPABILITIES,
   type AdviceLine,
 } from "../../src/tools/_advice-capability.js";
@@ -304,6 +305,29 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(renderAdvice([mixed], KILL)).toEqual([]);
     expect(renderAdvice([mixed], V2)).toEqual(["{tool:nope} then desktop_discover"]);
     expect(renderAdvice(["only {tool:nope}"], V2)).toEqual(["only {tool:nope}"]);
+  });
+
+  it("detects a leftover placeholder the way a SCANNER will call it — same answer every time", () => {
+    // PR-SIDE CODEX P2 on `6867088`, and the finding is about the cell above as
+    // much as the code: a factory that is fresh PER CALL does not help the shape
+    // this module's own note described — call it once, then `.test()` each line.
+    // That reuses one `/g` instance, so two consecutive identical lines alternate
+    // between detected and missed. The cell above dodged exactly that by calling
+    // the factory again each time, which is how a green suite hid the real mode.
+    //
+    // `hasPlaceholder` is stateless (no `/g`), so the scanner's real usage is safe.
+    const leftover = "Re-call {tool:nope} to reuse the pane";
+    const lines = [leftover, leftover, leftover]; // the alternating case, literally
+    expect(lines.map(hasPlaceholder)).toEqual([true, true, true]);
+    // And the same instance, hammered, keeps answering:
+    for (let i = 0; i < 5; i++) expect(hasPlaceholder(leftover)).toBe(true);
+    // Negatives, including the product's own syntax it must not claim:
+    expect(hasPlaceholder('run_macro({tool:"screenshot", args:{}})')).toBe(false);
+    expect(hasPlaceholder("Run desktop_discover to see available titles")).toBe(false);
+    // The contrast that justifies two exports: the /g pattern is for replacing, and
+    // one shared instance of it does alternate — pinned in the cell above.
+    const shared = placeholderPattern();
+    expect([shared.test(leftover), shared.test(leftover)]).toEqual([true, false]);
   });
 
   it("keeps surviving lines in their original order", () => {
