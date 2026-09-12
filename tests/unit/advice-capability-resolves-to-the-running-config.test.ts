@@ -431,6 +431,12 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // full-width braces and colon are accepted as leftovers:
     expect(hasPlaceholder("run_macro(｛tool：＂screenshot＂｝)")).toBe(false);
     expect(hasPlaceholder("run_macro({tool:“screenshot”})")).toBe(false);
+    // Zero-padded BRACES around a quoted example: the padding must not turn a
+    // legitimate macro into a leftover. This is the negative half of the same P2 —
+    // structuring the braces widens what counts as a brace, so the quote exemption
+    // has to keep holding underneath it.
+    expect(hasPlaceholder("run_macro(&#x07B;tool&#x03A;&#x22;s&#x22;&#x07D;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#0123;tool&#058;&quot;s&quot;&#0125;)")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -482,6 +488,12 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       // (PR-side codex P2 on `e670ad7`).
       "use &#x7B;tool&#x3A;set_value&#x7D; to do it",
       "use &#123;tool&#x3A;set_value&#125; to do it", // hex colon, decimal braces
+      // ZERO-PADDED references, which are legal and were missed while only the
+      // quote had been structured (PR-side codex P2 on `99b9b63`). Every reference
+      // is written `&(?:#x?0*(?:…));` now, so padding is covered by construction.
+      "use &#x07B;tool&#x03A;set_value&#x07D; to do it",
+      "use &#0123;tool&#058;set_value&#0125; to do it",
+      "use &#x07B;tool&#58;set_value&#125; to do it", // padded hex brace, plain decimal rest
       "use &#123;tool: set_value&#125; to do it", // entity braces, space, a NAME
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);

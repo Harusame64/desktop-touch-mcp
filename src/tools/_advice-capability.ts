@@ -176,11 +176,13 @@ export function placeholderPattern(): RegExp {
  * have their score recorded in this file** — the strict reuse, the quote-lookahead
  * (3 false positives), and the whitespace-after-brace variant (4 line / 15 whole-file)
  * — plus the shipped one (gate 2 round 5, finding 9: "two" undercounted its own text). The battery
- * itself is what the cell file holds, and counted there rather than here: **22 malformed positives and 21 negatives** at this commit (the earlier "six positives
- * and four negatives" was a count of an earlier battery left in place while the
- * battery grew — gate 2 round 4, finding 8; and "18 negatives" was the parent's
- * count left standing in a sentence that said three had just been added — round 7,
- * finding 1). The obvious pattern —
+ * itself is what the cell file holds, **and its size is not written here at all**.
+ * That number has now been wrong four times in this comment — "six and four", then
+ * "16 and 8", then the parent's "18" in a sentence that said three had just been
+ * added (gate 2 rounds 4 and 7), and then "21" in the very commit that added five
+ * more, **with the corrected count on screen from the gate run**. A live count kept
+ * in another file's prose is false the next time the battery grows, which is every
+ * round. **Count it where it lives.** The obvious pattern —
  * quote lookahead, optional closing brace — scored **3 false positives**, for two
  * reasons a reader would otherwise rediscover the hard way:
  *
@@ -224,9 +226,9 @@ export function placeholderPattern(): RegExp {
  * measured **over the battery as it stood at that commit, 16 malformed shapes and 8
  * negatives**: 0 missed, 0 false positives, 0 negatives claimed, the product's own
  * `{tool:\"sleep\"` still excluded. (The figure is left with its commit rather than
- * refreshed: it is a record of what was run then, and the battery has since grown to
- * 22 and 21 — gate 2 round 6, findings 3 and 7, which found two such figures reading
- * as current. **The pair above is `572edd8`'s, where that exemption actually landed:
+ * refreshed: it is a record of what was run then, and the battery has grown every
+ * round since — gate 2 round 6, findings 3 and 7, which found two such figures
+ * reading as current. **The pair above is `572edd8`'s, where that exemption actually landed:
  * 13 positives and 7 negatives.** The "16 and 8" written here before matched no
  * commit's battery at all — round 7, finding 5, which walked every tree on the
  * branch: 6/5, 13/7, 15/8, 15/12, 20/18, 22/18, 22/21.)
@@ -246,6 +248,17 @@ export function placeholderPattern(): RegExp {
  * `&(?:quot|apos|#x?0*(?:22|27|34|39));` so that **base, case and leading zeros are
  * all covered by construction**.
  *
+ * **AND THE SAME SHAPE HAS TO HOLD FOR THE BRACES AND THE COLON, which took one more
+ * round.** Structuring only the quote left `&#x7B;` / `&#x3A;` / `&#125;` as exact
+ * spellings, so a zero-padded reference — `&#x07B;tool&#x03A;set_value&#x07D;`, all
+ * legal — was shipped verbatim and **not** flagged (PR-side codex P2 on `99b9b63`).
+ * Measured: three such shapes missed. Writing every reference the same way
+ * (`&(?:#x?0*(?:7B|123));`, `&(?:#x?0*(?:3A|58));`, `&(?:#x?0*(?:7D|125));`) takes
+ * that to 0 missed, tree false positives still 0, and 12 of 12 negatives still
+ * clean — including a zero-padded brace around a *quoted* example, which must stay
+ * unflagged. **Fixing one token and leaving its neighbours enumerated is what made
+ * this the ninth round in a row to find "the same class one token to the right".**
+ *
  * The enumerated version was false as implemented, and the measurement is why this
  * one is structural: with six spellings listed, **5 of 14 negatives were claimed** —
  * zero-padded `&#0034;` / `&#x0022;` / `&#0039;` (leading zeros are legal in numeric
@@ -264,7 +277,8 @@ export function placeholderPattern(): RegExp {
  * malformed missed, 0 negatives claimed **at `51e2d88`, where that exemption landed:
  * 15 positives and 12 negatives** (the "16 positives" written here matched no tree —
  * round 7, finding 5). The hex quote entities and three more negatives came after,
- * and the battery now stands at **22 and 21**.
+ * and it has grown every round since; **the size is counted in the cell file, not
+ * restated here** — see the note above for why that number stopped being written.
  *
  * The entity alternatives are lower-case only ON PURPOSE: this regex already carries
  * `/i`, so `&QUOT;` is covered by the flag. Adding case variants measured identically
@@ -298,7 +312,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"'\s]+/i;
+  /(?:[{｛]|&(?:#x?0*(?:7B|123));)tool\s*(?:[:：]|&(?:#x?0*(?:3A|58));)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"']*(?:[}｝]|&(?:#x?0*(?:7D|125));)|(?:[{｛]|&(?:#x?0*(?:7B|123));)tool\s*(?:[:：]|&(?:#x?0*(?:3A|58));)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
