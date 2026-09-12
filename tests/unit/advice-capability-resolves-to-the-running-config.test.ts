@@ -526,6 +526,17 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // full-width quotes have no named form at all.
     expect(hasPlaceholder("run_macro({tool:&bdquo;s&rdquo;})")).toBe(false);
     expect(hasPlaceholder("run_macro({tool:&sbquo;s&rsquo;})")).toBe(false);
+    // AND A LEGACY REFERENCE NEEDS NO TERMINATOR AT ALL IN TEXT CONTENT (gate 1 P2 on
+    // `9fef327`). The `(?![0-9A-Za-z;])` terminator was modelling the ATTRIBUTE rule:
+    // the tokenizer flushes a semicolon-less legacy reference as literal text only
+    // when it was consumed as part of an attribute and the next character is `=` or
+    // alphanumeric. In text content it is consumed, so these three ARE the product's
+    // quoted macro example and must stay exempt. The contrast is `&apos set_value`
+    // above, which is a positive: `apos` is not in the legacy set, so a parser really
+    // does leave it literal.
+    expect(hasPlaceholder("run_macro({tool:&quotscreenshot&quot})")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&quotscreenshot&quot&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro({tool:&QUOTscreenshot&QUOT})")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -636,6 +647,26 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       "use {tool:&apos set_value}",
       "use {tool:&ldquo set_value}",
       "use {tool:&bsol set_value}",
+      // THE LOOKAHEAD HAS THREE POSITIONS, AND EVERYTHING HAD BEEN PUT IN THE THIRD
+      // (gate 1 P2 x2 on `9fef327`, plus the backslash sibling no finding named; all
+      // measured before fixing). The question is "after the colon, is there a QUOTE?",
+      // and the shape is padding* escape? quote — which the LITERAL side already had
+      // (`\s*` then a quote, `\\` then a quote). Every REFERENCE was added as an
+      // alternative of the quote itself, so an encoded space or an encoded backslash
+      // satisfied the exemption ALONE, while its decoded twin is flagged.
+      "use {tool:&#32;set_value}",
+      "use {tool:&#x20;set_value}",
+      "use {tool:&#160;set_value}",
+      "use {tool:&nbsp;set_value}",
+      "use {tool:&NonBreakingSpace;set_value}",
+      "use {tool:&Tab;set_value}",
+      "use {tool:&NewLine;set_value}",
+      // The sibling: the same misplacement for the escape position. The literal
+      // `{tool:\set_value}` is a positive two groups above; its encoded spellings were
+      // not, which is the asymmetry that named this as a defect rather than a choice.
+      "use {tool:&#92;set_value}",
+      "use {tool:&#x5C;set_value}",
+      "use {tool:&bsol;set_value}",
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
       expect(hasPlaceholder(bad), `the scan must flag ${bad}`).toBe(true);

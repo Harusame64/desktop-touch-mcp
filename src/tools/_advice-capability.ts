@@ -359,6 +359,10 @@ export function placeholderPattern(): RegExp {
  * `&quot;…`. Measured both ways — outside: 3 of 13 negatives claimed; inside
  * (`:(?!\s*…quote…)`): **0** (PR-side codex P2 on `51e2d88`).
  *
+ * **And the skip is a POSITION, not an alternative of the quote** — which took until
+ * round twelve to get right for the encoded spellings. See the three-position block
+ * below.
+ *
  * **THREE MORE SURFACES, all at zero cost** (gate 2 round 5, finding 3, which probed
  * the built module rather than reading the pattern): the **full-width colon** `：`
  * (U+FF1A) — the same IME that emits `｛｝` emits it for the colon key — plus the
@@ -374,8 +378,31 @@ export function placeholderPattern(): RegExp {
  * are also independent — closing the leftover side needs no change to the exemption,
  * because a negative lookahead can only ever REMOVE flags. The real hazard is the one
  * this file already documents for a backtrackable `\s*`: a naive `;?` lets the engine
- * retry and see the `;` instead of the quote, so the terminator is written
- * `(?:;|(?![0-9A-Za-z;]))`.
+ * retry and see the `;` instead of the quote.
+ *
+ * **THE TERMINATOR THEREFORE DIFFERS BY REFERENCE KIND, AND THE SPEC SAYS WHICH.**
+ * §13.2.5.78, *named character reference state*, quoted rather than summarised:
+ * "Consume the maximum number of characters possible, where the consumed characters are
+ * one of the identifiers in the first column of the named character references table.
+ * … If the character reference was consumed **as part of an attribute**, and the last
+ * character matched is not a U+003B SEMICOLON character (;), and the next input
+ * character is either a U+003D EQUALS SIGN character (=) or an ASCII alphanumeric,
+ * then, for historical reasons, flush code points consumed as a character reference…
+ * Otherwise: If the last character matched is not a U+003B SEMICOLON character (;),
+ * then this is a **missing-semicolon-after-character-reference** parse error."
+ *
+ * So the flush-as-literal path is **conditional on being inside an attribute**; in text
+ * content the reference RESOLVES, parse error and all. These strings are source text
+ * and advice prose, not attribute values, so text-content semantics is the model —
+ * stated as a scoping choice, not as a property of the string. Three consequences,
+ * which is exactly the shape the pattern now has:
+ *
+ *   a LEGACY name        carries **no terminator at all** — `&quot` is consumed even
+ *                        when an alphanumeric follows (`&quotscreenshot`)
+ *   a NON-LEGACY name    requires its `;`, because longest-match runs against the
+ *                        table's first column and that column holds `&quot` **and**
+ *                        `&quot;` but only `&apos;` — never `&apos`
+ *   a NUMERIC reference  may omit it (`(?:;|(?![0-9A-Za-z;]))` is kept there)
  *
  * **AND `/i` WAS BREAKING THE COMMIT'S OWN PRINCIPLE.** References are written per
  * code point and per base — then the flag made case a wildcard. Named references are
@@ -387,15 +414,35 @@ export function placeholderPattern(): RegExp {
  * **And removing it was not free** — it was covering the keyword and the hex digits
  * too, so both had to be written per token instead. Measured above.
  *
- * **AND THE LOOKAHEAD HAS FOUR MEMBERS; only the quote had been structured.** Note
- * carefully what got added and what did not: **the REFERENCE spellings of whitespace
- * and backslash are exempted, the literal characters are not.** The first attempt put
- * a bare `\s` and `\\` into the class, which exempted *any* space after the colon —
- * and the cell for `{tool: set_value}` went red, because a space followed by a NAME
- * is a leftover this detector is supposed to flag. **The finding asked for the
- * reference forms; widening to the literals dropped three shapes that were already
- * being caught.** Fixing wider than the finding is its own defect, and the battery
- * caught it before the commit.
+ * **AND THE LOOKAHEAD HAS THREE POSITIONS — `padding* escape? quote` — AND EVERY
+ * REFERENCE HAD BEEN PUT IN THE THIRD ONE.** The question it asks is "after the colon,
+ * is there a QUOTE?", and the literal side always had the right shape: whitespace is
+ * skippable, a backslash is an optional escape, and **a quote is still required after
+ * them**. The reference spellings were added as alternatives of the quote ITSELF, so an
+ * encoded space or an encoded backslash satisfied the exemption **alone**, while its
+ * decoded twin was flagged (gate 1 P2 ×2 on `9fef327`).
+ *
+ * Measured before fixing: **seven encoded-whitespace leftovers missed** —
+ * `{tool:&#32;set_value}`, `&#x20;`, `&#160;`, `&nbsp;`, `&NonBreakingSpace;`,
+ * `&Tab;`, `&NewLine;` — **plus three for the escape** (`&#92;`, `&#x5C;`, `&bsol;`),
+ * a sibling no finding named and the sharpest evidence that this is a POSITION error
+ * rather than a spelling one: the literal `{tool:\set_value}` was already a positive
+ * while its own encoded spellings were not. Three legitimate examples were claimed at
+ * the same time (the semicolon-less legacy forms, above). After: **0 missed, 0 claimed,
+ * 0 tree false positives.**
+ *
+ * Each position's members are derived BY CODE POINT from the spec data file — padding
+ * is U+0020 / U+0009 / U+000A / U+00A0, the escape is U+005C, the quote is the ten
+ * listed above — so a name cannot end up in the wrong position by being spelled there.
+ *
+ * **The earlier wording here was the defect stated as the design**: "the REFERENCE
+ * spellings of whitespace and backslash are exempted, the literal characters are not".
+ * The literals are not exempted alone either — they are padding and escape. That
+ * wording came from round nine, where a bare `\s` and `\\` **in the quote class**
+ * exempted *any* space after the colon and turned the cell for `{tool: set_value}` red;
+ * the fix then moved the reference forms into the same wrong place. **Fixing wider than
+ * the finding, and then narrower than the structure** — both caught before a commit,
+ * by the battery and by gate 1 respectively.
  *
  * The reference spellings were genuinely claimed:
  * `&#32;` `&#x20;` `&#160;` before a quote, and `&#92;` `&#x5C;` — **the
@@ -428,11 +475,15 @@ export function placeholderPattern(): RegExp {
  *                         beside `&bsol;` (U+005C) in the escape exemption — one of
  *                         this file's own over-wide fixes — so `{tool:&sol;set_value}`
  *                         was exempted while `{tool:/set_value}` was flagged.
- *   the semicolon         may be omitted **only for the legacy set**. Of the names
- *                         here that is exactly `nbsp`, `quot`, `QUOT` (106 exist in
- *                         total); `apos`, `bsol`, `Tab`, `NewLine` and every curly
- *                         name now require theirs, because a parser leaves
- *                         `{tool:&apos set_value}` literal — placeholder and all.
+ *   the semicolon         is not one rule for every name. Longest-match runs against
+ *                         the table's first column, which holds `&quot` **and**
+ *                         `&quot;` but only `&apos;` — so a legacy name is consumed
+ *                         without its semicolon and a non-legacy one is left literal,
+ *                         placeholder and all. Of the names here the legacy members are
+ *                         exactly `nbsp`, `quot`, `QUOT` (106 exist in total).
+ *                         **Round twelve refined this again**: a legacy name needs no
+ *                         terminator AT ALL in text content, not merely an optional
+ *                         semicolon — see the rule quoted above.
  *
  * **And the derivation found an alias none of the three findings mentions**:
  * `&NonBreakingSpace;`, a second name for U+00A0. A hand-written list would have
@@ -447,6 +498,13 @@ export function placeholderPattern(): RegExp {
  * **This is the first completeness claim this file can support**, and it is narrow:
  * for the code points the exemption names, the list is complete *against the spec
  * data*. It says nothing about the malformed set, which is still open by construction.
+ *
+ * **AND IT DID NOT CLOSE THE CLASS — round twelve arrived within the hour** (gate 1 P2
+ * ×2 on `9fef327`, on the POSITION axis). A complete table says nothing about whether
+ * each member sits in the right position, or carries the right terminator. **The claim
+ * in the previous commit's message — that the recurrence mechanism was gone rather than
+ * patched again — was too strong**, and is corrected here and in the PR: one axis was
+ * closed, another was still open, and nothing here licenses a claim about the next one.
  *
  * (The cost recorded here before — "a leftover whose capability begins with a named
  * reference is missed" — belonged to the wholesale `&name;` exemption, which is gone.
@@ -481,7 +539,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|(?:&(?:nbsp|quot|QUOT)(?:;|(?![0-9A-Za-z;]))|&(?:CloseCurlyDoubleQuote|OpenCurlyDoubleQuote|NonBreakingSpace|CloseCurlyQuote|OpenCurlyQuote|NewLine|ldquor|lsquor|rdquor|rsquor|bdquo|ldquo|lsquo|rdquo|rsquo|sbquo|apos|bsol|Tab);|&(?:#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;])))))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#[xX]0*7[Dd]|#0*65373|#[xX]0*[Ff][Ff]5[Dd]);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|(?:&(?:nbsp|quot|QUOT)(?:;|(?![0-9A-Za-z;]))|&(?:CloseCurlyDoubleQuote|OpenCurlyDoubleQuote|NonBreakingSpace|CloseCurlyQuote|OpenCurlyQuote|NewLine|ldquor|lsquor|rdquor|rsquor|bdquo|ldquo|lsquo|rdquo|rsquo|sbquo|apos|bsol|Tab);|&(?:#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;])))))[^}｝"'\s]+/;
+  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!(?:\s|&(?:nbsp);?|&(?:NonBreakingSpace|NewLine|Tab);|&(?:#0*(?:32|9|10|160)|#[xX]0*(?:20|9|[Aa]|[Aa]0));?)*(?:\\|&(?:bsol);|&(?:#0*(?:92)|#[xX]0*(?:5[Cc]));?)?(?:["'＂＇“”‘’„‚]|&(?:quot|QUOT);?|&(?:CloseCurlyDoubleQuote|OpenCurlyDoubleQuote|CloseCurlyQuote|OpenCurlyQuote|ldquor|lsquor|rdquor|rsquor|bdquo|ldquo|lsquo|rdquo|rsquo|sbquo|apos);|&(?:#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07));?))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#[xX]0*7[Dd]|#0*65373|#[xX]0*[Ff][Ff]5[Dd]);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!(?:\s|&(?:nbsp);?|&(?:NonBreakingSpace|NewLine|Tab);|&(?:#0*(?:32|9|10|160)|#[xX]0*(?:20|9|[Aa]|[Aa]0));?)*(?:\\|&(?:bsol);|&(?:#0*(?:92)|#[xX]0*(?:5[Cc]));?)?(?:["'＂＇“”‘’„‚]|&(?:quot|QUOT);?|&(?:CloseCurlyDoubleQuote|OpenCurlyDoubleQuote|CloseCurlyQuote|OpenCurlyQuote|ldquor|lsquor|rdquor|rsquor|bdquo|ldquo|lsquo|rdquo|rsquo|sbquo|apos);|&(?:#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07));?))[^}｝"'\s]+/;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
