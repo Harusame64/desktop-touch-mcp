@@ -1,42 +1,46 @@
 /**
  * ADR-036 段階2 B1 — the capability resolver, before any advice line is converted.
  *
- * WHAT THIS PINS, and why each cell exists rather than being obvious:
+ * WHAT EACH CELL EXISTS FOR, since none of them is obvious:
  *
- *  1. A plain string passes through BYTE-IDENTICAL. This is the cell that lets B1
- *     ship with zero lines converted: the machinery goes in, every one of the 300
- *     existing advice lines keeps its exact bytes, and the suite stays green. A
- *     green suite then means "the mechanism broke nothing" — NOT "the advice is
- *     correct", which is B2's claim and needs the four-corner measurement.
+ *  1. A line with no placeholder passes through BYTE-IDENTICAL. This is what lets
+ *     the mechanism ship with zero lines converted: all 297 existing lines keep
+ *     their exact bytes, so a green suite means the mechanism broke nothing — NOT
+ *     that the advice is correct, which needs the four-corner measurement.
  *
- *  2. The surface-swap switch resolves in BOTH directions. One direction green is
- *     not evidence: a wrong table can resolve correctly in one corner by accident
- *     (win2's point, which is the configuration-axis version of being satisfied by
- *     a one-sided control). So every capability is asserted at both v2 and
- *     kill-switch, and the assertions name the tool rather than "not the other one".
+ *  2. Every capability is asserted at BOTH corners, naming the tool rather than
+ *     "not the other one". One corner green is not evidence: a wrong table can
+ *     resolve correctly in one corner by accident — the configuration-axis version
+ *     of being satisfied by a one-sided control. This table was cut at the
+ *     implementation first and measurement broke two rows in OPPOSITE directions,
+ *     which is exactly what a one-corner check would have passed.
  *
- *  3. `credential_store` DROPS its line when the locker is off, and only then. The
- *     earlier draft (`requires: [toolName]`) dropped lines on the surface-swap
- *     switch too, which removes advice while the capability is still there — the
- *     reason it was rejected.
+ *  3. Dropping happens on BOTH switches now. `disambiguate_window_by_handle` has
+ *     no kill-switch provider (that surface returns titles and no handles at all),
+ *     and `credential_store` none with the locker off. An earlier version of this
+ *     file pinned "no line drops on the surface-swap switch", which measurement
+ *     refuted — so the opposite is pinned here, and the two reasons are kept
+ *     distinct in the comments even though the behaviour is one.
  *
- *  4. `{tool}` is replaced at EVERY occurrence. A single-replacement bug would be
- *     invisible in today's dictionary (no line names a tool twice) and would
- *     surface later as a half-resolved sentence.
+ *  4. A line mixing a dependent name with names available everywhere keeps the
+ *     shared names LITERAL. Nine lines look like that, and an anonymous `{tool}`
+ *     could not say which name to resolve.
  *
- * THE LOCKER AXIS CANNOT BE MADE FROM THE `env` ARGUMENT. `resolveV2Activation`
- * takes `env`, so three corners are reproducible in a unit test with no Windows
- * machine; `keyLockerDisabled()` reads `process.env` directly because it owns the
- * live kill switch. So the locker cells mutate `process.env` and restore it in a
- * `finally` — shared machine state, restored on the failing path too, because a
- * cell that leaves the switch flipped corrupts every test that runs after it.
+ *  5. Two placeholders in one line both resolve — one real line names two
+ *     dependent tools.
+ *
+ * THE LOCKER AXIS CANNOT BE BUILT FROM THE `env` ARGUMENT. `resolveV2Activation`
+ * takes `env`, so three corners need no Windows machine; `keyLockerDisabled()`
+ * reads `process.env` directly because it owns the live switch. So the locker
+ * cells mutate `process.env` and restore it in a `finally` — shared machine state,
+ * restored on the failing path too, because a cell that leaves the switch flipped
+ * corrupts every test that runs after it.
  */
 
 import { describe, it, expect } from "vitest";
 import {
   providerFor,
   renderAdvice,
-  TOOL_PLACEHOLDER,
   type AdviceLine,
 } from "../../src/tools/_advice-capability.js";
 
@@ -59,10 +63,7 @@ function withLocker(disabled: boolean, body: () => void): void {
 }
 
 describe("ADR-036 B1 — advice names a capability, the presenter resolves it", () => {
-  it("passes a plain string through byte-identical, tool name and all", () => {
-    // The 300 lines that exist today are plain strings, including the ones that
-    // name a tool the caller may not have. B1 must not touch them: converting
-    // them is B2, and doing both at once would make a green suite unreadable.
+  it("passes a line with no placeholder through byte-identical, tool name and all", () => {
     const lines: AdviceLine[] = [
       "Run desktop_discover to see available titles",
       "Do NOT fall back to addressing this window by title. …the keyboard fallback types into whichever window is in front.",
@@ -72,25 +73,38 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(renderAdvice(lines, KILL)).toEqual(lines);
   });
 
-  it("resolves the surface-swap capabilities in BOTH directions", () => {
-    // Named positively on both sides: "not desktop_discover" would pass for a
-    // resolver that returned null, which is the drop path and a different bug.
-    expect(providerFor("enumerate_windows", V2)).toBe("desktop_discover");
-    expect(providerFor("enumerate_windows", KILL)).toBe("get_windows");
-    expect(providerFor("read_ui_tree", V2)).toBe("desktop_discover");
-    expect(providerFor("read_ui_tree", KILL)).toBe("get_ui_elements");
+  it("resolves each capability at BOTH corners, named positively on each side", () => {
+    // `reidentify_element` is the row measurement re-cut: v2 identifies via
+    // entities, the kill switch via the raw tree. Cut at the implementation it
+    // looked kill-switch-only, because v2 returns no raw tree.
+    expect(providerFor("reidentify_element", V2)).toBe("desktop_discover");
+    expect(providerFor("reidentify_element", KILL)).toBe("get_ui_elements");
+    expect(providerFor("list_window_titles", V2)).toBe("desktop_discover");
+    expect(providerFor("list_window_titles", KILL)).toBe("get_windows");
     expect(providerFor("set_value", V2)).toBe("desktop_act");
     expect(providerFor("set_value", KILL)).toBe("set_element_value");
   });
 
-  it("renders the same line differently per configuration, and drops nothing", () => {
-    const line: AdviceLine = { cap: "enumerate_windows", text: `Use ${TOOL_PLACEHOLDER} to see available titles` };
-    expect(renderAdvice([line], V2)).toEqual(["Use desktop_discover to see available titles"]);
-    expect(renderAdvice([line], KILL)).toEqual(["Use get_windows to see available titles"]);
+  it("has no kill-switch provider for naming one window by handle", () => {
+    // Measured: that surface returns titles and NO handles (0 of 10, no
+    // `hwnd`/`handle` string anywhere), and takes no arguments, so there is not
+    // even a flag to ask for one.
+    expect(providerFor("disambiguate_window_by_handle", V2)).toBe("desktop_discover");
+    expect(providerFor("disambiguate_window_by_handle", KILL)).toBeNull();
+  });
+
+  it("drops a line on the SURFACE-SWAP switch when that surface lacks the capability", () => {
+    // The claim this replaces said no line drops on this switch. Measurement
+    // refuted it, so the refutation is pinned rather than the comfortable version.
+    const line: AdviceLine = "Pass the handle {tool:disambiguate_window_by_handle} returns to name one window exactly";
+    expect(renderAdvice([line], V2)).toEqual([
+      "Pass the handle desktop_discover returns to name one window exactly",
+    ]);
+    expect(renderAdvice([line], KILL)).toEqual([]);
   });
 
   it("drops a credential_store line only when the locker is off", () => {
-    const line: AdviceLine = { cap: "credential_store", text: `Re-call ${TOOL_PLACEHOLDER} to reuse the pane` };
+    const line: AdviceLine = "Re-call {tool:credential_store} to reuse the pane";
     withLocker(false, () => {
       expect(providerFor("credential_store")).toBe("key_locker");
       expect(renderAdvice([line])).toEqual(["Re-call key_locker to reuse the pane"]);
@@ -101,31 +115,61 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     });
   });
 
-  it("does not drop a surface-swap line on either switch", () => {
-    // The rejected draft's defect, pinned so it cannot come back: flipping the
-    // fukuwarai switch must never make advice disappear, because the capability
-    // is still provided — by a different name.
-    const line: AdviceLine = { cap: "set_value", text: `Use ${TOOL_PLACEHOLDER}` };
-    expect(renderAdvice([line], V2)).toHaveLength(1);
-    expect(renderAdvice([line], KILL)).toHaveLength(1);
-  });
-
-  it("replaces every occurrence of the placeholder, not just the first", () => {
-    const line: AdviceLine = {
-      cap: "read_ui_tree",
-      text: `${TOOL_PLACEHOLDER} reads the tree; call ${TOOL_PLACEHOLDER} again after it moves`,
-    };
+  it("keeps names available everywhere LITERAL while resolving the dependent one", () => {
+    // Nine real lines have this shape. An anonymous `{tool}` could not say which
+    // of the two names is the one to resolve.
+    const line: AdviceLine =
+      "Fall back to mouse_click({clickAt}) using the entity rect centre from {tool:reidentify_element}";
+    expect(renderAdvice([line], V2)).toEqual([
+      "Fall back to mouse_click({clickAt}) using the entity rect centre from desktop_discover",
+    ]);
     expect(renderAdvice([line], KILL)).toEqual([
-      "get_ui_elements reads the tree; call get_ui_elements again after it moves",
+      "Fall back to mouse_click({clickAt}) using the entity rect centre from get_ui_elements",
     ]);
   });
 
-  it("keeps plain and capability lines in their original order", () => {
-    // Dropping is by line, so the surviving lines must not be reordered — advice
-    // is read top-down and the first line is the one a caller acts on.
+  it("resolves two placeholders in one line — one real line names two dependent tools", () => {
+    const line: AdviceLine =
+      "Focus the field, then re-take it with {tool:reidentify_element} and write with {tool:set_value}";
+    expect(renderAdvice([line], KILL)).toEqual([
+      "Focus the field, then re-take it with get_ui_elements and write with set_element_value",
+    ]);
+  });
+
+  it("drops the whole line when ANY placeholder in it has no provider", () => {
+    const line: AdviceLine =
+      "Re-take it with {tool:reidentify_element}, then name one window with {tool:disambiguate_window_by_handle}";
+    expect(renderAdvice([line], V2)).toHaveLength(1);
+    expect(renderAdvice([line], KILL)).toEqual([]);
+  });
+
+  it("leaves the product's own {tool: syntax alone, and renders an unknown capability as the word undefined", () => {
+    // BOTH halves of the "DO NOT LOOSEN THAT PATTERN" comment, pinned — the comment
+    // previously asserted the second half from reasoning and it was half wrong.
+    //
+    // `{tool:` is real syntax in this product: `run_macro({tool:"screenshot", …})`
+    // appears in tool descriptions, examples and tests. It survives only because
+    // the capture is `[a-z_]+` and every real use has a quote or a comma right
+    // after the colon. If someone widens it, THIS is the cell that goes red.
+    const macro: AdviceLine =
+      'Batch it: run_macro({tool:"screenshot", args:{detail:"meta"}})';
+    expect(renderAdvice([macro], V2)).toEqual([macro]);
+    expect(renderAdvice([macro], KILL)).toEqual([macro]);
+
+    // And an unknown capability is left VERBATIM, neither resolved nor dropped.
+    // Measured first, then chosen: without the `KNOWN` check the line rendered
+    // `"x undefined y"` — which still reads as a sentence, so a caller would try
+    // to "use undefined". `{tool:nope}` reads as broken, which is the point. Not
+    // an exception either: this renders on the failure road, so throwing would
+    // cost the whole envelope.
+    expect(renderAdvice(["x {tool:nope} y"], V2)).toEqual(["x {tool:nope} y"]);
+    expect(renderAdvice(["x {tool:nope} y"], KILL)).toEqual(["x {tool:nope} y"]);
+  });
+
+  it("keeps surviving lines in their original order", () => {
     const lines: AdviceLine[] = [
       "first, plain",
-      { cap: "enumerate_windows", text: `then ${TOOL_PLACEHOLDER}` },
+      "then {tool:list_window_titles}",
       "last, plain",
     ];
     expect(renderAdvice(lines, KILL)).toEqual(["first, plain", "then get_windows", "last, plain"]);
