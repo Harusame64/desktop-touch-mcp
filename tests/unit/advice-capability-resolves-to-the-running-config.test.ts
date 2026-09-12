@@ -466,11 +466,56 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(hasPlaceholder("run_macro(&#123;tool:&ldquo;s&rdquor;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#123;tool:&lsquo;s&rsquor;&#125;)")).toBe(false);
 
-    // The cost of that choice, asserted so it is a measured trade and not a silent
-    // gap: a leftover whose name begins with a named reference is missed. No encoder
-    // produces it — a capability name is `[a-z_]+` — and the alternative is tracking
-    // every HTML5 alias for eight code points forever.
-    expect(hasPlaceholder("use &#123;tool:&foo;set_value&#125; to do it")).toBe(false);
+    // (That trade is gone: the quote names are enumerated explicitly now, so an
+    // undefined name no longer buys an exemption — see the assertion below.)
+    // `&foo;` is not a defined reference, so the text stays literal and the
+    // placeholder is still there — it is a LEFTOVER, and flagging it is correct. The
+    // earlier version asserted the opposite, as the cost of a wholesale `&[A-Za-z]+;`
+    // exemption that has since been replaced by the explicit quote list (round 9,
+    // finding 3, which showed that wildcard also swallowed `&Quot;`).
+    expect(hasPlaceholder("use &#123;tool:&foo;set_value&#125; to do it")).toBe(true);
+
+    // GATE 2 ROUND 9, findings 1 to 3 — each of these was a LIVE defect at the head
+    // before this commit, and each is a product example or a real string, not a
+    // synthetic one.
+    //
+    // 1. `&quot` without its semicolon: HTML5 parses it (legacy set), so this IS the
+    //    quoted macro example. It had been claimed since `51e2d88`, while the comment
+    //    said closing the semicolon gap would "re-open" it — it was already open.
+    expect(hasPlaceholder("run_macro(&#123;tool:&quot s&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&QUOT;s&QUOT;&#125;)")).toBe(false); // legacy upper
+    // 2. The lookahead has FOUR members and only the quote had been structured, so
+    //    the reference spellings of whitespace and backslash were claimed. The
+    //    backslash pair is the doc-pipeline rendering of a REAL product string —
+    //    `{tool:\"sleep\"` at `macro.ts:750` and `stub-tool-catalog.ts:1211`.
+    expect(hasPlaceholder("run_macro(&#123;tool:&#32;&quot;s&quot;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#x20;&quot;s&quot;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#160;&quot;s&quot;&#125;)")).toBe(false);
+    expect(hasPlaceholder("x &#123;tool:&#92;&quot;sleep&#92;&quot;&#125;")).toBe(false);
+    expect(hasPlaceholder("x &#123;tool:&#x5C;&quot;sleep&#x5C;&quot;&#125;")).toBe(false);
+    // 3. `&Colon;` is U+2237 ∷, not U+003A — so this is not a placeholder at all and
+    //    must not be flagged. It was matched as a colon.
+    expect(hasPlaceholder("use &#123;tool&Colon;set_value&#125; x")).toBe(false);
+
+    // AND THE ANSWER MUST NOT DEPEND ON WHERE THE PIPELINE DECODES (gate 1 P2 on
+    // `1a715b2`). `&ldquor;` / `&lsquor;` decode to U+201E `„` and U+201A `‚`, which
+    // were NOT among the eight quote code points listed — so the same typographic
+    // example was exempted BEFORE decoding and flagged AFTER it. Measured: 4 of 8
+    // negatives claimed before, 0 after adding those two as literals and as
+    // references. Treating a name as an alias of a character it does not decode to
+    // is the mistake; the fix is to carry the character.
+    expect(hasPlaceholder("run_macro({tool:&ldquor;s&rdquo;})")).toBe(false); // before decoding
+    expect(hasPlaceholder("run_macro({tool:„s”})")).toBe(false); // after decoding
+    expect(hasPlaceholder("run_macro({tool:‚s’})")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#8222;s&#8221;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#x201A;s&#x2019;&#125;)")).toBe(false);
+    // AND THE SAME EXAMPLE IN LOWER-CASE HEX, which the fix for the round above broke:
+    // `/i` came off so the NAMED references would be strict, and it took the hex digits
+    // with it. Measured at that head — this pair newly FLAGGED, i.e. a legitimate
+    // product example rejected, while three leftovers went missing (in the loop below).
+    // Hex digits and the `x` are case-insensitive per spec; a named reference is not.
+    expect(hasPlaceholder("run_macro(&#123;tool:&#x201c;s&#x201d;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#x7b;tool&#x3a;&#x22;screenshot&#x22;&#x7d;)")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -544,6 +589,26 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       // digit 9, not an apostrophe, so this must be flagged (round 8, finding 5).
       "use &#123;tool:&#x39;set_value&#125; to do it",
       "use &#123;tool: set_value&#125; to do it", // entity braces, space, a NAME
+      // CASE: named references are case-SENSITIVE apart from a small legacy set, so
+      // these are UNDEFINED — the text stays literal and the placeholder is still
+      // there. Every tree from `572edd8` to `282e0f2` flagged them; the wholesale
+      // `&[A-Za-z]+;` exemption plus `/i` had stopped (gate 2 round 9, finding 3).
+      "use &#123;tool:&Quot;set_value&#125; to do it",
+      "use &#123;tool:&Apos;set_value&#125; to do it",
+      "use &#123;tool:&Ldquo;set_value&#125; to do it",
+      "use &#123;tool:&RSQUO;set_value&#125; to do it",
+      // AND CASE IS A PER-TOKEN QUESTION, WHICH THE FIX FOR THE FOUR ABOVE GOT WRONG.
+      // `/i` had been doing three jobs at once — the keyword, the hex digits, and the
+      // named references — and only the third was meant to go. Removing the whole flag
+      // took the keyword with it (`{TOOL:` / `{Tool:`, two entries above, went red in
+      // the gate) and silently took the hex digits too: measured at that head, these
+      // three were missed and the legitimate lower-case-hex example above was newly
+      // FLAGGED. Hex digits and the `x` are case-insensitive per spec; a named
+      // reference is not. So the keyword is written `[Tt][Oo][Oo][Ll]` and every hex
+      // reference carries both digit cases, while the named list stays exact.
+      "use &#x7b;tool&#x3a;set_value&#x7d; to do it",
+      "use &#xff5b;tool&#xff1a;set_value&#xff5d; to do it",
+      "use &#X7B;tool&#X3A;set_value&#X7D; to do it", // capital `x` in `&#x`
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
       expect(hasPlaceholder(bad), `the scan must flag ${bad}`).toBe(true);

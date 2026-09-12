@@ -318,9 +318,37 @@ export function placeholderPattern(): RegExp {
  * honest version: the shapes are the record, the number was only ever a summary that
  * went stale (gate 2 round 8, finding 7, on the wording "counted in the cell file").
  *
- * The entity alternatives are lower-case only ON PURPOSE: this regex already carries
- * `/i`, so `&QUOT;` is covered by the flag. Adding case variants measured identically
- * — a knob with no measured benefit is not added.
+ * **CASE IS A PER-TOKEN QUESTION, AND ONE FLAG CANNOT ANSWER IT.** `/i` used to sit on
+ * this pattern, where it was doing three jobs at once: the keyword `tool`, the hex
+ * digits, and the named references. **Only the third was wrong** (see the next block),
+ * and removing the whole flag broke the other two — the "fix one token, leave its
+ * neighbours" shape of every round above, except this time the class came back one
+ * token to the LEFT, *inside* the fix for the round before it.
+ *
+ * Three arms, one run, over the battery in the cell file plus a probe set for this
+ * class (a record of that run; no denominators, because the populations grow):
+ *
+ *   `1a715b2` as committed, `/i` on .... 5 positives missed, 11 negatives claimed.
+ *                                        Four misses are the `&Quot;` class the next
+ *                                        block is about; the fifth is `&foo;`, which
+ *                                        this tree deliberately flips to a positive
+ *                                        (named as the cost further down)
+ *   the same text with `/i` removed .... 10 missed, 11 claimed. The five added misses
+ *                                        are the flag's OTHER two jobs: the keyword
+ *                                        (`{TOOL:`, `{Tool:` — the cells that went red
+ *                                        in the gate) and three lower-case-hex
+ *                                        leftovers. The eleventh claimed negative is
+ *                                        new as well, and it is a legitimate product
+ *                                        example rejected:
+ *                                        `run_macro(&#123;tool:&#x201c;s&#x201d;&#125;)`
+ *   this text .......................... 0 missed, 0 claimed, 0 tree false positives
+ *
+ * Hex digits and the `x` are case-insensitive per spec, so every hex reference carries
+ * both digit cases BY CONSTRUCTION (`#[xX]0*7[Bb]`), and the keyword is written
+ * `[Tt][Oo][Oo][Ll]`. The named list stays exact, which is the whole point of the next
+ * block. **The pattern text was GENERATED from the previous one by a recorded
+ * transformation rather than retyped**, so the string these numbers describe is the
+ * string that ships.
  *
  * **THE WHITESPACE SKIP MUST SIT INSIDE THE LOOKAHEAD, and that is not a style
  * choice.** A legitimate example can put a space after the colon —
@@ -338,7 +366,48 @@ export function placeholderPattern(): RegExp {
  * **HTML-escaped colon** `&#58;`. Adding all three keeps tree false positives at 0
  * and takes the battery from 8 missed shapes to 0.
  *
- * **AND THE NAMED SIDE IS A DICTIONARY, NOT A GRAMMAR — so it is exempted wholesale.**
+ * **THE SEMICOLON PARAGRAPH BELOW WAS FALSE IN BOTH HALVES, and the false positive it
+ * said it was avoiding was already live** (gate 2 round 9, finding 1, re-measured
+ * here). `hasPlaceholder("run_macro(&#123;tool:&quot s&#125;)")` answered **true**:
+ * HTML5 parses `&quot` without its semicolon (the legacy set), so that text IS the
+ * product's quoted example, and it had been claimed since `51e2d88`. The two halves
+ * are also independent — closing the leftover side needs no change to the exemption,
+ * because a negative lookahead can only ever REMOVE flags. The real hazard is the one
+ * this file already documents for a backtrackable `\s*`: a naive `;?` lets the engine
+ * retry and see the `;` instead of the quote, so the terminator is written
+ * `(?:;|(?![0-9A-Za-z;]))`.
+ *
+ * **AND `/i` WAS BREAKING THE COMMIT'S OWN PRINCIPLE.** References are written per
+ * code point and per base — then the flag made case a wildcard. Named references are
+ * case-SENSITIVE apart from a small legacy set, so `&Quot;` `&Apos;` `&Ldquo;`
+ * `&RSQUO;` are **undefined**: the text stays literal, the placeholder is still
+ * there, and every tree from `572edd8` to `282e0f2` flagged them while this branch
+ * had stopped. The mirror was live too — `&Colon;` is U+2237 ∷, not a colon, and was
+ * matched as one. The flag is gone; `QUOT` is listed explicitly because it is legacy.
+ * **And removing it was not free** — it was covering the keyword and the hex digits
+ * too, so both had to be written per token instead. Measured above.
+ *
+ * **AND THE LOOKAHEAD HAS FOUR MEMBERS; only the quote had been structured.** Note
+ * carefully what got added and what did not: **the REFERENCE spellings of whitespace
+ * and backslash are exempted, the literal characters are not.** The first attempt put
+ * a bare `\s` and `\\` into the class, which exempted *any* space after the colon —
+ * and the cell for `{tool: set_value}` went red, because a space followed by a NAME
+ * is a leftover this detector is supposed to flag. **The finding asked for the
+ * reference forms; widening to the literals dropped three shapes that were already
+ * being caught.** Fixing wider than the finding is its own defect, and the battery
+ * caught it before the commit.
+ *
+ * The reference spellings were genuinely claimed:
+ * `&#32;` `&#x20;` `&#160;` before a quote, and `&#92;` `&#x5C;` — **the
+ * doc-pipeline rendering of a REAL product string**, `{tool:\"sleep\"` at
+ * `macro.ts:750` and `stub-tool-catalog.ts:1211`, the two occurrences this file pins
+ * byte-exactly. Measured over the round's probe set: **7 false positives → 0, 4
+ * missed → 1**, tree false positives 0 throughout. The one still missed is the
+ * semicolon-less leftover, named below as a choice.
+ *
+ * **AND THE NAMED SIDE IS A DICTIONARY, NOT A GRAMMAR — so its quote spellings are
+ * enumerated rather than wildcarded.** A bare `&[A-Za-z]+;` exemption (the previous
+ * commit) also swallowed the `&Quot;` class above, which is why the list is explicit.
  * Listing `ldquo|rdquo|lsquo|rsquo` left `&OpenCurlyDoubleQuote;` and
  * `&OpenCurlyQuote;` claiming two legitimate examples (PR-side codex P2 on
  * `9942d26`; HTML5 also defines `rdquor`, `rsquor`, `ldquor`, `lsquor` for the same
@@ -357,12 +426,18 @@ export function placeholderPattern(): RegExp {
  *
  * **STILL NOT FLAGGED, deliberately — and one of these is a choice, not a limit**:
  * a reference with **no closing semicolon** (`&#123tool&#58set_value&#125`). HTML5
- * does parse those, and they are missed here. Closing them would mean matching
- * `&quot` without its semicolon on the exemption side too, and that **re-opens a
- * false positive** on the product's own `run_macro(&#123;tool:&quot s…)` — measured
- * both ways. So the trade is taken deliberately: **a semicolon-less leftover is
- * missed rather than a semicolon-less product example being claimed** (gate 2 round
- * 8, finding 6, which asked for this to be named rather than silently absent).
+ * parses those, and they are missed here. **The earlier rationale for that was
+ * wrong** — it claimed closing the leftover side would re-open a false positive on
+ * `run_macro(&#123;tool:&quot s…)`, a string that (a) does not exist in this product
+ * (**zero HTML character references anywhere in `src`+`tests` outside this module and
+ * its cell file, measured**, so it was synthetic while being labelled the product's)
+ * and (b) was **already** being claimed. The exemption now covers it.
+ *
+ * The gap stays open for a plainer reason: **nothing needs it**. A capability name is
+ * `[a-z_]+`, the advice corpus contains no character references at all, and the gate
+ * that would consume this does not exist yet. Widening the leftover side to
+ * semicolon-less references is measurable work with no measured beneficiary, so it is
+ * recorded as unclosed rather than done (gate 2 rounds 8 and 9).
  *
  * Also **still not flagged**: an unbalanced quote — the literal
  * `{tool:'set_value}`, and **since the structural exemption, its entity spellings
@@ -376,7 +451,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:[A-Za-z][A-Za-z0-9]*|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#x0*7D|#0*65373|#x0*FF5D);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:[A-Za-z][A-Za-z0-9]*|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"'\s]+/i;
+  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|&(?:(?:quot|QUOT|apos|ldquo|rdquo|lsquo|rsquo|rdquor|rsquor|ldquor|lsquor|OpenCurlyDoubleQuote|CloseCurlyDoubleQuote|OpenCurlyQuote|CloseCurlyQuote|nbsp|Tab|NewLine|bsol|sol)|#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;]))))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#[xX]0*7[Dd]|#0*65373|#[xX]0*[Ff][Ff]5[Dd]);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|&(?:(?:quot|QUOT|apos|ldquo|rdquo|lsquo|rsquo|rdquor|rsquor|ldquor|lsquor|OpenCurlyDoubleQuote|CloseCurlyDoubleQuote|OpenCurlyQuote|CloseCurlyQuote|nbsp|Tab|NewLine|bsol|sol)|#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;]))))[^}｝"'\s]+/;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
