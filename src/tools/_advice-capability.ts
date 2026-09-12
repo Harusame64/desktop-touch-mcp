@@ -137,18 +137,40 @@ export function placeholderPattern(): RegExp {
  * character class.
  *
  * So it matches `{tool:` followed by anything that is not a quote — either braced,
- * or an unbraced non-space run, because a truncated leftover is still a leftover.
+ * or an unbraced non-space RUN.
+ *
+ * **WHAT IT DELIBERATELY DOES NOT FLAG**, measured at this commit and pinned by
+ * cells, because "laxer than the grammar" is not "catches every malformed form"
+ * (gate 2 round 4, finding 1 — the earlier wording claimed the first shape below):
+ *
+ *   `Re-call {tool:`          nothing after the colon. NOT flagged, and that is the
+ *   `Re-call {tool: …prose`   price of the false positive at `macro.ts:274`, which
+ *                             is exactly this shape in a source comment.
+ *   `{tools:…}` `{tool;…}`    a typo in the PREFIX rather than in the name. The
+ *                             prefix is literal here, so these are out of reach —
+ *                             the fix made the NAME lax and left the prefix strict.
+ *   `{ tool:set_value}`       a space after the opening brace: that is the clause
+ *                             priced at 4/15 false positives (TypeScript type
+ *                             literals), so it is bought deliberately.
+ *   `{tool:"x"}` `{tool:'x'}` quoted, i.e. the product's own macro syntax.
  * The quote exclusion is what keeps the product's own syntax out:
  * `run_macro({tool:"screenshot", …})` and `{tool:'focus_window', …}` both put a
  * quote immediately after the colon.
  *
  * **THE SHAPE WAS CHOSEN BY MEASUREMENT, AND THE FIRST TRY WAS WRONG.** Four
  * candidates were run against the `{tool:` occurrences in `src` and `tests`
- * **excluding this module and its own cell file** — 21 of them on this tree, which
- * is the same count as the base commit only because the exclusion removes exactly
- * what this branch added (without it the tree reads 46; the population has to be
- * named or the number means nothing) — plus six malformed positives and four
- * negatives. The obvious pattern —
+ * **excluding this module and its own cell file** — **21** of them, the same count as
+ * the base commit, because the exclusion removes exactly what this branch added.
+ * **The unexcluded number is not worth quoting**: it was written here as 46, gate 2
+ * measured 99 at `25f9bb3`, and this tree now reads 104 occurrences on 84 lines
+ * across 6 files, of which **83 sit in this module and its cell file** — it moves
+ * every time either file is edited, which is the reason the population is NAMED
+ * rather than counted (gate 2 round 4, finding 2). **Four candidates, of which two
+ * are recorded here** — the shipped one and the obvious one it replaced. The battery
+ * itself is what the cell file holds, and counted there rather than here: **15
+ * malformed positives and 8 negatives** at this commit (the earlier "six positives
+ * and four negatives" was a count of an earlier battery left in place while the
+ * battery grew — gate 2 round 4, finding 8). The obvious pattern —
  * quote lookahead, optional closing brace — scored **3 false positives**, for two
  * reasons a reader would otherwise rediscover the hard way:
  *
@@ -253,14 +275,6 @@ export function hasPlaceholder(text: string): boolean {
  * is captured, fails `isCapability`, and is returned VERBATIM — byte-identical
  * output, green cells.
  *
- * HOW WIDE THE BLIND SPOT IS, stated as a property of the MATCH and not of the
- * pattern — because two attempts to state it as a property of the pattern were
- * measured false, in both directions, on two consecutive review rounds.
- *
- * A widening is invisible to behaviour while, on the inputs the cells contain,
- * **every genuine placeholder still matches with the capture exactly equal to the
- * capability name and the matched span exactly the placeholder**. Measured:
- *
  * NO GENERAL RULE IS STATED HERE, and that is the finding. Two attempts were made
  * to say which wideners behaviour can catch, and **both were measured false** — the
  * second one ("invisible only while both braces are intact") in both directions at
@@ -274,18 +288,31 @@ export function hasPlaceholder(text: string): boolean {
  *   `\{tool:([^}]+)\}`       0   the classic widening: captures `"screenshot", …`,
  *                                fails `isCapability`, returns verbatim
  *   `\{?tool:([a-z_]+)\}`    0   opening brace optional — greedy, so it is consumed
- *   `[a-z_]*\{tool:…\}`      0   match may begin outside the placeholder
+ *   `[a-z_]*\{tool:([a-z_]+)\}`
+ *                            0   match may begin outside the placeholder (written
+ *                                out rather than elided: an elided mutation cannot
+ *                                be re-derived — gate 2 round 4, finding 8)
  *   `\{tool:([a-z_]+)\}?`    1   closing brace optional — the SCANNER cell catches it
  *   `\{tool:(.+)\}`          3   one match spans two placeholders
  *   `\{([^}]+)\}`            8   capture becomes `tool:set_value`, so a GENUINE
  *                                placeholder stops resolving
  *   `\{tool:([a-z_]+)`       9   no closing brace: a stray `}` ships in the output
  *
- * **THE TABLE HAS THREE GENERATIONS ON THIS BRANCH, AND THE NUMBERS MOVED EACH
- * TIME** — not because the mutations changed, but because the cells did. `[^}]+` was
- * 0, then 1 when a scanner cell first used the strict grammar, then 0 again when the
- * detector was made lax; `\}?` went 0 → 1 the same way; `\{([^}]+)\}` read 9 with one
- * more cell present and 8 without. So: **the blind spot is a function of the inputs
+ * **THE SAME MUTATIONS HAVE GIVEN DIFFERENT ANSWERS ON THIS BRANCH**, so each number
+ * is named with the tree it was measured on (gate 2 round 4, finding 5, which
+ * corrected two rows and the causal phrasing of a third):
+ *
+ *   `\{tool:([^}]+)\}`     0 at `6867088` → 1 at `8375314` → 0 here
+ *   `\{tool:([a-z_]+)\}?`  0 at `6867088` → 0 at `8375314` → 1 here — it did NOT
+ *                          move "the same way": it moved only at this commit, and
+ *                          because the malformed-verbatim loop is new
+ *   `\{([^}]+)\}`          8 at `6867088` (15 cells) → 9 at `8375314` (16) → 8 here (16)
+ *                          — the 9-vs-8 difference is the cells' CONTENT, not their
+ *                          number; the count on this branch only ever rose
+ *
+ * The counts were first recorded in this file at `25f9bb3`; the earlier generations
+ * carried rows without numbers, so "the numbers moved each time" was describing
+ * measurements that had not been written down. So: **the blind spot is a function of the inputs
  * the cells contain, not of the mutation space**, a count without its tree is not a
  * number, and **any widening nobody has run is unobserved rather than invisible.**
  * Which is why the pattern's text is pinned directly, and why this comment carries a
@@ -311,9 +338,13 @@ export function hasPlaceholder(text: string): boolean {
  * road: every caller is already building a refusal. Throwing here would turn a
  * tool failure into an unhandled error and cost the envelope, the code and the
  * other advice lines — the fix failing into the shape of the bug it fixes. The
- * loud signal belongs in a gate — an advice line that still contains `{tool:` after
- * rendering is a defect, and that check is configuration-independent — rather than
- * in the failure path of a running server. **That gate does not exist anywhere in
+ * loud signal belongs in a gate — an advice line that {@link hasPlaceholder} flags
+ * after rendering is a defect, and that check is configuration-independent — rather
+ * than in the failure path of a running server. **Stated as a call, not as a
+ * substring**: "still contains `{tool:`" was the earlier wording and it now
+ * disagrees with the detector, which deliberately passes the product's quoted
+ * `run_macro({tool:"…"})` — a reader implementing the substring rule would write a
+ * scan with 21 false positives (gate 2 round 4, finding 7). One rule, one home. **That gate does not exist anywhere in
  * this repository yet** — no test and no script scans advice for a leftover
  * `{tool:`, verified rather than assumed — so until one is written, a leftover
  * placeholder is caught by nobody. **When it is written, it calls
@@ -427,8 +458,9 @@ export type AdviceLine = string;
  * everything; an unknown name stays verbatim while its line-mates still resolve.**
  * (An earlier wording said "verbatim beats resolve", which is not a relation this
  * code has — verbatim and resolve are per-PLACEHOLDER and independent, and only
- * drop is a whole-line fate. Gate 2 found the cell showing the opposite of the
- * phrase it was meant to pin: finding 5.) An unknown capability sharing a line with
+ * drop is a whole-line fate. Gate 2 round 3, finding 5, found the cell showing the
+ * opposite of the phrase it was meant to pin — the round is named because a later
+ * round's finding 5 is a different one.) An unknown capability sharing a line with
  * one that has no provider here is dropped along with it, so the visible breakage
  * never reaches a caller; an unknown capability alone SHIPS, placeholder and all.
  * Both are reachable the moment a typo meets a kill switch, and both are pinned —
@@ -451,7 +483,11 @@ export function renderAdvice(
   // explains why it needs none: `String.replace` resets `lastIndex`, so even a
   // single shared instance would be correct here (measured — a module-level shared
   // `/g` passes every cell). The factory call stays inside `renderAdvice` rather
-  // than at module level so that nothing exported is a shared mutable regex.
+  // than at module level so that no module-level mutable regex exists for a later
+  // edit to export. A module-level `const` would not be exported either, so that
+  // reason alone does not choose between the two — and the rejected option demonstrably
+  // works (a shared module-level `/g` passes every cell, measured twice). This is a
+  // preference with a narrow reason, stated as such (gate 2 round 4, finding 9).
   const pattern = placeholderPattern();
   for (const line of lines) {
     let dropped = false;

@@ -2,13 +2,17 @@
  * ADR-036 段階2 B1 — the capability resolver, before any advice line is converted.
  *
  * THE KINDS OF CELL HERE, and why each kind is not obvious. **Not a list of every
- * cell.** It was written as a complete list when the file had 7 cells, and has
- * never been one since — measured, because the first correction of this sentence
- * said "written when there were five, grown past it twice" and both halves were
- * wrong: the cell counts per commit are 7, 10, 14, 15 while the numbered list went
- * 4, 5, 5, 5 (gate 2 rounds 2 and 3, findings 6 and 5). A header that claims
- * completeness starts lying the next time someone adds a cell. The later cells
- * carry their reason inline.
+ * cell.** It was written as a complete list when the file had 7 cells and has never
+ * been one since. Measured across this branch: cells **7 → 10 → 14 → 15 → 16 → 16**
+ * while the numbered list went **4 → 5 → 5 → 5 → 5 → 5**.
+ *
+ * That sentence has now been wrong twice, in the same shape both times: the first
+ * version said "five cells, grown past it twice" (no tree ever had five), and the
+ * second stopped at the fourth of six commits, so the tree it was written on was
+ * missing from its own list (gate 2 rounds 2, 3 and 4 — findings 6, 5 and 6). **A
+ * per-commit history in a comment goes stale on the next commit by construction**,
+ * so this is the last time it is restated: the claim that matters is the one above —
+ * not a complete list — and the later cells carry their reason inline.
  *
  *  1. A line with no placeholder passes through BYTE-IDENTICAL. That is what lets
  *     the mechanism ship with zero lines converted.
@@ -78,6 +82,13 @@ import {
   CAPABILITIES,
   type AdviceLine,
 } from "../../src/tools/_advice-capability.js";
+
+/**
+ * A single backslash, BUILT rather than typed — see the malformed battery below for
+ * why. Guarded here so the constant itself cannot be the thing that is wrong.
+ */
+const BS = String.fromCharCode(92);
+if (BS !== "\\" || BS.length !== 1) throw new Error("BS is not exactly one backslash");
 
 /** The four corners of the two kill switches, as `env` maps. */
 const V2: Record<string, string | undefined> = {};
@@ -339,8 +350,17 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // THE TWO SHAPES THAT BROKE THE OBVIOUS DETECTOR, measured in the product and
     // kept here so the next person does not rediscover them. The first version —
     // quote lookahead, optional closing brace — matched three real places:
-    expect(hasPlaceholder('  "Batch it: run_macro({tool:\\"screenshot\\"})"')).toBe(false);
-    expect(hasPlaceholder("      // `z.object(schema).parse(args)`. Without this, `run_macro({tool:")).toBe(false);
+    // BYTE-EXACT EXCERPTS of the three real occurrences, not paraphrases of them.
+    // Gate 2 round 4 (finding 4) caught the earlier versions: one said `screenshot`
+    // where the file says `sleep`, and the other dropped the word " call" and used
+    // the wrong indent — so "a cell pins it with the real strings" was itself a
+    // paraphrase, which is the shape this whole file exists to distrust.
+    // `macro.ts:750` and `stub-tool-catalog.ts:1211`, the escaped-quote shape:
+    expect(hasPlaceholder('a special sleep pseudo-step: {tool:\\"sleep\\", params:{ms:N}} (max 10000ms per step)')).toBe(false);
+    // `stub-tool-catalog.ts:1211`, the single-quoted example shape:
+    expect(hasPlaceholder("  [{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}}]")).toBe(false);
+    // `macro.ts:274`, the line whose token is cut at the colon:
+    expect(hasPlaceholder("  // `z.object(schema).parse(args)` call. Without this, `run_macro({tool:")).toBe(false);
 
     // AND THE TWO SHAPES THAT PRICED THE OBVIOUS WAY OF REACHING THE FIVE ABOVE.
     // Allowing whitespace after the opening brace catches `{tool :x}` — and also
@@ -374,8 +394,16 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       // added for the product's `{tool:\"sleep\"` and excluded EVERY backslash, so a
       // leftover beginning with one was shipped verbatim and never flagged. Only
       // `\"` and `\'` are exempt now.
-      "use {tool:\\set_value} to do it",
-      "use {tool:\\} to do it",
+      // THE BACKSLASH SHAPES ARE BUILT FROM A CHARACTER CODE, NOT TYPED. The other
+      // side's merged battery had three entries whose names said "backslash" while
+      // the strings held none: a patch step ate one escape layer, and the run scored
+      // them as "resolved away" — a cell that does not contain the character it
+      // claims to test. That was the third escape-eaten incident of the day, so the
+      // rule is: when an entry exists to test ONE character, do not type it.
+      `use {tool:${BS}set_value} to do it`,
+      `use {tool:${BS}} to do it`,
+      `use {tool:${BS}${BS}set_value} to do it`,
+      `use {tool:${BS}${BS}} to do it`,
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
       expect(hasPlaceholder(bad), `the scan must flag ${bad}`).toBe(true);
