@@ -6,7 +6,23 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
+// Availability is asked of a real server double, not grepped out of the registration
+// source — see the invariant cell below for why that distinction is the finding.
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerUiElementTools } from "../../src/tools/ui-elements.js";
+// The shipped tool vocabulary, used for DETECTION only — see the invariant cell for
+// why it is not the availability set (it excludes the V1 tools and includes a
+// conditionally-registered one).
+import { STUB_TOOL_CATALOG } from "../../src/stub-tool-catalog.js";
+
+/**
+ * The three tools the kill-switch branch registers. Declared at module scope because
+ * the detection step below runs before the availability probe and both need it —
+ * inline in the probe it was a temporal-dead-zone reference, not merely misplaced.
+ * Anchored to win2's measured `tools/list` (`onlyInKillSwitch`), not to a reading of
+ * the registration source.
+ */
+const V1_FALLBACKS = ["get_windows", "get_ui_elements", "set_element_value"];
 
 // Mock uia-bridge
 vi.mock("../../src/engine/uia-bridge.js", async () => {
@@ -168,7 +184,75 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     vi.mocked(insertTextViaTextPattern2).mockResolvedValue({ ok: false, code: "aim_window_gone" });
     const parsed = JSON.parse((await setElementValueHandler(PINNED_ARGS)).content[0].text);
     const adv = parsed.suggest.join(" ");
-    const named = [...new Set((adv.match(/\b(?:get|set|desktop|click|run)_[a-z_]+\b/g) ?? []) as string[])];
+    // DETECTION was a five-prefix regex, and gate 2 killed it by mutation: advice
+    // saying "Use keyboard and perception_read and screenshot_ocr" left this cell
+    // GREEN, because `keyboard`, `screenshot`, `terminal`, `clipboard`,
+    // `focus_window`, `mouse_click`, `wait_until` and `key_locker` all match no
+    // prefix. So the cell pinned "every name matching five prefixes", not "every
+    // tool name" — and it therefore over-PERMITTED as well as over-rejecting, which
+    // contradicts what mac had filed about its failure direction.
+    //
+    // `key_locker` is the one with teeth: `registerKeyLockerTools` returns early
+    // when `keyLockerDisabled()`, so it is genuinely conditional and advice naming
+    // it can be un-callable while a prefix regex sees nothing.
+    //
+    // Detection now draws its vocabulary from the shipped catalog. Note this is NOT
+    // the availability set and must not be mistaken for one: the catalog holds 30
+    // v2-surface names, EXCLUDES all three V1 tools, and INCLUDES `key_locker`.
+    // Using it as availability would license exactly the un-callable advice above.
+    // Vocabulary and availability are separate concerns; the regex conflated them.
+    // Detection is limited to UNDERSCORED names, and the line is principled rather
+    // than convenient. Matching bare tool names against prose cannot distinguish a
+    // reference from a description: this cell first failed on `\bkeyboard\b` hitting
+    // the advice's own English — "the keyboard fallback types into whichever window"
+    // — which names a channel, not a tool. Gate 2's mutation used explicit tool
+    // references, so it never surfaced that.
+    //
+    // What makes the restriction safe rather than a hole: `key_locker` is the ONLY
+    // tool whose REGISTRATION self-gates (`key-locker-tool.ts:414`, verified with a
+    // positive control after a broken grep first reported none), and it contains an
+    // underscore. Every bare-word tool — keyboard, terminal, screenshot, clipboard,
+    // scroll, excel — is registered unconditionally, so failing to detect one cannot
+    // produce un-callable advice. The names that CAN be absent are all underscored.
+    //
+    // Availability below remains narrower than reality (see the filed row): it is
+    // computed from one registrar plus the V1 trio, not the 24 registrars the server
+    // calls. Widening detection to the full catalog while availability stayed at
+    // four turned a known-narrow set into an active false rejection — so the two
+    // halves must be widened together, in a separate change, against a source whose
+    // scope is written down. win2's measured `tools/list` carries a SCOPE_WARNING
+    // precisely because `inBoth` meant "both fukuwarai configs, this machine's other
+    // switches as-is" and would have licensed `key_locker` — the same
+    // false-acceptance direction, moved from the regex into the data.
+    const vocabulary = [...STUB_TOOL_CATALOG.map((e) => e.name), ...V1_FALLBACKS, "desktop_discover", "desktop_act"]
+      .filter((t) => t.includes("_"));
+    const named = [...new Set(vocabulary.filter((t) => new RegExp(`\\b${t}\\b`).test(adv)))];
+
+    // AVAILABILITY, not textual co-location. The previous version of this cell
+    // grepped the kill-switch `else` block of `server-windows.ts` — which would have
+    // REJECTED advice naming `click_element`, even though `registerUiElementTools`
+    // runs at line 239, unconditionally, before the `if (_desktopV2)` at 276. So the
+    // cell verified where a name sits in a file rather than whether the caller has
+    // the tool (PR 側 codex P3). Worse, win2 had already MEASURED the answer via
+    // `tools/list` on a server started both ways — `click_element` and `keyboard`
+    // present in both configurations — and this cell was built against source text
+    // with that measurement in hand.
+    //
+    // Availability in the configuration this refusal fires in = everything the
+    // unconditional registrars install, plus the three V1 fallbacks. The trio is
+    // listed explicitly because `createMcpServer` is not exported, so the
+    // kill-switch branch cannot be invoked from a test; it is anchored to win2's
+    // `tools/list` observation rather than to a reading of the branch.
+    const probe = new McpServer({ name: "probe", version: "0" });
+    registerUiElementTools(probe);
+    const availableUnconditionally = new Set(
+      Object.keys((probe as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {}),
+    );
+    const available = new Set([...availableUnconditionally, ...V1_FALLBACKS]);
+    expect(available.has("click_element"), "probe should see the unconditional registration").toBe(true);
+    for (const tool of named) {
+      expect(available.has(tool), `advice names ${tool}, which is not available where this refusal fires`).toBe(true);
+    }
 
     // TWO GATES FORBID OPPOSITE THINGS HERE, and between them every tool name is
     // blocked. `tool-naming-phase4` bans the V1 names from LLM-facing prose — and
@@ -190,18 +274,13 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     }
     // Naming nothing must not become a licence to say nothing: the recovery has to
     // stay concrete, or this cell would pass on advice that dropped it entirely.
-    expect(adv).toMatch(/by its handle/i);
+    // Re-pointed with the advice, for the third time today: this asked for "by its
+    // handle", which the wording dropped when the handle stopped being described as
+    // identity-preserving. The property being guarded is unchanged — naming no tool
+    // must not become licence to say nothing — so it now pins the weaker, true claim.
+    expect(adv).toMatch(/what owns it now/i);
     expect(adv).toMatch(/context\.hwnd/);
 
-    const server = readFileSync("src/server-windows.ts", "utf8");
-    const start = server.indexOf("Phase 4 kill-switch V1 fallback");
-    expect(start).toBeGreaterThan(-1);
-    const branch = server.slice(start, server.indexOf("\n  }", start));
-    // Sanity: the slice really is the branch that registers this tool.
-    expect(branch).toContain('"set_element_value"');
-    for (const tool of named) {
-      expect(branch, `advice names ${tool}, which is not registered alongside set_element_value`).toContain(`"${tool}"`);
-    }
   });
 
   it("stops the chain when channel 2 says the window is gone, rather than typing into whatever is in front", async () => {
@@ -248,8 +327,27 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // branch this refusal fires from. Every tool name is blocked, so the advice
     // describes what to do instead. Deleting the assertion was not an option: it
     // was guarding that the refusal leaves a concrete next step at all.
-    expect(parsed.suggest.join(" ")).toMatch(/read it again by its handle/i);
+    // Re-pointed a second time, and for a sharper reason than the first. This asked
+    // for "read it again by its handle", which the advice no longer says — because a
+    // handle does NOT preserve identity. Windows recycles handle numbers and
+    // `resolveWindowTarget` resolves one by asking whether something is there, never
+    // comparing process identity, so a reread can answer for an unrelated
+    // replacement (PR 側 codex P2). The concrete step survives; what it promises
+    // shrank to what is true. Deleting these was not an option — they guard that the
+    // refusal leaves a next step at all.
     expect(parsed.suggest.join(" ")).toMatch(/context\.hwnd/);
+    expect(parsed.suggest.join(" ")).toMatch(/what owns it now/i);
+    // A by-handle read needs the title too: `get_ui_elements`' `windowTitle` is
+    // required (`z.string()`, no `.optional()`) while `hwnd` merely takes
+    // precedence, so a caller sending `{hwnd}` alone gets a zod error instead of a
+    // read (PR 側 codex gate 2, LOW 6). Pinned because dropping the clause left all
+    // 165 cells green — the third claim today that was argued in the code and
+    // checked nowhere.
+    expect(parsed.suggest.join(" ")).toMatch(/context\.windowTitle/);
+    expect(parsed.suggest.join(" ")).toMatch(/needs both/i);
+    // And it must NOT claim the reread establishes the original window survived.
+    expect(parsed.suggest.join(" ")).toMatch(/recycled/i);
+    expect(parsed.suggest.join(" ")).not.toMatch(/stays specific to the window/i);
     // The advice must carry the same uncertainty as the error text. The shared
     // `SUGGESTS.AimWindowGone` asserts the window is gone and the handle unusable,
     // and the advice is the half a model reads — so a live window whose provider

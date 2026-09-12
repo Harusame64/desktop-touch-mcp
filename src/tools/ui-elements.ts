@@ -729,11 +729,27 @@ export const setElementValueHandler = async ({
               // ways shows `desktop_discover` absent under the kill switch — so the
               // shipped advice there is not merely unhelpful, it is UN-CALLABLE. Filed,
               // not a precedent to copy (win2 measured it; mac's inference was withdrawn).
-              // Describing the ACTION
-              // satisfies both gates and is true in both configurations: whatever this
-              // deployment calls it, a read addressed to the handle is the one that
-              // stays specific to the window named.
-              "The window may in fact still be there: a UIA provider or RPC failure during the element walk answers exactly as a closed window does, and this road cannot tell the two apart. To ask about THIS window, read it again by its handle — the handle is in context.hwnd, and a read addressed to it is the only one that stays specific to the window you named. Listing windows afresh finds a replacement if this one really did close, but cannot tell you whether this one is still there, because a title can name more than one. If the app was expected to close, this is the normal outcome and there may be nothing left to do.",
+              // Describing the ACTION satisfies both gates and is true in both
+              // configurations. But note what the earlier version of THIS comment went
+              // on to say — "a read addressed to the handle is the one that stays
+              // specific to the window named" — which is the very claim retracted just
+              // below. The correction was spliced in without deleting the sentence it
+              // replaced, so the file asserted both at once for several commits: the
+              // same false promise reaching a third audience, in the comment that
+              // explains why it is false.
+              //
+              // A handle does NOT preserve identity, and the earlier wording here
+              // promised that it did — "the only read that stays specific to the
+              // window you named". Windows recycles handle numbers (measured at
+              // ~24.6 s for a full cycle on a real machine), and
+              // `resolveWindowTarget` resolves a handle by asking whether SOMETHING
+              // is there — a title, else a rect — without comparing process
+              // identity. `desktop-executor.ts` already names this hazard exactly:
+              // "a recycled handle produces a row that says 'checked' about a
+              // stranger". So a reread can hand back an unrelated replacement, and
+              // advice claiming otherwise is a second false promise in the place of
+              // the first (PR 側 codex P2 on `24805cd`).
+              "The window may in fact still be there: a UIA provider or RPC failure during the element walk answers exactly as a closed window does, and this road cannot tell the two apart. The handle is in context.hwnd and the resolved title in context.windowTitle — a by-handle read needs both, because the handle takes precedence but the title is still a required argument. Reading by that handle asks what owns it NOW; it does not establish that the original window survived, because handle numbers are recycled and a reread can answer for an unrelated replacement. Treat a reread as probing the handle's current owner and compare what comes back against what you expected. If the app was expected to close, this is the normal outcome and there may be nothing left to do.",
             ],
             // `hwnd` as a string: it is a bigint, and the envelope is serialised with
             // `JSON.stringify`, which throws on one. Named here because a refusal that
