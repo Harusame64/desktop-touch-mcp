@@ -664,7 +664,7 @@ export const setElementValueHandler = async ({
           // (a destroyed child of a live window threw nothing), but the COM half is
           // unmeasured — so the sentence reports what was answered rather than
           // asserting the state of the world (gate 2, M3 on `5b133f3`).
-          "The window this write was aimed at reported as gone, so nothing was written. " +
+          "The window this write was aimed at was reported as gone, so nothing was written. " +
           "The remaining fallback types into whichever window is in front, which may be a different one wearing the same title.",
           {
             suggest: getSuggestsForCode("AimWindowGone"),

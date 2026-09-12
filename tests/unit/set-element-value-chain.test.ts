@@ -61,7 +61,12 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
     ...actual,
     resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) =>
       p.hwnd !== undefined
-        ? { hwnd: BigInt(p.hwnd), title: "TestApp", warnings: [], className: "TestClass" }
+        // Deliberately NOT equal to the caller's `windowTitle`. While the two matched,
+        // this file could not tell "the resolved title" from "what the caller asked
+        // for", so a refusal reporting the raw caller title passed every cell here —
+        // the sibling observation suite keeps them different for the same reason
+        // (gate 2, L4 on `24bd47d`).
+        ? { hwnd: BigInt(p.hwnd), title: "TestApp — resolved", warnings: [], className: "TestClass" }
         : null),
   };
 });
@@ -159,6 +164,16 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("AimWindowGone");
+    // The sentence reports what was ANSWERED, not the state of the world: the
+    // PowerShell road reaches this code through a blanket catch over the whole
+    // descendant walk, and a provider or RPC fault there is not proof the window
+    // left. Pinned because reverting it to "no longer exists" passed all 6096
+    // cells — the claim had no check (gate 2, L3 on `24bd47d`).
+    expect(parsed.error).toMatch(/was reported as gone/);
+    expect(parsed.error).not.toMatch(/no longer exists/);
+    // And the refusal names the window the write was actually aimed at — the
+    // RESOLVED title, not the partial string the caller typed.
+    expect(parsed.context?.windowTitle).toBe("TestApp — resolved");
     // The refusal must say its name AND what to do. An empty `suggest` is dropped
     // from the envelope by `toToolFailure`, so a missing dictionary lookup is a
     // silent loss of advice rather than a visibly empty field.
