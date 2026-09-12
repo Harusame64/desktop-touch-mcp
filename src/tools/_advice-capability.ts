@@ -406,6 +406,29 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * other way round each time: first "the flag lies" (it does not, on any path this
  * server can reach), then "so build for it" (there is nothing to build for).
  *
+ * **THAT ARGUMENT IS ABOUT ONE CAUSE — a failed import — AND IT DOES NOT COVER THE
+ * OTHER: WHEN each side reads the switch** (gate 2, 2026-09-13, third round;
+ * verified in source here). Registration takes a SNAPSHOT and this function reads
+ * LIVE:
+ *
+ *   `server-windows.ts:86`   `resolveV2Activation(process.env)` at module init, once
+ *   `server-windows.ts:98`   `_desktopV2` awaited there too, frozen for the process
+ *   `server-windows.ts:259`  `registerKeyLockerTools(s)` runs inside
+ *                            `createMcpServer()`, so the LOCKER switch is re-read per
+ *                            server — once per request in stateless HTTP mode
+ *   here                     both switches read from `env` at CALL time
+ *
+ * So the two switches do not even agree with each other about freshness, and a
+ * process that changes `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2` after startup would have
+ * this function answer for a surface that was never published — this ADR's own
+ * defect, arriving through the door the argument above does not watch. **Nothing in
+ * the product does that today** (the cells do it deliberately, which is how the
+ * shape is visible at all), so it is latent like the platform gap, and it is stated
+ * rather than argued away. **The fix is not another parameter**: registration and
+ * resolution should read ONE configuration captured at the same moment, which is a
+ * change to how the server hands the presenter its configuration — so it belongs to
+ * the change that wires the presenter, not to the mechanism.
+ *
  * **THE SENTENCE THAT USED TO STAND HERE SAID "no publishable configuration", AND
  * THAT IS FALSE** (gate 2 round 6, finding 2, verified here). `index.ts:15-18`
  * branches on `process.platform === "win32"` and otherwise loads
@@ -565,6 +588,25 @@ export type AdviceLine = string;
  *   on it. This is the LIST case above wearing different clothes — a sentence that is
  *   mostly configuration-independent — and the converter meets it on the first line
  *   it touches, so it is named here rather than left to be rediscovered.
+ *   **3. Resolution and registration must come from ONE captured configuration.**
+ *   This function reads the switches live; `server-windows.ts` snapshots the v2 flag
+ *   at module init and re-reads the locker per server. The details are in the flag
+ *   argument above; what the wiring change owes is the shape — hand the presenter the
+ *   configuration that registration actually used, rather than letting both re-derive
+ *   it from ambient env at different times.
+ *
+ *   **4. This module's import of `keyLockerDisabled` drags the native chain onto the
+ *   failure road, and the failure road is where `_errors.ts` lives.** The predicate is
+ *   one line of env reading, but it comes from `key-locker-manager.ts`, which
+ *   statically imports `key-locker-host.js` (`node:child_process`, `node:net`) and the
+ *   win32 chain, and `engine/win32.ts` calls `win32SetProcessDpiAwareness(2)` as a
+ *   module-evaluation side effect. `index.ts:10-13` says the repo deliberately avoids
+ *   static native imports because they throw off Windows. Today nothing imports this
+ *   module but its cells, so nothing happens; wire the presenter into `_errors.ts` —
+ *   which today imports only two dependency-free modules — and every importer of the
+ *   error envelope, on every platform, pulls that chain. `resolveV2Activation` shows
+ *   the cheap shape: its predicate lives in a leaf module with no imports at all
+ *   (gate 2, 2026-09-13, third round).
  */
 export function renderAdvice(
   lines: readonly AdviceLine[],
