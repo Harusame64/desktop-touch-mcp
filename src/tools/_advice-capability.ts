@@ -405,24 +405,54 @@ export function placeholderPattern(): RegExp {
  * missed → 1**, tree false positives 0 throughout. The one still missed is the
  * semicolon-less leftover, named below as a choice.
  *
- * **AND THE NAMED SIDE IS A DICTIONARY, NOT A GRAMMAR — so its quote spellings are
- * enumerated rather than wildcarded.** A bare `&[A-Za-z]+;` exemption (the previous
- * commit) also swallowed the `&Quot;` class above, which is why the list is explicit.
- * Listing `ldquo|rdquo|lsquo|rsquo` left `&OpenCurlyDoubleQuote;` and
- * `&OpenCurlyQuote;` claiming two legitimate examples (PR-side codex P2 on
- * `9942d26`; HTML5 also defines `rdquor`, `rsquor`, `ldquor`, `lsquor` for the same
- * code points). **Numeric references have a grammar and can be written exactly;
- * named ones are a list that keeps growing, which is the shape that lost ten rounds
- * in a row here.** Two candidates measured identically — the full alias dictionary
- * for these code points, and exempting **any** `&name;` after the colon: both 0 of 5
- * alias examples claimed, 0 leftovers missed, 0 tree false positives. **The one with
- * fewer knobs wins**, so any named reference after the colon is treated as somebody
- * else's syntax.
+ * **AND THE NAMED SIDE IS A DICTIONARY, NOT A GRAMMAR — SO IT IS DERIVED FROM THE
+ * SPEC'S OWN DATA FILE AND NOT TYPED HERE.** Numeric references have a grammar and can
+ * be written exactly; names are a table, and **writing that table from memory is what
+ * lost ten rounds in a row in this file.** A bare `&[A-Za-z]+;` exemption swallowed the
+ * `&Quot;` class above; listing `ldquo|rdquo|lsquo|rsquo` left
+ * `&OpenCurlyDoubleQuote;` and `&OpenCurlyQuote;` claiming legitimate examples
+ * (PR-side codex P2 on `9942d26`); and the explicit list that replaced it still got
+ * three properties wrong (P2 ×3 on `6f1d48e`).
  *
- * The cost is named rather than hidden: **a leftover whose capability begins with a
- * named reference is missed** (`{tool:&foo;set_value}`). That is a shape no encoder
- * produces — a capability name is `[a-z_]+` — and the alternative is maintaining a
- * list of every HTML5 alias for eight code points, forever.
+ * **All three were the same defect: a PROPERTY of a name, assumed instead of looked
+ * up.** `https://html.spec.whatwg.org/entities.json` states both properties directly —
+ * the code points a name decodes to, and (by the presence of a key without `;`)
+ * whether HTML5 lets the semicolon be dropped. 2,231 entities. What it corrected:
+ *
+ *   `&bdquo;` `&sbquo;`   the aliases for U+201E and U+201A — **the two characters the
+ *                         previous round had just added as LITERALS**. Omitting the
+ *                         names preserved the very pipeline-order dependency that
+ *                         round claimed to remove: exempt before decoding, flagged
+ *                         after.
+ *   `&sol;`               decodes to U+002F `/`, **not** a backslash. It had been put
+ *                         beside `&bsol;` (U+005C) in the escape exemption — one of
+ *                         this file's own over-wide fixes — so `{tool:&sol;set_value}`
+ *                         was exempted while `{tool:/set_value}` was flagged.
+ *   the semicolon         may be omitted **only for the legacy set**. Of the names
+ *                         here that is exactly `nbsp`, `quot`, `QUOT` (106 exist in
+ *                         total); `apos`, `bsol`, `Tab`, `NewLine` and every curly
+ *                         name now require theirs, because a parser leaves
+ *                         `{tool:&apos set_value}` literal — placeholder and all.
+ *
+ * **And the derivation found an alias none of the three findings mentions**:
+ * `&NonBreakingSpace;`, a second name for U+00A0. A hand-written list would have
+ * missed it for an eleventh round; a derived one cannot. The full-width quotes U+FF02
+ * and U+FF07 have **no** named form, which is why none appears.
+ *
+ * Measured over the battery in the cell file, the round's probe table and the tree:
+ * `6f1d48e` **4 positives missed, 2 negatives claimed**; this text **0, 0, and 0 tree
+ * false positives**. The pattern was generated from the previous one by a recorded
+ * transformation, so the string measured is the string that ships.
+ *
+ * **This is the first completeness claim this file can support**, and it is narrow:
+ * for the code points the exemption names, the list is complete *against the spec
+ * data*. It says nothing about the malformed set, which is still open by construction.
+ *
+ * (The cost recorded here before — "a leftover whose capability begins with a named
+ * reference is missed" — belonged to the wholesale `&name;` exemption, which is gone.
+ * `{tool:&foo;set_value}` **is** flagged now: `&foo;` is not a defined reference, so
+ * the text stays literal and the placeholder is still there. The stated alternative,
+ * "maintaining a list of every HTML5 alias forever", is what the data file makes free.)
  *
  * **STILL NOT FLAGGED, deliberately — and one of these is a choice, not a limit**:
  * a reference with **no closing semicolon** (`&#123tool&#58set_value&#125`). HTML5
@@ -451,7 +481,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|&(?:(?:quot|QUOT|apos|ldquo|rdquo|lsquo|rsquo|rdquor|rsquor|ldquor|lsquor|OpenCurlyDoubleQuote|CloseCurlyDoubleQuote|OpenCurlyQuote|CloseCurlyQuote|nbsp|Tab|NewLine|bsol|sol)|#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;]))))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#[xX]0*7[Dd]|#0*65373|#[xX]0*[Ff][Ff]5[Dd]);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|&(?:(?:quot|QUOT|apos|ldquo|rdquo|lsquo|rsquo|rdquor|rsquor|ldquor|lsquor|OpenCurlyDoubleQuote|CloseCurlyDoubleQuote|OpenCurlyQuote|CloseCurlyQuote|nbsp|Tab|NewLine|bsol|sol)|#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;]))))[^}｝"'\s]+/;
+  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|(?:&(?:nbsp|quot|QUOT)(?:;|(?![0-9A-Za-z;]))|&(?:CloseCurlyDoubleQuote|OpenCurlyDoubleQuote|NonBreakingSpace|CloseCurlyQuote|OpenCurlyQuote|NewLine|ldquor|lsquor|rdquor|rsquor|bdquo|ldquo|lsquo|rdquo|rsquo|sbquo|apos|bsol|Tab);|&(?:#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;])))))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#[xX]0*7[Dd]|#0*65373|#[xX]0*[Ff][Ff]5[Dd]);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#[xX]0*7[Bb]|#0*65371|#[xX]0*[Ff][Ff]5[Bb]);)[Tt][Oo][Oo][Ll]\s*(?:[:：]|&(?:colon|#0*58|#[xX]0*3[Aa]|#0*65306|#[xX]0*[Ff][Ff]1[Aa]);)(?!\s*(?:["'＂＇“”‘’„‚]|\\["']|(?:&(?:nbsp|quot|QUOT)(?:;|(?![0-9A-Za-z;]))|&(?:CloseCurlyDoubleQuote|OpenCurlyDoubleQuote|NonBreakingSpace|CloseCurlyQuote|OpenCurlyQuote|NewLine|ldquor|lsquor|rdquor|rsquor|bdquo|ldquo|lsquo|rdquo|rsquo|sbquo|apos|bsol|Tab);|&(?:#0*(?:34|39|8216|8217|8218|8220|8221|8222|65282|65287|32|160|92)|#[xX]0*(?:22|27|2018|2019|201[Aa]|201[Cc]|201[Dd]|201[Ee]|[Ff][Ff]02|[Ff][Ff]07|20|[Aa]0|5[Cc]))(?:;|(?![0-9A-Za-z;])))))[^}｝"'\s]+/;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —

@@ -516,6 +516,16 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // Hex digits and the `x` are case-insensitive per spec; a named reference is not.
     expect(hasPlaceholder("run_macro(&#123;tool:&#x201c;s&#x201d;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#x7b;tool&#x3a;&#x22;screenshot&#x22;&#x7d;)")).toBe(false);
+    // AND THE ALIASES FOR THOSE TWO CHARACTERS WERE MISSING (gate 1 P2 on `6f1d48e`,
+    // reproduced here before fixing). `&bdquo;` decodes to U+201E and `&sbquo;` to
+    // U+201A — the two characters the round above had just added as LITERALS — so
+    // leaving the aliases out preserved exactly the pipeline-order dependency that
+    // round claimed to remove. The name lists are now DERIVED from the spec's own
+    // data file (`https://html.spec.whatwg.org/entities.json`) rather than typed:
+    // U+201E is `&bdquo;` and `&ldquor;`, U+201A is `&sbquo;` and `&lsquor;`, and the
+    // full-width quotes have no named form at all.
+    expect(hasPlaceholder("run_macro({tool:&bdquo;s&rdquo;})")).toBe(false);
+    expect(hasPlaceholder("run_macro({tool:&sbquo;s&rsquo;})")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -609,6 +619,23 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       "use &#x7b;tool&#x3a;set_value&#x7d; to do it",
       "use &#xff5b;tool&#xff1a;set_value&#xff5d; to do it",
       "use &#X7B;tool&#X3A;set_value&#X7D; to do it", // capital `x` in `&#x`
+      // GATE 1's OTHER TWO FINDINGS ON `6f1d48e`, both measured before the fix. Each is
+      // a PROPERTY of a named reference that this file had assumed instead of looking
+      // up — which code point it decodes to, and whether HTML5 lets it drop its
+      // semicolon. Both are now read out of the spec's data file.
+      //
+      // `&sol;` decodes to U+002F `/`, not to a backslash. It had been listed beside
+      // `&bsol;` (U+005C) in the backslash exemption, so this leftover was exempted
+      // while its decoded twin `{tool:/set_value}` was flagged.
+      "use &#123;tool:&sol;set_value&#125;",
+      // The semicolon may be omitted only for HTML5's LEGACY set. Of the names this
+      // pattern lists, only `quot`, `QUOT` and `nbsp` are in it (106 names in total);
+      // for every other name a parser leaves the text literal, so the placeholder is
+      // still there. The `&quot s` example stays exempt — asserted above — because it
+      // IS legacy, which is the contrast that makes this a property and not a spelling.
+      "use {tool:&apos set_value}",
+      "use {tool:&ldquo set_value}",
+      "use {tool:&bsol set_value}",
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
       expect(hasPlaceholder(bad), `the scan must flag ${bad}`).toBe(true);
