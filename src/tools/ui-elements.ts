@@ -1,12 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
+import { AIM_WINDOW_GONE } from "../engine/aim.js";
 import { keyboardTypeHandler } from "./keyboard.js";
 import { captureScreen } from "../engine/image.js";
 import { padCaptureRegion, resolveCaptureRegionAsync } from "../engine/reachable-bounds.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith, failArgs, failCode } from "./_errors.js";
+import { failWith, failArgs, failCode, getSuggestsForCode } from "./_errors.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
@@ -621,6 +622,41 @@ export const setElementValueHandler = async ({
         attempts.push({ channel: "text2", error: r2.code ?? "TextPattern2Error" });
       } else {
         attempts.push({ channel: "text2", error: "TextPattern2NotSupported" });
+      }
+
+      // ADR-036 — channel 2 has been addressed to the handle since #631, so it can
+      // now answer `aim_window_gone`: the window this write named is not there any
+      // more. Channel 3 below is a FOREGROUND select-all-and-replace that resolves
+      // by TITLE, with `_skipAutoGuard:true` — so continuing past this code sends
+      // `Ctrl+A` and the whole value to whatever window inherited the foreground,
+      // and a same-titled sibling passes the focus leash's substring check. The
+      // chain already KNEW the window was gone and typed anyway; the information
+      // was here and was thrown away (win2 found the chain 2026-09-12 while
+      // designing #631's P2 arm, mac verified it from source, and PR 側 codex
+      // raised the same call site independently on `abaf141`).
+      //
+      // RETURNED, not thrown, and that is not a style choice. The outer catch
+      // renders through `classify()`, which takes the code from a leading
+      // `PascalCase:` token on the MESSAGE — `AimedWindowGoneError`'s sentence
+      // begins "The window this action was aimed at", so it would be filed as a
+      // generic tool error and shipped WITHOUT the four `AimWindowGone` lines.
+      // That is the same shape as the defect being fixed: a refusal that knows
+      // its name and does not say it. `failCode` names the code directly, and
+      // `toToolFailure` omits the `suggest` key entirely when it is empty, so the
+      // advice is passed explicitly rather than assumed.
+      if (r2.code === AIM_WINDOW_GONE) {
+        // Paid here because this early return never reaches the outer catch, and
+        // named by the handle because channel 2 is the channel that ran.
+        observe(effectiveTitle, resolvedWin?.hwnd);
+        return failCode(
+          "AimWindowGone",
+          "The window this write was aimed at no longer exists — nothing was written. " +
+          "The remaining fallback types into whichever window is in front, which may be a different one wearing the same title.",
+          {
+            suggest: getSuggestsForCode("AimWindowGone"),
+            context: { windowTitle: effectiveTitle, name, automationId, attempts },
+          },
+        );
       }
 
       // Channel 3: keyboard_type fallback (foreground required)

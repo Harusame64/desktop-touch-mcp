@@ -120,6 +120,27 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     expect(parsed.channel).toBe("keyboard");
   });
 
+  it("stops the chain when channel 2 says the window is gone, rather than typing into whatever is in front", async () => {
+    // ADR-036 — channel 3 is a foreground select-all-and-replace resolved by
+    // TITLE, with the auto-guard skipped. Continuing past `aim_window_gone`
+    // sends Ctrl+A and the whole value to the window that inherited the
+    // foreground, and a same-titled sibling passes the leash's substring check.
+    vi.mocked(setElementValue).mockResolvedValue({ ok: false, error: "ValuePatternNotSupported" });
+    vi.mocked(insertTextViaTextPattern2).mockResolvedValue({ ok: false, code: "aim_window_gone" });
+    const result = await setElementValueHandler(BASE_ARGS);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("AimWindowGone");
+    // The refusal must say its name AND what to do. An empty `suggest` is dropped
+    // from the envelope by `toToolFailure`, so a missing dictionary lookup is a
+    // silent loss of advice rather than a visibly empty field.
+    expect(parsed.suggest?.length ?? 0).toBeGreaterThan(0);
+    expect(parsed.suggest.join(" ")).toMatch(/desktop_discover/);
+    // The whole point of the row: channel 3 never runs.
+    expect(keyboardTypeHandler).not.toHaveBeenCalled();
+    expect(parsed.context?.attempts).toHaveLength(2);
+  });
+
   it("returns SetValueAllChannelsFailed when all channels fail", async () => {
     vi.mocked(setElementValue).mockResolvedValue({ ok: false, error: "ValuePatternNotSupported" });
     vi.mocked(insertTextViaTextPattern2).mockResolvedValue({ ok: false, code: "TextPattern2NotSupported" });
