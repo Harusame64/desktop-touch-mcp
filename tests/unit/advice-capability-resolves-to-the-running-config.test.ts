@@ -371,6 +371,20 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(hasPlaceholder("const x: { tool: string; params: Record<string, unknown> } = y;")).toBe(false);
     expect(hasPlaceholder("return { tool:   ev.tool   };")).toBe(false);
 
+    // THE MIRROR HOLE OF THE HTML BRANCH, and these four are SYNTHETIC: no line in
+    // the tree looks like this today, so they are not "real strings" — they are the
+    // shape a doc pipeline would produce from the product's own example. The branch
+    // was added to catch an HTML-escaped LEFTOVER and it flagged an HTML-escaped
+    // EXAMPLE, because the quote exemption knew only literal and `\"` quotes
+    // (PR-side codex P2 on `572edd8`). One boundary, every encoding: the character
+    // after the colon is a quote — literal, backslash-escaped, or an entity.
+    expect(hasPlaceholder("run_macro(&#123;tool:&quot;screenshot&quot;,args:&#123;&#125;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#34;screenshot&#34;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&apos;focus_window&apos;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#39;focus_window&#39;&#125;)")).toBe(false);
+    // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
+    // asserted in the malformed loop above. That contrast is the whole rule.
+
     // AND THE MALFORMED ONES, which is why this is not the replacement grammar
     // (PR-side codex P2 on `8375314`). None of these matches `[a-z_]+`, so
     // `renderAdvice` ships them VERBATIM — a strict detector answered `false` and

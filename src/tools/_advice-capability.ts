@@ -218,12 +218,26 @@ export function placeholderPattern(): RegExp {
  * nineteen were tried. Gate 1 produced the twentieth within the hour.** That is the
  * reason this file states no completeness claim about the malformed set.
  *
+ * **AND WIDENING A SURFACE BRINGS THAT SURFACE'S PRODUCT EXAMPLES WITH IT** — the
+ * HTML branch added above to catch an HTML-escaped LEFTOVER also flagged an
+ * HTML-escaped legitimate EXAMPLE: `run_macro(&#123;tool:&quot;screenshot&quot;…)`,
+ * because the quote exemption knew only literal and backslash-escaped quotes and
+ * read `&quot;` as ordinary content (PR-side codex P2 on `572edd8`). So the boundary
+ * is restated once, for every encoding: **the character after the colon is a quote —
+ * literal, backslash-escaped, or an HTML entity.** Measured over the tree and a
+ * battery of 16 malformed positives and 12 negatives: **0 false positives, 0
+ * malformed missed, 0 negatives claimed**.
+ *
+ * The entity alternatives are lower-case only ON PURPOSE: this regex already carries
+ * `/i`, so `&QUOT;` is covered by the flag. Adding case variants measured identically
+ * — a knob with no measured benefit is not added.
+ *
  * STATELESS because it is not global: without `/g`, `.test()` never advances
  * `lastIndex`, so the answer cannot depend on call order. That is the distinction
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&#123;)tool\s*:(?!["']|\\["'])[^}｝"']*(?:[}｝]|&#125;)|(?:[{｛]|&#123;)tool\s*:(?!["']|\\["'])[^}｝"'\s]+/i;
+  /(?:[{｛]|&#123;)tool\s*:(?!["']|\\["']|&quot;|&#34;|&apos;|&#39;)[^}｝"']*(?:[}｝]|&#125;)|(?:[{｛]|&#123;)tool\s*:(?!["']|\\["']|&quot;|&#34;|&apos;|&#39;)[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
