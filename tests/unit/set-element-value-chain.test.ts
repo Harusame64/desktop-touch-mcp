@@ -166,6 +166,25 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     expect(parsed.channel).toBe("keyboard");
   });
 
+  it("does not refuse a title-road call, because the title road never says gone", async () => {
+    // Pins `&& resolvedWin !== null` on the guard. Removing it SURVIVED the whole
+    // suite, because every other cell reaching this refusal names a handle — and
+    // this PR widened the blast radius: the refusal now dereferences
+    // `resolvedWin.hwnd`, so a widened guard throws into the outer catch and the
+    // caller gets a generic `ToolError` with no advice at all (gate 2, LOW).
+    vi.mocked(setElementValue).mockResolvedValue({ ok: false, error: "ValuePatternNotSupported" });
+    vi.mocked(insertTextViaTextPattern2).mockResolvedValue({ ok: false, code: "aim_window_gone" });
+    vi.mocked(keyboardTypeHandler).mockResolvedValue({
+      content: [{ type: "text", text: '{"ok":true,"typed":5}' }],
+    } as never);
+    // BASE_ARGS names no handle, so the resolver mock answers null.
+    const parsed = JSON.parse((await setElementValueHandler(BASE_ARGS)).content[0].text);
+    // A title search finding nothing is not a window that left: the title road
+    // answers `WindowNotFound`, never the gone code, so this refusal must not fire.
+    expect(parsed.code).not.toBe("AimWindowGone");
+    expect(keyboardTypeHandler).toHaveBeenCalled();
+  });
+
   it("names only tools that exist wherever this refusal can be reached", async () => {
     // The advice used to name `desktop_discover`. That tool is registered by the v2
     // branch, and `set_element_value` — the only road this refusal reaches a caller
@@ -186,7 +205,15 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     const adv = parsed.suggest.join(" ");
     // DETECTION was a five-prefix regex, and gate 2 killed it by mutation: advice
     // saying "Use keyboard and perception_read and screenshot_ocr" left this cell
-    // GREEN, because `keyboard`, `screenshot`, `terminal`, `clipboard`,
+    // GREEN. NOTE, because an earlier version of this comment took credit it had
+    // not earned: drawing the vocabulary from the catalog did NOT kill that
+    // mutant. It is still green HERE. `perception_read` and `screenshot_ocr` are
+    // privatized, so they are absent from `STUB_TOOL_CATALOG`, never enter this
+    // vocabulary, and die only in `tool-naming-phase4` because they sit on
+    // `OLD_NAMES` — a different suite, for a different reason (gate 2 on
+    // `b2ac009`). What the rewrite actually fixed was the five-prefix blindness,
+    // not that mutant. The original failure was that `keyboard`, `screenshot`,
+    // `terminal`, `clipboard`,
     // `focus_window`, `mouse_click`, `wait_until` and `key_locker` all match no
     // prefix. So the cell pinned "every name matching five prefixes", not "every
     // tool name" — and it therefore over-PERMITTED as well as over-rejecting, which
@@ -216,7 +243,7 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // produce un-callable advice. The names that CAN be absent are all underscored.
     //
     // Availability below remains narrower than reality (see the filed row): it is
-    // computed from one registrar plus the V1 trio, not the 24 registrars the server
+    // computed from one registrar plus the V1 trio, not the 25 registrars the server
     // calls. Widening detection to the full catalog while availability stayed at
     // four turned a known-narrow set into an active false rejection — so the two
     // halves must be widened together, in a separate change, against a source whose
@@ -238,11 +265,20 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // present in both configurations — and this cell was built against source text
     // with that measurement in hand.
     //
-    // Availability in the configuration this refusal fires in = everything the
-    // unconditional registrars install, plus the three V1 fallbacks. The trio is
-    // listed explicitly because `createMcpServer` is not exported, so the
-    // kill-switch branch cannot be invoked from a test; it is anchored to win2's
-    // `tools/list` observation rather than to a reading of the branch.
+    // What this probe ACTUALLY computes: one registrar plus the three V1 fallbacks
+    // — four names. An earlier sentence here claimed it was "everything the
+    // unconditional registrars install", directly above code installing one, and
+    // it stood alongside the correct description twenty lines up. That is the
+    // splice-without-deleting defect this very PR diagnoses in `ui-elements.ts`,
+    // committed in the comment that explains the fix (gate 2, LOW-MEDIUM).
+    // The trio is listed explicitly because `createMcpServer` is not exported, so
+    // the kill-switch branch cannot be invoked from a test; it is anchored to
+    // win2's `tools/list` observation rather than to a reading of the branch.
+    // This set is known-narrow and filed: it false-rejects 22 genuinely available
+    // tools. The fix needs availability = (registrar with no self-gate) INTERSECT
+    // (present in that config's `tools/list`), which excludes `key_locker`, and it
+    // must land WITH token-shape detection — widening either half alone has now
+    // made this cell worse twice.
     const probe = new McpServer({ name: "probe", version: "0" });
     registerUiElementTools(probe);
     const availableUnconditionally = new Set(
