@@ -338,6 +338,23 @@ export function placeholderPattern(): RegExp {
  * **HTML-escaped colon** `&#58;`. Adding all three keeps tree false positives at 0
  * and takes the battery from 8 missed shapes to 0.
  *
+ * **AND THE NAMED SIDE IS A DICTIONARY, NOT A GRAMMAR — so it is exempted wholesale.**
+ * Listing `ldquo|rdquo|lsquo|rsquo` left `&OpenCurlyDoubleQuote;` and
+ * `&OpenCurlyQuote;` claiming two legitimate examples (PR-side codex P2 on
+ * `9942d26`; HTML5 also defines `rdquor`, `rsquor`, `ldquor`, `lsquor` for the same
+ * code points). **Numeric references have a grammar and can be written exactly;
+ * named ones are a list that keeps growing, which is the shape that lost ten rounds
+ * in a row here.** Two candidates measured identically — the full alias dictionary
+ * for these code points, and exempting **any** `&name;` after the colon: both 0 of 5
+ * alias examples claimed, 0 leftovers missed, 0 tree false positives. **The one with
+ * fewer knobs wins**, so any named reference after the colon is treated as somebody
+ * else's syntax.
+ *
+ * The cost is named rather than hidden: **a leftover whose capability begins with a
+ * named reference is missed** (`{tool:&foo;set_value}`). That is a shape no encoder
+ * produces — a capability name is `[a-z_]+` — and the alternative is maintaining a
+ * list of every HTML5 alias for eight code points, forever.
+ *
  * **STILL NOT FLAGGED, deliberately — and one of these is a choice, not a limit**:
  * a reference with **no closing semicolon** (`&#123tool&#58set_value&#125`). HTML5
  * does parse those, and they are missed here. Closing them would mean matching
@@ -359,7 +376,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|ldquo|rdquo|lsquo|rsquo|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#x0*7D|#0*65373|#x0*FF5D);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|ldquo|rdquo|lsquo|rsquo|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"'\s]+/i;
+  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:[A-Za-z][A-Za-z0-9]*|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#x0*7D|#0*65373|#x0*FF5D);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:[A-Za-z][A-Za-z0-9]*|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —

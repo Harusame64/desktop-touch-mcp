@@ -453,6 +453,24 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(hasPlaceholder("run_macro(&#123;tool:&#65282;s&#65282;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#123;tool:&#xFF02;s&#xFF02;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#123;tool:&#65287;s&#65287;&#125;)")).toBe(false);
+
+    // THE LONG-FORM NAMED ALIASES — and the reason the named side is now exempted
+    // wholesale (PR-side codex P2 on `9942d26`). HTML5 defines several names per
+    // code point, so listing four of them left these two claiming real examples.
+    // Numeric references have a grammar; named ones are a dictionary that keeps
+    // growing — the shape that lost ten rounds in this file. Two candidates measured
+    // identically (the full alias list vs. exempting any `&name;`), so the one with
+    // fewer knobs won.
+    expect(hasPlaceholder("run_macro(&#123;tool:&OpenCurlyDoubleQuote;s&CloseCurlyDoubleQuote;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&OpenCurlyQuote;s&CloseCurlyQuote;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&ldquo;s&rdquor;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&lsquo;s&rsquor;&#125;)")).toBe(false);
+
+    // The cost of that choice, asserted so it is a measured trade and not a silent
+    // gap: a leftover whose name begins with a named reference is missed. No encoder
+    // produces it — a capability name is `[a-z_]+` — and the alternative is tracking
+    // every HTML5 alias for eight code points forever.
+    expect(hasPlaceholder("use &#123;tool:&foo;set_value&#125; to do it")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
