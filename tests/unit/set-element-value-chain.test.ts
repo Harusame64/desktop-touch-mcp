@@ -186,6 +186,11 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
   });
 
   it("names no tool the caller lacks — among the names it can recognize", async () => {
+    // The title carries the SAFE HALF only (gate 2 on `4c03cd0`, LOW). Green does
+    // imply it, but this cell also pins the `tool-naming-phase4` forbidden list and
+    // two concreteness properties below, and a RED does not by itself mean the
+    // caller lacks a tool — the availability set is known-narrow, so a red can
+    // equally mean that set is too small. Read the assertion message, not the title.
     // The advice used to name `desktop_discover`. That tool is registered by the v2
     // branch, and `set_element_value` — the only road this refusal reaches a caller
     // from — is registered in the kill-switch `else`. The two are MUTUALLY EXCLUSIVE
@@ -261,13 +266,29 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // Availability below remains narrower than reality (see the filed row): it is
     // computed from one registrar plus the V1 trio, not the 25 `register*(s)` calls
     // the server makes — "25" counts registrars RECEIVING THE SERVER at
-    // `server-windows.ts:235-277`; the kill-switch branch runs 24 of them, and
-    // `registerKeyLockerWiring()` at 262 takes no server and installs nothing. The
-    // rule is stated because four different rules give four defensible counts, and
+    // `server-windows.ts:235-277`, and `registerKeyLockerWiring()` at 262 takes no
+    // server and registers no TOOL — it installs a process-global dispatch hook
+    // plus reconcile/idle timers, returns a teardown, and self-gates on
+    // `keyLockerDisabled()` (`key-locker-wiring.ts:510`), so it is a SECOND
+    // self-gating registrar and "only `key_locker` self-gates" above is true of
+    // tools, not of registrars. The kill-switch branch leaves 24 of the 25 present
+    // but EXECUTES 23 by default: `registerPerceptionResources(s)` at 270 is gated
+    // on `DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1"`, off by default. The number
+    // that matters for sizing availability is smaller still — of the 25, FOUR
+    // install no tool: `registerEventTools` (248) and `registerPerceptionTools`
+    // (252) have zero registration sites, and `registerScreenshotResources` (266)
+    // and `registerPerceptionResources` (270) call `registerResource`, not
+    // `server.tool` (measured: 0 tools, 1 and 3 resources). So ~20 registrars
+    // contribute a tool name at all. The rule is stated because four different
+    // rules give four defensible counts, and this count has now been wrong twice —
+    // 24, then 25-read-as-installing-tools (gate 2 on `db9461d`, on `4c03cd0`), and
     // the number was already wrong once (gate 2 on `db9461d`, LOW). Widening
     // detection to the full catalog while availability stayed at four turned a
-    // known-narrow set into an active false rejection, against a source whose scope
-    // is written down. win2's measured `tools/list` carries a SCOPE_WARNING
+    // known-narrow set into an active false rejection. The FIX must be built
+    // against a source whose scope is written down — that clause modified "in a
+    // separate change" until this paragraph was rewritten and left it dangling on
+    // the past regression (gate 2 on `4c03cd0`, LOW).
+    // win2's measured `tools/list` carries a SCOPE_WARNING
     // precisely because `inBoth` meant "both fukuwarai configs, this machine's other
     // switches as-is" and would have licensed `key_locker` — the same
     // false-acceptance direction, moved from the regex into the data.
@@ -302,17 +323,45 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // `server-windows.ts:238`, unconditionally. The next person to write correct
     // recovery advice gets a red suite that lies to them about why.
     //
-    // The fix is availability = (registrar with no self-gate) INTERSECT (present in
-    // that config's `tools/list`), which excludes `key_locker`. An earlier version
+    // The fix is availability = (registrar that is UNCONDITIONAL) INTERSECT
+    // (present in that config's `tools/list`), which excludes `key_locker`. The
+    // left side first read "no self-gate", which win2 corrected AFTER supplying it:
+    // their `selfGate` column only saw an in-function early `return`, so the two
+    // CALLER-gated registrars (`registerDesktopTools`, `registerPerceptionResources`)
+    // read as `selfGate: null`, indistinguishable from unconditional. Use their
+    // explicit `unconditional` flag; census 1 self-gated / 2 caller-gated / 22
+    // unconditional of 25. An earlier version
     // of this comment said it must land WITH token-shape detection because widening
     // detection alone amplifies this gap. THAT REASON IS WRONG and gate 2 measured
-    // it: every catalog name is ALREADY detected, so token-shape adds zero
-    // rejections among the 22. The two halves are not symmetric. Widening
+    // it: every one of the 22 is ALREADY detected — all 22 are underscored catalog
+    // names, so they are in `vocabulary` below — and token-shape therefore adds
+    // zero rejections among them. NOT "every catalog name": 6 of the 30
+    // (`clipboard`, `excel`, `keyboard`, `screenshot`, `scroll`, `terminal`) carry
+    // no underscore and are never detected, as the bare-word paragraph above says.
+    // The distinction is load-bearing because the false version HID A LIVE TRAP
+    // (gate 2 on `4c03cd0`, HIGH): read as "detection is already complete", the
+    // next person implements token-shape as a general name-shape heuristic that
+    // also catches bare words — and this cell goes RED on TODAY'S shipped advice,
+    // because `keyboard` is in that advice ("the keyboard fallback types into
+    // whichever same-titled window is in front", verified in the source) and is
+    // not in the 4-name availability set. So token-shape here means SNAKE_CASE
+    // TOKENS ONLY, never bare words — the same restriction the prose-collision
+    // paragraph above argues for, and widening it re-opens `\bkeyboard\b`. The two halves are not symmetric. Widening
     // availability is the safe half and DISARMS the trap above, so it goes first,
     // alone. Token-shape is the risky half for a different reason, never stated
-    // before: it cannot tell a tool name from an error code or a parameter, so
-    // `aim_window_gone` and `_skipAutoGuard` would read as tools. It needs its own
-    // guard against non-tool tokens, and it follows separately.
+    // before: it cannot tell a tool name from an error code or a parameter value.
+    // The examples first written here — `aim_window_gone` and `_skipAutoGuard` —
+    // were BOTH WRONG, invented rather than swept for (gate 2 on `4c03cd0`): the
+    // first appears in no shipped advice string, and the second is camelCase behind
+    // an underscore, so no snake_case pattern matches it. Measured instead:
+    // `src/tools/_errors.ts` string literals hold 54 non-tool snake_case tokens,
+    // among them `window_appears`, `element_appears`, `value_changes`,
+    // `ambiguous_target`, `target_not_found`, `blocked_by_modal`,
+    // `browser_not_ready`, `needs_escalation`, `identity_changed`. Several are
+    // PARAMETER VALUES inside advice — `wait_until(condition='element_appears')` —
+    // the hazard in its sharpest form, since a name-shape rule cannot tell that
+    // token from a tool name. So token-shape needs its own guard against non-tool
+    // tokens, and it follows separately.
     const probe = new McpServer({ name: "probe", version: "0" });
     registerUiElementTools(probe);
     const availableUnconditionally = new Set(
