@@ -126,22 +126,61 @@ export function placeholderPattern(): RegExp {
 }
 
 /**
- * The detector, and it is STATELESS because it is not global.
+ * The detector, and it is deliberately **LAXER than the replacement grammar**.
  *
- * Sharing this one instance is safe for the reason the global one is not: without
- * `/g`, `lastIndex` is never advanced by `.test()`, so the same input always gives
- * the same answer no matter how many lines came before. That is the distinction
- * worth keeping visible rather than hiding behind another factory — a scanner wants
- * "does this line still carry a placeholder", not a regex it must handle carefully.
+ * The first version reused `PLACEHOLDER_SOURCE`, which made it blind to exactly the
+ * mistakes a scan exists to find (PR-side codex P2 on `8375314`): `{tool:set_value2}`,
+ * `{tool:set-value}` and `{tool:Set_value}` do not match the strict grammar, so
+ * `renderAdvice` leaves them **verbatim in the shipped line** — and a strict detector
+ * answers `false`, so the gate would wave them through. A typo is the likeliest
+ * leftover there is, and the strict form could not see any typo that broke the
+ * character class.
+ *
+ * So it matches `{tool:` followed by anything that is not a quote — either braced,
+ * or an unbraced non-space run, because a truncated leftover is still a leftover.
+ * The quote exclusion is what keeps the product's own syntax out:
+ * `run_macro({tool:"screenshot", …})` and `{tool:'focus_window', …}` both put a
+ * quote immediately after the colon.
+ *
+ * **THE SHAPE WAS CHOSEN BY MEASUREMENT, AND THE FIRST TRY WAS WRONG.** Four
+ * candidates were run against the `{tool:` occurrences in `src` and `tests`
+ * **excluding this module and its own cell file** — 21 of them on this tree, which
+ * is the same count as the base commit only because the exclusion removes exactly
+ * what this branch added (without it the tree reads 46; the population has to be
+ * named or the number means nothing) — plus six malformed positives and four
+ * negatives. The obvious pattern —
+ * quote lookahead, optional closing brace — scored **3 false positives**, for two
+ * reasons a reader would otherwise rediscover the hard way:
+ *
+ *   `{tool:\"screenshot\"…`  the character after the colon is a BACKSLASH, so a
+ *                            lookahead for `["']` does not fire (`macro.ts:750`,
+ *                            `stub-tool-catalog.ts:1211`)
+ *   `…run_macro({tool:` EOL  nothing follows the colon on that line, so an
+ *                            everything-optional pattern matches the empty tail
+ *                            (`macro.ts:274` — the same line that made the widened
+ *                            count 21-vs-20 earlier in this file)
+ *
+ * The shipped pattern excludes the backslash and requires either a closing brace or
+ * a non-empty run, which measures **0 false positives, 0 malformed missed, 0
+ * negatives claimed**. A cell pins all three with the real strings.
+ *
+ * STATELESS because it is not global: without `/g`, `.test()` never advances
+ * `lastIndex`, so the answer cannot depend on call order. That is the distinction
+ * worth keeping visible rather than hiding behind another factory.
  */
-const DETECT = new RegExp(PLACEHOLDER_SOURCE);
+const DETECT_LEFTOVER = /\{tool:(?!["'\\])[^}"']*\}|\{tool:(?!["'\\])[^}"'\s]+/;
 
 /**
- * True if `text` still carries a `{tool:…}` placeholder. **This is the entry point
- * for a gate or any per-line scan**; the answer does not depend on call order.
+ * True if `text` still carries something that looks like a `{tool:…}` placeholder —
+ * **including a malformed one**. This is the entry point for a gate or any per-line
+ * scan; the answer does not depend on call order.
+ *
+ * Not the same question as "would `renderAdvice` resolve it": that is
+ * {@link placeholderSource}'s grammar, and the gap between the two is the whole
+ * point — the gap is where typos live.
  */
 export function hasPlaceholder(text: string): boolean {
-  return DETECT.test(text);
+  return DETECT_LEFTOVER.test(text);
 }
 
 /**
@@ -181,22 +220,43 @@ export function hasPlaceholder(text: string): boolean {
  * is captured, fails `isCapability`, and is returned VERBATIM — byte-identical
  * output, green cells.
  *
- * THE CLASS IS NARROWER THAN THE OBVIOUS GENERALISATION, and the obvious one was
- * written here and measured false (gate 2, finding 1, with two counterexamples).
- * A widening is invisible only while **the match stays inside one placeholder's
- * boundary** — the capture stays `}`-free and both braces are intact. Widenings
- * that break either half still redden cells:
+ * HOW WIDE THE BLIND SPOT IS, stated as a property of the MATCH and not of the
+ * pattern — because two attempts to state it as a property of the pattern were
+ * measured false, in both directions, on two consecutive review rounds.
  *
- *   `\{tool:(.+)\}`     greedy, so ONE match spans two placeholders → the
- *                       two-placeholder cell and the mixed-precedence cell fail,
- *                       and the kill-switch corner stops dropping
- *   `\{tool:([a-z_]+)`  no closing brace → a stray `}` survives in the output, and
- *                       nine assertions fail
+ * A widening is invisible to behaviour while, on the inputs the cells contain,
+ * **every genuine placeholder still matches with the capture exactly equal to the
+ * capability name and the matched span exactly the placeholder**. Measured:
  *
- * So the mutation table has two columns, and the loosening column is **partly**
- * observable, not wholly blind — writing it from the false law would have marked
- * every loosening unobservable. What behaviour cannot distinguish is pinned by
- * asserting the pattern's text instead (gate 2, finding 2, on the round before).
+ * NO GENERAL RULE IS STATED HERE, and that is the finding. Two attempts were made
+ * to say which wideners behaviour can catch, and **both were measured false** — the
+ * second one ("invisible only while both braces are intact") in both directions at
+ * once. What is left is a table, its method, and a warning that the table moves.
+ *
+ * Measured by mutating `PLACEHOLDER_SOURCE` in a copy outside the repo and running
+ * this module's cell file per mutation, baseline 16/16 as a positive control. Counts
+ * are BEHAVIOURAL cells: the text pin fires for every mutation, so counting it would
+ * be counting the guard as evidence for the thing it replaces.
+ *
+ *   `\{tool:([^}]+)\}`       0   the classic widening: captures `"screenshot", …`,
+ *                                fails `isCapability`, returns verbatim
+ *   `\{?tool:([a-z_]+)\}`    0   opening brace optional — greedy, so it is consumed
+ *   `[a-z_]*\{tool:…\}`      0   match may begin outside the placeholder
+ *   `\{tool:([a-z_]+)\}?`    1   closing brace optional — the SCANNER cell catches it
+ *   `\{tool:(.+)\}`          3   one match spans two placeholders
+ *   `\{([^}]+)\}`            8   capture becomes `tool:set_value`, so a GENUINE
+ *                                placeholder stops resolving
+ *   `\{tool:([a-z_]+)`       9   no closing brace: a stray `}` ships in the output
+ *
+ * **THE TABLE HAS THREE GENERATIONS ON THIS BRANCH, AND THE NUMBERS MOVED EACH
+ * TIME** — not because the mutations changed, but because the cells did. `[^}]+` was
+ * 0, then 1 when a scanner cell first used the strict grammar, then 0 again when the
+ * detector was made lax; `\}?` went 0 → 1 the same way; `\{([^}]+)\}` read 9 with one
+ * more cell present and 8 without. So: **the blind spot is a function of the inputs
+ * the cells contain, not of the mutation space**, a count without its tree is not a
+ * number, and **any widening nobody has run is unobserved rather than invisible.**
+ * Which is why the pattern's text is pinned directly, and why this comment carries a
+ * table instead of a law.
  */
 
 /**
@@ -247,11 +307,14 @@ function isCapability(name: string): name is Capability {
  * The capability names, for gates and tests. Derived from `KNOWN` rather than
  * written again, so it cannot list something the resolver does not know.
  *
- * It exists because the union and `PLACEHOLDER`'s character class are otherwise
- * UNLINKED: a capability named `read_uia2` or `readTree` would compile, be `KNOWN`,
- * and have a `switch` arm — and `{tool:read_uia2}` could never match `[a-z_]+`, so
- * it would be left verbatim and read exactly like a typo. A cell walks this list
- * against the pattern's class (gate 2, finding 8).
+ * It exists because the union and the placeholder pattern's character class are
+ * otherwise UNLINKED: a capability named `read_uia2` or `readTree` would compile, be
+ * `KNOWN`, and have a `switch` arm — and `{tool:read_uia2}` could never match
+ * `[a-z_]+`, so it would be left verbatim and read exactly like a typo. A cell walks
+ * this list **through the pattern itself** — matching `{tool:<name>}` and requiring
+ * the whole placeholder to be consumed — rather than against a re-typed character
+ * class, which was the first version and reintroduced the very drift this list
+ * exists to prevent (gate 2, findings 8 and, for the re-typed class, 2).
  */
 export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capability[];
 
@@ -350,9 +413,16 @@ export function renderAdvice(
   env: Record<string, string | undefined> = process.env,
 ): string[] {
   const out: string[] = [];
+  // One pattern for this call, not one per line. Hoisted after gate 2 pointed out
+  // that the loop was building a RegExp per line while the module's own note
+  // explains why it needs none: `String.replace` resets `lastIndex`, so even a
+  // single shared instance would be correct here (measured — a module-level shared
+  // `/g` passes every cell). The factory call stays inside `renderAdvice` rather
+  // than at module level so that nothing exported is a shared mutable regex.
+  const pattern = placeholderPattern();
   for (const line of lines) {
     let dropped = false;
-    const rendered = line.replace(placeholderPattern(), (whole: string, cap: string) => {
+    const rendered = line.replace(pattern, (whole: string, cap: string) => {
       // A capability this module does not know stays verbatim — visibly broken
       // beats a sentence that reads as advice. See the note on `KNOWN`.
       if (!isCapability(cap)) return whole;

@@ -2,9 +2,13 @@
  * ADR-036 段階2 B1 — the capability resolver, before any advice line is converted.
  *
  * THE KINDS OF CELL HERE, and why each kind is not obvious. **Not a list of every
- * cell** — it was written as one when there were five, and the file has grown past
- * it twice; a header that claims completeness starts lying the next time someone
- * adds a cell (gate 2, finding 6). The later cells carry their reason inline.
+ * cell.** It was written as a complete list when the file had 7 cells, and has
+ * never been one since — measured, because the first correction of this sentence
+ * said "written when there were five, grown past it twice" and both halves were
+ * wrong: the cell counts per commit are 7, 10, 14, 15 while the numbered list went
+ * 4, 5, 5, 5 (gate 2 rounds 2 and 3, findings 6 and 5). A header that claims
+ * completeness starts lying the next time someone adds a cell. The later cells
+ * carry their reason inline.
  *
  *  1. A line with no placeholder passes through BYTE-IDENTICAL. That is what lets
  *     the mechanism ship with zero lines converted.
@@ -263,9 +267,14 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(a).not.toBe(b);
     expect(a.test("{tool:set_value}")).toBe(true);
     expect(b.test("{tool:set_value}")).toBe(true);
-    // And the trap itself, so the reason this factory exists cannot be read as taste:
-    expect(a.test("{tool:set_value}")).toBe(false); // same instance, same input
-    expect(placeholderPattern().test("{tool:set_value}")).toBe(true);
+    // The trap is demonstrated on a LOCALLY built global regex, not on the
+    // factory's product. Asserting `[true,false]` on `placeholderPattern()` would
+    // pin a JavaScript invariant (every `/g` regex advances `lastIndex`) AND make
+    // the suite require this factory to keep returning a stateful object — so the
+    // natural hardening, handing out a non-global detector, would go red. Gate 2
+    // caught that: a cell can forbid its own fix (round 3, finding 7).
+    const mine = new RegExp(placeholderSource(), "g");
+    expect([mine.test("{tool:set_value}"), mine.test("{tool:set_value}")]).toEqual([true, false]);
   });
 
   it("keeps every capability name expressible by that pattern", () => {
@@ -321,13 +330,38 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(lines.map(hasPlaceholder)).toEqual([true, true, true]);
     // And the same instance, hammered, keeps answering:
     for (let i = 0; i < 5; i++) expect(hasPlaceholder(leftover)).toBe(true);
-    // Negatives, including the product's own syntax it must not claim:
+    // Negatives, including the product's own syntax it must not claim — both quote
+    // styles, because `macro.ts` uses single quotes and the stub catalog double:
     expect(hasPlaceholder('run_macro({tool:"screenshot", args:{}})')).toBe(false);
+    expect(hasPlaceholder("run_macro({tool:'focus_window',params:{title:'x'}})")).toBe(false);
     expect(hasPlaceholder("Run desktop_discover to see available titles")).toBe(false);
-    // The contrast that justifies two exports: the /g pattern is for replacing, and
-    // one shared instance of it does alternate — pinned in the cell above.
-    const shared = placeholderPattern();
-    expect([shared.test(leftover), shared.test(leftover)]).toEqual([true, false]);
+
+    // THE TWO SHAPES THAT BROKE THE OBVIOUS DETECTOR, measured in the product and
+    // kept here so the next person does not rediscover them. The first version —
+    // quote lookahead, optional closing brace — matched three real places:
+    expect(hasPlaceholder('  "Batch it: run_macro({tool:\\"screenshot\\"})"')).toBe(false);
+    expect(hasPlaceholder("      // `z.object(schema).parse(args)`. Without this, `run_macro({tool:")).toBe(false);
+
+    // AND THE MALFORMED ONES, which is why this is not the replacement grammar
+    // (PR-side codex P2 on `8375314`). None of these matches `[a-z_]+`, so
+    // `renderAdvice` ships them VERBATIM — a strict detector answered `false` and
+    // the gate would have waved through exactly the typos it exists to catch.
+    for (const bad of [
+      "Re-call {tool:set_value2} to reuse the pane", // digit
+      "Re-call {tool:set-value} to reuse the pane", // hyphen
+      "Re-call {tool:Set_value} to reuse the pane", // capital
+      "Re-call {tool:} to reuse the pane", // empty
+      "Re-call {tool:set_value to reuse the pane", // truncated, no closing brace
+      "Re-call {tool:set value} to reuse the pane", // space inside the braces
+    ]) {
+      expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
+      expect(hasPlaceholder(bad), `the scan must flag ${bad}`).toBe(true);
+    }
+    // The contrast that justifies two exports, shown on a locally built global
+    // regex so that nothing here requires the factory to stay stateful: the same
+    // instance, used the way a hoisting scanner would use it, alternates.
+    const hoisted = new RegExp(placeholderSource(), "g");
+    expect(lines.map((l) => hoisted.test(l))).toEqual([true, false, true]);
   });
 
   it("keeps surviving lines in their original order", () => {
