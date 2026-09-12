@@ -552,49 +552,49 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 99,
+      "line": 100,
       "tool": "get_ui_elements",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 116,
+      "line": 117,
       "tool": "click_element",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 197,
+      "line": 198,
       "tool": "click_element",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 686,
+      "line": 763,
       "tool": "set_element_value",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 700,
+      "line": 777,
       "tool": "set_element_value",
       "errKind": "member",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 753,
+      "line": 830,
       "tool": "scope_element",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 798,
+      "line": 875,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"

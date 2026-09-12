@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
+import { AIM_WINDOW_GONE } from "../engine/aim.js";
 import { keyboardTypeHandler } from "./keyboard.js";
 import { captureScreen } from "../engine/image.js";
 import { padCaptureRegion, resolveCaptureRegionAsync } from "../engine/reachable-bounds.js";
@@ -621,6 +622,82 @@ export const setElementValueHandler = async ({
         attempts.push({ channel: "text2", error: r2.code ?? "TextPattern2Error" });
       } else {
         attempts.push({ channel: "text2", error: "TextPattern2NotSupported" });
+      }
+
+      // ADR-036 — channel 2 has been addressed to the handle since #631, so it can
+      // now answer `aim_window_gone`: the window this write named is not there any
+      // more. Channel 3 below is a FOREGROUND select-all-and-replace that resolves
+      // by TITLE, with `_skipAutoGuard:true` — so continuing past this code sends
+      // `Ctrl+A` and the whole value to whatever window inherited the foreground,
+      // and a same-titled sibling passes the focus leash's substring check. The
+      // chain already KNEW the window was gone and typed anyway; the information
+      // was here and was thrown away (win2 found the chain 2026-09-12 while
+      // designing #631's P2 arm, mac verified it from source, and PR 側 codex
+      // raised the same call site independently on `abaf141`).
+      //
+      // RETURNED, not thrown, and that is not a style choice. The outer catch
+      // renders through `classify()`, which takes the code from a leading
+      // `PascalCase:` token on the MESSAGE — `AimedWindowGoneError`'s sentence
+      // begins "The window this action was aimed at", so it would be filed as a
+      // generic tool error and shipped WITHOUT the four `AimWindowGone` lines.
+      // That is the same shape as the defect being fixed: a refusal that knows
+      // its name and does not say it. `failCode` names the code directly, and
+      // `toToolFailure` omits the `suggest` key entirely when it is empty, so the
+      // advice is passed explicitly rather than assumed.
+      // `resolvedWin !== null` is structural, not defensive padding. The code can
+      // only arrive from a call that named a handle — the bridge withholds it from
+      // a title search on purpose, because a window that stops matching a title is
+      // not a window that left — but that invariant lives in two other modules and
+      // was carried here by comment alone. A title caller's recovery is different,
+      // so if the title road ever learns to say "gone", this refusal must not widen
+      // to it silently (gate 2, L1 on `5b133f3`).
+      if (r2.code === AIM_WINDOW_GONE && resolvedWin !== null) {
+        // Paid here because this early return never reaches the outer catch, and
+        // named by the handle because channel 2 is the channel that ran.
+        observe(effectiveTitle, resolvedWin.hwnd);
+        return failCode(
+          "AimWindowGone",
+          // "reported as gone", not "no longer exists". The PowerShell road reaches
+          // this through a blanket catch over the whole descendant walk, and a
+          // provider or RPC fault there is not proof the window left. The
+          // stale-descendant half of that worry was measured and did NOT reproduce
+          // (a destroyed child of a live window threw nothing), but the COM half is
+          // unmeasured — so the sentence reports what was answered rather than
+          // asserting the state of the world (gate 2, M3 on `5b133f3`).
+          "The window this write was aimed at was reported as gone, so nothing was written. " +
+          "The remaining fallback types into whichever window is in front, which may be a different one wearing the same title.",
+          {
+            // Advice that carries the SAME uncertainty as the sentence above, and
+            // written out here rather than taken from `SUGGESTS.AimWindowGone`.
+            //
+            // Two independent gates found the same defect: the error text hedges
+            // ("was reported as gone") while the shared advice asserts — "no longer
+            // exists", "where that window used to be", "the old handle is not
+            // reusable" — and **the advice is the half a model reads**. A live
+            // window whose provider faults during the descendant walk would be told
+            // to throw away a lease and a handle that are both still valid.
+            // (PR 側 codex P2 on `de43a2d`; gate 2 Medium on `24bd47d`.)
+            //
+            // The shared dictionary is deliberately NOT softened: the act road
+            // reaches this code through `isWindowGone` and native resolution
+            // failure, which is stronger evidence than this road's blanket catch,
+            // so weakening the shared line would make a correct message vaguer
+            // everywhere it is already right. Whether the two roads should share
+            // one advice string at all is a design decision, filed separately.
+            //
+            // Spelled out rather than derived from the dictionary by index: an
+            // index-derived variant drifts silently the day someone reorders the
+            // shared array, which is how a document starts lying. The cell below
+            // pins that this advice does not assert.
+            suggest: [
+              "Re-run desktop_discover: the write was refused because the window was reported as gone, so the lease and the entities taken from it may no longer describe anything.",
+              "Do NOT retry by coordinate. If the window did close, the entity's rect is where it used to be and another window may be occupying it — the keystrokes would land on that one.",
+              "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
+              "If the window is still there, this can be a transient UIA provider or RPC failure during the element walk rather than a window that closed. desktop_discover will say which, and a fresh lease is needed either way.",
+            ],
+            context: { windowTitle: effectiveTitle, name, automationId, attempts },
+          },
+        );
       }
 
       // Channel 3: keyboard_type fallback (foreground required)
