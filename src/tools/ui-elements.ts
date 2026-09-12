@@ -689,13 +689,42 @@ export const setElementValueHandler = async ({
             // index-derived variant drifts silently the day someone reorders the
             // shared array, which is how a document starts lying. The cell below
             // pins that this advice does not assert.
+            // The first version of this advice hedged correctly about the evidence
+            // and was wrong about the CONSEQUENCE (gate 2, Medium on `f960513`). It
+            // told the caller the window might still be there, dropped every mention
+            // of the handle, and promised `desktop_discover` would say which — but a
+            // title names more than one window, which is the premise this whole ADR
+            // rests on, so a title-shaped discover cannot answer that question. A
+            // caller following it drops the handle and retries by title, and the
+            // title road WITHHOLDS `aim_window_gone` by design (it answers
+            // `WindowNotFound`), so this guard cannot fire a second time. Channel 3
+            // then types into whichever same-titled window is in front. That is not
+            // a hypothesis: a same-titled bystander has been measured taking a plain
+            // ASCII write, `CATCH-SEED` overwritten to `PROBE-P2` with `ok:true`.
+            //
+            // So the advice now closes the road it used to open, says nothing about
+            // leases or entities (those belong to `desktop_act`; this handler has
+            // neither), and keeps the handle in view — `context.hwnd` carries it.
             suggest: [
-              "Re-run desktop_discover: the write was refused because the window was reported as gone, so the lease and the entities taken from it may no longer describe anything.",
-              "Do NOT retry by coordinate. If the window did close, the entity's rect is where it used to be and another window may be occupying it — the keystrokes would land on that one.",
-              "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
-              "If the window is still there, this can be a transient UIA provider or RPC failure during the element walk rather than a window that closed. desktop_discover will say which, and a fresh lease is needed either way.",
+              "Nothing was written. The window this write named by handle was reported as gone — the handle is in context.hwnd.",
+              "Do NOT fall back to addressing this window by title. A title can name more than one window, so that road cannot repeat this refusal, and the keyboard fallback types into whichever same-titled window is in front. A bystander window taking the write has been measured, not merely predicted.",
+              "Do NOT retry by coordinate either. If the window did close, the remembered rectangle is where it used to be, and whatever occupies it now would take the keystrokes.",
+              "The window may in fact still be there: a UIA provider or RPC failure during the element walk answers exactly as a closed window does, and this road cannot tell the two apart. To ask about THIS window, call get_ui_elements again with the same hwnd — a read addressed to the handle is the only one that stays specific to the window you named.",
+              // `get_windows`, NOT `desktop_discover`. This refusal can only reach a
+              // caller from `set_element_value`, which is registered in the kill-switch
+              // branch — and that branch and the v2 branch are mutually exclusive, so
+              // `desktop_discover` is NOT registered wherever this fires. Naming it
+              // would hand the caller a tool it does not have. `get_windows` is
+              // co-registered with this tool and does the listing job. The cell below
+              // pins that every tool named here is registered in that same branch,
+              // because this defect was introduced while fixing a different false
+              // promise and neither the wording nor the provenance pin noticed.
+              "get_windows lists what is open now, so it can find a replacement if this window really did close. It cannot tell you whether this window is still there, because a title can name more than one. If the app was expected to close, this is the normal outcome and there may be nothing left to do.",
             ],
-            context: { windowTitle: effectiveTitle, name, automationId, attempts },
+            // `hwnd` as a string: it is a bigint, and the envelope is serialised with
+            // `JSON.stringify`, which throws on one. Named here because a refusal that
+            // will not say which window it refused cannot be acted on precisely.
+            context: { windowTitle: effectiveTitle, hwnd: resolvedWin.hwnd.toString(), name, automationId, attempts },
           },
         );
       }
