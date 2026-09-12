@@ -143,15 +143,22 @@ export function placeholderPattern(): RegExp {
  * cells, because "laxer than the grammar" is not "catches every malformed form"
  * (gate 2 round 4, finding 1 — the earlier wording claimed the first shape below):
  *
- *   `Re-call {tool:`          nothing after the colon. NOT flagged, and that is the
- *   `Re-call {tool: …prose`   price of the false positive at `macro.ts:274`, which
- *                             is exactly this shape in a source comment.
+ *   `Re-call {tool:`          nothing after the colon **and no later `}` on the
+ *   `Re-call {tool: …prose`   line**. NOT flagged, and that is the price of the false
+ *                             positive at `macro.ts:274`, which is exactly this
+ *                             shape in a source comment (the colon ends the line).
+ *                             **Prose WITH a later `}` on the line IS flagged** —
+ *                             `"{tool: see the handbook}"` matches, because the body
+ *                             walks to the closing brace. The earlier entry claimed
+ *                             the blanket shape (gate 2 round 5, finding 4).
  *   `{tools:…}` `{tool;…}`    a typo in the PREFIX rather than in the name. The
  *                             prefix is literal here, so these are out of reach —
  *                             the fix made the NAME lax and left the prefix strict.
- *   `{ tool:set_value}`       a space after the opening brace: that is the clause
- *                             priced at 4/15 false positives (TypeScript type
- *                             literals), so it is bought deliberately.
+ *   `{ tool:set_value}`       a space after the opening brace. The clause that would
+ *                             catch it was **rejected**, not bought: it prices at
+ *                             4/15 false positives on TypeScript type literals, so
+ *                             what is bought is this blind spot (gate 2 round 5,
+ *                             finding 10 — the earlier wording inverted the subject).
  *   `{tool:"x"}` `{tool:'x'}` quoted, i.e. the product's own macro syntax.
  * The quote exclusion is what keeps the product's own syntax out:
  * `run_macro({tool:"screenshot", …})` and `{tool:'focus_window', …}` both put a
@@ -165,8 +172,10 @@ export function placeholderPattern(): RegExp {
  * measured 99 at `25f9bb3`, and this tree now reads 104 occurrences on 84 lines
  * across 6 files, of which **83 sit in this module and its cell file** — it moves
  * every time either file is edited, which is the reason the population is NAMED
- * rather than counted (gate 2 round 4, finding 2). **Four candidates, of which two
- * are recorded here** — the shipped one and the obvious one it replaced. The battery
+ * rather than counted (gate 2 round 4, finding 2). **Four candidates, of which three
+ * have their score recorded in this file** — the strict reuse, the quote-lookahead
+ * (3 false positives), and the whitespace-after-brace variant (4 line / 15 whole-file)
+ * — plus the shipped one (gate 2 round 5, finding 9: "two" undercounted its own text). The battery
  * itself is what the cell file holds, and counted there rather than here: **15
  * malformed positives and 8 negatives** at this commit (the earlier "six positives
  * and four negatives" was a count of an earlier battery left in place while the
@@ -232,12 +241,32 @@ export function placeholderPattern(): RegExp {
  * `/i`, so `&QUOT;` is covered by the flag. Adding case variants measured identically
  * — a knob with no measured benefit is not added.
  *
+ * **THE WHITESPACE SKIP MUST SIT INSIDE THE LOOKAHEAD, and that is not a style
+ * choice.** A legitimate example can put a space after the colon —
+ * `run_macro(&#123;tool: &quot;screenshot&quot;&#125;)` — and the first attempt wrote
+ * the skip OUTSIDE, as `:\s*(?!…quote…)`. That still claimed it: `\s*` is
+ * backtrackable, so the engine retries with zero characters consumed, the lookahead
+ * then sees the SPACE rather than the entity, passes, and the body swallows
+ * `&quot;…`. Measured both ways — outside: 3 of 13 negatives claimed; inside
+ * (`:(?!\s*…quote…)`): **0** (PR-side codex P2 on `51e2d88`).
+ *
+ * **THREE MORE SURFACES, all at zero cost** (gate 2 round 5, finding 3, which probed
+ * the built module rather than reading the pattern): the **full-width colon** `：`
+ * (U+FF1A) — the same IME that emits `｛｝` emits it for the colon key — plus the
+ * **hex** brace entities `&#x7B;`/`&#x7D;` beside the decimal ones, and the
+ * **HTML-escaped colon** `&#58;`. Adding all three keeps tree false positives at 0
+ * and takes the battery from 8 missed shapes to 0.
+ *
+ * **STILL NOT FLAGGED, deliberately**: an unbalanced quote (`{tool:'set_value}`) and
+ * a tab or NBSP after the opening brace — the latter is the clause priced at 4/15
+ * false positives, so it stays rejected. Recorded as choices, not as coverage.
+ *
  * STATELESS because it is not global: without `/g`, `.test()` never advances
  * `lastIndex`, so the answer cannot depend on call order. That is the distinction
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&#123;)tool\s*:(?!["']|\\["']|&quot;|&#34;|&apos;|&#39;)[^}｝"']*(?:[}｝]|&#125;)|(?:[{｛]|&#123;)tool\s*:(?!["']|\\["']|&quot;|&#34;|&apos;|&#39;)[^}｝"'\s]+/i;
+  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
@@ -305,7 +334,12 @@ export function hasPlaceholder(text: string): boolean {
  *   `[a-z_]*\{tool:([a-z_]+)\}`
  *                            0   match may begin outside the placeholder (written
  *                                out rather than elided: an elided mutation cannot
- *                                be re-derived — gate 2 round 4, finding 8)
+ *                                be re-derived — gate 2 round 4, finding 8, which
+ *                                had three parts and is therefore cited twice in
+ *                                this file ON PURPOSE: the elided row here, and the
+ *                                battery counts above. Round 5 asked whether one of
+ *                                the two was misattributed; the record says neither
+ *                                is, so the citation stays and says why)
  *   `\{tool:([a-z_]+)\}?`    1   closing brace optional — the SCANNER cell catches it
  *   `\{tool:(.+)\}`          3   one match spans two placeholders
  *   `\{([^}]+)\}`            8   capture becomes `tool:set_value`, so a GENUINE
@@ -357,8 +391,12 @@ export function hasPlaceholder(text: string): boolean {
  * than in the failure path of a running server. **Stated as a call, not as a
  * substring**: "still contains `{tool:`" was the earlier wording and it now
  * disagrees with the detector, which deliberately passes the product's quoted
- * `run_macro({tool:"…"})` — a reader implementing the substring rule would write a
- * scan with 21 false positives (gate 2 round 4, finding 7). One rule, one home. **That gate does not exist anywhere in
+ * `run_macro({tool:"…"})` — a reader implementing the substring rule would flag that
+ * syntax (gate 2 round 4, finding 7). **No number is quoted for it**: the earlier
+ * "21 false positives" borrowed an occurrence count for a per-LINE scan (11 lines),
+ * and borrowed the repo-wide population for a gate that reads only rendered advice,
+ * where this file's own classification says the count is **0** — none of the 21 is an
+ * advice string (gate 2 round 5, finding 6). One rule, one home. **That gate does not exist anywhere in
  * this repository yet** — no test and no script scans advice for a leftover
  * `{tool:`, verified rather than assumed — so until one is written, a leftover
  * placeholder is caught by nobody. **When it is written, it calls
@@ -418,13 +456,28 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
 /**
  * What the server ACTUALLY published, when the caller knows it.
  *
- * **THERE IS A FIFTH STATE, and the flag cannot see it** (PR-side codex P2 on
- * `131c663`, verified in source). `server-windows.ts` pre-loads the v2 module with
- * `await import(…).catch(() => null)` — a failed import is deliberately swallowed so
- * the server still starts — and registration then branches on **`_desktopV2`**, not
- * on the flag: a null module publishes the three V1 fallback tools instead. So with
- * the flag ON and the module missing, the live surface is V1 while
- * `resolveV2Activation` still answers `enabled: true`.
+ * **A FIFTH STATE IS REACHABLE IN SOURCE, AND THE ONE WAY ANYONE TRIED TO BUILD IT
+ * TURNED OUT TO BE LOUD** (PR-side codex P2 on `131c663`, verified in source; then
+ * measured on Windows).
+ *
+ * In source: `server-windows.ts` pre-loads the v2 module with
+ * `await import(…).catch(() => null)` — a failed load is deliberately swallowed so
+ * the server still starts — and registration branches on **`_desktopV2`**, not on
+ * the flag, so a null module publishes the three V1 fallback tools instead. The flag
+ * would then say `enabled: true` over a V1 surface.
+ *
+ * Measured: **removing the module file does NOT produce that state — the server does
+ * not start at all.** `macro.ts:137` imports `./desktop-register.js` **statically**,
+ * and it is the only file that does, so ESM link fails in a different importer before
+ * that `catch` can run: `ERR_MODULE_NOT_FOUND … imported from …/dist/tools/macro.js`.
+ * A missing file is therefore a loud failure, not a silent surface swap, and the
+ * flag-only default is not wrong on that path.
+ *
+ * **What stays possible and UNOBSERVED** is a module that resolves but throws while
+ * evaluating — a missing native addon, a partial package. That reaches the `catch`,
+ * and then the divergence is real. It could not be simulated by renaming a file, so
+ * it is unobserved rather than absent, and that is the whole reason this parameter
+ * exists: the caller that knows the surface can say so.
  *
  * That makes the module's own design rule ("the predicates are the ones REGISTRATION
  * reads") false on exactly one path — and this is the defect this whole ADR exists to
@@ -525,8 +578,11 @@ export function renderAdvice(
   // explains why it needs none: `String.replace` resets `lastIndex`, so even a
   // single shared instance would be correct here (measured — a module-level shared
   // `/g` passes every cell). The factory call stays inside `renderAdvice` rather
-  // than at module level so that no module-level mutable regex exists for a later
-  // edit to export. A module-level `const` would not be exported either, so that
+  // than at module level so that no module-level GLOBAL regex exists for a later
+  // edit to export. ("mutable" was the earlier wording and a reader checking it
+  // finds `DETECT_LEFTOVER` two hundred lines above — a module-level regex, but not
+  // `/g`, so it carries no live `lastIndex`. The property meant was the flag, not
+  // mutability: gate 2 round 5, finding 7.) A module-level `const` would not be exported either, so that
   // reason alone does not choose between the two — and the rejected option demonstrably
   // works (a shared module-level `/g` passes every cell, measured twice). This is a
   // preference with a narrow reason, stated as such (gate 2 round 4, finding 9).

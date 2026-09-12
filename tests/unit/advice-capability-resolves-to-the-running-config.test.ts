@@ -3,16 +3,17 @@
  *
  * THE KINDS OF CELL HERE, and why each kind is not obvious. **Not a list of every
  * cell.** It was written as a complete list when the file had 7 cells and has never
- * been one since. Measured across this branch: cells **7 → 10 → 14 → 15 → 16 → 16**
- * while the numbered list went **4 → 5 → 5 → 5 → 5 → 5**.
+ * been one since.
  *
- * That sentence has now been wrong twice, in the same shape both times: the first
- * version said "five cells, grown past it twice" (no tree ever had five), and the
- * second stopped at the fourth of six commits, so the tree it was written on was
- * missing from its own list (gate 2 rounds 2, 3 and 4 — findings 6, 5 and 6). **A
- * per-commit history in a comment goes stale on the next commit by construction**,
- * so this is the last time it is restated: the claim that matters is the one above —
- * not a complete list — and the later cells carry their reason inline.
+ * **The per-commit sequence that used to sit here is deleted rather than corrected
+ * again.** It was wrong three times in the same shape: first "five cells, grown past
+ * it twice" (no tree ever had five); then it stopped at the fourth of six commits;
+ * then — in the sentence announcing it would not be restated — at the sixth of
+ * eight, each time omitting the tree it was written on (gate 2 rounds 2, 3, 4 and 5).
+ * **A per-commit history in a comment goes stale on the next commit by
+ * construction**, and three corrections did not change that. What survives is the
+ * claim above, which is the one that matters; the later cells carry their reason
+ * inline.
  *
  *  1. A line with no placeholder passes through BYTE-IDENTICAL. That is what lets
  *     the mechanism ship with zero lines converted.
@@ -89,7 +90,6 @@ import {
  * why. Guarded here so the constant itself cannot be the thing that is wrong.
  */
 const BS = String.fromCharCode(92);
-if (BS !== "\\" || BS.length !== 1) throw new Error("BS is not exactly one backslash");
 
 /** The four corners of the two kill switches, as `env` maps. */
 const V2: Record<string, string | undefined> = {};
@@ -358,8 +358,15 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // paraphrase, which is the shape this whole file exists to distrust.
     // `macro.ts:750` and `stub-tool-catalog.ts:1211`, the escaped-quote shape:
     expect(hasPlaceholder('a special sleep pseudo-step: {tool:\\"sleep\\", params:{ms:N}} (max 10000ms per step)')).toBe(false);
-    // `stub-tool-catalog.ts:1211`, the single-quoted example shape:
-    expect(hasPlaceholder("  [{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}}]")).toBe(false);
+    // A single-quoted example shape — and this one is NOT one of the three
+    // occurrences, it is an ordinary negative. The previous version of this line
+    // claimed to be byte-exact from `stub-tool-catalog.ts:1211` and was not: 86 of
+    // 87 characters matched and then it closed the array with a `]` that is not in
+    // the file (the line continues `,{tool:'keyboard',…`). So the fix for two
+    // paraphrases minted a third, fabricated string — in the sentence claiming to
+    // retire paraphrases (gate 2 round 5, finding 1). Truncated to the part that is
+    // byte-exact, and relabelled.
+    expect(hasPlaceholder("  [{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}}")).toBe(false);
     // `macro.ts:274`, the line whose token is cut at the colon:
     expect(hasPlaceholder("  // `z.object(schema).parse(args)` call. Without this, `run_macro({tool:")).toBe(false);
 
@@ -372,6 +379,18 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(hasPlaceholder("const x: { tool: string; params: Record<string, unknown> } = y;")).toBe(false);
     expect(hasPlaceholder("return { tool:   ev.tool   };")).toBe(false);
 
+    // THE TWO PREFIX TYPOS THE MODULE LISTS AS "deliberately not flagged" — they had
+    // no cell, so "pinned by cells" was false for two of the five entries and
+    // nothing would redden if the prefix became lax or stopped matching (gate 2
+    // round 5, finding 5). The prefix is literal, which is the whole reason.
+    expect(hasPlaceholder("Re-call {tools:set_value} to reuse the pane")).toBe(false);
+    expect(hasPlaceholder("Re-call {tool;set_value} to reuse the pane")).toBe(false);
+    // And the colon-at-end-of-line shape, with the qualification that matters: the
+    // same prose WITH a later `}` on the line IS flagged, because the body walks to
+    // the closing brace.
+    expect(hasPlaceholder("Re-call {tool: see the handbook")).toBe(false);
+    expect(hasPlaceholder("Re-call {tool: see the handbook}")).toBe(true);
+
     // THE MIRROR HOLE OF THE HTML BRANCH, and these four are SYNTHETIC: no line in
     // the tree looks like this today, so they are not "real strings" — they are the
     // shape a doc pipeline would produce from the product's own example. The branch
@@ -383,6 +402,12 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(hasPlaceholder("run_macro(&#123;tool:&#34;screenshot&#34;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#123;tool:&apos;focus_window&apos;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#123;tool:&#39;focus_window&#39;&#125;)")).toBe(false);
+    // WITH WHITESPACE BETWEEN THE COLON AND THE ENTITY — the shape that showed the
+    // skip has to live inside the lookahead, because `\s*` outside it backtracks to
+    // zero and the lookahead then sees the space (PR-side codex P2 on `51e2d88`).
+    expect(hasPlaceholder("run_macro(&#123;tool: &quot;screenshot&quot;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:  &quot;screenshot&quot;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#x7B;tool: &quot;screenshot&quot;&#x7D;)")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -405,7 +430,10 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       "use {Tool:set_value} to do it", // mixed case
       "use ｛tool:set_value｝ to do it", // full-width braces (a CJK IME emits these)
       "use &#123;tool:set_value&#125; to do it", // HTML-escaped
-      // The twentieth shape, from gate 1 on `25f9bb3`: the backslash exemption was
+      // The backslash family — one shape when gate 1 raised it on `25f9bb3` (where
+      // it was "the twentieth"), four entries now, so the ordinal is dropped rather
+      // than left heading a group it no longer counts (gate 2 round 5, finding 11):
+      // the backslash exemption was
       // added for the product's `{tool:\"sleep\"` and excluded EVERY backslash, so a
       // leftover beginning with one was shipped verbatim and never flagged. Only
       // `\"` and `\'` are exempt now.
@@ -419,6 +447,14 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       `use {tool:${BS}} to do it`,
       `use {tool:${BS}${BS}set_value} to do it`,
       `use {tool:${BS}${BS}} to do it`,
+      // Surfaces found by probing the BUILT module rather than reading the pattern
+      // (gate 2 round 5, finding 3). The full-width colon is the realistic one: the
+      // IME that emits `｛｝` emits `：` for the colon key just as readily.
+      `use {tool${String.fromCharCode(0xff1a)}set_value} to do it`,
+      `use ｛tool${String.fromCharCode(0xff1a)}set_value｝ to do it`,
+      "use &#x7B;tool:set_value&#x7D; to do it", // hex brace entities
+      "use &#123;tool&#58;set_value&#125; to do it", // HTML-escaped colon
+      "use &#123;tool: set_value&#125; to do it", // entity braces, space, a NAME
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
       expect(hasPlaceholder(bad), `the scan must flag ${bad}`).toBe(true);
@@ -458,6 +494,17 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // Omitting it keeps the old behaviour exactly — the reading, not the surface.
     expect(providerFor("reidentify_element", V2)).toBe("desktop_discover");
     expect(providerFor("reidentify_element", KILL)).toBe("get_ui_elements");
+  });
+
+  it("builds its backslash from a code point, checked here rather than at import time", () => {
+    // The guard used to be a module-level `if (…) throw`, which gate 2 round 5
+    // (finding 13) measured: mutate the code point and the file reports "Tests: no
+    // tests" — all 17 cells vanish instead of one reddening, which also destroys the
+    // baseline-16/16 positive control the mutation method depends on. And it compared
+    // against a typed "\\", the exact thing the battery comment forbids. So it is a
+    // cell, and it compares against the code point.
+    expect(BS.charCodeAt(0)).toBe(92);
+    expect(BS).toHaveLength(1);
   });
 
   it("keeps surviving lines in their original order", () => {
