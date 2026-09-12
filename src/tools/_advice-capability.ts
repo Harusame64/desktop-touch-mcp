@@ -369,8 +369,12 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * one of them changed. Both take `env`, which makes ALL FOUR corners reproducible in
  * a unit test with no Windows machine — `keyLockerDisabled` did not take one until
  * codex pointed out that this function then answered for the wrong configuration.
- */
-/**
+ *
+ * (The rest of this comment used to be a SECOND doc block. Two blocks in a row and
+ * only the last one attaches, so quick-info on `providerFor` showed the essay below
+ * and not the contract above it — the half a caller needs. Merged; the same shape
+ * the removal left behind on `KNOWN` one round earlier, found by gate 2 both times.)
+ *
  * THE FLAG IS THE SURFACE HERE, and that took three rounds to establish — two of
  * them spent building for a state that cannot happen.
  *
@@ -505,10 +509,16 @@ export function providerFor(
  *
  * Three answers, and the third is why this function exists: `UNKNOWN_CAPABILITY`
  * for a name this module does not know. It is a symbol so that it cannot be
- * mistaken for `null` by a drop-on-null protocol, and cannot be interpolated into a
- * sentence — `` `use ${answer}` `` throws at the call site instead of shipping a
- * word. `renderAdvice` does not use it: it screens and then takes the typed road,
- * which is what keeps a typo VERBATIM rather than dropped (gate 2, 2026-09-13).
+ * mistaken for `null` by a drop-on-null protocol, and so that a caller of THIS
+ * function who spends the answer without checking it — `` `use ${answer}` `` —
+ * throws at their own call site instead of shipping a word into a sentence.
+ *
+ * **That is a claim about this function's return value and nothing else, and it was
+ * read as a claim about the module** (win2, 2026-09-13, from the measurement):
+ * `renderAdvice`'s output is unchanged and an unknown placeholder still ships
+ * VERBATIM — measured on the built module at two commits. `renderAdvice` never sees
+ * this symbol, because it screens with `isCapability` and then takes the typed road,
+ * which is what keeps a typo visible rather than dropped (gate 2, 2026-09-13).
  */
 export const UNKNOWN_CAPABILITY: unique symbol = Symbol("advice-capability:unknown");
 

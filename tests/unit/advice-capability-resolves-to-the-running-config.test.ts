@@ -274,11 +274,21 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(a.test("{tool:set_value}")).toBe(true);
     expect(b.test("{tool:set_value}")).toBe(true);
     // The trap is demonstrated on a LOCALLY built global regex, not on the
-    // factory's product. Asserting `[true,false]` on `placeholderPattern()` would
-    // pin a JavaScript invariant (every `/g` regex advances `lastIndex`) AND make
-    // the suite require this factory to keep returning a stateful object — so the
-    // natural hardening, handing out a non-global detector, would go red. Gate 2
-    // caught that: a cell can forbid its own fix (round 3, finding 7).
+    // factory's product: asserting `[true,false]` on `placeholderPattern()` would pin
+    // a JavaScript invariant (every `/g` regex advances `lastIndex`) rather than
+    // anything this module decides.
+    //
+    // THE SECOND HALF OF THIS COMMENT USED TO BE WRONG, and it named a change as a
+    // "hardening" that would have broken the product (gate 2, 2026-09-13, fourth
+    // round). It said pinning statefulness would forbid "handing out a non-global
+    // detector". Handing out a non-global pattern is not a hardening: `renderAdvice`
+    // needs `/g` to replace EVERY placeholder in a line, so without it
+    // "…{tool:reidentify_element}…{tool:set_value}" ships with the second one raw,
+    // and a line whose only unresolvable placeholder is the second stops being
+    // dropped and names an unpublished tool. The two-placeholder and drop-on-any
+    // cells do catch that — but a comment inviting the change is worse than no
+    // comment. And the cell above already asserts `.flags === "g"`, so the
+    // requirement the old wording said it was avoiding is pinned there anyway.
     const mine = new RegExp(placeholderSource(), "g");
     expect([mine.test("{tool:set_value}"), mine.test("{tool:set_value}")]).toEqual([true, false]);
   });
