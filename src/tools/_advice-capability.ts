@@ -88,52 +88,7 @@ export type Capability =
  * name is the one to resolve. One line names two dependent tools, which the named
  * form also covers — so the capability lives IN the text and there is no separate
  * field to drift out of sync with it.
- */
-const PLACEHOLDER_SOURCE = "\\{tool:([a-z_]+)\\}";
-
-/**
- * The placeholder syntax, for gates and tests. **A string and a factory, not a
- * shared regex** — and that is the whole point of the shape.
  *
- * A global (`/g`) `RegExp` carries `lastIndex`, so a shared instance answers
- * `.test()` for the SAME input as `true`, then `false`, then `true`. Measured. The
- * consumer this module names is the future gate that walks rendered advice looking
- * for a leftover `{tool:` — i.e. exactly a per-line `.test()` loop, which on a
- * shared instance would report **every other line clean** (gate 2, finding 3, on the
- * commit that first exported it). `String.replace` happens to reset `lastIndex`,
- * which is why `renderAdvice` was never affected and why nothing here would have
- * caught it.
- *
- * So: build your own with `placeholderPattern()`, or read `placeholderSource()` and
- * compile what you need. There is no shared instance to borrow.
- */
-export function placeholderSource(): string {
-  return PLACEHOLDER_SOURCE;
-}
-
-/**
- * A FRESH global pattern, every call — for REPLACING. See {@link placeholderSource}.
- *
- * **Not for scanning.** Freshness per call does not help a scanner: the shape this
- * module's own note described — call the factory once, then `.test()` each line —
- * reuses one `/g` instance, and `lastIndex` then makes **two consecutive identical
- * lines alternate between detected and missed** (PR-side codex P2 on `6867088`,
- * which also pointed out that the cell below dodged the real failure mode by
- * calling the factory again each time).
- *
- * **The scanner itself is no longer in this repository.** The detector that answered
- * "does this line still carry a placeholder" — deliberately laxer than this grammar,
- * because a typo is what a scan exists to find — was carried out of this change on
- * 2026-09-13, verbatim and with its battery, to the route-check work that will
- * consume it. Thirteen review rounds had hardened it against a corpus this product
- * does not have yet. So when a gate is written it takes that detector; it does not
- * hoist a `/g` of its own from this source, which is the alternating bug above.
- */
-export function placeholderPattern(): RegExp {
-  return new RegExp(PLACEHOLDER_SOURCE, "g");
-}
-
-/**
  * DO NOT LOOSEN THAT PATTERN. `{tool:` is already real syntax in this product —
  * `run_macro({tool:"screenshot", args:{…}})` appears in tool descriptions,
  * examples and tests (`macro.ts`, `ui-elements.ts`, `stub-tool-catalog.ts`,
@@ -237,6 +192,49 @@ export function placeholderPattern(): RegExp {
  * Which is why the pattern's text is pinned directly, and why this comment carries a
  * table instead of a law.
  */
+const PLACEHOLDER_SOURCE = "\\{tool:([a-z_]+)\\}";
+
+/**
+ * The placeholder syntax, for gates and tests. **A string and a factory, not a
+ * shared regex** — and that is the whole point of the shape.
+ *
+ * A global (`/g`) `RegExp` carries `lastIndex`, so a shared instance answers
+ * `.test()` for the SAME input as `true`, then `false`, then `true`. Measured. The
+ * consumer this module names is the future gate that walks rendered advice looking
+ * for a leftover `{tool:` — i.e. exactly a per-line `.test()` loop, which on a
+ * shared instance would report **every other line clean** (gate 2, finding 3, on the
+ * commit that first exported it). `String.replace` happens to reset `lastIndex`,
+ * which is why `renderAdvice` was never affected and why nothing here would have
+ * caught it.
+ *
+ * So: build your own with `placeholderPattern()`, or read `placeholderSource()` and
+ * compile what you need. There is no shared instance to borrow.
+ */
+export function placeholderSource(): string {
+  return PLACEHOLDER_SOURCE;
+}
+
+/**
+ * A FRESH global pattern, every call — for REPLACING. See {@link placeholderSource}.
+ *
+ * **Not for scanning.** Freshness per call does not help a scanner: the shape this
+ * module's own note described — call the factory once, then `.test()` each line —
+ * reuses one `/g` instance, and `lastIndex` then makes **two consecutive identical
+ * lines alternate between detected and missed** (PR-side codex P2 on `6867088`,
+ * which also pointed out that the cell below dodged the real failure mode by
+ * calling the factory again each time).
+ *
+ * **The scanner itself is no longer in this repository.** The detector that answered
+ * "does this line still carry a placeholder" — deliberately laxer than this grammar,
+ * because a typo is what a scan exists to find — was carried out of this change on
+ * 2026-09-13, verbatim and with its battery, to the route-check work that will
+ * consume it. Thirteen review rounds had hardened it against a corpus this product
+ * does not have yet. So when a gate is written it takes that detector; it does not
+ * hoist a `/g` of its own from this source, which is the alternating bug above.
+ */
+export function placeholderPattern(): RegExp {
+  return new RegExp(PLACEHOLDER_SOURCE, "g");
+}
 
 /**
  * The capabilities, as a value. A `Record<Capability, true>` rather than a second
@@ -412,6 +410,23 @@ export function providerFor(
       // that never took it (PR-side codex P2 on `64e69a2`). The shared predicate was
       // widened rather than re-implemented here, so the switch keeps one reader.
       return keyLockerDisabled(env) ? null : "key_locker";
+    default: {
+      // NOT reachable through the type system, and reachable in fact: this module is
+      // exported, `tests/**` is outside `tsconfig.json`'s `include: ["src/**/*"]`, and
+      // eslint here is not type-aware — so an untyped caller passing
+      // `"credential_stores"` used to fall off the end of an exhaustive switch and get
+      // `undefined`, which is NOT the documented `null` protocol: the caller's
+      // `=== null` never fires and the literal word `undefined` reaches the sentence.
+      // That is the outcome `KNOWN` exists to prevent for `renderAdvice`, left open on
+      // the direct road (gate 2, 2026-09-13).
+      //
+      // `never` rather than a bare `return null`: the assignment is what keeps a
+      // MISSING arm a compile error. A trailing `return null` alone would close the
+      // runtime hole and silently swallow the next capability added to the union.
+      const unhandled: never = cap;
+      void unhandled;
+      return null;
+    }
   }
 }
 

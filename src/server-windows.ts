@@ -280,8 +280,15 @@ function createMcpServer(): McpServer {
     // when v2 is disabled, re-publish the V1 tools whose capability is
     // ONLY available through the dispatcher path so the operator does not
     // lose function coverage by flipping the kill switch.
-    //   - get_windows: enumerate visible HWNDs (no other tool exposes hwnd
-    //     listing for title-collision / hwnd-targeted workflows)
+    //   - get_windows: enumerate visible windows in z-order. NOT their handles:
+    //     the response projects zOrder / title / region / isActive / isMinimized /
+    //     isMaximized / isOnCurrentDesktop and drops the hwnd it read
+    //     (`window.ts:54-62`), while v2's window meta carries one
+    //     (`desktop-register.ts:361`). The earlier wording here said it enumerates
+    //     HWNDs and that no other tool exposes hwnd listing; both halves are wrong,
+    //     and it is corrected rather than left standing because
+    //     `_advice-capability.ts` now encodes the measured reading — there is no
+    //     kill-switch provider for naming one window by handle (gate 2, 2026-09-13)
     //   - get_ui_elements: raw UIA tree (screenshot(detail='text') is the
     //     screenshot-time alternative but does not return the unfiltered tree)
     //   - set_element_value: UIA ValuePattern (keyboard(action='type') is
