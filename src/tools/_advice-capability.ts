@@ -176,9 +176,11 @@ export function placeholderPattern(): RegExp {
  * have their score recorded in this file** — the strict reuse, the quote-lookahead
  * (3 false positives), and the whitespace-after-brace variant (4 line / 15 whole-file)
  * — plus the shipped one (gate 2 round 5, finding 9: "two" undercounted its own text). The battery
- * itself is what the cell file holds, and counted there rather than here: **22 malformed positives and 18 negatives** at this commit (the earlier "six positives
+ * itself is what the cell file holds, and counted there rather than here: **22 malformed positives and 21 negatives** at this commit (the earlier "six positives
  * and four negatives" was a count of an earlier battery left in place while the
- * battery grew — gate 2 round 4, finding 8). The obvious pattern —
+ * battery grew — gate 2 round 4, finding 8; and "18 negatives" was the parent's
+ * count left standing in a sentence that said three had just been added — round 7,
+ * finding 1). The obvious pattern —
  * quote lookahead, optional closing brace — scored **3 false positives**, for two
  * reasons a reader would otherwise rediscover the hard way:
  *
@@ -223,8 +225,11 @@ export function placeholderPattern(): RegExp {
  * negatives**: 0 missed, 0 false positives, 0 negatives claimed, the product's own
  * `{tool:\"sleep\"` still excluded. (The figure is left with its commit rather than
  * refreshed: it is a record of what was run then, and the battery has since grown to
- * 22 and 18 — gate 2 round 6, findings 3 and 7, which found two such figures reading
- * as current.)
+ * 22 and 21 — gate 2 round 6, findings 3 and 7, which found two such figures reading
+ * as current. **The pair above is `572edd8`'s, where that exemption actually landed:
+ * 13 positives and 7 negatives.** The "16 and 8" written here before matched no
+ * commit's battery at all — round 7, finding 5, which walked every tree on the
+ * branch: 6/5, 13/7, 15/8, 15/12, 20/18, 22/18, 22/21.)
  *
  * **The measuring side wrote "the twentieth shape is unobserved, not absent" while
  * nineteen were tried. Gate 1 produced the twentieth within the hour.** That is the
@@ -235,17 +240,31 @@ export function placeholderPattern(): RegExp {
  * HTML-escaped legitimate EXAMPLE: `run_macro(&#123;tool:&quot;screenshot&quot;…)`,
  * because the quote exemption knew only literal and backslash-escaped quotes and
  * read `&quot;` as ordinary content (PR-side codex P2 on `572edd8`). So the boundary
- * is restated once, for every encoding: **the character after the colon is a quote —
- * literal, backslash-escaped, or an HTML entity, NAMED OR NUMERIC IN EITHER BASE.**
- * That last clause was missing until gate 2 round 6 (finding 4): the hex colon
+ * is restated once, and **now as a STRUCTURE rather than a list of spellings**: the
+ * character after the colon is a quote — literal (including the full-width and curly
+ * forms), backslash-escaped, or a character reference to one, written
+ * `&(?:quot|apos|#x?0*(?:22|27|34|39));` so that **base, case and leading zeros are
+ * all covered by construction**.
+ *
+ * The enumerated version was false as implemented, and the measurement is why this
+ * one is structural: with six spellings listed, **5 of 14 negatives were claimed** —
+ * zero-padded `&#0034;` / `&#x0022;` / `&#0039;` (leading zeros are legal in numeric
+ * references), plus full-width `＂` and curly `“ ”` (reachable for the same CJK-IME
+ * reason the full-width braces and colon are accepted). The structural form takes
+ * that to 0, with tree false positives still 0 and no leftover missed (gate 2 round
+ * 7, finding 6 — "the same product example one encoding further right").
+ *
+ * The previous clause was missing until gate 2 round 6 (finding 4): the hex colon
  * `&#x3A;` had been added while the quote exemption still listed only named and
  * decimal entities, so an all-hex product example
  * (`run_macro(&#x7B;tool&#x3A;&#x22;screenshot&#x22;&#x7D;)`) was newly flagged — the
  * same hex/decimal asymmetry this comment had just congratulated itself for
  * catching, recreated one token to the right. Measured over the tree and the battery
  * as it stood at that commit (16 positives, 12 negatives): 0 false positives, 0
- * malformed missed, 0 negatives claimed; the hex quote entities and three all-hex
- * negatives were added after, and the battery now stands at 22 and 18.
+ * malformed missed, 0 negatives claimed **at `51e2d88`, where that exemption landed:
+ * 15 positives and 12 negatives** (the "16 positives" written here matched no tree —
+ * round 7, finding 5). The hex quote entities and three more negatives came after,
+ * and the battery now stands at **22 and 21**.
  *
  * The entity alternatives are lower-case only ON PURPOSE: this regex already carries
  * `/i`, so `&QUOT;` is covered by the flag. Adding case variants measured identically
@@ -267,7 +286,10 @@ export function placeholderPattern(): RegExp {
  * **HTML-escaped colon** `&#58;`. Adding all three keeps tree false positives at 0
  * and takes the battery from 8 missed shapes to 0.
  *
- * **STILL NOT FLAGGED, deliberately**: an unbalanced quote (`{tool:'set_value}`) and
+ * **STILL NOT FLAGGED, deliberately**: an unbalanced quote — the literal
+ * `{tool:'set_value}`, and **since the structural exemption, its entity spellings
+ * too** (`&#123;tool:&#x22;set_value&#125;` was flagged at `d7af13d` and is not now;
+ * gate 2 round 7, finding 10, which caught the narrowing going unrecorded) — and
  * a tab or NBSP after the opening brace — the latter is the clause priced at 4/15
  * false positives, so it stays rejected. Recorded as choices, not as coverage.
  *
@@ -276,7 +298,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;|&#x22;|&#x27;))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;|&#x22;|&#x27;))[^}｝"'\s]+/i;
+  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
@@ -502,11 +524,17 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * **THE SENTENCE THAT USED TO STAND HERE SAID "no publishable configuration", AND
  * THAT IS FALSE** (gate 2 round 6, finding 2, verified here). `index.ts:15-18`
  * branches on `process.platform === "win32"` and otherwise loads
- * `server-linux-stub.js`, whose catalogue has **30 entries and none of the five**
- * tools this table names; `resolveV2Activation` has **no platform gate**; and the
- * `Dockerfile` ships `node dist/index.js` on Debian. So on that entry point the flag
- * says v2 over a surface with no v2 tools — the divergence, reached without the
- * `catch`. It is **latent**: nothing calls `renderAdvice` yet and the stub answers
+ * `server-linux-stub.js`, whose catalogue has **30 entries** — and of the **six**
+ * tools this table names (five capabilities, six providers) **only `key_locker` is
+ * in it** (`stub-tool-catalog.ts:809`). `resolveV2Activation` has **no platform
+ * gate**; the `Dockerfile` ships `node dist/index.js` on Debian.
+ *
+ * So on that entry point **the answer names absent tools in EITHER corner**: v2's
+ * `desktop_discover` / `desktop_act` are missing, and so are the kill switch's
+ * `get_ui_elements` / `get_windows` / `set_element_value`. That is worth stating
+ * precisely, because it is the reason a `Surface` parameter would not have repaired
+ * it — there is no corner of this surface to switch to (gate 2 round 7, findings 3
+ * and 4, which corrected "none of the five" and the axis). It is **latent**: nothing calls `renderAdvice` yet and the stub answers
  * `UnsupportedPlatform` to everything. But it is the reason the argument above is
  * now scoped to the Windows server, and it is filed for the change that wires the
  * presenter.

@@ -410,11 +410,27 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // ALL-HEX product examples. Adding the hex COLON created this class and the
     // quote exemption had only named and decimal entities — the same hex/decimal
     // asymmetry the commit before had just congratulated itself for finding, one
-    // token to the right (gate 2 round 6, finding 4). Synthetic: the tree contains
-    // zero hex entities, measured.
+    // token to the right (gate 2 round 6, finding 4). Synthetic: zero hex entities
+    // exist OUTSIDE this module and this file, measured — the ones inside are these
+    // very assertions. The third shape below is the MIXED case (decimal braces, hex
+    // quotes), which is the interesting one, not a third all-hex example.
     expect(hasPlaceholder("run_macro(&#x7B;tool&#x3A;&#x22;screenshot&#x22;&#x7D;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#x7B;tool&#x3A;&#x27;focus_window&#x27;&#x7D;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#123;tool:&#x22;screenshot&#x22;&#125;)")).toBe(false);
+
+    // AND THE FIVE THAT FORCED THE LOOKAHEAD TO BECOME STRUCTURAL (gate 2 round 7,
+    // finding 6). Listing six spellings claimed all of these; writing the quote as
+    // `&(?:quot|apos|#x?0*(?:22|27|34|39));` plus the full-width and curly literals
+    // covers base, case and LEADING ZEROS by construction — zeros are legal in a
+    // numeric character reference, which is the part a list can never finish.
+    // Synthetic, like the rest of this group: none of these shapes exists in the tree.
+    expect(hasPlaceholder("run_macro(&#123;tool:&#0034;screenshot&#0034;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#x0022;screenshot&#x0022;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#0039;focus_window&#0039;&#125;)")).toBe(false);
+    // Full-width and curly quotes, reachable for the same CJK-IME reason the
+    // full-width braces and colon are accepted as leftovers:
+    expect(hasPlaceholder("run_macro(｛tool：＂screenshot＂｝)")).toBe(false);
+    expect(hasPlaceholder("run_macro({tool:“screenshot”})")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -478,7 +494,7 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(lines.map((l) => hoisted.test(l))).toEqual([true, false, true]);
   });
 
-  it("takes only the env, because the surface cannot diverge from the flag", () => {
+  it("takes only the env, because THIS SERVER's surface cannot diverge from the flag", () => {
     // THIS CELL IS THE HEADSTONE OF AN API THAT SHOULD NOT HAVE BEEN BUILT, kept so
     // the next reader does not build it again.
     //
@@ -492,17 +508,22 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // The second said there is nothing to model (`e670ad7`), and that is measured:
     //
     //   server-windows.ts:22  import { registerMacroTools } from "./tools/macro.js"
-    //   macro.ts:133-137      import { desktopDiscoverRegistrationSchema, … }
+    //   macro.ts:132-137      import { desktopDiscoverRegistrationSchema, … }
     //                           from "./desktop-register.js"
-    //   and zero `import(…macro…)` anywhere in the tree
+    //   and no module in `src` imports `macro.ts` dynamically (four do in
+    //   `tool-naming-phase4.test.ts`, none of which loads `server-windows.ts`)
     //
     // ESM evaluates a module's static dependency graph BEFORE running its body, so
     // `desktop-register.js` is evaluated before `server-windows.ts` reaches its
     // line-98 dynamic import. A missing file fails at link (measured on Windows:
     // `ERR_MODULE_NOT_FOUND … imported from …/dist/tools/macro.js`, the server never
     // starts) and an evaluation throw fails at the same edge. **The `catch` is
-    // unreachable for either cause**, so no publishable configuration has the flag
-    // disagreeing with the surface — and the `Surface` parameter was removed.
+    // unreachable for either cause**, so no configuration THIS server can reach has
+    // the flag disagreeing with the surface — and the `Surface` parameter was
+    // removed. Scoped to this server on purpose: `index.ts` loads a different module
+    // off win32, where the divergence IS reachable and a surface argument would not
+    // repair it either. See the Linux-stub note in the module — gate 2 round 7
+    // (finding 2) found the unscoped sentence still standing here.
     //
     // AND THE REMOVAL ITSELF IS NOT PINNED BY ANY CELL — said plainly, because the
     // first version of this cell claimed it was. It asserted
