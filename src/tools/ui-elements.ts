@@ -709,17 +709,31 @@ export const setElementValueHandler = async ({
               "Nothing was written. The window this write named by handle was reported as gone — the handle is in context.hwnd.",
               "Do NOT fall back to addressing this window by title. A title can name more than one window, so that road cannot repeat this refusal, and the keyboard fallback types into whichever same-titled window is in front. A bystander window taking the write has been measured, not merely predicted.",
               "Do NOT retry by coordinate either. If the window did close, the remembered rectangle is where it used to be, and whatever occupies it now would take the keystrokes.",
-              "The window may in fact still be there: a UIA provider or RPC failure during the element walk answers exactly as a closed window does, and this road cannot tell the two apart. To ask about THIS window, call get_ui_elements again with the same hwnd — a read addressed to the handle is the only one that stays specific to the window you named.",
-              // `get_windows`, NOT `desktop_discover`. This refusal can only reach a
-              // caller from `set_element_value`, which is registered in the kill-switch
-              // branch — and that branch and the v2 branch are mutually exclusive, so
-              // `desktop_discover` is NOT registered wherever this fires. Naming it
-              // would hand the caller a tool it does not have. `get_windows` is
-              // co-registered with this tool and does the listing job. The cell below
-              // pins that every tool named here is registered in that same branch,
-              // because this defect was introduced while fixing a different false
-              // promise and neither the wording nor the provenance pin noticed.
-              "get_windows lists what is open now, so it can find a replacement if this window really did close. It cannot tell you whether this window is still there, because a title can name more than one. If the app was expected to close, this is the normal outcome and there may be nothing left to do.",
+              // NAMES NO TOOL, and that is forced rather than stylistic. Two gates
+              // encode opposite requirements here and between them every tool name is
+              // blocked. `tool-naming-phase4` forbids the V1 names in LLM-facing prose
+              // — `get_ui_elements`, `get_windows`, and `set_element_value` itself are
+              // all on `OLD_NAMES`, whose stated migration is `→ desktop_discover`. But
+              // registration is `if (_desktopV2) {…} else {…v1 tools…}`, mutually
+              // exclusive, and this refusal reaches a caller only from the kill-switch
+              // branch, where `desktop_discover` is NOT registered. So the sanctioned
+              // name is absent, and the present names are forbidden.
+              //
+              // The sibling refusal 200 lines up names `desktop_discover`, and that is a
+              // defect — but for a reason this comment originally got wrong. Naming-gate
+              // pressure explains why the name is THERE; it does not show the tool is
+              // missing where the advice fires, and reachability is the whole claim. The
+              // same argument would have condemned correct advice had that ladder lived
+              // in `click_element`, which is registered in both configurations. What
+              // settles it is measurement: `tools/list` taken from a server started both
+              // ways shows `desktop_discover` absent under the kill switch — so the
+              // shipped advice there is not merely unhelpful, it is UN-CALLABLE. Filed,
+              // not a precedent to copy (win2 measured it; mac's inference was withdrawn).
+              // Describing the ACTION
+              // satisfies both gates and is true in both configurations: whatever this
+              // deployment calls it, a read addressed to the handle is the one that
+              // stays specific to the window named.
+              "The window may in fact still be there: a UIA provider or RPC failure during the element walk answers exactly as a closed window does, and this road cannot tell the two apart. To ask about THIS window, read it again by its handle — the handle is in context.hwnd, and a read addressed to it is the only one that stays specific to the window you named. Listing windows afresh finds a replacement if this one really did close, but cannot tell you whether this one is still there, because a title can name more than one. If the app was expected to close, this is the normal outcome and there may be nothing left to do.",
             ],
             // `hwnd` as a string: it is a bigint, and the envelope is serialised with
             // `JSON.stringify`, which throws on one. Named here because a refusal that

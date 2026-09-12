@@ -167,8 +167,31 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     vi.mocked(setElementValue).mockResolvedValue({ ok: false, error: "ValuePatternNotSupported" });
     vi.mocked(insertTextViaTextPattern2).mockResolvedValue({ ok: false, code: "aim_window_gone" });
     const parsed = JSON.parse((await setElementValueHandler(PINNED_ARGS)).content[0].text);
-    const named = [...new Set((parsed.suggest.join(" ").match(/\b(?:get|set|desktop|click|run)_[a-z_]+\b/g) ?? []) as string[])];
-    expect(named.length).toBeGreaterThan(0);
+    const adv = parsed.suggest.join(" ");
+    const named = [...new Set((adv.match(/\b(?:get|set|desktop|click|run)_[a-z_]+\b/g) ?? []) as string[])];
+
+    // TWO GATES FORBID OPPOSITE THINGS HERE, and between them every tool name is
+    // blocked. `tool-naming-phase4` bans the V1 names from LLM-facing prose — and
+    // `set_element_value`, the tool producing this very advice, is itself on that
+    // list, whose stated migration is `→ desktop_discover`. But registration is
+    // `if (_desktopV2) {…} else {…v1 tools…}`, mutually exclusive, and this refusal
+    // reaches a caller ONLY from the kill-switch branch, where `desktop_discover`
+    // is not registered. Sanctioned name absent; present names forbidden.
+    //
+    // The sibling refusal above names `desktop_discover` and is a defect — though
+    // not for the reason first written here. That the naming gate is indifferent to
+    // registration explains why the name is present; it does not show the tool is
+    // absent where the advice fires, and reachability is the load-bearing claim.
+    // Measured rather than inferred: `tools/list` from a server started both ways
+    // shows `desktop_discover` missing under the kill switch, so that advice is
+    // un-callable, not just unhelpful. Describing the ACTION is true either way.
+    for (const forbidden of ["get_ui_elements", "get_windows", "set_element_value", "scope_element"]) {
+      expect(adv, `advice must not name the V1 tool ${forbidden} (tool-naming-phase4)`).not.toContain(forbidden);
+    }
+    // Naming nothing must not become a licence to say nothing: the recovery has to
+    // stay concrete, or this cell would pass on advice that dropped it entirely.
+    expect(adv).toMatch(/by its handle/i);
+    expect(adv).toMatch(/context\.hwnd/);
 
     const server = readFileSync("src/server-windows.ts", "utf8");
     const start = server.indexOf("Phase 4 kill-switch V1 fallback");
@@ -219,8 +242,14 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // a title-shaped listing cannot answer "is THIS window still there", because a
     // title can name more than one. So pin the by-handle read, which can — and which
     // is a real parameter on this tool family, not an invented one.
-    expect(parsed.suggest.join(" ")).toMatch(/get_ui_elements/);
-    expect(parsed.suggest.join(" ")).toMatch(/same hwnd/i);
+    // Re-pointed from the tool NAME to the ACTION. This used to assert
+    // `/get_ui_elements/`, which `tool-naming-phase4` forbids in LLM-facing prose —
+    // and the sanctioned replacement, `desktop_discover`, is not registered in the
+    // branch this refusal fires from. Every tool name is blocked, so the advice
+    // describes what to do instead. Deleting the assertion was not an option: it
+    // was guarding that the refusal leaves a concrete next step at all.
+    expect(parsed.suggest.join(" ")).toMatch(/read it again by its handle/i);
+    expect(parsed.suggest.join(" ")).toMatch(/context\.hwnd/);
     // The advice must carry the same uncertainty as the error text. The shared
     // `SUGGESTS.AimWindowGone` asserts the window is gone and the handle unusable,
     // and the advice is the half a model reads — so a live window whose provider
