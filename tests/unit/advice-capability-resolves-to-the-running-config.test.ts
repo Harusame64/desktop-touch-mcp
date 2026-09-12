@@ -81,6 +81,7 @@ import {
   hasPlaceholder,
   CAPABILITIES,
   type AdviceLine,
+  type Surface,
 } from "../../src/tools/_advice-capability.js";
 
 /**
@@ -427,6 +428,36 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // instance, used the way a hoisting scanner would use it, alternates.
     const hoisted = new RegExp(placeholderSource(), "g");
     expect(lines.map((l) => hoisted.test(l))).toEqual([true, false, true]);
+  });
+
+  it("answers for the LIVE surface when given one — the fifth state the flag cannot see", () => {
+    // PR-SIDE CODEX P2 on `131c663`, verified in source: `server-windows.ts` loads
+    // the v2 module with `await import(…).catch(() => null)` — a failed import is
+    // swallowed on purpose — and registration branches on `_desktopV2`, not on the
+    // flag. So with the flag ON and the module missing, the published surface is V1
+    // while `resolveV2Activation` still says enabled. The resolver would then
+    // recommend `desktop_discover`, which is not registered: the exact defect this
+    // ADR exists to close, inside the fix.
+    const v1Live: Surface = { v2Loaded: false };
+    const v2Live: Surface = { v2Loaded: true };
+
+    // Flag says v2 (V2 has no kill switch set) but the module did not load:
+    expect(providerFor("reidentify_element", V2, v1Live)).toBe("get_ui_elements");
+    expect(providerFor("list_window_titles", V2, v1Live)).toBe("get_windows");
+    expect(providerFor("set_value", V2, v1Live)).toBe("set_element_value");
+    expect(providerFor("disambiguate_window_by_handle", V2, v1Live)).toBeNull();
+    // And the line drops, because that capability has no V1 provider:
+    expect(
+      renderAdvice(["Pass the handle {tool:disambiguate_window_by_handle} returns"], V2, v1Live),
+    ).toEqual([]);
+
+    // The surface beats the flag in the other direction too, so nothing here is
+    // reading both and preferring one by accident:
+    expect(providerFor("reidentify_element", KILL, v2Live)).toBe("desktop_discover");
+
+    // Omitting it keeps the old behaviour exactly — the reading, not the surface.
+    expect(providerFor("reidentify_element", V2)).toBe("desktop_discover");
+    expect(providerFor("reidentify_element", KILL)).toBe("get_ui_elements");
   });
 
   it("keeps surviving lines in their original order", () => {

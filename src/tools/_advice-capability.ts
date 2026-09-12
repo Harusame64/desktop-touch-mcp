@@ -415,11 +415,38 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * a unit test with no Windows machine — `keyLockerDisabled` did not take one until
  * codex pointed out that this function then answered for the wrong configuration.
  */
+/**
+ * What the server ACTUALLY published, when the caller knows it.
+ *
+ * **THERE IS A FIFTH STATE, and the flag cannot see it** (PR-side codex P2 on
+ * `131c663`, verified in source). `server-windows.ts` pre-loads the v2 module with
+ * `await import(…).catch(() => null)` — a failed import is deliberately swallowed so
+ * the server still starts — and registration then branches on **`_desktopV2`**, not
+ * on the flag: a null module publishes the three V1 fallback tools instead. So with
+ * the flag ON and the module missing, the live surface is V1 while
+ * `resolveV2Activation` still answers `enabled: true`.
+ *
+ * That makes the module's own design rule ("the predicates are the ones REGISTRATION
+ * reads") false on exactly one path — and this is the defect this whole ADR exists to
+ * close, sitting inside the fix: advice naming a tool the caller cannot call.
+ *
+ * So a caller that knows the surface passes it, and the flag reading is the fallback
+ * for callers that do not. The presenter will pass it when it is wired; until then
+ * every call here is the reading, which is why the reading is labelled rather than
+ * hidden.
+ */
+export type Surface = {
+  /** True when the v2 module loaded AND registered, i.e. `_desktopV2 !== null`. */
+  v2Loaded: boolean;
+};
+
 export function providerFor(
   cap: Capability,
   env: Record<string, string | undefined> = process.env,
+  surface?: Surface,
 ): string | null {
-  const v2 = resolveV2Activation(env).enabled;
+  // `surface` is the measurement; `env` is the reading. See {@link Surface}.
+  const v2 = surface ? surface.v2Loaded : resolveV2Activation(env).enabled;
   switch (cap) {
     case "reidentify_element":
       return v2 ? "desktop_discover" : "get_ui_elements";
@@ -490,6 +517,7 @@ export type AdviceLine = string;
 export function renderAdvice(
   lines: readonly AdviceLine[],
   env: Record<string, string | undefined> = process.env,
+  surface?: Surface,
 ): string[] {
   const out: string[] = [];
   // One pattern for this call, not one per line. Hoisted after gate 2 pointed out
@@ -509,7 +537,7 @@ export function renderAdvice(
       // A capability this module does not know stays verbatim — visibly broken
       // beats a sentence that reads as advice. See the note on `KNOWN`.
       if (!isCapability(cap)) return whole;
-      const tool = providerFor(cap, env);
+      const tool = providerFor(cap, env, surface);
       if (tool === null) {
         dropped = true;
         // Discarded — the whole line is dropped below. Returning the placeholder
