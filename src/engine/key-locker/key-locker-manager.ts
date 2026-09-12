@@ -81,9 +81,21 @@ export function consentAccepted(storeDir?: string): boolean {
   }
 }
 
-/** True if the whole feature is hard-disabled by the kill switch (regardless of consent, L4 §2). */
-export function keyLockerDisabled(): boolean {
-  return process.env.DESKTOP_TOUCH_DISABLE_KEY_LOCKER === "1";
+/**
+ * True if the whole feature is hard-disabled by the kill switch (regardless of consent, L4 §2).
+ *
+ * `env` is optional and defaulted, so every production caller reads the LIVE switch exactly as
+ * before. It exists because one caller asks about a configuration that is not necessarily the
+ * running one: advice resolution renders a line for a NAMED configuration
+ * (`tools/_advice-capability.ts`). Reading the ambient process there made `credential_store` the one
+ * capability that ignored the configuration it was handed — recommending `key_locker` for a
+ * locker-off configuration, and dropping the line for a locker-on one (PR-side codex P2 on
+ * `64e69a2`). Widening this predicate keeps ONE reader of the switch: if resolution re-implemented
+ * the check, the two would drift the first time either changed. It also makes all four corners of
+ * the two kill switches reachable in a unit test without mutating shared process state.
+ */
+export function keyLockerDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.DESKTOP_TOUCH_DISABLE_KEY_LOCKER === "1";
 }
 
 export interface KeyLockerManagerOptions extends KeyLockerStartOptions {
