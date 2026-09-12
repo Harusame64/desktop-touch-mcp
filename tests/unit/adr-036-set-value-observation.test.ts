@@ -146,6 +146,31 @@ describe("ADR-036 — set_element_value observes its window exactly once, whiche
     expect(mockBuildHints.mock.calls[0]![0]).toBe(RESOLVED);
   });
 
+  it("channel 2 says the window is gone — the chain stops there, and still observes exactly once", async () => {
+    // The refusal added on `5b133f3` is a NEW route out of this handler, and an
+    // early return never reaches the outer catch that pays the debt for the
+    // throwing paths. So the observation has to be taken at the branch. Deleting
+    // it left every other cell in this file green — this is the one that notices
+    // (gate 2, M2 on `5b133f3`).
+    process.env.DTM_SET_VALUE_CHAIN = "1";
+    mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternNotSupported" } as never);
+    mockInsertText.mockResolvedValue({ ok: false, code: "aim_window_gone" } as never);
+    // This file's `beforeEach` clears `mockBuildHints` and `mockEvalGuards` and
+    // NOT this one, so "was channel 3 reached?" reads a call left by an earlier
+    // cell unless it is cleared here. Asserting on an accumulated mock is the
+    // same vacuity gate 2 just found one file over — a cell that would pass
+    // whatever the code did.
+    mockKeyboardType.mockClear();
+    const r = await call();
+    expect(JSON.parse(r.content[0].text).code).toBe("AimWindowGone");
+    // Once, and pinned to the handle — because channel 2 is the channel that ran,
+    // and it was aimed at that handle.
+    expect(mockBuildHints).toHaveBeenCalledTimes(1);
+    expect(mockBuildHints).toHaveBeenCalledWith(RESOLVED, LIVE, true);
+    // The keyboard channel never ran, so it owes nothing and left nothing behind.
+    expect(mockKeyboardType).not.toHaveBeenCalled();
+  });
+
   it("all channels failed", async () => {
     process.env.DTM_SET_VALUE_CHAIN = "1";
     mockSetValue.mockResolvedValue({ ok: false, error: "ValuePatternFailed" } as never);

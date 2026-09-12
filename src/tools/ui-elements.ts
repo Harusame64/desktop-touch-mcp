@@ -644,13 +644,27 @@ export const setElementValueHandler = async ({
       // its name and does not say it. `failCode` names the code directly, and
       // `toToolFailure` omits the `suggest` key entirely when it is empty, so the
       // advice is passed explicitly rather than assumed.
-      if (r2.code === AIM_WINDOW_GONE) {
+      // `resolvedWin !== null` is structural, not defensive padding. The code can
+      // only arrive from a call that named a handle — the bridge withholds it from
+      // a title search on purpose, because a window that stops matching a title is
+      // not a window that left — but that invariant lives in two other modules and
+      // was carried here by comment alone. A title caller's recovery is different,
+      // so if the title road ever learns to say "gone", this refusal must not widen
+      // to it silently (gate 2, L1 on `5b133f3`).
+      if (r2.code === AIM_WINDOW_GONE && resolvedWin !== null) {
         // Paid here because this early return never reaches the outer catch, and
         // named by the handle because channel 2 is the channel that ran.
-        observe(effectiveTitle, resolvedWin?.hwnd);
+        observe(effectiveTitle, resolvedWin.hwnd);
         return failCode(
           "AimWindowGone",
-          "The window this write was aimed at no longer exists — nothing was written. " +
+          // "reported as gone", not "no longer exists". The PowerShell road reaches
+          // this through a blanket catch over the whole descendant walk, and a
+          // provider or RPC fault there is not proof the window left. The
+          // stale-descendant half of that worry was measured and did NOT reproduce
+          // (a destroyed child of a live window threw nothing), but the COM half is
+          // unmeasured — so the sentence reports what was answered rather than
+          // asserting the state of the world (gate 2, M3 on `5b133f3`).
+          "The window this write was aimed at reported as gone, so nothing was written. " +
           "The remaining fallback types into whichever window is in front, which may be a different one wearing the same title.",
           {
             suggest: getSuggestsForCode("AimWindowGone"),

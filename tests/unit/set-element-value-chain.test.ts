@@ -49,11 +49,31 @@ vi.mock("../../src/engine/identity-tracker.js", () => ({
   buildCacheStateHints: vi.fn().mockReturnValue({}),
 }));
 
+// ADR-036 — without this mock the title road is the only road this file can drive:
+// `resolveWindowTarget` falls back to `null` here, because the native win32 binding is
+// absent on a dev machine and the resolver swallows that. And the gone code is withheld
+// from the title road on purpose. So a refusal cell written without it pins a state
+// production cannot produce. Gate 2 caught exactly that: a mutant scoping the guard to
+// `resolvedWin === null` — dead on every real call — left the cell green.
+vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
+  return {
+    ...actual,
+    resolveWindowTarget: vi.fn(async (p: { hwnd?: string; windowTitle?: string }) =>
+      p.hwnd !== undefined
+        ? { hwnd: BigInt(p.hwnd), title: "TestApp", warnings: [], className: "TestClass" }
+        : null),
+  };
+});
+
 import { setElementValueHandler } from "../../src/tools/ui-elements.js";
 import { setElementValue, insertTextViaTextPattern2 } from "../../src/engine/uia-bridge.js";
 import { keyboardTypeHandler } from "../../src/tools/keyboard.js";
 
 const BASE_ARGS = { windowTitle: "TestApp", value: "hello", name: "input" };
+/** The refusal below exists only on the handle road, so the cell has to name a handle. */
+const PINNED = 0x4444n;
+const PINNED_ARGS = { ...BASE_ARGS, hwnd: String(PINNED) };
 
 describe("setElementValueHandler — chain disabled (DTM_SET_VALUE_CHAIN=0)", () => {
   beforeEach(() => {
@@ -125,9 +145,17 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // TITLE, with the auto-guard skipped. Continuing past `aim_window_gone`
     // sends Ctrl+A and the whole value to the window that inherited the
     // foreground, and a same-titled sibling passes the leash's substring check.
+    //
+    // Driven through the HANDLE road, which is the only road that can produce
+    // the code: the bridge withholds it from a title search, because a window
+    // that stops matching a title is not a window that left.
     vi.mocked(setElementValue).mockResolvedValue({ ok: false, error: "ValuePatternNotSupported" });
     vi.mocked(insertTextViaTextPattern2).mockResolvedValue({ ok: false, code: "aim_window_gone" });
-    const result = await setElementValueHandler(BASE_ARGS);
+    const result = await setElementValueHandler(PINNED_ARGS);
+    // The channel that produced the refusal was itself aimed at the handle — if
+    // it were not, the code could not have arrived and this cell would be
+    // pinning a state the product never reaches.
+    expect(vi.mocked(insertTextViaTextPattern2).mock.calls[0]?.[4]).toEqual({ hwnd: PINNED });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("AimWindowGone");
