@@ -689,13 +689,72 @@ export const setElementValueHandler = async ({
             // index-derived variant drifts silently the day someone reorders the
             // shared array, which is how a document starts lying. The cell below
             // pins that this advice does not assert.
+            // The first version of this advice hedged correctly about the evidence
+            // and was wrong about the CONSEQUENCE (gate 2, Medium on `f960513`). It
+            // told the caller the window might still be there, dropped every mention
+            // of the handle, and promised `desktop_discover` would say which — but a
+            // title names more than one window, which is the premise this whole ADR
+            // rests on, so a title-shaped discover cannot answer that question. A
+            // caller following it drops the handle and retries by title, and the
+            // title road WITHHOLDS `aim_window_gone` by design (it answers
+            // `WindowNotFound`), so this guard cannot fire a second time. Channel 3
+            // then types into whichever same-titled window is in front. That is not
+            // a hypothesis: a same-titled bystander has been measured taking a plain
+            // ASCII write, `CATCH-SEED` overwritten to `PROBE-P2` with `ok:true`.
+            //
+            // So the advice now closes the road it used to open, says nothing about
+            // leases or entities (those belong to `desktop_act`; this handler has
+            // neither), and keeps the handle in view — `context.hwnd` carries it.
             suggest: [
-              "Re-run desktop_discover: the write was refused because the window was reported as gone, so the lease and the entities taken from it may no longer describe anything.",
-              "Do NOT retry by coordinate. If the window did close, the entity's rect is where it used to be and another window may be occupying it — the keystrokes would land on that one.",
-              "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
-              "If the window is still there, this can be a transient UIA provider or RPC failure during the element walk rather than a window that closed. desktop_discover will say which, and a fresh lease is needed either way.",
+              "Nothing was written. The window this write named by handle was reported as gone — the handle is in context.hwnd.",
+              "Do NOT fall back to addressing this window by title. A title can name more than one window, so that road cannot repeat this refusal, and the keyboard fallback types into whichever same-titled window is in front. A bystander window taking the write has been measured, not merely predicted.",
+              "Do NOT retry by coordinate either. If the window did close, the remembered rectangle is where it used to be, and whatever occupies it now would take the keystrokes.",
+              // NAMES NO TOOL, and that is forced rather than stylistic. Two gates
+              // encode opposite requirements here and between them every tool name is
+              // blocked. `tool-naming-phase4` forbids the V1 names in LLM-facing prose
+              // — `get_ui_elements`, `get_windows`, and `set_element_value` itself are
+              // all on `OLD_NAMES`, whose stated migration is `→ desktop_discover`. But
+              // registration is `if (_desktopV2) {…} else {…v1 tools…}`, mutually
+              // exclusive, and this refusal reaches a caller only from the kill-switch
+              // branch, where `desktop_discover` is NOT registered. So the sanctioned
+              // name is absent, and the present names are forbidden.
+              //
+              // The sibling refusal 200 lines up names `desktop_discover`, and that is a
+              // defect — but for a reason this comment originally got wrong. Naming-gate
+              // pressure explains why the name is THERE; it does not show the tool is
+              // missing where the advice fires, and reachability is the whole claim. The
+              // same argument would have condemned correct advice had that ladder lived
+              // in `click_element`, which is registered in both configurations. What
+              // settles it is measurement: `tools/list` taken from a server started both
+              // ways shows `desktop_discover` absent under the kill switch — so the
+              // shipped advice there is not merely unhelpful, it is UN-CALLABLE. Filed,
+              // not a precedent to copy (win2 measured it; mac's inference was withdrawn).
+              // Describing the ACTION satisfies both gates and is true in both
+              // configurations. But note what the earlier version of THIS comment went
+              // on to say — "a read addressed to the handle is the one that stays
+              // specific to the window named" — which is the very claim retracted just
+              // below. The correction was spliced in without deleting the sentence it
+              // replaced, so the file asserted both at once for several commits: the
+              // same false promise reaching a third audience, in the comment that
+              // explains why it is false.
+              //
+              // A handle does NOT preserve identity, and the earlier wording here
+              // promised that it did — "the only read that stays specific to the
+              // window you named". Windows recycles handle numbers (measured at
+              // ~24.6 s for a full cycle on a real machine), and
+              // `resolveWindowTarget` resolves a handle by asking whether SOMETHING
+              // is there — a title, else a rect — without comparing process
+              // identity. `desktop-executor.ts` already names this hazard exactly:
+              // "a recycled handle produces a row that says 'checked' about a
+              // stranger". So a reread can hand back an unrelated replacement, and
+              // advice claiming otherwise is a second false promise in the place of
+              // the first (PR 側 codex P2 on `24805cd`).
+              "The window may in fact still be there: a UIA provider or RPC failure during the element walk answers exactly as a closed window does, and this road cannot tell the two apart. The handle is in context.hwnd and the resolved title in context.windowTitle — a by-handle read needs both, because the handle takes precedence but the title is still a required argument. Reading by that handle asks what owns it NOW; it does not establish that the original window survived, because handle numbers are recycled and a reread can answer for an unrelated replacement. Treat a reread as probing the handle's current owner and compare what comes back against what you expected. If the app was expected to close, this is the normal outcome and there may be nothing left to do.",
             ],
-            context: { windowTitle: effectiveTitle, name, automationId, attempts },
+            // `hwnd` as a string: it is a bigint, and the envelope is serialised with
+            // `JSON.stringify`, which throws on one. Named here because a refusal that
+            // will not say which window it refused cannot be acted on precisely.
+            context: { windowTitle: effectiveTitle, hwnd: resolvedWin.hwnd.toString(), name, automationId, attempts },
           },
         );
       }

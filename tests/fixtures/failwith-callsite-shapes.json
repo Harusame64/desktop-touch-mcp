@@ -573,28 +573,28 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 763,
+      "line": 822,
       "tool": "set_element_value",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 777,
+      "line": 836,
       "tool": "set_element_value",
       "errKind": "member",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 830,
+      "line": 889,
       "tool": "scope_element",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 875,
+      "line": 934,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"
