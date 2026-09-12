@@ -437,6 +437,22 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // has to keep holding underneath it.
     expect(hasPlaceholder("run_macro(&#x07B;tool&#x03A;&#x22;s&#x22;&#x07D;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#0123;tool&#058;&quot;s&quot;&#0125;)")).toBe(false);
+
+    // REFERENCES TO THE CURLY AND FULL-WIDTH QUOTES. The exemption claimed "a
+    // character reference to one" while listing those quotes only as literals, so
+    // these eight legitimate examples were flagged — false positives since
+    // `572edd8`, untouched by two rewrites that called themselves structural
+    // (gate 2 round 8, finding 2). The lesson is the asymmetry, not the characters:
+    // widening what counts as a BRACE while leaving the QUOTE side narrower turns
+    // product syntax into leftovers.
+    expect(hasPlaceholder("run_macro(&#123;tool:&#8220;s&#8221;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#x201C;s&#x201D;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&ldquo;s&rdquo;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#8216;s&#8217;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&lsquo;s&rsquo;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#65282;s&#65282;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#xFF02;s&#xFF02;&#125;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#65287;s&#65287;&#125;)")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -494,6 +510,21 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       "use &#x07B;tool&#x03A;set_value&#x07D; to do it",
       "use &#0123;tool&#058;set_value&#0125; to do it",
       "use &#x07B;tool&#58;set_value&#125; to do it", // padded hex brace, plain decimal rest
+      // REFERENCES TO THE FULL-WIDTH CHARACTERS, and the HTML5 named forms. The
+      // detector accepted the literal `｛｝：` while having no reference form for
+      // them, so these were shipped verbatim and missed — this module's own two
+      // premises composed (a CJK IME emits the full-width characters; a doc pipeline
+      // escapes non-ASCII), gate 2 round 8, finding 1.
+      "use &#65371;tool&#65306;set_value&#65373; to do it",
+      "use &#xFF5B;tool&#xFF1A;set_value&#xFF5D; to do it",
+      "use &#65371;tool:set_value&#65373; to do it", // reference brace, literal colon
+      "use ｛tool&#65306;set_value｝ to do it", // literal brace, reference colon
+      "use &lbrace;tool&colon;set_value&rbrace; to do it",
+      "use &lcub;tool&colon;set_value&rcub; to do it",
+      "use &#123;tool&colon;set_value&#125; to do it", // decimal braces, named colon
+      // And the cross-base conflation that ate a real leftover: `&#x39;` is the
+      // digit 9, not an apostrophe, so this must be flagged (round 8, finding 5).
+      "use &#123;tool:&#x39;set_value&#125; to do it",
       "use &#123;tool: set_value&#125; to do it", // entity braces, space, a NAME
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);

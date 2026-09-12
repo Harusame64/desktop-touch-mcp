@@ -254,10 +254,44 @@ export function placeholderPattern(): RegExp {
  * legal — was shipped verbatim and **not** flagged (PR-side codex P2 on `99b9b63`).
  * Measured: three such shapes missed. Writing every reference the same way
  * (`&(?:#x?0*(?:7B|123));`, `&(?:#x?0*(?:3A|58));`, `&(?:#x?0*(?:7D|125));`) takes
- * that to 0 missed, tree false positives still 0, and 12 of 12 negatives still
- * clean — including a zero-padded brace around a *quoted* example, which must stay
- * unflagged. **Fixing one token and leaving its neighbours enumerated is what made
- * this the ninth round in a row to find "the same class one token to the right".**
+ * that to 0 missed, tree false positives still 0, and **every negative still clean**
+ * — including a zero-padded brace around a *quoted* example, which must stay
+ * unflagged. (No count: "12 of 12" stood here and was the FIFTH wrong battery figure
+ * in this comment, minted by the commit whose headline was that counting stops
+ * happening here — gate 2 round 8, finding 3.)
+ *
+ * **AND THAT ROUND FOUND THE LIST HAD ONLY MOVED: from spellings to CODE POINTS.**
+ * `(?:7B|123)` still enumerates, and the detector accepted the literal full-width
+ * brace while having no reference form for it — so `&#65371;tool&#65306;…&#65373;`,
+ * its hex twin, the mixed forms, and the HTML5 **named** references
+ * (`&lbrace;` `&colon;` `&rbrace;` `&lcub;` `&rcub;`) were all shipped verbatim and
+ * missed: **8 of 16 probes**, measured. It is this module's own two premises
+ * composed — a CJK IME emits `｛｝：`, and a doc pipeline escapes non-ASCII, so
+ * references TO the full-width characters are the natural product of both.
+ *
+ * The mirror was live too: the exemption claimed "a character reference to one"
+ * while carrying no reference forms for the curly and full-width quotes it lists as
+ * literals, so **8 legitimate product examples were flagged** (`&#8220;`,
+ * `&#x201C;`, `&ldquo;`, `&#8216;`, `&lsquo;`, `&#65282;`, `&#xFF02;`, `&#65287;`) —
+ * false positives since `572edd8`, untouched by two "structural" rewrites.
+ *
+ * **AND `#x?` LET EACH BASE BORROW THE OTHER'S DIGITS.** `&#x39;` is the digit `9`,
+ * not an apostrophe, yet it was exempted — so `{tool:&#x39;set_value}` was a missed
+ * leftover; symmetrically `&#x123;` (`ģ`) counted as a brace. Each reference is now
+ * written per code point AND per base (`#0*123` decimal-only, `#x0*7B` hex-only),
+ * with the named forms and the full-width code points beside the ASCII ones.
+ * Measured: **16 of 16 probes flagged, 18 of 18 negatives clean, 0 tree false
+ * positives** (gate 2 round 8, findings 1, 2 and 5).
+ *
+ * **Fixing one token and leaving its neighbours enumerated is what kept
+ * this class coming back.** The widenings, by the commit that made each — because a
+ * narrated ordering of them was measured wrong twice (two pairs landed together and
+ * one pair was inverted, and the "nth round" ordinals were not reconstructible from
+ * the record — gate 2 round 8, finding 4): `572edd8` full-width braces **and** their
+ * decimal references; `e670ad7` the full-width colon, hex brace references **and**
+ * the decimal colon reference; `d7af13d` the hex colon; `99b9b63` hex quotes;
+ * `ad89dde` zero-padded and full-width/curly quote LITERALS; `282e0f2` zero-padded
+ * braces and colon.
  *
  * The enumerated version was false as implemented, and the measurement is why this
  * one is structural: with six spellings listed, **5 of 14 negatives were claimed** —
@@ -277,8 +311,10 @@ export function placeholderPattern(): RegExp {
  * malformed missed, 0 negatives claimed **at `51e2d88`, where that exemption landed:
  * 15 positives and 12 negatives** (the "16 positives" written here matched no tree —
  * round 7, finding 5). The hex quote entities and three more negatives came after,
- * and it has grown every round since; **the size is counted in the cell file, not
- * restated here** — see the note above for why that number stopped being written.
+ * and it has grown every round since; **the battery LIVES in the cell file and its
+ * size is not stated anywhere** — nothing counts it there either, which is the
+ * honest version: the shapes are the record, the number was only ever a summary that
+ * went stale (gate 2 round 8, finding 7, on the wording "counted in the cell file").
  *
  * The entity alternatives are lower-case only ON PURPOSE: this regex already carries
  * `/i`, so `&QUOT;` is covered by the flag. Adding case variants measured identically
@@ -300,7 +336,16 @@ export function placeholderPattern(): RegExp {
  * **HTML-escaped colon** `&#58;`. Adding all three keeps tree false positives at 0
  * and takes the battery from 8 missed shapes to 0.
  *
- * **STILL NOT FLAGGED, deliberately**: an unbalanced quote — the literal
+ * **STILL NOT FLAGGED, deliberately — and one of these is a choice, not a limit**:
+ * a reference with **no closing semicolon** (`&#123tool&#58set_value&#125`). HTML5
+ * does parse those, and they are missed here. Closing them would mean matching
+ * `&quot` without its semicolon on the exemption side too, and that **re-opens a
+ * false positive** on the product's own `run_macro(&#123;tool:&quot s…)` — measured
+ * both ways. So the trade is taken deliberately: **a semicolon-less leftover is
+ * missed rather than a semicolon-less product example being claimed** (gate 2 round
+ * 8, finding 6, which asked for this to be named rather than silently absent).
+ *
+ * Also **still not flagged**: an unbalanced quote — the literal
  * `{tool:'set_value}`, and **since the structural exemption, its entity spellings
  * too** (`&#123;tool:&#x22;set_value&#125;` was flagged at `d7af13d` and is not now;
  * gate 2 round 7, finding 10, which caught the narrowing going unrecorded) — and
@@ -312,7 +357,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&(?:#x?0*(?:7B|123));)tool\s*(?:[:：]|&(?:#x?0*(?:3A|58));)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"']*(?:[}｝]|&(?:#x?0*(?:7D|125));)|(?:[{｛]|&(?:#x?0*(?:7B|123));)tool\s*(?:[:：]|&(?:#x?0*(?:3A|58));)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|#x?0*(?:22|27|34|39));))[^}｝"'\s]+/i;
+  /(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|ldquo|rdquo|lsquo|rsquo|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"']*(?:[}｝]|&(?:rbrace|rcub|#0*125|#x0*7D|#0*65373|#x0*FF5D);)|(?:[{｛]|&(?:lbrace|lcub|#0*123|#x0*7B|#0*65371|#x0*FF5B);)tool\s*(?:[:：]|&(?:colon|#0*58|#x0*3A|#0*65306|#x0*FF1A);)(?!\s*(?:["'＂＇“”‘’]|\\["']|&(?:quot|apos|ldquo|rdquo|lsquo|rsquo|#0*(?:34|39|8216|8217|8220|8221|65282|65287)|#x0*(?:22|27|2018|2019|201C|201D|FF02|FF07));))[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
