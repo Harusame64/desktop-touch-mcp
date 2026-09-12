@@ -280,8 +280,10 @@ export function placeholderPattern(): RegExp {
  * leftover; symmetrically `&#x123;` (`ģ`) counted as a brace. Each reference is now
  * written per code point AND per base (`#0*123` decimal-only, `#x0*7B` hex-only),
  * with the named forms and the full-width code points beside the ASCII ones.
- * Measured: **16 of 16 probes flagged, 18 of 18 negatives clean, 0 tree false
- * positives** (gate 2 round 8, findings 1, 2 and 5).
+ * Measured **over that round's probe set — 16 shapes and 18 negatives, all of them
+ * clean, 0 tree false positives** (gate 2 round 8, findings 1, 2 and 5). The pair is
+ * a record of that run, not a live size: the probe set grows every round too, and
+ * the lesson about counts applies to it exactly as it did to the battery.
  *
  * **Fixing one token and leaving its neighbours enumerated is what kept
  * this class coming back.** The widenings, by the commit that made each — because a
