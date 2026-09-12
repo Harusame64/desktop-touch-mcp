@@ -299,6 +299,13 @@ export interface NativeUia {
     maxDepth?: number;
     maxElements?: number;
     fetchValues?: boolean;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeUiElementsResult>;
   uiaGetFocusedAndPoint?(opts: {
     cursorX: number;
@@ -312,18 +319,39 @@ export interface NativeUia {
     name?: string;
     automationId?: string;
     controlType?: string;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeActionResult>;
   uiaSetValue?(opts: {
     windowTitle: string;
     value: string;
     name?: string;
     automationId?: string;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeActionResult>;
   uiaInsertText?(opts: {
     windowTitle: string;
     value: string;
     name?: string;
     automationId?: string;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeActionResult>;
   uiaGetElementBounds?(opts: {
     windowTitle: string;
@@ -343,6 +371,8 @@ export interface NativeUia {
   uiaGetTextViaTextPattern?(opts: {
     windowTitle: string;
     timeoutMs: number;
+    /** ADR-036 — read this window's text, not the first one answering to the title. */
+    hwnd?: string;
   }): Promise<string | null>;
 
   // Phase D: Scroll / VDesktop

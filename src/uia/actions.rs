@@ -9,7 +9,7 @@ use windows::core::Interface;
 
 use super::scroll::find_element;
 use super::thread::{self, UiaContext};
-use super::tree::find_window;
+use super::tree::{resolve_root, CACHE_BUILD_FAILED_PREFIX};
 use super::types::*;
 
 const DEFAULT_TIMEOUT_MS: u32 = 8_000;
@@ -24,6 +24,9 @@ pub struct ClickElementOptions {
     pub name: Option<String>,
     pub automation_id: Option<String>,
     pub control_type: Option<String>,
+    /// ADR-036 — act on THIS window, rather than the first one whose name contains `window_title`.
+    /// A decimal handle as a string; see `GetElementsOptions::hwnd`.
+    pub hwnd: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -33,6 +36,9 @@ pub struct SetValueOptions {
     pub value: String,
     pub name: Option<String>,
     pub automation_id: Option<String>,
+    /// ADR-036 — act on THIS window, rather than the first one whose name contains `window_title`.
+    /// A decimal handle as a string; see `GetElementsOptions::hwnd`.
+    pub hwnd: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -42,6 +48,9 @@ pub struct InsertTextOptions {
     pub value: String,
     pub name: Option<String>,
     pub automation_id: Option<String>,
+    /// ADR-036 — act on THIS window, rather than the first one whose name contains `window_title`.
+    /// A decimal handle as a string; see `GetElementsOptions::hwnd`.
+    pub hwnd: Option<String>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -69,15 +78,38 @@ pub fn insert_text(opts: InsertTextOptions) -> napi::Result<ActionResult> {
 
 // ─── Implementation ──────────────────────────────────────────────────────────
 
+/// ADR-036 — a handle that no longer names a usable window is not "the route failed".
+///
+/// `resolve_root` fails on the handle road when the number does not parse, is not a window, or
+/// `ElementFromHandle` refuses it — all of which mean the window the caller named is gone. The
+/// PowerShell by-handle scripts have always said so with `code: "aim_window_gone"`, and the
+/// executor weighs that code to refuse without pressing the remembered rect. The native road
+/// answered with a sentence and no code, so once the engine started taking handles, a pinned act
+/// on a closed window came back as `aim_route_failed` and lost that advice (gate 2 on this branch).
+/// The title road keeps `None`: a title that matches nothing is not a window that went away.
+///
+/// And a failure raised after the window WAS found keeps `None` too: `BuildUpdatedCache` can fault
+/// on a live window (a provider hiccup, an RPC fault), and calling that "gone" would send the caller
+/// to re-discover a window that is still there (PR 側 codex, P2 on #631). `tree.rs` marks that case,
+/// because only this crate produces and reads the mark.
+fn root_failure_code(hwnd: Option<&str>, reason: &str) -> Option<String> {
+    if hwnd.is_none() || reason.starts_with(CACHE_BUILD_FAILED_PREFIX) {
+        return None;
+    }
+    Some("aim_window_gone".to_string())
+}
+
 fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Result<ActionResult> {
-    let window = match find_window(ctx, &opts.window_title) {
+    let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
         Err(e) => {
+            // The code is read from the reason before `error` takes ownership of it.
+            let code = root_failure_code(opts.hwnd.as_deref(), &e.reason);
             return Ok(ActionResult {
                 ok: false,
                 element: None,
                 error: Some(e.reason),
-                code: None,
+                code,
             });
         }
     };
@@ -164,14 +196,15 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
 }
 
 fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<ActionResult> {
-    let window = match find_window(ctx, &opts.window_title) {
+    let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
         Err(e) => {
+            let code = root_failure_code(opts.hwnd.as_deref(), &e.reason);
             return Ok(ActionResult {
                 ok: false,
                 element: None,
                 error: Some(e.reason),
-                code: None,
+                code,
             });
         }
     };
@@ -247,14 +280,15 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
 }
 
 fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<ActionResult> {
-    let window = match find_window(ctx, &opts.window_title) {
+    let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
         Err(e) => {
+            let code = root_failure_code(opts.hwnd.as_deref(), &e.reason);
             return Ok(ActionResult {
                 ok: false,
                 element: None,
                 error: Some(e.reason),
-                code: None,
+                code,
             });
         }
     };
