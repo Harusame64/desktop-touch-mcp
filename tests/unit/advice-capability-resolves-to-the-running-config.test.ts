@@ -407,6 +407,14 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(hasPlaceholder("run_macro(&#123;tool: &quot;screenshot&quot;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#123;tool:  &quot;screenshot&quot;&#125;)")).toBe(false);
     expect(hasPlaceholder("run_macro(&#x7B;tool: &quot;screenshot&quot;&#x7D;)")).toBe(false);
+    // ALL-HEX product examples. Adding the hex COLON created this class and the
+    // quote exemption had only named and decimal entities — the same hex/decimal
+    // asymmetry the commit before had just congratulated itself for finding, one
+    // token to the right (gate 2 round 6, finding 4). Synthetic: the tree contains
+    // zero hex entities, measured.
+    expect(hasPlaceholder("run_macro(&#x7B;tool&#x3A;&#x22;screenshot&#x22;&#x7D;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#x7B;tool&#x3A;&#x27;focus_window&#x27;&#x7D;)")).toBe(false);
+    expect(hasPlaceholder("run_macro(&#123;tool:&#x22;screenshot&#x22;&#125;)")).toBe(false);
     // …while the HTML-escaped LEFTOVER (no quote after the colon) stays a positive,
     // asserted in the malformed loop above. That contrast is the whole rule.
 
@@ -496,11 +504,19 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // unreachable for either cause**, so no publishable configuration has the flag
     // disagreeing with the surface — and the `Surface` parameter was removed.
     //
-    // What this cell pins is the consequence: the signature takes the env and
-    // nothing else, so re-adding a surface argument makes it fail to compile rather
-    // than quietly reintroducing an unreachable premise.
-    expect(providerFor.length).toBe(1); // cap, with env defaulted — no third parameter
-    expect(renderAdvice.length).toBe(1); // lines, with env defaulted
+    // AND THE REMOVAL ITSELF IS NOT PINNED BY ANY CELL — said plainly, because the
+    // first version of this cell claimed it was. It asserted
+    // `providerFor.length === 1`, with a comment that re-adding the argument "makes
+    // it fail to compile". Both halves are false (gate 2 round 6, finding 1, and
+    // re-measured here): `Function.length` counts only parameters BEFORE the first
+    // default, so a third one after `env = process.env` leaves it at 1; and
+    // `tsconfig.json` includes `src/**/*` only, with no second config, so this file
+    // is never type-checked at all — a caller passing a third argument would not
+    // fail `tsc` either. An inert guard is worse than none, because it reads as one.
+    //
+    // What this cell does hold is the BEHAVIOUR the flag alone must produce. If the
+    // premise ever becomes reachable — see the Linux-stub note in the module — this
+    // is where the change starts.
     expect(providerFor("reidentify_element", V2)).toBe("desktop_discover");
     expect(providerFor("reidentify_element", KILL)).toBe("get_ui_elements");
   });

@@ -176,8 +176,7 @@ export function placeholderPattern(): RegExp {
  * have their score recorded in this file** — the strict reuse, the quote-lookahead
  * (3 false positives), and the whitespace-after-brace variant (4 line / 15 whole-file)
  * — plus the shipped one (gate 2 round 5, finding 9: "two" undercounted its own text). The battery
- * itself is what the cell file holds, and counted there rather than here: **15
- * malformed positives and 8 negatives** at this commit (the earlier "six positives
+ * itself is what the cell file holds, and counted there rather than here: **22 malformed positives and 18 negatives** at this commit (the earlier "six positives
  * and four negatives" was a count of an earlier battery left in place while the
  * battery grew — gate 2 round 4, finding 8). The obvious pattern —
  * quote lookahead, optional closing brace — scored **3 false positives**, for two
@@ -220,8 +219,12 @@ export function placeholderPattern(): RegExp {
  * `{tool:\set_value}` is shipped verbatim and was NOT flagged, because a lookahead
  * for `[\\]` excludes every backslash rather than the escaped quotes it was added
  * for (PR-side codex P2 on `25f9bb3`). Exempting only `\"` and `\'` catches it —
- * measured over 16 malformed shapes and 8 negatives: **0 missed, 0 false positives,
- * 0 negatives claimed**, the product's own `{tool:\"sleep\"` still excluded.
+ * measured **over the battery as it stood at that commit, 16 malformed shapes and 8
+ * negatives**: 0 missed, 0 false positives, 0 negatives claimed, the product's own
+ * `{tool:\"sleep\"` still excluded. (The figure is left with its commit rather than
+ * refreshed: it is a record of what was run then, and the battery has since grown to
+ * 22 and 18 — gate 2 round 6, findings 3 and 7, which found two such figures reading
+ * as current.)
  *
  * **The measuring side wrote "the twentieth shape is unobserved, not absent" while
  * nineteen were tried. Gate 1 produced the twentieth within the hour.** That is the
@@ -233,9 +236,16 @@ export function placeholderPattern(): RegExp {
  * because the quote exemption knew only literal and backslash-escaped quotes and
  * read `&quot;` as ordinary content (PR-side codex P2 on `572edd8`). So the boundary
  * is restated once, for every encoding: **the character after the colon is a quote —
- * literal, backslash-escaped, or an HTML entity.** Measured over the tree and a
- * battery of 16 malformed positives and 12 negatives: **0 false positives, 0
- * malformed missed, 0 negatives claimed**.
+ * literal, backslash-escaped, or an HTML entity, NAMED OR NUMERIC IN EITHER BASE.**
+ * That last clause was missing until gate 2 round 6 (finding 4): the hex colon
+ * `&#x3A;` had been added while the quote exemption still listed only named and
+ * decimal entities, so an all-hex product example
+ * (`run_macro(&#x7B;tool&#x3A;&#x22;screenshot&#x22;&#x7D;)`) was newly flagged — the
+ * same hex/decimal asymmetry this comment had just congratulated itself for
+ * catching, recreated one token to the right. Measured over the tree and the battery
+ * as it stood at that commit (16 positives, 12 negatives): 0 false positives, 0
+ * malformed missed, 0 negatives claimed; the hex quote entities and three all-hex
+ * negatives were added after, and the battery now stands at 22 and 18.
  *
  * The entity alternatives are lower-case only ON PURPOSE: this regex already carries
  * `/i`, so `&QUOT;` is covered by the flag. Adding case variants measured identically
@@ -266,7 +276,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"'\s]+/i;
+  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;|&#x22;|&#x27;))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;|&#x22;|&#x27;))[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
@@ -468,7 +478,7 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * dynamic one:**
  *
  *   `server-windows.ts:22`  `import { registerMacroTools } from "./tools/macro.js"`
- *   `macro.ts:133-137`      `import { desktopDiscoverRegistrationSchema, … }`
+ *   `macro.ts:132-137`      `import { desktopDiscoverRegistrationSchema, … }`
  *                           `  from "./desktop-register.js"`
  *   and nothing imports `macro.ts` dynamically (measured: zero `import(…macro…)`)
  *
@@ -478,14 +488,28 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * `ERR_MODULE_NOT_FOUND … imported from …/dist/tools/macro.js`, and the server never
  * starts. **And a module that RESOLVES but throws while evaluating follows the same
  * edge** (PR-side codex P2 on `e670ad7`), so it too fails before the `catch` exists
- * to catch it. The `catch` at line 99 is unreachable for either cause.
+ * to catch it — reproduced outside the repo with a four-module graph: with a
+ * dependency that throws at evaluation, neither the importing module's body nor its
+ * `catch` ran (gate 2 round 6). The `catch` at line 99 is unreachable for either
+ * cause.
  *
- * So there is no fifth state to model, and the optional `Surface` parameter that
- * used to sit here — with its cell, asserting how resolution behaves for a flag/
- * surface divergence — **is removed**: it was an API for a configuration this server
- * cannot publish. Two rounds found the defect the other way round each time: first
- * "the flag lies" (it does not, on any reachable path), then "so build for it"
- * (there is nothing to build for).
+ * So **the Windows server** has no fifth state to model, and the optional `Surface`
+ * parameter that used to sit here — with its cell, asserting how resolution behaves
+ * for a flag/surface divergence — **is removed**. Two rounds found the defect the
+ * other way round each time: first "the flag lies" (it does not, on any path this
+ * server can reach), then "so build for it" (there is nothing to build for).
+ *
+ * **THE SENTENCE THAT USED TO STAND HERE SAID "no publishable configuration", AND
+ * THAT IS FALSE** (gate 2 round 6, finding 2, verified here). `index.ts:15-18`
+ * branches on `process.platform === "win32"` and otherwise loads
+ * `server-linux-stub.js`, whose catalogue has **30 entries and none of the five**
+ * tools this table names; `resolveV2Activation` has **no platform gate**; and the
+ * `Dockerfile` ships `node dist/index.js` on Debian. So on that entry point the flag
+ * says v2 over a surface with no v2 tools — the divergence, reached without the
+ * `catch`. It is **latent**: nothing calls `renderAdvice` yet and the stub answers
+ * `UnsupportedPlatform` to everything. But it is the reason the argument above is
+ * now scoped to the Windows server, and it is filed for the change that wires the
+ * presenter.
  *
  * **What would have to change for the divergence to exist**: break that static edge
  * — `macro.ts` imports the v2 schemas statically, which is what welds the two — and
