@@ -3,10 +3,23 @@
  *
  * WHAT EACH CELL EXISTS FOR, since none of them is obvious:
  *
- *  1. A line with no placeholder passes through BYTE-IDENTICAL. This is what lets
- *     the mechanism ship with zero lines converted: all 297 existing lines keep
- *     their exact bytes, so a green suite means the mechanism broke nothing — NOT
- *     that the advice is correct, which needs the four-corner measurement.
+ *  1. A line with no placeholder passes through BYTE-IDENTICAL. That is what lets
+ *     the mechanism ship with zero lines converted.
+ *
+ *     **The evidence for the 297 dictionary lines is a grep, not this cell.** This
+ *     cell feeds three hand-written literals, and the module has no importer
+ *     outside this file, so a green suite here cannot say anything about the
+ *     corpus. What supports the claim is that the narrow pattern matches **0**
+ *     times anywhere in `src` and `tests` outside the module and this file
+ *     (measured 2026-09-12), so no existing advice line can be altered by it. Two
+ *     different claims, two different instruments — the suite's green is the
+ *     weaker one (gate 2, finding 11).
+ *
+ *     297 is the count of advice strings in the `SUGGESTS` dictionary alone, and it
+ *     excludes the four named builders — including `paneIdMissSuggest`, which is
+ *     the motivating case in the module header. An earlier count said 300; that was
+ *     a quote-pairing counter meeting quotes inside comments, and the dictionary was
+ *     re-counted per code on the Windows machine (94 of 94 agreeing).
  *
  *  2. Every capability is asserted at BOTH corners, naming the tool rather than
  *     "not the other one". One corner green is not evidence: a wrong table can
@@ -29,25 +42,47 @@
  *  5. Two placeholders in one line both resolve — one real line names two
  *     dependent tools.
  *
- * THE LOCKER AXIS CANNOT BE BUILT FROM THE `env` ARGUMENT. `resolveV2Activation`
- * takes `env`, so three corners need no Windows machine; `keyLockerDisabled()`
- * reads `process.env` directly because it owns the live switch. So the locker
- * cells mutate `process.env` and restore it in a `finally` — shared machine state,
- * restored on the failing path too, because a cell that leaves the switch flipped
- * corrupts every test that runs after it.
+ * ALL FOUR CORNERS ARE BUILT FROM THE `env` ARGUMENT, and that is a fix, not a
+ * convenience. `keyLockerDisabled()` used to read the ambient process, so
+ * `credential_store` was the one capability that ignored the configuration it was
+ * handed — it answered `key_locker` for an env that disables the locker, and
+ * dropped the line for an env that enables it (PR-side codex P2 on `64e69a2`). The
+ * shared predicate now takes an optional `env`, defaulted, so production still
+ * reads the live switch.
+ *
+ * ONE cell still mutates `process.env`: the one that pins that default. It restores
+ * in a `finally`, including on the failing path, because a cell that leaves the
+ * switch flipped corrupts every test that runs after it — and that cell exists
+ * precisely because "the tests pass with an env argument" would not have caught the
+ * production callers reading something else.
  */
 
 import { describe, it, expect } from "vitest";
 import {
   providerFor,
   renderAdvice,
+  PLACEHOLDER,
+  CAPABILITIES,
   type AdviceLine,
 } from "../../src/tools/_advice-capability.js";
 
+/** The four corners of the two kill switches, as `env` maps. */
 const V2: Record<string, string | undefined> = {};
 const KILL: Record<string, string | undefined> = { DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1" };
+const V2_NO_LOCKER: Record<string, string | undefined> = { DESKTOP_TOUCH_DISABLE_KEY_LOCKER: "1" };
+const KILL_NO_LOCKER: Record<string, string | undefined> = {
+  DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1",
+  DESKTOP_TOUCH_DISABLE_KEY_LOCKER: "1",
+};
 
-/** Flip the locker switch for one cell and put it back, including on failure. */
+/**
+ * Flip the locker switch for one cell and put it back, including on failure.
+ *
+ * `body` is deliberately synchronous: a `void`-returning callback that was later
+ * made `async` would have its promise ignored, the `finally` would restore the
+ * switch before the assertions ran, and the cell would pass while measuring the
+ * wrong configuration (gate 2, finding 12).
+ */
 function withLocker(disabled: boolean, body: () => void): void {
   const key = "DESKTOP_TOUCH_DISABLE_KEY_LOCKER";
   const had = Object.prototype.hasOwnProperty.call(process.env, key);
@@ -103,7 +138,29 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(renderAdvice([line], KILL)).toEqual([]);
   });
 
-  it("drops a credential_store line only when the locker is off", () => {
+  it("drops a credential_store line at both locker-off corners, and keeps it at both locker-on corners", () => {
+    // The locker axis crosses the surface axis: the capability is gone in the two
+    // corners where the switch is set, whichever surface is published. Asserted on
+    // all four rather than on one, because this is the capability whose resolution
+    // was reading the wrong configuration entirely.
+    const line: AdviceLine = "Re-call {tool:credential_store} to reuse the pane";
+    const kept = ["Re-call key_locker to reuse the pane"];
+
+    expect(providerFor("credential_store", V2)).toBe("key_locker");
+    expect(providerFor("credential_store", KILL)).toBe("key_locker");
+    expect(providerFor("credential_store", V2_NO_LOCKER)).toBeNull();
+    expect(providerFor("credential_store", KILL_NO_LOCKER)).toBeNull();
+
+    expect(renderAdvice([line], V2)).toEqual(kept);
+    expect(renderAdvice([line], KILL)).toEqual(kept);
+    expect(renderAdvice([line], V2_NO_LOCKER)).toEqual([]);
+    expect(renderAdvice([line], KILL_NO_LOCKER)).toEqual([]);
+  });
+
+  it("still reads the LIVE switch when no env is supplied, which is what production does", () => {
+    // The cell that makes the default argument load-bearing. Without it, every
+    // assertion above could pass while production read something else entirely —
+    // which is the defect this shape replaced, one level up.
     const line: AdviceLine = "Re-call {tool:credential_store} to reuse the pane";
     withLocker(false, () => {
       expect(providerFor("credential_store")).toBe("key_locker");
@@ -143,7 +200,7 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(renderAdvice([line], KILL)).toEqual([]);
   });
 
-  it("leaves the product's own {tool: syntax alone, and renders an unknown capability as the word undefined", () => {
+  it("leaves the product's own {tool: syntax alone, and leaves an unknown capability verbatim", () => {
     // BOTH halves of the "DO NOT LOOSEN THAT PATTERN" comment, pinned — the comment
     // previously asserted the second half from reasoning and it was half wrong.
     //
@@ -164,6 +221,48 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     // cost the whole envelope.
     expect(renderAdvice(["x {tool:nope} y"], V2)).toEqual(["x {tool:nope} y"]);
     expect(renderAdvice(["x {tool:nope} y"], KILL)).toEqual(["x {tool:nope} y"]);
+  });
+
+  it("pins the pattern TEXT, because behaviour can no longer catch a widened one", () => {
+    // GATE 2, FINDING 2 — and it was a critical one. The cell above used to be
+    // described as "the cell that goes red if someone widens the capture". It does
+    // not, and the verbatim fallback in this very commit is why: widen the capture
+    // to `[^}]+` and `{tool:"screenshot", args:{…}` is captured, is not a
+    // capability, and is returned VERBATIM — byte-identical output, green cell.
+    //
+    // Generalised, and worth more than the specific case: after the verbatim
+    // fallback, **every mutation that makes this pattern match MORE is invisible
+    // behaviourally**; only mutations that make it match LESS can be observed. So
+    // the pattern's text is asserted directly. A safety net that the change it
+    // shipped with had quietly removed.
+    expect(PLACEHOLDER.source).toBe("\\{tool:([a-z_]+)\\}");
+    expect(PLACEHOLDER.flags).toBe("g");
+  });
+
+  it("keeps every capability name expressible by that pattern", () => {
+    // GATE 2, FINDING 8. The union and the pattern's character class are unlinked:
+    // `read_uia2` or `readTree` would compile, be KNOWN, and have a switch arm,
+    // while `{tool:read_uia2}` could never match `[a-z_]+` — so it would be left
+    // verbatim and be indistinguishable from a typo, with no gate firing.
+    expect(CAPABILITIES.length).toBeGreaterThan(0);
+    for (const cap of CAPABILITIES) {
+      expect(cap, `capability ${cap} cannot appear in a placeholder`).toMatch(/^[a-z_]+$/);
+      // And each one resolves to something at one corner or the other; a capability
+      // with no provider at any corner is a promise that cannot be declared.
+      const anywhere = providerFor(cap, V2) ?? providerFor(cap, KILL);
+      expect(anywhere, `capability ${cap} has no provider at either corner`).not.toBeNull();
+    }
+  });
+
+  it("drops a line that mixes an unknown capability with one that has no provider", () => {
+    // GATE 2, FINDING 9 — precedence was reachable but unpinned: drop beats
+    // verbatim, verbatim beats resolve. The consequence worth pinning is the second
+    // line: a typo alone SHIPS, placeholder and all, which is the intended visible
+    // breakage rather than an accident.
+    const mixed: AdviceLine = "{tool:nope} then {tool:disambiguate_window_by_handle}";
+    expect(renderAdvice([mixed], KILL)).toEqual([]);
+    expect(renderAdvice([mixed], V2)).toEqual(["{tool:nope} then desktop_discover"]);
+    expect(renderAdvice(["only {tool:nope}"], V2)).toEqual(["only {tool:nope}"]);
   });
 
   it("keeps surviving lines in their original order", () => {

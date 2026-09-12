@@ -89,7 +89,7 @@ export type Capability =
  * form also covers — so the capability lives IN the text and there is no separate
  * field to drift out of sync with it.
  */
-const PLACEHOLDER = /\{tool:([a-z_]+)\}/g;
+export const PLACEHOLDER = /\{tool:([a-z_]+)\}/g;
 
 /**
  * DO NOT LOOSEN THAT PATTERN. `{tool:` is already real syntax in this product —
@@ -97,12 +97,33 @@ const PLACEHOLDER = /\{tool:([a-z_]+)\}/g;
  * examples and tests (`macro.ts`, `ui-elements.ts`, `stub-tool-catalog.ts`,
  * `tool-naming-phase4.test.ts`). It does not collide today only because the
  * capture is `[a-z_]+` and every real use has a QUOTE right after the colon
- * (`{tool:"…"`), or a comma (`{tool, params}`). Measured: 0 matches across the
- * product. Widen the capture to `[^}]+` and it catches 21 REAL places — measured
- * independently on the Windows machine over `src` and `tests`: four files contain
- * `{tool:`, this pattern matches 0 of them, the widened pattern 21
- * (`{tool:'focus_window',params:{…}` and friends). The cell that goes red when
- * someone widens this is guarding 21 existing strings, not a hypothetical.
+ * (`{tool:"…"`), or a comma (`{tool, params}`).
+ *
+ * THE NUMBERS, WITH THEIR METHOD, because two counts of "the same thing" disagreed
+ * and both were right (measured 2026-09-12 over `src` and `tests`):
+ *
+ *   `{tool:` occurrences outside this module and its test ... 21, on 11 lines, in 4
+ *     files (`stub-tool-catalog.ts` 7, `macro.ts` 9, `ui-elements.ts` 1,
+ *     `tool-naming-phase4.test.ts` 4)
+ *   this pattern, `[a-z_]+` ......................... 0 of them
+ *   a widened `[^}]+` capture, applied per STRING .... 20 of them
+ *   the same widened capture, applied to whole files . 21 — `[^}]` matches newlines,
+ *     so it spans the one occurrence (`macro.ts:274`) whose closing brace is on the
+ *     next line
+ *
+ * The per-string number is the operative one: `renderAdvice` applies the pattern to
+ * one advice string at a time. A count is meaningless without its method, and this
+ * pair is the cheapest available reminder — the Windows measurement said 21 and
+ * gate 2 said 20 for the same mutation.
+ *
+ * **WIDENING IS NOT CAUGHT BY BEHAVIOUR.** It used to be, and the verbatim fallback
+ * added alongside this comment is what removed it: widen the capture and
+ * `{tool:"screenshot", args:{…}` is captured, fails `isCapability`, and is returned
+ * VERBATIM — byte-identical output, green cells. Generally, **every mutation that
+ * makes this pattern match MORE is now invisible behaviourally**, and only ones
+ * that make it match LESS can be observed. So a cell asserts `PLACEHOLDER.source`
+ * directly (gate 2, finding 2 — it found this comment claiming a guard the same
+ * commit had destroyed).
  */
 
 /**
@@ -124,9 +145,12 @@ const PLACEHOLDER = /\{tool:([a-z_]+)\}/g;
  * road: every caller is already building a refusal. Throwing here would turn a
  * tool failure into an unhandled error and cost the envelope, the code and the
  * other advice lines — the fix failing into the shape of the bug it fixes. The
- * loud signal belongs in the gate (an advice line that still contains `{tool:`
- * after rendering is a defect, and that check is configuration-independent), not
- * in the failure path of a running server.
+ * loud signal belongs in a gate — an advice line that still contains `{tool:` after
+ * rendering is a defect, and that check is configuration-independent — rather than
+ * in the failure path of a running server. **That gate does not exist yet**: it is
+ * stage B4 in the spec, and until it is written a leftover placeholder is caught by
+ * nobody. Stated in the future tense on purpose, because the present tense here
+ * would tell a reader they are covered when they are not.
  */
 const KNOWN: Record<Capability, true> = {
   reidentify_element: true,
@@ -141,13 +165,35 @@ function isCapability(name: string): name is Capability {
 }
 
 /**
+ * The capability names, for gates and tests. Derived from `KNOWN` rather than
+ * written again, so it cannot list something the resolver does not know.
+ *
+ * It exists because the union and `PLACEHOLDER`'s character class are otherwise
+ * UNLINKED: a capability named `read_uia2` or `readTree` would compile, be `KNOWN`,
+ * and have a `switch` arm — and `{tool:read_uia2}` could never match `[a-z_]+`, so
+ * it would be left verbatim and read exactly like a typo. A cell walks this list
+ * against the pattern's class (gate 2, finding 8).
+ */
+export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capability[];
+
+/**
  * The provider of `cap` in the configuration described by `env`, or `null` when
  * that configuration has no provider — in which case the line is dropped.
  *
+ * THERE IS A THIRD RETURN THE SIGNATURE DOES NOT NAME. The `switch` is exhaustive
+ * over `Capability`, so a `cap` from outside the union falls off its end and this
+ * returns `undefined` (measured). TypeScript stops that at a typed call site, but
+ * `tests/**` is outside `tsconfig.json`'s `include` and eslint here is not
+ * type-aware, so a test-side or future caller can pass a string straight through.
+ * **`renderAdvice` is the only placeholder-safe entry point** — it screens with
+ * `isCapability` first. Call this directly only with a literal from the union
+ * (gate 2, finding 7).
+ *
  * The predicates are the ones REGISTRATION reads. Deliberate: resolution reading a
  * different source of truth than registration would drift silently the first time
- * one of them changed. `resolveV2Activation` takes `env`, which makes three of the
- * four corners reproducible in a unit test with no Windows machine.
+ * one of them changed. Both take `env`, which makes ALL FOUR corners reproducible in
+ * a unit test with no Windows machine — `keyLockerDisabled` did not take one until
+ * codex pointed out that this function then answered for the wrong configuration.
  */
 export function providerFor(
   cap: Capability,
@@ -164,13 +210,27 @@ export function providerFor(
     case "set_value":
       return v2 ? "desktop_act" : "set_element_value";
     case "credential_store":
-      // Reads `process.env` directly because it owns the live kill switch, so an
-      // `env` argument cannot override it. The other three corners still work.
-      return keyLockerDisabled() ? null : "key_locker";
+      // `env` is passed on, like every other capability here. It did not used to be:
+      // `keyLockerDisabled()` read the ambient process, which made this the ONE
+      // capability that ignored the configuration it was handed — `providerFor
+      // ("credential_store", { DESKTOP_TOUCH_DISABLE_KEY_LOCKER: "1" })` still
+      // answered `key_locker`, and the inverse mismatch dropped a line that the
+      // named configuration provides. A signature that takes a configuration and
+      // then models a different one for one of its five answers is worse than one
+      // that never took it (PR-side codex P2 on `64e69a2`). The shared predicate was
+      // widened rather than re-implemented here, so the switch keeps one reader.
+      return keyLockerDisabled(env) ? null : "key_locker";
   }
 }
 
-/** An advice line: plain text, or text carrying `{tool:<capability>}` placeholders. */
+/**
+ * An advice line: plain text, or text carrying `{tool:<capability>}` placeholders.
+ *
+ * A plain alias, and it buys nothing — annotating a string with it does not check
+ * that its placeholders name real capabilities, because the compiler never reads
+ * inside a string. It is here to name the argument's ROLE, not to validate it
+ * (gate 2, finding 12).
+ */
 export type AdviceLine = string;
 
 /**
@@ -187,6 +247,13 @@ export type AdviceLine = string;
  * `credential_store` none with the locker off. Two reasons, one behaviour — the
  * capability is absent, either because it was removed or because the replacement
  * surface does not have it.
+ *
+ * PRECEDENCE, for a line carrying more than one kind of placeholder: **drop beats
+ * verbatim, verbatim beats resolve.** An unknown capability sharing a line with one
+ * that has no provider here is dropped along with it, so the visible breakage never
+ * reaches a caller; an unknown capability alone SHIPS, placeholder and all. Both are
+ * reachable the moment a typo meets a kill switch, and both are now pinned — neither
+ * was until gate 2 asked for it (finding 9).
  *
  * NOT HANDLED, and filed rather than guessed: two lines name a dependent tool as
  * one MEMBER OF A LIST of similar tools ("…(keyboard / desktop_act /
@@ -209,7 +276,10 @@ export function renderAdvice(
       const tool = providerFor(cap, env);
       if (tool === null) {
         dropped = true;
-        return "";
+        // Discarded — the whole line is dropped below. Returning the placeholder
+        // rather than "" so that nothing reads as "the sentence survives with the
+        // name blanked out", which is a behaviour this module does not have.
+        return whole;
       }
       return tool;
     });
