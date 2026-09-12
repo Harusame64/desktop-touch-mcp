@@ -82,7 +82,6 @@ import {
   hasPlaceholder,
   CAPABILITIES,
   type AdviceLine,
-  type Surface,
 } from "../../src/tools/_advice-capability.js";
 
 /**
@@ -453,7 +452,12 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
       `use {tool${String.fromCharCode(0xff1a)}set_value} to do it`,
       `use ｛tool${String.fromCharCode(0xff1a)}set_value｝ to do it`,
       "use &#x7B;tool:set_value&#x7D; to do it", // hex brace entities
-      "use &#123;tool&#58;set_value&#125; to do it", // HTML-escaped colon
+      "use &#123;tool&#58;set_value&#125; to do it", // HTML-escaped colon, decimal
+      // A pipeline that emits entities in HEX did so for the braces and not the
+      // colon in the first version — the asymmetry a reader would never guess
+      // (PR-side codex P2 on `e670ad7`).
+      "use &#x7B;tool&#x3A;set_value&#x7D; to do it",
+      "use &#123;tool&#x3A;set_value&#125; to do it", // hex colon, decimal braces
       "use &#123;tool: set_value&#125; to do it", // entity braces, space, a NAME
     ]) {
       expect(renderAdvice([bad], V2), `renderAdvice must ship ${bad} unchanged`).toEqual([bad]);
@@ -466,32 +470,37 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
     expect(lines.map((l) => hoisted.test(l))).toEqual([true, false, true]);
   });
 
-  it("answers for the LIVE surface when given one — the fifth state the flag cannot see", () => {
-    // PR-SIDE CODEX P2 on `131c663`, verified in source: `server-windows.ts` loads
-    // the v2 module with `await import(…).catch(() => null)` — a failed import is
-    // swallowed on purpose — and registration branches on `_desktopV2`, not on the
-    // flag. So with the flag ON and the module missing, the published surface is V1
-    // while `resolveV2Activation` still says enabled. The resolver would then
-    // recommend `desktop_discover`, which is not registered: the exact defect this
-    // ADR exists to close, inside the fix.
-    const v1Live: Surface = { v2Loaded: false };
-    const v2Live: Surface = { v2Loaded: true };
-
-    // Flag says v2 (V2 has no kill switch set) but the module did not load:
-    expect(providerFor("reidentify_element", V2, v1Live)).toBe("get_ui_elements");
-    expect(providerFor("list_window_titles", V2, v1Live)).toBe("get_windows");
-    expect(providerFor("set_value", V2, v1Live)).toBe("set_element_value");
-    expect(providerFor("disambiguate_window_by_handle", V2, v1Live)).toBeNull();
-    // And the line drops, because that capability has no V1 provider:
-    expect(
-      renderAdvice(["Pass the handle {tool:disambiguate_window_by_handle} returns"], V2, v1Live),
-    ).toEqual([]);
-
-    // The surface beats the flag in the other direction too, so nothing here is
-    // reading both and preferring one by accident:
-    expect(providerFor("reidentify_element", KILL, v2Live)).toBe("desktop_discover");
-
-    // Omitting it keeps the old behaviour exactly — the reading, not the surface.
+  it("takes only the env, because the surface cannot diverge from the flag", () => {
+    // THIS CELL IS THE HEADSTONE OF AN API THAT SHOULD NOT HAVE BEEN BUILT, kept so
+    // the next reader does not build it again.
+    //
+    // Two review rounds pushed in opposite directions. The first said the flag lies
+    // about the surface (`131c663`): `server-windows.ts` loads the v2 module as
+    // `await import(…).catch(() => null)` and registration branches on `_desktopV2`,
+    // not on the flag — so a null module would publish the V1 fallback while the
+    // flag still said v2, and advice would name `desktop_discover` over a V1
+    // surface. An optional `Surface` argument was added for that, with cells.
+    //
+    // The second said there is nothing to model (`e670ad7`), and that is measured:
+    //
+    //   server-windows.ts:22  import { registerMacroTools } from "./tools/macro.js"
+    //   macro.ts:133-137      import { desktopDiscoverRegistrationSchema, … }
+    //                           from "./desktop-register.js"
+    //   and zero `import(…macro…)` anywhere in the tree
+    //
+    // ESM evaluates a module's static dependency graph BEFORE running its body, so
+    // `desktop-register.js` is evaluated before `server-windows.ts` reaches its
+    // line-98 dynamic import. A missing file fails at link (measured on Windows:
+    // `ERR_MODULE_NOT_FOUND … imported from …/dist/tools/macro.js`, the server never
+    // starts) and an evaluation throw fails at the same edge. **The `catch` is
+    // unreachable for either cause**, so no publishable configuration has the flag
+    // disagreeing with the surface — and the `Surface` parameter was removed.
+    //
+    // What this cell pins is the consequence: the signature takes the env and
+    // nothing else, so re-adding a surface argument makes it fail to compile rather
+    // than quietly reintroducing an unreachable premise.
+    expect(providerFor.length).toBe(1); // cap, with env defaulted — no third parameter
+    expect(renderAdvice.length).toBe(1); // lines, with env defaulted
     expect(providerFor("reidentify_element", V2)).toBe("desktop_discover");
     expect(providerFor("reidentify_element", KILL)).toBe("get_ui_elements");
   });

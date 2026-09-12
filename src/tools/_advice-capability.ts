@@ -266,7 +266,7 @@ export function placeholderPattern(): RegExp {
  * worth keeping visible rather than hiding behind another factory.
  */
 const DETECT_LEFTOVER =
-  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"'\s]+/i;
+  /(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"']*(?:[}｝]|&#125;|&#x7D;)|(?:[{｛]|&#123;|&#x7B;)tool\s*(?:[:：]|&#58;|&#x3A;)(?!\s*(?:["']|\\["']|&quot;|&#34;|&apos;|&#39;))[^}｝"'\s]+/i;
 
 /**
  * True if `text` still carries something that looks like a `{tool:…}` placeholder —
@@ -454,52 +454,49 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * codex pointed out that this function then answered for the wrong configuration.
  */
 /**
- * What the server ACTUALLY published, when the caller knows it.
+ * THE FLAG IS THE SURFACE HERE, and that took three rounds to establish — two of
+ * them spent building for a state that cannot happen.
  *
- * **A FIFTH STATE IS REACHABLE IN SOURCE, AND THE ONE WAY ANYONE TRIED TO BUILD IT
- * TURNED OUT TO BE LOUD** (PR-side codex P2 on `131c663`, verified in source; then
- * measured on Windows).
+ * The worry was real in shape (PR-side codex P2 on `131c663`, verified in source):
+ * `server-windows.ts` pre-loads the v2 module as `await import(…).catch(() => null)`
+ * — a failed load is swallowed so the server still starts — and registration then
+ * branches on `_desktopV2`, not on the flag. A null module publishes the three V1
+ * fallback tools while the flag still says `enabled: true`, so advice would name
+ * `desktop_discover` over a V1 surface: this ADR's own defect, inside the fix.
  *
- * In source: `server-windows.ts` pre-loads the v2 module with
- * `await import(…).catch(() => null)` — a failed load is deliberately swallowed so
- * the server still starts — and registration branches on **`_desktopV2`**, not on
- * the flag, so a null module publishes the three V1 fallback tools instead. The flag
- * would then say `enabled: true` over a V1 surface.
+ * **It cannot happen, for BOTH causes, because a static import edge dominates the
+ * dynamic one:**
  *
- * Measured: **removing the module file does NOT produce that state — the server does
- * not start at all.** `macro.ts:137` imports `./desktop-register.js` **statically**,
- * and it is the only file that does, so ESM link fails in a different importer before
- * that `catch` can run: `ERR_MODULE_NOT_FOUND … imported from …/dist/tools/macro.js`.
- * A missing file is therefore a loud failure, not a silent surface swap, and the
- * flag-only default is not wrong on that path.
+ *   `server-windows.ts:22`  `import { registerMacroTools } from "./tools/macro.js"`
+ *   `macro.ts:133-137`      `import { desktopDiscoverRegistrationSchema, … }`
+ *                           `  from "./desktop-register.js"`
+ *   and nothing imports `macro.ts` dynamically (measured: zero `import(…macro…)`)
  *
- * **What stays possible and UNOBSERVED** is a module that resolves but throws while
- * evaluating — a missing native addon, a partial package. That reaches the `catch`,
- * and then the divergence is real. It could not be simulated by renaming a file, so
- * it is unobserved rather than absent, and that is the whole reason this parameter
- * exists: the caller that knows the surface can say so.
+ * ESM evaluates a module's static dependency graph **before** running its body, so
+ * `desktop-register.js` is evaluated before `server-windows.ts` reaches line 98 at
+ * all. A missing file fails at link — measured on Windows,
+ * `ERR_MODULE_NOT_FOUND … imported from …/dist/tools/macro.js`, and the server never
+ * starts. **And a module that RESOLVES but throws while evaluating follows the same
+ * edge** (PR-side codex P2 on `e670ad7`), so it too fails before the `catch` exists
+ * to catch it. The `catch` at line 99 is unreachable for either cause.
  *
- * That makes the module's own design rule ("the predicates are the ones REGISTRATION
- * reads") false on exactly one path — and this is the defect this whole ADR exists to
- * close, sitting inside the fix: advice naming a tool the caller cannot call.
+ * So there is no fifth state to model, and the optional `Surface` parameter that
+ * used to sit here — with its cell, asserting how resolution behaves for a flag/
+ * surface divergence — **is removed**: it was an API for a configuration this server
+ * cannot publish. Two rounds found the defect the other way round each time: first
+ * "the flag lies" (it does not, on any reachable path), then "so build for it"
+ * (there is nothing to build for).
  *
- * So a caller that knows the surface passes it, and the flag reading is the fallback
- * for callers that do not. The presenter will pass it when it is wired; until then
- * every call here is the reading, which is why the reading is labelled rather than
- * hidden.
+ * **What would have to change for the divergence to exist**: break that static edge
+ * — `macro.ts` imports the v2 schemas statically, which is what welds the two — and
+ * then the `catch` becomes reachable and this parameter becomes necessary. Filed in
+ * the internal remaining-work; it is a product change, not a mechanism one.
  */
-export type Surface = {
-  /** True when the v2 module loaded AND registered, i.e. `_desktopV2 !== null`. */
-  v2Loaded: boolean;
-};
-
 export function providerFor(
   cap: Capability,
   env: Record<string, string | undefined> = process.env,
-  surface?: Surface,
 ): string | null {
-  // `surface` is the measurement; `env` is the reading. See {@link Surface}.
-  const v2 = surface ? surface.v2Loaded : resolveV2Activation(env).enabled;
+  const v2 = resolveV2Activation(env).enabled;
   switch (cap) {
     case "reidentify_element":
       return v2 ? "desktop_discover" : "get_ui_elements";
@@ -570,7 +567,6 @@ export type AdviceLine = string;
 export function renderAdvice(
   lines: readonly AdviceLine[],
   env: Record<string, string | undefined> = process.env,
-  surface?: Surface,
 ): string[] {
   const out: string[] = [];
   // One pattern for this call, not one per line. Hoisted after gate 2 pointed out
@@ -593,7 +589,7 @@ export function renderAdvice(
       // A capability this module does not know stays verbatim — visibly broken
       // beats a sentence that reads as advice. See the note on `KNOWN`.
       if (!isCapability(cap)) return whole;
-      const tool = providerFor(cap, env, surface);
+      const tool = providerFor(cap, env);
       if (tool === null) {
         dropped = true;
         // Discarded — the whole line is dropped below. Returning the placeholder
