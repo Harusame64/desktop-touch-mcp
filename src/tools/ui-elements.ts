@@ -7,7 +7,7 @@ import { captureScreen } from "../engine/image.js";
 import { padCaptureRegion, resolveCaptureRegionAsync } from "../engine/reachable-bounds.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith, failArgs, failCode, getSuggestsForCode } from "./_errors.js";
+import { failWith, failArgs, failCode } from "./_errors.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
@@ -667,7 +667,34 @@ export const setElementValueHandler = async ({
           "The window this write was aimed at was reported as gone, so nothing was written. " +
           "The remaining fallback types into whichever window is in front, which may be a different one wearing the same title.",
           {
-            suggest: getSuggestsForCode("AimWindowGone"),
+            // Advice that carries the SAME uncertainty as the sentence above, and
+            // written out here rather than taken from `SUGGESTS.AimWindowGone`.
+            //
+            // Two independent gates found the same defect: the error text hedges
+            // ("was reported as gone") while the shared advice asserts — "no longer
+            // exists", "where that window used to be", "the old handle is not
+            // reusable" — and **the advice is the half a model reads**. A live
+            // window whose provider faults during the descendant walk would be told
+            // to throw away a lease and a handle that are both still valid.
+            // (PR 側 codex P2 on `de43a2d`; gate 2 Medium on `24bd47d`.)
+            //
+            // The shared dictionary is deliberately NOT softened: the act road
+            // reaches this code through `isWindowGone` and native resolution
+            // failure, which is stronger evidence than this road's blanket catch,
+            // so weakening the shared line would make a correct message vaguer
+            // everywhere it is already right. Whether the two roads should share
+            // one advice string at all is a design decision, filed separately.
+            //
+            // Spelled out rather than derived from the dictionary by index: an
+            // index-derived variant drifts silently the day someone reorders the
+            // shared array, which is how a document starts lying. The cell below
+            // pins that this advice does not assert.
+            suggest: [
+              "Re-run desktop_discover: the write was refused because the window was reported as gone, so the lease and the entities taken from it may no longer describe anything.",
+              "Do NOT retry by coordinate. If the window did close, the entity's rect is where it used to be and another window may be occupying it — the keystrokes would land on that one.",
+              "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
+              "If the window is still there, this can be a transient UIA provider or RPC failure during the element walk rather than a window that closed. desktop_discover will say which, and a fresh lease is needed either way.",
+            ],
             context: { windowTitle: effectiveTitle, name, automationId, attempts },
           },
         );

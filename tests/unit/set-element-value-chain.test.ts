@@ -179,6 +179,18 @@ describe("setElementValueHandler — chain enabled (DTM_SET_VALUE_CHAIN=1)", () 
     // silent loss of advice rather than a visibly empty field.
     expect(parsed.suggest?.length ?? 0).toBeGreaterThan(0);
     expect(parsed.suggest.join(" ")).toMatch(/desktop_discover/);
+    // The advice must carry the same uncertainty as the error text. The shared
+    // `SUGGESTS.AimWindowGone` asserts the window is gone and the handle unusable,
+    // and the advice is the half a model reads — so a live window whose provider
+    // faulted mid-walk would be told to discard a still-valid lease and handle.
+    // Two independent gates found that (codex P2, gate 2 Medium); this pins the
+    // fix, because nothing else would notice it being reverted to the shared array.
+    const advice = parsed.suggest.join(" ");
+    expect(advice).not.toMatch(/no longer exists/);
+    expect(advice).not.toMatch(/is not reusable/);
+    expect(advice).toMatch(/was reported as gone/);
+    // And it still says the thing that is actually load-bearing for recovery.
+    expect(advice).toMatch(/Do NOT retry by coordinate/);
     // The whole point of the row: channel 3 never runs.
     expect(keyboardTypeHandler).not.toHaveBeenCalled();
     expect(parsed.context?.attempts).toHaveLength(2);
