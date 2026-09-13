@@ -369,21 +369,37 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
       expect.stringMatching(/read its hwnd from desktop_state/),
       expect.stringMatching(/Narrowing windowTitle will not help on this call/),
     ]);
-    // NO PLACEHOLDER SURVIVES INTO THIS LIST, and none may: the second line used to
-    // carry `{tool:disambiguate_window_by_handle}`, whose provider is null at both
-    // corners this handler can be produced at, so it DROPPED for every real caller and
-    // the answer went out as two lines with no handle route. The cell above passed
-    // because the runner sits at the v2 corner — it was pinning a state production
-    // cannot reach. Rendering this array at the corners that can produce it is what
-    // says so.
-    for (const cfg of [
-      adviceConfigurationFromEnv({ DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1" }),
-      adviceConfigurationFromEnv({ DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1", DESKTOP_TOUCH_DISABLE_KEY_LOCKER: "1" }),
+    // NO LINE MAY DROP AT A CORNER THIS HANDLER ACTUALLY RUNS AT, and saying so means
+    // INVOKING IT THERE. The second line used to carry
+    // `{tool:disambiguate_window_by_handle}`, whose provider is null at both corners
+    // this handler can be produced at — `set_element_value` is registered only in the
+    // `else` arm of `server-windows.ts`, and `run_macro` refuses its route unless
+    // `v2KillSwitchActive()` — so it dropped for every real caller while the array
+    // above, read at the runner's v2 corner, looked complete.
+    //
+    // The first attempt to close that pinned nothing: it called `renderAdviceWith` on
+    // `r.suggest`, which `failCode` has ALREADY resolved against the ambient capture,
+    // so the placeholders were gone before the loop saw them and the length was
+    // compared with itself (gate 1 on `a1cc0f4`, 2026-09-13 — a no-op cell written one
+    // round earlier to catch exactly this class of no-op). The capture has to happen
+    // BEFORE the handler runs.
+    for (const corner of [
+      { v2: false, credentialStore: true },
+      { v2: false, credentialStore: false },
     ]) {
-      const shipped = renderAdviceWith(r.suggest as string[], cfg);
-      expect(shipped, "nothing may drop at a corner this handler actually runs at")
-        .toHaveLength((r.suggest as string[]).length);
-      expect(shipped.join(" ")).toMatch(/read its hwnd from desktop_state/);
+      captureAdviceConfiguration(corner);
+      try {
+        const atCorner = parse(await setElementValueHandler({
+          windowTitle: SHARED_TITLE, hwnd: String(LIVE), value: "x", name: "Field",
+        } as never));
+        const lines = (atCorner as { suggest?: string[] }).suggest ?? [];
+        expect(lines, `a line dropped at a corner this handler runs at: ${JSON.stringify(corner)}`)
+          .toHaveLength(3);
+        expect(lines.join(" ")).toMatch(/read its hwnd from desktop_state/);
+        expect(lines.join(" "), "and nothing may ship as a raw placeholder").not.toContain("{tool:");
+      } finally {
+        resetAdviceConfiguration();
+      }
     }
     expect(JSON.stringify(r.suggest)).not.toMatch(/narrow windowTitle until exactly one window matches/);
     // The other statuses' advice must not come back with it — those lines are

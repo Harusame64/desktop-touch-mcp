@@ -52,8 +52,15 @@ const SUGGESTS: Record<string, string[]> = {
     // target. Neither browser tool is behind either kill switch (`registerBrowserTools`
     // runs before the `_desktopV2` branch in `server-windows.ts`), so these are plain
     // names, not capabilities — there is nothing for the presenter to resolve.
-    "If the target was a CSS selector (browser_locate / browser_click / browser_form), re-discover it with browser_overview or browser_search — {tool:reidentify_element} enumerates native UIA elements, not DOM nodes.",
-    "Call {tool:reidentify_element} to see candidate names and automationIds",
+    "If the target was a CSS selector (browser_locate / browser_click / browser_form), re-discover it with browser_overview or browser_search — everything below is for native UIA targets and cannot match a DOM node.",
+    // AND THE LINE THE SPLIT WAS MEANT TO SCOPE HAS TO SAY SO ITSELF. Adding the
+    // browser line above left this one unconditional, so a selector miss read "use
+    // browser_search" and then, in the next breath, "call desktop_discover" — the
+    // contradiction the split existed to remove, moved down one line (gate 1 on
+    // `a1cc0f4`, 2026-09-13). The scope is stated twice on purpose: at the end of the
+    // line above, for a reader going in order, and at the head of this one, for a
+    // reader who lands on a single row.
+    "For a native target, call {tool:reidentify_element} to see candidate names and automationIds",
     "Use screenshot(detail='text') for actionable[] with clickAt coords",
     "Try a shorter partial name match",
     "The element may not be visible yet — use wait_until(condition='element_appears')",
