@@ -5,6 +5,7 @@
  * no-secret-in-output invariant.
  */
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { STUB_TOOL_CATALOG } from "../../src/stub-tool-catalog.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -227,5 +228,49 @@ describe("key_locker — kill switch", () => {
     const r = await call({ action: "save", uri: "sudo://host/root" });
     expect(r.code).toBe("KeyLockerDisabled");
     expect(mgr.captureCalls).toHaveLength(0);
+  });
+});
+
+describe("the shipped promise says what it covers", () => {
+  it("never carries the NEVER-shown promise without the clause that scopes it", () => {
+    // A TEXT PIN, and it pins a PAIRING rather than a sentence — which is the only part
+    // of this a machine can hold. The promise was already scoped by its subject
+    // ("Secrets are entered once into the locker's own secure dialog … they are NEVER
+    // shown"), and a reader generalised it anyway: "this product does not show
+    // passwords". That is not a promise the product keeps —
+    // `desktop_state.focusedElement.value` returns the value of a focused PLAIN field,
+    // measured on Windows at all four corners (2026-09-13). The description now says
+    // where the promise stops, and the clause is exactly what a later pass trimming
+    // tokens would delete, leaving the broad reading with nothing to check it.
+    //
+    // READ FROM THE ASSEMBLED CATALOGUE, NOT FROM THE SOURCE. The first version grepped
+    // `key-locker-tool.ts` and could never have failed: the description is built by
+    // string concatenation, so "NEVER shown to the assistant or sent to this tool"
+    // exists nowhere in that file — it spans a `" +` boundary. An anchor that matches
+    // nothing is a cell that cannot go red, and this is the third time that shape has
+    // appeared in this sequence. The generated catalogue holds the assembled text, and
+    // `check:stub-catalog` (CI) regenerates and diffs it, so catalogue == source is
+    // enforced elsewhere and reading the catalogue is reading what ships.
+    //
+    // WHAT IT CATCHES AND WHAT IT CANNOT, measured rather than guessed — an earlier
+    // version of this comment said a rewording would pass, and the mutation showed it
+    // reddens, because both strings are pinned exactly. Deleting the clause, diverging
+    // the catalogue from the source, and rewording the promise all go red; the last for
+    // a mechanical reason, which is the point — whoever rewords has to come here, and
+    // that is the moment to re-read whether the new words still say where it stops.
+    //
+    // It cannot judge MEANING. A description keeping both strings and re-broadening the
+    // claim in a later sentence passes.
+    const PROMISE = "NEVER shown to the assistant or sent to this tool";
+    const SCOPE = "this covers what the locker holds, not every password on the machine";
+
+    const locker = STUB_TOOL_CATALOG.find((t) => t.name === "key_locker");
+    // CONTROL: the entry is really there, or "the pair holds" is also what a lookup that
+    // found nothing would answer.
+    expect(locker, "key_locker must be in the shipped catalogue").toBeDefined();
+    expect(locker!.description, "the promise must ship for this cell to mean anything")
+      .toContain(PROMISE);
+    expect(locker!.description, "the promise ships without the clause that says what it covers")
+      .toContain(SCOPE);
   });
 });

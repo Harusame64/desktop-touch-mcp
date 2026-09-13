@@ -417,10 +417,24 @@ export function registerKeyLockerTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose:
+          // "these stored secrets", not "they". The sentence was already scoped — its subject
+          // is what the locker's dialog captured — but a reader generalises it to "this
+          // product does not show passwords", and that is not a promise the product can
+          // keep: `desktop_state.focusedElement.value` returns the value of a focused
+          // PLAIN field, measured on Windows at all four corners (2026-09-13). The clause
+          // says what the promise covers so the generalisation has somewhere to stop.
+          //
+          // What the promise IS still holds and is not weakened here: the locker's own
+          // secrets reach a terminal pane through the injector and never this tool. They
+          // do not reach a browser at all — `https-cred` bindings resolve to git's
+          // credential helper (`injector.ts`, channel "git-credential" → askpass), and
+          // `browser.ts` / `cdp-bridge.ts` carry no reference to the locker (traced on
+          // Windows, and confirmed by the repository owner).
           "Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login " +
           "passwords). Secrets are entered once into the locker's own secure dialog and stored encrypted " +
-          "on this machine (Windows DPAPI, current user); they are NEVER shown to the assistant or sent " +
-          "to this tool.",
+          "on this machine (Windows DPAPI, current user); these stored secrets are NEVER shown to the " +
+          "assistant or sent to this tool — this covers what the locker holds, not every password on " +
+          "the machine.",
         details:
           "action='save' pre-seeds a credential for a binding URI (ssh://user@host:22, sudo://host/root, " +
           "https-cred://host:443, sshkey:SHA256:…): it opens the locker's secure entry dialog and " +
