@@ -1,3 +1,4 @@
+import { renderAdviceForCaller } from "./_advice-capability.js";
 import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 import { ToolFailureError } from "../errors/typed-errors.js";
 
@@ -1376,11 +1377,20 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
   const error =
     err.toolName !== undefined ? `${err.toolName} failed: ${displayMessage}` : displayMessage;
 
+  // ADR-036 stage 2 B2b: the advice passes through the resolver on its way out. With
+  // no line converted yet this is byte-identical — a line with no `{tool:…}` in it is
+  // returned unchanged — and it is where the conversion will take effect for BOTH the
+  // dictionary and the 28 literal `suggest:` sites, including the ones a named builder
+  // produces. Rendering here rather than at each producer is the point: `WaitTimeout`
+  // is a measured case where a literal beats the dictionary, so a seam on the
+  // dictionary alone would miss the road it was aimed at.
+  const suggest = err.suggest && err.suggest.length > 0 ? renderAdviceForCaller(err.suggest) : undefined;
+
   return {
     ok: false,
     code,
     error,
-    ...(err.suggest && err.suggest.length > 0 && { suggest: err.suggest }),
+    ...(suggest && suggest.length > 0 && { suggest }),
     ...(err.context && { context: err.context }),
     ...(err.rootExtras ?? {}),
   };
@@ -1468,7 +1478,11 @@ export function failArgs(
     ok: false,
     code: "InvalidArgs",
     error: `${toolName}: ${message}`,
-    suggest: SUGGESTS.InvalidArgs,
+    // Through the resolver like every other road. This site builds the flat shape by
+    // hand rather than going through `toToolFailure`, which is exactly why it is
+    // named here: a seam that only covers the canonical builder misses the sites that
+    // predate it (ADR-036 stage 2 B2b).
+    suggest: renderAdviceForCaller(SUGGESTS.InvalidArgs),
     ...(context && { context }),
   };
   return fail(failure);

@@ -666,3 +666,60 @@ export function renderAdvice(
   }
   return out;
 }
+
+/**
+ * THE CONFIGURATION THE PRESENTER RESOLVES AGAINST, captured once where
+ * registration reads it.
+ *
+ * **Why a capture and not `process.env` at call time.** The server reads the two
+ * switches at DIFFERENT moments — `server-windows.ts:86` resolves the v2 flag at
+ * module init and freezes `_desktopV2` for the process, while
+ * `registerKeyLockerTools` runs inside `createMcpServer()` and therefore re-reads the
+ * locker per server (once per request in stateless HTTP mode). A presenter that read
+ * ambient env at call time would answer for a surface that was never published the
+ * moment anything changed the flag after startup. The fix is not another parameter:
+ * registration and resolution read ONE configuration, taken at one instant
+ * (gate 2, 2026-09-13, third round on the mechanism PR).
+ *
+ * **The fallback is `process.env`, and it is a hazard, so it is pinned rather than
+ * hidden**: a server that never captures behaves exactly as before, which is what
+ * keeps every existing test and every non-server caller working — and which would
+ * also silently swallow a forgotten `captureAdviceConfiguration` call. A cell asserts
+ * that the shipped server captures, and {@link adviceConfigurationWasCaptured} exists
+ * so that cell cannot be written by reading the source.
+ */
+let captured: Readonly<Record<string, string | undefined>> | null = null;
+
+/** Take the configuration for this server. Call it where registration reads the switches. */
+export function captureAdviceConfiguration(
+  env: Record<string, string | undefined> = process.env,
+): void {
+  // A snapshot, not a reference: `process.env` is live, and a reference would make
+  // this function a no-op with a ceremony around it.
+  captured = Object.freeze({ ...env });
+}
+
+/** True when a server has taken its configuration; false while the fallback is live. */
+export function adviceConfigurationWasCaptured(): boolean {
+  return captured !== null;
+}
+
+/** Forget the capture. For cells; the server captures once per `createMcpServer`. */
+export function resetAdviceConfiguration(): void {
+  captured = null;
+}
+
+/**
+ * Render advice for THIS server's configuration — the entry point the presenters use.
+ *
+ * Every advice line reaching a caller passes through here, on both roads: the flat
+ * shape (`toToolFailure`, which the lint rule makes the only builder) and the
+ * envelope (`buildFailureEnvelope`). That is deliberate: the dictionary is not the
+ * only source of advice — 28 literal `suggest:` sites and a named builder
+ * (`paneIdMissSuggest`) produce lines the dictionary never sees, and `WaitTimeout` is
+ * a measured case where the literal beats the dictionary. A seam on the dictionary
+ * alone would have been a fix that misses the road it was aimed at.
+ */
+export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
+  return renderAdvice(lines, captured ?? process.env);
+}

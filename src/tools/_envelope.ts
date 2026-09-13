@@ -116,6 +116,7 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
+import { renderAdviceForCaller } from "./_advice-capability.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
 import { Err, type Result } from "../types/result.js";
 import { HandlerError, CodedHandlerError } from "../errors/typed-errors.js";
@@ -1241,6 +1242,25 @@ export function compatFailureRaw(
  * size or fallback path — failure shape is small (try_next 1 path)
  * and wallclock fallback is irrelevant when the call never executed.
  */
+/**
+ * `try_next` rendered for this server's configuration — the `action` text is advice.
+ *
+ * Row by row rather than in one call, because a row is more than its text: the other
+ * fields must travel with it, and a dropped line has to take its whole row. The
+ * resolver answers with an empty array for a line it drops, which is what `length === 0`
+ * reads here.
+ */
+function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
+  const out: TryNextAction[] = [];
+  for (const row of tryNext) {
+    const rendered = renderAdviceForCaller([row.action]);
+    if (rendered.length === 0) continue; // its capability has no provider in this configuration
+    const text = rendered[0]!;
+    out.push(text === row.action ? row : { ...row, action: text });
+  }
+  return out;
+}
+
 export function buildFailureEnvelope(
   mostLikelyCause: string,
   tryNext: TryNextAction[],
@@ -1258,7 +1278,12 @@ export function buildFailureEnvelope(
     confidence: "stale",
     if_unexpected: {
       most_likely_cause: mostLikelyCause,
-      try_next: tryNext,
+      // ADR-036 stage 2 B2b — the envelope's advice goes through the resolver too, and
+      // for the same reason as the flat road: this is where every `try_next` becomes
+      // caller-visible, whatever built it. Byte-identical while no line carries a
+      // placeholder. A line whose capability has no provider here is DROPPED, so the
+      // array can shrink — the empty case is the decision the conversion owes.
+      try_next: renderTryNext(tryNext),
       ...(detail !== undefined && detail.trim() !== "" ? { detail } : {}),
     },
   };
