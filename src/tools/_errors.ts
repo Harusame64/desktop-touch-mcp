@@ -1475,11 +1475,18 @@ export function failCode(
  *
  * `undefined` means "there was no advice to begin with", which is not the same as
  * "the advice was withheld here" and must stay distinguishable.
+ *
+ * **And "withheld" is a CLAIM about the configuration**, so it is only made where a
+ * real sentence was dropped. A caller that passes entries which were never strings has
+ * a programming error, not a configuration without a provider; answering it with "no
+ * recovery is available in this configuration" tells the caller a false cause and
+ * hides the real one (gate 2, 2026-09-13, measured on the envelope road's twin).
  */
 function renderAdviceWithFloor(lines: string[] | undefined): string[] | undefined {
   if (lines === undefined || lines.length === 0) return undefined;
   const rendered = renderAdviceForCaller(lines);
   if (rendered.length > 0) return rendered;
+  if (!lines.some((line) => typeof line === "string")) return undefined;
   return [ADVICE_WITHHELD_FLOOR];
 }
 

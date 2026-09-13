@@ -283,7 +283,7 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     });
   });
 
-  it("passes a NON-STRING advice entry through instead of throwing", () => {
+  it("DROPS a non-string advice entry instead of throwing", () => {
     // The module's own rule: never throw on the failure road, because the caller is
     // already building a refusal. Wiring the seam in made `.replace` reachable with a
     // value the compiler cannot vouch for - both roads are exported and `tests/**` is
@@ -357,6 +357,68 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
         }),
       );
       expect(flat.suggest).toEqual(["real advice"]);
+    });
+  });
+
+  it("survives a row that is not an object at all, and does not take a good row with it", () => {
+    // GATE 2, 2026-09-13. The non-string guard is INSIDE the renderer, and
+    // `renderTryNext` reached the row before it: `tryNext.map((row) => row.action)`
+    // dereferenced first. `[{}]` was handled and `[null]` threw
+    // `Cannot read properties of null` — the identical species, through a door the
+    // guard never saw. Measured on the built code, `[{action:"keep me"}, null]` threw
+    // too, so a GOOD line went down with the bad one: the refusal, its code and its
+    // siblings, which is the exact cost this module's no-throw rule exists to avoid.
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      for (const bad of [null, undefined]) {
+        expect(() =>
+          buildFailureEnvelope("X", [bad as unknown as TryNextAction]),
+        ).not.toThrow();
+      }
+      const out = buildFailureEnvelope("X", [
+        { action: "keep me", args: { k: 1 } },
+        null as unknown as TryNextAction,
+      ]).if_unexpected.try_next;
+      expect(out).toEqual([{ action: "keep me", args: { k: 1 } }]);
+    });
+  });
+
+  it("does not blame the configuration for a caller's mistake", () => {
+    // The floor's sentence NAMES A CAUSE - "No recovery is available in this
+    // configuration". That is true when real advice was dropped for want of a
+    // provider, and false when the caller passed entries that never carried a
+    // sentence. Measured before the fix (gate 2, 2026-09-13):
+    // `buildFailureEnvelope("X", [{}])` answered the floor line, so a programming
+    // error was reported to the caller as a fact about their environment - and the
+    // real cause was hidden behind a plausible one.
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const envelope = buildFailureEnvelope("X", [{} as unknown as TryNextAction]);
+      expect(envelope.if_unexpected.try_next).toEqual([]);
+      const flat = toToolFailure(
+        new ToolFailureError("X", {
+          displayMessage: "x",
+          suggest: [null as unknown as string],
+        }),
+      );
+      expect(flat.suggest).toBeUndefined();
+    });
+    // THE CONTROL, and it is the half that makes the cell mean anything: a REAL line
+    // dropped by the configuration still buys the floor. Without this, deleting the
+    // floor entirely would pass the assertions above.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      expect(
+        buildFailureEnvelope("X", [{ action: "Save it with {tool:credential_store}" }])
+          .if_unexpected.try_next,
+      ).toEqual([{ action: ADVICE_WITHHELD_FLOOR }]);
+      const flat = toToolFailure(
+        new ToolFailureError("X", {
+          displayMessage: "x",
+          suggest: ["Save it with {tool:credential_store}"],
+        }),
+      );
+      expect(flat.suggest).toEqual([ADVICE_WITHHELD_FLOOR]);
     });
   });
 

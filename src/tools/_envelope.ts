@@ -1245,7 +1245,19 @@ function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
   // keeping its own `args`, and the last survivor was discarded (gate 2 and gate 1
   // independently, 2026-09-13, measured on the built code). Identifying survivors,
   // not counting them, is what the doc block above states as the contract.
-  const rendered = renderAdviceEachForCaller(tryNext.map((row) => row.action));
+  // `row?.action`, not `row.action`: the non-string guard downstream cannot help if
+  // the dereference happens first. Measured on the built code (gate 2, 2026-09-13):
+  // `[{}]` was handled, `[null]` threw `Cannot read properties of null`, and
+  // `[{action:"keep me"}, null]` threw too — taking a GOOD line down with it. That is
+  // the shape this round's guard exists to prevent, one expression upstream of it.
+  const rendered = renderAdviceEachForCaller(
+    // The cast is the honest spelling of the situation, not a way around the checker:
+    // `AdviceLine` is `string`, and the renderer's non-string arm exists precisely
+    // because values `tsc` cannot vouch for reach it from `tests/**` and from JS. A
+    // `?.` that produced `undefined` and then a signature that forbids it would have
+    // to lie somewhere; it lies here, in one place, with the reason beside it.
+    tryNext.map((row) => (row as TryNextAction | null | undefined)?.action) as readonly string[],
+  );
   const out: TryNextAction[] = [];
   for (const [i, row] of tryNext.entries()) {
     const text = rendered[i];
@@ -1260,7 +1272,14 @@ function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
   // keeps at least one line at every corner. Where the conversion cannot honour that
   // by hand, this catches it — and says, in the line itself, that something was
   // withheld rather than pretending there was never any advice.
-  if (out.length === 0 && tryNext.length > 0) {
+  // ...but only where advice ACTUALLY EXISTED. The floor's sentence names the
+  // configuration as the cause, and that is a claim: it is true when real lines were
+  // dropped for want of a provider, and false when the caller passed rows that never
+  // carried a sentence. `buildFailureEnvelope("X", [{}])` used to answer "no recovery
+  // is available in this configuration" to a PROGRAMMING ERROR (gate 2, 2026-09-13,
+  // measured). A row with no string action is not a withheld recovery, so it does not
+  // buy one.
+  if (out.length === 0 && tryNext.some((row) => typeof (row as TryNextAction | null | undefined)?.action === "string")) {
     return [{ action: ADVICE_WITHHELD_FLOOR }];
   }
   return out;

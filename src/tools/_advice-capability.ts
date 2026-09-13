@@ -446,10 +446,12 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * `get_ui_elements` / `get_windows` / `set_element_value`. That is worth stating
  * precisely, because it is the reason a `Surface` parameter would not have repaired
  * it — there is no corner of this surface to switch to (gate 2 round 7, findings 3
- * and 4, which corrected "none of the five" and the axis). It is **latent**: nothing calls `renderAdvice` yet and the stub answers
- * `UnsupportedPlatform` to everything. But it is the reason the argument above is
- * now scoped to the Windows server, and it is filed for the change that wires the
- * presenter.
+ * and 4, which corrected "none of the five" and the axis). It stays harmless for a
+ * DIFFERENT reason than the one written here before this PR wired the presenter: it
+ * is no longer "nothing calls `renderAdvice` yet" (gate 2, 2026-09-13) — the resolver
+ * runs on every Windows refusal now. What holds on the stub is that the stub answers
+ * `UnsupportedPlatform` to everything and builds that refusal by hand, without this
+ * module. That is the reason the argument above is scoped to the Windows server.
  *
  * **What would have to change for the divergence to exist**: break that static edge
  * — `macro.ts` imports the v2 schemas statically, which is what welds the two — and
@@ -588,10 +590,18 @@ export type AdviceLine = string;
  * ---
  *
  * **WHAT THE CHANGE THAT CONVERTS THE LINES HAS TO DECIDE, written here because that
- * is where its author will be reading** (gate 2, 2026-09-13, both rounds). Neither is
- * a defect today — nothing calls this yet — and neither is answered by this module:
+ * is where its author will be reading** (gate 2, 2026-09-13, both rounds).
  *
- *   **1. There is no floor: an advice set can render to `[]`.** The case is not
+ * **"Neither is a defect today — nothing calls this yet" stood here, and this PR is
+ * what made it false** (gate 2, 2026-09-13): the resolver now runs on every refusal on
+ * Windows, through `toToolFailure` and `buildFailureEnvelope`. Items 1 and 3 were
+ * ANSWERED by that wiring and are struck through below; item 2 is live and reaches
+ * callers the moment a line it describes carries a placeholder.
+ *
+ *   **1. ~~There is no floor: an advice set can render to `[]`.~~ DONE — the floor is
+ *   `ADVICE_WITHHELD_FLOOR`, applied on BOTH roads (`renderTryNext` and
+ *   `renderAdviceWithFloor`), and only where a real sentence was dropped.** Kept
+ *   because the reasoning is what the conversion still needs: the case is not
  *   hypothetical and it is this module's own motivating one. `paneIdMissSuggest`'s
  *   malformed-`paneId` branch (`terminal.ts:742-750`) returns exactly two lines and
  *   BOTH name `key_locker`, so once they carry `{tool:credential_store}` a server
@@ -610,8 +620,11 @@ export type AdviceLine = string;
  *   on it. This is the LIST case above wearing different clothes — a sentence that is
  *   mostly configuration-independent — and the converter meets it on the first line
  *   it touches, so it is named here rather than left to be rediscovered.
- *   **3. Resolution and registration must come from ONE captured configuration.**
- *   This function reads the switches live; `server-windows.ts` snapshots the v2 flag
+ *   **3. ~~Resolution and registration must come from ONE captured configuration.~~
+ *   DONE — that is this PR.** `createMcpServer()` captures what registration DID and
+ *   the presenters resolve against it; the text below is kept as the statement of the
+ *   problem it answers.
+ *   This function read the switches live; `server-windows.ts` snapshots the v2 flag
  *   at module init and re-reads the locker per server. The details are in the flag
  *   argument above; what the wiring change owes is the shape — hand the presenter the
  *   configuration that registration actually used, rather than letting both re-derive
@@ -686,7 +699,12 @@ export function renderAdviceEach(
   // preference with a narrow reason, stated as such (gate 2 round 4, finding 9).
   const pattern = placeholderPattern();
   for (const line of lines) {
-    // NOT A STRING? Pass it through untouched. This module's own rule is that it never
+    // NOT A STRING? Drop it — and do not throw. (This said "pass it through untouched"
+    // until gate 2 read it against the `out.push(null)` three lines below and the
+    // comment on it, which had already recorded WHY pass-through was wrong. The
+    // previous round's wording outlived the round: an edit made on the strength of
+    // this line would have restored the measured `suggest: [null]`.)
+    // This module's own rule is that it never
     // throws on the failure road — every caller here is already building a refusal, so
     // a throw costs the envelope, the code and the sibling lines: the fix failing into
     // the shape of the bug. Wiring the seam in made `line.replace` reachable with a
@@ -842,9 +860,21 @@ export const ADVICE_WITHHELD_FLOOR =
 /**
  * Render advice for THIS server's configuration — the entry point the presenters use.
  *
- * Every advice line that travels as `suggest` or `try_next` passes through here — on
- * the flat shape (`toToolFailure`, which the lint rule makes the only builder) and on
- * the envelope (`buildFailureEnvelope`).
+ * Every advice line that travels as `suggest` or `try_next` **from a tool** passes
+ * through here — on the flat shape (`toToolFailure`) and on the envelope
+ * (`buildFailureEnvelope`).
+ *
+ * **"which the lint rule makes the only builder" was too strong** (gate 2,
+ * 2026-09-13). `no-tool-failure-shape-direct-construct` is registered for
+ * `src/tools` only (`eslint.config.mjs:80`, a `files:` glob under that directory), and
+ * `src/server-linux-stub.ts:52-69` is outside it: its `CallToolRequestSchema` handler
+ * hand-builds `{ok:false, code:"UnsupportedPlatform", error, suggest:[…]}` and does
+ * not import `_errors.ts` at all. **That is a failure road this seam does not cover**,
+ * and it is not one of the `ok:true` sites enumerated below. It is harmless today for
+ * a reason about its CONTENT, not its road — its three lines name no
+ * configuration-dependent tool, and no capability has a provider on that platform in
+ * either corner — so the gate the conversion owes must walk it rather than trust this
+ * paragraph.
  *
  * **NOT "every advice line on the failure road", which is what this said until gate 2
  * measured it** (2026-09-13). Advice also travels on that road in fields this seam
