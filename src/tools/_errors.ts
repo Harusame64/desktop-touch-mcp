@@ -1,4 +1,8 @@
-import { renderAdviceForCaller, ADVICE_WITHHELD_FLOOR } from "./_advice-capability.js";
+import {
+  renderAdviceForCaller,
+  ADVICE_WITHHELD_FLOOR,
+  adviceExisted,
+} from "./_advice-capability.js";
 import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 import { ToolFailureError } from "../errors/typed-errors.js";
 
@@ -1499,8 +1503,7 @@ function renderAdviceWithFloor(lines: string[] | undefined): string[] | undefine
   if (!Array.isArray(lines) || lines.length === 0) return undefined;
   const rendered = renderAdviceForCaller(lines);
   if (rendered.length > 0) return rendered;
-  if (!lines.some((line) => typeof line === "string")) return undefined;
-  return [ADVICE_WITHHELD_FLOOR];
+  return adviceExisted(lines) ? [ADVICE_WITHHELD_FLOOR] : undefined;
 }
 
 /**

@@ -116,7 +116,11 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
-import { renderAdviceEachForCaller, ADVICE_WITHHELD_FLOOR } from "./_advice-capability.js";
+import {
+  renderAdviceEachForCaller,
+  ADVICE_WITHHELD_FLOOR,
+  adviceExisted,
+} from "./_advice-capability.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
 import { Err, type Result } from "../types/result.js";
 import { HandlerError, CodedHandlerError } from "../errors/typed-errors.js";
@@ -1259,14 +1263,15 @@ function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
   // `[{}]` was handled, `[null]` threw `Cannot read properties of null`, and
   // `[{action:"keep me"}, null]` threw too — taking a GOOD line down with it. That is
   // the shape this round's guard exists to prevent, one expression upstream of it.
-  const rendered = renderAdviceEachForCaller(
-    // The cast is the honest spelling of the situation, not a way around the checker:
-    // `AdviceLine` is `string`, and the renderer's non-string arm exists precisely
-    // because values `tsc` cannot vouch for reach it from `tests/**` and from JS. A
-    // `?.` that produced `undefined` and then a signature that forbids it would have
-    // to lie somewhere; it lies here, in one place, with the reason beside it.
-    tryNext.map((row) => (row as TryNextAction | null | undefined)?.action) as readonly string[],
-  );
+  // The cast is the honest spelling of the situation, not a way around the checker:
+  // `AdviceLine` is `string`, and the renderer's non-string arm exists precisely
+  // because values `tsc` cannot vouch for reach it from `tests/**` and from JS. A
+  // `?.` that produced `undefined` and then a signature that forbids it would have to
+  // lie somewhere; it lies here, in one place, with the reason beside it.
+  const actions = tryNext.map(
+    (row) => (row as TryNextAction | null | undefined)?.action,
+  ) as readonly string[];
+  const rendered = renderAdviceEachForCaller(actions);
   const out: TryNextAction[] = [];
   for (const [i, row] of tryNext.entries()) {
     const text = rendered[i];
@@ -1291,7 +1296,7 @@ function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
   // is available in this configuration" to a PROGRAMMING ERROR (gate 2, 2026-09-13,
   // measured). A row with no string action is not a withheld recovery, so it does not
   // buy one.
-  if (out.length === 0 && tryNext.some((row) => typeof (row as TryNextAction | null | undefined)?.action === "string")) {
+  if (out.length === 0 && adviceExisted(actions)) {
     return [{ action: ADVICE_WITHHELD_FLOOR }];
   }
   return out;

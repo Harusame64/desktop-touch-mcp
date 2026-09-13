@@ -23,6 +23,7 @@ import {
   adviceConfigurationWasCaptured,
   resetAdviceConfiguration,
   renderAdviceForCaller,
+  renderAdviceEachForCaller,
   ADVICE_WITHHELD_FLOOR,
 } from "../../src/tools/_advice-capability.js";
 import { readFileSync, readdirSync } from "node:fs";
@@ -168,9 +169,15 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // adviceConfigurationFromEnv())` is the same "read ambient env at call time"
     // behaviour spelled with the new names — banning the old two only would have left
     // the defect one rename away (gate 2, 2026-09-13).
+    // `providerForName` joined them in the eighth round: it is exported and defaults
+    // its `env` to `process.env` too, so `providerForName(cap)` in a production module
+    // is the same call-time ambient resolution under a fourth spelling. The comment
+    // above said adding `adviceConfigurationFromEnv` closed the "one rename away"
+    // hole; it closed one rename, and there was another.
     const BANNED_EXPORTS = new Set([
       "renderAdvice",
       "providerFor",
+      "providerForName",
       "adviceConfigurationFromEnv",
     ]);
     const offenders: string[] = [];
@@ -422,6 +429,19 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
           } as unknown as ToolFailureError).suggest,
         ).toBeUndefined();
       }
+    });
+    // AND AT THE MODULE, which is where the guard finally sits. The two callers each
+    // held their own copy, so the exported doors were still open: a string is
+    // iterable, and `renderAdviceForCaller("some advice")` walked it (gate 2,
+    // 2026-09-13, eighth round). The doc names three `ok:true` roads as future
+    // callers of this seam; each would have had to re-derive the same guard.
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      expect(renderAdviceForCaller("some advice" as unknown as string[])).toEqual([]);
+      expect(renderAdviceEachForCaller(7 as unknown as string[])).toEqual([]);
+      // The control: a real list still renders, so an over-eager guard is not what
+      // makes the two assertions above pass.
+      expect(renderAdviceForCaller(["a real line"])).toEqual(["a real line"]);
     });
   });
 

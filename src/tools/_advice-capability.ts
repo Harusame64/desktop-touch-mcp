@@ -682,6 +682,15 @@ export function renderAdviceEach(
   lines: readonly AdviceLine[],
   cfg: AdviceConfiguration,
 ): (string | null)[] {
+  // THE CONTAINER, and this is the last place it can move to: every road — both
+  // presenters, both `*ForCaller` doors, `renderAdvice`, `renderAdviceWith` — comes
+  // through this loop. The guard was in the two callers, which is where gate 2 found
+  // it in the eighth round: `renderAdviceForCaller("some advice")` is exported, a
+  // string is iterable, and `for…of` shipped the sentence one character per line —
+  // no throw, no red, the worst of the three shapes measured on the flat road. The
+  // doc above names three `ok:true` roads as future callers of this seam; each of
+  // them would otherwise have had to re-derive the same guard.
+  if (!Array.isArray(lines)) return [];
   const out: (string | null)[] = [];
   // One pattern for this call, not one per line. Hoisted after gate 2 pointed out
   // that the loop was building a RegExp per line while the module's own note
@@ -858,6 +867,22 @@ export const ADVICE_WITHHELD_FLOOR =
   "No recovery is available in this configuration — see the error message.";
 
 /**
+ * Whether the floor's sentence is TRUE of this input — the rule, hoisted beside the
+ * sentence for the same reason the sentence was hoisted.
+ *
+ * The floor names a cause: *"in this configuration"*. That holds when a real sentence
+ * was dropped for want of a provider, and not when the caller passed entries that were
+ * never sentences. Both roads decide it; **centralising the string and leaving the
+ * predicate written out twice keeps the one-sided-drift hazard and only moves it a
+ * level up** (gate 2, 2026-09-13, eighth round) — a later edit that teaches one road
+ * to treat, say, a whitespace-only line as "not a sentence" reproduces the asymmetry
+ * with every cell green, because the only shared artefact would be the constant.
+ */
+export function adviceExisted(lines: readonly unknown[]): boolean {
+  return Array.isArray(lines) && lines.some((line) => typeof line === "string");
+}
+
+/**
  * Render advice for THIS server's configuration — the entry point the presenters use.
  *
  * Every advice line that travels as `suggest` or `try_next` **from a tool** passes
@@ -903,8 +928,7 @@ export const ADVICE_WITHHELD_FLOOR =
  * must, because "harmless" there is a property of the current wording and not of the
  * road. Recorded as remaining work rather than widened here: a success payload is a
  * different shape with different callers, and this round's claim is byte stability.
- */
-/**
+ *
  * **THIS FUNCTION TAKES NO CONFIGURATION, and JavaScript will not tell you.** Pass one
  * as a second argument and it is silently dropped, so the call answers about the
  * RUNNING PROCESS instead of the corner you meant — measured by win2 on 2026-09-13,
@@ -912,8 +936,14 @@ export const ADVICE_WITHHELD_FLOOR =
  * without a provider. That reads as "nothing was dropped", agrees with today's correct
  * answer, and would go on agreeing after a conversion broke something: the strongest
  * kind of false green. **If you hold a configuration, call {@link renderAdviceWith}.**
+ *
+ * (These were two adjacent blocks separated by a blank line, so hover showed only the
+ * warning and the coverage statement above it — the `ok:true` roads and the stub —
+ * vanished. This file records the same shape being fixed on `providerFor` at lines
+ * 373-376, and gate 2 found it here twice: raised in the fifth round, and STILL HERE
+ * in the eighth, because the edit that claimed to merge them never ran — see the
+ * commit that fixes this.)
  */
-
 export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
   return renderAdviceWith(lines, captured ?? adviceConfigurationFromEnv());
 }
@@ -925,6 +955,12 @@ export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
  * `args` and `confidence` — because compacting the list loses which line went, and
  * re-pairing by counting survivors put one row's text beside another row's arguments
  * (gate 2, 2026-09-13, a high).
+ *
+ * **IT TAKES NO CONFIGURATION EITHER, and the hazard is its sibling's, verbatim.**
+ * `renderAdviceEachForCaller(lines, cfg)` drops the second argument in silence and
+ * answers about the running process — the same measured false green
+ * ({@link renderAdviceForCaller}), one function over. **If you hold a configuration,
+ * call {@link renderAdviceEach}.**
  */
 export function renderAdviceEachForCaller(lines: readonly AdviceLine[]): (string | null)[] {
   return renderAdviceEach(lines, captured ?? adviceConfigurationFromEnv());
