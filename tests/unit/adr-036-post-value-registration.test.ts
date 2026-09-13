@@ -36,7 +36,10 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
       },
     ]),
     getWindowProcessId: vi.fn(() => 1234),
-    getProcessIdentityByPid: vi.fn(() => ({ processName: "notepad.exe" })),
+    // The full identity the real function returns — pid and start time included, because the
+    // post layer compares them to decide whether the foreground is still the same WINDOW and
+    // treats a start time of 0 (the failure path's shape) as unreadable.
+    getProcessIdentityByPid: vi.fn(() => ({ pid: 1234, processName: "notepad.exe", processStartTimeMs: 900 })),
     restoreAndFocusWindow: vi.fn(() => true),
     getWindowTitleW: vi.fn(() => FOREGROUND.title),
   };

@@ -116,16 +116,23 @@ export function getHistorySnapshot(n = 5): HistoryEntry[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Capture the current foreground window. Cheap (~1 EnumWindows call). */
-function snapshotFocus(): { title: string | null; hwnd: string | null; processName: string } {
+function snapshotFocus(): {
+  title: string | null; hwnd: string | null; processName: string;
+  /** The identity `identity-tracker.ts` uses, kept so "same window" is answerable later. */
+  processPid: number; processStartTimeMs: number;
+} {
   try {
     const wins = enumWindowsInZOrder();
     const fg = wins.find((w) => w.isActive);
-    if (!fg) return { title: null, hwnd: null, processName: "" };
+    if (!fg) return { title: null, hwnd: null, processName: "", processPid: 0, processStartTimeMs: 0 };
     const pid = getWindowProcessId(fg.hwnd);
     const ident = getProcessIdentityByPid(pid);
-    return { title: fg.title, hwnd: String(fg.hwnd), processName: ident.processName };
+    return {
+      title: fg.title, hwnd: String(fg.hwnd), processName: ident.processName,
+      processPid: ident.pid ?? 0, processStartTimeMs: ident.processStartTimeMs ?? 0,
+    };
   } catch {
-    return { title: null, hwnd: null, processName: "" };
+    return { title: null, hwnd: null, processName: "", processPid: 0, processStartTimeMs: 0 };
   }
 }
 
@@ -403,14 +410,19 @@ export function withPostState<T extends Record<string, unknown>>(
       // `NativeUiaFocusInfo` does not carry. Filed rather than faked.
       if (carryValue && focusedElement && focusedElement.value !== undefined) {
         const settled = snapshotFocus();
-        // IDENTITY, NOT THE NUMBER. A handle is recyclable: the named window can exit during the
-        // lookup and Windows can hand its number to whatever takes focus next, and then the
-        // cheapest form of this check — `settled.hwnd === after.hwnd` — is true about a different
-        // window. `identity-tracker.ts` calls that `hwnd_reused`; the process name is already in
-        // both snapshots, so asking for it costs nothing, and an unreadable one withholds
-        // (gate on `93e39ef`).
+        // IDENTITY, NOT THE NUMBER — and identity is the PAIR, not the name. A handle is
+        // recyclable: the named window can exit during the lookup and Windows can hand its number
+        // to whatever takes focus next, so `settled.hwnd === after.hwnd` alone is true about a
+        // different window (gate on `93e39ef`). Comparing the process NAME does not close it
+        // either: a second instance of the same executable — the second Notepad — answers the same
+        // name, and a user with two of anything open is not a corner case (gate on `6f33565`).
+        // `getProcessIdentityByPid` already returns what `identity-tracker.ts` compares, pid and
+        // process start time, and `snapshotFocus` was throwing both away. An unreadable identity
+        // (start time 0, which is also what the failure path returns) withholds.
         const sameWindow = settled.hwnd !== null && settled.hwnd === after.hwnd &&
-          settled.processName !== "" && settled.processName === after.processName;
+          settled.processStartTimeMs !== 0 &&
+          settled.processPid === after.processPid &&
+          settled.processStartTimeMs === after.processStartTimeMs;
         if (!sameWindow) delete focusedElement.value;
       }
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;

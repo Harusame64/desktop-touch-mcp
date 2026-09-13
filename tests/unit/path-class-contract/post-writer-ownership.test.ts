@@ -50,6 +50,9 @@ import { errorFromMessage, toToolFailure, failWith } from "../../../src/tools/_e
 import { getFocusedAndPointInfo } from "../../../src/engine/uia-bridge.js";
 import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../../../src/engine/win32.js";
 
+/** One window's process, as `getProcessIdentityByPid` returns it: pid, name, and start time. */
+const NOTEPAD = { pid: 1234, processName: "notepad.exe", processStartTimeMs: 900 };
+
 function parse(result: { content: ReadonlyArray<{ type: string; text?: string }> }): Record<string, unknown> {
   const block = result.content[0];
   if (!block || block.type !== "text" || typeof block.text !== "string") {
@@ -253,7 +256,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     vi.mocked(enumWindowsInZOrder).mockImplementation(
       () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
     );
-    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     const focusedWith = (value: string) =>
       vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Notes", controlType: "Edit", value } } as never);
     const elementOf = async (tool: string, args: Record<string, unknown>, keys?: PostWindowArgKeys) => {
@@ -380,7 +383,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // value published for the window the caller named would be the other window's field.
     // The sequence below is the wrapper's three reads: `before`, `after`, and the re-check.
     const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
-    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     const win = (hwnd: bigint, title: string) => [{ hwnd, title, isActive: true }] as never;
     const elementOfSequence = async (third: () => unknown) => {
       vi.mocked(enumWindowsInZOrder)
@@ -405,12 +408,28 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       // THE HANDLE CAN BE THE SAME WINDOW'S NUMBER AND A DIFFERENT WINDOW. The named window exits
       // during the lookup, Windows hands its number to whatever takes focus, and a check on the
       // number alone says nothing moved. Same hwnd, different process.
+      // A DIFFERENT PROCESS behind the same handle — the named window exited, its number was
+      // reused. Two rows, because the cheap readings of "same window" each pass one of them: the
+      // handle alone passes both, and the process NAME passes the second, where the replacement is
+      // another instance of the same executable (a second Notepad, which nobody would call a
+      // corner case). Only pid + start time — what `identity-tracker.ts` compares — refuses both.
       vi.mocked(getProcessIdentityByPid)
-        .mockReturnValueOnce({ processName: "notepad.exe" } as never)
-        .mockReturnValueOnce({ processName: "notepad.exe" } as never)
-        .mockReturnValueOnce({ processName: "passwords.exe" } as never);
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 77, processName: "passwords.exe", processStartTimeMs: 900 } as never);
       expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
-      vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 99, processName: "notepad.exe", processStartTimeMs: 900 } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      // …and an identity that could not be read at all withholds too (the failure path's shape).
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 0, processName: "", processStartTimeMs: 0 } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     } finally {
       // RESET IN A `finally`, and reset rather than restore: the sequences above are
       // `mockImplementationOnce` queues, so a regression that skips the third read leaves one
@@ -432,7 +451,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     vi.mocked(enumWindowsInZOrder).mockImplementation(
       () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
     );
-    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     vi.mocked(getFocusedAndPointInfo).mockResolvedValue({
       focused: { name: "Notes", controlType: "Edit", value: "PROBE-REFUSED-RING" },
     } as never);
