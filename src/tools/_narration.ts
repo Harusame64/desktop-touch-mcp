@@ -255,7 +255,13 @@ export function withRichNarration<T extends Record<string, unknown>>(
   handler: (args: T) => Promise<ToolResult>,
   options: RichNarrationOptions = {}
 ): (args: T) => Promise<ToolResult> {
-  const wrappedWithPost = withPostState(toolName, handler);
+  // The keys this tool declared, handed down so the post layer asks the same question this
+  // wrapper does — "did the call name a window?" — of the same arguments. `focus_window` names
+  // its destination `title`, and a post layer reading a fixed `windowTitle` could not see it.
+  const wrappedWithPost = withPostState(toolName, handler, {
+    windowTitleKey: options.windowTitleKey,
+    hwndKey: options.hwndKey,
+  });
 
   return async (args: T) => {
     const narrate = (args.narrate as string | undefined) ?? "minimal";

@@ -97,9 +97,19 @@ vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
 });
 
 // The post-state layer is not what this file is about; passthrough keeps the
-// assertions on the narration rule rather than on focus snapshots.
+// assertions on the narration rule rather than on focus snapshots. The third argument IS
+// recorded, because it is this wrapper's declaration of which argument names a window and the
+// post layer's answer to "did the call name the window focus ended in?" is built from it.
+const { mockPostKeys } = vi.hoisted(() => ({ mockPostKeys: vi.fn() }));
 vi.mock("../../src/tools/_post.js", () => ({
-  withPostState: (_name: string, handler: (a: Record<string, unknown>) => Promise<unknown>) => handler,
+  withPostState: (
+    _name: string,
+    handler: (a: Record<string, unknown>) => Promise<unknown>,
+    keys?: { windowTitleKey?: string; hwndKey?: string },
+  ) => {
+    mockPostKeys(keys);
+    return handler;
+  },
 }));
 
 const { withRichNarration, UIA_WRITE_NARRATION, narrateParam } = await import("../../src/tools/_narration.js");
@@ -858,5 +868,28 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     expect(richOf(r).diffDegraded).toBe("no_target");
     expect(mockGetUiElements).not.toHaveBeenCalled();
     expect(innerHandler).toHaveBeenCalled();
+  });
+});
+
+// ── The declared key reaches the post layer ──────────────────────────────────
+describe("ADR-036: the argument that names a window is the one the tool declared", () => {
+  it("hands its own keys down, so a tool that calls the destination `title` is not read for `windowTitle`", () => {
+    // `focus_window`'s schema names the partial title `title` (window.ts), and it declares that
+    // here. A post layer reading a fixed `windowTitle` saw nothing on the one tool whose entire
+    // job is to name a window. The two calls are the pairing: same wrapper, different
+    // declaration, and what reaches the post layer follows the declaration.
+    mockPostKeys.mockClear();
+    withRichNarration("focus_window", innerHandler as never, { windowTitleKey: "title" });
+    expect(mockPostKeys).toHaveBeenCalledWith({ windowTitleKey: "title", hwndKey: undefined });
+
+    mockPostKeys.mockClear();
+    withRichNarration("click_element", innerHandler as never, UIA_WRITE_NARRATION);
+    expect(mockPostKeys).toHaveBeenCalledWith({ windowTitleKey: "windowTitle", hwndKey: "hwnd" });
+
+    // A tool that declares nothing declares nothing — the post layer applies its own default,
+    // which is what keeps `notification_show({title})` from being read as naming a window.
+    mockPostKeys.mockClear();
+    withRichNarration("clipboard", innerHandler as never, {});
+    expect(mockPostKeys).toHaveBeenCalledWith({ windowTitleKey: undefined, hwndKey: undefined });
   });
 });

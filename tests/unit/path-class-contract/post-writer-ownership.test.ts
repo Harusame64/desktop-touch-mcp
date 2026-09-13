@@ -44,6 +44,7 @@ vi.mock("../../../src/engine/uia-bridge.js", () => ({
 }));
 
 import { withPostState, getHistorySnapshot } from "../../../src/tools/_post.js";
+import type { PostWindowArgKeys } from "../../../src/tools/_post.js";
 import { ok, fail } from "../../../src/tools/_types.js";
 import { errorFromMessage, toToolFailure, failWith } from "../../../src/tools/_errors.js";
 import { getFocusedAndPointInfo } from "../../../src/engine/uia-bridge.js";
@@ -255,9 +256,12 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
     const focusedWith = (value: string) =>
       vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Notes", controlType: "Edit", value } } as never);
-    const elementOf = async (tool: string, args: Record<string, unknown>) => {
+    const elementOf = async (tool: string, args: Record<string, unknown>, keys?: PostWindowArgKeys) => {
       focusedWith("PROBE-TYPED-POST-2");
-      return (parse(await withPostState(tool, async () => ok({ ok: true }))(args)).post as Record<string, unknown>).focusedElement;
+      const wrapped = keys
+        ? withPostState(tool, async () => ok({ ok: true }), keys)
+        : withPostState(tool, async () => ok({ ok: true }));
+      return (parse(await wrapped(args)).post as Record<string, unknown>).focusedElement;
     };
     // CONTROL: the foreground really is what the rows below assume, or every WITHOUT is vacuous.
     expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" }))
@@ -283,6 +287,35 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Calculator" })).toEqual(WITHOUT);
     // A handle that is not the focused one.
     expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "9999" })).toEqual(WITHOUT);
+
+    // ONE HANDLE, HOWEVER IT WAS SPELLED. `resolveWindowTarget` accepts the argument through
+    // `BigInt`, so all four of these name window 4242 and the call succeeds; an exact string
+    // compare against the decimal snapshot answered WITHOUT for three of them, which is the
+    // value being withheld from the caller who named the window best.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "0x1092" })).toEqual(WITH);
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "004242" })).toEqual(WITH);
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "  4242  " })).toEqual(WITH);
+    // …and the pairing that says the widening stops at SPELLING: a different number is still a
+    // different window, however it is written.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "0x9999" })).toEqual(WITHOUT);
+    // What neither side can parse is not a name. `resolveWindowTarget` throws on this argument.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "4242px" })).toEqual(WITHOUT);
+
+    // THE TOOL'S OWN ARGUMENT NAME. `focus_window` names its destination `title`, and the two
+    // rows are the same call — only the declared key differs, so nothing else can explain the
+    // change. The second row is what shipped before this: the tool whose entire job is to name a
+    // window, carrying no value because the predicate was reading an argument it does not have.
+    const FOCUS_KEYS: PostWindowArgKeys = { windowTitleKey: "title", hwndKey: "hwnd" };
+    expect(await elementOf("focus_window", { title: "Notepad" }, FOCUS_KEYS)).toEqual(WITH);
+    expect(await elementOf("focus_window", { title: "Notepad" })).toEqual(WITHOUT);
+    // Declaring the key does not loosen WHICH window: a title that is not the focused one is
+    // still nothing, and `@active` is still "whatever is in front".
+    expect(await elementOf("focus_window", { title: "Calculator" }, FOCUS_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("focus_window", { title: "@active" }, FOCUS_KEYS)).toEqual(WITHOUT);
+    // And the reason a fixed key list could not simply be widened to `title`: the row above sits
+    // one line from `notification_show({title})`, where `title` is a message heading. It stays
+    // WITHOUT because that tool declares no window key — the same `title`, read as nothing.
+    expect(await elementOf("notification_show", { title: "Notepad", message: "m" })).toEqual(WITHOUT);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
   });
 

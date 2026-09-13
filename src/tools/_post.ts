@@ -125,6 +125,25 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
 }
 
 /**
+ * Which arguments name a window FOR THIS TOOL. The same two keys `RichNarrationOptions` declares,
+ * threaded down so the post layer reads the tool's own argument rather than a fixed pair of names.
+ */
+export interface PostWindowArgKeys {
+  /** Arg holding the target window title — `title` for `focus_window` / `window_dock`. */
+  windowTitleKey?: string;
+  /** Arg holding the target window handle. */
+  hwndKey?: string;
+}
+
+/**
+ * What a tool that declares nothing gets: the names most of the schemas use. Resolved HERE rather
+ * than at the call site, so the fallback has one home and a caller can pass the options object it
+ * already has, holes and all.
+ */
+const DEFAULT_WINDOW_TITLE_KEY = "windowTitle";
+const DEFAULT_HWND_KEY = "hwnd";
+
+/**
  * Did THIS call name the window the focus ended up in?
  *
  * The predicate option (b) rests on, and it was measured before it was written (win2, `f2b7241`,
@@ -142,28 +161,72 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
  * as the way back to carrying the value everywhere, and what it was a way back TO is the row set
  * above.
  *
+ * The two ways the first form of this predicate then said "no window" about a call that HAD named
+ * one were measured on the same machine before the fix (on `7480ce1`, internal
+ * `dev/pr639-post-value-named-window` `e6074a3`): `hwnd:"0x20a4a"`, `hwnd:"  133706  "` and
+ * `hwnd:"000133706"` each returned `ok:true` with the keystrokes delivered and no value, and so
+ * did `focus_window({title})`. Each of those arms really did write — the arithmetic says so rather
+ * than the `ok` flag: the fixture field's length counts the needles that arrived, and the three
+ * handle spellings added theirs. A refusal carries nothing either way; the failure branch below
+ * takes no focused-element snapshot at all (measured on the same round, `AutoGuardBlocked`).
+ *
  * CONSERVATIVE ON PURPOSE, in the direction where being wrong is cheap. Withholding costs a
  * read-back the caller can still get from `desktop_state`; attaching costs a field the caller never
  * asked about. So:
  *
- *   - `hwnd` is compared exactly. It is the only unambiguous naming this codebase has.
+ *   - THE ARGUMENT NAMES ARE THE ONES THE TOOL DECLARED, not the literal `windowTitle` / `hwnd`.
+ *     `focus_window` calls its destination `title` (`window_dock` too), so reading only
+ *     `windowTitle` withheld the value from the two tools whose whole purpose is to name a window
+ *     — as explicit a naming as this codebase has, and the predicate could not see it (gate on
+ *     `7480ce1`, 2026-09-13). The keys come from `RichNarrationOptions`, the table every other
+ *     layer already reads them from; a second table here would be a second place to forget a tool.
+ *     A tool that declares no key keeps the defaults, which is why `notification_show({title})` —
+ *     whose `title` is a message heading and not a window — is still read as naming nothing.
+ *   - THE HANDLE IS COMPARED AS A NUMBER, through the same `BigInt` that ACCEPTED it
+ *     (`_resolve-window.ts` case 1). An exact string compare was the first form, and it withheld
+ *     the value from calls that had named the window unambiguously: the schemas take `hwnd` as
+ *     `z.string()` with no decimal rule, `BigInt` takes `"0x1092"`, `"004242"` and whitespace, and
+ *     the foreground snapshot always writes decimal — so every spelling but one lost its own value
+ *     (gate on `7480ce1`, 2026-09-13). Enumerating the spellings does not end; sharing the parser
+ *     with the side that accepted the argument does, and it cannot widen WHICH window matches,
+ *     only how that one window may be written. A handle neither side can parse names nothing.
  *   - `windowTitle` must be contained in the focused window's title, case-folded and nothing more.
  *     No suffix stripping, no normalisation — the guard's matching rules exist to DECIDE a target
  *     and are deliberately generous; borrowing them here would widen what attaches.
  *   - `"@active"` counts as naming NOTHING. It means "whatever is in front", which is the same
  *     thing every leaking arm above was pointed at by accident. A caller who really wants the
- *     value of the foreground field can ask `desktop_state` for it.
+ *     value of the foreground field can ask `desktop_state` for it — and it answers, naming no
+ *     window, measured on the same round. So this is a change in WHO HAS TO ASK for a field, not a
+ *     reduction in what can be read; `desktop_state`'s own caveat is where that is written down.
+ *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
+ *     `hasValuePattern` still come back for a window this call never named, which is how the
+ *     success-path advisory (ADR-022) decides anything at all.
  */
 function valueBelongsToTheWindowActedOn(
   args: Record<string, unknown>,
   after: { title: string | null; hwnd: string | null },
+  keys: PostWindowArgKeys,
 ): boolean {
-  const hwnd = args.hwnd;
-  if (typeof hwnd === "string" && hwnd !== "") return after.hwnd !== null && after.hwnd === hwnd;
-  const title = args.windowTitle;
+  const hwnd = args[keys.hwndKey ?? DEFAULT_HWND_KEY];
+  if (typeof hwnd === "string" && hwnd.trim() !== "") return isTheSameHandle(hwnd, after.hwnd);
+  const title = args[keys.windowTitleKey ?? DEFAULT_WINDOW_TITLE_KEY];
   if (typeof title !== "string" || title === "" || title === "@active") return false;
   if (after.title === null) return false;
   return after.title.toLowerCase().includes(title.toLowerCase());
+}
+
+/**
+ * One handle, however it was spelled. `BigInt` is the parser `resolveWindowTarget` uses to accept
+ * the argument, so the two sides cannot disagree about what a handle IS; anything it refuses is
+ * not a name and gets no value.
+ */
+function isTheSameHandle(arg: string, afterHwnd: string | null): boolean {
+  if (afterHwnd === null) return false;
+  try {
+    return BigInt(arg) === BigInt(afterHwnd);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -246,7 +309,8 @@ async function snapshotFocusedElement(carryValue: boolean): Promise<PostElementI
  */
 export function withPostState<T extends Record<string, unknown>>(
   toolName: string,
-  handler: (args: T) => Promise<ToolResult>
+  handler: (args: T) => Promise<ToolResult>,
+  windowArgKeys: PostWindowArgKeys = {}
 ): (args: T) => Promise<ToolResult> {
   return async (args: T) => {
     const startedAt = Date.now();
@@ -255,7 +319,7 @@ export function withPostState<T extends Record<string, unknown>>(
     try {
       const after = snapshotFocus();
       const focusedElement = await snapshotFocusedElement(
-        valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after),
+        valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys),
       );
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
