@@ -238,22 +238,52 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ name: "Canvas", type: "Pane", hasValuePattern: false });
   });
 
-  it("gives the value back only under DESKTOP_TOUCH_POST_FOCUSED_VALUE=1 — the way back the user asked to keep", async () => {
+  it("gives the value back only for the window THIS call named — the arms, as they were measured", async () => {
+    // OPTION (b), and every row here is one the Windows machine shot on `f2b7241` before the code
+    // was written (the switch was on so the arms were observable). The four leaking tools name no
+    // window and resolve none internally; `keyboard(type, windowTitle)` names the one it typed
+    // into. So the predicate splits exactly where the exposure is, and this cell is that table.
+    // The foreground window for the whole cell: "Notepad", handle 4242. `snapshotFocus` reads it
+    // from `enumWindowsInZOrder`, mocked at the top of this file to `[]` — which would make every
+    // row below WITHOUT for the wrong reason (no focused window at all), so the arm-A rows would
+    // have passed as WITHOUT and the cell would have reported the predicate working while it was
+    // only ever seeing null. Restored after the cell.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
     const focusedWith = (value: string) =>
       vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Notes", controlType: "Edit", value } } as never);
-    const focusedElementOf = async () =>
-      (parse(await withPostState("keyboard", async () => ok({ ok: true }))({ action: "type", text: "x" })).post as Record<string, unknown>).focusedElement;
-    try {
-      vi.stubEnv("DESKTOP_TOUCH_POST_FOCUSED_VALUE", "1");
+    const elementOf = async (tool: string, args: Record<string, unknown>) => {
       focusedWith("PROBE-TYPED-POST-2");
-      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true, value: "PROBE-TYPED-POST-2" });
-      // Anything but "1" keeps it off.
-      vi.stubEnv("DESKTOP_TOUCH_POST_FOCUSED_VALUE", "0");
-      focusedWith("PROBE-TYPED-POST-3");
-      expect(await focusedElementOf()).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true });
-    } finally {
-      vi.unstubAllEnvs();
-    }
+      return (parse(await withPostState(tool, async () => ok({ ok: true }))(args)).post as Record<string, unknown>).focusedElement;
+    };
+    // CONTROL: the foreground really is what the rows below assume, or every WITHOUT is vacuous.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" }))
+      .toHaveProperty("value");
+    const WITH = { name: "Notes", type: "Edit", hasValuePattern: true, value: "PROBE-TYPED-POST-2" };
+    const WITHOUT = { name: "Notes", type: "Edit", hasValuePattern: true };
+
+    // Arm A — the reason the value exists. `snapshotFocus` is mocked to this title below.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toEqual(WITH);
+    // …and by handle, the only unambiguous naming there is.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "4242" })).toEqual(WITH);
+
+    // Arm B — the four measured carrying a field they never touched.
+    expect(await elementOf("clipboard", { action: "read" })).toEqual(WITHOUT);
+    expect(await elementOf("clipboard", { action: "write", text: "x" })).toEqual(WITHOUT);
+    expect(await elementOf("notification_show", { title: "t", message: "m" })).toEqual(WITHOUT);
+    expect(await elementOf("mouse_click", { x: 900, y: 450 })).toEqual(WITHOUT);
+
+    // `@active` names nothing: it is "whatever is in front", which is what every arm above was
+    // pointed at by accident. Conservative on purpose — `desktop_state` is the explicit read.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "@active" })).toEqual(WITHOUT);
+    // A named window that is NOT the one focus ended in.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Calculator" })).toEqual(WITHOUT);
+    // A handle that is not the focused one.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "9999" })).toEqual(WITHOUT);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
   });
 
   it("does NOT set advisory when the focused element is not a text input", async () => {

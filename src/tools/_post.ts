@@ -49,9 +49,21 @@ export interface PostElementInfo {
    */
   hasValuePattern: boolean;
   /**
-   * The value itself — only when `DESKTOP_TOUCH_POST_FOCUSED_VALUE=1` (`postCarriesFocusedValue`),
-   * which brings back every exposure described above. Kept for checking where input landed when
-   * focus does not arrive.
+   * The value itself — only when the focused element is in the window THIS CALL NAMED
+   * (`valueBelongsToTheWindowActedOn`). Option (b) of the 2026-09-11 material, taken on
+   * 2026-09-13 after the predicate was measured to split the arms cleanly.
+   *
+   * What that buys, and what it does not. It closes the cross-tool exposure above: the four tools
+   * measured carrying a field they never touched — `clipboard` read and write,
+   * `notification_show`, and a coordinate `mouse_click` — name no window at all and resolve none
+   * internally, so the value never attaches to them (win2, on `f2b7241`, with the old switch on so
+   * the arms were observable). It keeps the reason the value existed: `keyboard(type, windowTitle)`
+   * still confirms its own write in one cycle.
+   *
+   * It does NOT make a value safe to read. A field the caller DID act on still comes back in full
+   * (up to the 4,096 UIA cap), CSS-masked fields in cleartext, and a Chrome password as one bullet
+   * per character whose count is the secret's length. Naming the window narrows WHOSE field, not
+   * WHAT is in it.
    */
   value?: string;
   automationId?: string;
@@ -113,22 +125,52 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
 }
 
 /**
- * `DESKTOP_TOUCH_POST_FOCUSED_VALUE=1` puts the focused element's value back into every post, and
- * so into the history ring — the behaviour before option c, with every exposure it had (see
- * `PostElementInfo`). Any other value, or none, keeps it off. Read on every call, which is how the
- * tests flip it; a running server reads the environment it was started with, so the variable goes
- * into the MCP client's config and takes effect on restart. Turning it off does not clear the
- * values already in the history ring (up to 20), which no public tool reads.
+ * Did THIS call name the window the focus ended up in?
+ *
+ * The predicate option (b) rests on, and it was measured before it was written (win2, `f2b7241`,
+ * with `DESKTOP_TOUCH_POST_FOCUSED_VALUE=1` so the arms were observable):
+ *
+ * | arm | tool | names a window | focus after | predicate |
+ * |---|---|---|---|---|
+ * | B | `clipboard(read)` / `clipboard(write)` | no | the untouched field's window | false |
+ * | B | `notification_show` | no | same | false |
+ * | B | `mouse_click(x,y)` | no | same | false |
+ * | A | `keyboard(type, windowTitle)` | yes | that window | TRUE |
+ *
+ * The four leaking arms name no window and resolve none internally, so the predicate splits
+ * exactly where the exposure is. `DESKTOP_TOUCH_POST_FOCUSED_VALUE` is gone with this: it existed
+ * as the way back to carrying the value everywhere, and what it was a way back TO is the row set
+ * above.
+ *
+ * CONSERVATIVE ON PURPOSE, in the direction where being wrong is cheap. Withholding costs a
+ * read-back the caller can still get from `desktop_state`; attaching costs a field the caller never
+ * asked about. So:
+ *
+ *   - `hwnd` is compared exactly. It is the only unambiguous naming this codebase has.
+ *   - `windowTitle` must be contained in the focused window's title, case-folded and nothing more.
+ *     No suffix stripping, no normalisation — the guard's matching rules exist to DECIDE a target
+ *     and are deliberately generous; borrowing them here would widen what attaches.
+ *   - `"@active"` counts as naming NOTHING. It means "whatever is in front", which is the same
+ *     thing every leaking arm above was pointed at by accident. A caller who really wants the
+ *     value of the foreground field can ask `desktop_state` for it.
  */
-function postCarriesFocusedValue(): boolean {
-  return process.env.DESKTOP_TOUCH_POST_FOCUSED_VALUE === "1";
+function valueBelongsToTheWindowActedOn(
+  args: Record<string, unknown>,
+  after: { title: string | null; hwnd: string | null },
+): boolean {
+  const hwnd = args.hwnd;
+  if (typeof hwnd === "string" && hwnd !== "") return after.hwnd !== null && after.hwnd === hwnd;
+  const title = args.windowTitle;
+  if (typeof title !== "string" || title === "" || title === "@active") return false;
+  if (after.title === null) return false;
+  return after.title.toLowerCase().includes(title.toLowerCase());
 }
 
 /**
  * Best-effort: call getFocusedAndPointInfo with a tight timeout.
  * Returns null on timeout or error — never throws.
  */
-async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
+async function snapshotFocusedElement(carryValue: boolean): Promise<PostElementInfo | null> {
   try {
     // #352 follow-up (ADR-022 §5.5): pass includeUnnamed=true so an UNNAMED UIA
     // text input (Edit/Document with ValuePattern but an empty Name) survives the
@@ -144,7 +186,7 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
     // history ring stores this same object, so it holds a value only under the switch as well.
     const info: PostElementInfo = { name: focused.name, type: focused.controlType, hasValuePattern: focused.value != null };
     if (focused.automationId) info.automationId = focused.automationId;
-    if (postCarriesFocusedValue() && focused.value != null) info.value = focused.value;
+    if (carryValue && focused.value != null) info.value = focused.value;
     return info;
   } catch {
     return null;
@@ -212,7 +254,9 @@ export function withPostState<T extends Record<string, unknown>>(
     const result = await handler(args);
     try {
       const after = snapshotFocus();
-      const focusedElement = await snapshotFocusedElement();
+      const focusedElement = await snapshotFocusedElement(
+        valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after),
+      );
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
