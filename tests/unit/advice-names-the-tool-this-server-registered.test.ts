@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
 import { getSuggestsForCode, toToolFailure } from "../../src/tools/_errors.js";
-import { paneIdMissSuggest, runNeedsDestinationSuggest } from "../../src/tools/terminal.js";
+import { paneIdMissSuggest } from "../../src/tools/terminal.js";
 import * as advice from "../../src/tools/_advice-capability.js";
 import {
   renderAdviceWith,
@@ -239,18 +239,23 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
       "paneIdMissSuggest(malformed)": "not-a-pane",
       "paneIdMissSuggest(no-live-pane)": "12345678",
     };
-    // AND EVERY OTHER BUILDER THAT CAN DROP. The closing control below reads as "the
-    // registered set is exactly the set that drops", and that is only true of the
-    // producers this list walks — `terminal(action='run')`'s destination advice was an
-    // inline array inside a handler, dropping its paneId line at both locker-off
-    // corners with nothing pinning what survived (gate 2 on `7fda7f7`, 2026-09-13). It
-    // was extracted into a builder for this. The other site gate 2 named, the inline
-    // `suggest` in `ui-elements.ts`, is not reachable from here either — it is a
-    // handler body — and is covered instead where it can be rendered at the two corners
-    // that produce it (`adr-036-hwnd-uia-guard.test.ts`).
-    const NULLARY: Record<string, () => string[]> = {
-      "runNeedsDestinationSuggest()": runNeedsDestinationSuggest,
-    };
+    // AND EVERY OTHER BUILDER THAT CAN DROP — of which there are none beyond these
+    // today, and the round that thought otherwise is worth keeping in view.
+    // `terminal(action='run')`'s destination advice was an inline array that drops its
+    // paneId line at both locker-off corners, so it was extracted into a builder and
+    // registered here (gate 2 on `7fda7f7`). The next round found that its only call
+    // site is UNREACHABLE — the run variant's `.refine()` rejects a missing destination
+    // before the handler runs — so the two rows it added pinned what survives a refusal
+    // no caller receives, which is the shape this same PR removed from
+    // `KeyLockerConsentRequired` (gate 2 on `44fa0fa`). The builder is gone and the rows
+    // with it.
+    //
+    // A producer being reachable is therefore part of what "registered" has to mean
+    // here, not just that it drops. The other site gate 2 named, the inline `suggest` in
+    // `ui-elements.ts`, is a handler body this walk cannot call, and is covered where it
+    // can be rendered at the two corners that produce it
+    // (`adr-036-hwnd-uia-guard.test.ts`).
+    const NULLARY: Record<string, () => string[]> = {};
     const codes = codesFromSource();
     const seen: string[] = [];
     const producers: Array<[string, () => string[]]> = [];
@@ -398,6 +403,44 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
       renderAdviceWith(["x {tool:reidentify_elemnt} y"], cfgFor("v2_default"))[0],
       "control: the detector must see a misspelling survive",
     ).toContain("{tool:reidentify_elemnt}");
+  });
+
+  it("keeps the envelope's lease row on the only surface that can produce it", () => {
+    // `_envelope.ts`'s `LeaseExpired` row is `{action: "{tool:reidentify_element}",
+    // args: {}}`. `args: {}` says "no arguments needed", which is true of
+    // `desktop_discover` and false of `get_ui_elements`, whose `windowTitle` is
+    // required — so at a kill-switch corner that row would hand a caller a call they
+    // cannot make. It is filed rather than changed because it is unreachable: the only
+    // `leaseValidator` in the tree belongs to `desktop_act`, which exists only at the
+    // v2 corner, where the row renders back to `desktop_discover`.
+    //
+    // GATE 2's POINT, and the reason this cell exists: that argument and the rendering
+    // do not share a source. `renderTryNext` resolves against the process-global
+    // capture, not against the producer's corner, so the row is safe only because of a
+    // property of `desktop-register.ts` — checked, until now, nowhere near the row. The
+    // comment said "whoever gives this row a second producer owes the check", and
+    // nothing reddened if they did not (`44fa0fa`, 2026-09-13).
+    const SRC = fileURLToPath(new URL("../../src", import.meta.url));
+    const files: string[] = [];
+    const walkDir = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p2 = join(dir, e.name);
+        if (e.isDirectory()) walkDir(p2);
+        else if (e.name.endsWith(".ts")) files.push(p2);
+      }
+    };
+    walkDir(SRC);
+    const withValidator = files
+      .filter((f) => /^\s*leaseValidator:/m.test(readFileSync(f, "utf8")))
+      .map((f) => f.slice(SRC.length + 1))
+      .sort();
+    // CONTROL: the walk read the tree and the pattern matches something, or "exactly
+    // one" is also what a broken search answers.
+    expect(files.length, "the walk must have read the tree").toBeGreaterThan(50);
+    expect(
+      withValidator,
+      "a second lease-validated tool exists — check whether it is registered outside the `_desktopV2` branch, because `_envelope.ts`'s `args: {}` row is only honest while none is",
+    ).toEqual(["tools/desktop-register.ts"]);
   });
 
   it("keeps the paneId format specification when the locker is gone", () => {

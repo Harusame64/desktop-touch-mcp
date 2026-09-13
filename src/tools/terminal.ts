@@ -715,28 +715,6 @@ export function isPaneShellAlive(paneId: string | undefined): boolean {
 }
 
 /**
- * The advice for `terminal(action='run')` arriving with neither destination.
- *
- * SPLIT BY HAND (the user's decision of 2026-09-13). The core — which argument to pass
- * — is true in every configuration; only the way to obtain a paneId depends on the
- * locker. Substituting the whole line would drop the real answer at the two locker-off
- * corners, and dropping the line would drop it everywhere.
- *
- * EXPORTED so the survivors registry can call it. It was an inline array, which put it
- * outside the walk that registers what survives wherever a line drops — and that walk's
- * closing control reads as "the registered set is exactly the set that drops", a claim
- * its producer list could not support while a dropping producer sat in a handler body
- * (gate 2 on `7fda7f7`, 2026-09-13). A line that drops must be reachable by the cell
- * that asks a human to read what is left.
- */
-export function runNeedsDestinationSuggest(): string[] {
-  return [
-    "Pass windowTitle — a partial terminal title.",
-    "Or pass paneId, which {tool:credential_store} action='launch_console' returns.",
-  ];
-}
-
-/**
  * Build a recovery `suggest[]` for a `paneId` that failed to resolve to a live pane, branched on the
  * FAILURE SHAPE so the hint matches the actual mistake instead of misdirecting.
  *
@@ -3037,11 +3015,23 @@ export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolR
         runWindowTitle = resolved;
       }
       if (runWindowTitle === undefined || runWindowTitle === "") {
-        // Unreachable: the run variant's `.refine(windowTitle || paneId)` already rejected this as a
-        // typed InvalidArgs error. Kept so TS narrows runWindowTitle to a non-empty string.
-        return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId", {
-          suggest: runNeedsDestinationSuggest(),
-        });
+        // UNREACHABLE, and now it says so with nothing attached. The run variant's
+        // `.refine(windowTitle || paneId)` rejects this before the handler runs; this
+        // branch exists so TS narrows `runWindowTitle` to a non-empty string.
+        //
+        // It briefly carried a hand-split `suggest`, extracted into a builder so the
+        // survivors registry could walk it — which put two rows in that registry
+        // pinning what survives a refusal NO CALLER CAN RECEIVE. That is the same shape
+        // this round removed from `KeyLockerConsentRequired`: advice kept alive at a
+        // place no reader reaches. Gate 2 caught it one file over from where the lesson
+        // was written (`44fa0fa`, 2026-09-13).
+        //
+        // The caller who really omits both arguments is not helped by any of this: the
+        // refine's message reaches them, and the advice beside it is `SUGGESTS.InvalidArgs`
+        // — "Check the required parameters" and a line about `name` / `automationId`,
+        // which this tool does not take. Filed in `remaining-work.md`; converting that
+        // road means giving the schema layer a way to carry advice, which is its own change.
+        return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId");
       }
       return terminalRunHandler({ ...a, windowTitle: runWindowTitle, input: resolvedInput });
     }

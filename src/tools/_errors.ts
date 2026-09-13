@@ -96,8 +96,17 @@ const SUGGESTS: Record<string, string[]> = {
     // substitute — so the argument the caller must supply is stated in one line, and
     // the argument that only one provider has is stated conditionally in the next
     // (gate 2, 2026-09-13; the general form of this axis is B4's sweep).
+    // "THE SET-VALUE TOOL", not "that tool". The two lines below are riders on this one,
+    // and drop is PER LINE: if `set_value` ever gained a null arm — a third surface, a
+    // switch that removes both providers — this line would go and the riders would ship
+    // alone, saying "if that tool also takes an `action` argument" with no tool named
+    // anywhere in the refusal. That is the rider shape this same round merged back into
+    // `KeyLockerConsentRequired`, and the survivors registry cannot catch it because it
+    // only pins pairs that drop TODAY (gate 2 on `44fa0fa`, 2026-09-13). Naming the
+    // subject in each rider costs two words and removes the dependency; merging all
+    // three into one line would cost the reader more than it saves.
     "Use {tool:set_value} for text input fields — set the value rather than invoking the control, passing the new text as the value argument its schema names.",
-    "If that tool also takes an `action` argument, name the set-value action explicitly: its default affordance is the invoke that has just failed.",
+    "If the set-value tool also takes an `action` argument, name the set-value action explicitly: its default affordance is the invoke that has just failed.",
     // THE THIRD ARGUMENT, and the one the caller cannot invent. This refusal comes from
     // `click_element` — a name, an automationId and a window — while `desktop_act`'s
     // `lease` is REQUIRED, and no lease is anywhere in what the caller has. Following
@@ -108,7 +117,7 @@ const SUGGESTS: Record<string, string[]> = {
     // take. The source is not named here on purpose: the tool that needs a lease says
     // in its own schema which call returns one, and the tool that does not need one
     // does not exist at the corner where that call does.
-    "If that tool takes a `lease`, this refusal has none to hand over: run the discovery call its schema names first, then set the value on what that returns.",
+    "If the set-value tool takes a `lease`, this refusal has none to hand over: run the discovery call its schema names first, then set the value on what that returns.",
     "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after {tool:reidentify_element})",
   ],
   BlockedKeyCombo: [
@@ -1599,8 +1608,14 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
   // B2c the lines carry `{tool:<capability>}` for it to resolve. A line with no
   // placeholder is still returned unchanged, which is what keeps the conversion
   // measurable: at the v2 corner every converted line renders back to the bytes it
-  // had, so the only codes that move there are the four split by hand (measured,
-  // 2026-09-13). Rendering here rather than at each producer is the point:
+  // had, so the codes that move there are exactly the ones a person changed. HOW MANY
+  // is not written here any more — it said "the four", stated as measured, while ten
+  // had moved, and someone auditing what changed for existing v2 callers would have
+  // re-read four and shipped six unreviewed (gate 2 on `44fa0fa`, 2026-09-13). The
+  // list lives where it is CHECKED, in the acceptance file's claim-4 cell, against a
+  // committed pre-image of this dictionary at `1ee173c`; adding a code there is the
+  // deliberate act, and a byte that moves without one reddens.
+  // Rendering here rather than at each producer is the point:
   // `WaitTimeout` is a measured case where a literal beats the dictionary, so a seam
   // on the dictionary alone would miss the road it was aimed at.
   const suggest = renderAdviceWithFloor(err.suggest);

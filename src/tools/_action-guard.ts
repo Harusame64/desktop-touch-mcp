@@ -11,9 +11,22 @@
  */
 
 import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
-// The NAME, not a placeholder: these sentences travel in the refusal's own `error`
-// string and in the perception summary, which no presenter renders, so a `{tool:…}`
-// written here would ship as literal text (ADR-036, measured on the wire).
+// PER FIELD, NOT PER FILE. `nextStepFor` and its siblings write into the refusal's own
+// `error` string and into the perception summary, which no presenter renders — a
+// `{tool:…}` written THERE ships as literal text (ADR-036, measured on the wire), so
+// those sites ask for the NAME and build the sentence themselves.
+//
+// `suggest` is the other case and this file has one: the tailored `ambiguous_target`
+// array below carries `{tool:list_window_titles}` on purpose, because
+// `failBlockedByGuard` → `failCode` → `toToolFailure` → `renderAdviceWithFloor` resolves
+// it, drops the line where the capability has no provider, and floors the code if
+// everything drops. Stated file-wide, this comment told an editor adding a
+// configuration-dependent line to that array to hand-build it — losing the drop and the
+// floor — or to read the placeholder 960 lines down as a bug and hard-code one corner's
+// tool name (gate 2 on `44fa0fa`, 2026-09-13).
+//
+// The rule: `error` and `summary.next` take a NAME from here; `suggest` takes a
+// PLACEHOLDER and lets the presenter answer.
 import { providerForCaller } from "./_advice-capability.js";
 import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 import { logDiagnostic } from "../engine/diagnostic-log.js";
