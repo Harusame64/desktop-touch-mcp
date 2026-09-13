@@ -1184,9 +1184,72 @@ export function registerDesktopStateTools(server: McpServer): void {
         "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. " +
         "attention='ok' means safe to proceed; other values require recovery (see suggest[]). " +
         "Set include* flags only when you need the extra data (each adds one syscall or CDP round-trip).",
+      // WHERE THE LOCKER'S PROMISE STOPS, said in the place it stops. `key_locker` now
+      // says its promise covers what the locker holds and not every password on the
+      // machine; this is the behaviour that makes that necessary, and its description
+      // advertised `focusedElement (… value …)` while saying nothing about what a
+      // credential field puts there. A reader who took the hint seriously and came
+      // looking would have found nothing and concluded the exposure was elsewhere
+      // (gate 2 on `1c22b3e`, 2026-09-13).
+      //
+      // THE TWO ROADS ARE NOT THE SAME AND THE CAVEAT MAY NOT SAY THEY ARE. The first
+      // version of this sentence read "a masked field comes back without it" —
+      // categorical, and true of only one of them. On the CDP road it is enforced and
+      // tested: `__isMasked` in `_element-name-js.ts`, pinned by
+      // `never-hand-back-a-password.test.ts`. On the UIA road nothing checks:
+      // `src/uia/focus.rs` calls `vp.CurrentValue()` on the focused element with no
+      // `IsPassword` or control-type gate, so the value is whatever the provider serves.
+      // A WinForms `UseSystemPasswordChar` box returns nothing — measured, one
+      // mechanism — but a WPF `PasswordBox` or a Qt / Java / Electron provider that does
+      // serve `ValuePattern` for a masked control would put plaintext here, and a caller
+      // who read the categorical version had been told that cannot happen.
+      //
+      // That is the same over-generalised promise this change removes from `key_locker`,
+      // re-introduced one sentence over on the half nothing enforces (gate 2 on
+      // `1f42968`, 2026-09-13). A trailing hedge does not undo a flat leading assertion,
+      // so the assertion is gone instead.
+      //
+      // `IsPassword` is also not the gate anyone would reach for: it comes back False
+      // for a genuinely masked WinForms box, so a guard written against it skips nothing.
+      //
+      // AND THE OTHER HALF, WHICH THE FIRST VERSION OF THIS CAVEAT LEFT OUT. "Do not rely on it
+      // being absent" says nothing about relying on it being PRESENT, and the value is not always
+      // there: `focusedElement` is preferred from the perception view (`buildElementInfoFromView`),
+      // and that shape has no `value` field at all. The invariant is about THAT road and no other:
+      // the CDP read carries a value too (`CDP_FOCUSED_ELEMENT_SCRIPT` returns `el.value` for an
+      // unmasked element, and `buildElementInfoFromCdp` keeps a non-empty one), so what is true is
+      // that the VIEW road can never carry one — not that only UIA can (gate on `05f31f6`).
+      //
+      // MEASURED, all three roads, one focused field at a time (win2, 2026-09-14, `8765f8c`):
+      //
+      //   road   plain field                     `type=password` field
+      //   uia    the value, 12 of 12 characters  12 bullets — i.e. the secret's LENGTH
+      //   cdp    the value, 12 of 12 characters  no value at all
+      //   view   (0 of 8, no value ever)         —
+      //
+      // So the masking sentence above is road-dependent in a way worth saying here even though the
+      // shipped string stays short: the CDP rule withholds, and the UIA road hands back a row whose
+      // length is the secret's. Anyone tightening this caveat should know that "masked fields are
+      // withheld" is true of exactly one of the two roads that can carry a value.
+      //
+      // Getting there cost four rounds on the measuring side, and two of them are worth carrying:
+      // Chrome's renderer accessibility makes UIA answer for every field, so the CDP branch is
+      // never reached while it is on — `--disable-renderer-accessibility` is the condition that
+      // branch is written for, not a trick to reach it. And the CDP fallback here asks
+      // `_defaultPort`, not the port the caller connected `browser_open` with: on any other port
+      // this road is simply absent (`hints.cdpUnavailable`), which is filed as its own item.
+      // Measured on Windows 2026-09-14 (win2, `dev/pr639-post-value-named-window` `a4802dd`): with
+      // the same element focused, 24 of 24 reads answered with a value while
+      // `hints.focusedElementSource` was `uia`, and 0 of 8 did while it was `view` — the element's
+      // NAME identical in every one of them, so a caller cannot tell "this road carries no values"
+      // from "the field is empty". What fills that window's view is this server's own writing, so
+      // the read-back is at its weakest immediately after a write, which is when a caller asks.
+      // `hints.focusedElementSource` is the only thing that separates the two, so the caveat says
+      // to read it.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
-        "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
+        "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
+        "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control, so do not rely on it being absent. It is also not always present: focusedElement is preferred from the perception view, which carries no value at all — check hints.focusedElementSource, where 'view' means no value was available rather than an empty field.",
     }),
     desktopStateRegistrationSchema,
     desktopStateRegistrationHandlerWithIncludeRoute as typeof desktopStateHandler
