@@ -610,9 +610,15 @@ export type AdviceLine = string;
  *   what would have made it bite.** The predicate now lives in
  *   `engine/key-locker/key-locker-switch.ts`, a leaf that imports nothing, and
  *   `key-locker-manager.ts` re-exports it so the switch still has one reader.
- *   Measured by walking static imports from this file: **15 modules and the native
- *   chain reached, down to 3 and none** — with the control that the same walker still
- *   reaches all three from `key-locker-tool.ts`. It is kept as a numbered item rather
+ *   Measured by walking static imports from this file: **the native chain reached,
+ *   down to none** — with the control that the same walker still reaches all three
+ *   from `key-locker-tool.ts`. **The module COUNTS that went with it (15 → 3) belong
+ *   to one walk and not to the question**: that walk counts this file and follows
+ *   type-only edges, the cell's walker skips them, and win2's walk over the emitted
+ *   `dist/` answers smaller again because tsc has already erased them (12 → 3, or
+ *   11 → 2 without the root). All four agree on what matters and none of the numbers
+ *   is portable — a count without its method is not a number, and gate 2 caught this
+ *   line quoting one across two methods. It is kept as a numbered item rather
  *   than deleted because the list is a checklist and a silently vanished line reads
  *   like a line that was never there. **The property is pinned by a cell**
  *   (`the-advice-road-does-not-import-the-native-chain.test.ts`), which is the part
