@@ -809,8 +809,21 @@ const SUGGESTS: Record<string, string[]> = {
   // WHEN their producers land (the tool + the L3 inject loop) — the classify producer-pin invariant
   // (issue-211) forbids a branch without a producer.
   KeyLockerConsentRequired: [
-    "The key locker is off until you enable it once. Run {tool:credential_store} with action='save' to open the enable dialog, or click Enable when it appears.",
-    "Enabling is a one-time confirmation shown by the locker itself; the assistant never sees your secret.",
+    // MERGED, not split (win2, 2026-09-13, measuring the ORDER after a drop). The
+    // second line was a rider on the first: it describes what enabling is like, and
+    // when the first line drops it is left explaining a thing the caller cannot do —
+    // one surviving line, no recovery in it. The capability audit asked "does this
+    // code go empty?" and answered `2 → 1 ok`; the number was right and the `ok` was
+    // wrong, because the test decision (2) actually implies is "is what SURVIVES a
+    // recovery?". A rider belongs to the sentence it rides on, so it is one line now
+    // and the pair stands or falls together.
+    "The key locker is off until you enable it once. Run {tool:credential_store} with action='save' to open the enable dialog, or click Enable when it appears — enabling is a one-time confirmation shown by the locker itself, and the assistant never sees your secret.",
+    // …AND A RECOVERY FOR THE CORNER WHERE THE LINE ABOVE DROPS. `macro.ts` already
+    // ships this shape for the other kill switch — a code that can only be answered
+    // from OUTSIDE the session says so — and this is its twin. It is true at every
+    // corner and it is the only thing a caller can act on at the two where the locker
+    // has no tool, which is what stops the floor from being the whole answer there.
+    "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1 the locker cannot be enabled here: unset it (or set it to 0) and restart the MCP server.",
   ],
   KeyLockerDisabled: [
     "The key locker is turned off by DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. Remove that environment variable (and restart the MCP server) to use it.",

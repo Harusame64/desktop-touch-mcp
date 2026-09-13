@@ -97,6 +97,54 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     expect(floored, "the floor must not have to catch anything").toEqual([]);
   });
 
+  it("leaves a RECOVERY where lines drop, not whatever happened to survive", () => {
+    // GATE: win2, 2026-09-13, measuring the ORDER after a drop. The capability audit
+    // asked "does this code go empty?" and `KeyLockerConsentRequired` answered
+    // `2 → 1  ok`. The number was right and the `ok` was wrong: the surviving line was
+    // a RIDER on the dropped one — it described what the enable dialog is like, for a
+    // dialog that cannot be opened at that corner. One line, no recovery in it.
+    // Decision (1) was satisfied in letter and broken in substance.
+    //
+    // "Is this sentence a recovery" is not a property a cell can compute, so the cell
+    // does the next thing: it PINS what survives wherever anything drops, and a human
+    // has judged each of these. Change what a dropping code ships and this reddens —
+    // which is the point: the judgement has to be made again, by someone reading it.
+    const SURVIVORS: Record<string, string> = {
+      // …the locker's own codes, at the two corners where it has no tool. Each
+      // survivor is something the caller can act on WITHOUT the locker.
+      "v2_noLocker/KeyLockerConsentRequired": "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1",
+      "v2_noLocker/KeyLockerConsoleLimit": "Too many anchored consoles are already open. Close a console window",
+      "v2_noLocker/KeyLockerWtUnavailable": "The Windows Terminal pane could not be opened — wt.exe may not be installed",
+      "v2_noLocker/KeyLockerNoSuchBinding": "No saved binding matches that URI — the display URI must match exactly",
+      "killSwitch_noLocker/KeyLockerConsentRequired": "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1",
+      "killSwitch_noLocker/KeyLockerConsoleLimit": "Too many anchored consoles are already open. Close a console window",
+      "killSwitch_noLocker/KeyLockerWtUnavailable": "The Windows Terminal pane could not be opened — wt.exe may not be installed",
+      "killSwitch_noLocker/KeyLockerNoSuchBinding": "No saved binding matches that URI — the display URI must match exactly",
+      // …and the guard, where the hwnd clause goes and six recoveries stay.
+      "killSwitch/AutoGuardBlocked": "Read the error message — its tail preserves",
+      "killSwitch_noLocker/AutoGuardBlocked": "Read the error message — its tail preserves",
+    };
+    const codes = codesFromSource();
+    const seen: string[] = [];
+    for (const corner of Object.keys(CORNERS)) {
+      const cfg = cfgFor(corner);
+      for (const code of codes) {
+        const raw = getSuggestsForCode(code);
+        if (raw.length === 0) continue;
+        const out = renderAdviceWith(raw, cfg);
+        if (out.length === raw.length) continue; // nothing dropped here
+        const key = `${corner}/${code}`;
+        seen.push(key);
+        expect(out.length, `${key} must keep something`).toBeGreaterThan(0);
+        expect(SURVIVORS[key], `${key} drops lines and is not registered — read what survives`).toBeDefined();
+        expect(out[0], `${key}: what survives changed`).toContain(SURVIVORS[key]);
+      }
+    }
+    // CONTROL both ways: the registered set is exactly the set that drops. A pair that
+    // stops dropping is as much a change as one that starts.
+    expect(seen.sort()).toEqual(Object.keys(SURVIVORS).sort());
+  });
+
   it("ships no placeholder to a caller, on any road, at any corner", () => {
     const codes = codesFromSource();
     const leaked: string[] = [];
