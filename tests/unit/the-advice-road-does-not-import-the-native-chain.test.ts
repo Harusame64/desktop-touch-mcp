@@ -215,7 +215,11 @@ function reach(entry: string): Reach {
       posix(join(base, "index.ts")),
       base,
     ];
-    return candidates.find((c) => existsSync(join(REPO, c)) && c.endsWith(".ts")) ?? null;
+    return (
+      candidates.find(
+        (c) => existsSync(join(REPO, c)) && /\.(?:ts|mts|cts)$/.test(c),
+      ) ?? null
+    );
   };
   const walk = (file: string): void => {
     if (seen.has(file)) return;
@@ -244,6 +248,23 @@ const ADVICE = "src/tools/_advice-capability.ts";
 const LEAF = "src/engine/key-locker/key-locker-switch.ts";
 
 describe("the advice road's import graph", () => {
+  it("still stands on the erasure rule it assumes", () => {
+    // `typeOnly` says tsc deletes an inline-`type` import. That is true TODAY and
+    // stops being true the day `verbatimModuleSyntax` is turned on: then
+    // `import { type A } from "./x.js"` is emitted as `import {} from "./x.js"` and
+    // DOES evaluate the module at load — exactly the cost this cell measures, skipped
+    // silently (gate 2, 2026-09-13, fifth round). The dependency is asserted rather
+    // than written in a comment, so the tidy-up that enables the flag reddens here and
+    // reads why.
+    const cfg = JSON.parse(
+      readFileSync(join(REPO, "tsconfig.json"), "utf8").replace(/^\s*\/\/[^\n]*$/gm, ""),
+    ) as { compilerOptions?: Record<string, unknown> };
+    expect(
+      cfg.compilerOptions?.verbatimModuleSyntax,
+      "verbatimModuleSyntax changes what tsc erases — see typeOnly()",
+    ).not.toBe(true);
+  });
+
   it("does not reach the Windows-native chain — controls first, because a broken walker looks clean", () => {
     // CONTROL 1: the walker can still find what must be found.
     const locker = reach("src/tools/key-locker-tool.ts");
