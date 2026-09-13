@@ -24,7 +24,8 @@ import {
   resetAdviceConfiguration,
   renderAdviceForCaller,
 } from "../../src/tools/_advice-capability.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { toToolFailure } from "../../src/tools/_errors.js";
@@ -155,6 +156,47 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     expect(src.getText()).toContain("function createMcpServer");
   });
 
+  it("keeps production off the renderers that read ambient env", () => {
+    // GATE 2, 2026-09-13: `renderAdvice` and `providerFor` are still exported and
+    // still read `process.env` at call time - they are what the cells and the
+    // four-corner sweeps drive. Nothing stopped the next tool from importing the
+    // obvious name and quietly reintroducing the defect this round removes. The AST
+    // cell above says the capture HAPPENS; this one says nothing bypasses it.
+    const root = fileURLToPath(new URL("../../src/", import.meta.url));
+    const offenders: string[] = [];
+    let scanned = 0;
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(p);
+          continue;
+        }
+        if (!p.endsWith(".ts")) continue;
+        const rel = relative(root, p);
+        if (rel === "tools/_advice-capability.ts") continue; // the module's own definitions
+        scanned += 1;
+        const file = ts.createSourceFile(p, readFileSync(p, "utf8"), ts.ScriptTarget.ESNext, true);
+        const visit = (node: ts.Node): void => {
+          if (
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            (node.expression.text === "renderAdvice" || node.expression.text === "providerFor")
+          ) {
+            offenders.push(`${rel}: ${node.expression.text}`);
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(file);
+      }
+    };
+    walk(root);
+    // The control first: a walk that scans nothing reports no offender and reads
+    // exactly like a clean tree.
+    expect(scanned, "the walk must have read the source tree").toBeGreaterThan(100);
+    expect(offenders, "production must call renderAdviceForCaller, not the env readers").toEqual([]);
+  });
+
   it("never renders try_next to an empty list — the floor the envelope already promised", () => {
     // `toFailureEnvelope` substitutes a generic hint rather than ship an empty
     // `try_next`. Dropping rows here would have taken that away by construction: the
@@ -174,6 +216,44 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
       expect(buildFailureEnvelope("X", []).if_unexpected.try_next).toEqual([]);
     });
+  });
+
+  it("gives the FLAT road the same floor as the envelope", () => {
+    // Gate 2 found the asymmetry: the envelope substituted a line and the flat road
+    // omitted `suggest` entirely, so one code answered two ways depending on which
+    // presenter it went through.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const flat = toToolFailure(
+        new ToolFailureError("KeyLockerConsentRequired", {
+          displayMessage: "consent",
+          suggest: ["Run {tool:credential_store} to save it"],
+        }),
+      );
+      expect(flat.suggest).toHaveLength(1);
+      expect(flat.suggest?.[0]).toMatch(/No recovery is available/);
+    });
+    // …and a failure that never had advice still has none: `undefined` and "withheld"
+    // stay different answers.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const flat = toToolFailure(new ToolFailureError("X", { displayMessage: "no advice" }));
+      expect(flat.suggest).toBeUndefined();
+    });
+  });
+
+  it("passes a NON-STRING advice entry through instead of throwing", () => {
+    // The module's own rule: never throw on the failure road, because the caller is
+    // already building a refusal. Wiring the seam in made `.replace` reachable with a
+    // value the compiler cannot vouch for - both roads are exported and `tests/**` is
+    // outside the include (gate 2: `buildFailureEnvelope("X", [{}])` threw).
+    captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+    expect(() => buildFailureEnvelope("X", [{} as unknown as TryNextAction])).not.toThrow();
+    expect(() =>
+      toToolFailure(
+        new ToolFailureError("X", { displayMessage: "x", suggest: [null as unknown as string] }),
+      ),
+    ).not.toThrow();
   });
 
   it("moves NO byte of a line that carries no placeholder, on either road", () => {

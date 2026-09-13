@@ -1384,13 +1384,13 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
   // produces. Rendering here rather than at each producer is the point: `WaitTimeout`
   // is a measured case where a literal beats the dictionary, so a seam on the
   // dictionary alone would miss the road it was aimed at.
-  const suggest = err.suggest && err.suggest.length > 0 ? renderAdviceForCaller(err.suggest) : undefined;
+  const suggest = renderAdviceWithFloor(err.suggest);
 
   return {
     ok: false,
     code,
     error,
-    ...(suggest && suggest.length > 0 && { suggest }),
+    ...(suggest !== undefined && { suggest }),
     ...(err.context && { context: err.context }),
     ...(err.rootExtras ?? {}),
   };
@@ -1469,11 +1469,31 @@ export function failCode(
  * Use this instead of failWith() for validation errors so they get the
  * dedicated InvalidArgs code rather than the generic ToolError fallback.
  */
+/**
+ * Advice for the caller, with the FLOOR the user's decision of 2026-09-13 asks for:
+ * a code that had advice keeps at least one line at every corner.
+ *
+ * The envelope road grew this first (`renderTryNext`), and gate 2 pointed out that the
+ * flat road did the opposite — it omitted `suggest` entirely when the resolver emptied
+ * it, so the same code answered two different ways depending on which presenter it
+ * went through. Two roads, two answers, one of them with a cell.
+ *
+ * `undefined` means "there was no advice to begin with", which is not the same as
+ * "the advice was withheld here" and must stay distinguishable.
+ */
+function renderAdviceWithFloor(lines: string[] | undefined): string[] | undefined {
+  if (lines === undefined || lines.length === 0) return undefined;
+  const rendered = renderAdviceForCaller(lines);
+  if (rendered.length > 0) return rendered;
+  return ["No recovery is available in this configuration — see the error message."];
+}
+
 export function failArgs(
   message: string,
   toolName: string,
   context?: Record<string, unknown>
 ): ToolResult {
+  const invalidArgsAdvice = renderAdviceWithFloor(SUGGESTS.InvalidArgs);
   const failure: ToolFailure = {
     ok: false,
     code: "InvalidArgs",
@@ -1482,12 +1502,9 @@ export function failArgs(
     // hand rather than going through `toToolFailure`, which is exactly why it is
     // named here: a seam that only covers the canonical builder misses the sites that
     // predate it (ADR-036 stage 2 B2b).
-    // Omitted when the resolver leaves nothing, which is what `toToolFailure` does —
-    // two shapes for "no advice" on one road would be a distinction without a
-    // difference for the caller and a trap for anyone diffing them (gate 2).
-    ...(renderAdviceForCaller(SUGGESTS.InvalidArgs).length > 0 && {
-      suggest: renderAdviceForCaller(SUGGESTS.InvalidArgs),
-    }),
+    // Rendered ONCE - this is the hottest validation path in the server, and the first
+    // version called the resolver twice, for the guard and for the value (gate 2).
+    ...(invalidArgsAdvice !== undefined && { suggest: invalidArgsAdvice }),
     ...(context && { context }),
   };
   return fail(failure);

@@ -667,6 +667,18 @@ export function renderAdviceWith(
   // preference with a narrow reason, stated as such (gate 2 round 4, finding 9).
   const pattern = placeholderPattern();
   for (const line of lines) {
+    // NOT A STRING? Pass it through untouched. This module's own rule is that it never
+    // throws on the failure road — every caller here is already building a refusal, so
+    // a throw costs the envelope, the code and the sibling lines: the fix failing into
+    // the shape of the bug. Wiring the seam in made `line.replace` reachable with a
+    // value `tsc` cannot vouch for, because both roads are exported and `tests/**` is
+    // outside the include (gate 2, 2026-09-13: `buildFailureEnvelope("X", [{}])` threw
+    // `Cannot read properties of undefined`). Same door `providerForConfig`'s `default`
+    // arm guards, and the same answer: refuse to invent, do not take the caller down.
+    if (typeof line !== "string") {
+      out.push(line as unknown as string);
+      continue;
+    }
     let dropped = false;
     const rendered = line.replace(pattern, (whole: string, cap: string) => {
       // A capability this module does not know stays verbatim — visibly broken
@@ -733,7 +745,17 @@ export interface AdviceConfiguration {
   credentialStore: boolean;
 }
 
-/** Take the configuration for this server. Call it where registration reads the switches. */
+/**
+ * Take the configuration for this server. Call it where registration reads the switches.
+ *
+ * **One slot, process-wide, and that is correct only while both inputs are** (gate 2,
+ * 2026-09-13). `createMcpServer()` runs once per request in stateless HTTP mode and
+ * each call overwrites this; today every server computes the same answer, because
+ * `_desktopV2` is frozen at module init and the locker predicate reads `process.env`.
+ * The day a second source appears — an embedder building two servers, a per-server
+ * config object — the last capture answers for every earlier server, and this needs
+ * per-server plumbing rather than a module global.
+ */
 export function captureAdviceConfiguration(cfg: AdviceConfiguration): void {
   captured = Object.freeze({ ...cfg });
 }
@@ -758,13 +780,26 @@ export function resetAdviceConfiguration(): void {
 /**
  * Render advice for THIS server's configuration — the entry point the presenters use.
  *
- * Every advice line reaching a caller passes through here, on both roads: the flat
- * shape (`toToolFailure`, which the lint rule makes the only builder) and the
- * envelope (`buildFailureEnvelope`). That is deliberate: the dictionary is not the
- * only source of advice — 28 literal `suggest:` sites and a named builder
+ * Every advice line reaching a caller **on the FAILURE road** passes through here:
+ * the flat shape (`toToolFailure`, which the lint rule makes the only builder) and
+ * the envelope (`buildFailureEnvelope`). That is deliberate: the dictionary is not
+ * the only source of advice — 28 literal `suggest:` sites and a named builder
  * (`paneIdMissSuggest`) produce lines the dictionary never sees, and `WaitTimeout` is
  * a measured case where the literal beats the dictionary. A seam on the dictionary
  * alone would have been a fix that misses the road it was aimed at.
+ *
+ * **THERE IS A THIRD ROAD AND IT IS NOT COVERED: advice on an `ok:true` payload.**
+ * The sentence above said "both roads" until gate 2 measured otherwise
+ * (2026-09-13). Three sites ship advice on success and touch neither presenter:
+ * `excel.ts:272` (`ok({… suggest})` for `check_access_vbom`), `ocr-bridge.ts:552`
+ * (a per-element `suggest` on low-confidence OCR — a singular `string` on
+ * `ActionableElement`, a different type from the failure road's `string[]`), and
+ * `terminal.ts:2824` (`readError.suggest`, hand-built inside an `ok:true` run
+ * result). **None of them names a configuration-dependent tool today**, which is why
+ * the conversion does not reach them — and is also why the gate that will check this
+ * must, because "harmless" there is a property of the current wording and not of the
+ * road. Recorded as remaining work rather than widened here: a success payload is a
+ * different shape with different callers, and this round's claim is byte stability.
  */
 export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
   return renderAdviceWith(lines, captured ?? adviceConfigurationFromEnv());
