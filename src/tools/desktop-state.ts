@@ -1219,6 +1219,25 @@ export function registerDesktopStateTools(server: McpServer): void {
       // the CDP read carries a value too (`CDP_FOCUSED_ELEMENT_SCRIPT` returns `el.value` for an
       // unmasked element, and `buildElementInfoFromCdp` keeps a non-empty one), so what is true is
       // that the VIEW road can never carry one — not that only UIA can (gate on `05f31f6`).
+      //
+      // MEASURED, all three roads, one focused field at a time (win2, 2026-09-14, `8765f8c`):
+      //
+      //   road   plain field                     `type=password` field
+      //   uia    the value, 12 of 12 characters  12 bullets — i.e. the secret's LENGTH
+      //   cdp    the value, 12 of 12 characters  no value at all
+      //   view   (0 of 8, no value ever)         —
+      //
+      // So the masking sentence above is road-dependent in a way worth saying here even though the
+      // shipped string stays short: the CDP rule withholds, and the UIA road hands back a row whose
+      // length is the secret's. Anyone tightening this caveat should know that "masked fields are
+      // withheld" is true of exactly one of the two roads that can carry a value.
+      //
+      // Getting there cost four rounds on the measuring side, and two of them are worth carrying:
+      // Chrome's renderer accessibility makes UIA answer for every field, so the CDP branch is
+      // never reached while it is on — `--disable-renderer-accessibility` is the condition that
+      // branch is written for, not a trick to reach it. And the CDP fallback here asks
+      // `_defaultPort`, not the port the caller connected `browser_open` with: on any other port
+      // this road is simply absent (`hints.cdpUnavailable`), which is filed as its own item.
       // Measured on Windows 2026-09-14 (win2, `dev/pr639-post-value-named-window` `a4802dd`): with
       // the same element focused, 24 of 24 reads answered with a value while
       // `hints.focusedElementSource` was `uia`, and 0 of 8 did while it was `view` — the element's
