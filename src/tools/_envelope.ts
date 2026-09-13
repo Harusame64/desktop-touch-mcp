@@ -116,7 +116,7 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
-import { renderAdviceForCaller } from "./_advice-capability.js";
+import { renderAdviceForCaller, ADVICE_WITHHELD_FLOOR } from "./_advice-capability.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
 import { Err, type Result } from "../types/result.js";
 import { HandlerError, CodedHandlerError } from "../errors/typed-errors.js";
@@ -1234,11 +1234,18 @@ export function compatFailureRaw(
  * reads here.
  */
 function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
+  // ONE call for the whole list, not one per row: the resolver hoists its pattern for
+  // exactly this reason, and a per-row call built a fresh RegExp for each of a
+  // refusal's five suggests (gate 2, 2026-09-13). The rows are re-attached by walking
+  // both lists together — the resolver preserves order and drops nothing silently, so
+  // a row survives when its rendered text is still there.
+  const rendered = renderAdviceForCaller(tryNext.map((row) => row.action));
   const out: TryNextAction[] = [];
+  let i = 0;
   for (const row of tryNext) {
-    const rendered = renderAdviceForCaller([row.action]);
-    if (rendered.length === 0) continue; // its capability has no provider in this configuration
-    const text = rendered[0]!;
+    const text = rendered[i];
+    if (text === undefined) continue; // dropped: its capability has no provider here
+    i += 1;
     out.push(text === row.action ? row : { ...row, action: text });
   }
   // THE FLOOR. `toFailureEnvelope` goes out of its way to never ship an empty
@@ -1250,7 +1257,7 @@ function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
   // by hand, this catches it — and says, in the line itself, that something was
   // withheld rather than pretending there was never any advice.
   if (out.length === 0 && tryNext.length > 0) {
-    return [{ action: "No recovery is available in this configuration — see the error message." }];
+    return [{ action: ADVICE_WITHHELD_FLOOR }];
   }
   return out;
 }
@@ -1361,8 +1368,10 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
   // `_errors.ts`) は本 dict の正しい lookup API で、unknown code には汎用
   // fallback 配列を返す。empty fallback の場合は本 helper 側で再 fallback。
   const errorName = result.error.name;
-  // Caller-supplied `tryNext` wins verbatim (incl. empty []); otherwise derive
-  // from SUGGESTS, falling back to a generic hint when the dict has no entry.
+  // Caller-supplied `tryNext` is used instead of SUGGESTS (an empty [] still ships
+  // empty) — but NOT verbatim any more: `buildFailureEnvelope` resolves each row's
+  // advice against this server's configuration. This comment said "verbatim" thirty
+  // lines below the doc that had been corrected to say the opposite (gate 2).
   let tryNext: TryNextAction[];
   if (options.tryNext !== undefined) {
     tryNext = options.tryNext;

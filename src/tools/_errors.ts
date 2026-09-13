@@ -1,4 +1,4 @@
-import { renderAdviceForCaller } from "./_advice-capability.js";
+import { renderAdviceForCaller, ADVICE_WITHHELD_FLOOR } from "./_advice-capability.js";
 import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 import { ToolFailureError } from "../errors/typed-errors.js";
 
@@ -1465,11 +1465,6 @@ export function failCode(
 }
 
 /**
- * Return a structured ToolFailure for invalid / missing input arguments.
- * Use this instead of failWith() for validation errors so they get the
- * dedicated InvalidArgs code rather than the generic ToolError fallback.
- */
-/**
  * Advice for the caller, with the FLOOR the user's decision of 2026-09-13 asks for:
  * a code that had advice keeps at least one line at every corner.
  *
@@ -1485,9 +1480,14 @@ function renderAdviceWithFloor(lines: string[] | undefined): string[] | undefine
   if (lines === undefined || lines.length === 0) return undefined;
   const rendered = renderAdviceForCaller(lines);
   if (rendered.length > 0) return rendered;
-  return ["No recovery is available in this configuration — see the error message."];
+  return [ADVICE_WITHHELD_FLOOR];
 }
 
+/**
+ * Return a structured ToolFailure for invalid / missing input arguments.
+ * Use this instead of failWith() for validation errors so they get the
+ * dedicated InvalidArgs code rather than the generic ToolError fallback.
+ */
 export function failArgs(
   message: string,
   toolName: string,

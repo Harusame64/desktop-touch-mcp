@@ -1,5 +1,5 @@
 node_modules
-dist/
+dist
 *.log
 .env
 
@@ -79,7 +79,7 @@ mcp-publisher.exe
 remote_commits.txt
 
 # Rust build artefacts (monorepo: napi-rs native addon)
-target/
+target
 *.node
 *.node.bak
 *.node.old

@@ -23,6 +23,7 @@ import {
   adviceConfigurationWasCaptured,
   resetAdviceConfiguration,
   renderAdviceForCaller,
+  ADVICE_WITHHELD_FLOOR,
 } from "../../src/tools/_advice-capability.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -163,7 +164,15 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // obvious name and quietly reintroducing the defect this round removes. The AST
     // cell above says the capture HAPPENS; this one says nothing bypasses it.
     const root = fileURLToPath(new URL("../../src/", import.meta.url));
-    const BANNED_EXPORTS = new Set(["renderAdvice", "providerFor"]);
+    // `adviceConfigurationFromEnv` is here because `renderAdviceWith(lines,
+    // adviceConfigurationFromEnv())` is the same "read ambient env at call time"
+    // behaviour spelled with the new names — banning the old two only would have left
+    // the defect one rename away (gate 2, 2026-09-13).
+    const BANNED_EXPORTS = new Set([
+      "renderAdvice",
+      "providerFor",
+      "adviceConfigurationFromEnv",
+    ]);
     const offenders: string[] = [];
     let scanned = 0;
     const walk = (dir: string): void => {
@@ -279,13 +288,34 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // already building a refusal. Wiring the seam in made `.replace` reachable with a
     // value the compiler cannot vouch for - both roads are exported and `tests/**` is
     // outside the include (gate 2: `buildFailureEnvelope("X", [{}])` threw).
-    captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
-    expect(() => buildFailureEnvelope("X", [{} as unknown as TryNextAction])).not.toThrow();
-    expect(() =>
-      toToolFailure(
-        new ToolFailureError("X", { displayMessage: "x", suggest: [null as unknown as string] }),
-      ),
-    ).not.toThrow();
+    // Inside `withEnv` so the capture is released in its `finally`: outside it, this
+    // cell left the module global set for everything after it and made the file
+    // order-dependent (gate 2, 2026-09-13).
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      expect(() => buildFailureEnvelope("X", [{} as unknown as TryNextAction])).not.toThrow();
+      expect(() =>
+        toToolFailure(
+          new ToolFailureError("X", { displayMessage: "x", suggest: [null as unknown as string] }),
+        ),
+      ).not.toThrow();
+    });
+  });
+
+  it("says the SAME floor sentence on both roads, from one constant", () => {
+    // The floor exists because the two roads answered differently. Writing the
+    // sentence twice would have left that fixed by hand and re-breakable by a
+    // one-sided reword, with every cell green (gate 2, 2026-09-13).
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const dropped = ["Run {tool:credential_store} to save it"];
+      const flat = toToolFailure(
+        new ToolFailureError("KeyLockerConsentRequired", { displayMessage: "c", suggest: dropped }),
+      );
+      const env = buildFailureEnvelope("KeyLockerConsentRequired", dropped.map((action) => ({ action })));
+      expect(flat.suggest).toEqual([ADVICE_WITHHELD_FLOOR]);
+      expect(env.if_unexpected.try_next).toEqual([{ action: ADVICE_WITHHELD_FLOOR }]);
+    });
   });
 
   it("moves NO byte of a line that carries no placeholder, on either road", () => {

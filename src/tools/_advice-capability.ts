@@ -826,6 +826,17 @@ export function resetAdviceConfiguration(): void {
  * answer, and would go on agreeing after a conversion broke something: the strongest
  * kind of false green. **If you hold a configuration, call {@link renderAdviceWith}.**
  */
+/**
+ * The line a road substitutes when the resolver empties advice that existed.
+ *
+ * **One constant, because the two roads must say the same thing.** The floor exists
+ * because gate 2 found the flat road and the envelope road answering differently for
+ * one code; writing the sentence out twice would have left that fixed by hand and
+ * re-breakable by a one-sided reword, with every cell green (gate 2, 2026-09-13).
+ */
+export const ADVICE_WITHHELD_FLOOR =
+  "No recovery is available in this configuration — see the error message.";
+
 export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
   return renderAdviceWith(lines, captured ?? adviceConfigurationFromEnv());
 }
