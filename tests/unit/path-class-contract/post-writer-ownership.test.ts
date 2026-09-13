@@ -316,6 +316,82 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // one line from `notification_show({title})`, where `title` is a message heading. It stays
     // WITHOUT because that tool declares no window key — the same `title`, read as nothing.
     expect(await elementOf("notification_show", { title: "Notepad", message: "m" })).toEqual(WITHOUT);
+
+    // A SELECTOR THE HANDLER PREFERS MEANS THE TITLE NAMED NOTHING. `terminal(action:'send')`
+    // branches on `paneId !== undefined` before it reads `windowTitle`, and a background send does
+    // not move the foreground — so the title below is stale, matches whatever happens to be in
+    // front, and was credited with that untouched window's field. The pair differs only in the
+    // pane: without it the same call is an ordinary naming and keeps its value.
+    const TERMINAL_KEYS: PostWindowArgKeys = { windowTitleKey: "windowTitle", supersedingKeys: ["paneId"] };
+    expect(await elementOf("terminal", { action: "send", input: "x", windowTitle: "Notepad", paneId: "wt:31264:133" }, TERMINAL_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("terminal", { action: "send", input: "x", windowTitle: "Notepad" }, TERMINAL_KEYS)).toEqual(WITH);
+    // An empty pane is no pane: the schemas accept `""` and the handler's `!== undefined` branch
+    // would take it, but `findTerminalWindowByPaneId("")` finds nothing and the call fails — a
+    // failure carries no value either way. Pinned as WITHOUT so the two readings cannot diverge
+    // silently later.
+    expect(await elementOf("terminal", { action: "send", input: "x", windowTitle: "Notepad", paneId: "" }, TERMINAL_KEYS)).toEqual(WITH);
+
+    // A HANDLE ARGUMENT KEEPS THE HANDLE ROAD, even when it is unusable. Whitespace-only is not a
+    // handle (`BigInt("   ")` is `0n`, and `resolveWindowTarget` refuses the call), and it must not
+    // fall through to the title beside it — that would let an unusable handle plus a stale title
+    // attach a window the call never reached. Gate 2 caught exactly this, introduced by a `.trim()`
+    // that nothing else needed.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "   ", windowTitle: "Notepad" })).toEqual(WITHOUT);
+
+    // `@active` NAMES NOTHING — against a foreground whose title actually contains it, so the
+    // guard is what answers rather than the plain `includes` failing anyway. The first fixture's
+    // title ("Notepad") made this row pass with the guard deleted (gate 2).
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "board @active — staging", isActive: true }] as never,
+    );
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "@active" })).toEqual(WITHOUT);
+    // …and the same fixture with an ordinary substring of that title DOES carry the value, so the
+    // row above is the guard talking and not a fixture that stopped matching.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "staging" })).toEqual(WITH);
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+
+    // A `fixId` that retargets: the handler acts on the stored fix's window, so these arguments
+    // describe the call the caller wrote rather than the one that ran. Same default as the rich
+    // path — assume it retargets unless the registration proves otherwise.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad", fixId: "f1" })).toEqual(WITHOUT);
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad", fixId: "" })).toEqual(WITH);
+    expect(await elementOf(
+      "keyboard",
+      { action: "press", keys: "ctrl+a", windowTitle: "Notepad", fixId: "f1" },
+      { windowTitleKey: "windowTitle", hwndKey: "hwnd", fixRetargets: (a) => a.action !== "press" },
+    )).toEqual(WITH);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+  });
+
+  it("does not keep, in the history ring, the value a refusal withheld from the response", async () => {
+    // The response side was measured (`AutoGuardBlocked` carries no focused element) and the
+    // docstring then claimed no snapshot was taken at all. It is: the snapshot runs before either
+    // branch, so the ring held the value for a call the product had just refused — including a
+    // handle naming the key locker's window, which `refuseIfExcludedTarget` exists to reject.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue({
+      focused: { name: "Notes", controlType: "Edit", value: "PROBE-REFUSED-RING" },
+    } as never);
+
+    // CONTROL: the same call, succeeding, does put the value in the ring — so a clean ring below
+    // is the refusal's doing and not an instrument that stopped recording.
+    await withPostState("keyboard", async () => ok({ ok: true }))({ action: "type", text: "x", hwnd: "4242" });
+    const okEntry = getHistorySnapshot(1)[0];
+    expect(JSON.stringify(okEntry)).toContain("PROBE-REFUSED-RING");
+
+    await withPostState("keyboard", async () => fail({ ok: false, code: "AutoGuardBlocked", error: "blocked" }))({ action: "type", text: "x", hwnd: "4242" });
+    const refusedEntry = getHistorySnapshot(1)[0];
+    expect(refusedEntry.ok).toBe(false);
+    expect(JSON.stringify(refusedEntry)).not.toContain("PROBE-REFUSED-RING");
+    expect((refusedEntry.post as Record<string, unknown>).focusedElement).toBeNull();
+
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
   });
 

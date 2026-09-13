@@ -3084,7 +3084,10 @@ export const terminalRegistrationHandler = makeCommitWrapper(
   withRichNarration(
     "terminal",
     terminalDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
-    { windowTitleKey: "windowTitle" },
+    // `paneId` supersedes: `terminalSendSchema` says so and the handler branches on it before it
+    // reads `windowTitle` at all, so a call carrying both named its window with the pane. Declared
+    // for the post layer, which would otherwise credit the ignored title (gate on `447698f`).
+    { windowTitleKey: "windowTitle", supersedingKeys: ["paneId"] },
   ) as (args: Record<string, unknown>) => Promise<ToolResult>,
   "terminal",
   {

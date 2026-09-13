@@ -186,6 +186,15 @@ export interface RichNarrationOptions {
   fixRetargets?: (args: Record<string, unknown>) => boolean;
 
   /**
+   * ADR-036 — args that decide the target INSTEAD of `windowTitleKey` / `hwndKey`, so the window
+   * arguments on such a call are not a naming of anything. `terminal` declares `["paneId"]`: its
+   * schema says the pane takes precedence, and the handler branches on it before reading the
+   * title. Read by the post layer, which must not attribute an untouched window's field to a call
+   * whose title argument the handler ignored.
+   */
+  supersedingKeys?: string[];
+
+  /**
    * When true, `narrate:"rich"` is silently ignored for non-state-transitioning
    * keyboard combos (see isStateTransitioningKey).  Set on keyboard_press.
    */
@@ -261,6 +270,8 @@ export function withRichNarration<T extends Record<string, unknown>>(
   const wrappedWithPost = withPostState(toolName, handler, {
     windowTitleKey: options.windowTitleKey,
     hwndKey: options.hwndKey,
+    supersedingKeys: options.supersedingKeys,
+    fixRetargets: options.fixRetargets,
   });
 
   return async (args: T) => {

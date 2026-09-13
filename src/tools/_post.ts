@@ -133,6 +133,18 @@ export interface PostWindowArgKeys {
   windowTitleKey?: string;
   /** Arg holding the target window handle. */
   hwndKey?: string;
+  /**
+   * Args that decide the target INSTEAD of the window arguments, so the window arguments are not a
+   * naming of anything. `terminal`'s `paneId` is the one today: the schema says it takes precedence,
+   * and the handler branches on `paneId !== undefined` before it looks at `windowTitle` at all.
+   */
+  supersedingKeys?: string[];
+  /**
+   * Does a `fixId` on THIS call retarget the handler? Same question, same default and same source
+   * as `RichNarrationOptions.fixRetargets` — the registration answers it, because which variants
+   * adopt a fix is known there and nowhere else.
+   */
+  fixRetargets?: (args: Record<string, unknown>) => boolean;
 }
 
 /**
@@ -167,8 +179,16 @@ const DEFAULT_HWND_KEY = "hwnd";
  * `hwnd:"000133706"` each returned `ok:true` with the keystrokes delivered and no value, and so
  * did `focus_window({title})`. Each of those arms really did write — the arithmetic says so rather
  * than the `ok` flag: the fixture field's length counts the needles that arrived, and the three
- * handle spellings added theirs. A refusal carries nothing either way; the failure branch below
- * takes no focused-element snapshot at all (measured on the same round, `AutoGuardBlocked`).
+ * handle spellings added theirs.
+ *
+ * A REFUSED CALL PUBLISHES NO VALUE — and that sentence had to be made true rather than written.
+ * The measured fact is about the RESPONSE: an `AutoGuardBlocked` reply carries no focused element.
+ * The snapshot below is taken before either branch runs, so the ring was recording, for a refused
+ * call, exactly the field the refusal withheld — including for a handle `refuseIfExcludedTarget`
+ * rejected, which is the key locker's window (gate 2 on `447698f`; the spelling fix widened which
+ * arguments reach that path). The ring now follows the response. What is still unconditional is
+ * the UIA read itself: `getFocusedAndPointInfo` asks the FOREGROUND, whatever the call targeted,
+ * and has no exclusion gate of its own — older than this change, filed, not closed here.
  *
  * CONSERVATIVE ON PURPOSE, in the direction where being wrong is cheap. Withholding costs a
  * read-back the caller can still get from `desktop_state`; attaching costs a field the caller never
@@ -190,25 +210,57 @@ const DEFAULT_HWND_KEY = "hwnd";
  *     (gate on `7480ce1`, 2026-09-13). Enumerating the spellings does not end; sharing the parser
  *     with the side that accepted the argument does, and it cannot widen WHICH window matches,
  *     only how that one window may be written. A handle neither side can parse names nothing.
- *   - `windowTitle` must be contained in the focused window's title, case-folded and nothing more.
- *     No suffix stripping, no normalisation — the guard's matching rules exist to DECIDE a target
- *     and are deliberately generous; borrowing them here would widen what attaches.
+ *   - `windowTitle` must be contained in the focused window's title, case-folded and nothing more,
+ *     and it is the ARGUMENT that is compared — never a window the server chose on the caller's
+ *     behalf. `resolveWindowTarget` PREFERS THE ACTIVE POPUP when the named window is blocked by
+ *     its own modal, so `click_element(hwnd=<owner>)` with a dialog up acts on the DIALOG; the
+ *     handle in the argument then matches nothing and the value is withheld. Deliberate, and the
+ *     more careful side of a fork: the caller named the owner, and a modal that took focus is
+ *     exactly the class of window — a credential prompt, a save dialog — whose field nobody asked
+ *     for. The gate raised it on `447698f` and it is filed rather than changed.
+ *   - Borrowing the guard's title matching is still refused, but NOT because it is looser: asked
+ *     directly, with the fixture window open, `findPlainTopLevelWindowsByTitle` returned zero
+ *     matches for a padded title and for dash variants, and agreed with this predicate on case —
+ *     the two matchings are not known to differ on any axis measured (win2, 2026-09-14,
+ *     `dev/pr639-post-value-named-window` `1258868`, after two rounds that read a `scroll` call
+ *     with `ok:true` as evidence of the opposite; `hints.verifyDelivery.channel` said
+ *     `wheel_send_input`, i.e. no window had been resolved at all). The reason to keep a rule of
+ *     its own is that the guard's exists to DECIDE a target and may be loosened for that job —
+ *     and a predicate that borrows it would loosen with it, silently.
  *   - `"@active"` counts as naming NOTHING. It means "whatever is in front", which is the same
  *     thing every leaking arm above was pointed at by accident. A caller who really wants the
- *     value of the foreground field can ask `desktop_state` for it — and it answers, naming no
- *     window, measured on the same round. So this is a change in WHO HAS TO ASK for a field, not a
- *     reduction in what can be read; `desktop_state`'s own caveat is where that is written down.
+ *     value of the foreground field can ask `desktop_state` for it — SOMETIMES. It answers while
+ *     naming no window, so this is a change in WHO HAS TO ASK for a field rather than a reduction
+ *     in what can be read; `desktop_state`'s own caveat is where that is written down. But it
+ *     answers only from the UIA road: `desktop_state` prefers the perception view's focus, and
+ *     `buildElementInfoFromView` has no `value` field at all, so once this server's own writing has
+ *     filled that window's view the read-back returns the element WITH NO VALUE — which a caller
+ *     cannot tell from an empty field. Measured 24/24 with a value on the UIA road and 0/8 without
+ *     on the view road, the element's name identical in all four conditions and
+ *     `hints.focusedElementSource` the only column that moved (win2, 2026-09-14, `a4802dd`). So
+ *     the recommendation above is at its weakest exactly where it is most wanted: immediately
+ *     after a write.
  *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
- *     `hasValuePattern` still come back for a window this call never named, which is how the
- *     success-path advisory (ADR-022) decides anything at all.
+ *     `hasValuePattern` still come back for a window this call never named. Three of those four
+ *     are what the success-path advisory (ADR-022) decides from — `buildHint` reads `type`,
+ *     `hasValuePattern` and `automationId`, and never `name`, so `name` travels for the caller's
+ *     benefit alone (gate 2 on `447698f`, correcting this sentence's first form).
  */
 function valueBelongsToTheWindowActedOn(
   args: Record<string, unknown>,
   after: { title: string | null; hwnd: string | null },
   keys: PostWindowArgKeys,
 ): boolean {
+  // A SELECTOR THE HANDLER PREFERS MEANS THE WINDOW ARGUMENTS NAMED NOTHING. `terminal(action:
+  // 'send', paneId, windowTitle)` never reads that title — and a background send does not move the
+  // foreground, so a stale title that happens to match whatever is in front would have attached
+  // that untouched window's field. Same for a `fixId` that retargets: the handler acts on the
+  // stored fix's window and these arguments describe the call the caller wrote, not the one that
+  // ran. Withholding is the recoverable direction; the rich path answers this identically.
+  if (keys.supersedingKeys?.some((k) => args[k] !== undefined && args[k] !== "")) return false;
+  if (args["fixId"] && (keys.fixRetargets ?? (() => true))(args)) return false;
   const hwnd = args[keys.hwndKey ?? DEFAULT_HWND_KEY];
-  if (typeof hwnd === "string" && hwnd.trim() !== "") return isTheSameHandle(hwnd, after.hwnd);
+  if (typeof hwnd === "string" && hwnd !== "") return isTheSameHandle(hwnd, after.hwnd);
   const title = args[keys.windowTitleKey ?? DEFAULT_WINDOW_TITLE_KEY];
   if (typeof title !== "string" || title === "" || title === "@active") return false;
   if (after.title === null) return false;
@@ -401,8 +453,13 @@ export function withPostState<T extends Record<string, unknown>>(
         }
       }
 
-      // Strip rich and perception blocks from history to avoid bloating the ring buffer.
-      const { rich: _rich, perception: _perception, ...postForHistory } = post;
+      // Strip rich and perception blocks from history to avoid bloating the ring buffer — and the
+      // focused element on a refusal, because the response does not publish one (the failure
+      // branch above writes `focusedElement: null`, and a failure with no perception marker
+      // publishes no `post` at all). Keeping it here meant a refused call still stored the field
+      // the refusal was withholding.
+      const { rich: _rich, perception: _perception, ...postFields } = post;
+      const postForHistory = okFlag ? postFields : { ...postFields, focusedElement: null };
       recordHistory({
         tool: toolName,
         argsDigest: digest(args),
