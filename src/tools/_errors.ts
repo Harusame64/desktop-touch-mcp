@@ -1,3 +1,8 @@
+import {
+  renderAdviceForCaller,
+  ADVICE_WITHHELD_FLOOR,
+  adviceExisted,
+} from "./_advice-capability.js";
 import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 import { ToolFailureError } from "../errors/typed-errors.js";
 
@@ -1376,11 +1381,20 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
   const error =
     err.toolName !== undefined ? `${err.toolName} failed: ${displayMessage}` : displayMessage;
 
+  // ADR-036 stage 2 B2b: the advice passes through the resolver on its way out. With
+  // no line converted yet this is byte-identical — a line with no `{tool:…}` in it is
+  // returned unchanged — and it is where the conversion will take effect for BOTH the
+  // dictionary and the 28 literal `suggest:` sites, including the ones a named builder
+  // produces. Rendering here rather than at each producer is the point: `WaitTimeout`
+  // is a measured case where a literal beats the dictionary, so a seam on the
+  // dictionary alone would miss the road it was aimed at.
+  const suggest = renderAdviceWithFloor(err.suggest);
+
   return {
     ok: false,
     code,
     error,
-    ...(err.suggest && err.suggest.length > 0 && { suggest: err.suggest }),
+    ...(suggest !== undefined && { suggest }),
     ...(err.context && { context: err.context }),
     ...(err.rootExtras ?? {}),
   };
@@ -1455,6 +1469,44 @@ export function failCode(
 }
 
 /**
+ * Advice for the caller, with the FLOOR the user's decision of 2026-09-13 asks for:
+ * a code that had advice keeps at least one line at every corner.
+ *
+ * The envelope road grew this first (`renderTryNext`), and gate 2 pointed out that the
+ * flat road did the opposite — it omitted `suggest` entirely when the resolver emptied
+ * it, so the same code answered two different ways depending on which presenter it
+ * went through. Two roads, two answers, one of them with a cell.
+ *
+ * `undefined` means "there was no advice to begin with", which is not the same as
+ * "the advice was withheld here" and must stay distinguishable.
+ *
+ * **And "withheld" is a CLAIM about the configuration**, so it is only made where a
+ * real sentence was dropped. A caller that passes entries which were never strings has
+ * a programming error, not a configuration without a provider; answering it with "no
+ * recovery is available in this configuration" tells the caller a false cause and
+ * hides the real one (gate 2, 2026-09-13, measured on the envelope road's twin).
+ */
+function renderAdviceWithFloor(lines: string[] | undefined): string[] | undefined {
+  // THE CONTAINER, and this road needed it MORE than the envelope road did — which is
+  // why it is here rather than only there (gate 2, 2026-09-13, seventh round: the
+  // envelope road was guarded and its twin was not, in the same commit that said
+  // "guarding the container ends it"). `toToolFailure` is exported and takes a plain
+  // object, so this is reachable from `tests/**` and from JS. Measured against `main`,
+  // where all three were harmless:
+  //
+  //   suggest: null            main → undefined      here → THREW on `.length`
+  //   suggest: "some advice"   main → "some advice"  here → ["s","o","m","e",…]
+  //   suggest: 7               main → undefined      here → THREW, not iterable
+  //
+  // The middle one is the worst of the three: no throw, no red, a sentence shipped to
+  // a caller one character per line.
+  if (!Array.isArray(lines) || lines.length === 0) return undefined;
+  const rendered = renderAdviceForCaller(lines);
+  if (rendered.length > 0) return rendered;
+  return adviceExisted(lines) ? [ADVICE_WITHHELD_FLOOR] : undefined;
+}
+
+/**
  * Return a structured ToolFailure for invalid / missing input arguments.
  * Use this instead of failWith() for validation errors so they get the
  * dedicated InvalidArgs code rather than the generic ToolError fallback.
@@ -1464,11 +1516,25 @@ export function failArgs(
   toolName: string,
   context?: Record<string, unknown>
 ): ToolResult {
+  // NOT MEMOISED, deliberately (gate 2, 2026-09-13, tenth round). `SUGGESTS.InvalidArgs`
+  // is fixed and placeholder-free, so this renders the same two lines every time and
+  // could be cached against the capture. It is not, because a cache keyed on a mutable
+  // module global is a new correctness surface — the exact kind this round exists to
+  // remove — bought against a cost that lands only on a REFUSAL: one `RegExp` and two
+  // `String.replace` calls on lines with nothing to replace. Revisit if the capture
+  // ever becomes per-server, when the key stops being global.
+  const invalidArgsAdvice = renderAdviceWithFloor(SUGGESTS.InvalidArgs);
   const failure: ToolFailure = {
     ok: false,
     code: "InvalidArgs",
     error: `${toolName}: ${message}`,
-    suggest: SUGGESTS.InvalidArgs,
+    // Through the resolver like every other road. This site builds the flat shape by
+    // hand rather than going through `toToolFailure`, which is exactly why it is
+    // named here: a seam that only covers the canonical builder misses the sites that
+    // predate it (ADR-036 stage 2 B2b).
+    // Rendered ONCE - this is the hottest validation path in the server, and the first
+    // version called the resolver twice, for the guard and for the value (gate 2).
+    ...(invalidArgsAdvice !== undefined && { suggest: invalidArgsAdvice }),
     ...(context && { context }),
   };
   return fail(failure);

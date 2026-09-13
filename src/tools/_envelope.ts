@@ -116,6 +116,11 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
+import {
+  renderAdviceEachForCaller,
+  ADVICE_WITHHELD_FLOOR,
+  adviceExisted,
+} from "./_advice-capability.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
 import { Err, type Result } from "../types/result.js";
 import { HandlerError, CodedHandlerError } from "../errors/typed-errors.js";
@@ -1225,6 +1230,97 @@ export function compatFailureRaw(
 }
 
 /**
+ * `try_next` rendered for this server's configuration — the `action` text is advice.
+ *
+ * ONE call for the whole list, and a PER-LINE result: `renderAdviceEachForCaller`
+ * returns an array the same length as its input, with `null` where a line was dropped.
+ * A row is more than its text — `args` and `confidence` must travel with the sentence
+ * they belong to — so the pairing is by position and cannot slide.
+ *
+ * **This block described the previous two contracts in turn, and the second time it
+ * described a defect as if it were the design** (gate 1, 2026-09-13, on the head that
+ * fixed the defect). Whoever changes the loop below changes this paragraph in the same
+ * edit: it sits outside the hunk, which is exactly why it keeps being left behind.
+ */
+function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
+  // THE CONTAINER, and this is where the species stops. Three rounds of gates have
+  // each moved the same guard one expression further up this road: `[{}]` reached
+  // `.replace`, `[null]` reached `.action`, and `undefined` reaches `.map` — the same
+  // shape each time, from `tests/**` and from JS, on a road whose stated rule is that
+  // it never throws because every caller is already building a refusal. Guarding the
+  // instance again would invite a fourth round; guarding the container ends it. `[]`
+  // is also the RIGHT shape, where the pre-B2b answer for this input was
+  // `try_next: undefined` against a type that says `TryNextAction[]`.
+  if (!Array.isArray(tryNext)) return [];
+  // Why the batched call is kept rather than reverted to one call per row: the
+  // resolver's pattern stays hoisted. Its first version re-paired by index against a
+  // COMPACTED array — every row after a drop took the next survivor's text while
+  // keeping its own `args`, and the last survivor was discarded (gate 2 and gate 1
+  // independently, 2026-09-13, measured on the built code). Identifying survivors,
+  // not counting them, is what the doc block above states as the contract.
+  // `row?.action`, not `row.action`: the non-string guard downstream cannot help if
+  // the dereference happens first. Measured on the built code (gate 2, 2026-09-13):
+  // `[{}]` was handled, `[null]` threw `Cannot read properties of null`, and
+  // `[{action:"keep me"}, null]` threw too — taking a GOOD line down with it. That is
+  // the shape this round's guard exists to prevent, one expression upstream of it.
+  // The cast is the honest spelling of the situation, not a way around the checker:
+  // `AdviceLine` is `string`, and the renderer's non-string arm exists precisely
+  // because values `tsc` cannot vouch for reach it from `tests/**` and from JS. A
+  // `?.` that produced `undefined` and then a signature that forbids it would have to
+  // lie somewhere; it lies here, in one place, with the reason beside it.
+  // A PLAIN STRING IS A ROW TOO, and leaving it out made this branch WORSE than
+  // `main` at the one shape most likely to arrive: the sibling field on the flat road
+  // IS `string[]`, so a caller moving a `suggest` array into `options.tryNext` writes
+  // exactly this. Measured (gate 2, 2026-09-13, tenth round):
+  //
+  //   main    ["do this"] → ["do this"]        ["do this", {action}] → both
+  //   before  ["do this"] → []                 ["do this", {action}] → the object only
+  //
+  // Every line silently gone, and no floor: the mapped `undefined` is not a sentence,
+  // so `adviceExisted` correctly says nothing was withheld. The row is rendered like
+  // any other and put back AS A STRING, because this round's claim is byte stability
+  // and `main` shipped a string here.
+  const actions = tryNext.map((row) =>
+    typeof row === "string" ? row : (row as TryNextAction | null | undefined)?.action,
+  ) as readonly string[];
+  const rendered = renderAdviceEachForCaller(actions);
+  const out: TryNextAction[] = [];
+  for (const [i, row] of tryNext.entries()) {
+    const text = rendered[i];
+    if (text === null || text === undefined) continue; // dropped here, or not a string at all
+    if (typeof row === "string") {
+      // Out of contract and preserved as found: spreading a string would have made an
+      // object of its character indices.
+      out.push(text as unknown as TryNextAction);
+      continue;
+    }
+    out.push(text === row.action ? row : { ...row, action: text });
+  }
+  // THE FLOOR. `toFailureEnvelope` substitutes a generic hint when the DICTIONARY has
+  // none, so a code with no advice still ships a line; that is the guarantee, and it
+  // is narrower than "`try_next` is never empty" — a caller who passes `tryNext: []`
+  // gets `[]`, on `main` as well as here (measured, 2026-09-13, after gate 2 reasoned
+  // from the wider claim this comment used to make). Dropping rows would have taken
+  // the real guarantee away by construction — the
+  // fallback computed and then dropped, a caller's `try_next[0].action` throwing
+  // (gate 2, 2026-09-13). The user's decision of the same day is the rule: EVERY code
+  // keeps at least one line at every corner. Where the conversion cannot honour that
+  // by hand, this catches it — and says, in the line itself, that something was
+  // withheld rather than pretending there was never any advice.
+  // ...but only where advice ACTUALLY EXISTED. The floor's sentence names the
+  // configuration as the cause, and that is a claim: it is true when real lines were
+  // dropped for want of a provider, and false when the caller passed rows that never
+  // carried a sentence. `buildFailureEnvelope("X", [{}])` used to answer "no recovery
+  // is available in this configuration" to a PROGRAMMING ERROR (gate 2, 2026-09-13,
+  // measured). A row with no string action is not a withheld recovery, so it does not
+  // buy one.
+  if (out.length === 0 && adviceExisted(actions)) {
+    return [{ action: ADVICE_WITHHELD_FLOOR }];
+  }
+  return out;
+}
+
+/**
  * Build a commit-failure envelope (ADR-010 §5.3, sub-plan §2.4).
  *
  *   {
@@ -1258,7 +1354,12 @@ export function buildFailureEnvelope(
     confidence: "stale",
     if_unexpected: {
       most_likely_cause: mostLikelyCause,
-      try_next: tryNext,
+      // ADR-036 stage 2 B2b — the envelope's advice goes through the resolver too, and
+      // for the same reason as the flat road: this is where every `try_next` becomes
+      // caller-visible, whatever built it. Byte-identical while no line carries a
+      // placeholder. A line whose capability has no provider here is DROPPED, so the
+      // array can shrink — the empty case is the decision the conversion owes.
+      try_next: renderTryNext(tryNext),
       ...(detail !== undefined && detail.trim() !== "" ? { detail } : {}),
     },
   };
@@ -1300,8 +1401,12 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
      *  (`asOfWallclockMs` 等の L1 event wallclock 経路、将来 root extras hoist 伝播)。 */
     envelopeOptions?: EnvelopeOptions;
     /** Explicit `try_next` override (ADR-021 P1-2). When provided it is used
-     *  verbatim — **including an empty `[]`** — instead of deriving from
-     *  `getSuggestsForCode(errorName)`. Lets hand-built failure callsites that
+     *  instead of deriving from `getSuggestsForCode(errorName)` — **including an
+     *  empty `[]`**, which still ships empty. **It is no longer verbatim** (ADR-036
+     *  stage 2 B2b): every row's `action` goes through the advice resolver on its way
+     *  out, so a row naming a capability this configuration cannot provide is
+     *  dropped, taking its `args` / `confidence` with it, and a list that empties
+     *  that way gets one line saying so rather than none. Lets hand-built failure callsites that
      *  already hold a typed/rich `try_next` (e.g. lease validation's
      *  `{action, args, confidence}`, or a deliberately-empty list) migrate to
      *  this single converter without changing their envelope shape (north star
@@ -1321,8 +1426,10 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
   // `_errors.ts`) は本 dict の正しい lookup API で、unknown code には汎用
   // fallback 配列を返す。empty fallback の場合は本 helper 側で再 fallback。
   const errorName = result.error.name;
-  // Caller-supplied `tryNext` wins verbatim (incl. empty []); otherwise derive
-  // from SUGGESTS, falling back to a generic hint when the dict has no entry.
+  // Caller-supplied `tryNext` is used instead of SUGGESTS (an empty [] still ships
+  // empty) — but NOT verbatim any more: `buildFailureEnvelope` resolves each row's
+  // advice against this server's configuration. This comment said "verbatim" thirty
+  // lines below the doc that had been corrected to say the opposite (gate 2).
   let tryNext: TryNextAction[];
   if (options.tryNext !== undefined) {
     tryNext = options.tryNext;

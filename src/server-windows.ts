@@ -37,6 +37,8 @@ import { registerScreenshotResources } from "./tools/screenshot-resources.js";
 import { registerScreenshotQueryTool } from "./tools/screenshot-query.js";
 import { registerScreenshotGcTool } from "./tools/screenshot-gc.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
+import { captureAdviceConfiguration } from "./tools/_advice-capability.js";
+import { keyLockerDisabled } from "./engine/key-locker/key-locker-switch.js";
 import { registerKeyLockerTools } from "./tools/key-locker-tool.js";
 import { registerKeyLockerWiring } from "./tools/key-locker-wiring.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
@@ -256,6 +258,19 @@ function createMcpServer(): McpServer {
   registerScreenshotGcTool(s);
   // ADR-014 R3 — the key locker management tool (self-gates on the kill switch, so a disabled
   // locker registers nothing).
+  // ADR-036 stage 2 B2b: take the configuration HERE, where registration reads the
+  // switches, so the presenter answers about the surface this server actually
+  // published. Reading ambient env at call time instead would let a flag changed after
+  // startup make the advice name tools that were never registered — this ADR's own
+  // defect, through the door the "the flag IS the surface" argument does not watch.
+  captureAdviceConfiguration({
+    // `_desktopV2 !== null`, not the flag: what registration BRANCHED on is the
+    // surface the caller sees, and the two can only be told apart here (gate 2,
+    // 2026-09-13, on the first version of this line, which captured `process.env`).
+    v2: _desktopV2 !== null,
+    // The same predicate `registerKeyLockerTools` reads, at the same moment.
+    credentialStore: !keyLockerDisabled(),
+  });
   registerKeyLockerTools(s);
   // ADR-014 R3 L3-4 W-4 — the live autofill wiring (S-A dispatch hook + reconcile/idle timers). No-op when
   // kill-switched; returns a teardown the shutdown path clears (timers + event-bus + hooks).

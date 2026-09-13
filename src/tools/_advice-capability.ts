@@ -364,11 +364,19 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  *
  * **`renderAdvice` is still the only placeholder-safe entry point.**
  *
- * The predicates are the ones REGISTRATION reads. Deliberate: resolution reading a
- * different source of truth than registration would drift silently the first time
- * one of them changed. Both take `env`, which makes ALL FOUR corners reproducible in
- * a unit test with no Windows machine — `keyLockerDisabled` did not take one until
- * codex pointed out that this function then answered for the wrong configuration.
+ * The predicates are the ones REGISTRATION reads — but **this function is no longer
+ * the road production takes, and saying so here is the point** (gate 2, 2026-09-13,
+ * eleventh round). Since the presenter was wired, resolution reads `captured`: what
+ * registration DID, taken at the instant it did it. `providerFor`, `providerForName`
+ * and `renderAdvice` read `env` at CALL time, which is the drift this paragraph warns
+ * about — so they are for CELLS and SWEEPS, and a production-scan cell bans all of
+ * them by name. **A reader who reaches for the obvious name and believes the older
+ * wording reintroduces exactly the defect this ADR removes**, which is why the ban
+ * exists and why this sentence had to be corrected rather than left as background.
+ *
+ * Both take `env`, which makes ALL FOUR corners reproducible in a unit test with no
+ * Windows machine — `keyLockerDisabled` did not take one until codex pointed out that
+ * this function then answered for the wrong configuration.
  *
  * (The rest of this comment used to be a SECOND doc block. Two blocks in a row and
  * only the last one attaches, so quick-info on `providerFor` showed the essay below
@@ -415,12 +423,20 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * verified in source here). Registration takes a SNAPSHOT and this function reads
  * LIVE:
  *
- *   `server-windows.ts:86`   `resolveV2Activation(process.env)` at module init, once
- *   `server-windows.ts:98`   `_desktopV2` awaited there too, frozen for the process
- *   `server-windows.ts:259`  `registerKeyLockerTools(s)` runs inside
- *                            `createMcpServer()`, so the LOCKER switch is re-read per
- *                            server — once per request in stateless HTTP mode
- *   here                     both switches read from `env` at CALL time
+ *   `server-windows.ts`, module init   `resolveV2Activation(process.env)`, once, and
+ *                                      `_desktopV2` awaited there too — frozen for
+ *                                      the process
+ *   `server-windows.ts`, registration  `registerKeyLockerTools(s)` runs inside
+ *                                      `createMcpServer()`, so the LOCKER switch is
+ *                                      re-read per server — once per request in
+ *                                      stateless HTTP mode
+ *   here                               both switches read from `env` at CALL time
+ *
+ * (No line numbers: this table carried three, **and this PR's own capture block moved
+ * every one of them** — 98 → 100, 259 → 274, and one that was already off by one
+ * became off by three. A number in prose is a claim that goes stale on the next edit
+ * to the file it names, and nothing checks it. Gate 2 found them in the eleventh
+ * round, in a branch whose other commits keep closing this species.)
  *
  * So the two switches do not even agree with each other about freshness, and a
  * process that changes `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2` after startup would have
@@ -428,10 +444,13 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * defect, arriving through the door the argument above does not watch. **Nothing in
  * the product does that today** (the cells do it deliberately, which is how the
  * shape is visible at all), so it is latent like the platform gap, and it is stated
- * rather than argued away. **The fix is not another parameter**: registration and
- * resolution should read ONE configuration captured at the same moment, which is a
- * change to how the server hands the presenter its configuration — so it belongs to
- * the change that wires the presenter, not to the mechanism.
+ * rather than argued away. **The fix was not another parameter**: registration and
+ * resolution read ONE configuration captured at the same moment — **which is done,
+ * and is this PR**. It stayed written as future work through three rounds after it
+ * shipped (gate 2, eleventh round), while the sibling checklist's item 3 had been
+ * struck through; the two paragraphs said opposite things about the same change.
+ * What survives here is the description of the problem, because the ban that keeps
+ * production off this function is only intelligible next to it.
  *
  * **THE SENTENCE THAT USED TO STAND HERE SAID "no publishable configuration", AND
  * THAT IS FALSE** (gate 2 round 6, finding 2, verified here). `index.ts:15-18`
@@ -446,10 +465,12 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * `get_ui_elements` / `get_windows` / `set_element_value`. That is worth stating
  * precisely, because it is the reason a `Surface` parameter would not have repaired
  * it — there is no corner of this surface to switch to (gate 2 round 7, findings 3
- * and 4, which corrected "none of the five" and the axis). It is **latent**: nothing calls `renderAdvice` yet and the stub answers
- * `UnsupportedPlatform` to everything. But it is the reason the argument above is
- * now scoped to the Windows server, and it is filed for the change that wires the
- * presenter.
+ * and 4, which corrected "none of the five" and the axis). It stays harmless for a
+ * DIFFERENT reason than the one written here before this PR wired the presenter: it
+ * is no longer "nothing calls `renderAdvice` yet" (gate 2, 2026-09-13) — the resolver
+ * runs on every Windows refusal now. What holds on the stub is that the stub answers
+ * `UnsupportedPlatform` to everything and builds that refusal by hand, without this
+ * module. That is the reason the argument above is scoped to the Windows server.
  *
  * **What would have to change for the divergence to exist**: break that static edge
  * — `macro.ts` imports the v2 schemas statically, which is what welds the two — and
@@ -460,7 +481,19 @@ export function providerFor(
   cap: Capability,
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  const v2 = resolveV2Activation(env).enabled;
+  return providerForConfig(cap, adviceConfigurationFromEnv(env));
+}
+
+/**
+ * The same answer from a RESOLVED configuration rather than from an environment.
+ *
+ * Two entry points, one switch: the env road is what the cells and the four-corner
+ * sweeps drive, and the configuration road is what the presenter uses, because what
+ * registration did is not always what the environment said (see
+ * {@link AdviceConfiguration}).
+ */
+export function providerForConfig(cap: Capability, cfg: AdviceConfiguration): string | null {
+  const v2 = cfg.v2;
   switch (cap) {
     case "reidentify_element":
       return v2 ? "desktop_discover" : "get_ui_elements";
@@ -480,7 +513,7 @@ export function providerFor(
       // then models a different one for one of its five answers is worse than one
       // that never took it (PR-side codex P2 on `64e69a2`). The shared predicate was
       // widened rather than re-implemented here, so the switch keeps one reader.
-      return keyLockerDisabled(env) ? null : "key_locker";
+      return cfg.credentialStore ? "key_locker" : null;
     default: {
       // Impossible by type, and reachable in fact from `tests/**` (outside
       // `tsconfig.json`'s include) or from JS. It THROWS rather than answering,
@@ -576,10 +609,18 @@ export type AdviceLine = string;
  * ---
  *
  * **WHAT THE CHANGE THAT CONVERTS THE LINES HAS TO DECIDE, written here because that
- * is where its author will be reading** (gate 2, 2026-09-13, both rounds). Neither is
- * a defect today — nothing calls this yet — and neither is answered by this module:
+ * is where its author will be reading** (gate 2, 2026-09-13, both rounds).
  *
- *   **1. There is no floor: an advice set can render to `[]`.** The case is not
+ * **"Neither is a defect today — nothing calls this yet" stood here, and this PR is
+ * what made it false** (gate 2, 2026-09-13): the resolver now runs on every refusal on
+ * Windows, through `toToolFailure` and `buildFailureEnvelope`. Items 1 and 3 were
+ * ANSWERED by that wiring and are struck through below; item 2 is live and reaches
+ * callers the moment a line it describes carries a placeholder.
+ *
+ *   **1. ~~There is no floor: an advice set can render to `[]`.~~ DONE — the floor is
+ *   `ADVICE_WITHHELD_FLOOR`, applied on BOTH roads (`renderTryNext` and
+ *   `renderAdviceWithFloor`), and only where a real sentence was dropped.** Kept
+ *   because the reasoning is what the conversion still needs: the case is not
  *   hypothetical and it is this module's own motivating one. `paneIdMissSuggest`'s
  *   malformed-`paneId` branch (`terminal.ts:742-750`) returns exactly two lines and
  *   BOTH name `key_locker`, so once they carry `{tool:credential_store}` a server
@@ -598,8 +639,11 @@ export type AdviceLine = string;
  *   on it. This is the LIST case above wearing different clothes — a sentence that is
  *   mostly configuration-independent — and the converter meets it on the first line
  *   it touches, so it is named here rather than left to be rediscovered.
- *   **3. Resolution and registration must come from ONE captured configuration.**
- *   This function reads the switches live; `server-windows.ts` snapshots the v2 flag
+ *   **3. ~~Resolution and registration must come from ONE captured configuration.~~
+ *   DONE — that is this PR.** `createMcpServer()` captures what registration DID and
+ *   the presenters resolve against it; the text below is kept as the statement of the
+ *   problem it answers.
+ *   This function read the switches live; `server-windows.ts` snapshots the v2 flag
  *   at module init and re-reads the locker per server. The details are in the flag
  *   argument above; what the wiring change owes is the shape — hand the presenter the
  *   configuration that registration actually used, rather than letting both re-derive
@@ -630,7 +674,43 @@ export function renderAdvice(
   lines: readonly AdviceLine[],
   env: Record<string, string | undefined> = process.env,
 ): string[] {
-  const out: string[] = [];
+  return renderAdviceWith(lines, adviceConfigurationFromEnv(env));
+}
+
+/** {@link renderAdvice}, driven by a resolved configuration. One loop, two doors. */
+export function renderAdviceWith(
+  lines: readonly AdviceLine[],
+  cfg: AdviceConfiguration,
+): string[] {
+  return renderAdviceEach(lines, cfg).filter((line): line is string => line !== null);
+}
+
+/**
+ * The same rendering, **per line**: `null` where a line was dropped, so a caller that
+ * has to keep something else beside each line can tell WHICH line went.
+ *
+ * **This exists because compacting lost the pairing** (gate 2, 2026-09-13, a high).
+ * `renderTryNext` carried `args` and `confidence` beside each `action`, rendered the
+ * whole list in one call for the pattern hoist, and re-attached by index — but the
+ * compacted array has no gap where a row was dropped, so **every row after a drop
+ * took the next survivor's text while keeping its own arguments**, and the last
+ * survivor was discarded. Measured on the built code: a caller acting on advice that
+ * belonged to a different row. Counting survivors is not identifying them.
+ */
+export function renderAdviceEach(
+  lines: readonly AdviceLine[],
+  cfg: AdviceConfiguration,
+): (string | null)[] {
+  // THE CONTAINER, and this is the last place it can move to: every road — both
+  // presenters, both `*ForCaller` doors, `renderAdvice`, `renderAdviceWith` — comes
+  // through this loop. The guard was in the two callers, which is where gate 2 found
+  // it in the eighth round: `renderAdviceForCaller("some advice")` is exported, a
+  // string is iterable, and `for…of` shipped the sentence one character per line —
+  // no throw, no red, the worst of the three shapes measured on the flat road. The
+  // doc above names three `ok:true` roads as future callers of this seam; each of
+  // them would otherwise have had to re-derive the same guard.
+  if (!Array.isArray(lines)) return [];
+  const out: (string | null)[] = [];
   // One pattern for this call, not one per line. Hoisted after gate 2 pointed out
   // that the loop was building a RegExp per line while the module's own note
   // explains why it needs none: `String.replace` resets `lastIndex`, so even a
@@ -647,12 +727,35 @@ export function renderAdvice(
   // preference with a narrow reason, stated as such (gate 2 round 4, finding 9).
   const pattern = placeholderPattern();
   for (const line of lines) {
+    // NOT A STRING? Drop it — and do not throw. (This said "pass it through untouched"
+    // until gate 2 read it against the `out.push(null)` three lines below and the
+    // comment on it, which had already recorded WHY pass-through was wrong. The
+    // previous round's wording outlived the round: an edit made on the strength of
+    // this line would have restored the measured `suggest: [null]`.)
+    // This module's own rule is that it never
+    // throws on the failure road — every caller here is already building a refusal, so
+    // a throw costs the envelope, the code and the sibling lines: the fix failing into
+    // the shape of the bug. Wiring the seam in made `line.replace` reachable with a
+    // value `tsc` cannot vouch for, because both roads are exported and `tests/**` is
+    // outside the include (gate 2, 2026-09-13: `buildFailureEnvelope("X", [{}])` threw
+    // `Cannot read properties of undefined`). Same door `providerForConfig`'s `default`
+    // arm guards, and the same answer: refuse to invent, do not take the caller down.
+    if (typeof line !== "string") {
+      // DROPPED, not passed through. Not thrown either: this module's rule is that it
+      // never throws on the failure road. But passing it through put a non-string into
+      // a `string[]` on the wire — `suggest: [null]` reached a caller, whose own
+      // `.trim()` then threw on their side instead of ours, and the floor's
+      // `length > 0` guard read it as advice (gate 2, 2026-09-13). Refusing to invent,
+      // and refusing to ship what the type says is not there, are the same answer.
+      out.push(null);
+      continue;
+    }
     let dropped = false;
     const rendered = line.replace(pattern, (whole: string, cap: string) => {
       // A capability this module does not know stays verbatim — visibly broken
       // beats a sentence that reads as advice. See the note on `KNOWN`.
       if (!isCapability(cap)) return whole;
-      const tool = providerFor(cap, env);
+      const tool = providerForConfig(cap, cfg);
       if (tool === null) {
         dropped = true;
         // Discarded — the whole line is dropped below. Returning the placeholder
@@ -662,7 +765,247 @@ export function renderAdvice(
       }
       return tool;
     });
-    if (!dropped) out.push(rendered);
+    out.push(dropped ? null : rendered);
   }
   return out;
+}
+
+/**
+ * The one slot. See {@link AdviceConfiguration} for WHY it is a capture and not
+ * `process.env` at call time, and for the hazard the fallback carries.
+ */
+let captured: Readonly<AdviceConfiguration> | null = null;
+let warnedAboutDisagreement = false;
+
+/**
+ * THE CONFIGURATION THE PRESENTER RESOLVES AGAINST, captured once where
+ * registration reads it.
+ *
+ * **Why a capture and not `process.env` at call time.** The server reads the two
+ * switches at DIFFERENT moments — `server-windows.ts` resolves the v2 flag at module
+ * init (the `resolveV2Activation(process.env)` destructuring near the top) and freezes
+ * `_desktopV2` for the process, while
+ * `registerKeyLockerTools` runs inside `createMcpServer()` and therefore re-reads the
+ * locker per server (once per request in stateless HTTP mode). A presenter that read
+ * ambient env at call time would answer for a surface that was never published the
+ * moment anything changed the flag after startup. The fix is not another parameter:
+ * registration and resolution read ONE configuration, taken at one instant
+ * (gate 2, 2026-09-13, third round on the mechanism PR).
+ *
+ * **The fallback is the environment, and it is a hazard, so it is pinned rather than
+ * hidden**: a server that never captures behaves exactly as before, which is what
+ * keeps every existing test and every non-server caller working — and which would
+ * also silently swallow a forgotten `captureAdviceConfiguration` call. **That last
+ * sentence stood here while no such cell existed** (gate 2, 2026-09-13, which deleted
+ * the call in `server-windows.ts` and watched everything stay green). There is one
+ * now: it parses the shipped `server-windows.ts` and asserts the call is inside
+ * `createMcpServer`, with a control that the walk finds the function at all — reading
+ * the shipped source rather than a copy of the belief about it. Importing the server
+ * to check would start one.
+ *
+ * The RESOLVED surface, not the environment that suggested it.
+ *
+ * **The first version of this captured `process.env`, and gate 2 showed that is the
+ * same defect one layer along** (2026-09-13): the v2 half of the surface is not the
+ * flag, it is `_desktopV2` — the module the server actually loaded and branched its
+ * registration on — and that was decided at module init, while an env snapshot taken
+ * inside `createMcpServer()` is a second reading of a second thing. Two readings of
+ * two things is what this round exists to remove, so what is captured is what
+ * registration DID: `v2` is "the v2 module is the surface I registered", and
+ * `credentialStore` is "the locker registered its tool".
+ */
+export interface AdviceConfiguration {
+  /** The v2 surface was registered — `_desktopV2 !== null`, not the flag's value. */
+  v2: boolean;
+  /** The locker's capability is available — what `registerKeyLockerTools` read. */
+  credentialStore: boolean;
+}
+
+/**
+ * Take the configuration for this server. Call it where registration reads the switches.
+ *
+ * **One slot, process-wide, and that is correct only while both inputs are** (gate 2,
+ * 2026-09-13). `createMcpServer()` runs once per request in stateless HTTP mode and
+ * each call overwrites this; today every server computes the same answer, because
+ * `_desktopV2` is frozen at module init and the locker predicate reads `process.env`.
+ * The day a second source appears — an embedder building two servers, a per-server
+ * config object — the last capture answers for every earlier server, and this needs
+ * per-server plumbing rather than a module global.
+ */
+export function captureAdviceConfiguration(cfg: AdviceConfiguration): void {
+  // A SECOND capture that DISAGREES with the first is the exact condition under which
+  // one slot is the wrong shape — two servers whose surfaces differ, with one global
+  // answering for both. Both gates raised the scope; neither could name a way to reach
+  // it today, because both inputs are process-global. So it is not silently allowed:
+  // the disagreement is announced on the server's own channel, once, with both
+  // answers, so the first report of the real thing arrives as a line rather than as a
+  // caller wondering why the advice named a tool they do not have.
+  if (
+    !warnedAboutDisagreement &&
+    captured !== null &&
+    (captured.v2 !== cfg.v2 || captured.credentialStore !== cfg.credentialStore)
+  ) {
+    // ONCE, and the flag is what makes that true: `captured` is overwritten every
+    // call, so two alternating surfaces logged on every `createMcpServer()` — once per
+    // request in stateless HTTP mode — while this comment claimed "once" (gate 2).
+    //
+    // **LATCHED FOR THE LIFE OF THE PROCESS, and that is the deliberate half of the
+    // trade** (gate 2, 2026-09-13, tenth round). The flag is only cleared by
+    // `resetAdviceConfiguration`, which the gate bans from production, so the FIRST
+    // flip is reported and every later one is silent while `captured` keeps changing
+    // under in-flight responses — the presenters resolve at response time, not at
+    // registration. The hazard is ongoing; the report is not. It stays this way
+    // because the alternative is a line per request on a road that already cannot be
+    // reached today (nothing in production mutates these variables), and because the
+    // real answer is per-server plumbing rather than better logging — filed with the
+    // one-slot scope in the internal `remaining-work.md`, not fixed here.
+    warnedAboutDisagreement = true;
+    console.error(
+      "[desktop-touch] advice configuration changed mid-process: " +
+        `was {v2:${String(captured.v2)},credentialStore:${String(captured.credentialStore)}}, ` +
+        `now {v2:${String(cfg.v2)},credentialStore:${String(cfg.credentialStore)}} — ` +
+        "advice is resolved from ONE process-wide capture, so a server registered under " +
+        "the earlier surface may now answer under the later one",
+    );
+  }
+  captured = Object.freeze({ ...cfg });
+}
+
+/** The configuration an `env` describes — the fallback road, and what the cells drive. */
+export function adviceConfigurationFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): AdviceConfiguration {
+  return { v2: resolveV2Activation(env).enabled, credentialStore: !keyLockerDisabled(env) };
+}
+
+/** True when a server has taken its configuration; false while the fallback is live. */
+export function adviceConfigurationWasCaptured(): boolean {
+  return captured !== null;
+}
+
+/** Forget the capture. For cells; the server captures once per `createMcpServer`. */
+export function resetAdviceConfiguration(): void {
+  captured = null;
+  warnedAboutDisagreement = false;
+}
+
+/**
+ * The line a road substitutes when the resolver empties advice that existed.
+ *
+ * **One constant, because the two roads must say the same thing.** The floor exists
+ * because gate 2 found the flat road and the envelope road answering differently for
+ * one code; writing the sentence out twice would have left that fixed by hand and
+ * re-breakable by a one-sided reword, with every cell green (gate 2, 2026-09-13).
+ *
+ * **And one constant means the sentence must be true on BOTH roads, which the first
+ * version was not.** It ended "— see the error message", and only the flat road has
+ * one: measured, `toToolFailure` answers `{ok, code, error, suggest}` while
+ * `buildFailureEnvelope` answers `{_version, data, as_of, confidence, if_unexpected}`
+ * and `compatFailureRaw` answers `{ok, reason, diff, if_unexpected}` — no `error` in
+ * either, and `detail` is optional and usually absent. So a `KeyLockerConsentRequired`
+ * refusal on the envelope road shipped this as its ONLY recovery line and pointed the
+ * caller at a field that is not there (gate 2, 2026-09-13, ninth round). The pointer
+ * is gone rather than made conditional: **the caller holds the whole response, and a
+ * pointer that is right on one road and wrong on the other is worse than none.**
+ */
+export const ADVICE_WITHHELD_FLOOR = "No recovery is available in this configuration.";
+
+/**
+ * Whether the floor's sentence is TRUE of this input — the rule, hoisted beside the
+ * sentence for the same reason the sentence was hoisted.
+ *
+ * The floor names a cause: *"in this configuration"*. That holds when a real sentence
+ * was dropped for want of a provider, and not when the caller passed entries that were
+ * never sentences. Both roads decide it; **centralising the string and leaving the
+ * predicate written out twice keeps the one-sided-drift hazard and only moves it a
+ * level up** (gate 2, 2026-09-13, eighth round) — a later edit that teaches one road
+ * to treat, say, a whitespace-only line as "not a sentence" reproduces the asymmetry
+ * with every cell green, because the only shared artefact would be the constant.
+ */
+export function adviceExisted(lines: readonly unknown[]): boolean {
+  return Array.isArray(lines) && lines.some((line) => typeof line === "string");
+}
+
+/**
+ * Render advice for THIS server's configuration — the entry point the presenters use.
+ *
+ * Every advice line that travels as `suggest` or `try_next` **from a tool** passes
+ * through here — on the flat shape (`toToolFailure`) and on the envelope
+ * (`buildFailureEnvelope`).
+ *
+ * **"which the lint rule makes the only builder" was too strong** (gate 2,
+ * 2026-09-13). `no-tool-failure-shape-direct-construct` is registered for
+ * `src/tools` only (`eslint.config.mjs:80`, a `files:` glob under that directory), and
+ * `src/server-linux-stub.ts:52-69` is outside it: its `CallToolRequestSchema` handler
+ * hand-builds `{ok:false, code:"UnsupportedPlatform", error, suggest:[…]}` and does
+ * not import `_errors.ts` at all. **That is a failure road this seam does not cover**,
+ * and it is not one of the `ok:true` sites enumerated below. It is harmless today for
+ * a reason about its CONTENT, not its road — its three lines name no
+ * configuration-dependent tool, and no capability has a provider on that platform in
+ * either corner — so the gate the conversion owes must walk it rather than trust this
+ * paragraph.
+ *
+ * **NOT "every advice line on the failure road", which is what this said until gate 2
+ * measured it** (2026-09-13). Advice also travels on that road in fields this seam
+ * never sees: `nextStepFor()` (`_action-guard.ts:279`) writes sentences naming
+ * `desktop_discover` into `context.guard.next` and into the refusal's own `error`
+ * string, and `toToolFailure` renders `suggest` and nothing else. Under the kill
+ * switch a guarded action's `target_not_found` therefore tells the caller to call a
+ * tool this server never registered — **this ADR's motivating defect, on the road this
+ * change is about**. It is not fixed here because those fields are not advice arrays
+ * and touching them moves bytes, which is the one thing this round claims it does not
+ * do; it goes to the conversion with its measurement. That is deliberate: the dictionary is not
+ * the only source of advice — 28 literal `suggest:` sites and a named builder
+ * (`paneIdMissSuggest`) produce lines the dictionary never sees, and `WaitTimeout` is
+ * a measured case where the literal beats the dictionary. A seam on the dictionary
+ * alone would have been a fix that misses the road it was aimed at.
+ *
+ * **THERE IS A THIRD ROAD AND IT IS NOT COVERED: advice on an `ok:true` payload.**
+ * The sentence above said "both roads" until gate 2 measured otherwise
+ * (2026-09-13). Three sites ship advice on success and touch neither presenter:
+ * `excel.ts:272` (`ok({… suggest})` for `check_access_vbom`), `src/engine/ocr-bridge.ts:552`
+ * (a per-element `suggest` on low-confidence OCR — a singular `string` on
+ * `ActionableElement`, a different type from the failure road's `string[]`), and
+ * `terminal.ts:2824` (`readError.suggest`, hand-built inside an `ok:true` run
+ * result). **None of them names a configuration-dependent tool today**, which is why
+ * the conversion does not reach them — and is also why the gate that will check this
+ * must, because "harmless" there is a property of the current wording and not of the
+ * road. Recorded as remaining work rather than widened here: a success payload is a
+ * different shape with different callers, and this round's claim is byte stability.
+ *
+ * **THIS FUNCTION TAKES NO CONFIGURATION, and JavaScript will not tell you.** Pass one
+ * as a second argument and it is silently dropped, so the call answers about the
+ * RUNNING PROCESS instead of the corner you meant — measured by win2 on 2026-09-13,
+ * whose harness then reported "locker present" at all four corners, including the two
+ * without a provider. That reads as "nothing was dropped", agrees with today's correct
+ * answer, and would go on agreeing after a conversion broke something: the strongest
+ * kind of false green. **If you hold a configuration, call {@link renderAdviceWith}.**
+ *
+ * (These were two adjacent blocks separated by a blank line, so hover showed only the
+ * warning and the coverage statement above it — the `ok:true` roads and the stub —
+ * vanished. This file records the same shape being fixed on `providerFor` at lines
+ * 373-376, and gate 2 found it here twice: raised in the fifth round, and STILL HERE
+ * in the eighth, because the edit that claimed to merge them never ran — see the
+ * commit that fixes this.)
+ */
+export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
+  return renderAdviceWith(lines, captured ?? adviceConfigurationFromEnv());
+}
+
+/**
+ * {@link renderAdviceForCaller}, **per line**: `null` where a line was dropped.
+ *
+ * For a caller that carries something else beside each line — `try_next` rows have
+ * `args` and `confidence` — because compacting the list loses which line went, and
+ * re-pairing by counting survivors put one row's text beside another row's arguments
+ * (gate 2, 2026-09-13, a high).
+ *
+ * **IT TAKES NO CONFIGURATION EITHER, and the hazard is its sibling's, verbatim.**
+ * `renderAdviceEachForCaller(lines, cfg)` drops the second argument in silence and
+ * answers about the running process — the same measured false green
+ * ({@link renderAdviceForCaller}), one function over. **If you hold a configuration,
+ * call {@link renderAdviceEach}.**
+ */
+export function renderAdviceEachForCaller(lines: readonly AdviceLine[]): (string | null)[] {
+  return renderAdviceEach(lines, captured ?? adviceConfigurationFromEnv());
 }
