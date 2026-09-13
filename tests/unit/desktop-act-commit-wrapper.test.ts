@@ -27,7 +27,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { renderAdviceForCaller } from "../../src/tools/_advice-capability.js";
+import { renderAdviceForCaller, renderAdviceWith, adviceConfigurationFromEnv } from "../../src/tools/_advice-capability.js";
 import {
   makeCommitWrapper,
   makeQueryWrapper,
@@ -100,7 +100,13 @@ describe("mapLeaseValidationToTypedReason — runtime path (sub-plan §7 R4)", (
     // "the source holds a placeholder" and "the wire holds a tool" are two claims and
     // pinning only the first is how a placeholder ships.
     expect(m.tryNext[0]).toMatchObject({ action: "{tool:reidentify_element}", confidence: "high" });
-    expect(renderAdviceForCaller([m.tryNext[0].action])[0]).toBe("desktop_discover");
+    // THE CORNER IS PINNED, because the answer is corner-specific. `renderAdviceForCaller`
+    // reads the process-global capture or, failing that, ambient `process.env` — so this
+    // assertion used to name the v2 answer while depending on the runner not having the
+    // kill switch set, and on nothing earlier in the module graph having captured a
+    // configuration (gate 2, 2026-09-13). `adviceConfigurationFromEnv({})` states which
+    // surface the expectation belongs to.
+    expect(renderAdviceWith([m.tryNext[0].action], adviceConfigurationFromEnv({}))[0]).toBe("desktop_discover");
   });
   it("generation_mismatch → Unknown with empty try_next (S4 trunk Unknown fallback)", () => {
     const m = mapLeaseValidationToTypedReason("generation_mismatch");
@@ -112,7 +118,8 @@ describe("mapLeaseValidationToTypedReason — runtime path (sub-plan §7 R4)", (
     // the lease check that catches it first has to answer the same.
     const m = mapLeaseValidationToTypedReason("entity_not_found");
     expect(m.code).toBe("EntityNotFound");
-    expect(renderAdviceForCaller(m.tryNext.map((t) => t.action)).join(" ")).toMatch(/desktop_discover/);
+    // Corner pinned, same reason as the cell above.
+    expect(renderAdviceWith(m.tryNext.map((t) => t.action), adviceConfigurationFromEnv({})).join(" ")).toMatch(/desktop_discover/);
   });
   it("digest_mismatch → Unknown with empty try_next (S4 trunk)", () => {
     const m = mapLeaseValidationToTypedReason("digest_mismatch");

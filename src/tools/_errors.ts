@@ -36,6 +36,23 @@ const SUGGESTS: Record<string, string[]> = {
     "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_open to get the tabId, then browser_navigate to the target URL to switch tabs",
   ],
   ElementNotFound: [
+    // TWO FAMILIES REACH THIS ONE CODE, and only one of them has a UIA tree. `classify`
+    // routes on the substring "element not found", and the DOM side produces exactly
+    // that string — `cdp-bridge.ts` (`Element not found: <selector>`), `browser.ts`'s
+    // eval returns, and `failWith("Element not found", "browser_form", …)`. For that
+    // caller both providers of `reidentify_element` are the wrong instrument:
+    // `desktop_discover` and `get_ui_elements` enumerate native UIA names and
+    // automationIds, and a CSS selector matches none of them. The product already says
+    // so where it is registered — `browser_locate`'s own description names
+    // `browser_overview` / `browser_search` as the re-discovery path — so the dictionary
+    // was contradicting the tool description it ships beside (gate 1, 2026-09-13).
+    //
+    // The condition goes FIRST because it is the disambiguator: the desktop reader skips
+    // one line, and the browser reader is not sent to a tree that cannot hold their
+    // target. Neither browser tool is behind either kill switch (`registerBrowserTools`
+    // runs before the `_desktopV2` branch in `server-windows.ts`), so these are plain
+    // names, not capabilities — there is nothing for the presenter to resolve.
+    "If the target was a CSS selector (browser_locate / browser_click / browser_form), re-discover it with browser_overview or browser_search — {tool:reidentify_element} enumerates native UIA elements, not DOM nodes.",
     "Call {tool:reidentify_element} to see candidate names and automationIds",
     "Use screenshot(detail='text') for actionable[] with clickAt coords",
     "Try a shorter partial name match",
@@ -60,7 +77,20 @@ const SUGGESTS: Record<string, string[]> = {
     // It is also the first line to use `set_value`. The capability was defined in B1
     // and no advice line had ever carried it — an arm of the table the conversion
     // never wired (gate 2, 2026-09-13).
-    "Use {tool:set_value} for text input fields — set the value rather than invoking the control",
+    //
+    // AND DROPPING THE ARGUMENT DROPPED TOO MUCH — the second line exists because of
+    // it. `desktop_act`'s `action` is OPTIONAL and defaults to `'auto'`, and its `text`
+    // is a separate optional field required only when the action is named; so a caller
+    // who reads "use desktop_act" literally sends `desktop_act({lease})`, the executor
+    // takes the auto affordance, and the auto affordance is the UIA invoke this very
+    // refusal was raised to say does not work. `set_element_value` has no `action` at
+    // all and takes its `value` directly. The NAMES differ across providers and the
+    // CALL SHAPES differ too, and only the first is something the presenter can
+    // substitute — so the argument the caller must supply is stated in one line, and
+    // the argument that only one provider has is stated conditionally in the next
+    // (gate 2, 2026-09-13; the general form of this axis is B4's sweep).
+    "Use {tool:set_value} for text input fields — set the value rather than invoking the control, passing the new text as the value argument its schema names.",
+    "If that tool also takes an `action` argument, name the set-value action explicitly: its default affordance is the invoke that has just failed.",
     "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after {tool:reidentify_element})",
   ],
   BlockedKeyCombo: [
@@ -179,6 +209,31 @@ const SUGGESTS: Record<string, string[]> = {
     "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
     "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
     "Or pass hwnd to name that window exactly, which {tool:disambiguate_window_by_handle} returns.",
+    // THE ROUTE THAT SURVIVES WHERE THE LINE ABOVE DROPS. `disambiguate_window_by_handle`
+    // has no provider under the v2 kill switch — `get_windows` reads each handle and
+    // leaves it out of the result, and `screenshot(detail='meta')` returns title and
+    // region only — so the row above disappears there and, before this line, every
+    // mention of the hwnd recovery went with it. But `click_element`,
+    // `set_element_value` and `get_ui_elements` all still ACCEPT `hwnd` at that corner,
+    // and `desktop_state` (registered before the `_desktopV2` branch, so present at all
+    // four corners) always returns `focusedWindow.hwnd`. What the kill switch removes is
+    // the ENUMERATION of handles, not handles — and the capability table cannot tell
+    // those apart, which is why a `null` there read as "no recovery exists" for a whole
+    // round (gate 2, 2026-09-13).
+    //
+    // Stated with the condition it needs, not flat: it is a recovery exactly when the
+    // caller can get the intended window in front, which is the case title narrowing
+    // provably cannot serve — two windows whose normalized titles are equal ("Report"
+    // beside "REPORT", one page open in Chrome and in Edge) can never be told apart by
+    // title, and can be told apart by bringing one forward.
+    //
+    // It is a WEAKER DUPLICATE at the v2 corner, where the line above already hands back
+    // every window's handle, and that is a decision rather than an oversight: this is the
+    // STATIC catalogue, so conditioning it on the corner means a hand-branched call site,
+    // and `AutoGuardBlocked` reaches its producers through this one array. One redundant
+    // sentence where a better route exists is the cheaper half of that trade than no
+    // sentence where it does not.
+    "Or bring the intended window to the front and pass the hwnd desktop_state reports for it — worth doing when the titles cannot be told apart by narrowing (matching lowercases, trims, and strips a browser suffix from both sides).",
     // ONE SUBJECT, because the sentence had two and the providers split under the kill
     // switch: "the window" is `list_window_titles` (→ get_windows) and "the element" is
     // `reidentify_element` (→ get_ui_elements). The conversion picked one, which is the
@@ -205,7 +260,20 @@ const SUGGESTS: Record<string, string[]> = {
     // The earlier measurement still holds: `get_ui_elements` answers the window half
     // too if you ask it (a missing window comes back as `WindowNotFound`). It is a
     // diagnosis there, not a recovery, which is the distinction this line now respects.
-    "If the target was not found (target_not_found) and its window is still open, run {tool:reidentify_element} — the element no longer matches the current desktop state.",
+    //
+    // AND `target_not_found` HAS A SECOND PRODUCER, which the narrowed antecedent still
+    // covered: a `browser_*` call with a stale `tabId`. `resolveBrowserTabTarget`
+    // returns `candidates: 0` when no open tab carries the id
+    // (`engine/perception/action-target.ts`, the `tabId` filter), and the guard turns
+    // every `candidates === 0` into `target_not_found` — with the Chrome window still
+    // open, so "its window is still open" is satisfied too. Neither provider of
+    // `reidentify_element` returns tab ids: `browser_open` is the recovery there.
+    // Split by producer rather than narrowed again, because narrowing "desktop" into
+    // the first line leaves the browser caller with no line at all (gate 1, 2026-09-13
+    // — the third correction to this one sentence, and the second where the ANTECEDENT
+    // was broader than the cause named in the consequent).
+    "If a desktop element was not found (target_not_found) and its window is still open, run {tool:reidentify_element} — the element no longer matches the current desktop state.",
+    "If a browser_* call was refused with target_not_found, the stale part is the tabId rather than an element: call browser_open for the current tab ids. No tab appears in what {tool:reidentify_element} returns.",
     "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
     "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
@@ -252,8 +320,19 @@ const SUGGESTS: Record<string, string[]> = {
   // list cannot know which one it is in.
   CoordinateOutsideReachableBounds: [
     "Read the error message first: it says whether the point is off every monitor (stale coordinates) or whether this installation is limited to the primary monitor.",
-    "Off every monitor → the coordinates are stale: re-run {tool:reidentify_element} or take a fresh screenshot, then act on the new coordinates.",
-    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then re-run {tool:reidentify_element} and retry. Reinstalling or updating the server restores input on the other monitors.",
+    // THE TITLE-FREE ROUTE LEADS, because this refusal's caller may have no title to
+    // give. A coordinate-only `mouse_click` / `mouse_drag` carries a point and nothing
+    // else, and the two providers of `reidentify_element` disagree about whether that is
+    // enough: `desktop_discover`'s `windowTitle` is optional, `get_ui_elements`'s is
+    // REQUIRED (`ui-elements.ts`, `getUiElementsSchema`). So at the kill-switch corners
+    // the substituted name is registered and still not callable from where the refusal
+    // leaves the caller — "the surface has this tool" and "this caller can call it" are
+    // different questions, and the capability table only answers the first (gate 1,
+    // 2026-09-13; the general sweep of this axis is B4's, this is the instance that
+    // shipped). `screenshot` takes no required argument, so it leads and the tool is
+    // offered to the caller who can name a window.
+    "Off every monitor → the coordinates are stale: take a fresh screenshot and act on the new coordinates. If you can name the window the target is in, {tool:reidentify_element} gives its elements with current bounds.",
+    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then take a fresh screenshot and retry — or {tool:reidentify_element} on that window, once you can name it. Reinstalling or updating the server restores input on the other monitors.",
     "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act / browser_click fails the same way — the coordinate is the problem, not the tool.",
     "If the target exposes UIA, click_element(name=…) invokes the element directly and never moves the cursor.",
   ],
@@ -268,7 +347,12 @@ const SUGGESTS: Record<string, string[]> = {
   // loop cannot terminate.
   RegionOutsideCapturableBounds: [
     "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor. In that last case it also says whether per-window capture still works here, which decides the recovery below.",
-    "Off every monitor → the coordinates are stale: re-run {tool:reidentify_element} or take a fresh screenshot, then capture the new region.",
+    // Same title-free ordering as its cursor-side twin above, for the same reason and
+    // by the same rule: a region is a rectangle, and this refusal's caller may hold no
+    // window title at all, which `get_ui_elements` requires and `desktop_discover` does
+    // not. Gate 1 named the twin; this one is the identical sentence one entry down, and
+    // fixing only the instance that was reported is the shape that keeps coming back.
+    "Off every monitor → the coordinates are stale: take a fresh screenshot, then capture the new region. If you can name the window the region was around, {tool:reidentify_element} gives its current bounds.",
     // No per-window route named here on purpose: an overhang can occur on
     // either backend, and whether screenshot(windowTitle=…) works depends on
     // the determinant — which the two lines below own. Shrinking is the one
@@ -415,7 +499,13 @@ const SUGGESTS: Record<string, string[]> = {
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
-    "Act on another window: {tool:list_window_titles} (or any by-identity tool) on a different target returns what this server may touch.",
+    // "on a different target" WAS ATTACHED TO THE WRONG HALF. `get_windows`, the
+    // kill-switch provider here, takes no arguments — there is not even a flag to ask —
+    // so a clause telling the caller to aim it somewhere cannot be followed, and it is
+    // not a by-identity tool either. The listing and the by-identity retry are two
+    // different acts; the sentence now says so instead of hanging one modifier off
+    // both (gate 2, 2026-09-13).
+    "Act on another window: {tool:list_window_titles} shows what is open, and any by-identity tool aimed at a different target returns what this server may touch.",
     "If the excluded window is a prompt waiting for a person — the key locker's own dialog — it is theirs to answer; this session cannot answer it for them.",
   ],
   CursorPlacementBlocked: [

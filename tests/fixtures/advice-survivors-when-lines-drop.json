@@ -46,7 +46,9 @@
     "survivors": [
       "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
       "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
-      "If the target was not found (target_not_found) and its window is still open, run get_ui_elements — the element no longer matches the current desktop state.",
+      "Or bring the intended window to the front and pass the hwnd desktop_state reports for it — worth doing when the titles cannot be told apart by narrowing (matching lowercases, trims, and strips a browser suffix from both sides).",
+      "If a desktop element was not found (target_not_found) and its window is still open, run get_ui_elements — the element no longer matches the current desktop state.",
+      "If a browser_* call was refused with target_not_found, the stale part is the tabId rather than an element: call browser_open for the current tab ids. No tab appears in what get_ui_elements returns.",
       "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
       "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
       "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
@@ -58,7 +60,9 @@
     "survivors": [
       "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
       "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
-      "If the target was not found (target_not_found) and its window is still open, run get_ui_elements — the element no longer matches the current desktop state.",
+      "Or bring the intended window to the front and pass the hwnd desktop_state reports for it — worth doing when the titles cannot be told apart by narrowing (matching lowercases, trims, and strips a browser suffix from both sides).",
+      "If a desktop element was not found (target_not_found) and its window is still open, run get_ui_elements — the element no longer matches the current desktop state.",
+      "If a browser_* call was refused with target_not_found, the stale part is the tabId rather than an element: call browser_open for the current tab ids. No tab appears in what get_ui_elements returns.",
       "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
       "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
       "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",

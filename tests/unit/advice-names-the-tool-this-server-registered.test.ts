@@ -19,9 +19,11 @@
  *      conversion renders back to the bytes it replaced, so the codes that differ
  *      there are exactly the ones split by hand.
  */
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, it, expect, vi } from "vitest";
+import { readFileSync, mkdtempSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import ts from "typescript";
 import { getSuggestsForCode, toToolFailure } from "../../src/tools/_errors.js";
 import { paneIdMissSuggest } from "../../src/tools/terminal.js";
@@ -96,6 +98,11 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
 
     const empty: string[] = [];
     const floored: string[] = [];
+    // `finally`, because the capture is a MODULE GLOBAL: a failing assertion below used
+    // to leave it pinned at the last corner for every cell that ran after, turning one
+    // red into a cascade whose cause is not in any of their messages (gate 2,
+    // 2026-09-13). The last cell in this file already did it this way.
+    try {
     for (const corner of Object.keys(CORNERS)) {
       const cfg = cfgFor(corner);
       advice.captureAdviceConfiguration(cfg);
@@ -114,6 +121,9 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
         if (out.includes(ADVICE_WITHHELD_FLOOR)) floored.push(`${corner}/${code}`);
       }
     }
+    } finally {
+      advice.resetAdviceConfiguration();
+    }
     expect(empty, "a code with advice must never render to nothing").toEqual([]);
     // The floor is the net that makes a design defect visible, not a condition to
     // satisfy: if it catches something here, the hand-written work was not done —
@@ -131,11 +141,67 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // claim of mine).
     //
     // Registered, not excused: change what floors and this reddens, and whoever
-    // changes it has to show the same kind of producer analysis.
-    advice.resetAdviceConfiguration();
+    // changes it has to show the same kind of producer analysis. The analysis itself
+    // is MEASURED by the cell below, not left as prose.
     expect(floored.sort(), "the floor must not have to catch anything else").toEqual(
       FLOOR_IS_HONEST_HERE.sort(),
     );
+  });
+
+  it("proves the floor exception by walking the two roads that make the code unproducible", async () => {
+    // A REGISTRATION IS A CLAIM, and `FLOOR_IS_HONEST_HERE` was carrying one no cell
+    // tested: that `KeyLockerConsentRequired` cannot be produced while the locker
+    // switch is on. Gate 1 put the hole exactly — delete the early return and a
+    // disabled caller could reach `list` without consent, receive the consent refusal
+    // AND the floor, and `floored` would still hold these same two entries with every
+    // assertion above green (2026-09-13). The claim has two roads and each is measured
+    // here, with the control that makes a negative answer mean something.
+    const { registerKeyLockerTools } = await import("../../src/tools/key-locker-tool.js");
+    const { KeyLockerManager, KeyLockerDisabledError, KeyLockerConsentRequiredError } =
+      await import("../../src/engine/key-locker/key-locker-manager.js");
+
+    const namesRegisteredWithSwitch = (value: string): string[] => {
+      const names: string[] = [];
+      const stub = { registerTool: (name: string): void => { names.push(name); } };
+      vi.stubEnv("DESKTOP_TOUCH_DISABLE_KEY_LOCKER", value);
+      try {
+        registerKeyLockerTools(stub as unknown as Parameters<typeof registerKeyLockerTools>[0]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      return names;
+    };
+    // ROAD 1 — REGISTRATION. Control first, or "registered nothing" is also what a stub
+    // that records nothing answers.
+    expect(namesRegisteredWithSwitch(""), "control: the locker IS offered when enabled")
+      .toContain("key_locker");
+    expect(namesRegisteredWithSwitch("1"), "no tool is offered while the switch is on")
+      .toEqual([]);
+
+    // ROAD 2 — THE HANDLER, for the case where something calls the manager anyway.
+    // A fresh store means consent is unaccepted, which is the state that PRODUCES
+    // `KeyLockerConsentRequired`; the switch has to win over it, in that order.
+    const storeDir = mkdtempSync(join(tmpdir(), "dtm-floor-proof-"));
+    const mgr = new KeyLockerManager({ storeDir });
+    const thrownWithSwitch = async (value: string): Promise<unknown> => {
+      vi.stubEnv("DESKTOP_TOUCH_DISABLE_KEY_LOCKER", value);
+      try {
+        await mgr.withHost(async () => undefined);
+        return null;
+      } catch (e) {
+        return e;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+    // Control: with the switch off, this store DOES produce the consent refusal — so
+    // the code is genuinely producible, and the assertion below is about the switch.
+    expect(await thrownWithSwitch(""), "control: consent is what an enabled locker refuses on")
+      .toBeInstanceOf(KeyLockerConsentRequiredError);
+    expect(
+      await thrownWithSwitch("1"),
+      "the switch answers before consent does — this is why the floor at the locker-off corners is honest",
+    ).toBeInstanceOf(KeyLockerDisabledError);
   });
 
   it("leaves a RECOVERY where lines drop, not whatever happened to survive", () => {
@@ -227,6 +293,100 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     expect(leaked, "no caller may receive a raw placeholder").toEqual([]);
   });
 
+  it("names a capability at EVERY placeholder site in src, not only the ones this file calls", () => {
+    // THE TITLE OF THE CELL ABOVE SAID "any road" AND IT SWEPT ONE. It walks
+    // `getSuggestsForCode`, so it covers `_errors.ts` and nothing else — and the sites
+    // it does not reach are exactly where a misspelling survives, because the resolver
+    // returns an UNKNOWN capability VERBATIM on purpose ("visibly broken beats a
+    // sentence that reads as advice", `_advice-capability.ts`). So `{tool:reidentify_elemnt}`
+    // ships as those literal bytes, and until this cell nothing outside the dictionary
+    // would have said so. Found by asking win2 for the residual of their own sweep, not
+    // by the sweep's answer: the three non-capability names they reported are this
+    // module's deliberate doc examples, and the question "where else could a real one
+    // hide" is what had no cell (2026-09-13).
+    //
+    // FROM THE AST, so comments are excluded by the parser rather than by a regex that
+    // has to know what a comment looks like — the doc examples above sit in `/** */`
+    // blocks and a line-oriented filter reads them as code.
+    //
+    // `{tool:` IS NOT A UNIQUE MARKER in this tree: `run_macro`'s step syntax is
+    // literally `{tool: "sleep", params: {…}}`, and `macro.ts` and the stub catalogue
+    // carry several. They do not match because the pattern requires the closing brace
+    // immediately after a bare identifier, and every macro example quotes the name. A
+    // future unquoted one (`{tool:sleep}`) would be flagged here as an unknown
+    // capability — a false positive, and the safe direction: the resolver would leave
+    // those same bytes in place, so a loud cell beats a silent shipment.
+    const SRC = fileURLToPath(new URL("../../src", import.meta.url));
+    const files: string[] = [];
+    const walkDir = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walkDir(p);
+        else if (e.name.endsWith(".ts")) files.push(p);
+      }
+    };
+    walkDir(SRC);
+
+    const sites: Array<{ file: string; name: string }> = [];
+    for (const file of files) {
+      const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+      const visit = (n: ts.Node): void => {
+        if (
+          ts.isStringLiteral(n) ||
+          ts.isNoSubstitutionTemplateLiteral(n) ||
+          ts.isTemplateHead(n) ||
+          ts.isTemplateMiddle(n) ||
+          ts.isTemplateTail(n)
+        ) {
+          for (const m of n.text.matchAll(/\{tool:([a-z_]+)\}/g)) {
+            sites.push({ file: file.slice(SRC.length + 1), name: m[1]! });
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+    }
+
+    // RESIDUAL, printed rather than implied: "everything resolved" and "the walk found
+    // nothing" are the same silence otherwise. win2's §26 — the instrument states what
+    // it read.
+    const byFile = new Map<string, number>();
+    for (const s of sites) byFile.set(s.file, (byFile.get(s.file) ?? 0) + 1);
+    const residual =
+      `read ${files.length} src files, ${sites.length} placeholder occurrences in ` +
+      `${byFile.size} of them: ` +
+      [...byFile.entries()].sort().map(([f, n]) => `${f}×${n}`).join(", ");
+    expect(files.length, `control — the walk must have read the tree (${residual})`).toBeGreaterThan(50);
+    expect(sites.length, `control — the walk must have found the sites (${residual})`).toBeGreaterThan(30);
+    // More than one file, or a walk that only ever reaches `_errors.ts` passes this too
+    // while leaving the hole it was written for.
+    expect(byFile.size, `control — more than the dictionary must be in view (${residual})`).toBeGreaterThan(3);
+
+    // THE CLAIM. A name the module knows resolves (to a tool) or drops (provider null);
+    // a name it does not know comes back verbatim. So a surviving placeholder at ANY
+    // corner is a name that is not a capability — which is the only way this can fail.
+    const unknown: string[] = [];
+    for (const corner of Object.keys(CORNERS)) {
+      const cfg = cfgFor(corner);
+      for (const site of sites) {
+        const [rendered] = renderAdviceWith([`x {tool:${site.name}} y`], cfg);
+        if (rendered !== null && rendered !== undefined && rendered.includes("{tool:")) {
+          unknown.push(`${site.file}: {tool:${site.name}} (at ${corner})`);
+        }
+      }
+    }
+    expect(
+      [...new Set(unknown)].sort(),
+      `a placeholder naming no capability ships as literal text — ${residual}`,
+    ).toEqual([]);
+    // CONTROL for the instrument itself: a name that is NOT a capability must be seen
+    // to survive, or "none unknown" is also what a broken detector answers.
+    expect(
+      renderAdviceWith(["x {tool:reidentify_elemnt} y"], cfgFor("v2_default"))[0],
+      "control: the detector must see a misspelling survive",
+    ).toContain("{tool:reidentify_elemnt}");
+  });
+
   it("keeps the paneId format specification when the locker is gone", () => {
     // THE MOTIVATING CASE, named in this module's own checklist before it was fixed:
     // `paneIdMissSuggest`'s malformed branch returned two lines and BOTH named the
@@ -266,7 +426,18 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     expect(text).toContain("{tool:disambiguate_window_by_handle} returns each open window's hwnd");
     expect(text).not.toContain("desktop_discover returns each open window's hwnd");
     expect(text).not.toContain("{tool:reidentify_element} returns this window's hwnd");
-    expect(text).toContain("Or narrow windowTitle until exactly one window matches");
+    // AND THE LINE THAT SURVIVES THE DROP IS SCOPED, which is a separate claim from the
+    // one above and was wrong while that one was right. Flat, "Or narrow windowTitle
+    // until exactly one window matches" reached three readers this branch has and was
+    // false for two of them — the titleless caller (no title to narrow) and the caller
+    // who passed `hwnd` (whose `windowTitle` the guard had already ignored) — and it
+    // was the ONLY line left at the kill-switch corners, where the handle line drops.
+    // Both gates found it independently on the same commit (2026-09-13). The flat form
+    // is pinned as absent because it is the shape that comes back.
+    expect(text).not.toContain("Or narrow windowTitle until exactly one window matches");
+    expect(text).toContain("There is no title here to narrow");
+    expect(text).toContain("Narrowing windowTitle will not help on this call");
+    expect(text).toContain("It works while this window's normalized title is not contained in another open window's");
   });
 
   it("resolves the guard's own sentences at CONSTRUCTION, because no presenter renders them", () => {

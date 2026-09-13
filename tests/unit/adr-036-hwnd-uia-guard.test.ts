@@ -119,6 +119,10 @@ const { clickElementHandler, setElementValueHandler, getUiElementsHandler } =
 import { _resetForTest as resetHotCache } from "../../src/engine/perception/hot-target-cache.js";
 import { buildHintsForTitle } from "../../src/engine/identity-tracker.js";
 import { getSuggestsForCode } from "../../src/tools/_errors.js";
+import {
+  captureAdviceConfiguration,
+  resetAdviceConfiguration,
+} from "../../src/tools/_advice-capability.js";
 
 function parse(result: { content?: Array<{ type: string; text: string }> }): Record<string, any> {
   const text = result.content?.[0]?.text;
@@ -314,11 +318,18 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // B2c added the handle-free route: the hwnd line resolves
     // `disambiguate_window_by_handle` and DROPS at the kill-switch corners, so the
     // tailored set needs a third line that survives there.
+    //
+    // SCOPED to the reader it addresses, and this test IS the reader the flat version
+    // was false for — its own name says the caller passed the handle. `next` tells them
+    // `windowTitle` was ignored; a `suggest` in the same response telling them to narrow
+    // it re-created, one level down inside the list, the contradiction this tailored
+    // list exists to remove (both gates found it on `48517b6`, 2026-09-13).
     expect(r.suggest).toEqual([
       expect.stringMatching(/error message/i),
       expect.stringMatching(/desktop_discover/),
-      expect.stringMatching(/narrow windowTitle until exactly one window matches/),
+      expect.stringMatching(/Narrowing windowTitle will not help on this call/),
     ]);
+    expect(JSON.stringify(r.suggest)).not.toMatch(/narrow windowTitle until exactly one window matches/);
     // The other statuses' advice must not come back with it — those lines are
     // about target_not_found, modals, elevation, and none of them is what
     // happened here.
@@ -362,6 +373,12 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // handle" — denying the one recovery the message two lines up offers.
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
     expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    // …and the surviving line does not tell a window with NO title to narrow one. This
+    // branch reaches the same `suggest` array as the titled case above, so the flat
+    // third line arrived here too — for a caller whose `next`, in the same response,
+    // says the window "cannot be addressed by title" (both gates, 2026-09-13).
+    expect(suggests).toMatch(/There is no title here to narrow/);
+    expect(suggests).not.toMatch(/narrow windowTitle until exactly one window matches/);
     expect(suggests).toMatch(/keyboard does accept its hwnd, but only while this window is in the foreground/);
     expect(suggests).not.toMatch(/nothing addresses it by handle/);
     // And it must not offer the whitespace arm's wording, which promises
@@ -694,6 +711,60 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // not on the slash between them, so rewriting it as "name and automationId"
     // is not a failure.
     expect(JSON.stringify(r)).toMatch(/\bname\b[^.]*\bautomationId\b[^.]*do not change the count/i);
+  });
+
+  it("names a working hwnd route at BOTH corners, including the one with no handle lister", async () => {
+    // THE ARM WITH NO CELL. `nextStepFor('ambiguous_target')` branches on
+    // `providerForCaller("disambiguate_window_by_handle")`, and only the v2 arm was ever
+    // exercised — the cell above runs at the default corner. Under the kill switch the
+    // branch collapsed to "Use a more specific windowTitle", which is precisely the
+    // recovery that CANNOT separate two windows whose normalized titles are equal, while
+    // `click_element` / `set_element_value` / `get_ui_elements` all still take `hwnd`
+    // there and `desktop_state` still returns `focusedWindow.hwnd`. Gate 2 found that by
+    // reading, because nothing here could go red (2026-09-13).
+    //
+    // What the kill switch removes is the ENUMERATION of handles — `get_windows` reads
+    // each one and leaves it out of its result, `screenshot(detail='meta')` returns title
+    // and region — so the capability is genuinely `null`. "No tool provides this" and
+    // "no recovery exists" are different claims, and this cell is where they stay apart.
+    // THE TWO HALVES ARE READ SEPARATELY, because they are two mechanisms and the first
+    // version of this cell could not tell them apart. It matched the whole response, so
+    // the catalogue's own line satisfied it and reverting `nextStepFor` to the collapsed
+    // form left the cell GREEN — measured with that exact mutation before this comment
+    // was written. `next` is built at construction by `providerForCaller`; the `suggest`
+    // line is resolved by the presenter. Either can regress without the other.
+    const halves = async (): Promise<{ next: string; suggest: string }> => {
+      const r = parse(await setElementValueHandler({
+        windowTitle: SHARED_TITLE, value: "x", name: "Field",
+      } as never));
+      return {
+        next: (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "",
+        suggest: JSON.stringify((r as { suggest?: string[] }).suggest ?? []),
+      };
+    };
+    const ROUTE = /bring the intended window to the front and pass the hwnd desktop_state reports for it/;
+    try {
+      captureAdviceConfiguration({ v2: true, credentialStore: true });
+      const v2 = await halves();
+      expect(v2.next).toContain("Pass hwnd to name one window exactly (desktop_discover returns it)");
+      expect(v2.suggest).toContain("Or pass hwnd to name that window exactly, which desktop_discover returns.");
+
+      captureAdviceConfiguration({ v2: false, credentialStore: true });
+      const killed = await halves();
+      // The handle lister is gone from both roads, and its promise with it…
+      expect(killed.next).not.toContain("desktop_discover");
+      expect(killed.next).not.toMatch(/Pass hwnd to name one window exactly/);
+      expect(killed.suggest).not.toContain("desktop_discover");
+      // …and a route to a handle is named on EACH road, asserted on each.
+      expect(killed.next, "the guard's own sentence must still name a way to a handle").toMatch(ROUTE);
+      expect(killed.suggest, "and so must the catalogue, which is a separate mechanism").toMatch(ROUTE);
+      // CONTROL: the corners really did answer differently on both roads, so none of the
+      // assertions above is passing on a string that never moved.
+      expect(killed.next).not.toBe(v2.next);
+      expect(killed.suggest).not.toBe(v2.suggest);
+    } finally {
+      resetAdviceConfiguration();
+    }
   });
 });
 

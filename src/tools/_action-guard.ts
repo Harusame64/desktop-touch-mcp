@@ -308,11 +308,22 @@ function nextStepFor(
       // the hwnd clause is removed where nothing provides it, by hand, at the one call
       // site (the user's decision of 2026-09-13: split a mixed sentence rather than
       // add a third mechanism).
+      //
+      // REMOVED, BUT NOT LEFT EMPTY. What the kill switch takes away is the ENUMERATION
+      // of handles, not handles: `click_element`, `set_element_value` and
+      // `get_ui_elements` all accept `hwnd` there, and `desktop_state` — registered
+      // before the `_desktopV2` branch, so present at every corner — always returns
+      // `focusedWindow.hwnd`. Collapsing to "use a more specific windowTitle" pointed
+      // the caller at the one recovery that provably cannot separate two windows whose
+      // normalized titles are equal, while a working one went unnamed (gate 2,
+      // 2026-09-13). The capability table reads `null` as "no tool provides this", and
+      // that is not the same claim as "no recovery exists" — this arm is where the two
+      // came apart.
       {
         const byHandle = providerForCaller("disambiguate_window_by_handle");
         const matched = target ? ` (matched: ${target})` : "";
         return byHandle === null
-          ? `Use a more specific windowTitle${matched}`
+          ? `Use a more specific windowTitle, or bring the intended window to the front and pass the hwnd desktop_state reports for it${matched}`
           : `Pass hwnd to name one window exactly (${byHandle} returns it), or use a more specific windowTitle${matched}`;
       }
     case "target_not_found":

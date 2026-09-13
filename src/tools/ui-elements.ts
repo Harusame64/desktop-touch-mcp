@@ -497,10 +497,22 @@ export const setElementValueHandler = async ({
                   ? "{tool:disambiguate_window_by_handle} returns each open window's hwnd; click_element and keyboard accept it on this window."
                   : "{tool:disambiguate_window_by_handle} returns each open window's hwnd; click_element accepts it on this window, and keyboard only while this window is in the foreground.",
               // …and the route that needs no handle, which is what survives where the
-              // one above drops. The refusal itself says more than one window matched,
-              // so narrowing the title is the recovery that does not depend on any
-              // tool being able to hand back a handle.
-              "Or narrow windowTitle until exactly one window matches — this refusal means more than one did.",
+              // one above drops. SCOPED THE WAY `next` IS SCOPED, and for the reason
+              // written 130 lines above: "the title advice has to say WHO it is for."
+              // Flat, it was false for two of the three readers this branch has and
+              // overstated for the third — the titleless caller has no title to narrow,
+              // the caller who passed `hwnd` already had `windowTitle` ignored (the
+              // guard counted with the resolved window's own full title), and narrowing
+              // works for the rest only while this window's normalized title is not
+              // contained in another's. Unscoped it re-created, inside the list written
+              // to replace the catalogue, the exact contradiction that list exists to
+              // remove — and at the kill-switch corners, where the handle line drops, it
+              // was the ONLY line left saying anything (gate 1, 2026-09-13).
+              titlelessTarget
+                ? "There is no title here to narrow — the error message names the two routes that remain for an untitled window."
+                : hwndParam !== undefined
+                  ? "Narrowing windowTitle will not help on this call: you passed hwnd, and this refusal already counted with that window's own full title."
+                  : "Or narrow windowTitle — this refusal means more than one window matched. It works while this window's normalized title is not contained in another open window's; the error message states that test and the two pairs it cannot separate.",
             ],
             rootExtras: { _perceptionForPost: ag.summary },
           });
