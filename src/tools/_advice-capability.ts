@@ -796,9 +796,20 @@ export function resetAdviceConfiguration(): void {
 /**
  * Render advice for THIS server's configuration — the entry point the presenters use.
  *
- * Every advice line reaching a caller **on the FAILURE road** passes through here:
- * the flat shape (`toToolFailure`, which the lint rule makes the only builder) and
- * the envelope (`buildFailureEnvelope`). That is deliberate: the dictionary is not
+ * Every advice line that travels as `suggest` or `try_next` passes through here — on
+ * the flat shape (`toToolFailure`, which the lint rule makes the only builder) and on
+ * the envelope (`buildFailureEnvelope`).
+ *
+ * **NOT "every advice line on the failure road", which is what this said until gate 2
+ * measured it** (2026-09-13). Advice also travels on that road in fields this seam
+ * never sees: `nextStepFor()` (`_action-guard.ts:279`) writes sentences naming
+ * `desktop_discover` into `context.guard.next` and into the refusal's own `error`
+ * string, and `toToolFailure` renders `suggest` and nothing else. Under the kill
+ * switch a guarded action's `target_not_found` therefore tells the caller to call a
+ * tool this server never registered — **this ADR's motivating defect, on the road this
+ * change is about**. It is not fixed here because those fields are not advice arrays
+ * and touching them moves bytes, which is the one thing this round claims it does not
+ * do; it goes to the conversion with its measurement. That is deliberate: the dictionary is not
  * the only source of advice — 28 literal `suggest:` sites and a named builder
  * (`paneIdMissSuggest`) produce lines the dictionary never sees, and `WaitTimeout` is
  * a measured case where the literal beats the dictionary. A seam on the dictionary
