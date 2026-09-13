@@ -465,16 +465,81 @@ export const setElementValueHandler = async ({
           return failCode("AutoGuardBlocked", ag.summary.next, {
             suggest: [
               "Read the error message — for this refusal it is the whole recovery.",
+              // NO CAPABILITY BELONGS ON THIS LINE, and it took three attempts to see
+              // why. This handler runs at ONE pair of corners, so there is nothing for
+              // a presenter to vary; what the line needs is the route that exists
+              // there. The first two attempts narrowed a claim instead of choosing a
+              // capability, and the third chose one that is null wherever this code
+              // runs:
+              //
+              //   1. "each open window's hwnd" — false of the kill switch's provider,
+              //      because `get_windows` drops the handle it reads;
+              //   2. "THIS window's hwnd" via `reidentify_element` — false ON THIS
+              //      REFUSAL. This branch fires only for `ambiguous_target`, i.e. two
+              //      or more windows matched the title, and `get_ui_elements` resolves
+              //      its hwnd through `buildHintsForTitle`, which with no pinned handle
+              //      takes the FIRST z-order match. "This window" is precisely what the
+              //      refusal says cannot be determined, so a caller following it would
+              //      have written into whichever sibling was topmost, silently
+              //      (gate 2, 2026-09-13).
+              //
+              // The measurement behind (2) was sound and its SCOPE was dropped in
+              // transit: win2 read one hwnd from `$.hints.target.hwnd` on a fixture
+              // window with a UNIQUE title. This refusal exists because the title is
+              // not unique.
+              //
+              //   3. `{tool:disambiguate_window_by_handle}` — a capability that is
+              //      `null` at EVERY corner this code can run at, so the line dropped
+              //      for every real caller and the answer above became two lines with
+              //      no handle route in them. `set_element_value` is registered ONLY in
+              //      the `else` arm of `server-windows.ts` (v2 kill switch ON), and
+              //      `run_macro`'s route to it refuses unless `v2KillSwitchActive()`.
+              //      There is no v2 corner for this handler. The cell that pinned the
+              //      sentence passed because the RUNNER is at the v2 corner — it was
+              //      pinning a state production cannot reach (gate 2, 2026-09-13).
+              //
+              // THE ANALYSIS THAT WAS MISSING IS THE ONE ALREADY WRITTEN FOR
+              // `KeyLockerConsentRequired`: before choosing a capability, ask at which
+              // corners this code can be PRODUCED. Two rounds asked "does the tool
+              // exist there" and "can the caller call it", and neither asked whether
+              // the sentence is ever built. Here the producer pins the corner, so the
+              // answer is a concrete route rather than a capability: nothing enumerates
+              // handles under the kill switch, but `desktop_state` returns
+              // `focusedWindow.hwnd` at every corner — for a window its enumeration keeps,
+              // which is this branch's case and not a general guarantee: `focusedWindow`
+              // is `null` when the foreground window is one `enumWindowsInZOrder` drops.
+              // The titleless caller is answered by the arm above, which never reaches
+              // this line. And `click_element` and `keyboard`
+              // both take a handle here — which is what `handleRecovery`, built for
+              // `next` a few lines above this refusal, has been saying all along.
+              //
               // Answers for the branch that actually fired. Flat, this line
               // offered a titleless caller a listing that drops their window
               // (`enumWindowsInZOrder` skips `!title`) and two channels of
               // which one cannot reach it — the catalogue's contradiction one
               // level down, inside the list written to replace it.
               titlelessTarget
-                ? "desktop_discover cannot list this window — the enumeration drops untitled ones. keyboard does accept its hwnd, but only while this window is in the foreground; click_element resolves handles through that same enumeration and cannot reach it."
+                ? "{tool:list_window_titles} cannot list this window — the enumeration drops untitled ones. keyboard does accept its hwnd, but only while this window is in the foreground; click_element resolves handles through that same enumeration and cannot reach it."
                 : keyboardTakesHwndHere
-                  ? "desktop_discover returns each open window's hwnd; click_element and keyboard accept it on this window."
-                  : "desktop_discover returns each open window's hwnd; click_element accepts it on this window, and keyboard only while this window is in the foreground.",
+                  ? "Bring the intended window to the front and read its hwnd from desktop_state (focusedWindow.hwnd) — nothing here lists every window's handle, and click_element and keyboard both accept one."
+                  : "Bring the intended window to the front and read its hwnd from desktop_state (focusedWindow.hwnd) — nothing here lists every window's handle. click_element accepts it; keyboard reaches this window by handle only while it holds the foreground, which the step above is what puts it in.",
+              // …and the route that needs no handle, which is what survives where the
+              // one above drops. SCOPED THE WAY `next` IS SCOPED, and for the reason
+              // written 130 lines above: "the title advice has to say WHO it is for."
+              // Flat, it was false for two of the three readers this branch has and
+              // overstated for the third — the titleless caller has no title to narrow,
+              // the caller who passed `hwnd` already had `windowTitle` ignored (the
+              // guard counted with the resolved window's own full title), and narrowing
+              // works for the rest only while this window's normalized title is not
+              // contained in another's. Unscoped it re-created, inside the list written
+              // to replace the catalogue, the exact contradiction that list exists to
+              // remove — and at the kill-switch corners, where the handle line drops, it
+              // was the ONLY line left saying anything (gate 1, 2026-09-13).
+              titlelessTarget
+                ? "There is no title here to narrow — the error message names the two routes that remain for an untitled window."
+                : hwndParam !== undefined
+                  ? "Narrowing windowTitle will not help on this call: you passed hwnd, and this refusal already counted with that window's own full title."
+                  : "Or narrow windowTitle — this refusal means more than one window matched. It works while this window's normalized title is not contained in another open window's; the error message states that test and the two pairs it cannot separate.",
             ],
             rootExtras: { _perceptionForPost: ag.summary },
           });

@@ -1,0 +1,487 @@
+{
+  "InvalidArgs": [
+    "Check the required parameters for this tool",
+    "At least one of name or automationId must be provided"
+  ],
+  "WindowNotFound": [
+    "Run desktop_discover to see available titles",
+    "Try a shorter partial title match (e.g. first word only)",
+    "The window may be minimized — try focus_window first",
+    "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
+    "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_open to get the tabId, then browser_navigate to the target URL to switch tabs"
+  ],
+  "ElementNotFound": [
+    "Call desktop_discover to see candidate names and automationIds",
+    "Use screenshot(detail='text') for actionable[] with clickAt coords",
+    "Try a shorter partial name match",
+    "The element may not be visible yet — use wait_until(condition='element_appears')"
+  ],
+  "InvokePatternNotSupported": [
+    "Use mouse_click with clickAt coords from screenshot(detail='text')",
+    "Use desktop_act({action:'setValue'}) for text input fields",
+    "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after desktop_discover)"
+  ],
+  "BlockedKeyCombo": [
+    "Use workspace_launch to open applications by name instead",
+    "If you need shell execution, use terminal({action:'send'}) to an existing terminal window"
+  ],
+  "UiaTimeout": [
+    "The target app may be unresponsive — wait and retry",
+    "Try screenshot(detail='image') as a visual fallback"
+  ],
+  "ElementDisabled": [
+    "The element exists but is currently disabled",
+    "Use wait_until(condition='value_changes') to wait for it to become enabled",
+    "Check page state with screenshot(detail='text') before retrying"
+  ],
+  "BrowserNotConnected": [
+    "Call browser_open first with the correct port",
+    "Verify Chrome was launched with --remote-debugging-port",
+    "Or call browser_open({launch:{}}) to spawn a debug-mode Chrome on the configured port"
+  ],
+  "TerminalWindowNotFound": [
+    "Call desktop_discover to see available titles",
+    "Try a partial title match (e.g. 'PowerShell' or 'pwsh')",
+    "Filter by processName: pwsh / powershell / cmd / bash / WindowsTerminal"
+  ],
+  "TerminalTextPatternUnavailable": [
+    "Retry with source:'ocr' to use Windows OCR",
+    "Or source:'auto' to auto-fallback when TextPattern is missing",
+    "Some terminal apps (e.g. WSL inside vt100) do not implement TextPattern"
+  ],
+  "ExitModeUnsafeInput": [
+    "until:{mode:'exit'} cannot append its completion epilogue after an input that ends in an open construct — close it first.",
+    "context.reason names what was detected: heredoc (<<EOF), unbalanced_quotes, unterminated_command_substitution ($(…), powershell_herestring (@\"…\"@), or trailing_line_continuation (\\ or backtick).",
+    "Or switch to until:{mode:'pattern', pattern:'<final output>'} / {mode:'quiet'} — those do not inject an epilogue and accept any input."
+  ],
+  "ExitModeShellUnsupported": [
+    "until:{mode:'exit'} supports shell:'bash' and shell:'powershell'. cmd.exe is not supported yet (its exit code needs a separate `cmd /v:on` delayed-expansion path).",
+    "If the terminal runs bash or PowerShell, pass that shell explicitly (shell:'bash' / shell:'powershell').",
+    "For cmd.exe, use until:{mode:'pattern', pattern:'<final output>'} instead."
+  ],
+  "ExitModeShellAmbiguous": [
+    "until:{mode:'exit', shell:'auto'} could not tell which shell the terminal runs — the host process hides it (Windows Terminal / conhost / OpenSSH, or an SSH/WSL session).",
+    "Pass shell:'bash' or shell:'powershell' explicitly to match the shell actually running in that window.",
+    "context.processName shows the host process that was detected, for reference."
+  ],
+  "BrowserSearchNoResults": [
+    "Try a different 'by' axis (text → ariaLabel, regex → role)",
+    "Remove the scope parameter to search the full document",
+    "Set visibleOnly:false to include hidden / off-viewport elements",
+    "Toggle caseSensitive:false for text and regex"
+  ],
+  "BrowserSearchTimeout": [
+    "Reduce maxResults",
+    "Narrow the scope via a CSS selector",
+    "Try by:'selector' for a specific element if you know it"
+  ],
+  "ScopeNotFound": [
+    "Verify the scope CSS selector matches at least one element",
+    "Omit the scope parameter to search the full document"
+  ],
+  "WaitTimeout": [
+    "Increase timeoutMs",
+    "Verify the target window/element appears as expected",
+    "Check intermediate state with screenshot(detail='meta') or desktop_state()"
+  ],
+  "ScrollbarUnavailable": [
+    "The target window has no Win32 scrollbar (e.g. overlay scrollbars or non-scrollable content)",
+    "Try strategy:'image' with a hint param for binary-search scrolling",
+    "Verify the target is actually a scrollable container"
+  ],
+  "OverflowHiddenAncestor": [
+    "A parent element has overflow:hidden which silently swallows scroll input",
+    "Pass expandHidden:true to temporarily unlock it (mutates live CSS)",
+    "Or click an expand/collapse control on the page to reveal the content first"
+  ],
+  "VirtualScrollExhausted": [
+    "The virtualised list did not reach the target after retryCount attempts",
+    "Provide virtualIndex + virtualTotal for direct proportional seeking",
+    "Increase retryCount (default 3) or narrow search with hint:'above'|'below'"
+  ],
+  "GuardFailed": [
+    "Read the perception envelope for attention/guard details",
+    "Call desktop_state to force a fresh observation before retrying",
+    "Consider a corrective action: focus_window, dismiss modal, or wait_until"
+  ],
+  "AutoGuardBlocked": [
+    "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
+    "If the descriptor matched multiple targets (ambiguous_target), pass hwnd to name one window exactly (desktop_discover returns it), or narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
+    "If the target was not found (target_not_found), run desktop_discover — the window or element no longer matches the current desktop state.",
+    "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
+    "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
+    "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
+    "If app state shifted under the lens (identity_changed) or coords look stale (unsafe_coordinates), refresh via desktop_state or screenshot before retrying."
+  ],
+  "DestinationRequired": [
+    "Pass `windowTitle` or `hwnd` so the input has an explicit destination window.",
+    "Call `desktop_discover` (or `desktop_state`) to list windows and pick a target.",
+    "To deliberately type into the current foreground window, set DESKTOP_TOUCH_REQUIRE_DESTINATION=0 (downgrades this stop to a warning — never a silent pass)."
+  ],
+  "LensNotFound": [
+    "Drop the lensId — Auto Perception tracks state when you pass windowTitle / tabId directly",
+    "If you cached a lensId from a prior session, treat it as expired"
+  ],
+  "BackgroundInputUnsupported": [
+    "Target app does not accept background input - use method:'foreground' or omit",
+    "For Chrome/Edge: use browser_fill instead"
+  ],
+  "ForegroundRestricted": [
+    "Windows blocked SetForegroundWindow even after AttachThreadInput escalation — UIPI cross-elevation barrier or admin-only target.",
+    "Run the MCP server elevated (admin) if the target is elevated, or match elevation levels on both sides.",
+    "If the call originates from a background process or service, the OS suppresses foreground transfers — proxy the focus request via the foreground app.",
+    "Skip explicit focus_window: tools that accept windowTitle directly (keyboard / desktop_act / browser_click) handle focus internally and may succeed where focus_window cannot."
+  ],
+  "CoordinateOutsideReachableBounds": [
+    "Read the error message first: it says whether the point is off every monitor (stale coordinates) or whether this installation is limited to the primary monitor.",
+    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then act on the new coordinates.",
+    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then re-run desktop_discover and retry. Reinstalling or updating the server restores input on the other monitors.",
+    "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act / browser_click fails the same way — the coordinate is the problem, not the tool.",
+    "If the target exposes UIA, click_element(name=…) invokes the element directly and never moves the cursor."
+  ],
+  "RegionOutsideCapturableBounds": [
+    "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor. In that last case it also says whether per-window capture still works here, which decides the recovery below.",
+    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then capture the new region.",
+    "Overlaps a monitor but extends beyond the capturable area → the coordinates are NOT stale; re-discovering returns the same rectangle. Shrink the region to fit the monitor.",
+    "Limited to the primary monitor, and the message offers screenshot(windowTitle=…) → per-window capture still reads every monitor on this build, so use it.",
+    "Limited to the primary monitor, and the message says window capture would fail too → this build cannot read another monitor either way: move the window onto the primary monitor, or reinstall / update the server to restore multi-monitor capture.",
+    "Retrying the same region fails the same way — the region is the problem, not the tool. screenshot(detail='meta') still lists every monitor and window, including the ones that cannot be captured this way."
+  ],
+  "CaptureBackendFailed": [
+    "Capture the window directly with screenshot(windowTitle=…) — it reads through a different Windows path (PrintWindow / Windows.Graphics.Capture) that usually works when a whole-screen read does not.",
+    "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no desktop to capture. A lock screen or a UAC prompt blocks capture the same way until it is dismissed.",
+    "Transient failures happen while displays are being added, removed or rearranged: retry once after the layout settles.",
+    "If the message says the monitor layout could not be read, the whole-screen capture cannot pick a rectangle at all; screenshot(windowTitle=…) and screenshot(detail='text') do not depend on it.",
+    "The failure is recorded in the diagnostic log (%USERPROFILE%\\.desktop-touch-mcp\\logs\\diagnostic.log, `\"kind\":\"capture\"` entries) with the requested region and the capture backend in use."
+  ],
+  "AimWindowGone": [
+    "Re-run desktop_discover: the window this act was aimed at no longer exists, so the lease and every entity taken from it describe something that is gone.",
+    "Do NOT retry by coordinate. The entity's rect is where that window used to be, and another window may be occupying it now — the click would land on that one.",
+    "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
+    "If the app was NOT expected to close, it may have crashed or restarted: desktop_discover will show the replacement window, which needs a fresh lease — the old handle is not reusable."
+  ],
+  "AimIdentityChanged": [
+    "Re-run desktop_discover. The window this act named has gone, and Windows has given its handle to a different window — the lease, the entities and their coordinates all describe a window that is gone.",
+    "Nothing was done. This is a refusal, not a failure: an action addressed to that handle would have reached whatever holds it now, which is not what was discovered. Any of three things happened — another process took the handle, the same process was restarted, or the same program put a different KIND of window on it — and the recovery is the same for all three.",
+    "Do NOT retry with the same handle, and do NOT retry by coordinate: both address whatever occupies that window's place now.",
+    "If the application was expected to restart (an update, a crash, a document reopened), the new window is a normal target — discover it and take a fresh lease. Handles are not stable across a restart."
+  ],
+  "AimOccluded": [
+    "Another window is on top of the point this act would have pressed, so nothing was done. Whether it would REALLY have taken the press is not something this build can ask — that needs the OS hit test — so a window on top counts as being in the way. Some overlays pass presses straight through and are still reported here: measured 2026-09-10 on a full-screen monitor-utility overlay with per-pixel transparency, which no window style distinguishes from one that blocks.",
+    "The detail field in if_unexpected names the window that is on top — its handle always, its title when it has one — as the engine saw it at the moment of the refusal. That is the window in the way; the window you named is the one to bring forward. (Under include:[\"envelope\"] the failure hint sits at data.if_unexpected.)",
+    "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
+    "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top — and is also the way past an overlay that this build cannot tell is click-through.",
+    "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them."
+  ],
+  "AimPointOutsideWindow": [
+    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but the coordinates taken from it can no longer be trusted.",
+    "A window that moved WITHOUT resizing does not reach here — the point is carried with it by the same offset, when the coordinates were measured in the same read that measured the window. Among the reasons that do reach here: the window was minimised; it changed SIZE, and a resize may have reflowed the contents, so it is refused even where the point still falls inside; it moved WHILE it was being discovered, in which case that snapshot's coordinates were measured against more than one position and no correction can describe them — discover again once the window has settled; the coordinates came from a lane whose measurement moment cannot be established, such as a stored visual snapshot captured while the window was somewhere else; or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point. A move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport — that check passes uia / cdp / terminal entities without looking, so it is not a second guarantee.",
+    "Do NOT retry by coordinate. Whatever is under that point now would take the press.",
+    "If the window was minimised, restore it first (focus_window), then re-run desktop_discover: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
+    "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way."
+  ],
+  "AimRouteFailed": [
+    "if_unexpected.detail says which failure it was when the backend's answer is one this server recognises — the element was not found, or the element the route matched does not support this action through UI Automation, is disabled, or is read-only — and says nothing more when it is not: on this road an unrecognised answer can be a shell rejection carrying the command that produced it. Not found: re-discover. No pattern for this action (a custom-drawn button, a canvas): act on a different affordance or reach it by keyboard navigation. Disabled: find what enables it before trying again. Read-only: it does not take typed text — act on the control that edits it, or read the value instead. The route matches by name, so when another element's name contains the same text, the answer can be about that element.",
+    "When the detail names no failure, or says the element was not found: re-run desktop_discover — this act named its window by handle, the attempt on it failed, and the entity may have changed name, moved in the tree, or gone. For the other failures it names, re-discovering does not help: a disabled element is left out of the list until it is enabled, and the others come back giving the same answer until their state changes.",
+    "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
+    "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator, and controlType narrows it when the route matched another element by the same text. It runs the same enabled and pattern checks, so a disabled element gives it the same answer.",
+    "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity."
+  ],
+  "KeyboardTargetUnsafe": [
+    "Nothing was typed. if_unexpected.detail names the ground: other_control (the focus is on a different control in the same window), other_window (the focus is in a different window from the field you named), or read_only (the control that would have received the characters does not take typed text).",
+    "other_control / other_window: put the focus on the field you named, then type again — the background write goes to whatever holds the focus. if_unexpected.detail names the way back for the road this act took. When it named its window by title, desktop_act action='click' on the same entity does it: a text field has no UIA invoke, so it is clicked at its position — checked against the window it was captured in when that window's handle was recorded. When it named its window by handle, no route here moves the focus to a text field yet (that click answers aim_route_failed): re-run desktop_discover by the window's title and click the field from there — except for a common dialog (Save As, Open), whose title resolves to a handle as well, so that road does not open there either.",
+    "other_window: bring the field's window forward first (focus_window) — it comes forward with the focus it last had, which is often enough, and the window that holds the focus is usually drawn over the field, which makes a click on it answer aim_occluded when the act has a window handle to check that point against.",
+    "read_only: the field does not take typed text. Act on the control that edits it, or read its value instead; typing again gives the same answer until its state changes.",
+    "Do NOT type through the foreground instead (keyboard with method:'foreground'), and do NOT retry by coordinate: whatever holds the focus would take the characters, which is what this refusal stopped.",
+    "If the field may have changed or gone, re-run desktop_discover and act on the fresh entity."
+  ],
+  "EntityNotFound": [
+    "Re-run desktop_discover and act on the fresh entity: the element this lease described could not be found — it may have been removed, renamed or moved, another window with the same title may have answered, or the view it came from may have expired.",
+    "Do NOT retry by coordinate: the entity's rect is where the element used to be, and whatever is there now would take the press.",
+    "If the element should still be there, let the page or dialog settle and discover again — a list that is re-rendering can drop an element for a moment."
+  ],
+  "AimBlockedByExcludedWindow": [
+    "A window this server may not act through is over the point this act would have pressed, so nothing was done. Your window is NOT the excluded one — it is still there and still actionable; something else is drawn over that point right now.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the same point would reach that window through a route that does not check this, which is the press being refused here.",
+    "Act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which does not move the cursor and does not press whatever is on top.",
+    "Or wait for the point to clear and act again — a window that covers it now need not cover it in a moment. Re-running desktop_discover does not help by itself: the entity's coordinates are correct; what is wrong is what is drawn over them.",
+    "Nothing in this response describes the window in the way, by design."
+  ],
+  "WindowExcluded": [
+    "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
+    "Act on another window: desktop_discover (or any by-identity tool) on a different target returns what this server may touch.",
+    "If the excluded window is a prompt waiting for a person — the key locker's own dialog — it is theirs to answer; this session cannot answer it for them."
+  ],
+  "CursorPlacementBlocked": [
+    "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
+    "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",
+    "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
+    "If the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates. Where the failure says which, it is in if_unexpected.detail on the act path and in error on a flat tool result."
+  ],
+  "ForegroundFlashChannelNotImplemented": [
+    "method:'foreground_flash' is only implemented for the Windows Terminal clipboard path; this window resolved to a different channel (context.kind names it).",
+    "Use method:'foreground' — it types into the window after focusing it and does not depend on the flash channel."
+  ],
+  "ForegroundFlashRequiresTarget": [
+    "method:'foreground_flash' needs a target window — pass windowTitle (or hwnd).",
+    "Without a target there is nothing to flash to the foreground; use method:'foreground' to type into whatever is already focused."
+  ],
+  "ForegroundFlashUnsupported": [
+    "method:'foreground_flash' resolved to a channel this window cannot accept.",
+    "Try method:'foreground' — it works for Chromium, UWP and other non-terminal windows, and for terminal targets that reject the flash path.",
+    "context.reason says why the channel was rejected (`chromium`, `uwp_sandboxed` or `class_unknown`)."
+  ],
+  "ForegroundFlashFailed": [
+    "Read context.reason first — it says where the sequence stopped, and the recoveries are mutually exclusive. If the reason is not one of the ones below, context.rawError carries the raw message from the native path.",
+    "Nothing was pasted, and an identical retry fails identically: input_contains_newline (send one line per call — terminal(action:'send') can add the Enter itself via pressEnter, and for keyboard:type follow the line with keyboard({action:'press', keys:'enter'})), input_exceeds_paste_warning_threshold (split the text into smaller calls — for terminal(action:'send') pass pressEnter:false on every chunk but the last, or each chunk runs as its own command), clipboard_empty_failed / clipboard_alloc_failed / clipboard_set_data_failed (the clipboard could not be written) / hidden_owner_create_failed (the helper window that clipboard write needs could not be created) — for all four, use method:'foreground').",
+    "wt_paste_warning_intercepted: the terminal's paste warning appeared, so the text was NOT pasted, and it may still be on screen — check the target and dismiss the dialog before retrying, then use method:'foreground'.",
+    "send_input_failed: either the paste keystroke or the Enter after it was refused, so the text may be fully pasted with only the Enter missing, or not pasted at all. Read the target before resending — a blind resend can double-input. Unless the target was already the front window, it was also left in front and not switched back, so focus_window returns you to the window you were using. If context.rawError says the native addon is missing, nothing was sent at all and the server needs reinstalling.",
+    "foreground_restore_failed: the paste had already been sent; what failed was switching back to the window that was in front. Bring it back with focus_window, and read the target rather than resending — for a Windows Terminal target this reason can also hide an intercepted paste where nothing landed.",
+    "focus_wait_timeout: nothing was pasted. Unless the target was already the front window, it was brought forward and not switched back, so restore the window you were using with focus_window; then retry once, or fall back to method:'foreground'.",
+    "foreground_steal_denied / clipboard_lock_contention: nothing was pasted and the foreground was left as it was — usually transient, so retry once, then fall back to method:'foreground'. For foreground_steal_denied specifically: if the target runs elevated (admin) and this server does not, Windows refuses the steal for good, so match elevation levels instead of retrying."
+  ],
+  "TabDragBlocked": [
+    "To move the window, drag from the window border or use Win+Arrow keys instead.",
+    "Pass allowTabDrag:true if you intend to rearrange or detach a tab."
+  ],
+  "CrossWindowDragBlocked": [
+    "Pass allowCrossWindowDrag:true to confirm cross-window or desktop drag intent.",
+    "If the drag was meant to stay inside one window, re-read the coordinates — one of the endpoints is landing outside it."
+  ],
+  "BackgroundInputIncomplete": [
+    "Input sent partially - for keyboard:type and terminal:send, retry with method:'foreground' for full input",
+    "Check context.sent vs context.total when the failure carries them — they say how much arrived",
+    "keyboard:press reports context.keys instead: a combo has no partial count, and a modifier may still be held down in the target, so confirm the window with desktop_state before resending",
+    "If the target runs elevated (admin) and this server does not, foreground delivery may be required — UIPI blocks WM_CHAR across that boundary"
+  ],
+  "BackgroundInputNotDelivered": [
+    "Retry with method:'foreground' — post-send UIA read-back could not find the input echoed in the terminal buffer.",
+    "Common cause: Windows Terminal (WinUI/XAML host) silently drops WM_CHAR; use foreground SendInput.",
+    "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
+    "False-positive cause: hidden-input prompts (password / sudo / ssh / Read-Host -AsSecureString) accept WM_CHAR but suppress echo, so this check cannot distinguish delivery from drop. Use method:'foreground' for credential entry."
+  ],
+  "ImeOnDuringType": [
+    "Pass forceImeOff:true to flip the IME OFF for the duration of this call (and restore in finally).",
+    "Pass use_clipboard:true to bypass the keystroke pipeline — pasted text is not run through IME conversion. This does not help while a composition is already in progress: the paste keystroke is consumed by the IME, so commit or cancel it first.",
+    "Drop forceKeystrokes (default false) so auto-clipboard promotion handles non-ASCII / IME-active windows transparently.",
+    "Diagnose live state via desktop_state — hints.imeOpen reports the focused window's IME composition mode."
+  ],
+  "ClipboardWriteNotDelivered": [
+    "Another application replaced the clipboard contents between Set-Clipboard and the verification read — retry, ideally without a clipboard manager intercepting writes.",
+    "DLP / endpoint security may sanitize or block clipboard writes; check organisation policy or test on an unmanaged session.",
+    "RDP / Citrix / ChromeBook clipboard sharing can drop or transcode UTF-16 payloads — verify on the local console session.",
+    "Clipboard format conversion (CF_UNICODETEXT vs CF_TEXT) lost characters; try shorter ASCII text to isolate, then file an issue with the original payload's hex dump.",
+    "Treat the clipboard as un-written on this failure: do not assume a paste downstream will see the requested value."
+  ],
+  "ClipboardWriteTooLargeForFallback": [
+    "Reinstall or rebuild the server so the compiled native addon is present — the native clipboard path accepts the full 100000 characters the schema allows.",
+    "Split the text into chunks below the limit and paste each one into the target application before writing the next — each write replaces the clipboard, so writing them back to back leaves only the last chunk.",
+    "For short text, keyboard(action='type', use_clipboard=false) types directly and does not touch the clipboard at all.",
+    "Write the text to a file and have the target application open it, if the goal was to move a large payload rather than to populate the clipboard."
+  ],
+  "MouseClickNotDelivered": [
+    "Retry with elementName + windowTitle to use UIA InvokePattern via click_element (more reliable than pixel click)",
+    "Use desktop_act(lease, action='click') with a freshly-discovered lease — entity-based click survives layout shifts",
+    "Verify the click coordinate is inside the target window rect — homing may have stale window bounds; refresh via screenshot or desktop_state first",
+    "If the target runs elevated (admin) and the MCP server does not, UIPI silently blocks SendInput at the cursor — relaunch the server elevated or use a non-elevated target",
+    "For Chrome/Edge: prefer browser_click (CDP) over pixel mouse_click — CDP click survives repaints and reports DOM ack"
+  ],
+  "MouseDragNotDelivered": [
+    "Retry the drag at a slower speed — fast drags can outpace the target's drop-target hit testing",
+    "If the drag is meant to scroll, use scroll(action='raw' or 'smart') instead — scroll has a dedicated delivery contract",
+    "For tab rearrangement: pass allowTabDrag:true if the drag intentionally starts in a tab strip",
+    "For cross-window drops: pass allowCrossWindowDrag:true — endpoint-window mismatch is blocked by default",
+    "If a modifier key (Shift / Ctrl) must be held during the drag, send it via keyboard({action:'press'}) before the drag and release after — modifier state is not preserved across the SendInput sequence",
+    "If the drop target is a dragdrop API consumer (Explorer, IDE file tabs), pixel SendInput cannot signal DROPEFFECT — use desktop_act(lease, action='drag') if the target is UIA-discoverable"
+  ],
+  "BackgroundKeyNotDelivered": [
+    "Retry with method:'foreground' — post-send UIA read-back did not observe the expected buffer mutation (cursor advance / new line / tab insertion).",
+    "Common cause: Windows Terminal (WinUI/XAML host) silently drops WM_KEYDOWN; use foreground SendInput which dispatches via the system input queue.",
+    "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
+    "Verification scope: only enter / tab / arrow keys are read-back-verified on terminal-class targets. Other combos return hints.verifyDelivery:'unverifiable' rather than this error — caller should observe the semantic effect (e.g. menu open, selection change) directly."
+  ],
+  "BrowserClickNotDelivered": [
+    "The element rendered, but no DOM mutation, URL change, or focus change followed the click — the page may have no handler attached.",
+    "Verify the selector targets the actual interactive element (a button label / icon span often forwards clicks to a parent button)",
+    "If the page uses delayed handlers (>500ms), retry then immediately read state with browser_eval to confirm the action took effect",
+    "For canvas / WebGL apps, DOM mutations are not produced — switch to browser_eval to assert against the app's own state, or use mouse_click against the same coords",
+    "If the target is inside a cross-origin iframe, the verification scope is the top frame only — pin the iframe with a frame selector before clicking"
+  ],
+  "BrowserFillNotDelivered": [
+    "The input rejected or transformed the value — element.value after fill did not match the requested string.",
+    "If hints.verifyDelivery.subReason is 'controlled_input_transform', the value reached the page but the framework rewrote it (e.g. numbers-only filter, max-length truncation, format mask). Treat the actual value (echoed in context) as authoritative.",
+    "If the input has a pattern / inputmode / type=number constraint, try sending an already-canonical value (digits only, lowercased, etc.)",
+    "For inputs guarded by React's synthetic-event proxy, try keyboard(action='type') against the focused element as a fallback (slower but framework-agnostic)",
+    "Verify the selector targets an <input> / <textarea> — contenteditable div uses different setters (use browser_eval instead)"
+  ],
+  "ScrollNotDelivered": [
+    "Retry with scroll({action:'smart', target:'<selector>'}) — multi-strategy fallback (CDP / UIA ScrollPattern / image binary-search) often delivers where wheel SendInput is swallowed",
+    "Use scroll({action:'to_element', name|selector}) when you know the target — bypasses the wheel channel entirely via UIA ScrollItemPattern or CDP scrollIntoView (the same Tier 1 / Tier 2 destination-explicit channels ADR-018 Phase 1b/3 wire into action='raw')",
+    "Verify the target is actually scrollable: run desktop_state or screenshot(detail='text') first to confirm the focused element under the cursor accepts wheel input — transparent layered overlays (Dell DDPM, Logitech Options+, etc.) intercept wheel events and produce reason='wheel_overlay_intercepted' once ADR-018 Phase 4 detection ships",
+    "If the target runs elevated (admin) and the caller does not, wheel events are blocked by UIPI — re-run the caller with matching integrity level",
+    "If the target uses overlay/Chromium scrollbars (no Win32 scrollbar), pass coords inside the actual scrollable region — the cursor must be over a scroll-receiving element. For Chrome/Edge tabs prefer scroll(action:'smart') which uses CDP (the same path ADR-018 Phase 3 wires into action='raw' as Tier 2)"
+  ],
+  "SetValueAllChannelsFailed": [
+    "Verify the element supports text input",
+    "Try click_element + keyboard({action:'type'}) manually",
+    "Check context.attempts for per-channel error codes"
+  ],
+  "ExecutorFailed": [
+    "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from desktop_discover — common when UIA InvokePattern is missing on the control",
+    "For action='type' or action='setValue': desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click",
+    "If the entity has a stable name or automationId, try click_element({name|automationId}) — uses a different UIA path than desktop_act and may succeed where this executor threw",
+    "Re-run desktop_discover — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator"
+  ],
+  "FocusLostDuringType": [
+    "User stole foreground mid-type — re-focus the target window then call keyboard(action:'type') again with context.remaining as text",
+    "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
+    "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)"
+  ],
+  "MenuFocusLostMidSequence": [
+    "Focus left the target between steps — re-focus the window then call keyboard({action:'sequence', steps: context.remaining, windowTitle, ...}) to continue.",
+    "If the menu state is unrecoverable (auto-closed by the OS), pivot to desktop_act / click_element for the remaining action.",
+    "For long sequences, reduce step count or rely on UIA targeting instead of Alt-mnemonic chord navigation."
+  ],
+  "ForegroundFlashNotApplicableToSequence": [
+    "Sequence is foreground-only. Use keyboard(action:'press') with method:'foreground_flash' for individual key combos that need the ADR-013 妥協 path.",
+    "If you need to chord Alt-mnemonics in a terminal, split the sequence into per-step keyboard(action:'press') calls."
+  ],
+  "ForegroundFlashNotApplicableToKeyPress": [
+    "method:'foreground_flash' is for text injection (keyboard:type / terminal:send) only — clipboard paste cannot carry a key combo.",
+    "For the key combo, call keyboard({action:'press', keys, method:'foreground', windowTitle}) instead (default FG SendInput).",
+    "If the target supports background injection (WM_KEYDOWN-class hosts), keyboard({action:'press', keys, method:'background', windowTitle}) also works.",
+    "If you actually wanted to paste text (not chord keys), switch to keyboard({action:'type', text, method:'foreground_flash', windowTitle}) or terminal({action:'send', input, method:'foreground_flash'})."
+  ],
+  "BackgroundNotApplicableToSequence": [
+    "Sequence does not support the background path — Alt-menu mnemonics require real SendInput which only the foreground path provides.",
+    "Use foreground (default) and target via windowTitle/hwnd, or split into separate keyboard(action:'press') calls if BG delivery is essential."
+  ],
+  "SpawnFailed": [
+    "The OS rejected the process spawn — verify the executable exists and is accessible from the MCP server's working directory.",
+    "If the command is not in PATH, provide the full path (e.g. \"C:\\\\Program Files\\\\App\\\\app.exe\"). Common ENOENT cause is unqualified executable name.",
+    "EACCES / EPERM (permission denied): verify the file is executable and not blocked by Windows policy / AV / `Unblock-File` (right-click → properties → Unblock).",
+    "If the target requires admin elevation, the MCP server must run elevated to spawn it (UAC blocks cross-elevation spawn from non-admin parents).",
+    "For built-in commands (cmd.exe / powershell.exe / etc.), the executable lives under %SystemRoot%\\\\System32 — pass the full path or rely on PATH env var."
+  ],
+  "WorkingMemoryNUpperBoundExceeded": [
+    "Reduce working:N — upper bound is WORKING_MEMORY_N_MAX (= 50, layer-constraints §5)",
+    "If you need more recent events, use include=[\"episodic:N\"] for richer rich-shape projection (B-2 land 後に有効)",
+    "Working memory is a compact summary of recent commits — N typically ≤ 10 is sufficient for context"
+  ],
+  "EpisodicMemoryNUpperBoundExceeded": [
+    "Reduce episodic:N — upper bound is EPISODIC_MEMORY_N_MAX (= 100, layer-constraints §5)",
+    "Use include=[\"working:N\"] (compact summary) when the rich shape (lease_token / event_id / elapsed_ms) is unnecessary",
+    "Episodic memory exposes the full ToolCallEvent shape — N typically ≤ 5 is sufficient for causal context recovery"
+  ],
+  "SemanticMemoryKUpperBoundExceeded": [
+    "Reduce semantic:K — upper bound is SEMANTIC_MEMORY_K_MAX (= 10)",
+    "Semantic memory surfaces top-K learned UI patterns (rule-based: same windowTitle + 3+ successful commits)",
+    "If you want recent commits instead of patterns, use include=[\"episodic:N\"] (rich shape) or [\"working:N\"] (compact)"
+  ],
+  "ProceduralMemoryKUpperBoundExceeded": [
+    "Reduce procedural:K — upper bound is PROCEDURAL_MEMORY_K_MAX (= 10)",
+    "Procedural memory surfaces top-K successful repeated workflows (success>=3 + 0 failures + no destructive tools)",
+    "Suggest candidates are limited by design — destructive macro suggest is non-goal in Phase B (consider Phase B follow-up for explicit consent UX)"
+  ],
+  "VbaAccessNotTrusted": [
+    "HKCU AccessVBOM is 0 (or never set). Run `node scripts/enable-access-vbom.mjs` to set it to 1.",
+    "Close any running Excel.exe BEFORE retrying — Excel caches the AccessVBOM value at process start.",
+    "If a fresh terminal is fine, run the CLI with --check-only first to see the current trust state."
+  ],
+  "VbaAccessLockedByPolicy": [
+    "HKLM group policy forces AccessVBOM=0. No MCP-side workaround exists; contact your IT department.",
+    "The setting `Software\\Microsoft\\Office\\16.0\\Excel\\Security\\AccessVBOM` under HKLM cannot be overridden by HKCU."
+  ],
+  "ExcelNotInstalled": [
+    "Excel.Application COM class is not registered. Install Microsoft Excel 365 / 2019 / 2021 / 2024.",
+    "If Excel IS installed but unregistered, repair the install via Control Panel → Programs → Office → Change → Quick Repair."
+  ],
+  "VbaModuleAuthoringFailed": [
+    "VBA AddFromString rejected the source. Common cause: syntax error in the `code` argument.",
+    "ALTERNATIVELY: SaveAs to the Trusted Location failed. Verify the directory exists and is writable, and that AV is not blocking the file.",
+    "ALTERNATIVELY: the DisplayAlerts save-restore guard failed during SaveAs — typically means the COM apartment is being torn down concurrently. Retry with a fresh excel() call."
+  ],
+  "VbaMacroExecutionFailed": [
+    "Application.Run rejected the macro. Most common cause is HRESULT 0x800a03ec: macros disabled by Trust Center.",
+    "Ensure the workbook is in a registered Trusted Location (the bridge does this automatically via SaveAs to %LOCALAPPDATA%\\desktop-touch-mcp\\trusted-vba).",
+    "Verify HKCU VBAWarnings=1 — otherwise dynamically-authored macros are blocked even from Trusted Locations.",
+    "Close all running Excel.exe BEFORE retrying — Excel caches Trusted Locations at process start."
+  ],
+  "VbaMacroNotFound": [
+    "Your `code` argument does not declare a Sub matching `macroName`. Add `Sub <macroName>()` at the start of `code`.",
+    "Default macroName is `DesktopTouchAdHoc`; rename to that OR pass an explicit `macroName` parameter that matches your Sub.",
+    "The check is a regex scan for `Sub <name>(...)` with optional Public/Private modifier — no Function support in v1."
+  ],
+  "VbaUnsupportedArgumentType": [
+    "VBA macro args support null / boolean / number / string only in v1. For complex types, serialise into a worksheet cell from the macro side.",
+    "Date arguments need an explicit `{__type: 'date', value: '<ISO>'}` wrapper because MCP/JSON transport does not preserve native Date objects."
+  ],
+  "VbaWorkbookProtected": [
+    "The workbook has a VBA project password set. Manually unlock the workbook before authoring (Tools → VBAProject Properties → Protection in the VBA Editor).",
+    "Alternative: author the macro into a fresh unprotected workbook instead."
+  ],
+  "SessionNotFound": [
+    "The Excel session ID is no longer valid (already closed or never opened). Retry the operation — the run_vba tool spawns a fresh session per call.",
+    "If this fires during a single run_vba invocation, the addon's session registry was reset (e.g. MCP server restart). Re-run the tool."
+  ],
+  "SessionIdExhausted": [
+    "The u32 monotonic session counter has saturated at 2^32 spawns. Practically only reachable after ~136 years of continuous 1-spawn-per-second use.",
+    "Restart the MCP server to reset the counter."
+  ],
+  "VbaUnsupportedFileFormat": [
+    "The Phase 4 v1 bridge only supports `.xlsm` (xlOpenXMLWorkbookMacroEnabled = 52). Saving as `.xlsx` would silently drop the VBA module, so it is rejected up front.",
+    "If you need a different format, the future ADR-015 expansion (`eval_cell` / `refresh_query` phase) will surface additional XlFileFormat variants."
+  ],
+  "VbaBridgeUnavailable": [
+    "The native VBA bridge (`vba_bridge.rs`) is not loaded — likely a pre-v1.5.0 addon build or non-Windows host.",
+    "Upgrade to a v1.5.0+ desktop-touch-mcp build (or run on Windows where the addon is included).",
+    "If the addon IS present, verify it loaded successfully: check the stderr for `[native-engine] Rust VBA bridge loaded`."
+  ],
+  "KeyLockerConsentRequired": [
+    "The key locker is off until you enable it once. Run key_locker with action='save' to open the enable dialog, or click Enable when it appears.",
+    "Enabling is a one-time confirmation shown by the locker itself; the assistant never sees your secret."
+  ],
+  "KeyLockerDisabled": [
+    "The key locker is turned off by DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. Remove that environment variable (and restart the MCP server) to use it."
+  ],
+  "KeyLockerSpawnFailed": [
+    "The locker helper could not start. Ensure key-locker.exe is present (build it: cd tools/key-locker && dotnet publish -c Release -o ../../bin/).",
+    "This tool is Windows-only."
+  ],
+  "KeyLockerHandshakeRejected": [
+    "The locker helper started but its secure handshake was rejected. Restart the MCP server so a fresh locker session is created."
+  ],
+  "KeyLockerPipeUnavailable": [
+    "The connection to the locker helper was lost. Retry; if it persists, restart the MCP server."
+  ],
+  "KeyLockerConsoleLimit": [
+    "Too many anchored consoles are already open. Reuse an existing one (key_locker action='launch_console' without fresh:true returns the most recent), or close a console window before opening another."
+  ],
+  "KeyLockerWtUnavailable": [
+    "The Windows Terminal pane could not be opened (wt.exe not installed, or the new tab could not be identified). Retry with key_locker action='launch_console', host:'classic' to open a dedicated classic console window instead."
+  ],
+  "KeyLockerSshUnresolved": [
+    "The ssh host key is not in known_hosts yet. Connect to the host once (ssh user@host) so its key is recorded, then save.",
+    "ProxyJump / ProxyCommand bindings are not supported — the first prompt may belong to the jump host."
+  ],
+  "KeyLockerNoSuchBinding": [
+    "No saved binding matches that URI. Run key_locker action='list' to see the exact display URIs, then retry with one of them."
+  ],
+  "UnknownScheme": [
+    "The URI scheme is not one of: ssh:// (user@host:port), sudo:// (host/targetUser), https-cred:// (host:port), sshkey: (SHA256:…, opaque form — no //)."
+  ],
+  "MissingComponent": [
+    "The binding URI is missing a required part. Examples: ssh://user@host:22, sudo://host/root, https-cred://github.com:443, sshkey:SHA256:abc…"
+  ],
+  "MalformedUri": [
+    "The binding URI is malformed. Percent-encode any character outside the grammar and follow the scheme's shape (e.g. ssh://user@host:22).",
+    "For an SSH key passphrase use the opaque form sshkey:SHA256:<fingerprint> — no // after the scheme."
+  ],
+  "BadPercentEscape": [
+    "A percent-escape in the URI is invalid — use %XX with two hex digits."
+  ],
+  "BadPort": [
+    "The port must be an integer between 1 and 65535."
+  ]
+}

@@ -269,7 +269,31 @@ describe("the advice for a refusal does not name the press it refused", () => {
         if (!mentionsCoordinatePress) continue;
         expect(line, `${name} suggests the press it refused: ${line}`).toMatch(/do not|never|cannot/i);
       }
-      expect(joined).toMatch(/desktop_discover|another window/i);
+      // The capability, not the name: the dictionary holds `{tool:reidentify_element}`
+      // and the presenter turns it into whichever tool this server registered
+      // (ADR-036 stage 2 B2c). What the cell is about — the refusal points at
+      // re-discovery rather than at the press it just refused — is unchanged.
+      //
+      // ONE REGISTERED EXCEPTION, rather than a matcher widened to accept the literal
+      // everywhere. `KeyboardTargetUnsafe` is raised only on the v2 road
+      // (`desktop-executor.ts` throws it, `desktop-register.ts` wraps it), so there is
+      // no corner where its tools are not `desktop_discover` and `desktop_act` — and
+      // its longest line names `desktop_act action='click'`, for which no capability
+      // exists. Converting half of it produced a sentence that would have named two
+      // corners' tools at once, so the entry is uniformly literal with the reachability
+      // argument written above it (gate 2 on `42524cb`, 2026-09-13).
+      //
+      // Widening the pattern to `|desktop_discover` would have let ANY code in this
+      // loop quietly revert its conversion — and claim 4 cannot catch that, because a
+      // reverted line renders byte-identically to the pre-image it is compared against.
+      const LITERAL_BY_REACHABILITY: Record<string, string> = {
+        KeyboardTargetUnsafe: "v2-only producer; `desktop_act action='click'` has no capability",
+      };
+      expect(joined).toMatch(
+        name in LITERAL_BY_REACHABILITY
+          ? /desktop_discover|another window/i
+          : /\{tool:reidentify_element\}|another window/i,
+      );
       expect(advice.length).toBeGreaterThanOrEqual(2);
     });
   }
@@ -299,7 +323,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     // desktop_discover" spends the caller's first round trip on it anyway (win の外からの読み, #622).
     const advice = await adviceFor("AimRouteFailed");
     expect(advice[0]).toMatch(/^if_unexpected\.detail says which failure it was/);
-    const rediscover = advice.find((line) => /re-run desktop_discover/i.test(line));
+    const rediscover = advice.find((line) => /re-run \{tool:reidentify_element\}/i.test(line));
     expect(rediscover).toMatch(/^When the detail names no failure, or says the element was not found/);
   });
 

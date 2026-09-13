@@ -131,6 +131,42 @@ describe("runActionGuard", () => {
     });
     expect(result.block).toBe(true);
     expect(result.summary.status).toBe("target_not_found");
+    // …and the recommended next step is about a WINDOW, because that is what was aimed
+    // at. Paired with the browser cell below: `target_not_found` is the one status with
+    // more than one kind of producer, and the two must not answer the same.
+    expect(result.summary.next).toMatch(/window title/i);
+    expect(result.summary.next).not.toMatch(/browser_open/);
+  });
+
+  it("sends a BROWSER target miss to browser_open, not to a window lister", async () => {
+    // ADR-036 stage 2 B2c. `resolveBrowserTabTarget` returns zero candidates for a tab
+    // that cannot be resolved, and the guard turns every zero into `target_not_found` —
+    // so this arm used to tell a `browser_*` caller to verify a window title, through a
+    // lister that has never returned a tab. Splitting the catalogue by producer did not
+    // repair it: `AutoGuardBlocked`'s first line tells the caller to read
+    // `summary.next`, which is built here (gate 1 on `7fda7f7`, 2026-09-13).
+    //
+    // The cause is deliberately unnamed. Zero candidates covers a stale id, an
+    // unavailable CDP, an empty tab list and a title/URL binding miss, and `tabId` is
+    // optional — naming one of the four is the mistake this line was rewritten to stop
+    // making, in the same round, one layer up.
+    mockResolveActionTarget.mockResolvedValue({
+      lens: null, localStore: null, identity: null, candidates: 0, warnings: [],
+    });
+    const result = await runActionGuard({
+      toolName: "browser_click",
+      actionKind: "browserCdp",
+      descriptor: { kind: "browserTab", port: 9222, tabId: "gone" },
+    });
+    expect(result.block).toBe(true);
+    expect(result.summary.status).toBe("target_not_found");
+    expect(result.summary.next).toMatch(/browser_open/);
+    expect(result.summary.next).not.toMatch(/window title/i);
+    // No provider of `list_window_titles` may appear on this road, at either corner.
+    expect(result.summary.next).not.toMatch(/desktop_discover|get_windows/);
+    // And the diagnosis stays out: the recovery is what is stable across the four ways
+    // a browser target resolves to nothing.
+    expect(result.summary.next).not.toMatch(/stale/i);
   });
 
   it("blocks ambiguous_target for keyboard with multiple candidates", async () => {

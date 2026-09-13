@@ -11,6 +11,23 @@
  */
 
 import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
+// PER FIELD, NOT PER FILE. `nextStepFor` and its siblings write into the refusal's own
+// `error` string and into the perception summary, which no presenter renders — a
+// `{tool:…}` written THERE ships as literal text (ADR-036, measured on the wire), so
+// those sites ask for the NAME and build the sentence themselves.
+//
+// `suggest` is the other case and this file has one: the tailored `ambiguous_target`
+// array below carries `{tool:list_window_titles}` on purpose, because
+// `failBlockedByGuard` → `failCode` → `toToolFailure` → `renderAdviceWithFloor` resolves
+// it, drops the line where the capability has no provider, and floors the code if
+// everything drops. Stated file-wide, this comment told an editor adding a
+// configuration-dependent line to that array to hand-build it — losing the drop and the
+// floor — or to read the placeholder 960 lines down as a bug and hard-code one corner's
+// tool name (gate 2 on `44fa0fa`, 2026-09-13).
+//
+// The rule: `error` and `summary.next` take a NAME from here; `suggest` takes a
+// PLACEHOLDER and lets the presenter answer.
+import { providerForCaller } from "./_advice-capability.js";
 import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 import { logDiagnostic } from "../engine/diagnostic-log.js";
 import { getWindowProcessId, getProcessIdentityByPid, getWindowRectByHwnd, enumWindowsInZOrder, isExcludedWindowHandle } from "../engine/win32.js";
@@ -93,7 +110,7 @@ export interface ActionGuardResult {
   /**
    * ADR-036 — replaces the status catalogue for THIS refusal.
    *
-   * `SUGGESTS.AutoGuardBlocked` is a seven-line constant appended to every guard
+   * `SUGGESTS.AutoGuardBlocked` is a constant appended to every guard
    * refusal from every tool, and it is the structured field the server
    * instructions tell the model to read. Its `ambiguous_target` and
    * `target_not_found` lines name recoveries a refusal can have just finished
@@ -255,9 +272,58 @@ export function failBlockedByGuard(
   });
 }
 
+/**
+ * "Verify the window title" — the one recovery the guard offers twice.
+ *
+ * WRITTEN ONCE because it was written twice, and the second copy is why the
+ * conversion's own ledger undercounted this road: the plan recorded two
+ * configuration-dependent sentences on the guard road and there were three, the third
+ * built inline in the title-mismatch refusal (mac, 2026-09-13, sweeping `src/**` by
+ * AST rather than trusting the enumeration).
+ *
+ * The `null` arm is not decoration. `list_window_titles` has a provider in every
+ * configuration today, so it cannot fire — but the alternative is interpolating
+ * `null` into a sentence, and the sentence is still true without the tool clause.
+ */
+function titleVerificationStep(): string {
+  const lister = providerForCaller("list_window_titles");
+  return lister === null
+    ? "Verify the window title, then retry"
+    : `Call ${lister} to verify the window title, then retry`;
+}
+
+/**
+ * The opening clause of the titleless-handle refusal, branched the way
+ * {@link titleVerificationStep} branches.
+ *
+ * The lister's name was interpolated with `?? "the window lister"`. `list_window_titles`
+ * has a provider at both corners, so the fallback is unreachable — and a fallback that
+ * can only fire by becoming wrong is worse than none: it would ship a sentence whose
+ * subject is a phrase rather than a tool, which is not this module's protocol for a
+ * null provider. The protocol is a hand-written sentence that does not need a name, and
+ * the sibling three lines up already followed it (gate 2 on `42524cb`, 2026-09-13).
+ */
+function titlelessHandleStep(): string {
+  const lister = providerForCaller("list_window_titles");
+  return lister === null
+    ? "That hwnd is a live window, and the enumeration this guard reads does not list it — so it cannot be named "
+    : `That hwnd is a live window, and the enumeration this guard and ${lister} both read does not list it — so neither can name it `;
+}
+
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
-  target?: string
+  target?: string,
+  /**
+   * The kind of thing that was being aimed at, where the caller has one.
+   *
+   * `target_not_found` is the status with more than one KIND of producer, and until
+   * this parameter existed the arm could not tell them apart: a `browser_*` call whose
+   * tab could not be resolved was told to verify a WINDOW TITLE, through a lister that
+   * has never returned a tab (gate 1, 2026-09-13). The catalogue was split by producer
+   * in the same round and that did not repair this road — `AutoGuardBlocked`'s first
+   * line tells the caller to read `summary.next`, so the leading advice is built here.
+   */
+  kind?: ActionTargetDescriptor["kind"],
 ): string {
   switch (status) {
     case "ok":
@@ -276,9 +342,47 @@ function nextStepFor(
       // the advice below is again the one thing that cannot help, so that
       // handler replaces this text with a recovery it can honour rather than
       // this line trying to know about it (ADR-036 R-36-5).
-      return `Pass hwnd to name one window exactly (desktop_discover returns it), or use a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
+      // HAND-WRITTEN, and the one place in the conversion that is neither a
+      // substitution nor a drop. `get_windows` cannot be substituted here: it READS a
+      // handle and does not return one, so the sentence would promise an hwnd from a
+      // tool that drops it. Dropping the line is not available either — the sentence
+      // IS the recovery, and "use a more specific windowTitle" would go with it. So
+      // the hwnd clause is removed where nothing provides it, by hand, at the one call
+      // site (the user's decision of 2026-09-13: split a mixed sentence rather than
+      // add a third mechanism).
+      //
+      // REMOVED, BUT NOT LEFT EMPTY. What the kill switch takes away is the ENUMERATION
+      // of handles, not handles: `click_element`, `set_element_value` and
+      // `get_ui_elements` all accept `hwnd` there, and `desktop_state` — registered
+      // before the `_desktopV2` branch, so present at every corner — always returns
+      // `focusedWindow.hwnd` — for a window the enumeration keeps. `focusedWindow` comes
+      // from `wins.find(w => w.isActive)` over `enumWindowsInZOrder()`, which drops
+      // untitled windows, so this route is not unconditional; it holds here because
+      // `ambiguous_target` counts titled windows and cannot be raised without them.
+      // Collapsing to "use a more specific windowTitle" pointed
+      // the caller at the one recovery that provably cannot separate two windows whose
+      // normalized titles are equal, while a working one went unnamed (gate 2,
+      // 2026-09-13). The capability table reads `null` as "no tool provides this", and
+      // that is not the same claim as "no recovery exists" — this arm is where the two
+      // came apart.
+      {
+        const byHandle = providerForCaller("disambiguate_window_by_handle");
+        const matched = target ? ` (matched: ${target})` : "";
+        return byHandle === null
+          ? `Use a more specific windowTitle, or bring the intended window to the front and pass the hwnd desktop_state reports for it${matched}`
+          : `Pass hwnd to name one window exactly (${byHandle} returns it), or use a more specific windowTitle${matched}`;
+      }
     case "target_not_found":
-      return "Call desktop_discover to verify the window title, then retry";
+      // A browser target does not resolve through the window enumeration, so neither
+      // provider of `list_window_titles` can answer for it. `browser_open` is what
+      // reconnects and lists the current tabs; it is registered at every corner
+      // (`registerBrowserTools` runs before the `_desktopV2` branch), so no capability
+      // is involved. The cause is deliberately NOT named — `resolveBrowserTabTarget`
+      // returns zero candidates for a stale id, an unavailable CDP, an empty tab list
+      // and a title/URL binding miss alike, and `tabId` is optional to begin with.
+      return kind === "browserTab"
+        ? "The browser target did not resolve. Call browser_open to reconnect and list the current tabs, then retry with one of them"
+        : titleVerificationStep();
     case "identity_changed":
       return "Target window was replaced. Take a new screenshot.";
     case "blocked_by_modal":
@@ -808,7 +912,7 @@ export async function runActionGuard(
     const status: AutoGuardEnvelope["status"] = notFound ? "target_not_found" : "unsafe_coordinates";
     const next = notFound
       ? `No open window matches "${tm.requested}" — point ${point} is inside "${tm.resolved}". ` +
-        `Call desktop_discover to verify the window title, then retry.`
+        `${titleVerificationStep()}.`
       : `Point ${point} is inside "${tm.resolved}", not "${tm.requested}". ` +
         `Take a new screenshot to get fresh coordinates.`;
     // This refusal used to return before deriveTargetKey ran, making it the
@@ -865,8 +969,7 @@ export async function runActionGuard(
         status,
         canContinue: false,
         next: titlelessHandle
-          ? "That hwnd is a live window, and the enumeration this guard and " +
-            "desktop_discover both read does not list it — so neither can name it " +
+          ? titlelessHandleStep() +
             "and passing the handle again returns here. That enumeration keeps " +
             "top-level windows on this desktop that are visible, titled, have a " +
             "rectangle, and are either at least 50x50 or minimised; a window " +
@@ -876,7 +979,7 @@ export async function runActionGuard(
             "it is not, nothing here addresses it by handle — keyboard with " +
             "windowTitle:\"@active\" reaches whatever holds the foreground, which " +
             "is only your window if it can hold it."
-          : nextStepFor(status),
+          : nextStepFor(status, undefined, descriptor?.kind),
       },
       block: true,
       // The catalogue's two lines for this status name `desktop_discover` and
@@ -887,7 +990,7 @@ export async function runActionGuard(
       ...(titlelessHandle && {
         suggest: [
           "Read the error message — for this refusal it is the whole recovery.",
-          "desktop_discover cannot list this window; passing its hwnd returns here. keyboard with windowTitle:\"@active\" is the one channel that reaches it, and only while it holds the foreground.",
+          "{tool:list_window_titles} cannot list this window; passing its hwnd returns here. keyboard with windowTitle:\"@active\" is the one channel that reaches it, and only while it holds the foreground.",
         ],
       }),
     };

@@ -27,6 +27,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { renderAdviceForCaller, renderAdviceWith, adviceConfigurationFromEnv } from "../../src/tools/_advice-capability.js";
 import {
   makeCommitWrapper,
   makeQueryWrapper,
@@ -93,7 +94,19 @@ describe("mapLeaseValidationToTypedReason — runtime path (sub-plan §7 R4)", (
     const m = mapLeaseValidationToTypedReason("expired");
     expect(m.code).toBe("LeaseExpired");
     expect(m.tryNext).toHaveLength(1);
-    expect(m.tryNext[0]).toMatchObject({ action: "desktop_discover", confidence: "high" });
+    // THE SOURCE, not the wire. `mapLeaseValidationToTypedReason` is upstream of the
+    // seam, so as of ADR-036 stage 2 B2c it carries the CAPABILITY; the envelope road
+    // turns it into the name this server registered. Both halves are asserted, because
+    // "the source holds a placeholder" and "the wire holds a tool" are two claims and
+    // pinning only the first is how a placeholder ships.
+    expect(m.tryNext[0]).toMatchObject({ action: "{tool:reidentify_element}", confidence: "high" });
+    // THE CORNER IS PINNED, because the answer is corner-specific. `renderAdviceForCaller`
+    // reads the process-global capture or, failing that, ambient `process.env` — so this
+    // assertion used to name the v2 answer while depending on the runner not having the
+    // kill switch set, and on nothing earlier in the module graph having captured a
+    // configuration (gate 2, 2026-09-13). `adviceConfigurationFromEnv({})` states which
+    // surface the expectation belongs to.
+    expect(renderAdviceWith([m.tryNext[0].action], adviceConfigurationFromEnv({}))[0]).toBe("desktop_discover");
   });
   it("generation_mismatch → Unknown with empty try_next (S4 trunk Unknown fallback)", () => {
     const m = mapLeaseValidationToTypedReason("generation_mismatch");
@@ -105,7 +118,8 @@ describe("mapLeaseValidationToTypedReason — runtime path (sub-plan §7 R4)", (
     // the lease check that catches it first has to answer the same.
     const m = mapLeaseValidationToTypedReason("entity_not_found");
     expect(m.code).toBe("EntityNotFound");
-    expect(m.tryNext.map((t) => t.action).join(" ")).toMatch(/desktop_discover/);
+    // Corner pinned, same reason as the cell above.
+    expect(renderAdviceWith(m.tryNext.map((t) => t.action), adviceConfigurationFromEnv({})).join(" ")).toMatch(/desktop_discover/);
   });
   it("digest_mismatch → Unknown with empty try_next (S4 trunk)", () => {
     const m = mapLeaseValidationToTypedReason("digest_mismatch");
@@ -216,7 +230,7 @@ describe("buildFailureEnvelope (sub-plan §2.4)", () => {
   it("emits stale + if_unexpected with most_likely_cause + try_next", () => {
     const e = buildFailureEnvelope(
       "LeaseExpired",
-      [{ action: "desktop_discover", args: {}, confidence: "high" }],
+      [{ action: "{tool:reidentify_element}", args: {}, confidence: "high" }],
       { asOfWallclockMs: FRESH_WALLCLOCK },
     );
     expect(e._version).toBe("1.0");
@@ -369,7 +383,11 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     const parsed = parseResult(result) as Record<string, unknown>;
     const ifUnexp = parsed.if_unexpected as { most_likely_cause: string; try_next: Array<{ action: string }> };
     expect(ifUnexp.most_likely_cause).toBe("EntityNotFound");
-    expect(ifUnexp.try_next.map((t) => t.action)).toEqual(getSuggestsForCode("EntityNotFound"));
+    // The wire against the RESOLVED dictionary: the envelope road renders every row's
+    // action, so comparing it to the raw table would pin the placeholder (ADR-036 B2c).
+    expect(ifUnexp.try_next.map((t) => t.action)).toEqual(
+      renderAdviceForCaller(getSuggestsForCode("EntityNotFound")),
+    );
   });
 
   it("G3-S4-3: lease ok → ToolCallStarted carries lease_token, ToolCallCompleted carries elapsed_ms", async () => {

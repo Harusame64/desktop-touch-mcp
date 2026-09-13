@@ -72,6 +72,10 @@ import {
   type CommitL1Emitter,
 } from "../../../src/tools/_envelope.js";
 import { Err } from "../../../src/types/result.js";
+import {
+  captureAdviceConfiguration,
+  resetAdviceConfiguration,
+} from "../../../src/tools/_advice-capability.js";
 import { CodedHandlerError } from "../../../src/errors/typed-errors.js";
 import {
   desktopActRawHandler,
@@ -108,6 +112,15 @@ const NOOP_L1: CommitL1Emitter = {
  * decoupled from the production source it guards). If SUGGESTS legitimately
  * changes, update these literals deliberately (and note any user-facing hint
  * change in the CHANGELOG).
+ *
+ * **They are the V2-CORNER rendering, and the corner is now pinned in `beforeEach`.**
+ * ADR-036 stage 2 B2c made these lines carry `{tool:<capability>}` in the dictionary
+ * and resolve at the presenter, so `desktop_discover` here is one corner's answer, not
+ * a constant. Left unpinned they passed only while the ambient environment had no kill
+ * switch and nothing in the module graph had captured a configuration — a latent
+ * dependency the same round removed from `desktop-act-commit-wrapper.test.ts` and left
+ * in this file (gate 2 on `7fda7f7`, 2026-09-13). The decoupling above is unchanged:
+ * the literals are still literals, so a SUGGESTS edit still surfaces here.
  */
 const FROZEN_TRY_NEXT: Record<string, ReadonlyArray<{ action: string }>> = {
   WorkingMemoryNUpperBoundExceeded: [
@@ -141,10 +154,14 @@ const FROZEN_TRY_NEXT: Record<string, ReadonlyArray<{ action: string }>> = {
 beforeEach(() => {
   _resetHistoryBuffersForTest();
   _resetToolCallSeqForTest();
+  // The frozen tables above are one corner's rendering — say which, rather than
+  // inheriting it from the runner. See the note on `FROZEN_TRY_NEXT`.
+  captureAdviceConfiguration({ v2: true, credentialStore: true });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetAdviceConfiguration();
 });
 
 // ── Sites 1-4: memory N/K bound checks (already via toFailureEnvelope) ─────────
@@ -291,8 +308,18 @@ describe("PR-P1-1 site 5c: lease validation 'entity_not_found' (ADR-036 item 16)
         l1Emitter: NOOP_L1,
       },
     )({} as Record<string, unknown>);
-    const tryNext = getSuggestsForCode("EntityNotFound").map((action) => ({ action }));
+    // RESOLVED, because that is the wire. The SSOT accessor is still the source — a
+    // dictionary edit still moves this expectation with it — but as of ADR-036 stage 2
+    // B2c the dictionary holds `{tool:<capability>}` and the envelope holds the name
+    // this server registered. Comparing the wire to the raw dictionary would pin a
+    // shape no caller receives.
+    const { renderAdviceForCaller } = await import("../../../src/tools/_advice-capability.js");
+    const raw = getSuggestsForCode("EntityNotFound");
+    const tryNext = renderAdviceForCaller(raw).map((action) => ({ action }));
     expect(tryNext.length).toBeGreaterThan(0);
+    // The round's claim, in the cell: a placeholder in the dictionary, none on the wire.
+    expect(raw.join(" ")).toContain("{tool:");
+    expect(tryNext.map((t) => t.action).join(" ")).not.toContain("{tool:");
     expect(parseContent(result.content)).toEqual({
       ok: false,
       reason: "entity_not_found",

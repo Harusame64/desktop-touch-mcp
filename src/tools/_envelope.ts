@@ -1071,9 +1071,21 @@ export function mapLeaseValidationToTypedReason(
   reason: "expired" | "generation_mismatch" | "entity_not_found" | "digest_mismatch",
 ): { code: string; tryNext: TryNextAction[] } {
   if (reason === "expired") {
+    // `args: {}` IS A CLAIM ABOUT ONE CORNER'S PROVIDER, filed rather than changed.
+    // `desktop_discover`'s `windowTitle` is optional, so "no arguments needed" is true
+    // of it; `get_ui_elements`' is required, so at a kill-switch corner this row would
+    // hand a caller a call it cannot make — the "registered is not the same as
+    // callable" axis this round handles by hand elsewhere. It is unreachable today:
+    // `makeCommitWrapper`'s only `leaseValidator` is `desktop_act`'s
+    // (`desktop-register.ts`), which exists only at the v2 corner, where the row
+    // renders back to `desktop_discover`. Both fixes cost more than the defect —
+    // dropping `args` moves a frozen envelope-shape expectation, and reverting the
+    // capability undoes the conversion — so the reachability is written here instead,
+    // and whoever gives this row a second producer owes the check (gate 2 on
+    // `a1cc0f4`, 2026-09-13).
     return {
       code: "LeaseExpired",
-      tryNext: [{ action: "desktop_discover", args: {}, confidence: "high" }],
+      tryNext: [{ action: "{tool:reidentify_element}", args: {}, confidence: "high" }],
     };
   }
   // ADR-036 item 16 — promoted. The same reason comes back from the touch itself (the entity

@@ -1,0 +1,114 @@
+{
+  "v2_noLocker/KeyLockerConsentRequired": {
+    "dropped": 1,
+    "survivors": []
+  },
+  "v2_noLocker/KeyLockerConsoleLimit": {
+    "dropped": 1,
+    "survivors": [
+      "Too many anchored consoles are already open. Close a console window before opening another."
+    ]
+  },
+  "v2_noLocker/KeyLockerWtUnavailable": {
+    "dropped": 1,
+    "survivors": [
+      "The Windows Terminal pane could not be opened — wt.exe may not be installed, or the new tab could not be identified. A dedicated classic console window is the fallback."
+    ]
+  },
+  "v2_noLocker/KeyLockerNoSuchBinding": {
+    "dropped": 1,
+    "survivors": [
+      "No saved binding matches that URI — the display URI must match exactly, including scheme, user, host and port."
+    ]
+  },
+  "v2_noLocker/paneIdMissSuggest(windowTitle-for-paneId)": {
+    "dropped": 1,
+    "survivors": [
+      "That value is the locker console's `windowTitle`, NOT its `paneId` — a console pane has both. Pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
+      "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window title is the host window's, shared by all tabs)."
+    ]
+  },
+  "v2_noLocker/paneIdMissSuggest(malformed)": {
+    "dropped": 2,
+    "survivors": [
+      "paneId is malformed. Valid forms: a decimal console hwnd (e.g. 12345678) or a Windows Terminal handle `wt:<pid>:<startMs>`."
+    ]
+  },
+  "v2_noLocker/paneIdMissSuggest(no-live-pane)": {
+    "dropped": 1,
+    "survivors": [
+      "The paneId is well-formed but no live pane matches it now. If it is a `wt:…` handle, its Windows Terminal tab may not be the ACTIVE tab — a wt pane reads/sends only while its tab is active; switch back to that tab (or focus_window its Windows Terminal window) and retry.",
+      "Otherwise the console may have closed, or its title is no longer unique among open windows."
+    ]
+  },
+  "killSwitch/AutoGuardBlocked": {
+    "dropped": 1,
+    "survivors": [
+      "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
+      "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
+      "Or bring the intended window to the front and pass the hwnd desktop_state reports for it — worth doing when the titles cannot be told apart by narrowing (matching lowercases, trims, and strips a browser suffix from both sides).",
+      "If a desktop element was not found (target_not_found) and its window is still open, run get_ui_elements — the element no longer matches the current desktop state.",
+      "If a browser_* call was refused with target_not_found, the target is a tab and not a desktop element: call browser_open to reconnect and list the current tabs, then retry with one of them. No tab appears in what get_ui_elements returns.",
+      "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
+      "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
+      "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
+      "If app state shifted under the lens (identity_changed) or coords look stale (unsafe_coordinates), refresh via desktop_state or screenshot before retrying."
+    ]
+  },
+  "killSwitch_noLocker/AutoGuardBlocked": {
+    "dropped": 1,
+    "survivors": [
+      "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
+      "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
+      "Or bring the intended window to the front and pass the hwnd desktop_state reports for it — worth doing when the titles cannot be told apart by narrowing (matching lowercases, trims, and strips a browser suffix from both sides).",
+      "If a desktop element was not found (target_not_found) and its window is still open, run get_ui_elements — the element no longer matches the current desktop state.",
+      "If a browser_* call was refused with target_not_found, the target is a tab and not a desktop element: call browser_open to reconnect and list the current tabs, then retry with one of them. No tab appears in what get_ui_elements returns.",
+      "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
+      "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
+      "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
+      "If app state shifted under the lens (identity_changed) or coords look stale (unsafe_coordinates), refresh via desktop_state or screenshot before retrying."
+    ]
+  },
+  "killSwitch_noLocker/KeyLockerConsentRequired": {
+    "dropped": 1,
+    "survivors": []
+  },
+  "killSwitch_noLocker/KeyLockerConsoleLimit": {
+    "dropped": 1,
+    "survivors": [
+      "Too many anchored consoles are already open. Close a console window before opening another."
+    ]
+  },
+  "killSwitch_noLocker/KeyLockerWtUnavailable": {
+    "dropped": 1,
+    "survivors": [
+      "The Windows Terminal pane could not be opened — wt.exe may not be installed, or the new tab could not be identified. A dedicated classic console window is the fallback."
+    ]
+  },
+  "killSwitch_noLocker/KeyLockerNoSuchBinding": {
+    "dropped": 1,
+    "survivors": [
+      "No saved binding matches that URI — the display URI must match exactly, including scheme, user, host and port."
+    ]
+  },
+  "killSwitch_noLocker/paneIdMissSuggest(windowTitle-for-paneId)": {
+    "dropped": 1,
+    "survivors": [
+      "That value is the locker console's `windowTitle`, NOT its `paneId` — a console pane has both. Pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
+      "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window title is the host window's, shared by all tabs)."
+    ]
+  },
+  "killSwitch_noLocker/paneIdMissSuggest(malformed)": {
+    "dropped": 2,
+    "survivors": [
+      "paneId is malformed. Valid forms: a decimal console hwnd (e.g. 12345678) or a Windows Terminal handle `wt:<pid>:<startMs>`."
+    ]
+  },
+  "killSwitch_noLocker/paneIdMissSuggest(no-live-pane)": {
+    "dropped": 1,
+    "survivors": [
+      "The paneId is well-formed but no live pane matches it now. If it is a `wt:…` handle, its Windows Terminal tab may not be the ACTIVE tab — a wt pane reads/sends only while its tab is active; switch back to that tab (or focus_window its Windows Terminal window) and retry.",
+      "Otherwise the console may have closed, or its title is no longer unique among open windows."
+    ]
+  }
+}

@@ -27,15 +27,23 @@
  *     different claims, two different instruments — the suite's green is the
  *     weaker one (gate 2, finding 11).
  *
- *     297 is the count of advice strings in the `SUGGESTS` dictionary alone, and it
- *     excludes the four named builders — `getSuggestsForCode` (`_errors.ts:872`),
- *     `nextStepFor` (`_action-guard.ts:258`), `tryBuildSuggestedFix`
- *     (`_action-guard.ts:599`) and `paneIdMissSuggest` (`terminal.ts:731`), the last
- *     being the motivating case in the module header. Two of the four are NOT
- *     exported, so a sweep for exported builders finds two and a reader concludes
- *     the claim is inflated (gate 2 did). An earlier count said 300; that was
- *     a quote-pairing counter meeting quotes inside comments, and the dictionary was
- *     re-counted per code on the Windows machine (94 of 94 agreeing).
+ *     That count is of advice strings in the `SUGGESTS` dictionary alone, and it
+ *     excludes the named builders — `getSuggestsForCode`, `nextStepFor`,
+ *     `tryBuildSuggestedFix`, `paneIdMissSuggest` (the motivating case in the module
+ *     header) and `runNeedsDestinationSuggest`. Not all of them are exported, so a
+ *     sweep for exported builders finds fewer and a reader concludes the claim is
+ *     inflated (gate 2 did). An earlier count said 300; that was a quote-pairing
+ *     counter meeting quotes inside comments, and the dictionary was re-counted per
+ *     code on the Windows machine (94 of 94 agreeing).
+ *
+ *     NO LINE NUMBERS AND NO TOTAL HERE ANY MORE. This paragraph carried four of each,
+ *     and ADR-036 stage 2 B2c moved every one of them — `nextStepFor` and
+ *     `paneIdMissSuggest` shifted, `_action-guard.ts:599` came to land inside an
+ *     unrelated interface, and the total went from 297 to 305 in eight commits. It is
+ *     the species `_advice-capability.ts` records in its own words: a number in prose
+ *     is a claim that goes stale on the next edit to the file it names, and nothing
+ *     checks it. The count that IS checked lives in the acceptance cells, against a
+ *     committed pre-image (gate 2 on `42524cb`, 2026-09-13).
  *
  *  2. Every capability is asserted at BOTH corners, naming the tool rather than
  *     "not the other one". One corner green is not evidence: a wrong table can
@@ -415,10 +423,17 @@ describe("ADR-036 B1 — advice names a capability, the presenter resolves it", 
   });
 
   it("renders to an EMPTY array when every line drops — pinned, because it is a decision owed", () => {
-    // Not a wish: `paneIdMissSuggest`'s malformed-paneId branch is two lines and both
-    // name `key_locker`, so with the locker off the caller gets no advice at all. This
-    // cell pins today's answer so the change that converts the lines has to face it
-    // rather than discover it (gate 2, 2026-09-13, both rounds).
+    // ANSWERED, and the cell stays for the RULE rather than the case. It was written
+    // when `paneIdMissSuggest`'s malformed-paneId branch was two lines that both named
+    // `key_locker`, so with the locker off the caller got no advice at all — pinned so
+    // the change that converts the lines would have to face it. B2c is that change: the
+    // branch is three lines now and the survivor is the locker-free paneId format
+    // specification, registered in `advice-survivors-when-lines-drop.json`. What this
+    // cell still holds is the renderer's own behaviour — every line dropping renders to
+    // `[]`, not to a partial list or a throw — on a synthetic input, which is why it
+    // did not move when the production case did (gate 2 on `42524cb`, 2026-09-13:
+    // a comment describing a defect that no longer exists, on the cell a reader would
+    // consult to decide whether it still does).
     const bothDependent: AdviceLine[] = [
       "Re-call {tool:credential_store} to get the paneId back",
       "Lost it? {tool:credential_store} again",

@@ -732,19 +732,27 @@ export function paneIdMissSuggest(paneId: string): string[] {
   // (a) A launch_console windowTitle passed where a paneId belongs — the single most common mixup.
   if (/^dtm-locker-console-/i.test(paneId)) {
     return [
-      "That value is the `windowTitle` launch_console returned, NOT its `paneId`. launch_console returns BOTH " +
-        "{paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
+      // The ACTION name is as configuration-dependent as the tool name, and it
+      // survives the drop below: at the locker-off corners this line was still telling
+      // the caller where to get a paneId from `launch_console`, which is not there —
+      // the same rider shape `KeyLockerConsentRequired` had (gate 2, 2026-09-13). What
+      // the caller has to do does not need the name: the two fields are in the value
+      // they already hold.
+      "That value is the locker console's `windowTitle`, NOT its `paneId` — a console pane has both. " +
+        "Pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
       "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill " +
         "un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window " +
-        "title is the host window's, shared by all tabs). Lost the paneId? Re-call key_locker({action:'launch_console'}) (default fresh:false) to get it back.",
+        "title is the host window's, shared by all tabs).",
+      "Lost the paneId? Re-call {tool:credential_store}({action:'launch_console'}) (default fresh:false) to get it back.",
     ];
   }
   // (b) Any other handle that does not parse — a malformed paneId.
   if (parsePaneId(paneId) === null) {
     return [
       "paneId is malformed. Valid forms: a decimal console hwnd (e.g. 12345678) or a Windows Terminal handle " +
-        "`wt:<pid>:<startMs>`. Use the `paneId` field from key_locker({action:'launch_console'}) verbatim.",
-      "Lost the paneId? Re-call key_locker({action:'launch_console'}) — the default fresh:false reuses the " +
+        "`wt:<pid>:<startMs>`.",
+      "Use the `paneId` field from {tool:credential_store}({action:'launch_console'}) verbatim.",
+      "Lost the paneId? Re-call {tool:credential_store}({action:'launch_console'}) — the default fresh:false reuses the " +
         "most-recent still-open locker pane and returns its paneId (there is no pane-listing action).",
     ];
   }
@@ -753,8 +761,8 @@ export function paneIdMissSuggest(paneId: string): string[] {
     "The paneId is well-formed but no live pane matches it now. If it is a `wt:…` handle, its Windows Terminal " +
       "tab may not be the ACTIVE tab — a wt pane reads/sends only while its tab is active; switch back to that tab " +
       "(or focus_window its Windows Terminal window) and retry.",
-    "Otherwise the console may have closed, or its title is no longer unique among open windows. Re-call " +
-      "key_locker({action:'launch_console'}) to reuse or (with fresh:true) open a new pane.",
+    "Otherwise the console may have closed, or its title is no longer unique among open windows.",
+    "Re-call {tool:credential_store}({action:'launch_console'}) to reuse or (with fresh:true) open a new pane.",
   ];
 }
 
@@ -3007,11 +3015,23 @@ export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolR
         runWindowTitle = resolved;
       }
       if (runWindowTitle === undefined || runWindowTitle === "") {
-        // Unreachable: the run variant's `.refine(windowTitle || paneId)` already rejected this as a
-        // typed InvalidArgs error. Kept so TS narrows runWindowTitle to a non-empty string.
-        return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId", {
-          suggest: ["Pass windowTitle (a partial terminal title) or paneId (from key_locker launch_console)."],
-        });
+        // UNREACHABLE, and now it says so with nothing attached. The run variant's
+        // `.refine(windowTitle || paneId)` rejects this before the handler runs; this
+        // branch exists so TS narrows `runWindowTitle` to a non-empty string.
+        //
+        // It briefly carried a hand-split `suggest`, extracted into a builder so the
+        // survivors registry could walk it — which put two rows in that registry
+        // pinning what survives a refusal NO CALLER CAN RECEIVE. That is the same shape
+        // this round removed from `KeyLockerConsentRequired`: advice kept alive at a
+        // place no reader reaches. Gate 2 caught it one file over from where the lesson
+        // was written (`44fa0fa`, 2026-09-13).
+        //
+        // The caller who really omits both arguments is not helped by any of this: the
+        // refine's message reaches them, and the advice beside it is `SUGGESTS.InvalidArgs`
+        // — "Check the required parameters" and a line about `name` / `automationId`,
+        // which this tool does not take. Filed in `remaining-work.md`; converting that
+        // road means giving the schema layer a way to carry advice, which is its own change.
+        return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId");
       }
       return terminalRunHandler({ ...a, windowTitle: runWindowTitle, input: resolvedInput });
     }
