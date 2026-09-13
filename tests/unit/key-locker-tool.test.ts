@@ -252,17 +252,30 @@ describe("the shipped promise says what it covers", () => {
     // `check:stub-catalog` (CI) regenerates and diffs it, so catalogue == source is
     // enforced elsewhere and reading the catalogue is reading what ships.
     //
-    // WHAT IT CATCHES AND WHAT IT CANNOT, measured rather than guessed — an earlier
-    // version of this comment said a rewording would pass, and the mutation showed it
-    // reddens, because both strings are pinned exactly. Deleting the clause, diverging
-    // the catalogue from the source, and rewording the promise all go red; the last for
-    // a mechanical reason, which is the point — whoever rewords has to come here, and
-    // that is the moment to re-read whether the new words still say where it stops.
+    // WHAT IT CATCHES AND WHAT IT CANNOT, measured rather than guessed — and corrected
+    // twice, because an inventory a reader trusts cannot afford to be wrong. Deleting
+    // the clause, DETACHING it from the promise, and rewording either all go red; the
+    // rewording case for a mechanical reason, which is the point — whoever rewords has
+    // to come here, and that is the moment to re-read whether the new words still say
+    // where the promise stops.
+    //
+    // It does NOT catch a source edit that was never regenerated. This cell reads the
+    // catalogue, so a `key-locker-tool.ts` changed without `npm run generate:stub-catalog`
+    // leaves the OLD strings here and passes green. `check:stub-catalog` in CI holds
+    // that direction, and an earlier draft of this list claimed the catch anyway —
+    // contradicting its own paragraph two above (gate 2 on `1c22b3e`).
     //
     // It cannot judge MEANING. A description keeping both strings and re-broadening the
     // claim in a later sentence passes.
+    // ONE JOINED STRING, because the comment above says "pairing" and two unordered
+    // `toContain` calls do not make that true. A cleanup deciding the clause belongs in
+    // the Caveats section could move it nine hundred characters and three headers away,
+    // leaving `Purpose:` ending on the unscoped sentence, and both separate assertions
+    // would still have passed (gate 2 on `1c22b3e`). Adjacency is the property, so
+    // adjacency is what gets asserted.
     const PROMISE = "NEVER shown to the assistant or sent to this tool";
     const SCOPE = "this covers what the locker holds, not every password on the machine";
+    const JOINED = `${PROMISE} — ${SCOPE}`;
 
     const locker = STUB_TOOL_CATALOG.find((t) => t.name === "key_locker");
     // CONTROL: the entry is really there, or "the pair holds" is also what a lookup that
@@ -270,7 +283,9 @@ describe("the shipped promise says what it covers", () => {
     expect(locker, "key_locker must be in the shipped catalogue").toBeDefined();
     expect(locker!.description, "the promise must ship for this cell to mean anything")
       .toContain(PROMISE);
-    expect(locker!.description, "the promise ships without the clause that says what it covers")
-      .toContain(SCOPE);
+    expect(
+      locker!.description,
+      "the promise ships without the clause that scopes it, or with the clause detached from it",
+    ).toContain(JOINED);
   });
 });
