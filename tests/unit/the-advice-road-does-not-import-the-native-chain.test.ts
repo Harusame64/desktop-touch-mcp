@@ -38,14 +38,26 @@
  *      verbatim regression named above. Two statements of one regex are one
  *      statement.
  *
- * `import type` edges are NOT followed: tsc erases them, so they cost nothing at
- * module-evaluation time, which is the cost this cell is about. A type-only import
- * of `engine/win32.js` on the advice road is free and must not redden — the cheapest
- * answer to a false red is to delete the guard.
+ * TYPE-ONLY edges are NOT followed, in BOTH spellings: `import type { X } from …`
+ * and `import { type X } from …` where every specifier carries `type`. tsc erases
+ * both, so they cost nothing at module-evaluation time, which is the cost this cell
+ * is about. Following them would be wrong in two directions (gate 2, third round on
+ * this branch): a free type import on the advice road would redden CI, and the
+ * cheapest answer to a false red is deleting the guard — and CONTROL 1 would credit
+ * an edge that does not exist at load time, reporting "the walker still works" for a
+ * path `tsc` deleted. The inline spelling is already in this repo
+ * (`key-locker-capture-driver.ts` → `ssh-session-watch.js`).
+ *
+ * PATHS ARE COMPARED IN POSIX SPELLING. `path.join` answers `src\engine\win32.ts`
+ * on Windows, and the literals here are `/`-spelled, so an unnormalised walker is
+ * RED on the machine that runs the pre-merge capture — and red on CONTROL 1 first,
+ * with the three subject assertions passing vacuously behind it (gate 2, third
+ * round; the shape the controls exist for, arriving in the controls' own plumbing).
+ * The cell asserts the spelling directly, so the next reader does not have to know.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, join, normalize, relative } from "node:path";
+import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -61,6 +73,26 @@ function stripComments(src: string): string {
  * be told apart, and `[^;]` keeps one statement from swallowing the next.
  */
 const EDGE = /\b(import|export)\b([^;'"]*?)from\s*["']([^"']+)["']|\bimport\s*["']([^"']+)["']/g;
+
+/** Repo-relative, `/`-spelled, whatever the host separator is. */
+function posix(p: string): string {
+  return p.split(sep).join("/");
+}
+
+/**
+ * A clause `tsc` erases entirely: `import type { … }`, or a named list whose every
+ * specifier is `type`-prefixed and which has no default/namespace binding beside it.
+ * `import Foo, { type Bar }` keeps a value binding and is NOT type-only.
+ */
+function typeOnly(clause: string): boolean {
+  if (/^\s*type\b/.test(clause)) return true;
+  const braced = /\{([^}]*)\}/.exec(clause);
+  if (braced === null) return false; // default or namespace import: a value edge
+  const beside = clause.slice(0, braced.index).replace(/[\s,]/g, "");
+  if (beside !== "") return false; // a default binding sits outside the braces
+  const specs = braced[1]!.split(",").map((x) => x.trim()).filter((x) => x !== "");
+  return specs.length > 0 && specs.every((x) => /^type\s/.test(x));
+}
 
 interface Reach {
   files: string[];
@@ -79,19 +111,19 @@ function reach(entry: string): Reach {
       const clause = m[2] ?? "";
       const spec = m[3] ?? m[4];
       if (spec === undefined || !spec.startsWith(".")) continue; // node: and packages are not our graph
-      if (/^\s*type\b/.test(clause)) continue; // erased by tsc; costs nothing at load
-      const base = normalize(join(dirname(file), spec));
+      if (typeOnly(clause)) continue; // erased by tsc; costs nothing at load
+      const base = posix(normalize(join(dirname(file), spec)));
       const candidates = [
         base.replace(/\.js$/, ".ts"),
         base.replace(/\.mjs$/, ".mts"),
         base.replace(/\.cjs$/, ".cts"),
         `${base}.ts`,
-        join(base, "index.ts"),
+        posix(join(base, "index.ts")),
         base,
       ];
       const hit = candidates.find((c) => existsSync(join(REPO, c)) && c.endsWith(".ts"));
       if (hit === undefined) unresolved.add(`${file} -> ${spec}`);
-      else walk(relative("", hit));
+      else walk(hit); // already repo-relative; `relative("", …)` would drag in the cwd
     }
   };
   walk(entry);
@@ -126,6 +158,15 @@ describe("the advice road's import graph", () => {
     }
     // Nor through the manager, which is the module the predicate used to live in.
     expect(advice.files).not.toContain("src/engine/key-locker/key-locker-manager.ts");
+
+    // CONTROL 4: the spelling itself. On Windows `path.join` answers backslashes, and
+    // every assertion above compares against `/`-spelled literals — so without this,
+    // the cell is red on the machine that runs the pre-merge capture and the subject
+    // assertions pass vacuously behind a red control. Asserted rather than trusted,
+    // because this machine cannot produce the failing spelling.
+    for (const f of [...advice.files, ...locker.files]) {
+      expect(f, `paths must be posix-spelled: ${f}`).not.toMatch(/\\/);
+    }
   });
 
   it("keeps the switch a leaf: the file it lives in imports nothing", () => {
