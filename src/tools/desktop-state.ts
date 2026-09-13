@@ -1192,17 +1192,29 @@ export function registerDesktopStateTools(server: McpServer): void {
       // looking would have found nothing and concluded the exposure was elsewhere
       // (gate 2 on `1c22b3e`, 2026-09-13).
       //
-      // The masking half is stated with its SOURCE, because it is not a filter this
-      // tool applies: the CDP read skips masked elements by rule
-      // (`CDP_FOCUSED_ELEMENT_SCRIPT`), and on the UIA road a password Edit simply
-      // returns nothing from `ValuePattern` — a platform behaviour, measured on Windows
-      // for one masking mechanism (WinForms `UseSystemPasswordChar`) and not a
-      // guarantee this code enforces. `IsPassword` comes back False for such a box, so
-      // a guard written against it would skip nothing.
+      // THE TWO ROADS ARE NOT THE SAME AND THE CAVEAT MAY NOT SAY THEY ARE. The first
+      // version of this sentence read "a masked field comes back without it" —
+      // categorical, and true of only one of them. On the CDP road it is enforced and
+      // tested: `__isMasked` in `_element-name-js.ts`, pinned by
+      // `never-hand-back-a-password.test.ts`. On the UIA road nothing checks:
+      // `src/uia/focus.rs` calls `vp.CurrentValue()` on the focused element with no
+      // `IsPassword` or control-type gate, so the value is whatever the provider serves.
+      // A WinForms `UseSystemPasswordChar` box returns nothing — measured, one
+      // mechanism — but a WPF `PasswordBox` or a Qt / Java / Electron provider that does
+      // serve `ValuePattern` for a masked control would put plaintext here, and a caller
+      // who read the categorical version had been told that cannot happen.
+      //
+      // That is the same over-generalised promise this change removes from `key_locker`,
+      // re-introduced one sentence over on the half nothing enforces (gate 2 on
+      // `1f42968`, 2026-09-13). A trailing hedge does not undo a flat leading assertion,
+      // so the assertion is gone instead.
+      //
+      // `IsPassword` is also not the gate anyone would reach for: it comes back False
+      // for a genuinely masked WinForms box, so a guard written against it skips nothing.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
-        "focusedElement.value is the focused field's current text, so a plain credential field's value is returned like any other. A masked field comes back without it — the CDP read skips masked elements and UIA returns nothing from a password Edit — which is a property of those readers, not a filter this tool applies.",
+        "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control, so do not rely on it being absent.",
     }),
     desktopStateRegistrationSchema,
     desktopStateRegistrationHandlerWithIncludeRoute as typeof desktopStateHandler

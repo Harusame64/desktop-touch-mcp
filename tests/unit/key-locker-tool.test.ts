@@ -232,7 +232,7 @@ describe("key_locker — kill switch", () => {
 });
 
 describe("the shipped promise says what it covers", () => {
-  it("never carries the NEVER-shown promise without the clause that scopes it", () => {
+  it("never carries the NEVER-shown promise without the clause that scopes it, nor that clause without the behaviour it points at", () => {
     // A TEXT PIN, and it pins a PAIRING rather than a sentence — which is the only part
     // of this a machine can hold. The promise was already scoped by its subject
     // ("Secrets are entered once into the locker's own secure dialog … they are NEVER
@@ -287,5 +287,27 @@ describe("the shipped promise says what it covers", () => {
       locker!.description,
       "the promise ships without the clause that scopes it, or with the clause detached from it",
     ).toContain(JOINED);
+
+    // AND THE PLACE THE PROMISE STOPS MUST STILL SAY SO. The locker's clause points at a
+    // behaviour documented in `desktop_state`; delete that caveat in a token-trim pass
+    // and the clause survives pointing at nothing, with this file green — the half that
+    // matters going unheld by the cell whose stated rationale is "whoever rewords has to
+    // come here" (gate 2 on `1f42968`, 2026-09-13).
+    //
+    // Pinned as two clauses, not one joined string: unlike the locker's pair these are
+    // separate sentences, and the property is that BOTH are said, not that they are
+    // adjacent. The second is deliberately the hedged half — the categorical version of
+    // it ("a masked field comes back without it") was the defect this round removed, so
+    // pinning the hedge is what stops it coming back.
+    const state = STUB_TOOL_CATALOG.find((t) => t.name === "desktop_state");
+    expect(state, "desktop_state must be in the shipped catalogue").toBeDefined();
+    expect(
+      state!.description,
+      "desktop_state stopped saying that a focused field's value is returned",
+    ).toContain("a plain credential field's value comes back like any other");
+    expect(
+      state!.description,
+      "the masking half must stay hedged — the UIA road enforces nothing",
+    ).toContain("nothing here checks for a masked control, so do not rely on it being absent");
   });
 });
