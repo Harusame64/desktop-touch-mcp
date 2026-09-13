@@ -48,6 +48,16 @@
  * path `tsc` deleted. The inline spelling is already in this repo
  * (`key-locker-capture-driver.ts` → `ssh-session-watch.js`).
  *
+ * WRITING THIS FILE: use a writer that does NOT interpret escapes — a quoted
+ * heredoc, an editor, `String.fromCharCode` — never `printf` or a shell-interpolated
+ * `node -e`. win2 lost a day's instrument to the other kind on 2026-09-13: a regex
+ * meant to say "word boundary" was saved with a literal BACKSPACE in it, so the flag
+ * it guarded never fired, and the silence read exactly like "there is nothing here to
+ * skip". Four layers did it on one day, including the writer that saved the lesson
+ * ABOUT it. The sweep that finds it is
+ * `LC_ALL=C grep -rn $'[\x01-\x08\x0b\x0c\x0e-\x1f]'` with a positive control,
+ * because a sweep that finds nothing and a sweep that cannot fire look identical.
+ *
  * PATHS ARE COMPARED IN POSIX SPELLING. `path.join` answers `src\engine\win32.ts`
  * on Windows, and the literals here are `/`-spelled, so an unnormalised walker is
  * RED on the machine that runs the pre-merge capture — and red on CONTROL 1 first,
