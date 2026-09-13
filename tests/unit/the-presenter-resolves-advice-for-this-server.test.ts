@@ -381,6 +381,23 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       ]).if_unexpected.try_next;
       expect(out).toEqual([{ action: "keep me", args: { k: 1 } }]);
     });
+    // AND THE CONTAINER, which is where this species stops. Three gate rounds each
+    // moved the same guard one expression up this road - `[{}]` reached `.replace`,
+    // `[null]` reached `.action`, `undefined` reached `.map`. Guarding the instance a
+    // third time invites a fourth round; the cell is written against the CONTAINER so
+    // that it covers the shape rather than the example.
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      for (const notAList of [undefined, null, "rows", 7, {}]) {
+        expect(() =>
+          buildFailureEnvelope("X", notAList as unknown as TryNextAction[]),
+        ).not.toThrow();
+        expect(
+          buildFailureEnvelope("X", notAList as unknown as TryNextAction[]).if_unexpected
+            .try_next,
+        ).toEqual([]);
+      }
+    });
   });
 
   it("does not blame the configuration for a caller's mistake", () => {

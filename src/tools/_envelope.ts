@@ -1239,6 +1239,15 @@ export function compatFailureRaw(
  * edit: it sits outside the hunk, which is exactly why it keeps being left behind.
  */
 function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
+  // THE CONTAINER, and this is where the species stops. Three rounds of gates have
+  // each moved the same guard one expression further up this road: `[{}]` reached
+  // `.replace`, `[null]` reached `.action`, and `undefined` reaches `.map` — the same
+  // shape each time, from `tests/**` and from JS, on a road whose stated rule is that
+  // it never throws because every caller is already building a refusal. Guarding the
+  // instance again would invite a fourth round; guarding the container ends it. `[]`
+  // is also the RIGHT shape, where the pre-B2b answer for this input was
+  // `try_next: undefined` against a type that says `TryNextAction[]`.
+  if (!Array.isArray(tryNext)) return [];
   // Why the batched call is kept rather than reverted to one call per row: the
   // resolver's pattern stays hoisted. Its first version re-paired by index against a
   // COMPACTED array — every row after a drop took the next survivor's text while

@@ -287,6 +287,7 @@ const NATIVE = [
   "src/engine/key-locker-host.ts",
 ];
 const ADVICE = "src/tools/_advice-capability.ts";
+const ROAD = "src/tools/_errors.ts";
 const LEAF = "src/engine/key-locker/key-locker-switch.ts";
 
 describe("the advice road's import graph", () => {
@@ -321,14 +322,24 @@ describe("the advice road's import graph", () => {
     }
 
     const advice = reach(ADVICE);
+    // AND FROM THE ROAD ITSELF, not only from the resolver. The property the leaf's
+    // rationale claims is about the REFUSAL ROAD — "`_errors.ts` … is reached by every
+    // refusal, on every platform" — and this walk was rooted one module downstream of
+    // it, so the sentence was asserted about a different entry point than the one it
+    // named (gate 2, 2026-09-13, sixth round). `_errors.ts` is the root that matches
+    // the claim: everything the resolver pulls in, plus everything else the refusal
+    // road pulls in beside it.
+    const road = reach(ROAD);
 
     // CONTROL 2: nothing was skipped on the way. Without this, a specifier the
     // resolver cannot follow makes the claim below pass by seeing nothing.
     expect(advice.unresolved, "every relative import on the advice road must resolve").toEqual([]);
+    expect(road.unresolved, "and on the refusal road it is reached from").toEqual([]);
     expect(locker.unresolved, "and on the control's road too").toEqual([]);
 
     for (const n of NATIVE) {
       expect(advice.files, `the advice road must not reach ${n}`).not.toContain(n);
+      expect(road.files, `the refusal road must not reach ${n}`).not.toContain(n);
     }
     // Nor through the manager, which is the module the predicate used to live in.
     expect(advice.files).not.toContain("src/engine/key-locker/key-locker-manager.ts");
