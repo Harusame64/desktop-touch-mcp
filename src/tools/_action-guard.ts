@@ -281,7 +281,18 @@ function titleVerificationStep(): string {
 
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
-  target?: string
+  target?: string,
+  /**
+   * The kind of thing that was being aimed at, where the caller has one.
+   *
+   * `target_not_found` is the status with more than one KIND of producer, and until
+   * this parameter existed the arm could not tell them apart: a `browser_*` call whose
+   * tab could not be resolved was told to verify a WINDOW TITLE, through a lister that
+   * has never returned a tab (gate 1, 2026-09-13). The catalogue was split by producer
+   * in the same round and that did not repair this road — `AutoGuardBlocked`'s first
+   * line tells the caller to read `summary.next`, so the leading advice is built here.
+   */
+  kind?: ActionTargetDescriptor["kind"],
 ): string {
   switch (status) {
     case "ok":
@@ -327,7 +338,16 @@ function nextStepFor(
           : `Pass hwnd to name one window exactly (${byHandle} returns it), or use a more specific windowTitle${matched}`;
       }
     case "target_not_found":
-      return titleVerificationStep();
+      // A browser target does not resolve through the window enumeration, so neither
+      // provider of `list_window_titles` can answer for it. `browser_open` is what
+      // reconnects and lists the current tabs; it is registered at every corner
+      // (`registerBrowserTools` runs before the `_desktopV2` branch), so no capability
+      // is involved. The cause is deliberately NOT named — `resolveBrowserTabTarget`
+      // returns zero candidates for a stale id, an unavailable CDP, an empty tab list
+      // and a title/URL binding miss alike, and `tabId` is optional to begin with.
+      return kind === "browserTab"
+        ? "The browser target did not resolve. Call browser_open to reconnect and list the current tabs, then retry with one of them"
+        : titleVerificationStep();
     case "identity_changed":
       return "Target window was replaced. Take a new screenshot.";
     case "blocked_by_modal":
@@ -925,7 +945,7 @@ export async function runActionGuard(
             "it is not, nothing here addresses it by handle — keyboard with " +
             "windowTitle:\"@active\" reaches whatever holds the foreground, which " +
             "is only your window if it can hold it."
-          : nextStepFor(status),
+          : nextStepFor(status, undefined, descriptor?.kind),
       },
       block: true,
       // The catalogue's two lines for this status name `desktop_discover` and

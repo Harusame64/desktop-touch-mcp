@@ -83,7 +83,7 @@
     },
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 1115,
+      "line": 1135,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"

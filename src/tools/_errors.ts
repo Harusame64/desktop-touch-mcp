@@ -91,6 +91,17 @@ const SUGGESTS: Record<string, string[]> = {
     // (gate 2, 2026-09-13; the general form of this axis is B4's sweep).
     "Use {tool:set_value} for text input fields — set the value rather than invoking the control, passing the new text as the value argument its schema names.",
     "If that tool also takes an `action` argument, name the set-value action explicitly: its default affordance is the invoke that has just failed.",
+    // THE THIRD ARGUMENT, and the one the caller cannot invent. This refusal comes from
+    // `click_element` — a name, an automationId and a window — while `desktop_act`'s
+    // `lease` is REQUIRED, and no lease is anywhere in what the caller has. Following
+    // the two lines above literally therefore fails at the protocol layer, unless a
+    // still-valid lease happened to survive from an earlier discovery (gate 1,
+    // 2026-09-13). win2's sweep had classified exactly this as `ONE_HOP` — obtainable,
+    // one call away — and a hop the advice does not name is a hop the caller does not
+    // take. The source is not named here on purpose: the tool that needs a lease says
+    // in its own schema which call returns one, and the tool that does not need one
+    // does not exist at the corner where that call does.
+    "If that tool takes a `lease`, this refusal has none to hand over: run the discovery call its schema names first, then set the value on what that returns.",
     "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after {tool:reidentify_element})",
   ],
   BlockedKeyCombo: [
@@ -273,7 +284,15 @@ const SUGGESTS: Record<string, string[]> = {
     // — the third correction to this one sentence, and the second where the ANTECEDENT
     // was broader than the cause named in the consequent).
     "If a desktop element was not found (target_not_found) and its window is still open, run {tool:reidentify_element} — the element no longer matches the current desktop state.",
-    "If a browser_* call was refused with target_not_found, the stale part is the tabId rather than an element: call browser_open for the current tab ids. No tab appears in what {tool:reidentify_element} returns.",
+    // AND THE DIAGNOSIS IS NOT NAMED, because the first version of this line named the
+    // wrong half again. "The stale part is the tabId" asserts one cause where
+    // `resolveBrowserTabTarget` has four: a supplied id that matches no open tab, an
+    // unavailable CDP, an empty tab list, and a title/URL binding that misses — and
+    // `tabId` is optional in the browser schemas, so a caller who never sent one was
+    // told theirs had gone stale. Same shape as the correction two comments up, made
+    // one round later on the line that correction produced: the RECOVERY is stable
+    // across all four, so the recovery is what the line carries (gate 1, 2026-09-13).
+    "If a browser_* call was refused with target_not_found, the target is a tab and not a desktop element: call browser_open to reconnect and list the current tabs, then retry with one of them. No tab appears in what {tool:reidentify_element} returns.",
     "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
     "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
