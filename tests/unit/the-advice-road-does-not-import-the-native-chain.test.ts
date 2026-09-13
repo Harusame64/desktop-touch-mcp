@@ -146,6 +146,14 @@ function edgesOf(file: string): Edges {
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
       const spec = literal(node.moduleSpecifier);
       if (spec !== null && !exportErased(node)) out.value.push(spec);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      // `import x = require("…")` — a separate AST node, not a call expression, and
+      // under NodeNext tsc emits a top-level `createRequire`/`__require` for it, so it
+      // evaluates the target at load (gate 1, 2026-09-13, sixth spelling this guard
+      // has been shown). The reviewer verified the emit; the mutation below verifies
+      // the catch.
+      const spec = literal(node.moduleReference.expression);
+      if (spec !== null) out.require.push(spec);
     } else if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const spec = literal(node.arguments[0]);
