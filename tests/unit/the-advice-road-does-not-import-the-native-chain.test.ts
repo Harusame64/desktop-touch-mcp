@@ -19,9 +19,10 @@
  * this closure. What this cell measures is a closure, NOT the process: other roots
  * still load the addon, and must.
  *
- * WHAT MAKES THIS EVIDENCE rather than a green light — three controls, because the
- * first version of this cell had one and it was not enough (gate 2, 2026-09-13,
- * second round on this branch):
+ * WHAT MAKES THIS EVIDENCE rather than a green light — FIVE controls, each added by a
+ * round that showed the previous set was not enough (gate 2, 2026-09-13; the count is
+ * stated because a reader counting them against a stale "three" cannot tell whether
+ * two were added or two are missing):
  *
  *   1. the same walker MUST reach all three native modules from
  *      `key-locker-tool.ts`. A walker that stops resolving reports "clean" for the
@@ -62,6 +63,16 @@
  * say what tsc will erase, and a call expression says what `import(…)` and `require(…)`
  * do. **This is the same lesson as the entity table**: when a rule depends on a
  * grammar, use the grammar's own reader rather than typing what it accepts.
+ *
+ * WHAT THIS CELL CLAIMS, AND WHERE THE CLAIM STOPS. It says: **no edge OF THE KINDS
+ * BELOW reaches the native chain from the advice road.** It does not say "no edge".
+ * The kinds are: static `import`/`export … from`, bare `import "…"`, `import(…)`,
+ * `require(…)`, `createRequire(…)` under any local name, and
+ * `import x = require("…")`. Six rounds each found one more spelling — that is the
+ * evidence for stating a limit rather than claiming completeness, and the reason the
+ * list is written out: a reader adding the seventh should add it here and to the
+ * mutations, not discover that the guard quietly never covered it. The mutation set
+ * IS the specification of this cell's reach.
  *
  * WRITING THIS FILE: use a writer that does NOT interpret escapes — a quoted
  * heredoc, an editor, `String.fromCharCode` — never `printf` or a shell-interpolated
@@ -119,25 +130,53 @@ function edgesOf(file: string): Edges {
   const literal = (n: ts.Node | undefined): string | null =>
     n !== undefined && ts.isStringLiteralLike(n) ? n.text : null;
 
-  // `const req = createRequire(import.meta.url)` then `req("…")` — the common
-  // spelling, and the one the first version of this check missed while catching the
-  // immediate `createRequire(…)("…")` form. Found by running the mutation instead of
-  // reading it: the reviewer's example used the immediate form, real code does not.
-  const requireBindings = new Set<string>();
-  const collect = (node: ts.Node): void => {
+  // `createRequire` is reached under whatever name the file gave it, so the names are
+  // RESOLVED rather than matched. Three rounds of mutations produced three spellings:
+  // the immediate `createRequire(…)("…")` (a reviewer's example), the bound
+  // `const req = createRequire(…)` (what real code writes), and — found by gate 2 on
+  // the head before this one — the aliased `import { createRequire as cr }` and the
+  // namespace `import * as mod from "node:module"; mod.createRequire(…)`. Matching the
+  // identifier's text caught the first two and read as complete.
+  const factories = new Set<string>(["createRequire"]); // local names OF the factory
+  const namespaces = new Set<string>(); // `import * as m from "node:module"`
+  const requireFns = new Set<string>(["require"]); // names bound to a require function
+
+  const isFactory = (e: ts.Expression): boolean =>
+    (ts.isIdentifier(e) && factories.has(e.text)) ||
+    (ts.isPropertyAccessExpression(e) &&
+      ts.isIdentifier(e.expression) &&
+      namespaces.has(e.expression.text) &&
+      e.name.text === "createRequire");
+
+  const collectNames = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const from = node.moduleSpecifier.text;
+      const bindings = node.importClause?.namedBindings;
+      if (from === "node:module" || from === "module") {
+        if (bindings !== undefined && ts.isNamespaceImport(bindings)) namespaces.add(bindings.name.text);
+        if (bindings !== undefined && ts.isNamedImports(bindings)) {
+          for (const el of bindings.elements) {
+            if ((el.propertyName ?? el.name).text === "createRequire") factories.add(el.name.text);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, collectNames);
+  };
+  const collectBindings = (node: ts.Node): void => {
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.initializer !== undefined &&
       ts.isCallExpression(node.initializer) &&
-      ts.isIdentifier(node.initializer.expression) &&
-      node.initializer.expression.text === "createRequire"
+      isFactory(node.initializer.expression)
     ) {
-      requireBindings.add(node.name.text);
+      requireFns.add(node.name.text);
     }
-    ts.forEachChild(node, collect);
+    ts.forEachChild(node, collectBindings);
   };
-  collect(src);
+  collectNames(src);
+  collectBindings(src);
 
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node)) {
@@ -158,19 +197,14 @@ function edgesOf(file: string): Edges {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const spec = literal(node.arguments[0]);
         if (spec !== null) out.dynamic.push(spec);
-      } else if (
-        ts.isIdentifier(node.expression) &&
-        (node.expression.text === "require" || requireBindings.has(node.expression.text))
-      ) {
+      } else if (ts.isIdentifier(node.expression) && requireFns.has(node.expression.text)) {
         const spec = literal(node.arguments[0]);
         if (spec !== null) out.require.push(spec);
-      } else if (ts.isCallExpression(node.expression)) {
-        // `createRequire(import.meta.url)("…")` — the callee is itself a call.
-        const inner = node.expression.expression;
-        if (ts.isIdentifier(inner) && inner.text === "createRequire") {
-          const spec = literal(node.arguments[0]);
-          if (spec !== null) out.require.push(spec);
-        }
+      } else if (ts.isCallExpression(node.expression) && isFactory(node.expression.expression)) {
+        // The immediate form: `createRequire(import.meta.url)("…")`, under any of the
+        // factory's local names.
+        const spec = literal(node.arguments[0]);
+        if (spec !== null) out.require.push(spec);
       }
     }
     ts.forEachChild(node, visit);
@@ -264,12 +298,18 @@ describe("the advice road's import graph", () => {
     // silently (gate 2, 2026-09-13, fifth round). The dependency is asserted rather
     // than written in a comment, so the tidy-up that enables the flag reddens here and
     // reads why.
-    const cfg = JSON.parse(
-      readFileSync(join(REPO, "tsconfig.json"), "utf8").replace(/^\s*\/\/[^\n]*$/gm, ""),
-    ) as { compilerOptions?: Record<string, unknown> };
+    // Read with the compiler, not `JSON.parse`: tsconfig is JSONC, and this repo uses
+    // trailing comments and commas. A hand-rolled strip throws a bare `SyntaxError`
+    // saying nothing about the property — a false red on a guard, which is how guards
+    // get deleted. `parseJsonConfigFileContent` also follows `extends`, so a base
+    // config that sets the flag cannot pass silently (gate 2, sixth round).
+    const path = join(REPO, "tsconfig.json");
+    const read = ts.readConfigFile(path, ts.sys.readFile);
+    expect(read.error, "tsconfig.json must be readable for this pin to mean anything").toBeUndefined();
+    const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(path));
     expect(
-      cfg.compilerOptions?.verbatimModuleSyntax,
-      "verbatimModuleSyntax changes what tsc erases — see typeOnly()",
+      parsed.options.verbatimModuleSyntax,
+      "verbatimModuleSyntax changes what tsc erases — see erased() / exportErased()",
     ).not.toBe(true);
   });
 
