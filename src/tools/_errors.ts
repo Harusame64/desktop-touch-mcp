@@ -1516,6 +1516,13 @@ export function failArgs(
   toolName: string,
   context?: Record<string, unknown>
 ): ToolResult {
+  // NOT MEMOISED, deliberately (gate 2, 2026-09-13, tenth round). `SUGGESTS.InvalidArgs`
+  // is fixed and placeholder-free, so this renders the same two lines every time and
+  // could be cached against the capture. It is not, because a cache keyed on a mutable
+  // module global is a new correctness surface — the exact kind this round exists to
+  // remove — bought against a cost that lands only on a REFUSAL: one `RegExp` and two
+  // `String.replace` calls on lines with nothing to replace. Revisit if the capture
+  // ever becomes per-server, when the key stops being global.
   const invalidArgsAdvice = renderAdviceWithFloor(SUGGESTS.InvalidArgs);
   const failure: ToolFailure = {
     ok: false,

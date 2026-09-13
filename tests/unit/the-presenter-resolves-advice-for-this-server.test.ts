@@ -134,12 +134,16 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     const file = fileURLToPath(new URL("../../src/server-windows.ts", import.meta.url));
     const src = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.ESNext, true);
     let insideCreateMcpServer = false;
+    let found = 0;
     let called = false;
     const visit = (node: ts.Node): void => {
       const isTarget =
         (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) &&
         node.name?.text === "createMcpServer";
-      if (isTarget) insideCreateMcpServer = true;
+      if (isTarget) {
+        insideCreateMcpServer = true;
+        found += 1;
+      }
       if (
         insideCreateMcpServer &&
         ts.isCallExpression(node) &&
@@ -152,10 +156,15 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       if (isTarget) insideCreateMcpServer = false;
     };
     visit(src);
+    // THE CONTROL FIRST, and it counts what the WALK matched rather than what the TEXT
+    // contains. `getText().toContain("function createMcpServer")` was satisfied by the
+    // phrase appearing anywhere, a comment included, and said nothing about whether
+    // `isTarget` ever fired — so converting the declaration to
+    // `const createMcpServer = () => {…}` would have reported "no call" when the truth
+    // is "the walk cannot see this shape" (gate 2, 2026-09-13, tenth round). Those are
+    // different failures and the control exists to tell them apart.
+    expect(found, "the walk must recognise createMcpServer's declaration shape").toBe(1);
     expect(called, "createMcpServer must capture the configuration it registered against").toBe(true);
-    // The control: the same walk must find the function at all, or "no call" would
-    // mean "no function" and read the same.
-    expect(src.getText()).toContain("function createMcpServer");
   });
 
   it("keeps production off the renderers that read ambient env", () => {
@@ -244,7 +253,11 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
           if (ts.isCallExpression(node)) {
             const e = node.expression;
             if (ts.isIdentifier(e) && banned.has(e.text)) {
-              if (!(e.text === "captureAdviceConfiguration" && rel.endsWith(CAPTURE_SITE))) {
+              // `===`, not `endsWith`: the latter also exempts a future
+              // `src/legacy/server-windows.ts` or `src/http-server-windows.ts`, and a
+              // SECOND capture site is the "one slot, two servers" hazard this gate is
+              // the only thing standing against (gate 2, tenth round).
+              if (!(e.text === "captureAdviceConfiguration" && rel === CAPTURE_SITE)) {
                 offenders.push(`${rel}: ${e.text}`);
               }
             } else if (
@@ -478,6 +491,34 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       // The control: a real list still renders, so an over-eager guard is not what
       // makes the two assertions above pass.
       expect(renderAdviceForCaller(["a real line"])).toEqual(["a real line"]);
+    });
+    // A PLAIN STRING ROW, which is the shape the container guard did not cover and the
+    // one most likely to arrive: the flat road's sibling field IS `string[]`, so a
+    // caller moving a `suggest` array into `options.tryNext` writes exactly this.
+    // Measured before the fix: `["do this"]` answered `[]` — every line gone, and no
+    // floor, because a mapped `undefined` is correctly not a withheld sentence. `main`
+    // shipped the strings, so this branch was WORSE there (gate 2, tenth round).
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      expect(
+        buildFailureEnvelope("X", ["do this"] as unknown as TryNextAction[]).if_unexpected
+          .try_next,
+      ).toEqual(["do this"]);
+      expect(
+        buildFailureEnvelope("X", [
+          "do this",
+          { action: "and this" },
+        ] as unknown as TryNextAction[]).if_unexpected.try_next,
+      ).toEqual(["do this", { action: "and this" }]);
+    });
+    // …and it goes through the seam like any other line, rather than being waved past.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      expect(
+        buildFailureEnvelope("X", [
+          "Save it with {tool:credential_store}",
+        ] as unknown as TryNextAction[]).if_unexpected.try_next,
+      ).toEqual([{ action: ADVICE_WITHHELD_FLOOR }]);
     });
   });
 

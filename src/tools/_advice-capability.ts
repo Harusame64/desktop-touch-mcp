@@ -828,6 +828,17 @@ export function captureAdviceConfiguration(cfg: AdviceConfiguration): void {
     // ONCE, and the flag is what makes that true: `captured` is overwritten every
     // call, so two alternating surfaces logged on every `createMcpServer()` — once per
     // request in stateless HTTP mode — while this comment claimed "once" (gate 2).
+    //
+    // **LATCHED FOR THE LIFE OF THE PROCESS, and that is the deliberate half of the
+    // trade** (gate 2, 2026-09-13, tenth round). The flag is only cleared by
+    // `resetAdviceConfiguration`, which the gate bans from production, so the FIRST
+    // flip is reported and every later one is silent while `captured` keeps changing
+    // under in-flight responses — the presenters resolve at response time, not at
+    // registration. The hazard is ongoing; the report is not. It stays this way
+    // because the alternative is a line per request on a road that already cannot be
+    // reached today (nothing in production mutates these variables), and because the
+    // real answer is per-server plumbing rather than better logging — filed with the
+    // one-slot scope in the internal `remaining-work.md`, not fixed here.
     warnedAboutDisagreement = true;
     console.error(
       "[desktop-touch] advice configuration changed mid-process: " +

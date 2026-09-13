@@ -1268,14 +1268,32 @@ function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
   // because values `tsc` cannot vouch for reach it from `tests/**` and from JS. A
   // `?.` that produced `undefined` and then a signature that forbids it would have to
   // lie somewhere; it lies here, in one place, with the reason beside it.
-  const actions = tryNext.map(
-    (row) => (row as TryNextAction | null | undefined)?.action,
+  // A PLAIN STRING IS A ROW TOO, and leaving it out made this branch WORSE than
+  // `main` at the one shape most likely to arrive: the sibling field on the flat road
+  // IS `string[]`, so a caller moving a `suggest` array into `options.tryNext` writes
+  // exactly this. Measured (gate 2, 2026-09-13, tenth round):
+  //
+  //   main    ["do this"] → ["do this"]        ["do this", {action}] → both
+  //   before  ["do this"] → []                 ["do this", {action}] → the object only
+  //
+  // Every line silently gone, and no floor: the mapped `undefined` is not a sentence,
+  // so `adviceExisted` correctly says nothing was withheld. The row is rendered like
+  // any other and put back AS A STRING, because this round's claim is byte stability
+  // and `main` shipped a string here.
+  const actions = tryNext.map((row) =>
+    typeof row === "string" ? row : (row as TryNextAction | null | undefined)?.action,
   ) as readonly string[];
   const rendered = renderAdviceEachForCaller(actions);
   const out: TryNextAction[] = [];
   for (const [i, row] of tryNext.entries()) {
     const text = rendered[i];
     if (text === null || text === undefined) continue; // dropped here, or not a string at all
+    if (typeof row === "string") {
+      // Out of contract and preserved as found: spreading a string would have made an
+      // object of its character indices.
+      out.push(text as unknown as TryNextAction);
+      continue;
+    }
     out.push(text === row.action ? row : { ...row, action: text });
   }
   // THE FLOOR. `toFailureEnvelope` substitutes a generic hint when the DICTIONARY has
