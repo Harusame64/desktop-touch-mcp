@@ -605,18 +605,20 @@ export type AdviceLine = string;
  *   configuration that registration actually used, rather than letting both re-derive
  *   it from ambient env at different times.
  *
- *   **4. This module's import of `keyLockerDisabled` drags the native chain onto the
- *   failure road, and the failure road is where `_errors.ts` lives.** The predicate is
- *   one line of env reading, but it comes from `key-locker-manager.ts`, which
- *   statically imports `key-locker-host.js` (`node:child_process`, `node:net`) and the
- *   win32 chain, and `engine/win32.ts` calls `win32SetProcessDpiAwareness(2)` as a
- *   module-evaluation side effect. `index.ts:10-13` says the repo deliberately avoids
- *   static native imports because they throw off Windows. Today nothing imports this
- *   module but its cells, so nothing happens; wire the presenter into `_errors.ts` —
- *   which today imports only two dependency-free modules — and every importer of the
- *   error envelope, on every platform, pulls that chain. `resolveV2Activation` shows
- *   the cheap shape: its predicate lives in a leaf module with no imports at all
- *   (gate 2, 2026-09-13, third round).
+ *   **4. ~~This module's import of `keyLockerDisabled` drags the native chain onto
+ *   the failure road.~~ DONE 2026-09-13, before the conversion, because the wiring is
+ *   what would have made it bite.** The predicate now lives in
+ *   `engine/key-locker/key-locker-switch.ts`, a leaf that imports nothing, and
+ *   `key-locker-manager.ts` re-exports it so the switch still has one reader.
+ *   Measured by walking static imports from this file: **15 modules and the native
+ *   chain reached, down to 3 and none** — with the control that the same walker still
+ *   reaches all three from `key-locker-tool.ts`. It is kept as a numbered item rather
+ *   than deleted because the list is a checklist and a silently vanished line reads
+ *   like a line that was never there. **The property is pinned by a cell**
+ *   (`the-advice-road-does-not-import-the-native-chain.test.ts`), which is the part
+ *   that was missing when this was only prose: `tsc`, `eslint` and every other cell
+ *   stay green if a later edit gives the leaf an import (gate 2, third and fourth
+ *   rounds; the cell answers the fourth).
  */
 export function renderAdvice(
   lines: readonly AdviceLine[],
