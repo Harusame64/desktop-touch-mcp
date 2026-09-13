@@ -1215,7 +1215,10 @@ export function registerDesktopStateTools(server: McpServer): void {
       // AND THE OTHER HALF, WHICH THE FIRST VERSION OF THIS CAVEAT LEFT OUT. "Do not rely on it
       // being absent" says nothing about relying on it being PRESENT, and the value is not always
       // there: `focusedElement` is preferred from the perception view (`buildElementInfoFromView`),
-      // and that shape has no `value` field at all — the UIA road is the only one that carries one.
+      // and that shape has no `value` field at all. The invariant is about THAT road and no other:
+      // the CDP read carries a value too (`CDP_FOCUSED_ELEMENT_SCRIPT` returns `el.value` for an
+      // unmasked element, and `buildElementInfoFromCdp` keeps a non-empty one), so what is true is
+      // that the VIEW road can never carry one — not that only UIA can (gate on `05f31f6`).
       // Measured on Windows 2026-09-14 (win2, `dev/pr639-post-value-named-window` `a4802dd`): with
       // the same element focused, 24 of 24 reads answered with a value while
       // `hints.focusedElementSource` was `uia`, and 0 of 8 did while it was `view` — the element's
