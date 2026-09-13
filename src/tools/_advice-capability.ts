@@ -752,6 +752,13 @@ export function renderAdviceEach(
 }
 
 /**
+ * The one slot. See {@link AdviceConfiguration} for WHY it is a capture and not
+ * `process.env` at call time, and for the hazard the fallback carries.
+ */
+let captured: Readonly<AdviceConfiguration> | null = null;
+let warnedAboutDisagreement = false;
+
+/**
  * THE CONFIGURATION THE PRESENTER RESOLVES AGAINST, captured once where
  * registration reads it.
  *
@@ -775,11 +782,7 @@ export function renderAdviceEach(
  * `createMcpServer`, with a control that the walk finds the function at all — reading
  * the shipped source rather than a copy of the belief about it. Importing the server
  * to check would start one.
- */
-let captured: Readonly<AdviceConfiguration> | null = null;
-let warnedAboutDisagreement = false;
-
-/**
+ *
  * The RESOLVED surface, not the environment that suggested it.
  *
  * **The first version of this captured `process.env`, and gate 2 showed that is the
@@ -862,9 +865,19 @@ export function resetAdviceConfiguration(): void {
  * because gate 2 found the flat road and the envelope road answering differently for
  * one code; writing the sentence out twice would have left that fixed by hand and
  * re-breakable by a one-sided reword, with every cell green (gate 2, 2026-09-13).
+ *
+ * **And one constant means the sentence must be true on BOTH roads, which the first
+ * version was not.** It ended "— see the error message", and only the flat road has
+ * one: measured, `toToolFailure` answers `{ok, code, error, suggest}` while
+ * `buildFailureEnvelope` answers `{_version, data, as_of, confidence, if_unexpected}`
+ * and `compatFailureRaw` answers `{ok, reason, diff, if_unexpected}` — no `error` in
+ * either, and `detail` is optional and usually absent. So a `KeyLockerConsentRequired`
+ * refusal on the envelope road shipped this as its ONLY recovery line and pointed the
+ * caller at a field that is not there (gate 2, 2026-09-13, ninth round). The pointer
+ * is gone rather than made conditional: **the caller holds the whole response, and a
+ * pointer that is right on one road and wrong on the other is worse than none.**
  */
-export const ADVICE_WITHHELD_FLOOR =
-  "No recovery is available in this configuration — see the error message.";
+export const ADVICE_WITHHELD_FLOOR = "No recovery is available in this configuration.";
 
 /**
  * Whether the floor's sentence is TRUE of this input — the rule, hoisted beside the

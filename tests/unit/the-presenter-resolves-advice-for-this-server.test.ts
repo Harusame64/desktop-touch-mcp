@@ -27,7 +27,7 @@ import {
   ADVICE_WITHHELD_FLOOR,
 } from "../../src/tools/_advice-capability.js";
 import { readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { toToolFailure } from "../../src/tools/_errors.js";
@@ -179,8 +179,21 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       "providerFor",
       "providerForName",
       "adviceConfigurationFromEnv",
+      // THE WRITE SIDE, added in the ninth round. The read side was banned four ways
+      // and the write side not at all, though it reaches the same place from the
+      // other end: `resetAdviceConfiguration()` in production returns the whole
+      // process to `captured ?? adviceConfigurationFromEnv()`, which IS call-time
+      // ambient resolution, and a stray `captureAdviceConfiguration({…})` silently
+      // redirects every presenter — the disagreement warning fires at most once per
+      // process, and nothing checks `adviceConfigurationWasCaptured()` at runtime.
+      "resetAdviceConfiguration",
+      "captureAdviceConfiguration",
     ]);
+    // …with the ONE site that must call it. The cell above asserts that this call
+    // exists inside `createMcpServer`; this one asserts nothing else makes it.
+    const CAPTURE_SITE = "server-windows.ts";
     const offenders: string[] = [];
+    const spellings: string[] = [];
     let scanned = 0;
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -190,7 +203,15 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
           continue;
         }
         if (!p.endsWith(".ts")) continue;
-        const rel = relative(root, p);
+        // POSIX-SPELLED, because `relative()` answers backslashes on Windows and the
+        // comparison below is against a `/`-spelled literal — so on the machine this
+        // server ships on, the exclusion was silently inert and the module would have
+        // scanned itself (gate 2, 2026-09-13, ninth round). The sibling gate in this
+        // directory carries a control for exactly this hazard and this one did not;
+        // it does now, below. Harmless today only because the module has no
+        // self-import, which is a property of today's code, not of the gate.
+        const rel = relative(root, p).split(sep).join("/");
+        spellings.push(rel);
         if (rel === "tools/_advice-capability.ts") continue; // the module's own definitions
         scanned += 1;
         const file = ts.createSourceFile(p, readFileSync(p, "utf8"), ts.ScriptTarget.ESNext, true);
@@ -223,7 +244,9 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
           if (ts.isCallExpression(node)) {
             const e = node.expression;
             if (ts.isIdentifier(e) && banned.has(e.text)) {
-              offenders.push(`${rel}: ${e.text}`);
+              if (!(e.text === "captureAdviceConfiguration" && rel.endsWith(CAPTURE_SITE))) {
+                offenders.push(`${rel}: ${e.text}`);
+              }
             } else if (
               ts.isPropertyAccessExpression(e) &&
               ts.isIdentifier(e.expression) &&
@@ -242,6 +265,19 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // The control first: a walk that scans nothing reports no offender and reads
     // exactly like a clean tree.
     expect(scanned, "the walk must have read the source tree").toBeGreaterThan(100);
+    // CONTROL, the one the sibling gate carries and this one did not: on Windows
+    // `relative()` answers backslashes, and the self-exclusion above compares against
+    // a `/`-spelled literal. Without this the exclusion is inert on the platform the
+    // server ships on, and no assertion here would notice (gate 2, ninth round).
+    // Asserted rather than trusted, because this machine cannot produce the spelling.
+    for (const rel of spellings) {
+      expect(rel, `paths must be posix-spelled: ${rel}`).not.toMatch(/\\/);
+    }
+    // …and that the exclusion actually excluded something, so it cannot pass by
+    // matching nothing on either platform.
+    expect(spellings, "the module itself must be among the files walked").toContain(
+      "tools/_advice-capability.ts",
+    );
     expect(offenders, "production must call renderAdviceForCaller, not the env readers").toEqual([]);
   });
 
