@@ -95,6 +95,12 @@ function posix(p: string): string {
  * `import Foo, { type Bar }` keeps a value binding and is NOT type-only.
  */
 function typeOnly(clause: string): boolean {
+  // A clause that swallowed a whole statement is not a clause. `EDGE`'s body stops at
+  // `;`, `'` and `"`, and a semicolon-less `export type R = number` above a value
+  // import has none of those — so the two merge, the clause begins with `type`, and a
+  // REAL edge would be skipped. Measured by gate 2 (2026-09-13, fourth round), and
+  // reachable here: eslint's `semi` does not cover `TSTypeAliasDeclaration`.
+  if (/\b(?:import|export)\b/.test(clause)) return false;
   if (/^\s*type\b/.test(clause)) return true;
   const braced = /\{([^}]*)\}/.exec(clause);
   if (braced === null) return false; // default or namespace import: a value edge
@@ -169,6 +175,20 @@ describe("the advice road's import graph", () => {
     // Nor through the manager, which is the module the predicate used to live in.
     expect(advice.files).not.toContain("src/engine/key-locker/key-locker-manager.ts");
 
+    // CONTROL 5: a TOP-LEVEL dynamic import evaluates at module load, on every
+    // platform, and the walker cannot see it — `import(…)` is not `import … from`.
+    // The header's argument (the door is reached through modules that must be
+    // imported statically first) holds for a dynamic import inside a FUNCTION, which
+    // costs nothing until called; it does not hold for one at the top level. The
+    // advice closure is three small files, so the strict form is affordable here:
+    // no `import(` at all. The control road is exempt — `native-engine.ts` reaches
+    // the addon with exactly this shape, on purpose (gate 2, 2026-09-13, fourth
+    // round, which verified the walker reports zero edges for it).
+    for (const f of advice.files) {
+      const text = stripComments(readFileSync(join(REPO, f), "utf8"));
+      expect(text, `no dynamic import on the advice road: ${f}`).not.toMatch(/\bimport\s*\(/);
+    }
+
     // CONTROL 4: the spelling itself. On Windows `path.join` answers backslashes, and
     // every assertion above compares against `/`-spelled literals — so without this,
     // the cell is red on the machine that runs the pre-merge capture and the subject
@@ -186,5 +206,8 @@ describe("the advice road's import graph", () => {
     const src = stripComments(readFileSync(join(REPO, LEAF), "utf8"));
     expect(src, "no import statement").not.toMatch(/^\s*import\b/m);
     expect(src, "no from clause").not.toMatch(/\bfrom\s*["']/);
+    // …and no dynamic import either: `await import("…")` at the top level of a leaf
+    // loads its target at module evaluation while matching neither regex above.
+    expect(src, "no dynamic import").not.toMatch(/\bimport\s*\(/);
   });
 });
