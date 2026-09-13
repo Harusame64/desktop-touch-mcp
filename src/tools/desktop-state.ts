@@ -1184,9 +1184,25 @@ export function registerDesktopStateTools(server: McpServer): void {
         "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. " +
         "attention='ok' means safe to proceed; other values require recovery (see suggest[]). " +
         "Set include* flags only when you need the extra data (each adds one syscall or CDP round-trip).",
+      // WHERE THE LOCKER'S PROMISE STOPS, said in the place it stops. `key_locker` now
+      // says its promise covers what the locker holds and not every password on the
+      // machine; this is the behaviour that makes that necessary, and its description
+      // advertised `focusedElement (… value …)` while saying nothing about what a
+      // credential field puts there. A reader who took the hint seriously and came
+      // looking would have found nothing and concluded the exposure was elsewhere
+      // (gate 2 on `1c22b3e`, 2026-09-13).
+      //
+      // The masking half is stated with its SOURCE, because it is not a filter this
+      // tool applies: the CDP read skips masked elements by rule
+      // (`CDP_FOCUSED_ELEMENT_SCRIPT`), and on the UIA road a password Edit simply
+      // returns nothing from `ValuePattern` — a platform behaviour, measured on Windows
+      // for one masking mechanism (WinForms `UseSystemPasswordChar`) and not a
+      // guarantee this code enforces. `IsPassword` comes back False for such a box, so
+      // a guard written against it would skip nothing.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
-        "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
+        "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
+        "focusedElement.value is the focused field's current text, so a plain credential field's value is returned like any other. A masked field comes back without it — the CDP read skips masked elements and UIA returns nothing from a password Edit — which is a property of those readers, not a filter this tool applies.",
     }),
     desktopStateRegistrationSchema,
     desktopStateRegistrationHandlerWithIncludeRoute as typeof desktopStateHandler
