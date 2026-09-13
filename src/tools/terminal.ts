@@ -715,20 +715,6 @@ export function isPaneShellAlive(paneId: string | undefined): boolean {
 }
 
 /**
- * Build a recovery `suggest[]` for a `paneId` that failed to resolve to a live pane, branched on the
- * FAILURE SHAPE so the hint matches the actual mistake instead of misdirecting.
- *
- * The #1 dogfood confusion (2026-07): an assistant passed launch_console's WINDOW TITLE
- * (`dtm-locker-console-<hex>`) into the `paneId` slot. That value never parses as a paneId, so the
- * generic `TerminalWindowNotFound` suggest ("run desktop_discover / try a partial title") pointed the
- * OPPOSITE way — while the very same value, passed as `windowTitle`, would have resolved. The three
- * branches below distinguish (a) a windowTitle-in-the-paneId-slot mixup, (b) any other malformed
- * handle, and (c) a well-formed handle whose pane is simply gone / its wt tab inactive.
- *
- * The typed CODE stays `TerminalWindowNotFound` at every call site (existing clients branch on it); only
- * the suggest text is sharpened, so this is a purely additive LLM-facing improvement.
- */
-/**
  * The advice for `terminal(action='run')` arriving with neither destination.
  *
  * SPLIT BY HAND (the user's decision of 2026-09-13). The core — which argument to pass
@@ -750,6 +736,20 @@ export function runNeedsDestinationSuggest(): string[] {
   ];
 }
 
+/**
+ * Build a recovery `suggest[]` for a `paneId` that failed to resolve to a live pane, branched on the
+ * FAILURE SHAPE so the hint matches the actual mistake instead of misdirecting.
+ *
+ * The #1 dogfood confusion (2026-07): an assistant passed launch_console's WINDOW TITLE
+ * (`dtm-locker-console-<hex>`) into the `paneId` slot. That value never parses as a paneId, so the
+ * generic `TerminalWindowNotFound` suggest ("run desktop_discover / try a partial title") pointed the
+ * OPPOSITE way — while the very same value, passed as `windowTitle`, would have resolved. The three
+ * branches below distinguish (a) a windowTitle-in-the-paneId-slot mixup, (b) any other malformed
+ * handle, and (c) a well-formed handle whose pane is simply gone / its wt tab inactive.
+ *
+ * The typed CODE stays `TerminalWindowNotFound` at every call site (existing clients branch on it); only
+ * the suggest text is sharpened, so this is a purely additive LLM-facing improvement.
+ */
 export function paneIdMissSuggest(paneId: string): string[] {
   // (a) A launch_console windowTitle passed where a paneId belongs — the single most common mixup.
   if (/^dtm-locker-console-/i.test(paneId)) {

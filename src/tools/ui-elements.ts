@@ -464,6 +464,7 @@ export const setElementValueHandler = async ({
           // catalogue, which is right for them.
           return failCode("AutoGuardBlocked", ag.summary.next, {
             suggest: [
+              "Read the error message — for this refusal it is the whole recovery.",
               // NO CAPABILITY BELONGS ON THIS LINE, and it took three attempts to see
               // why. This handler runs at ONE pair of corners, so there is nothing for
               // a presenter to vary; what the line needs is the route that exists
@@ -505,9 +506,9 @@ export const setElementValueHandler = async ({
               // answer is a concrete route rather than a capability: nothing enumerates
               // handles under the kill switch, but `desktop_state` returns
               // `focusedWindow.hwnd` at every corner, and `click_element` and `keyboard`
-              // both take a handle here — which is what `next` has been saying all
-              // along, three lines down, in `handleRecovery`.
-              "Read the error message — for this refusal it is the whole recovery.",
+              // both take a handle here — which is what `handleRecovery`, built for
+              // `next` a few lines above this refusal, has been saying all along.
+              //
               // Answers for the branch that actually fired. Flat, this line
               // offered a titleless caller a listing that drops their window
               // (`enumWindowsInZOrder` skips `!title`) and two channels of

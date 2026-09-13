@@ -481,9 +481,17 @@ const SUGGESTS: Record<string, string[]> = {
   // ADR-036 family 2 — the keyboard rung refused to post, because the characters would not have
   // reached the field named. Every line has to keep one door shut: `executor_failed` advises a
   // foreground type, and whatever holds the focus would take those characters.
+  // BOTH LINES OR NEITHER. One line here was converted and a sibling kept a literal
+  // `desktop_discover`, so at a non-v2 corner the same refusal would have named
+  // `get_ui_elements` and `desktop_discover` in one breath. It is latent — the only
+  // producer is v2-only (`desktop-register.ts`), which also means converting the first
+  // line was a no-op — but an internally inconsistent refusal is the kind of thing that
+  // stops being latent when a producer moves, and the cost of agreeing is one token
+  // (gate 2 on `a1cc0f4`, 2026-09-13). Byte-identical at the v2 corner either way, so
+  // this code stays off the hand-changed list.
   KeyboardTargetUnsafe: [
     "Nothing was typed. if_unexpected.detail names the ground: other_control (the focus is on a different control in the same window), other_window (the focus is in a different window from the field you named), or read_only (the control that would have received the characters does not take typed text).",
-    "other_control / other_window: put the focus on the field you named, then type again — the background write goes to whatever holds the focus. if_unexpected.detail names the way back for the road this act took. When it named its window by title, desktop_act action='click' on the same entity does it: a text field has no UIA invoke, so it is clicked at its position — checked against the window it was captured in when that window's handle was recorded. When it named its window by handle, no route here moves the focus to a text field yet (that click answers aim_route_failed): re-run desktop_discover by the window's title and click the field from there — except for a common dialog (Save As, Open), whose title resolves to a handle as well, so that road does not open there either.",
+    "other_control / other_window: put the focus on the field you named, then type again — the background write goes to whatever holds the focus. if_unexpected.detail names the way back for the road this act took. When it named its window by title, desktop_act action='click' on the same entity does it: a text field has no UIA invoke, so it is clicked at its position — checked against the window it was captured in when that window's handle was recorded. When it named its window by handle, no route here moves the focus to a text field yet (that click answers aim_route_failed): re-run {tool:reidentify_element} by the window's title and click the field from there — except for a common dialog (Save As, Open), whose title resolves to a handle as well, so that road does not open there either.",
     "other_window: bring the field's window forward first (focus_window) — it comes forward with the focus it last had, which is often enough, and the window that holds the focus is usually drawn over the field, which makes a click on it answer aim_occluded when the act has a window handle to check that point against.",
     "read_only: the field does not take typed text. Act on the control that edits it, or read its value instead; typing again gives the same answer until its state changes.",
     "Do NOT type through the foreground instead (keyboard with method:'foreground'), and do NOT retry by coordinate: whatever holds the focus would take the characters, which is what this refusal stopped.",

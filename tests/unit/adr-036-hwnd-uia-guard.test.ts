@@ -444,7 +444,28 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // this whole arm survived the suite. It said "nothing addresses it by
     // handle" — denying the one recovery the message two lines up offers.
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
-    expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    // CORNER-FREE, because this handler has no v2 corner. `set_element_value` is
+    // registered only in the `else` arm of `server-windows.ts`, so in production this
+    // line always reads `get_windows cannot list this window` — pinning
+    // `desktop_discover` pinned the runner's corner, which is the same defect this file
+    // fixes two cells down and `ui-elements.ts` documents at length (gate 2 on
+    // `a1cc0f4`, 2026-09-13; it named one of these three). The provider name is checked
+    // once, at the corner that actually runs, in the first of them.
+    expect(suggests).toMatch(/cannot list this window/);
+    // …and here it is: invoked under a production corner, the lister named is the one
+    // that exists there. A control on the other side too, or "it says get_windows" is
+    // also what a cell that never resolved anything would report.
+    captureAdviceConfiguration({ v2: false, credentialStore: true });
+    try {
+      const atCorner = parse(await setElementValueHandler({
+        windowTitle: "@active", value: "x", name: "Field",
+      } as never));
+      const shipped = JSON.stringify((atCorner as { suggest?: string[] }).suggest ?? []);
+      expect(shipped).toMatch(/get_windows cannot list this window/);
+      expect(shipped).not.toMatch(/desktop_discover/);
+    } finally {
+      resetAdviceConfiguration();
+    }
     // …and the surviving line does not tell a window with NO title to narrow one. This
     // branch reaches the same `suggest` array as the titled case above, so the flat
     // third line arrived here too — for a caller whose `next`, in the same response,
@@ -480,7 +501,14 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(next).not.toMatch(/unsetting DTM_SET_VALUE_CHAIN/);
     expect(next).toMatch(/keyboard[^.]*foreground/i);
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
-    expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    // CORNER-FREE, because this handler has no v2 corner. `set_element_value` is
+    // registered only in the `else` arm of `server-windows.ts`, so in production this
+    // line always reads `get_windows cannot list this window` — pinning
+    // `desktop_discover` pinned the runner's corner, which is the same defect this file
+    // fixes two cells down and `ui-elements.ts` documents at length (gate 2 on
+    // `a1cc0f4`, 2026-09-13; it named one of these three). The provider name is checked
+    // once, at the corner that actually runs, in the first of them.
+    expect(suggests).toMatch(/cannot list this window/);
     // The generic catalogue, whose ambiguous_target line is the dead half, is
     // replaced rather than appended to.
     //
@@ -556,7 +584,14 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(next).toMatch(/does not list/i);
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
-    expect(suggests).toMatch(/desktop_discover cannot list this window/);
+    // CORNER-FREE, because this handler has no v2 corner. `set_element_value` is
+    // registered only in the `else` arm of `server-windows.ts`, so in production this
+    // line always reads `get_windows cannot list this window` — pinning
+    // `desktop_discover` pinned the runner's corner, which is the same defect this file
+    // fixes two cells down and `ui-elements.ts` documents at length (gate 2 on
+    // `a1cc0f4`, 2026-09-13; it named one of these three). The provider name is checked
+    // once, at the corner that actually runs, in the first of them.
+    expect(suggests).toMatch(/cannot list this window/);
     catalogueDidNotComeBack(suggests);
     // …and the perception object handed to `_post` is the summary WITHOUT the
     // presentation field.
