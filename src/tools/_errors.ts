@@ -234,7 +234,14 @@ const SUGGESTS: Record<string, string[]> = {
     // mention of the hwnd recovery went with it. But `click_element`,
     // `set_element_value` and `get_ui_elements` all still ACCEPT `hwnd` at that corner,
     // and `desktop_state` (registered before the `_desktopV2` branch, so present at all
-    // four corners) always returns `focusedWindow.hwnd`. What the kill switch removes is
+    // four corners) reports `focusedWindow.hwnd` for a window the enumeration keeps —
+    // NOT unconditionally: `focusedWindow` is built from `wins.find(w => w.isActive)` over
+    // `enumWindowsInZOrder()`, the same enumeration this file says elsewhere drops
+    // untitled windows, so a titleless foreground gives `focusedWindow: null` and no
+    // handle. It holds for the windows `ambiguous_target` is raised over, which are
+    // titled by construction — the enumeration is what counted them. "Always" was the
+    // word, and it was the load-bearing one (gate 2 on `42524cb`, 2026-09-13). What the
+    // kill switch removes is
     // the ENUMERATION of handles, not handles — and the capability table cannot tell
     // those apart, which is why a `null` there read as "no recovery exists" for a whole
     // round (gate 2, 2026-09-13).
@@ -481,21 +488,30 @@ const SUGGESTS: Record<string, string[]> = {
   // ADR-036 family 2 — the keyboard rung refused to post, because the characters would not have
   // reached the field named. Every line has to keep one door shut: `executor_failed` advises a
   // foreground type, and whatever holds the focus would take those characters.
-  // BOTH LINES OR NEITHER. One line here was converted and a sibling kept a literal
-  // `desktop_discover`, so at a non-v2 corner the same refusal would have named
-  // `get_ui_elements` and `desktop_discover` in one breath. It is latent — the only
-  // producer is v2-only (`desktop-register.ts`), which also means converting the first
-  // line was a no-op — but an internally inconsistent refusal is the kind of thing that
-  // stops being latent when a producer moves, and the cost of agreeing is one token
-  // (gate 2 on `a1cc0f4`, 2026-09-13). Byte-identical at the v2 corner either way, so
-  // this code stays off the hand-changed list.
+  // ONE CORNER'S LANGUAGE, DELIBERATELY LEFT LITERAL. Every producer of this code is on
+  // the v2 road (`desktop-executor.ts` raises it, `desktop-register.ts` wraps it), so
+  // there is no corner where `desktop_discover` and `desktop_act` are not the tools the
+  // caller has — and nothing here for a presenter to vary.
+  //
+  // Two rounds got this wrong in opposite directions. First one line was converted and a
+  // sibling was not, which a non-v2 rendering would have read as `get_ui_elements` and
+  // `desktop_discover` in one breath. Then BOTH were converted "for consistency" — and
+  // the same sentence still carries `desktop_act action='click'`, which is v2-only and
+  // has no capability at all, so the mixed-corner refusal the fix claimed to remove was
+  // still there, one clause over, with the comment above it saying otherwise (gate 2 on
+  // `42524cb`, 2026-09-13, quoting my own comment back).
+  //
+  // Converting the rest needs a sixth capability for "click an entity by identity",
+  // which buys nothing at a corner that cannot exist. Producer reachability is the
+  // argument, and it is the same one the floor exception and `ui-elements.ts` use — so
+  // it is written here rather than left as the reason a line looks unconverted.
   KeyboardTargetUnsafe: [
     "Nothing was typed. if_unexpected.detail names the ground: other_control (the focus is on a different control in the same window), other_window (the focus is in a different window from the field you named), or read_only (the control that would have received the characters does not take typed text).",
-    "other_control / other_window: put the focus on the field you named, then type again — the background write goes to whatever holds the focus. if_unexpected.detail names the way back for the road this act took. When it named its window by title, desktop_act action='click' on the same entity does it: a text field has no UIA invoke, so it is clicked at its position — checked against the window it was captured in when that window's handle was recorded. When it named its window by handle, no route here moves the focus to a text field yet (that click answers aim_route_failed): re-run {tool:reidentify_element} by the window's title and click the field from there — except for a common dialog (Save As, Open), whose title resolves to a handle as well, so that road does not open there either.",
+    "other_control / other_window: put the focus on the field you named, then type again — the background write goes to whatever holds the focus. if_unexpected.detail names the way back for the road this act took. When it named its window by title, desktop_act action='click' on the same entity does it: a text field has no UIA invoke, so it is clicked at its position — checked against the window it was captured in when that window's handle was recorded. When it named its window by handle, no route here moves the focus to a text field yet (that click answers aim_route_failed): re-run desktop_discover by the window's title and click the field from there — except for a common dialog (Save As, Open), whose title resolves to a handle as well, so that road does not open there either.",
     "other_window: bring the field's window forward first (focus_window) — it comes forward with the focus it last had, which is often enough, and the window that holds the focus is usually drawn over the field, which makes a click on it answer aim_occluded when the act has a window handle to check that point against.",
     "read_only: the field does not take typed text. Act on the control that edits it, or read its value instead; typing again gives the same answer until its state changes.",
     "Do NOT type through the foreground instead (keyboard with method:'foreground'), and do NOT retry by coordinate: whatever holds the focus would take the characters, which is what this refusal stopped.",
-    "If the field may have changed or gone, re-run {tool:reidentify_element} and act on the fresh entity.",
+    "If the field may have changed or gone, re-run desktop_discover and act on the fresh entity.",
   ],
   // ADR-036 item 16 — the entity could not be found: missing from the live view (or the view has
   // expired), or answered "not found" by the native UIA engine that also read it, on an act that named its

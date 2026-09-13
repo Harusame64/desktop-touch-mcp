@@ -279,6 +279,24 @@ function titleVerificationStep(): string {
     : `Call ${lister} to verify the window title, then retry`;
 }
 
+/**
+ * The opening clause of the titleless-handle refusal, branched the way
+ * {@link titleVerificationStep} branches.
+ *
+ * The lister's name was interpolated with `?? "the window lister"`. `list_window_titles`
+ * has a provider at both corners, so the fallback is unreachable — and a fallback that
+ * can only fire by becoming wrong is worse than none: it would ship a sentence whose
+ * subject is a phrase rather than a tool, which is not this module's protocol for a
+ * null provider. The protocol is a hand-written sentence that does not need a name, and
+ * the sibling three lines up already followed it (gate 2 on `42524cb`, 2026-09-13).
+ */
+function titlelessHandleStep(): string {
+  const lister = providerForCaller("list_window_titles");
+  return lister === null
+    ? "That hwnd is a live window, and the enumeration this guard reads does not list it — so it cannot be named "
+    : `That hwnd is a live window, and the enumeration this guard and ${lister} both read does not list it — so neither can name it `;
+}
+
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
   target?: string,
@@ -324,7 +342,11 @@ function nextStepFor(
       // of handles, not handles: `click_element`, `set_element_value` and
       // `get_ui_elements` all accept `hwnd` there, and `desktop_state` — registered
       // before the `_desktopV2` branch, so present at every corner — always returns
-      // `focusedWindow.hwnd`. Collapsing to "use a more specific windowTitle" pointed
+      // `focusedWindow.hwnd` — for a window the enumeration keeps. `focusedWindow` comes
+      // from `wins.find(w => w.isActive)` over `enumWindowsInZOrder()`, which drops
+      // untitled windows, so this route is not unconditional; it holds here because
+      // `ambiguous_target` counts titled windows and cannot be raised without them.
+      // Collapsing to "use a more specific windowTitle" pointed
       // the caller at the one recovery that provably cannot separate two windows whose
       // normalized titles are equal, while a working one went unnamed (gate 2,
       // 2026-09-13). The capability table reads `null` as "no tool provides this", and
@@ -934,8 +956,7 @@ export async function runActionGuard(
         status,
         canContinue: false,
         next: titlelessHandle
-          ? "That hwnd is a live window, and the enumeration this guard and " +
-            `${providerForCaller("list_window_titles") ?? "the window lister"} both read does not list it — so neither can name it ` +
+          ? titlelessHandleStep() +
             "and passing the handle again returns here. That enumeration keeps " +
             "top-level windows on this desktop that are visible, titled, have a " +
             "rectangle, and are either at least 50x50 or minimised; a window " +

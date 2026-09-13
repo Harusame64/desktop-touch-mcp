@@ -505,7 +505,11 @@ export const setElementValueHandler = async ({
               // the sentence is ever built. Here the producer pins the corner, so the
               // answer is a concrete route rather than a capability: nothing enumerates
               // handles under the kill switch, but `desktop_state` returns
-              // `focusedWindow.hwnd` at every corner, and `click_element` and `keyboard`
+              // `focusedWindow.hwnd` at every corner — for a window its enumeration keeps,
+              // which is this branch's case and not a general guarantee: `focusedWindow`
+              // is `null` when the foreground window is one `enumWindowsInZOrder` drops.
+              // The titleless caller is answered by the arm above, which never reaches
+              // this line. And `click_element` and `keyboard`
               // both take a handle here — which is what `handleRecovery`, built for
               // `next` a few lines above this refusal, has been saying all along.
               //

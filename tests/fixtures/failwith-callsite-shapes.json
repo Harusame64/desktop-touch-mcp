@@ -83,7 +83,7 @@
     },
     {
       "file": "src/tools/_action-guard.ts",
-      "line": 1135,
+      "line": 1156,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
@@ -573,28 +573,28 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 883,
+      "line": 887,
       "tool": "set_element_value",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 897,
+      "line": 901,
       "tool": "set_element_value",
       "errKind": "member",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 950,
+      "line": 954,
       "tool": "scope_element",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 995,
+      "line": 999,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"
