@@ -385,9 +385,26 @@ export function withPostState<T extends Record<string, unknown>>(
     const result = await handler(args);
     try {
       const after = snapshotFocus();
-      const focusedElement = await snapshotFocusedElement(
-        valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys),
-      );
+      const carryValue = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
+      const focusedElement = await snapshotFocusedElement(carryValue);
+      // THE PERMISSION AND THE ELEMENT ARE READ AT DIFFERENT MOMENTS, and between them is an
+      // asynchronous UIA call with its own 800 ms budget. `carryValue` was decided against the
+      // foreground at `after`; the element comes from whatever holds focus when UIA answers. If
+      // the user alt-tabbed, or the app raised a dialog, that is a DIFFERENT window — and the
+      // value the caller was authorised to see for the window they named would be published from
+      // the window that took focus instead. Re-read the foreground and drop the value if it
+      // moved; withholding is the recoverable direction, and the read costs one enumeration only
+      // on the calls that were going to carry a value anyway (gate on `a2a9376`, P1).
+      //
+      // `post.focusedWindow` keeps its `after` reading rather than being re-derived here: it is
+      // the foreground the action left behind, which is the question it answers. The element and
+      // the window CAN disagree in that window of time — they could before this change too, for
+      // every call, value or no value — and binding them properly needs the owning HWND, which
+      // `NativeUiaFocusInfo` does not carry. Filed rather than faked.
+      if (carryValue && focusedElement && focusedElement.value !== undefined) {
+        const settled = snapshotFocus();
+        if (settled.hwnd === null || settled.hwnd !== after.hwnd) delete focusedElement.value;
+      }
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,

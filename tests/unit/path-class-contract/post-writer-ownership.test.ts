@@ -353,9 +353,12 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     );
 
     // `scroll` is the second superseding selector, and it is a CDP road rather than a pane: with a
-    // `selector` the handler scrolls a TAB and never reads the title beside it.
-    const SCROLL_KEYS: PostWindowArgKeys = { windowTitleKey: "windowTitle", supersedingKeys: ["selector"] };
+    // `selector` the handler scrolls a TAB and never reads the title beside it. TWO argument names
+    // for the one thing — `to_element` says `selector`, `smart` says `target` — and declaring only
+    // the first left the second attaching a foreground field to a background tab scroll.
+    const SCROLL_KEYS: PostWindowArgKeys = { windowTitleKey: "windowTitle", supersedingKeys: ["selector", "target"] };
     expect(await elementOf("scroll", { action: "to_element", selector: "#row-9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("scroll", { action: "smart", strategy: "cdp", target: "#row-9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITHOUT);
     expect(await elementOf("scroll", { action: "to_element", name: "row 9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITH);
 
     // A `fixId` that retargets: the handler acts on the stored fix's window, so these arguments
@@ -369,6 +372,46 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       { windowTitleKey: "windowTitle", hwndKey: "hwnd", fixRetargets: (a) => a.action !== "press" },
     )).toEqual(WITH);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+  });
+
+  it("drops the value when the foreground moved while the UIA read was in flight", async () => {
+    // The permission is decided against the foreground BEFORE the asynchronous element read, and
+    // the element comes from whatever holds focus when UIA answers. Alt-tab in between and the
+    // value published for the window the caller named would be the other window's field.
+    // The sequence below is the wrapper's three reads: `before`, `after`, and the re-check.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
+    const win = (hwnd: bigint, title: string) => [{ hwnd, title, isActive: true }] as never;
+    const elementOfSequence = async (third: () => unknown) => {
+      vi.mocked(enumWindowsInZOrder)
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(third as never);
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+        focused: { name: "Notes", controlType: "Edit", value: "PROBE-RACE" },
+      } as never);
+      return (parse(await withPostState("keyboard", async () => ok({ ok: true }))({
+        action: "type", text: "x", windowTitle: "Notepad",
+      })).post as Record<string, unknown>).focusedElement;
+    };
+
+    try {
+      // CONTROL: nothing moved, so the value is carried — the row below is the movement talking.
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).toHaveProperty("value", "PROBE-RACE");
+      // The foreground moved between the permission and the element.
+      expect(await elementOfSequence(() => win(9999n, "Password Manager"))).not.toHaveProperty("value");
+      // …and a foreground that cannot be read at all counts as moved.
+      expect(await elementOfSequence(() => [] as never)).not.toHaveProperty("value");
+    } finally {
+      // RESET IN A `finally`, and reset rather than restore: the sequences above are
+      // `mockImplementationOnce` queues, so a regression that skips the third read leaves one
+      // queued — and if the failure also skipped this cleanup, the NEXT test would consume it and
+      // fail for a reason that has nothing to do with itself. Measured while mutating this very
+      // guard: two cells went red, one of them innocent.
+      vi.mocked(enumWindowsInZOrder).mockReset();
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
+      vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows ?? (() => [] as never));
+    }
   });
 
   it("does not keep, in the history ring, the value a refusal withheld from the response", async () => {

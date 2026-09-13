@@ -51,6 +51,8 @@ describe("ADR-036: the post layer is told which argument names a window, by the 
     // CDP road on `selector` and never reads it. Without these, a stale title beside either
     // selector credits whatever window is in front with a field nobody touched.
     expect(keysFor("terminal")).toMatchObject({ windowTitleKey: "windowTitle", supersedingKeys: ["paneId"] });
-    expect(keysFor("scroll")).toMatchObject({ windowTitleKey: "windowTitle", supersedingKeys: ["selector"] });
+    // Two names for the one thing: `to_element` calls it `selector`, `smart` calls it `target`.
+    // Declaring only the first left the CDP road open under the other name.
+    expect(keysFor("scroll")).toMatchObject({ windowTitleKey: "windowTitle", supersedingKeys: ["selector", "target"] });
   });
 });
