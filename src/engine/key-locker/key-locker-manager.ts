@@ -20,6 +20,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { keyLockerDisabled } from "./key-locker-switch.js";
 import { HELPER_EXE, KeyLockerError, KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
 import {
   buildProcessParentMap,
@@ -93,10 +94,15 @@ export function consentAccepted(storeDir?: string): boolean {
  * `64e69a2`). Widening this predicate keeps ONE reader of the switch: if resolution re-implemented
  * the check, the two would drift the first time either changed. It also makes all four corners of
  * the two kill switches reachable in a unit test without mutating shared process state.
+ *
+ * **THE IMPLEMENTATION MOVED TO `key-locker-switch.ts`, a leaf that imports nothing**, and this
+ * re-export is what keeps "one reader of the switch" true (2026-09-13). It moved because THIS file
+ * is not free to import: it pulls `key-locker-host.js` (`node:child_process`, `node:net`), the
+ * session tracker, the SSH watch and `engine/win32.ts`, whose module evaluation calls
+ * `win32SetProcessDpiAwareness(2)`. That is fine for the locker's own callers and wrong for the
+ * advice road, which is reached by every refusal on every platform (gate 2, 2026-09-13).
  */
-export function keyLockerDisabled(env: Record<string, string | undefined> = process.env): boolean {
-  return env.DESKTOP_TOUCH_DISABLE_KEY_LOCKER === "1";
-}
+export { keyLockerDisabled };
 
 export interface KeyLockerManagerOptions extends KeyLockerStartOptions {
   /** Override the store dir (tests); production uses the locker default. */

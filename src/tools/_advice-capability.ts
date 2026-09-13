@@ -29,7 +29,7 @@
  */
 
 import { resolveV2Activation } from "./desktop-activation.js";
-import { keyLockerDisabled } from "../engine/key-locker/key-locker-manager.js";
+import { keyLockerDisabled } from "../engine/key-locker/key-locker-switch.js";
 
 /**
  * A capability is listed here only when naming its provider directly could hand a
