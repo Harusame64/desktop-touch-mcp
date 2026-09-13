@@ -23,7 +23,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { getSuggestsForCode } from "../../src/tools/_errors.js";
+import { getSuggestsForCode, toToolFailure } from "../../src/tools/_errors.js";
 import { paneIdMissSuggest } from "../../src/tools/terminal.js";
 import * as advice from "../../src/tools/_advice-capability.js";
 import {
@@ -44,6 +44,21 @@ const CORNERS: Record<string, Record<string, string | undefined>> = {
 };
 const cfgFor = (corner: string): AdviceConfiguration =>
   adviceConfigurationFromEnv({ ...CORNERS[corner] });
+
+/**
+ * The one place the floor may fire, with the reason it is not a gap.
+ *
+ * `KeyLockerConsentRequired` needs the locker enabled to be produced at all —
+ * `withHost` checks `isDisabled()` first and throws `KeyLockerDisabledError`, and
+ * `registerKeyLockerTools` returns before registering anything when the switch is on.
+ * So the two locker-off corners cannot raise it, and a floor there is not advice the
+ * caller is missing. Registered rather than excused: change what floors and the cells
+ * redden, and whoever changes it owes the same producer analysis.
+ */
+const FLOOR_IS_HONEST_HERE = [
+  "v2_noLocker/KeyLockerConsentRequired",
+  "killSwitch_noLocker/KeyLockerConsentRequired",
+];
 
 /** The code list comes from the shipped dictionary, not from a list typed here. */
 function codesFromSource(): string[] {
@@ -83,18 +98,44 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     const floored: string[] = [];
     for (const corner of Object.keys(CORNERS)) {
       const cfg = cfgFor(corner);
+      advice.captureAdviceConfiguration(cfg);
       for (const code of codes) {
         const lines = getSuggestsForCode(code);
         if (lines.length === 0) continue; // no advice to begin with is not this rule's business
-        const out = renderAdviceWith(lines, cfg);
+        // ON THE ROAD, not one layer below it. `renderAdviceWith` sits UNDER the
+        // floor — `renderAdviceWithFloor` is where it lives — so a cell that calls
+        // the renderer directly reports EMPTY where a caller receives the floor
+        // sentence. Third time this layer has been confused in this branch, twice by
+        // me and once by the Windows side, which is why the comment is here and not
+        // in a commit message.
+        const out =
+          toToolFailure({ name: code, displayMessage: "m", suggest: lines }).suggest ?? [];
         if (out.length === 0) empty.push(`${corner}/${code}`);
         if (out.includes(ADVICE_WITHHELD_FLOOR)) floored.push(`${corner}/${code}`);
       }
     }
     expect(empty, "a code with advice must never render to nothing").toEqual([]);
     // The floor is the net that makes a design defect visible, not a condition to
-    // satisfy: if it catches something here, the hand-written work was not done.
-    expect(floored, "the floor must not have to catch anything").toEqual([]);
+    // satisfy: if it catches something here, the hand-written work was not done —
+    // EXCEPT where the code cannot be produced at that corner at all.
+    //
+    // One such pair, registered with its proof rather than papered over.
+    // `KeyLockerConsentRequired` needs the locker enabled: `withHost` checks
+    // `isDisabled()` first and throws `KeyLockerDisabledError`, and
+    // `registerKeyLockerTools` returns before registering anything when the switch is
+    // on, so no producer survives the locker-off corners. A line WAS added here to
+    // keep the floor at zero, and it shipped to real callers at the corners where the
+    // locker works, telling them to check a variable that is provably not the cause —
+    // noise everywhere it could be read, to satisfy a gate where it could not be
+    // (gate 2, 2026-09-13, twice; the first answer to it was a wrong reachability
+    // claim of mine).
+    //
+    // Registered, not excused: change what floors and this reddens, and whoever
+    // changes it has to show the same kind of producer analysis.
+    advice.resetAdviceConfiguration();
+    expect(floored.sort(), "the floor must not have to catch anything else").toEqual(
+      FLOOR_IS_HONEST_HERE.sort(),
+    );
   });
 
   it("leaves a RECOVERY where lines drop, not whatever happened to survive", () => {
@@ -148,7 +189,9 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
         if (out.length === raw.length) continue; // nothing dropped here
         const key = `${corner}/${code}`;
         seen.push(key);
-        expect(out.length, `${key} must keep something`).toBeGreaterThan(0);
+        if (!FLOOR_IS_HONEST_HERE.includes(key)) {
+          expect(out.length, `${key} must keep something`).toBeGreaterThan(0);
+        }
         expect(
           registered[key],
           `${key} drops lines and is not registered — read what survives and decide whether it is a recovery`,
@@ -214,8 +257,16 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // claim both providers satisfy.
     const file = fileURLToPath(new URL("../../src/tools/ui-elements.ts", import.meta.url));
     const text = readFileSync(file, "utf8");
-    expect(text).toContain("{tool:reidentify_element} returns this window's hwnd");
+    // The capability, not a narrowed claim: obtaining a handle that names ONE window
+    // out of several is `disambiguate_window_by_handle`, whose kill-switch arm is
+    // null, so the line drops there and the handle-free route survives. Two earlier
+    // wordings are pinned as absent because each was measured false — "each open
+    // window's hwnd" of `get_windows`, and "this window's hwnd" of `get_ui_elements`
+    // on an `ambiguous_target` refusal, where the hwnd is the first z-order match.
+    expect(text).toContain("{tool:disambiguate_window_by_handle} returns each open window's hwnd");
     expect(text).not.toContain("desktop_discover returns each open window's hwnd");
+    expect(text).not.toContain("{tool:reidentify_element} returns this window's hwnd");
+    expect(text).toContain("Or narrow windowTitle until exactly one window matches");
   });
 
   it("resolves the guard's own sentences at CONSTRUCTION, because no presenter renders them", () => {

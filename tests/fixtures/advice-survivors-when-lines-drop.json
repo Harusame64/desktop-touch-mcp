@@ -1,9 +1,7 @@
 {
   "v2_noLocker/KeyLockerConsentRequired": {
     "dropped": 1,
-    "survivors": [
-      "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1 the locker cannot be enabled here: unset it (or set it to 0) and restart the MCP server."
-    ]
+    "survivors": []
   },
   "v2_noLocker/KeyLockerConsoleLimit": {
     "dropped": 1,
@@ -69,9 +67,7 @@
   },
   "killSwitch_noLocker/KeyLockerConsentRequired": {
     "dropped": 1,
-    "survivors": [
-      "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1 the locker cannot be enabled here: unset it (or set it to 0) and restart the MCP server."
-    ]
+    "survivors": []
   },
   "killSwitch_noLocker/KeyLockerConsoleLimit": {
     "dropped": 1,

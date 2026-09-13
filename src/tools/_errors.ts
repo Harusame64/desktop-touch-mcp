@@ -861,12 +861,26 @@ const SUGGESTS: Record<string, string[]> = {
     // recovery?". A rider belongs to the sentence it rides on, so it is one line now
     // and the pair stands or falls together.
     "The key locker is off until you enable it once. Run {tool:credential_store} with action='save' to open the enable dialog, or click Enable when it appears — enabling is a one-time confirmation shown by the locker itself, and the assistant never sees your secret.",
-    // …AND A RECOVERY FOR THE CORNER WHERE THE LINE ABOVE DROPS. `macro.ts` already
-    // ships this shape for the other kill switch — a code that can only be answered
-    // from OUTSIDE the session says so — and this is its twin. It is true at every
-    // corner and it is the only thing a caller can act on at the two where the locker
-    // has no tool, which is what stops the floor from being the whole answer there.
-    "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1 the locker cannot be enabled here: unset it (or set it to 0) and restart the MCP server.",
+    // NO SECOND LINE, and the one that was here is why this comment is long.
+    //
+    // It said "if this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1,
+    // unset it and restart", added so the code would keep a recovery at the two
+    // locker-off corners. **That code cannot be produced at those corners.**
+    // `KeyLockerManager.withHost` checks `isDisabled()` FIRST and throws
+    // `KeyLockerDisabledError`, and `registerKeyLockerTools` returns before
+    // registering anything when the switch is on, so every producer of
+    // `KeyLockerConsentRequired` requires the locker enabled. The classifier arm in
+    // this file only re-derives the code from a message one of those producers wrote.
+    //
+    // So the line shipped ONLY where the flag is not set — to real callers, at the
+    // corners where the locker works, telling them to check a variable that is
+    // provably not the cause. **A line added to make a gate green at a corner no
+    // caller can reach, and noise at every corner they can.** Gate 2 found it twice
+    // and I answered the first one with a reachability claim that was wrong.
+    //
+    // The floor therefore fires for this code at the two locker-off corners, and that
+    // is registered as the one place it may (see the acceptance cell): a floor at a
+    // corner where the code cannot be produced is not a gap in the advice.
   ],
   KeyLockerDisabled: [
     "The key locker is turned off by DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. Remove that environment variable (and restart the MCP server) to use it.",

@@ -311,9 +311,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // The tailored `suggest` replaces a catalogue keyed on guard status, and
     // nothing had pinned it: deleting it outright, or appending the catalogue's
     // other statuses back into it, both left this file green.
+    // B2c added the handle-free route: the hwnd line resolves
+    // `disambiguate_window_by_handle` and DROPS at the kill-switch corners, so the
+    // tailored set needs a third line that survives there.
     expect(r.suggest).toEqual([
       expect.stringMatching(/error message/i),
       expect.stringMatching(/desktop_discover/),
+      expect.stringMatching(/narrow windowTitle until exactly one window matches/),
     ]);
     // The other statuses' advice must not come back with it — those lines are
     // about target_not_found, modals, elevation, and none of them is what
@@ -406,9 +410,13 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(suggests, "the tailored suggest replaces the catalogue, it does not append it").not.toMatch(
       /blocked_by_modal/,
     );
-    // …and by shape as well as by marker: the tailored pair is two lines, the
-    // catalogue is many, so appending is visible without depending on any wording.
-    expect((r as { suggest?: string[] }).suggest ?? []).toHaveLength(2);
+    // …and by shape as well as by marker: the tailored set is short, the catalogue is
+    // many, so appending is visible without depending on any wording. The number is a
+    // hostage to the tailored text — B2c added a third line here and this assertion is
+    // what noticed — so it is an upper bound on the tailored set rather than a count.
+    expect(((r as { suggest?: string[] }).suggest ?? []).length).toBeLessThan(
+      getSuggestsForCode("AutoGuardBlocked").length,
+    );
   });
 
   it("does not send a titleless-handle caller to a listing that cannot show it", async () => {
