@@ -9,7 +9,12 @@
  * (getFocusedAndPointInfo) instead of being hard-coded to null.
  * A short timeout (800 ms) prevents this from blocking fast actions.
  *
- * Also maintains a ring buffer of recent action posts for get_history().
+ * Also maintains a ring buffer of recent action posts. `get_history` is the tool that reads it —
+ * and it is registered on NO corner: asked with `tools/list` on the four real servers, all four
+ * answered NOT REGISTERED (win2, 2026-09-14, `45ff635`; Phase 4 privatised it and
+ * `desktop-state.ts` keeps the handler as an internal export). So the ring is written on every
+ * action and readable by no caller — which is a reach, not a safety property: it is still in the
+ * server's memory, and anything that later prints it publishes what was in it.
  */
 
 import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
@@ -182,11 +187,15 @@ const DEFAULT_HWND_KEY = "hwnd";
  * handle spellings added theirs.
  *
  * A REFUSED CALL PUBLISHES NO VALUE — and that sentence had to be made true rather than written.
+ * Two refusal shapes were measured, and they are not the same: `WindowNotFound` publishes no
+ * `post` block at all, while `AutoGuardBlocked` publishes one with `focusedElement: null` (win2).
  * The measured fact is about the RESPONSE: an `AutoGuardBlocked` reply carries no focused element.
  * The snapshot below is taken before either branch runs, so the ring was recording, for a refused
  * call, exactly the field the refusal withheld — including for a handle `refuseIfExcludedTarget`
  * rejected, which is the key locker's window (gate 2 on `447698f`; the spelling fix widened which
- * arguments reach that path). The ring now follows the response. What is still unconditional is
+ * arguments reach that path). The ring now follows the response. No caller could read it either
+ * way — see the header: `get_history` is registered on no corner — so this closed a store, not a
+ * leak. It was worth closing because the store is what a future reader would publish. What is still unconditional is
  * the UIA read itself: `getFocusedAndPointInfo` asks the FOREGROUND, whatever the call targeted,
  * and has no exclusion gate of its own — older than this change, filed, not closed here.
  *
@@ -217,7 +226,13 @@ const DEFAULT_HWND_KEY = "hwnd";
  *     handle in the argument then matches nothing and the value is withheld. Deliberate, and the
  *     more careful side of a fork: the caller named the owner, and a modal that took focus is
  *     exactly the class of window — a credential prompt, a save dialog — whose field nobody asked
- *     for. The gate raised it on `447698f` and it is filed rather than changed.
+ *     for. The gate raised it on `447698f` and it is filed rather than changed — and then
+ *     measured, with the two controls that make it mean something (win2, 2026-09-14, `b218767`):
+ *     naming the owner while its dialog is up returns `ok:true` with `parent_disabled_prefer_popup`
+ *     and no value; naming the DIALOG carries one; naming the owner after the dialog closes carries
+ *     one. Either control alone leaves an alternative reading alive ("the popup road never
+ *     carries", "this owner's handle never carries"); together they say only where focus landed
+ *     decides.
  *   - Borrowing the guard's title matching is still refused, but NOT because it is looser: asked
  *     directly, with the fixture window open, `findPlainTopLevelWindowsByTitle` returned zero
  *     matches for a padded title and for dash variants, and agreed with this predicate on case —
