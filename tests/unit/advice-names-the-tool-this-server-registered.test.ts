@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
 import { getSuggestsForCode, toToolFailure } from "../../src/tools/_errors.js";
-import { paneIdMissSuggest } from "../../src/tools/terminal.js";
+import { paneIdMissSuggest, runNeedsDestinationSuggest } from "../../src/tools/terminal.js";
 import * as advice from "../../src/tools/_advice-capability.js";
 import {
   renderAdviceWith,
@@ -239,6 +239,18 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
       "paneIdMissSuggest(malformed)": "not-a-pane",
       "paneIdMissSuggest(no-live-pane)": "12345678",
     };
+    // AND EVERY OTHER BUILDER THAT CAN DROP. The closing control below reads as "the
+    // registered set is exactly the set that drops", and that is only true of the
+    // producers this list walks — `terminal(action='run')`'s destination advice was an
+    // inline array inside a handler, dropping its paneId line at both locker-off
+    // corners with nothing pinning what survived (gate 2 on `7fda7f7`, 2026-09-13). It
+    // was extracted into a builder for this. The other site gate 2 named, the inline
+    // `suggest` in `ui-elements.ts`, is not reachable from here either — it is a
+    // handler body — and is covered instead where it can be rendered at the two corners
+    // that produce it (`adr-036-hwnd-uia-guard.test.ts`).
+    const NULLARY: Record<string, () => string[]> = {
+      "runNeedsDestinationSuggest()": runNeedsDestinationSuggest,
+    };
     const codes = codesFromSource();
     const seen: string[] = [];
     const producers: Array<[string, () => string[]]> = [];
@@ -246,6 +258,7 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     for (const [name, paneId] of Object.entries(BUILDER)) {
       producers.push([name, () => paneIdMissSuggest(paneId)]);
     }
+    for (const [name, produce] of Object.entries(NULLARY)) producers.push([name, produce]);
     for (const corner of Object.keys(CORNERS)) {
       const cfg = cfgFor(corner);
       for (const [code, produce] of producers) {
@@ -408,6 +421,68 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     }
   });
 
+  it("moves only the codes that were changed by hand — every other renders back to its pre-image bytes", () => {
+    // CLAIM 4 OF THIS FILE'S HEADER, which had no cell until gate 2 counted them
+    // (`7fda7f7`, 2026-09-13). It is also asserted as "measured" in `_errors.ts`, and a
+    // measurement with no instrument in the tree is the shape this whole branch keeps
+    // finding. Here it is the instrument.
+    //
+    // The pre-image is the dictionary at `1ee173c` — B2b, the commit before any line
+    // was converted — extracted from source and committed as a fixture rather than read
+    // from git at run time, so the cell works in a shallow clone and in CI. Every line
+    // there is plain text, so the pre-image IS the v2-corner rendering: a mechanical
+    // conversion must come back byte-identical, and anything that does not is a change
+    // a person made and has to own.
+    const PRE = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../fixtures/advice-v2-rendering-before-b2c.json", import.meta.url)), "utf8"),
+    ) as Record<string, string[] | null>;
+
+    // Each entry is one line of why, because "changed by hand" with no reason is the
+    // same as no list. Adding a code here is the deliberate act; the cell only insists
+    // that the act happened.
+    const CHANGED_BY_HAND: Record<string, string> = {
+      AutoGuardBlocked:
+        "mixed subject split; `target_not_found` split by producer (desktop vs browser); the desktop_state handle route added where the enumeration is gone",
+      ElementNotFound:
+        "split by producer — a CSS selector miss reaches this code and has no UIA tree",
+      InvokePatternNotSupported:
+        "the call SHAPE differs across providers, not only the name: the action argument and the lease are stated in prose-conditioned lines",
+      CoordinateOutsideReachableBounds:
+        "the title-free route leads, because this refusal's caller may hold no window title and one provider requires one",
+      RegionOutsideCapturableBounds:
+        "same treatment as its cursor-side twin, for the same reason",
+      WindowExcluded:
+        "'on a different target' was attached to a tool that takes no arguments",
+      KeyLockerConsentRequired:
+        "the rider was merged back and a line added only to keep the floor at zero was removed",
+      KeyLockerConsoleLimit: "mixed line split by hand",
+      KeyLockerWtUnavailable: "mixed line split by hand",
+      KeyLockerNoSuchBinding: "mixed line split by hand",
+    };
+
+    const cfg = cfgFor("v2_default");
+    const moved: string[] = [];
+    let compared = 0;
+    for (const [code, before] of Object.entries(PRE)) {
+      if (before === null) continue;
+      const now = renderAdviceWith(getSuggestsForCode(code), cfg);
+      compared += 1;
+      if (JSON.stringify(now) !== JSON.stringify(before)) moved.push(code);
+    }
+    // CONTROLS: the fixture was read, and the renderer really did resolve something —
+    // otherwise "nothing moved" is what an empty comparison answers too.
+    expect(compared, "the pre-image fixture must have been read").toBeGreaterThan(80);
+    expect(
+      renderAdviceWith(getSuggestsForCode("WindowNotFound"), cfg)[0],
+      "control: a mechanical conversion must be resolving, not passing through",
+    ).toContain("desktop_discover");
+
+    expect(
+      moved.sort(),
+      "a code whose v2 rendering moved without being listed as hand-changed — either the conversion is not byte-clean, or the list owes a reason",
+    ).toEqual(Object.keys(CHANGED_BY_HAND).sort());
+  });
+
   it("narrows the claim where a substitution alone would be false", () => {
     // THE FOURTH TREATMENT (win2, measured 2026-09-13). "each open window's hwnd" is
     // true of `desktop_discover` and false of the kill switch's provider —
@@ -423,7 +498,18 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // wordings are pinned as absent because each was measured false — "each open
     // window's hwnd" of `get_windows`, and "this window's hwnd" of `get_ui_elements`
     // on an `ambiguous_target` refusal, where the hwnd is the first z-order match.
-    expect(text).toContain("{tool:disambiguate_window_by_handle} returns each open window's hwnd");
+    // …AND THE ANSWER WAS NOT A CAPABILITY AT ALL, which took a third attempt to see.
+    // `set_element_value` is registered only in the `else` arm of `server-windows.ts`
+    // (v2 kill switch ON) and `run_macro` refuses its route unless
+    // `v2KillSwitchActive()`, so this handler has NO v2 corner —
+    // `{tool:disambiguate_window_by_handle}` is null at every corner it can run at, and
+    // the line dropped for every real caller while this cell, reading source text,
+    // reported it present (gate 2 on `7fda7f7`, 2026-09-13). The rendered check lives
+    // in `adr-036-hwnd-uia-guard.test.ts`, where the array can be resolved at the two
+    // corners that produce it; here all three rejected wordings stay pinned as absent,
+    // because a source-text cell is only good for saying what must not come back.
+    expect(text).toContain("read its hwnd from desktop_state (focusedWindow.hwnd)");
+    expect(text).not.toContain("{tool:disambiguate_window_by_handle} returns each open window's hwnd");
     expect(text).not.toContain("desktop_discover returns each open window's hwnd");
     expect(text).not.toContain("{tool:reidentify_element} returns this window's hwnd");
     // AND THE LINE THAT SURVIVES THE DROP IS SCOPED, which is a separate claim from the
@@ -473,7 +559,19 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     let inSuggest = 0;
     const walk = (n: ts.Node): void => {
       if (
-        (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) &&
+        // EVERY NODE KIND THE FILE ACTUALLY USES. The guard's converted sentences are
+        // TEMPLATE EXPRESSIONS — `nextStepFor` and its siblings interpolate the
+        // provider — so their literal parts are `TemplateHead` / `Middle` / `Tail`, and
+        // a walk that knows only `StringLiteral` steps over the very construct this
+        // cell exists to police. A `{tool:…}` written into one of them would have
+        // passed here AND passed the src-wide sweep, which only asks whether the name
+        // is a capability, and shipped as literal text (gate 2 on `7fda7f7`,
+        // 2026-09-13). The src-wide cell already reads these kinds; this one did not.
+        (ts.isStringLiteral(n) ||
+          ts.isNoSubstitutionTemplateLiteral(n) ||
+          ts.isTemplateHead(n) ||
+          ts.isTemplateMiddle(n) ||
+          ts.isTemplateTail(n)) &&
         n.text.includes("{tool:")
       ) {
         if (insideSuggest(n)) inSuggest += 1;
@@ -486,6 +584,23 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // walk answers too.
     expect(inSuggest, "the seam-covered placeholder must be visible to this walk").toBeGreaterThan(0);
     expect(stray, "a placeholder outside `suggest` ships as literal text on this road").toEqual([]);
+
+    // THE SECOND DOOR INTO THE THROWING ARM, pinned rather than described.
+    // `providerForConfig`'s `default` arm used to say "the throw cannot reach the
+    // failure road: `renderAdvice` screens with `isCapability` first" — true while that
+    // was the only door. `providerForCaller` is the second, it asks the same question
+    // while a REFUSAL is being constructed, and it does not screen: its parameter is
+    // typed and every call site passes a literal, so the compiler is the screen and
+    // `tests/**` and JS are outside it. Throwing is the deliberate answer — `null`
+    // would make a typo vanish as "dropped for this configuration" — and this cell is
+    // what keeps it a decision instead of an accident (gate 2 on `7fda7f7`, 2026-09-13).
+    expect(
+      () => (advice.providerForCaller as (c: string) => unknown)("reidentify_elemnt"),
+      "an unscreened non-capability must throw, not answer",
+    ).toThrow(TypeError);
+    // CONTROL: the same door answers normally for a real capability, so the throw above
+    // is about the argument and not about the door being shut.
+    expect(advice.providerForCaller("list_window_titles")).not.toBeNull();
 
     // And the name it builds comes from the capture, at both corners.
     const { providerForCaller, captureAdviceConfiguration, resetAdviceConfiguration } = advice;

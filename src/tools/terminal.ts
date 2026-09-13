@@ -728,6 +728,28 @@ export function isPaneShellAlive(paneId: string | undefined): boolean {
  * The typed CODE stays `TerminalWindowNotFound` at every call site (existing clients branch on it); only
  * the suggest text is sharpened, so this is a purely additive LLM-facing improvement.
  */
+/**
+ * The advice for `terminal(action='run')` arriving with neither destination.
+ *
+ * SPLIT BY HAND (the user's decision of 2026-09-13). The core — which argument to pass
+ * — is true in every configuration; only the way to obtain a paneId depends on the
+ * locker. Substituting the whole line would drop the real answer at the two locker-off
+ * corners, and dropping the line would drop it everywhere.
+ *
+ * EXPORTED so the survivors registry can call it. It was an inline array, which put it
+ * outside the walk that registers what survives wherever a line drops — and that walk's
+ * closing control reads as "the registered set is exactly the set that drops", a claim
+ * its producer list could not support while a dropping producer sat in a handler body
+ * (gate 2 on `7fda7f7`, 2026-09-13). A line that drops must be reachable by the cell
+ * that asks a human to read what is left.
+ */
+export function runNeedsDestinationSuggest(): string[] {
+  return [
+    "Pass windowTitle — a partial terminal title.",
+    "Or pass paneId, which {tool:credential_store} action='launch_console' returns.",
+  ];
+}
+
 export function paneIdMissSuggest(paneId: string): string[] {
   // (a) A launch_console windowTitle passed where a paneId belongs — the single most common mixup.
   if (/^dtm-locker-console-/i.test(paneId)) {
@@ -3018,15 +3040,7 @@ export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolR
         // Unreachable: the run variant's `.refine(windowTitle || paneId)` already rejected this as a
         // typed InvalidArgs error. Kept so TS narrows runWindowTitle to a non-empty string.
         return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId", {
-          suggest: [
-            // SPLIT BY HAND (the user's decision of 2026-09-13). The core — which
-            // argument to pass — is true in every configuration; only the way to
-            // obtain a paneId depends on the locker. Substituting the whole line
-            // would drop the real answer at the two locker-off corners, and dropping
-            // the line would drop it everywhere.
-            "Pass windowTitle — a partial terminal title.",
-            "Or pass paneId, which {tool:credential_store} action='launch_console' returns.",
-          ],
+          suggest: runNeedsDestinationSuggest(),
         });
       }
       return terminalRunHandler({ ...a, windowTitle: runWindowTitle, input: resolvedInput });

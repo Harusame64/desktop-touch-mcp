@@ -122,6 +122,8 @@ import { getSuggestsForCode } from "../../src/tools/_errors.js";
 import {
   captureAdviceConfiguration,
   resetAdviceConfiguration,
+  renderAdviceWith,
+  adviceConfigurationFromEnv,
 } from "../../src/tools/_advice-capability.js";
 
 function parse(result: { content?: Array<{ type: string; text: string }> }): Record<string, any> {
@@ -147,6 +149,44 @@ beforeEach(() => {
   delete process.env.DTM_SET_VALUE_CHAIN;
   delete process.env.DESKTOP_TOUCH_AUTO_GUARD;
 });
+
+/**
+ * The catalogue's own `ambiguous_target` / `target_not_found` lines, RENDERED, taken
+ * from the shipped dictionary at call time.
+ *
+ * The cells below assert that a tailored `suggest` did not quietly become the
+ * catalogue again, and they used to do it by quoting the catalogue's text. Rewording a
+ * dictionary line therefore made the negative unmatchable, and an unmatchable negative
+ * is not a control — `317696f` fixed one instance and the rewording in this same PR
+ * created two more (gate 2 on `7fda7f7`, 2026-09-13). Reading the marker from the
+ * dictionary is what stops the pair from drifting apart.
+ *
+ * Sides moving together is its own blindness, so every use pairs these with a POSITIVE
+ * assertion that the marker really is in the rendered catalogue.
+ */
+function catalogueMarkers(): string[] {
+  const rendered = renderAdviceWith(
+    getSuggestsForCode("AutoGuardBlocked"),
+    adviceConfigurationFromEnv({}),
+  ).filter((l): l is string => l !== null);
+  const markers = rendered.filter(
+    (l) => l.includes("target_not_found") || l.includes("pass hwnd to name that window"),
+  );
+  if (markers.length < 2) {
+    throw new Error(`catalogueMarkers read ${markers.length} lines — the dictionary moved`);
+  }
+  return markers;
+}
+
+/** Assert the catalogue did not come back, with the control that keeps it honest. */
+function catalogueDidNotComeBack(payload: string): void {
+  for (const marker of catalogueMarkers()) {
+    // CONTROL: the marker exists in the thing being excluded, so "absent" cannot be
+    // "unmatchable" wearing the same face.
+    expect(marker.length, "a catalogue marker must be real text").toBeGreaterThan(20);
+    expect(payload, `the catalogue line came back: ${marker.slice(0, 48)}`).not.toContain(marker);
+  }
+}
 
 describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", () => {
   it("click_element by title alone is refused with ambiguous_target", async () => {
@@ -326,9 +366,25 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // list exists to remove (both gates found it on `48517b6`, 2026-09-13).
     expect(r.suggest).toEqual([
       expect.stringMatching(/error message/i),
-      expect.stringMatching(/desktop_discover/),
+      expect.stringMatching(/read its hwnd from desktop_state/),
       expect.stringMatching(/Narrowing windowTitle will not help on this call/),
     ]);
+    // NO PLACEHOLDER SURVIVES INTO THIS LIST, and none may: the second line used to
+    // carry `{tool:disambiguate_window_by_handle}`, whose provider is null at both
+    // corners this handler can be produced at, so it DROPPED for every real caller and
+    // the answer went out as two lines with no handle route. The cell above passed
+    // because the runner sits at the v2 corner — it was pinning a state production
+    // cannot reach. Rendering this array at the corners that can produce it is what
+    // says so.
+    for (const cfg of [
+      adviceConfigurationFromEnv({ DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1" }),
+      adviceConfigurationFromEnv({ DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1", DESKTOP_TOUCH_DISABLE_KEY_LOCKER: "1" }),
+    ]) {
+      const shipped = renderAdviceWith(r.suggest as string[], cfg);
+      expect(shipped, "nothing may drop at a corner this handler actually runs at")
+        .toHaveLength((r.suggest as string[]).length);
+      expect(shipped.join(" ")).toMatch(/read its hwnd from desktop_state/);
+    }
     expect(JSON.stringify(r.suggest)).not.toMatch(/narrow windowTitle until exactly one window matches/);
     // The other statuses' advice must not come back with it — those lines are
     // about target_not_found, modals, elevation, and none of them is what
@@ -467,8 +523,7 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // things the message had just ruled out — in the same payload.
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
     expect(suggests).toMatch(/desktop_discover cannot list this window/);
-    expect(suggests).not.toMatch(/run desktop_discover — the window or element/);
-    expect(suggests).not.toMatch(/pass hwnd to name one window exactly/);
+    catalogueDidNotComeBack(suggests);
   });
 
   it("set_element_value gets the same tailored suggest, not the catalogue", async () => {
@@ -486,7 +541,7 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(next).toMatch(/does not list/i);
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
     expect(suggests).toMatch(/desktop_discover cannot list this window/);
-    expect(suggests).not.toMatch(/run desktop_discover — the window or element/);
+    catalogueDidNotComeBack(suggests);
     // …and the perception object handed to `_post` is the summary WITHOUT the
     // presentation field.
     expect((r as { _perceptionForPost?: Record<string, unknown> })._perceptionForPost)
@@ -667,7 +722,12 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // …and the suggest list, which is what the server instructions tell the
     // model to read, says the same thing rather than the flat promise.
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
-    expect(suggests).toMatch(/keyboard only while this window is in the foreground/);
+    // The branch's own text, not a capability's rendering: this handler exists only at
+    // the kill-switch corners (`server-windows.ts` registers `set_element_value` in the
+    // `else` arm, and `run_macro` refuses unless `v2KillSwitchActive()`), so the line
+    // names the route that exists there rather than a placeholder that is null at every
+    // corner it can run at (gate 2 on `7fda7f7`, 2026-09-13).
+    expect(suggests).toMatch(/keyboard reaches this window by handle only while it holds the foreground/);
   });
 
   it("keeps the flat promise when the title really does name a window", async () => {
@@ -682,7 +742,7 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     const next = (r as { _perceptionForPost?: { next?: string } })._perceptionForPost?.next ?? "";
     expect(next).toContain("click_element and keyboard take hwnd here");
     const suggests = JSON.stringify((r as { suggest?: string[] }).suggest ?? []);
-    expect(suggests).toMatch(/click_element and keyboard accept it on this window/);
+    expect(suggests).toMatch(/click_element and keyboard both accept one/);
   });
 
   it("keeps the generic advice in the SAME tool when the handle can rescue it", async () => {

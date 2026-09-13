@@ -41,6 +41,12 @@
       "Otherwise the console may have closed, or its title is no longer unique among open windows."
     ]
   },
+  "v2_noLocker/runNeedsDestinationSuggest()": {
+    "dropped": 1,
+    "survivors": [
+      "Pass windowTitle — a partial terminal title."
+    ]
+  },
   "killSwitch/AutoGuardBlocked": {
     "dropped": 1,
     "survivors": [
@@ -109,6 +115,12 @@
     "survivors": [
       "The paneId is well-formed but no live pane matches it now. If it is a `wt:…` handle, its Windows Terminal tab may not be the ACTIVE tab — a wt pane reads/sends only while its tab is active; switch back to that tab (or focus_window its Windows Terminal window) and retry.",
       "Otherwise the console may have closed, or its title is no longer unique among open windows."
+    ]
+  },
+  "killSwitch_noLocker/runNeedsDestinationSuggest()": {
+    "dropped": 1,
+    "survivors": [
+      "Pass windowTitle — a partial terminal title."
     ]
   }
 }

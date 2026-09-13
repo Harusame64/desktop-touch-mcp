@@ -521,8 +521,21 @@ export function providerForConfig(cap: Capability, cfg: AdviceConfiguration): st
       // means "dropped for this configuration" and would make a typo vanish
       // silently, and `undefined` — what this used to return — reaches the sentence
       // as the literal word. Text goes to `providerForName`, which has a third
-      // answer for exactly this. The throw cannot reach the failure road:
-      // `renderAdvice` screens with `isCapability` first.
+      // answer for exactly this.
+      //
+      // TWO DOORS REACH THIS ARM, and only one is screened. `renderAdvice` screens with
+      // `isCapability` before calling, so no dictionary line can arrive here. B2c added
+      // the second: `providerForCaller` asks this question while a refusal is being
+      // CONSTRUCTED (`_action-guard.ts`), and it does not screen — it does not have to,
+      // because its parameter is typed `Capability` and every call site passes a
+      // literal. What that leaves is the same residue this comment already admits for
+      // the first door: `tests/**` and JS are outside `tsconfig.json`'s include, so an
+      // untyped caller can still reach the throw, and on the guard road a throw would
+      // land while a refusal is being built. That is deliberate and it is pinned by a
+      // cell rather than left as a sentence — the alternative answers are worse in the
+      // way the paragraph above describes (gate 2 on `7fda7f7`, 2026-09-13: the earlier
+      // wording claimed one screen covered both doors, which stopped being true the
+      // moment the second one opened).
       //
       // `never` rather than a plain `throw`: the assignment is what keeps a MISSING
       // arm a compile error. Without it, the next capability added to the union
@@ -1031,6 +1044,12 @@ export function renderAdviceEachForCaller(lines: readonly AdviceLine[]): (string
  * then say something that does not need one, rather than interpolating "null" into a
  * sentence. There is exactly one such capability among the guard's texts today
  * (`disambiguate_window_by_handle`), and its call site is hand-written for that reason.
+ *
+ * **It does not screen its argument, and it is on the failure road.** The parameter is
+ * typed `Capability` and every call site passes a literal, so the screen is the
+ * compiler; an untyped caller reaches `providerForConfig`'s throwing `default` arm
+ * while a refusal is being constructed. That arm explains why throwing beats every
+ * available answer, and the behaviour is pinned by a cell so it stays a decision.
  */
 export function providerForCaller(cap: Capability): string | null {
   return providerForConfig(cap, captured ?? adviceConfigurationFromEnv());
