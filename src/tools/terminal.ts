@@ -732,8 +732,14 @@ export function paneIdMissSuggest(paneId: string): string[] {
   // (a) A launch_console windowTitle passed where a paneId belongs — the single most common mixup.
   if (/^dtm-locker-console-/i.test(paneId)) {
     return [
-      "That value is the `windowTitle` launch_console returned, NOT its `paneId`. launch_console returns BOTH " +
-        "{paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
+      // The ACTION name is as configuration-dependent as the tool name, and it
+      // survives the drop below: at the locker-off corners this line was still telling
+      // the caller where to get a paneId from `launch_console`, which is not there —
+      // the same rider shape `KeyLockerConsentRequired` had (gate 2, 2026-09-13). What
+      // the caller has to do does not need the name: the two fields are in the value
+      // they already hold.
+      "That value is the locker console's `windowTitle`, NOT its `paneId` — a console pane has both. " +
+        "Pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
       "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill " +
         "un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window " +
         "title is the host window's, shared by all tabs).",

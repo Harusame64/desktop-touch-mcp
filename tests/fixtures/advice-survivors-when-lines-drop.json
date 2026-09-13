@@ -26,7 +26,7 @@
   "v2_noLocker/paneIdMissSuggest(windowTitle-for-paneId)": {
     "dropped": 1,
     "survivors": [
-      "That value is the `windowTitle` launch_console returned, NOT its `paneId`. launch_console returns BOTH {paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
+      "That value is the locker console's `windowTitle`, NOT its `paneId` — a console pane has both. Pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
       "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window title is the host window's, shared by all tabs)."
     ]
   },
@@ -94,7 +94,7 @@
   "killSwitch_noLocker/paneIdMissSuggest(windowTitle-for-paneId)": {
     "dropped": 1,
     "survivors": [
-      "That value is the `windowTitle` launch_console returned, NOT its `paneId`. launch_console returns BOTH {paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
+      "That value is the locker console's `windowTitle`, NOT its `paneId` — a console pane has both. Pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
       "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window title is the host window's, shared by all tabs)."
     ]
   },

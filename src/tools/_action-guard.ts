@@ -97,7 +97,7 @@ export interface ActionGuardResult {
   /**
    * ADR-036 — replaces the status catalogue for THIS refusal.
    *
-   * `SUGGESTS.AutoGuardBlocked` is a seven-line constant appended to every guard
+   * `SUGGESTS.AutoGuardBlocked` is a constant appended to every guard
    * refusal from every tool, and it is the structured field the server
    * instructions tell the model to read. Its `ambiguous_target` and
    * `target_not_found` lines name recoveries a refusal can have just finished

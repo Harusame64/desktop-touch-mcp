@@ -43,7 +43,24 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   InvokePatternNotSupported: [
     "Use mouse_click with clickAt coords from screenshot(detail='text')",
-    "Use desktop_act({action:'setValue'}) for text input fields",
+    // REACHED, not inferred: win2 put a Label in a fixture window and called
+    // `click_element` at both kill-switch corners, and the caller got
+    // `desktop_act({action:'setValue'})` — a tool that surface never registered.
+    // `click_element` is registered at `server-windows.ts:241`, outside the v2 branch,
+    // so this line ships wherever that tool does.
+    //
+    // The registered reason for keeping it verbatim was sound and is not what changed:
+    // `set_element_value` takes no `action`, so substituting the NAME alone makes the
+    // sentence false. What changed is that the sentence had to say what the caller can
+    // do at THIS corner rather than name the tool of another one — the treatment
+    // `KeyLockerConsentRequired` got. Dropping the argument is what makes one sentence
+    // true of both providers: `set the value` is `desktop_act`'s `action:'setValue'`
+    // and is all `set_element_value` does.
+    //
+    // It is also the first line to use `set_value`. The capability was defined in B1
+    // and no advice line had ever carried it — an arm of the table the conversion
+    // never wired (gate 2, 2026-09-13).
+    "Use {tool:set_value} for text input fields — set the value rather than invoking the control",
     "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after {tool:reidentify_element})",
   ],
   BlockedKeyCombo: [
