@@ -179,7 +179,22 @@ const SUGGESTS: Record<string, string[]> = {
     "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
     "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
     "Or pass hwnd to name that window exactly, which {tool:disambiguate_window_by_handle} returns.",
-    "If the target was not found (target_not_found), run {tool:reidentify_element} — the window or element no longer matches the current desktop state.",
+    // ONE SUBJECT, because the sentence had two and the providers split under the kill
+    // switch: "the window" is `list_window_titles` (→ get_windows) and "the element" is
+    // `reidentify_element` (→ get_ui_elements). The conversion picked one, which is the
+    // mixed-line shape this round splits everywhere else (win2, measured on the wire,
+    // 2026-09-13).
+    //
+    // Narrowed rather than split, because splitting makes it two lines and BOTH resolve
+    // to `desktop_discover` at the v2 corner — "run desktop_discover" twice, which is
+    // worse than what it replaces. The window half is already answered in the same
+    // response: `summary.next` says "verify the window title" and resolves
+    // `list_window_titles`. So this line keeps the half `next` does not cover.
+    //
+    // The earlier measurement still holds: `get_ui_elements` answers the window half
+    // too if you ask it (a missing window comes back as `WindowNotFound`). What
+    // narrowed is the PROMISE, not the tool's reach.
+    "If the target was not found (target_not_found), run {tool:reidentify_element} — the element no longer matches the current desktop state.",
     "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
     "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",

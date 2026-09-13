@@ -48,7 +48,7 @@
     "survivors": [
       "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
       "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
-      "If the target was not found (target_not_found), run get_ui_elements — the window or element no longer matches the current desktop state.",
+      "If the target was not found (target_not_found), run get_ui_elements — the element no longer matches the current desktop state.",
       "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
       "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
       "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
@@ -60,7 +60,7 @@
     "survivors": [
       "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
       "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
-      "If the target was not found (target_not_found), run get_ui_elements — the window or element no longer matches the current desktop state.",
+      "If the target was not found (target_not_found), run get_ui_elements — the element no longer matches the current desktop state.",
       "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
       "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
       "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
