@@ -1228,19 +1228,23 @@ export function compatFailureRaw(
 /**
  * `try_next` rendered for this server's configuration — the `action` text is advice.
  *
- * Row by row rather than in one call, because a row is more than its text: the other
- * fields must travel with it, and a dropped line has to take its whole row. The
- * resolver answers with an empty array for a line it drops, which is what `length === 0`
- * reads here.
+ * ONE call for the whole list, and a PER-LINE result: `renderAdviceEachForCaller`
+ * returns an array the same length as its input, with `null` where a line was dropped.
+ * A row is more than its text — `args` and `confidence` must travel with the sentence
+ * they belong to — so the pairing is by position and cannot slide.
+ *
+ * **This block described the previous two contracts in turn, and the second time it
+ * described a defect as if it were the design** (gate 1, 2026-09-13, on the head that
+ * fixed the defect). Whoever changes the loop below changes this paragraph in the same
+ * edit: it sits outside the hunk, which is exactly why it keeps being left behind.
  */
 function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
-  // ONE call for the whole list, so the resolver's pattern stays hoisted — and a
-  // PER-LINE result, so a survivor is identified rather than counted. The first
-  // version of this hoist re-paired by index against a COMPACTED array: every row
-  // after a drop took the next survivor's text while keeping its own `args`, and the
-  // last survivor was discarded (gate 2, 2026-09-13, a high, measured on the built
-  // code). `null` means this row's line was dropped; the array is the same length as
-  // the input, so the pairing cannot slide.
+  // Why the batched call is kept rather than reverted to one call per row: the
+  // resolver's pattern stays hoisted. Its first version re-paired by index against a
+  // COMPACTED array — every row after a drop took the next survivor's text while
+  // keeping its own `args`, and the last survivor was discarded (gate 2 and gate 1
+  // independently, 2026-09-13, measured on the built code). Identifying survivors,
+  // not counting them, is what the doc block above states as the contract.
   const rendered = renderAdviceEachForCaller(tryNext.map((row) => row.action));
   const out: TryNextAction[] = [];
   for (const [i, row] of tryNext.entries()) {
