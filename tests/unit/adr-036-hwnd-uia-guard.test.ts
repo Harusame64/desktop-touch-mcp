@@ -118,6 +118,7 @@ const { clickElementHandler, setElementValueHandler, getUiElementsHandler } =
   await import("../../src/tools/ui-elements.js");
 import { _resetForTest as resetHotCache } from "../../src/engine/perception/hot-target-cache.js";
 import { buildHintsForTitle } from "../../src/engine/identity-tracker.js";
+import { getSuggestsForCode } from "../../src/tools/_errors.js";
 
 function parse(result: { content?: Array<{ type: string; text: string }> }): Record<string, any> {
   const text = result.content?.[0]?.text;
@@ -389,7 +390,25 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     expect(suggests).toMatch(/desktop_discover cannot list this window/);
     // The generic catalogue, whose ambiguous_target line is the dead half, is
     // replaced rather than appended to.
-    expect(suggests).not.toMatch(/pass hwnd to name one window exactly/);
+    //
+    // ASSERTED WITH A CONTROL, because the previous form went vacuous the moment the
+    // catalogue was reworded: it excluded "pass hwnd to name ONE window exactly", and
+    // B2c's hand split made that line "Or pass hwnd to name THAT window exactly". The
+    // regex then matched nothing the code could produce, so the cell would have stayed
+    // green while `failBlockedByGuard` appended the whole catalogue (gate 2,
+    // 2026-09-13). A negative assertion needs a positive one beside it, proving the
+    // marker is present in the thing being excluded — otherwise "absent" and
+    // "unmatchable" read the same.
+    const catalogue = getSuggestsForCode("AutoGuardBlocked").join(" ");
+    expect(catalogue, "the marker must exist in the catalogue, or the negative below is vacuous").toMatch(
+      /blocked_by_modal/,
+    );
+    expect(suggests, "the tailored suggest replaces the catalogue, it does not append it").not.toMatch(
+      /blocked_by_modal/,
+    );
+    // …and by shape as well as by marker: the tailored pair is two lines, the
+    // catalogue is many, so appending is visible without depending on any wording.
+    expect((r as { suggest?: string[] }).suggest ?? []).toHaveLength(2);
   });
 
   it("does not send a titleless-handle caller to a listing that cannot show it", async () => {
