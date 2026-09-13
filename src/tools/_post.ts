@@ -403,7 +403,15 @@ export function withPostState<T extends Record<string, unknown>>(
       // `NativeUiaFocusInfo` does not carry. Filed rather than faked.
       if (carryValue && focusedElement && focusedElement.value !== undefined) {
         const settled = snapshotFocus();
-        if (settled.hwnd === null || settled.hwnd !== after.hwnd) delete focusedElement.value;
+        // IDENTITY, NOT THE NUMBER. A handle is recyclable: the named window can exit during the
+        // lookup and Windows can hand its number to whatever takes focus next, and then the
+        // cheapest form of this check — `settled.hwnd === after.hwnd` — is true about a different
+        // window. `identity-tracker.ts` calls that `hwnd_reused`; the process name is already in
+        // both snapshots, so asking for it costs nothing, and an unreadable one withholds
+        // (gate on `93e39ef`).
+        const sameWindow = settled.hwnd !== null && settled.hwnd === after.hwnd &&
+          settled.processName !== "" && settled.processName === after.processName;
+        if (!sameWindow) delete focusedElement.value;
       }
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {

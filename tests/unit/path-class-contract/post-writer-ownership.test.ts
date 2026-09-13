@@ -402,6 +402,15 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       expect(await elementOfSequence(() => win(9999n, "Password Manager"))).not.toHaveProperty("value");
       // …and a foreground that cannot be read at all counts as moved.
       expect(await elementOfSequence(() => [] as never)).not.toHaveProperty("value");
+      // THE HANDLE CAN BE THE SAME WINDOW'S NUMBER AND A DIFFERENT WINDOW. The named window exits
+      // during the lookup, Windows hands its number to whatever takes focus, and a check on the
+      // number alone says nothing moved. Same hwnd, different process.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce({ processName: "notepad.exe" } as never)
+        .mockReturnValueOnce({ processName: "notepad.exe" } as never)
+        .mockReturnValueOnce({ processName: "passwords.exe" } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "notepad.exe" } as never);
     } finally {
       // RESET IN A `finally`, and reset rather than restore: the sequences above are
       // `mockImplementationOnce` queues, so a regression that skips the third read leaves one
