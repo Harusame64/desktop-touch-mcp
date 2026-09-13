@@ -247,7 +247,17 @@ export const scrollRegistrationHandler = makeCommitWrapper(
   withRichNarration(
     "scroll",
     scrollDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
-    { windowTitleKey: "windowTitle" },
+    // `selector` supersedes: `action:'to_element'` branches on `if (selector)` into the CDP path
+    // and never reads `windowTitle` (`scroll-to-element.ts`), and `action:'smart'` reaches a tab
+    // the same way. A background CDP scroll leaves the foreground alone, so a stale title beside a
+    // selector would have credited whatever window happened to be in front (gate on `75b9268`,
+    // the same shape as `terminal`'s `paneId`).
+    //
+    // Declared as PRESENCE rather than as the handler's branch condition, which is
+    // action-dependent and shared with a UIA meaning (`smart` takes `selector` as a UIA name when
+    // `strategy:'uia'`). Re-deriving that branch here would be a second copy of it, and the cost
+    // of being conservative is a withheld read-back the caller can still ask for.
+    { windowTitleKey: "windowTitle", supersedingKeys: ["selector"] },
   ) as (args: Record<string, unknown>) => Promise<ToolResult>,
   "scroll",
   {

@@ -352,6 +352,12 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
     );
 
+    // `scroll` is the second superseding selector, and it is a CDP road rather than a pane: with a
+    // `selector` the handler scrolls a TAB and never reads the title beside it.
+    const SCROLL_KEYS: PostWindowArgKeys = { windowTitleKey: "windowTitle", supersedingKeys: ["selector"] };
+    expect(await elementOf("scroll", { action: "to_element", selector: "#row-9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("scroll", { action: "to_element", name: "row 9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITH);
+
     // A `fixId` that retargets: the handler acts on the stored fix's window, so these arguments
     // describe the call the caller wrote rather than the one that ran. Same default as the rich
     // path — assume it retargets unless the registration proves otherwise.
