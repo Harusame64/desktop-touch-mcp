@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { KeyLockerHost } from "../../src/engine/key-locker/key-locker-host.js";
+import type { KeyLockerHost } from "../../src/engine/key-locker-host.js";
 import {
   KeyLockerConsentRequiredError,
   KeyLockerDisabledError,
@@ -83,6 +83,27 @@ describe("keyLockerDisabled — kill switch", () => {
     expect(keyLockerDisabled()).toBe(false);
     process.env.DESKTOP_TOUCH_DISABLE_KEY_LOCKER = "1";
     expect(keyLockerDisabled()).toBe(true);
+  });
+
+  it("matches EXACTLY the string \"1\", which is what the doc claims", () => {
+    // The predicate's own comment names four values that must read as unset, and
+    // nothing pinned them (gate 2, 2026-09-13). A loosening — `!== undefined`, or a
+    // `"true"` alias added for convenience — passes every other cell in this repo,
+    // while a user who set the variable to `0` meaning "on" silently loses the
+    // locker AND the advice lines that name it.
+    for (const v of ["true", "yes", "0", " ", "", "01", "1 "]) {
+      expect(keyLockerDisabled({ DESKTOP_TOUCH_DISABLE_KEY_LOCKER: v }), `${JSON.stringify(v)} must read as unset`).toBe(false);
+    }
+    expect(keyLockerDisabled({ DESKTOP_TOUCH_DISABLE_KEY_LOCKER: "1" })).toBe(true);
+    expect(keyLockerDisabled({})).toBe(false);
+  });
+
+  it("is re-exported by the manager, and IMPLEMENTED in the leaf", async () => {
+    // The manager keeps its importers working; the implementation lives where it can
+    // be imported without the native chain. Pinned as one identity so that a future
+    // re-implementation in either place (two readers of one switch) reddens here.
+    const leaf = await import("../../src/engine/key-locker/key-locker-switch.js");
+    expect(keyLockerDisabled).toBe(leaf.keyLockerDisabled);
   });
 });
 
