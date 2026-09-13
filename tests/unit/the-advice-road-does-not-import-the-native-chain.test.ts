@@ -48,6 +48,21 @@
  * path `tsc` deleted. The inline spelling is already in this repo
  * (`key-locker-capture-driver.ts` → `ssh-session-watch.js`).
  *
+ * THE WALKER IS A PARSER, NOT A REGEX — and that is the third fix of one class.
+ * A regular expression over TypeScript kept being *nearly* right, and each round
+ * found the next spelling it did not model: multi-line imports (gate 1 and gate 2,
+ * independently), named type-only specifiers, a semicolon-less type alias merging
+ * into the next statement, `import { type as x }` where `type` is the imported
+ * VALUE's name and not a modifier, and `createRequire(import.meta.url)("…")`, which
+ * loads synchronously while looking nothing like an import. Five spellings in four
+ * rounds, every one of them real and every one found by someone else.
+ *
+ * So the question is asked of the compiler that owns the grammar: `ts.createSourceFile`
+ * gives the statements, `importClause.isTypeOnly` and each specifier's `isTypeOnly`
+ * say what tsc will erase, and a call expression says what `import(…)` and `require(…)`
+ * do. **This is the same lesson as the entity table**: when a rule depends on a
+ * grammar, use the grammar's own reader rather than typing what it accepts.
+ *
  * WRITING THIS FILE: use a writer that does NOT interpret escapes — a quoted
  * heredoc, an editor, `String.fromCharCode` — never `printf` or a shell-interpolated
  * `node -e`. win2 lost a day's instrument to the other kind on 2026-09-13: a regex
@@ -69,81 +84,155 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
 
-/** Comments carry example imports; they are not edges. */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+/**
+ * The edges of one file, as the compiler sees them.
+ *
+ *  - `import … from "x"` / `export … from "x"` / bare `import "x"` — a value edge
+ *    unless tsc erases the whole statement: `import type { … }`, or a named clause
+ *    whose every specifier carries `type`. `import { type as x }` is NOT erased —
+ *    there `type` is the imported name, which `isTypeOnly` reports correctly and a
+ *    regex cannot.
+ *  - `import("x")` — a dynamic edge. Reported separately: at the top level it loads
+ *    at module evaluation, inside a function it costs nothing until called.
+ *  - `require("x")` and `createRequire(…)("x")` — a SYNCHRONOUS edge that looks
+ *    nothing like an import and loads its target while the module evaluates.
+ */
+interface Edges {
+  value: string[];
+  dynamic: string[];
+  require: string[];
 }
 
-/**
- * `import … from "x"`, `export … from "x"`, and bare `import "x"` — across newlines.
- * The clause between the keyword and `from` is captured so a TYPE-ONLY statement can
- * be told apart, and `[^;]` keeps one statement from swallowing the next.
- */
-const EDGE = /\b(import|export)\b([^;'"]*?)from\s*["']([^"']+)["']|\bimport\s*["']([^"']+)["']/g;
+function edgesOf(file: string): Edges {
+  const src = ts.createSourceFile(
+    file,
+    readFileSync(join(REPO, file), "utf8"),
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const out: Edges = { value: [], dynamic: [], require: [] };
+  const literal = (n: ts.Node | undefined): string | null =>
+    n !== undefined && ts.isStringLiteralLike(n) ? n.text : null;
+
+  // `const req = createRequire(import.meta.url)` then `req("…")` — the common
+  // spelling, and the one the first version of this check missed while catching the
+  // immediate `createRequire(…)("…")` form. Found by running the mutation instead of
+  // reading it: the reviewer's example used the immediate form, real code does not.
+  const requireBindings = new Set<string>();
+  const collect = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isCallExpression(node.initializer) &&
+      ts.isIdentifier(node.initializer.expression) &&
+      node.initializer.expression.text === "createRequire"
+    ) {
+      requireBindings.add(node.name.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(src);
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      const spec = literal(node.moduleSpecifier);
+      if (spec !== null && !erased(node.importClause)) out.value.push(spec);
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+      const spec = literal(node.moduleSpecifier);
+      if (spec !== null && !exportErased(node)) out.value.push(spec);
+    } else if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const spec = literal(node.arguments[0]);
+        if (spec !== null) out.dynamic.push(spec);
+      } else if (
+        ts.isIdentifier(node.expression) &&
+        (node.expression.text === "require" || requireBindings.has(node.expression.text))
+      ) {
+        const spec = literal(node.arguments[0]);
+        if (spec !== null) out.require.push(spec);
+      } else if (ts.isCallExpression(node.expression)) {
+        // `createRequire(import.meta.url)("…")` — the callee is itself a call.
+        const inner = node.expression.expression;
+        if (ts.isIdentifier(inner) && inner.text === "createRequire") {
+          const spec = literal(node.arguments[0]);
+          if (spec !== null) out.require.push(spec);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(src);
+  return out;
+}
+
+/** A whole import statement tsc erases: `import type {…}`, or every specifier `type`. */
+function erased(clause: ts.ImportClause | undefined): boolean {
+  if (clause === undefined) return false; // bare `import "x"` — a side-effect edge
+  if (clause.isTypeOnly) return true;
+  if (clause.name !== undefined) return false; // a default binding is a value
+  const named = clause.namedBindings;
+  if (named === undefined || !ts.isNamedImports(named)) return false; // `* as ns`
+  return named.elements.length > 0 && named.elements.every((e) => e.isTypeOnly);
+}
+
+function exportErased(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return true;
+  const clause = node.exportClause;
+  if (clause === undefined || !ts.isNamedExports(clause)) return false;
+  return clause.elements.length > 0 && clause.elements.every((e) => e.isTypeOnly);
+}
 
 /** Repo-relative, `/`-spelled, whatever the host separator is. */
 function posix(p: string): string {
   return p.split(sep).join("/");
 }
 
-/**
- * A clause `tsc` erases entirely: `import type { … }`, or a named list whose every
- * specifier is `type`-prefixed and which has no default/namespace binding beside it.
- * `import Foo, { type Bar }` keeps a value binding and is NOT type-only.
- */
-function typeOnly(clause: string): boolean {
-  // A clause that swallowed a whole statement is not a clause. `EDGE`'s body stops at
-  // `;`, `'` and `"`, and a semicolon-less `export type R = number` above a value
-  // import has none of those — so the two merge, the clause begins with `type`, and a
-  // REAL edge would be skipped. Measured by gate 2 (2026-09-13, fourth round), and
-  // reachable here: eslint's `semi` does not cover `TSTypeAliasDeclaration`.
-  if (/\b(?:import|export)\b/.test(clause)) return false;
-  if (/^\s*type\b/.test(clause)) return true;
-  const braced = /\{([^}]*)\}/.exec(clause);
-  if (braced === null) return false; // default or namespace import: a value edge
-  const beside = clause.slice(0, braced.index).replace(/[\s,]/g, "");
-  if (beside !== "") return false; // a default binding sits outside the braces
-  const specs = braced[1]!.split(",").map((x) => x.trim()).filter((x) => x !== "");
-  return specs.length > 0 && specs.every((x) => /^type\s/.test(x));
-}
-
 interface Reach {
   files: string[];
   /** Relative specifiers no candidate path resolved — an empty set is part of the claim. */
   unresolved: string[];
+  /** Every dynamic or `require` edge met, with the file that carries it. */
+  runtimeEdges: string[];
 }
 
 function reach(entry: string): Reach {
   const seen = new Set<string>();
   const unresolved = new Set<string>();
+  const runtimeEdges = new Set<string>();
+  const resolve = (from: string, spec: string): string | null => {
+    const base = posix(normalize(join(dirname(from), spec)));
+    const candidates = [
+      base.replace(/\.js$/, ".ts"),
+      base.replace(/\.mjs$/, ".mts"),
+      base.replace(/\.cjs$/, ".cts"),
+      `${base}.ts`,
+      posix(join(base, "index.ts")),
+      base,
+    ];
+    return candidates.find((c) => existsSync(join(REPO, c)) && c.endsWith(".ts")) ?? null;
+  };
   const walk = (file: string): void => {
     if (seen.has(file)) return;
     seen.add(file);
-    const src = stripComments(readFileSync(join(REPO, file), "utf8"));
-    for (const m of src.matchAll(EDGE)) {
-      const clause = m[2] ?? "";
-      const spec = m[3] ?? m[4];
-      if (spec === undefined || !spec.startsWith(".")) continue; // node: and packages are not our graph
-      if (typeOnly(clause)) continue; // erased by tsc; costs nothing at load
-      const base = posix(normalize(join(dirname(file), spec)));
-      const candidates = [
-        base.replace(/\.js$/, ".ts"),
-        base.replace(/\.mjs$/, ".mts"),
-        base.replace(/\.cjs$/, ".cts"),
-        `${base}.ts`,
-        posix(join(base, "index.ts")),
-        base,
-      ];
-      const hit = candidates.find((c) => existsSync(join(REPO, c)) && c.endsWith(".ts"));
-      if (hit === undefined) unresolved.add(`${file} -> ${spec}`);
-      else walk(hit); // already repo-relative; `relative("", …)` would drag in the cwd
+    const e = edgesOf(file);
+    for (const spec of [...e.dynamic, ...e.require]) {
+      if (spec.startsWith(".")) runtimeEdges.add(`${file} -> ${spec}`);
+    }
+    for (const spec of [...e.value, ...e.require]) {
+      if (!spec.startsWith(".")) continue; // node: and packages are not our graph
+      const hit = resolve(file, spec);
+      if (hit === null) unresolved.add(`${file} -> ${spec}`);
+      else walk(hit);
     }
   };
   walk(entry);
-  return { files: [...seen], unresolved: [...unresolved] };
+  return { files: [...seen], unresolved: [...unresolved], runtimeEdges: [...runtimeEdges] };
 }
 
 const NATIVE = [
@@ -175,19 +264,16 @@ describe("the advice road's import graph", () => {
     // Nor through the manager, which is the module the predicate used to live in.
     expect(advice.files).not.toContain("src/engine/key-locker/key-locker-manager.ts");
 
-    // CONTROL 5: a TOP-LEVEL dynamic import evaluates at module load, on every
-    // platform, and the walker cannot see it — `import(…)` is not `import … from`.
-    // The header's argument (the door is reached through modules that must be
-    // imported statically first) holds for a dynamic import inside a FUNCTION, which
-    // costs nothing until called; it does not hold for one at the top level. The
-    // advice closure is three small files, so the strict form is affordable here:
-    // no `import(` at all. The control road is exempt — `native-engine.ts` reaches
-    // the addon with exactly this shape, on purpose (gate 2, 2026-09-13, fourth
-    // round, which verified the walker reports zero edges for it).
-    for (const f of advice.files) {
-      const text = stripComments(readFileSync(join(REPO, f), "utf8"));
-      expect(text, `no dynamic import on the advice road: ${f}`).not.toMatch(/\bimport\s*\(/);
-    }
+    // CONTROL 5: the edges that are not imports. `import("…")` at the top level
+    // evaluates its target at module load; `require("…")` and
+    // `createRequire(import.meta.url)("…")` do it synchronously while looking nothing
+    // like an import (gate 1 and gate 2, 2026-09-13, on two consecutive heads). The
+    // parser reports them separately, and the advice closure — three small files —
+    // may carry none at all. Deliberately stricter than "top-level only": telling
+    // top-level from function-scoped is a judgement, and three files do not need it.
+    // The control road is exempt on purpose: `native-engine.ts` reaches the addon
+    // with exactly this shape, which is why the door is where it is.
+    expect(advice.runtimeEdges, "no dynamic or require edge on the advice road").toEqual([]);
 
     // CONTROL 4: the spelling itself. On Windows `path.join` answers backslashes, and
     // every assertion above compares against `/`-spelled literals — so without this,
@@ -200,14 +286,20 @@ describe("the advice road's import graph", () => {
   });
 
   it("keeps the switch a leaf: the file it lives in imports nothing", () => {
-    expect(reach(LEAF).files).toEqual([LEAF]);
-    // CONTROL 3: a different shape from the walker's, so one broken regex cannot
-    // silence both. Any `import` statement at all, and any `from "…"` clause.
-    const src = stripComments(readFileSync(join(REPO, LEAF), "utf8"));
+    const leaf = reach(LEAF);
+    expect(leaf.files).toEqual([LEAF]);
+    expect(leaf.runtimeEdges).toEqual([]);
+    expect(edgesOf(LEAF)).toEqual({ value: [], dynamic: [], require: [] });
+
+    // CONTROL 3: a DIFFERENT MECHANISM from the parser, so one broken reader cannot
+    // silence both. Text, with comments removed by a rule of its own — if the parser
+    // were mis-wired to report nothing, this still sees an import; if this regex is
+    // wrong, the parser above still sees one.
+    const src = readFileSync(join(REPO, LEAF), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
     expect(src, "no import statement").not.toMatch(/^\s*import\b/m);
     expect(src, "no from clause").not.toMatch(/\bfrom\s*["']/);
-    // …and no dynamic import either: `await import("…")` at the top level of a leaf
-    // loads its target at module evaluation while matching neither regex above.
-    expect(src, "no dynamic import").not.toMatch(/\bimport\s*\(/);
+    expect(src, "no dynamic import or require").not.toMatch(/\b(?:import|require)\s*\(/);
   });
 });
