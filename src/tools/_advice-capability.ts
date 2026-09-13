@@ -782,8 +782,9 @@ let warnedAboutDisagreement = false;
  * registration reads it.
  *
  * **Why a capture and not `process.env` at call time.** The server reads the two
- * switches at DIFFERENT moments — `server-windows.ts:86` resolves the v2 flag at
- * module init and freezes `_desktopV2` for the process, while
+ * switches at DIFFERENT moments — `server-windows.ts` resolves the v2 flag at module
+ * init (the `resolveV2Activation(process.env)` destructuring near the top) and freezes
+ * `_desktopV2` for the process, while
  * `registerKeyLockerTools` runs inside `createMcpServer()` and therefore re-reads the
  * locker per server (once per request in stateless HTTP mode). A presenter that read
  * ambient env at call time would answer for a surface that was never published the

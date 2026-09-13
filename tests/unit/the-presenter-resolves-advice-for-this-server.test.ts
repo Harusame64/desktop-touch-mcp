@@ -143,6 +143,7 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // the function does. Depth is the property, not presence.
     let directStatements = 0;
     let unconditional = 0;
+    let returnsBeforeCapture = 0;
     const visit = (node: ts.Node): void => {
       const isTarget =
         (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) &&
@@ -152,7 +153,8 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
         const body = (node as ts.FunctionLikeDeclaration).body;
         if (body !== undefined && ts.isBlock(body)) {
           directStatements = body.statements.length;
-          for (const st of body.statements) {
+          let captureAt = -1;
+          body.statements.forEach((st, i) => {
             if (
               ts.isExpressionStatement(st) &&
               ts.isCallExpression(st.expression) &&
@@ -160,6 +162,24 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
               st.expression.expression.text === "captureAdviceConfiguration"
             ) {
               unconditional += 1;
+              if (captureAt === -1) captureAt = i;
+            }
+          });
+          // …AND CONTROL MUST REACH IT. "A direct statement always runs" is true only
+          // while nothing above it can return: `if (cond) return s;` inserted before
+          // the capture leaves the statement exactly where it is and the function
+          // returning without it (gate 1, 2026-09-13, P3 on this cell's own head).
+          // The commit that wrote the cell CLAIMED the early-return case and did not
+          // check it — the claim was in the prose, not in the code. Returns inside a
+          // nested function do not return from here, so the walk stops at one.
+          if (captureAt > 0) {
+            const hasReturn = (n: ts.Node): boolean => {
+              if (ts.isFunctionLike(n)) return false;
+              if (ts.isReturnStatement(n)) return true;
+              return ts.forEachChild(n, hasReturn) === true;
+            };
+            for (const st of body.statements.slice(0, captureAt)) {
+              if (hasReturn(st)) returnsBeforeCapture += 1;
             }
           }
         }
@@ -182,6 +202,10 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       unconditional,
       "createMcpServer must capture unconditionally — a guarded capture is a forgotten one",
     ).toBe(1);
+    expect(
+      returnsBeforeCapture,
+      "nothing above the capture may return — an unreached capture is a forgotten one",
+    ).toBe(0);
   });
 
   it("keeps production off the renderers that read ambient env", () => {
