@@ -1226,6 +1226,36 @@ export function compatFailureRaw(
 }
 
 /**
+ * `try_next` rendered for this server's configuration — the `action` text is advice.
+ *
+ * Row by row rather than in one call, because a row is more than its text: the other
+ * fields must travel with it, and a dropped line has to take its whole row. The
+ * resolver answers with an empty array for a line it drops, which is what `length === 0`
+ * reads here.
+ */
+function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
+  const out: TryNextAction[] = [];
+  for (const row of tryNext) {
+    const rendered = renderAdviceForCaller([row.action]);
+    if (rendered.length === 0) continue; // its capability has no provider in this configuration
+    const text = rendered[0]!;
+    out.push(text === row.action ? row : { ...row, action: text });
+  }
+  // THE FLOOR. `toFailureEnvelope` goes out of its way to never ship an empty
+  // `try_next` (it substitutes a generic hint when the dictionary has none), and
+  // dropping rows here would have taken that guarantee away by construction — the
+  // fallback computed and then dropped, a caller's `try_next[0].action` throwing
+  // (gate 2, 2026-09-13). The user's decision of the same day is the rule: EVERY code
+  // keeps at least one line at every corner. Where the conversion cannot honour that
+  // by hand, this catches it — and says, in the line itself, that something was
+  // withheld rather than pretending there was never any advice.
+  if (out.length === 0 && tryNext.length > 0) {
+    return [{ action: "No recovery is available in this configuration — see the error message." }];
+  }
+  return out;
+}
+
+/**
  * Build a commit-failure envelope (ADR-010 §5.3, sub-plan §2.4).
  *
  *   {
@@ -1242,25 +1272,6 @@ export function compatFailureRaw(
  * size or fallback path — failure shape is small (try_next 1 path)
  * and wallclock fallback is irrelevant when the call never executed.
  */
-/**
- * `try_next` rendered for this server's configuration — the `action` text is advice.
- *
- * Row by row rather than in one call, because a row is more than its text: the other
- * fields must travel with it, and a dropped line has to take its whole row. The
- * resolver answers with an empty array for a line it drops, which is what `length === 0`
- * reads here.
- */
-function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
-  const out: TryNextAction[] = [];
-  for (const row of tryNext) {
-    const rendered = renderAdviceForCaller([row.action]);
-    if (rendered.length === 0) continue; // its capability has no provider in this configuration
-    const text = rendered[0]!;
-    out.push(text === row.action ? row : { ...row, action: text });
-  }
-  return out;
-}
-
 export function buildFailureEnvelope(
   mostLikelyCause: string,
   tryNext: TryNextAction[],
@@ -1325,8 +1336,12 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
      *  (`asOfWallclockMs` 等の L1 event wallclock 経路、将来 root extras hoist 伝播)。 */
     envelopeOptions?: EnvelopeOptions;
     /** Explicit `try_next` override (ADR-021 P1-2). When provided it is used
-     *  verbatim — **including an empty `[]`** — instead of deriving from
-     *  `getSuggestsForCode(errorName)`. Lets hand-built failure callsites that
+     *  instead of deriving from `getSuggestsForCode(errorName)` — **including an
+     *  empty `[]`**, which still ships empty. **It is no longer verbatim** (ADR-036
+     *  stage 2 B2b): every row's `action` goes through the advice resolver on its way
+     *  out, so a row naming a capability this configuration cannot provide is
+     *  dropped, taking its `args` / `confidence` with it, and a list that empties
+     *  that way gets one line saying so rather than none. Lets hand-built failure callsites that
      *  already hold a typed/rich `try_next` (e.g. lease validation's
      *  `{action, args, confidence}`, or a deliberately-empty list) migrate to
      *  this single converter without changing their envelope shape (north star

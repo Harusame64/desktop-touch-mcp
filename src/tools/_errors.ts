@@ -1482,7 +1482,12 @@ export function failArgs(
     // hand rather than going through `toToolFailure`, which is exactly why it is
     // named here: a seam that only covers the canonical builder misses the sites that
     // predate it (ADR-036 stage 2 B2b).
-    suggest: renderAdviceForCaller(SUGGESTS.InvalidArgs),
+    // Omitted when the resolver leaves nothing, which is what `toToolFailure` does —
+    // two shapes for "no advice" on one road would be a distinction without a
+    // difference for the caller and a trap for anyone diffing them (gate 2).
+    ...(renderAdviceForCaller(SUGGESTS.InvalidArgs).length > 0 && {
+      suggest: renderAdviceForCaller(SUGGESTS.InvalidArgs),
+    }),
     ...(context && { context }),
   };
   return fail(failure);

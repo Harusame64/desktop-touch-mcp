@@ -19,13 +19,17 @@
 import { describe, it, expect } from "vitest";
 import {
   captureAdviceConfiguration,
+  adviceConfigurationFromEnv,
   adviceConfigurationWasCaptured,
   resetAdviceConfiguration,
   renderAdviceForCaller,
 } from "../../src/tools/_advice-capability.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { toToolFailure } from "../../src/tools/_errors.js";
 import { ToolFailureError } from "../../src/errors/typed-errors.js";
-import { buildFailureEnvelope } from "../../src/tools/_envelope.js";
+import { buildFailureEnvelope, type TryNextAction } from "../../src/tools/_envelope.js";
 
 const KEY = "DESKTOP_TOUCH_DISABLE_KEY_LOCKER";
 const V2 = "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2";
@@ -53,14 +57,14 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
   it("follows the CAPTURE, not the environment as it stands when the advice is built", () => {
     // The whole point of the round, and the only shape that separates the two answers.
     withEnv({ [KEY]: undefined }, () => {
-      captureAdviceConfiguration(process.env); // locker ON at registration
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env)); // locker ON at registration
       process.env[KEY] = "1"; // …and someone turns it off afterwards
       expect(renderAdviceForCaller(["use {tool:credential_store}"])).toEqual(["use key_locker"]);
     });
     // And the other direction, so this is not one-sided: captured OFF stays off even
     // when the ambient environment says the locker is back.
     withEnv({ [KEY]: "1" }, () => {
-      captureAdviceConfiguration(process.env);
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
       delete process.env[KEY];
       expect(renderAdviceForCaller(["use {tool:credential_store}"])).toEqual([]);
     });
@@ -73,14 +77,14 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       resetAdviceConfiguration();
       expect(adviceConfigurationWasCaptured()).toBe(false);
       expect(renderAdviceForCaller(["use {tool:credential_store}"])).toEqual(["use key_locker"]);
-      captureAdviceConfiguration(process.env);
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
       expect(adviceConfigurationWasCaptured()).toBe(true);
     });
   });
 
   it("resolves through the FLAT road — the wire is live, not merely quiet", () => {
     withEnv({ [V2]: undefined }, () => {
-      captureAdviceConfiguration(process.env);
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
       const flat = toToolFailure(
         new ToolFailureError("WindowNotFound", {
           displayMessage: "no window",
@@ -90,7 +94,7 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       expect(flat.suggest).toEqual(["Run desktop_discover to see the titles"]);
     });
     withEnv({ [V2]: "1" }, () => {
-      captureAdviceConfiguration(process.env);
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
       const flat = toToolFailure(
         new ToolFailureError("WindowNotFound", {
           displayMessage: "no window",
@@ -103,7 +107,7 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
 
   it("resolves through the ENVELOPE road, and drops a row whose capability is absent", () => {
     withEnv({ [V2]: "1", [KEY]: "1" }, () => {
-      captureAdviceConfiguration(process.env);
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
       const env = buildFailureEnvelope("WindowNotFound", [
         { action: "Run {tool:list_window_titles} to see the titles" },
         { action: "Then {tool:credential_store} for the secret" },
@@ -113,6 +117,62 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
         { action: "Run get_windows to see the titles" },
         { action: "Plain advice, no placeholder" },
       ]);
+    });
+  });
+
+  it("is CALLED by the shipped server, which no other cell here can see", () => {
+    // GATE 2, 2026-09-13. The module's own comment claimed this cell existed before it
+    // did. Delete the call in `server-windows.ts` and everything stays green, because
+    // the `process.env` fallback takes over silently - the very "forgotten capture"
+    // the fallback's note says is covered. Importing the server to check would start
+    // one, so the source is parsed instead: the claim is about the shipped code, and
+    // this is the cheapest instrument that reads the shipped code rather than a copy
+    // of the belief about it.
+    const file = fileURLToPath(new URL("../../src/server-windows.ts", import.meta.url));
+    const src = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.ESNext, true);
+    let insideCreateMcpServer = false;
+    let called = false;
+    const visit = (node: ts.Node): void => {
+      const isTarget =
+        (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) &&
+        node.name?.text === "createMcpServer";
+      if (isTarget) insideCreateMcpServer = true;
+      if (
+        insideCreateMcpServer &&
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "captureAdviceConfiguration"
+      ) {
+        called = true;
+      }
+      ts.forEachChild(node, visit);
+      if (isTarget) insideCreateMcpServer = false;
+    };
+    visit(src);
+    expect(called, "createMcpServer must capture the configuration it registered against").toBe(true);
+    // The control: the same walk must find the function at all, or "no call" would
+    // mean "no function" and read the same.
+    expect(src.getText()).toContain("function createMcpServer");
+  });
+
+  it("never renders try_next to an empty list — the floor the envelope already promised", () => {
+    // `toFailureEnvelope` substitutes a generic hint rather than ship an empty
+    // `try_next`. Dropping rows here would have taken that away by construction: the
+    // fallback computed, then dropped (gate 2, 2026-09-13). The user's decision of the
+    // same day is the rule - every code keeps a line at every corner.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const env = buildFailureEnvelope("KeyLockerConsentRequired", [
+        { action: "Run {tool:credential_store} to save it" },
+      ]);
+      expect(env.if_unexpected.try_next).toHaveLength(1);
+      expect(env.if_unexpected.try_next[0]!.action).toMatch(/No recovery is available/);
+    });
+    // …and an input that was empty to begin with stays empty: the floor is about
+    // advice that was DROPPED, not about inventing advice nobody wrote.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      expect(buildFailureEnvelope("X", []).if_unexpected.try_next).toEqual([]);
     });
   });
 
@@ -126,7 +186,7 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     ];
     for (const corner of [{ [V2]: undefined }, { [V2]: "1" }]) {
       withEnv(corner, () => {
-        captureAdviceConfiguration(process.env);
+        captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
         expect(renderAdviceForCaller(lines)).toEqual(lines);
         const flat = toToolFailure(
           new ToolFailureError("ToolError", { displayMessage: "x", suggest: lines }),
@@ -140,11 +200,18 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
 
   it("keeps the other fields of a try_next row when only its text resolves", () => {
     withEnv({ [V2]: "1" }, () => {
-      captureAdviceConfiguration(process.env);
-      const row = { action: "Run {tool:list_window_titles}", tool: "get_windows", args: { a: 1 } };
-      const env = buildFailureEnvelope("WindowNotFound", [row as never]);
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      // Typed, not cast: `as never` silenced the checker on this call, so a change to
+      // `TryNextAction` or to the signature would not have reddened the cell that
+      // exists to pin the row's other fields (gate 2, 2026-09-13).
+      const row: TryNextAction = {
+        action: "Run {tool:list_window_titles}",
+        args: { a: 1 },
+        confidence: "high",
+      };
+      const env = buildFailureEnvelope("WindowNotFound", [row]);
       expect(env.if_unexpected.try_next).toEqual([
-        { action: "Run get_windows", tool: "get_windows", args: { a: 1 } },
+        { action: "Run get_windows", args: { a: 1 }, confidence: "high" },
       ]);
     });
   });

@@ -460,7 +460,19 @@ export function providerFor(
   cap: Capability,
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  const v2 = resolveV2Activation(env).enabled;
+  return providerForConfig(cap, adviceConfigurationFromEnv(env));
+}
+
+/**
+ * The same answer from a RESOLVED configuration rather than from an environment.
+ *
+ * Two entry points, one switch: the env road is what the cells and the four-corner
+ * sweeps drive, and the configuration road is what the presenter uses, because what
+ * registration did is not always what the environment said (see
+ * {@link AdviceConfiguration}).
+ */
+export function providerForConfig(cap: Capability, cfg: AdviceConfiguration): string | null {
+  const v2 = cfg.v2;
   switch (cap) {
     case "reidentify_element":
       return v2 ? "desktop_discover" : "get_ui_elements";
@@ -480,7 +492,7 @@ export function providerFor(
       // then models a different one for one of its five answers is worse than one
       // that never took it (PR-side codex P2 on `64e69a2`). The shared predicate was
       // widened rather than re-implemented here, so the switch keeps one reader.
-      return keyLockerDisabled(env) ? null : "key_locker";
+      return cfg.credentialStore ? "key_locker" : null;
     default: {
       // Impossible by type, and reachable in fact from `tests/**` (outside
       // `tsconfig.json`'s include) or from JS. It THROWS rather than answering,
@@ -630,6 +642,14 @@ export function renderAdvice(
   lines: readonly AdviceLine[],
   env: Record<string, string | undefined> = process.env,
 ): string[] {
+  return renderAdviceWith(lines, adviceConfigurationFromEnv(env));
+}
+
+/** {@link renderAdvice}, driven by a resolved configuration. One loop, two doors. */
+export function renderAdviceWith(
+  lines: readonly AdviceLine[],
+  cfg: AdviceConfiguration,
+): string[] {
   const out: string[] = [];
   // One pattern for this call, not one per line. Hoisted after gate 2 pointed out
   // that the loop was building a RegExp per line while the module's own note
@@ -652,7 +672,7 @@ export function renderAdvice(
       // A capability this module does not know stays verbatim — visibly broken
       // beats a sentence that reads as advice. See the note on `KNOWN`.
       if (!isCapability(cap)) return whole;
-      const tool = providerFor(cap, env);
+      const tool = providerForConfig(cap, cfg);
       if (tool === null) {
         dropped = true;
         // Discarded — the whole line is dropped below. Returning the placeholder
@@ -681,22 +701,48 @@ export function renderAdvice(
  * registration and resolution read ONE configuration, taken at one instant
  * (gate 2, 2026-09-13, third round on the mechanism PR).
  *
- * **The fallback is `process.env`, and it is a hazard, so it is pinned rather than
+ * **The fallback is the environment, and it is a hazard, so it is pinned rather than
  * hidden**: a server that never captures behaves exactly as before, which is what
  * keeps every existing test and every non-server caller working — and which would
- * also silently swallow a forgotten `captureAdviceConfiguration` call. A cell asserts
- * that the shipped server captures, and {@link adviceConfigurationWasCaptured} exists
- * so that cell cannot be written by reading the source.
+ * also silently swallow a forgotten `captureAdviceConfiguration` call. **That last
+ * sentence stood here while no such cell existed** (gate 2, 2026-09-13, which deleted
+ * the call in `server-windows.ts` and watched everything stay green). There is one
+ * now: it parses the shipped `server-windows.ts` and asserts the call is inside
+ * `createMcpServer`, with a control that the walk finds the function at all — reading
+ * the shipped source rather than a copy of the belief about it. Importing the server
+ * to check would start one.
  */
-let captured: Readonly<Record<string, string | undefined>> | null = null;
+let captured: Readonly<AdviceConfiguration> | null = null;
+
+/**
+ * The RESOLVED surface, not the environment that suggested it.
+ *
+ * **The first version of this captured `process.env`, and gate 2 showed that is the
+ * same defect one layer along** (2026-09-13): the v2 half of the surface is not the
+ * flag, it is `_desktopV2` — the module the server actually loaded and branched its
+ * registration on — and that was decided at module init, while an env snapshot taken
+ * inside `createMcpServer()` is a second reading of a second thing. Two readings of
+ * two things is what this round exists to remove, so what is captured is what
+ * registration DID: `v2` is "the v2 module is the surface I registered", and
+ * `credentialStore` is "the locker registered its tool".
+ */
+export interface AdviceConfiguration {
+  /** The v2 surface was registered — `_desktopV2 !== null`, not the flag's value. */
+  v2: boolean;
+  /** The locker's capability is available — what `registerKeyLockerTools` read. */
+  credentialStore: boolean;
+}
 
 /** Take the configuration for this server. Call it where registration reads the switches. */
-export function captureAdviceConfiguration(
+export function captureAdviceConfiguration(cfg: AdviceConfiguration): void {
+  captured = Object.freeze({ ...cfg });
+}
+
+/** The configuration an `env` describes — the fallback road, and what the cells drive. */
+export function adviceConfigurationFromEnv(
   env: Record<string, string | undefined> = process.env,
-): void {
-  // A snapshot, not a reference: `process.env` is live, and a reference would make
-  // this function a no-op with a ceremony around it.
-  captured = Object.freeze({ ...env });
+): AdviceConfiguration {
+  return { v2: resolveV2Activation(env).enabled, credentialStore: !keyLockerDisabled(env) };
 }
 
 /** True when a server has taken its configuration; false while the fallback is live. */
@@ -721,5 +767,5 @@ export function resetAdviceConfiguration(): void {
  * alone would have been a fix that misses the road it was aimed at.
  */
 export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
-  return renderAdvice(lines, captured ?? process.env);
+  return renderAdviceWith(lines, captured ?? adviceConfigurationFromEnv());
 }
