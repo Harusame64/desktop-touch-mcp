@@ -650,7 +650,26 @@ export function renderAdviceWith(
   lines: readonly AdviceLine[],
   cfg: AdviceConfiguration,
 ): string[] {
-  const out: string[] = [];
+  return renderAdviceEach(lines, cfg).filter((line): line is string => line !== null);
+}
+
+/**
+ * The same rendering, **per line**: `null` where a line was dropped, so a caller that
+ * has to keep something else beside each line can tell WHICH line went.
+ *
+ * **This exists because compacting lost the pairing** (gate 2, 2026-09-13, a high).
+ * `renderTryNext` carried `args` and `confidence` beside each `action`, rendered the
+ * whole list in one call for the pattern hoist, and re-attached by index — but the
+ * compacted array has no gap where a row was dropped, so **every row after a drop
+ * took the next survivor's text while keeping its own arguments**, and the last
+ * survivor was discarded. Measured on the built code: a caller acting on advice that
+ * belonged to a different row. Counting survivors is not identifying them.
+ */
+export function renderAdviceEach(
+  lines: readonly AdviceLine[],
+  cfg: AdviceConfiguration,
+): (string | null)[] {
+  const out: (string | null)[] = [];
   // One pattern for this call, not one per line. Hoisted after gate 2 pointed out
   // that the loop was building a RegExp per line while the module's own note
   // explains why it needs none: `String.replace` resets `lastIndex`, so even a
@@ -676,7 +695,13 @@ export function renderAdviceWith(
     // `Cannot read properties of undefined`). Same door `providerForConfig`'s `default`
     // arm guards, and the same answer: refuse to invent, do not take the caller down.
     if (typeof line !== "string") {
-      out.push(line as unknown as string);
+      // DROPPED, not passed through. Not thrown either: this module's rule is that it
+      // never throws on the failure road. But passing it through put a non-string into
+      // a `string[]` on the wire — `suggest: [null]` reached a caller, whose own
+      // `.trim()` then threw on their side instead of ours, and the floor's
+      // `length > 0` guard read it as advice (gate 2, 2026-09-13). Refusing to invent,
+      // and refusing to ship what the type says is not there, are the same answer.
+      out.push(null);
       continue;
     }
     let dropped = false;
@@ -694,7 +719,7 @@ export function renderAdviceWith(
       }
       return tool;
     });
-    if (!dropped) out.push(rendered);
+    out.push(dropped ? null : rendered);
   }
   return out;
 }
@@ -725,6 +750,7 @@ export function renderAdviceWith(
  * to check would start one.
  */
 let captured: Readonly<AdviceConfiguration> | null = null;
+let warnedAboutDisagreement = false;
 
 /**
  * The RESOLVED surface, not the environment that suggested it.
@@ -764,7 +790,15 @@ export function captureAdviceConfiguration(cfg: AdviceConfiguration): void {
   // the disagreement is announced on the server's own channel, once, with both
   // answers, so the first report of the real thing arrives as a line rather than as a
   // caller wondering why the advice named a tool they do not have.
-  if (captured !== null && (captured.v2 !== cfg.v2 || captured.credentialStore !== cfg.credentialStore)) {
+  if (
+    !warnedAboutDisagreement &&
+    captured !== null &&
+    (captured.v2 !== cfg.v2 || captured.credentialStore !== cfg.credentialStore)
+  ) {
+    // ONCE, and the flag is what makes that true: `captured` is overwritten every
+    // call, so two alternating surfaces logged on every `createMcpServer()` — once per
+    // request in stateless HTTP mode — while this comment claimed "once" (gate 2).
+    warnedAboutDisagreement = true;
     console.error(
       "[desktop-touch] advice configuration changed mid-process: " +
         `was {v2:${String(captured.v2)},credentialStore:${String(captured.credentialStore)}}, ` +
@@ -791,7 +825,19 @@ export function adviceConfigurationWasCaptured(): boolean {
 /** Forget the capture. For cells; the server captures once per `createMcpServer`. */
 export function resetAdviceConfiguration(): void {
   captured = null;
+  warnedAboutDisagreement = false;
 }
+
+/**
+ * The line a road substitutes when the resolver empties advice that existed.
+ *
+ * **One constant, because the two roads must say the same thing.** The floor exists
+ * because gate 2 found the flat road and the envelope road answering differently for
+ * one code; writing the sentence out twice would have left that fixed by hand and
+ * re-breakable by a one-sided reword, with every cell green (gate 2, 2026-09-13).
+ */
+export const ADVICE_WITHHELD_FLOOR =
+  "No recovery is available in this configuration — see the error message.";
 
 /**
  * Render advice for THIS server's configuration — the entry point the presenters use.
@@ -837,17 +883,19 @@ export function resetAdviceConfiguration(): void {
  * answer, and would go on agreeing after a conversion broke something: the strongest
  * kind of false green. **If you hold a configuration, call {@link renderAdviceWith}.**
  */
-/**
- * The line a road substitutes when the resolver empties advice that existed.
- *
- * **One constant, because the two roads must say the same thing.** The floor exists
- * because gate 2 found the flat road and the envelope road answering differently for
- * one code; writing the sentence out twice would have left that fixed by hand and
- * re-breakable by a one-sided reword, with every cell green (gate 2, 2026-09-13).
- */
-export const ADVICE_WITHHELD_FLOOR =
-  "No recovery is available in this configuration — see the error message.";
 
 export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
   return renderAdviceWith(lines, captured ?? adviceConfigurationFromEnv());
+}
+
+/**
+ * {@link renderAdviceForCaller}, **per line**: `null` where a line was dropped.
+ *
+ * For a caller that carries something else beside each line — `try_next` rows have
+ * `args` and `confidence` — because compacting the list loses which line went, and
+ * re-pairing by counting survivors put one row's text beside another row's arguments
+ * (gate 2, 2026-09-13, a high).
+ */
+export function renderAdviceEachForCaller(lines: readonly AdviceLine[]): (string | null)[] {
+  return renderAdviceEach(lines, captured ?? adviceConfigurationFromEnv());
 }

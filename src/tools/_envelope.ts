@@ -116,7 +116,7 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
-import { renderAdviceForCaller, ADVICE_WITHHELD_FLOOR } from "./_advice-capability.js";
+import { renderAdviceEachForCaller, ADVICE_WITHHELD_FLOOR } from "./_advice-capability.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
 import { Err, type Result } from "../types/result.js";
 import { HandlerError, CodedHandlerError } from "../errors/typed-errors.js";
@@ -1234,18 +1234,18 @@ export function compatFailureRaw(
  * reads here.
  */
 function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
-  // ONE call for the whole list, not one per row: the resolver hoists its pattern for
-  // exactly this reason, and a per-row call built a fresh RegExp for each of a
-  // refusal's five suggests (gate 2, 2026-09-13). The rows are re-attached by walking
-  // both lists together — the resolver preserves order and drops nothing silently, so
-  // a row survives when its rendered text is still there.
-  const rendered = renderAdviceForCaller(tryNext.map((row) => row.action));
+  // ONE call for the whole list, so the resolver's pattern stays hoisted — and a
+  // PER-LINE result, so a survivor is identified rather than counted. The first
+  // version of this hoist re-paired by index against a COMPACTED array: every row
+  // after a drop took the next survivor's text while keeping its own `args`, and the
+  // last survivor was discarded (gate 2, 2026-09-13, a high, measured on the built
+  // code). `null` means this row's line was dropped; the array is the same length as
+  // the input, so the pairing cannot slide.
+  const rendered = renderAdviceEachForCaller(tryNext.map((row) => row.action));
   const out: TryNextAction[] = [];
-  let i = 0;
-  for (const row of tryNext) {
+  for (const [i, row] of tryNext.entries()) {
     const text = rendered[i];
-    if (text === undefined) continue; // dropped: its capability has no provider here
-    i += 1;
+    if (text === null || text === undefined) continue; // dropped here, or not a string at all
     out.push(text === row.action ? row : { ...row, action: text });
   }
   // THE FLOOR. `toFailureEnvelope` goes out of its way to never ship an empty

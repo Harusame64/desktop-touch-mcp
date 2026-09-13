@@ -302,6 +302,64 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     });
   });
 
+  it("keeps each row's OWN fields when a row between them drops", () => {
+    // GATE 2, 2026-09-13, A HIGH — and the cells that were here did not see it: the
+    // drop case used rows with only `action` (so a mispairing is invisible) and the
+    // fields case used one row with no drop. Rendering the list in one call and
+    // re-pairing by counting survivors gave every row after a drop the NEXT
+    // survivor's text while keeping its own `args`, and threw the last survivor away.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const rows: TryNextAction[] = [
+        { action: "Save it with {tool:credential_store}", args: { secret: true }, confidence: "high" },
+        { action: "Otherwise retry the click", args: { retry: 1 }, confidence: "low" },
+      ];
+      expect(buildFailureEnvelope("X", rows).if_unexpected.try_next).toEqual([
+        { action: "Otherwise retry the click", args: { retry: 1 }, confidence: "low" },
+      ]);
+    });
+    // A drop in the MIDDLE, which is where an index walk slides furthest.
+    withEnv({ [KEY]: "1" }, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const rows: TryNextAction[] = [
+        { action: "plain first", args: { p: 1 } },
+        { action: "drop me {tool:credential_store}", args: { q: 2 } },
+        { action: "plain third", args: { r: 3 } },
+      ];
+      expect(buildFailureEnvelope("X", rows).if_unexpected.try_next).toEqual([
+        { action: "plain first", args: { p: 1 } },
+        { action: "plain third", args: { r: 3 } },
+      ]);
+    });
+  });
+
+  it("does not let a non-string row swallow the rows after it", () => {
+    // Same root cause as the mispairing: `undefined` had meant both "end of the list"
+    // and "this entry was not a string", so one bad row read as "everything after me
+    // dropped" and the floor replaced real advice (gate 2, 2026-09-13). Measured then:
+    // `buildFailureEnvelope("X", [{}, {action:"real advice"}])` returned only the
+    // floor line.
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const out = buildFailureEnvelope("X", [
+        {} as unknown as TryNextAction,
+        { action: "real advice" },
+      ]).if_unexpected.try_next;
+      expect(out).toEqual([{ action: "real advice" }]);
+    });
+    // And a non-string never reaches the wire, where the type says `string[]`.
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      const flat = toToolFailure(
+        new ToolFailureError("X", {
+          displayMessage: "x",
+          suggest: [null as unknown as string, "real advice"],
+        }),
+      );
+      expect(flat.suggest).toEqual(["real advice"]);
+    });
+  });
+
   it("says the SAME floor sentence on both roads, from one constant", () => {
     // The floor exists because the two roads answered differently. Writing the
     // sentence twice would have left that fixed by hand and re-breakable by a
