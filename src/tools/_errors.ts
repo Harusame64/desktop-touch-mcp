@@ -191,10 +191,21 @@ const SUGGESTS: Record<string, string[]> = {
     // response: `summary.next` says "verify the window title" and resolves
     // `list_window_titles`. So this line keeps the half `next` does not cover.
     //
+    // NARROWED ON THE ANTECEDENT, not the consequent — the first attempt got the
+    // direction wrong. Cutting "the window or" made the CLAIM specific
+    // ("the element no longer matches") while the CONDITION stayed broad
+    // (`target_not_found` fires for a vanished window too), so the line asserted a
+    // cause that is false in half the cases it introduces itself with. Gate 1 found it
+    // from the other end: following the advice for a missing window returns another
+    // `WindowNotFound` and no titles, because `get_ui_elements` resolves the window
+    // first. Conditioning the line on the case it serves makes both halves agree, and
+    // `summary.next` — which resolves `list_window_titles` — is what answers the other
+    // case, in the same response.
+    //
     // The earlier measurement still holds: `get_ui_elements` answers the window half
-    // too if you ask it (a missing window comes back as `WindowNotFound`). What
-    // narrowed is the PROMISE, not the tool's reach.
-    "If the target was not found (target_not_found), run {tool:reidentify_element} — the element no longer matches the current desktop state.",
+    // too if you ask it (a missing window comes back as `WindowNotFound`). It is a
+    // diagnosis there, not a recovery, which is the distinction this line now respects.
+    "If the target was not found (target_not_found) and its window is still open, run {tool:reidentify_element} — the element no longer matches the current desktop state.",
     "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
     "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
