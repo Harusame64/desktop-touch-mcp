@@ -109,40 +109,59 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // does the next thing: it PINS what survives wherever anything drops, and a human
     // has judged each of these. Change what a dropping code ships and this reddens —
     // which is the point: the judgement has to be made again, by someone reading it.
-    const SURVIVORS: Record<string, string> = {
-      // …the locker's own codes, at the two corners where it has no tool. Each
-      // survivor is something the caller can act on WITHOUT the locker.
-      "v2_noLocker/KeyLockerConsentRequired": "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1",
-      "v2_noLocker/KeyLockerConsoleLimit": "Too many anchored consoles are already open. Close a console window",
-      "v2_noLocker/KeyLockerWtUnavailable": "The Windows Terminal pane could not be opened — wt.exe may not be installed",
-      "v2_noLocker/KeyLockerNoSuchBinding": "No saved binding matches that URI — the display URI must match exactly",
-      "killSwitch_noLocker/KeyLockerConsentRequired": "If this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1",
-      "killSwitch_noLocker/KeyLockerConsoleLimit": "Too many anchored consoles are already open. Close a console window",
-      "killSwitch_noLocker/KeyLockerWtUnavailable": "The Windows Terminal pane could not be opened — wt.exe may not be installed",
-      "killSwitch_noLocker/KeyLockerNoSuchBinding": "No saved binding matches that URI — the display URI must match exactly",
-      // …and the guard, where the hwnd clause goes and six recoveries stay.
-      "killSwitch/AutoGuardBlocked": "Read the error message — its tail preserves",
-      "killSwitch_noLocker/AutoGuardBlocked": "Read the error message — its tail preserves",
+    // FULL TEXT, from a fixture, because the reader is the point. The first version
+    // registered a ~70-character PREFIX and compared only the FIRST survivor — and
+    // win2's cell made the identical mistake at 150 characters, which is how they
+    // reported `paneIdMissSuggest` (c) as having no action left: the clause naming
+    // `focus_window` was past the cut. **Truncate only what a machine compares — a
+    // name, an id, a path, a hash. The field a reader weighs goes in whole.** Their
+    // §23, and it applied here first.
+    const FIXTURE = fileURLToPath(
+      new URL("../fixtures/advice-survivors-when-lines-drop.json", import.meta.url),
+    );
+    const registered = JSON.parse(readFileSync(FIXTURE, "utf8")) as Record<
+      string,
+      { dropped: number; survivors: string[] }
+    >;
+    // THE BUILDER IS A PRODUCER TOO, and it is where the subtlest survivors are — the
+    // registration covered only the dictionary at first, so a mutation that changed
+    // `paneIdMissSuggest`'s surviving text left the cell green. That is the shape this
+    // cell exists to catch, missed by the cell itself (mutation, 2026-09-13).
+    const BUILDER: Record<string, string> = {
+      "paneIdMissSuggest(windowTitle-for-paneId)": "dtm-locker-console-x",
+      "paneIdMissSuggest(malformed)": "not-a-pane",
+      "paneIdMissSuggest(no-live-pane)": "12345678",
     };
     const codes = codesFromSource();
     const seen: string[] = [];
+    const producers: Array<[string, () => string[]]> = [];
+    for (const code of codes) producers.push([code, () => getSuggestsForCode(code)]);
+    for (const [name, paneId] of Object.entries(BUILDER)) {
+      producers.push([name, () => paneIdMissSuggest(paneId)]);
+    }
     for (const corner of Object.keys(CORNERS)) {
       const cfg = cfgFor(corner);
-      for (const code of codes) {
-        const raw = getSuggestsForCode(code);
+      for (const [code, produce] of producers) {
+        const raw = produce();
         if (raw.length === 0) continue;
         const out = renderAdviceWith(raw, cfg);
         if (out.length === raw.length) continue; // nothing dropped here
         const key = `${corner}/${code}`;
         seen.push(key);
         expect(out.length, `${key} must keep something`).toBeGreaterThan(0);
-        expect(SURVIVORS[key], `${key} drops lines and is not registered — read what survives`).toBeDefined();
-        expect(out[0], `${key}: what survives changed`).toContain(SURVIVORS[key]);
+        expect(
+          registered[key],
+          `${key} drops lines and is not registered — read what survives and decide whether it is a recovery`,
+        ).toBeDefined();
+        expect(registered[key], `${key}: what survives changed — read it again`).toEqual({
+          dropped: raw.length - out.length,
+          survivors: out,
+        });
       }
     }
     // CONTROL both ways: the registered set is exactly the set that drops. A pair that
     // stops dropping is as much a change as one that starts.
-    expect(seen.sort()).toEqual(Object.keys(SURVIVORS).sort());
+    expect(seen.sort()).toEqual(Object.keys(registered).sort());
   });
 
   it("ships no placeholder to a caller, on any road, at any corner", () => {
