@@ -1483,7 +1483,20 @@ export function failCode(
  * hides the real one (gate 2, 2026-09-13, measured on the envelope road's twin).
  */
 function renderAdviceWithFloor(lines: string[] | undefined): string[] | undefined {
-  if (lines === undefined || lines.length === 0) return undefined;
+  // THE CONTAINER, and this road needed it MORE than the envelope road did — which is
+  // why it is here rather than only there (gate 2, 2026-09-13, seventh round: the
+  // envelope road was guarded and its twin was not, in the same commit that said
+  // "guarding the container ends it"). `toToolFailure` is exported and takes a plain
+  // object, so this is reachable from `tests/**` and from JS. Measured against `main`,
+  // where all three were harmless:
+  //
+  //   suggest: null            main → undefined      here → THREW on `.length`
+  //   suggest: "some advice"   main → "some advice"  here → ["s","o","m","e",…]
+  //   suggest: 7               main → undefined      here → THREW, not iterable
+  //
+  // The middle one is the worst of the three: no throw, no red, a sentence shipped to
+  // a caller one character per line.
+  if (!Array.isArray(lines) || lines.length === 0) return undefined;
   const rendered = renderAdviceForCaller(lines);
   if (rendered.length > 0) return rendered;
   if (!lines.some((line) => typeof line === "string")) return undefined;

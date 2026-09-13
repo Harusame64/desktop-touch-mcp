@@ -1273,9 +1273,12 @@ function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
     if (text === null || text === undefined) continue; // dropped here, or not a string at all
     out.push(text === row.action ? row : { ...row, action: text });
   }
-  // THE FLOOR. `toFailureEnvelope` goes out of its way to never ship an empty
-  // `try_next` (it substitutes a generic hint when the dictionary has none), and
-  // dropping rows here would have taken that guarantee away by construction — the
+  // THE FLOOR. `toFailureEnvelope` substitutes a generic hint when the DICTIONARY has
+  // none, so a code with no advice still ships a line; that is the guarantee, and it
+  // is narrower than "`try_next` is never empty" — a caller who passes `tryNext: []`
+  // gets `[]`, on `main` as well as here (measured, 2026-09-13, after gate 2 reasoned
+  // from the wider claim this comment used to make). Dropping rows would have taken
+  // the real guarantee away by construction — the
   // fallback computed and then dropped, a caller's `try_next[0].action` throwing
   // (gate 2, 2026-09-13). The user's decision of the same day is the rule: EVERY code
   // keeps at least one line at every corner. Where the conversion cannot honour that

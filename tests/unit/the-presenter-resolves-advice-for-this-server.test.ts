@@ -398,6 +398,31 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
         ).toEqual([]);
       }
     });
+    // ON BOTH ROADS. The envelope road was guarded and its twin was not, in the same
+    // commit whose comment said "guarding the container ends it" (gate 2, 2026-09-13,
+    // seventh round). `toToolFailure` takes a plain object and is exported, so the
+    // door is the same one. The string case is the one that needed a cell most: it
+    // neither threw nor stayed silent — `for...of` walked the sentence and shipped it
+    // to the caller one character per line, which no red would have shown.
+    withEnv({}, () => {
+      captureAdviceConfiguration(adviceConfigurationFromEnv(process.env));
+      for (const notAList of [null, "some advice", 7, {}]) {
+        expect(() =>
+          toToolFailure({
+            name: "X",
+            displayMessage: "m",
+            suggest: notAList,
+          } as unknown as ToolFailureError),
+        ).not.toThrow();
+        expect(
+          toToolFailure({
+            name: "X",
+            displayMessage: "m",
+            suggest: notAList,
+          } as unknown as ToolFailureError).suggest,
+        ).toBeUndefined();
+      }
+    });
   });
 
   it("does not blame the configuration for a caller's mistake", () => {

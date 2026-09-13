@@ -354,6 +354,13 @@ describe("the advice road's import graph", () => {
     // The control road is exempt on purpose: `native-engine.ts` reaches the addon
     // with exactly this shape, which is why the door is where it is.
     expect(advice.runtimeEdges, "no dynamic or require edge on the advice road").toEqual([]);
+    // AND FROM THE REFUSAL ROAD'S ROOT. The `road.files` assertions above cannot see
+    // this: `reach()` deliberately does NOT follow a dynamic edge, it records it, so a
+    // top-level `import("../engine/win32.js")` in `_errors.ts` leaves every file
+    // assertion green (gate 1, 2026-09-13, on the head that added the root). The
+    // mutation that "proved" the new root was a STATIC import — the spelling the gate
+    // already covered — which is how half a gate passes for a whole one.
+    expect(road.runtimeEdges, "nor on the refusal road it is reached from").toEqual([]);
 
     // CONTROL 4: the spelling itself. On Windows `path.join` answers backslashes, and
     // every assertion above compares against `/`-spelled literals — so without this,
