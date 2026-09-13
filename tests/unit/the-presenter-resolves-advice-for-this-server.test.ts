@@ -163,6 +163,7 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // obvious name and quietly reintroducing the defect this round removes. The AST
     // cell above says the capture HAPPENS; this one says nothing bypasses it.
     const root = fileURLToPath(new URL("../../src/", import.meta.url));
+    const BANNED_EXPORTS = new Set(["renderAdvice", "providerFor"]);
     const offenders: string[] = [];
     let scanned = 0;
     const walk = (dir: string): void => {
@@ -177,13 +178,44 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
         if (rel === "tools/_advice-capability.ts") continue; // the module's own definitions
         scanned += 1;
         const file = ts.createSourceFile(p, readFileSync(p, "utf8"), ts.ScriptTarget.ESNext, true);
-        const visit = (node: ts.Node): void => {
+        // Resolve the LOCAL names, not the spelling: `import { renderAdvice as x }` and
+        // `import * as advice from "…"` both bypass a match on the callee's text, and
+        // both reintroduce live-environment resolution (gate 1, 2026-09-13 — the same
+        // species as the aliased `createRequire` on the sibling branch).
+        const banned = new Set<string>();
+        const namespaces = new Set<string>();
+        const collect = (node: ts.Node): void => {
           if (
-            ts.isCallExpression(node) &&
-            ts.isIdentifier(node.expression) &&
-            (node.expression.text === "renderAdvice" || node.expression.text === "providerFor")
+            ts.isImportDeclaration(node) &&
+            ts.isStringLiteralLike(node.moduleSpecifier) &&
+            node.moduleSpecifier.text.includes("_advice-capability")
           ) {
-            offenders.push(`${rel}: ${node.expression.text}`);
+            const bindings = node.importClause?.namedBindings;
+            if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+              namespaces.add(bindings.name.text);
+            }
+            if (bindings !== undefined && ts.isNamedImports(bindings)) {
+              for (const el of bindings.elements) {
+                if (BANNED_EXPORTS.has((el.propertyName ?? el.name).text)) banned.add(el.name.text);
+              }
+            }
+          }
+          ts.forEachChild(node, collect);
+        };
+        collect(file);
+        const visit = (node: ts.Node): void => {
+          if (ts.isCallExpression(node)) {
+            const e = node.expression;
+            if (ts.isIdentifier(e) && banned.has(e.text)) {
+              offenders.push(`${rel}: ${e.text}`);
+            } else if (
+              ts.isPropertyAccessExpression(e) &&
+              ts.isIdentifier(e.expression) &&
+              namespaces.has(e.expression.text) &&
+              BANNED_EXPORTS.has(e.name.text)
+            ) {
+              offenders.push(`${rel}: ${e.expression.text}.${e.name.text}`);
+            }
           }
           ts.forEachChild(node, visit);
         };

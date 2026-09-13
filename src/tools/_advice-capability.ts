@@ -757,6 +757,22 @@ export interface AdviceConfiguration {
  * per-server plumbing rather than a module global.
  */
 export function captureAdviceConfiguration(cfg: AdviceConfiguration): void {
+  // A SECOND capture that DISAGREES with the first is the exact condition under which
+  // one slot is the wrong shape — two servers whose surfaces differ, with one global
+  // answering for both. Both gates raised the scope; neither could name a way to reach
+  // it today, because both inputs are process-global. So it is not silently allowed:
+  // the disagreement is announced on the server's own channel, once, with both
+  // answers, so the first report of the real thing arrives as a line rather than as a
+  // caller wondering why the advice named a tool they do not have.
+  if (captured !== null && (captured.v2 !== cfg.v2 || captured.credentialStore !== cfg.credentialStore)) {
+    console.error(
+      "[desktop-touch] advice configuration changed mid-process: " +
+        `was {v2:${String(captured.v2)},credentialStore:${String(captured.credentialStore)}}, ` +
+        `now {v2:${String(cfg.v2)},credentialStore:${String(cfg.credentialStore)}} — ` +
+        "advice is resolved from ONE process-wide capture, so a server registered under " +
+        "the earlier surface may now answer under the later one",
+    );
+  }
   captured = Object.freeze({ ...cfg });
 }
 
@@ -800,6 +816,15 @@ export function resetAdviceConfiguration(): void {
  * must, because "harmless" there is a property of the current wording and not of the
  * road. Recorded as remaining work rather than widened here: a success payload is a
  * different shape with different callers, and this round's claim is byte stability.
+ */
+/**
+ * **THIS FUNCTION TAKES NO CONFIGURATION, and JavaScript will not tell you.** Pass one
+ * as a second argument and it is silently dropped, so the call answers about the
+ * RUNNING PROCESS instead of the corner you meant — measured by win2 on 2026-09-13,
+ * whose harness then reported "locker present" at all four corners, including the two
+ * without a provider. That reads as "nothing was dropped", agrees with today's correct
+ * answer, and would go on agreeing after a conversion broke something: the strongest
+ * kind of false green. **If you hold a configuration, call {@link renderAdviceWith}.**
  */
 export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
   return renderAdviceWith(lines, captured ?? adviceConfigurationFromEnv());
