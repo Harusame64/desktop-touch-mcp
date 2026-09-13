@@ -133,27 +133,38 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // of the belief about it.
     const file = fileURLToPath(new URL("../../src/server-windows.ts", import.meta.url));
     const src = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.ESNext, true);
-    let insideCreateMcpServer = false;
     let found = 0;
-    let called = false;
+    // UNCONDITIONAL, not merely CONTAINED. Counting any call anywhere under the
+    // function stays green when the call is wrapped in an `if`, buried in a closure
+    // that runs at first tool call, or put behind an early return — and a capture that
+    // does not happen is a FORGOTTEN capture, which is the one thing this cell exists
+    // to catch (gate 2, 2026-09-13, eleventh round). So the search is over the
+    // function's OWN statement list: a direct `ExpressionStatement` always runs when
+    // the function does. Depth is the property, not presence.
+    let directStatements = 0;
+    let unconditional = 0;
     const visit = (node: ts.Node): void => {
       const isTarget =
         (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) &&
         node.name?.text === "createMcpServer";
       if (isTarget) {
-        insideCreateMcpServer = true;
         found += 1;
-      }
-      if (
-        insideCreateMcpServer &&
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "captureAdviceConfiguration"
-      ) {
-        called = true;
+        const body = (node as ts.FunctionLikeDeclaration).body;
+        if (body !== undefined && ts.isBlock(body)) {
+          directStatements = body.statements.length;
+          for (const st of body.statements) {
+            if (
+              ts.isExpressionStatement(st) &&
+              ts.isCallExpression(st.expression) &&
+              ts.isIdentifier(st.expression.expression) &&
+              st.expression.expression.text === "captureAdviceConfiguration"
+            ) {
+              unconditional += 1;
+            }
+          }
+        }
       }
       ts.forEachChild(node, visit);
-      if (isTarget) insideCreateMcpServer = false;
     };
     visit(src);
     // THE CONTROL FIRST, and it counts what the WALK matched rather than what the TEXT
@@ -164,7 +175,13 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
     // is "the walk cannot see this shape" (gate 2, 2026-09-13, tenth round). Those are
     // different failures and the control exists to tell them apart.
     expect(found, "the walk must recognise createMcpServer's declaration shape").toBe(1);
-    expect(called, "createMcpServer must capture the configuration it registered against").toBe(true);
+    // …and that the body was readable at all, so "no statement matched" cannot mean
+    // "there were no statements to look at".
+    expect(directStatements, "the walk must see createMcpServer's statement list").toBeGreaterThan(5);
+    expect(
+      unconditional,
+      "createMcpServer must capture unconditionally — a guarded capture is a forgotten one",
+    ).toBe(1);
   });
 
   it("keeps production off the renderers that read ambient env", () => {
@@ -197,6 +214,16 @@ describe("ADR-036 B2b — the presenter reads one captured configuration", () =>
       // process, and nothing checks `adviceConfigurationWasCaptured()` at runtime.
       "resetAdviceConfiguration",
       "captureAdviceConfiguration",
+      // AND THE CONFIG-TAKERS, which are a fifth spelling of the same thing (gate 2,
+      // eleventh round). `renderAdviceWith(lines, { v2: resolveV2Activation(
+      // process.env).enabled, credentialStore: !keyLockerDisabled() })` is call-time
+      // ambient resolution built by hand, and it passed tsc, eslint and this gate.
+      // Production hands the presenter no configuration at all: it calls the
+      // `*ForCaller` doors, which read the capture. Anything that TAKES an
+      // `AdviceConfiguration` is a cell's tool or a sweep's.
+      "renderAdviceWith",
+      "renderAdviceEach",
+      "providerForConfig",
     ]);
     // …with the ONE site that must call it. The cell above asserts that this call
     // exists inside `createMcpServer`; this one asserts nothing else makes it.

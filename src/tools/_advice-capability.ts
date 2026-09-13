@@ -364,11 +364,19 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  *
  * **`renderAdvice` is still the only placeholder-safe entry point.**
  *
- * The predicates are the ones REGISTRATION reads. Deliberate: resolution reading a
- * different source of truth than registration would drift silently the first time
- * one of them changed. Both take `env`, which makes ALL FOUR corners reproducible in
- * a unit test with no Windows machine — `keyLockerDisabled` did not take one until
- * codex pointed out that this function then answered for the wrong configuration.
+ * The predicates are the ones REGISTRATION reads — but **this function is no longer
+ * the road production takes, and saying so here is the point** (gate 2, 2026-09-13,
+ * eleventh round). Since the presenter was wired, resolution reads `captured`: what
+ * registration DID, taken at the instant it did it. `providerFor`, `providerForName`
+ * and `renderAdvice` read `env` at CALL time, which is the drift this paragraph warns
+ * about — so they are for CELLS and SWEEPS, and a production-scan cell bans all of
+ * them by name. **A reader who reaches for the obvious name and believes the older
+ * wording reintroduces exactly the defect this ADR removes**, which is why the ban
+ * exists and why this sentence had to be corrected rather than left as background.
+ *
+ * Both take `env`, which makes ALL FOUR corners reproducible in a unit test with no
+ * Windows machine — `keyLockerDisabled` did not take one until codex pointed out that
+ * this function then answered for the wrong configuration.
  *
  * (The rest of this comment used to be a SECOND doc block. Two blocks in a row and
  * only the last one attaches, so quick-info on `providerFor` showed the essay below
@@ -415,12 +423,20 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * verified in source here). Registration takes a SNAPSHOT and this function reads
  * LIVE:
  *
- *   `server-windows.ts:86`   `resolveV2Activation(process.env)` at module init, once
- *   `server-windows.ts:98`   `_desktopV2` awaited there too, frozen for the process
- *   `server-windows.ts:259`  `registerKeyLockerTools(s)` runs inside
- *                            `createMcpServer()`, so the LOCKER switch is re-read per
- *                            server — once per request in stateless HTTP mode
- *   here                     both switches read from `env` at CALL time
+ *   `server-windows.ts`, module init   `resolveV2Activation(process.env)`, once, and
+ *                                      `_desktopV2` awaited there too — frozen for
+ *                                      the process
+ *   `server-windows.ts`, registration  `registerKeyLockerTools(s)` runs inside
+ *                                      `createMcpServer()`, so the LOCKER switch is
+ *                                      re-read per server — once per request in
+ *                                      stateless HTTP mode
+ *   here                               both switches read from `env` at CALL time
+ *
+ * (No line numbers: this table carried three, **and this PR's own capture block moved
+ * every one of them** — 98 → 100, 259 → 274, and one that was already off by one
+ * became off by three. A number in prose is a claim that goes stale on the next edit
+ * to the file it names, and nothing checks it. Gate 2 found them in the eleventh
+ * round, in a branch whose other commits keep closing this species.)
  *
  * So the two switches do not even agree with each other about freshness, and a
  * process that changes `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2` after startup would have
@@ -428,10 +444,13 @@ export const CAPABILITIES: readonly Capability[] = Object.keys(KNOWN) as Capabil
  * defect, arriving through the door the argument above does not watch. **Nothing in
  * the product does that today** (the cells do it deliberately, which is how the
  * shape is visible at all), so it is latent like the platform gap, and it is stated
- * rather than argued away. **The fix is not another parameter**: registration and
- * resolution should read ONE configuration captured at the same moment, which is a
- * change to how the server hands the presenter its configuration — so it belongs to
- * the change that wires the presenter, not to the mechanism.
+ * rather than argued away. **The fix was not another parameter**: registration and
+ * resolution read ONE configuration captured at the same moment — **which is done,
+ * and is this PR**. It stayed written as future work through three rounds after it
+ * shipped (gate 2, eleventh round), while the sibling checklist's item 3 had been
+ * struck through; the two paragraphs said opposite things about the same change.
+ * What survives here is the description of the problem, because the ban that keeps
+ * production off this function is only intelligible next to it.
  *
  * **THE SENTENCE THAT USED TO STAND HERE SAID "no publishable configuration", AND
  * THAT IS FALSE** (gate 2 round 6, finding 2, verified here). `index.ts:15-18`
@@ -943,7 +962,7 @@ export function adviceExisted(lines: readonly unknown[]): boolean {
  * **THERE IS A THIRD ROAD AND IT IS NOT COVERED: advice on an `ok:true` payload.**
  * The sentence above said "both roads" until gate 2 measured otherwise
  * (2026-09-13). Three sites ship advice on success and touch neither presenter:
- * `excel.ts:272` (`ok({… suggest})` for `check_access_vbom`), `ocr-bridge.ts:552`
+ * `excel.ts:272` (`ok({… suggest})` for `check_access_vbom`), `src/engine/ocr-bridge.ts:552`
  * (a per-element `suggest` on low-confidence OCR — a singular `string` on
  * `ActionableElement`, a different type from the failure road's `string[]`), and
  * `terminal.ts:2824` (`readError.suggest`, hand-built inside an `ok:true` run
