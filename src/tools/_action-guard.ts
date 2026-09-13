@@ -11,6 +11,10 @@
  */
 
 import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
+// The NAME, not a placeholder: these sentences travel in the refusal's own `error`
+// string and in the perception summary, which no presenter renders, so a `{tool:…}`
+// written here would ship as literal text (ADR-036, measured on the wire).
+import { providerForCaller } from "./_advice-capability.js";
 import { isAutoGuardEnabled } from "../utils/auto-guard-env.js";
 import { logDiagnostic } from "../engine/diagnostic-log.js";
 import { getWindowProcessId, getProcessIdentityByPid, getWindowRectByHwnd, enumWindowsInZOrder, isExcludedWindowHandle } from "../engine/win32.js";
@@ -255,6 +259,26 @@ export function failBlockedByGuard(
   });
 }
 
+/**
+ * "Verify the window title" — the one recovery the guard offers twice.
+ *
+ * WRITTEN ONCE because it was written twice, and the second copy is why the
+ * conversion's own ledger undercounted this road: the plan recorded two
+ * configuration-dependent sentences on the guard road and there were three, the third
+ * built inline in the title-mismatch refusal (mac, 2026-09-13, sweeping `src/**` by
+ * AST rather than trusting the enumeration).
+ *
+ * The `null` arm is not decoration. `list_window_titles` has a provider in every
+ * configuration today, so it cannot fire — but the alternative is interpolating
+ * `null` into a sentence, and the sentence is still true without the tool clause.
+ */
+function titleVerificationStep(): string {
+  const lister = providerForCaller("list_window_titles");
+  return lister === null
+    ? "Verify the window title, then retry"
+    : `Call ${lister} to verify the window title, then retry`;
+}
+
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
   target?: string
@@ -276,9 +300,23 @@ function nextStepFor(
       // the advice below is again the one thing that cannot help, so that
       // handler replaces this text with a recovery it can honour rather than
       // this line trying to know about it (ADR-036 R-36-5).
-      return `Pass hwnd to name one window exactly (desktop_discover returns it), or use a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
+      // HAND-WRITTEN, and the one place in the conversion that is neither a
+      // substitution nor a drop. `get_windows` cannot be substituted here: it READS a
+      // handle and does not return one, so the sentence would promise an hwnd from a
+      // tool that drops it. Dropping the line is not available either — the sentence
+      // IS the recovery, and "use a more specific windowTitle" would go with it. So
+      // the hwnd clause is removed where nothing provides it, by hand, at the one call
+      // site (the user's decision of 2026-09-13: split a mixed sentence rather than
+      // add a third mechanism).
+      {
+        const byHandle = providerForCaller("disambiguate_window_by_handle");
+        const matched = target ? ` (matched: ${target})` : "";
+        return byHandle === null
+          ? `Use a more specific windowTitle${matched}`
+          : `Pass hwnd to name one window exactly (${byHandle} returns it), or use a more specific windowTitle${matched}`;
+      }
     case "target_not_found":
-      return "Call desktop_discover to verify the window title, then retry";
+      return titleVerificationStep();
     case "identity_changed":
       return "Target window was replaced. Take a new screenshot.";
     case "blocked_by_modal":
@@ -808,7 +846,7 @@ export async function runActionGuard(
     const status: AutoGuardEnvelope["status"] = notFound ? "target_not_found" : "unsafe_coordinates";
     const next = notFound
       ? `No open window matches "${tm.requested}" — point ${point} is inside "${tm.resolved}". ` +
-        `Call desktop_discover to verify the window title, then retry.`
+        `${titleVerificationStep()}.`
       : `Point ${point} is inside "${tm.resolved}", not "${tm.requested}". ` +
         `Take a new screenshot to get fresh coordinates.`;
     // This refusal used to return before deriveTargetKey ran, making it the
@@ -866,7 +904,7 @@ export async function runActionGuard(
         canContinue: false,
         next: titlelessHandle
           ? "That hwnd is a live window, and the enumeration this guard and " +
-            "desktop_discover both read does not list it — so neither can name it " +
+            `${providerForCaller("list_window_titles") ?? "the window lister"} both read does not list it — so neither can name it ` +
             "and passing the handle again returns here. That enumeration keeps " +
             "top-level windows on this desktop that are visible, titled, have a " +
             "rectangle, and are either at least 50x50 or minimised; a window " +
@@ -887,7 +925,7 @@ export async function runActionGuard(
       ...(titlelessHandle && {
         suggest: [
           "Read the error message — for this refusal it is the whole recovery.",
-          "desktop_discover cannot list this window; passing its hwnd returns here. keyboard with windowTitle:\"@active\" is the one channel that reaches it, and only while it holds the foreground.",
+          "{tool:list_window_titles} cannot list this window; passing its hwnd returns here. keyboard with windowTitle:\"@active\" is the one channel that reaches it, and only while it holds the foreground.",
         ],
       }),
     };

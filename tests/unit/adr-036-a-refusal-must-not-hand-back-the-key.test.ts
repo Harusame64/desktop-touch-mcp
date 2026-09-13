@@ -269,7 +269,11 @@ describe("the advice for a refusal does not name the press it refused", () => {
         if (!mentionsCoordinatePress) continue;
         expect(line, `${name} suggests the press it refused: ${line}`).toMatch(/do not|never|cannot/i);
       }
-      expect(joined).toMatch(/desktop_discover|another window/i);
+      // The capability, not the name: the dictionary holds `{tool:reidentify_element}`
+      // and the presenter turns it into whichever tool this server registered
+      // (ADR-036 stage 2 B2c). What the cell is about — the refusal points at
+      // re-discovery rather than at the press it just refused — is unchanged.
+      expect(joined).toMatch(/\{tool:reidentify_element\}|another window/i);
       expect(advice.length).toBeGreaterThanOrEqual(2);
     });
   }
@@ -299,7 +303,7 @@ describe("the advice for a refusal does not name the press it refused", () => {
     // desktop_discover" spends the caller's first round trip on it anyway (win の外からの読み, #622).
     const advice = await adviceFor("AimRouteFailed");
     expect(advice[0]).toMatch(/^if_unexpected\.detail says which failure it was/);
-    const rediscover = advice.find((line) => /re-run desktop_discover/i.test(line));
+    const rediscover = advice.find((line) => /re-run \{tool:reidentify_element\}/i.test(line));
     expect(rediscover).toMatch(/^When the detail names no failure, or says the element was not found/);
   });
 

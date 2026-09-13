@@ -736,15 +736,17 @@ export function paneIdMissSuggest(paneId: string): string[] {
         "{paneId, windowTitle}: pass the `paneId` field — a decimal console hwnd, or a `wt:<pid>:<startMs>` string — here.",
       "Use the paneId, not this windowTitle: driving a locker pane by windowTitle can leave credential autofill " +
         "un-armed (autofill keys off the paneId, and a Windows Terminal pane has no title of its own — the window " +
-        "title is the host window's, shared by all tabs). Lost the paneId? Re-call key_locker({action:'launch_console'}) (default fresh:false) to get it back.",
+        "title is the host window's, shared by all tabs).",
+      "Lost the paneId? Re-call {tool:credential_store}({action:'launch_console'}) (default fresh:false) to get it back.",
     ];
   }
   // (b) Any other handle that does not parse — a malformed paneId.
   if (parsePaneId(paneId) === null) {
     return [
       "paneId is malformed. Valid forms: a decimal console hwnd (e.g. 12345678) or a Windows Terminal handle " +
-        "`wt:<pid>:<startMs>`. Use the `paneId` field from key_locker({action:'launch_console'}) verbatim.",
-      "Lost the paneId? Re-call key_locker({action:'launch_console'}) — the default fresh:false reuses the " +
+        "`wt:<pid>:<startMs>`.",
+      "Use the `paneId` field from {tool:credential_store}({action:'launch_console'}) verbatim.",
+      "Lost the paneId? Re-call {tool:credential_store}({action:'launch_console'}) — the default fresh:false reuses the " +
         "most-recent still-open locker pane and returns its paneId (there is no pane-listing action).",
     ];
   }
@@ -753,8 +755,8 @@ export function paneIdMissSuggest(paneId: string): string[] {
     "The paneId is well-formed but no live pane matches it now. If it is a `wt:…` handle, its Windows Terminal " +
       "tab may not be the ACTIVE tab — a wt pane reads/sends only while its tab is active; switch back to that tab " +
       "(or focus_window its Windows Terminal window) and retry.",
-    "Otherwise the console may have closed, or its title is no longer unique among open windows. Re-call " +
-      "key_locker({action:'launch_console'}) to reuse or (with fresh:true) open a new pane.",
+    "Otherwise the console may have closed, or its title is no longer unique among open windows.",
+    "Re-call {tool:credential_store}({action:'launch_console'}) to reuse or (with fresh:true) open a new pane.",
   ];
 }
 
@@ -3010,7 +3012,15 @@ export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolR
         // Unreachable: the run variant's `.refine(windowTitle || paneId)` already rejected this as a
         // typed InvalidArgs error. Kept so TS narrows runWindowTitle to a non-empty string.
         return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId", {
-          suggest: ["Pass windowTitle (a partial terminal title) or paneId (from key_locker launch_console)."],
+          suggest: [
+            // SPLIT BY HAND (the user's decision of 2026-09-13). The core — which
+            // argument to pass — is true in every configuration; only the way to
+            // obtain a paneId depends on the locker. Substituting the whole line
+            // would drop the real answer at the two locker-off corners, and dropping
+            // the line would drop it everywhere.
+            "Pass windowTitle — a partial terminal title.",
+            "Or pass paneId, which {tool:credential_store} action='launch_console' returns.",
+          ],
         });
       }
       return terminalRunHandler({ ...a, windowTitle: runWindowTitle, input: resolvedInput });

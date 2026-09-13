@@ -41,6 +41,7 @@ import {
   toToolFailure,
   getSuggestsForCode,
 } from "../../../src/tools/_errors.js";
+import { renderAdviceForCaller } from "../../../src/tools/_advice-capability.js";
 import { fail } from "../../../src/tools/_types.js";
 
 /** Extract the single JSON text block `failWith` (via `fail`) emits. */
@@ -77,9 +78,19 @@ describe("PR-P2-2 layer A: failWith frozen golden (revert-proof, non-tautologica
       ok: false,
       code: "WindowNotFound",
       error: "focus_window failed: window not found",
-      suggest: getSuggestsForCode("WindowNotFound"),
+      // THROUGH THE RESOLVER, because that is what the caller receives. Sourcing the
+      // expectation from the SSOT accessor was right and stays right; what changed in
+      // ADR-036 stage 2 B2c is that the SSOT holds `{tool:<capability>}` and the wire
+      // holds the name this server registered. Comparing the wire to the RAW
+      // dictionary would now pin the placeholder — a shape no caller ever sees.
+      suggest: renderAdviceForCaller(getSuggestsForCode("WindowNotFound")),
     });
     expect(getSuggestsForCode("WindowNotFound").length).toBeGreaterThan(0); // guard: real classified case
+    // …and the round's own claim, in the same cell: the line CARRIES a placeholder in
+    // the dictionary and does NOT carry one on the wire. Without this the assertion
+    // above would pass just as well if the resolver were removed.
+    expect(getSuggestsForCode("WindowNotFound")[0]).toContain("{tool:");
+    expect(renderAdviceForCaller(getSuggestsForCode("WindowNotFound"))[0]).not.toContain("{tool:");
     expect(wireText(failWith(new Error("window not found"), "focus_window"))).toBe(expected);
   });
 

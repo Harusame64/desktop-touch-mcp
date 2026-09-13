@@ -154,6 +154,13 @@ function v2DisabledError(): ToolResult {
     "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set; v2 World-Graph tools (desktop_discover / desktop_act) are disabled and may not be invoked through run_macro either.",
     {
       suggest: [
+        // VERBATIM, and it is the clearest case in the conversion. The names here are
+        // on the ABSENT side of the sentence: it tells the caller what unsetting the
+        // flag would GIVE them. Substituting the kill-switch names would make it read
+        // "unset the flag to use get_ui_elements", which is false — those are what the
+        // caller already has. This code path exists only while v2 is off, so the
+        // resolver would answer for exactly the wrong corner (ADR-036 §4.2's third
+        // shape, crossing the configuration axis).
         "Unset DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 (or set it to 0) and restart the MCP server to use desktop_discover / desktop_act.",
       ],
     }

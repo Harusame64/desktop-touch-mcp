@@ -971,7 +971,7 @@ export function adviceExisted(lines: readonly unknown[]): boolean {
  * the conversion does not reach them — and is also why the gate that will check this
  * must, because "harmless" there is a property of the current wording and not of the
  * road. Recorded as remaining work rather than widened here: a success payload is a
- * different shape with different callers, and this round's claim is byte stability.
+ * different shape with different callers, and B2b's claim was byte stability.
  *
  * **THIS FUNCTION TAKES NO CONFIGURATION, and JavaScript will not tell you.** Pass one
  * as a second argument and it is silently dropped, so the call answers about the
@@ -1008,4 +1008,30 @@ export function renderAdviceForCaller(lines: readonly AdviceLine[]): string[] {
  */
 export function renderAdviceEachForCaller(lines: readonly AdviceLine[]): (string | null)[] {
   return renderAdviceEach(lines, captured ?? adviceConfigurationFromEnv());
+}
+
+/**
+ * The provider for one capability, **for this server** — the door for text that never
+ * reaches a presenter.
+ *
+ * **Why a third door exists at all.** The seam resolves `{tool:…}` where advice is
+ * rendered, and that covers `suggest` and `try_next`. It does not cover the guard's
+ * own sentences: `nextStepFor()` and its siblings write prose that travels in the
+ * refusal's `error` string and in the perception summary, fields no presenter touches
+ * (measured on the wire: 8 occurrences at the two kill-switch corners, ADR-036's
+ * motivating defect). A placeholder written there would ship as the literal text
+ * `{tool:list_window_titles}`. So those call sites ask for the NAME and build the
+ * sentence themselves.
+ *
+ * **It answers from the capture**, like the presenters, which is what keeps it out of
+ * the ban: `providerFor` and `providerForConfig` read an environment or take a
+ * configuration, and a production-scan cell forbids both. This one takes neither.
+ *
+ * `null` means the capability has no provider in this configuration — the caller must
+ * then say something that does not need one, rather than interpolating "null" into a
+ * sentence. There is exactly one such capability among the guard's texts today
+ * (`disambiguate_window_by_handle`), and its call site is hand-written for that reason.
+ */
+export function providerForCaller(cap: Capability): string | null {
+  return providerForConfig(cap, captured ?? adviceConfigurationFromEnv());
 }

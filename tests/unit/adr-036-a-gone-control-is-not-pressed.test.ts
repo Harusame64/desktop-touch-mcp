@@ -191,7 +191,22 @@ describe("the envelope entity_not_found goes out in", () => {
     const raw = toFailureEnvelope(Err(new EntityNotFoundRefusalError("x")), { optIn: false }) as { reason?: string };
     expect(raw.reason).toBe("entity_not_found");
     const advice = getSuggestsForCode("EntityNotFound");
-    expect(advice.join(" ")).toMatch(/desktop_discover/);
+    // AT BOTH CORNERS. This used to match `desktop_discover` against the raw
+    // dictionary; as of ADR-036 stage 2 B2c the dictionary says WHICH CAPABILITY and
+    // the wire says which tool. Asserting the resolved text at both corners is the
+    // stronger claim the conversion makes available: the advice sends the caller back
+    // to re-discovery under either surface, naming the tool that surface has.
+    const { renderAdviceWith, adviceConfigurationFromEnv } = await import(
+      "../../src/tools/_advice-capability.js"
+    );
+    const v2 = renderAdviceWith(advice, adviceConfigurationFromEnv({})).join(" ");
+    const kill = renderAdviceWith(
+      advice,
+      adviceConfigurationFromEnv({ DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1" }),
+    ).join(" ");
+    expect(v2).toMatch(/desktop_discover/);
+    expect(kill).toMatch(/get_ui_elements/);
+    expect(`${v2} ${kill}`).not.toContain("{tool:");
     for (const line of advice) {
       if (/mouse_click|by coordinate|rect/i.test(line)) expect(line).toMatch(/do not|never/i);
     }

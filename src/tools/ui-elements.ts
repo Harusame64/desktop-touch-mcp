@@ -464,6 +464,17 @@ export const setElementValueHandler = async ({
           // catalogue, which is right for them.
           return failCode("AutoGuardBlocked", ag.summary.next, {
             suggest: [
+              // A FOURTH TREATMENT: substitute the name AND narrow the claim (win2,
+              // measured 2026-09-13). "each open window's hwnd" is true of
+              // `desktop_discover` and false of the kill switch's provider, so the
+              // sentence needed more than a substitution — but it is not unactionable
+              // there, which is what the measurement settled. `get_windows` DROPS the
+              // handle it reads (0 hwnds on the wire); `get_ui_elements` returns ONE,
+              // at `$.hints.target.hwnd` — the window the caller just named, which is
+              // exactly the window this refusal is about, and `set_element_value`
+              // accepts it. So the capability is `reidentify_element`, and the claim
+              // narrows from "each open window" to "this window", which is true in
+              // BOTH configurations.
               "Read the error message — for this refusal it is the whole recovery.",
               // Answers for the branch that actually fired. Flat, this line
               // offered a titleless caller a listing that drops their window
@@ -471,10 +482,10 @@ export const setElementValueHandler = async ({
               // which one cannot reach it — the catalogue's contradiction one
               // level down, inside the list written to replace it.
               titlelessTarget
-                ? "desktop_discover cannot list this window — the enumeration drops untitled ones. keyboard does accept its hwnd, but only while this window is in the foreground; click_element resolves handles through that same enumeration and cannot reach it."
+                ? "{tool:list_window_titles} cannot list this window — the enumeration drops untitled ones. keyboard does accept its hwnd, but only while this window is in the foreground; click_element resolves handles through that same enumeration and cannot reach it."
                 : keyboardTakesHwndHere
-                  ? "desktop_discover returns each open window's hwnd; click_element and keyboard accept it on this window."
-                  : "desktop_discover returns each open window's hwnd; click_element accepts it on this window, and keyboard only while this window is in the foreground.",
+                  ? "{tool:reidentify_element} returns this window's hwnd; click_element and keyboard accept it on this window."
+                  : "{tool:reidentify_element} returns this window's hwnd; click_element accepts it on this window, and keyboard only while this window is in the foreground.",
             ],
             rootExtras: { _perceptionForPost: ag.summary },
           });

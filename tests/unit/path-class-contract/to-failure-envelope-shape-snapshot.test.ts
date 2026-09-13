@@ -291,8 +291,18 @@ describe("PR-P1-1 site 5c: lease validation 'entity_not_found' (ADR-036 item 16)
         l1Emitter: NOOP_L1,
       },
     )({} as Record<string, unknown>);
-    const tryNext = getSuggestsForCode("EntityNotFound").map((action) => ({ action }));
+    // RESOLVED, because that is the wire. The SSOT accessor is still the source — a
+    // dictionary edit still moves this expectation with it — but as of ADR-036 stage 2
+    // B2c the dictionary holds `{tool:<capability>}` and the envelope holds the name
+    // this server registered. Comparing the wire to the raw dictionary would pin a
+    // shape no caller receives.
+    const { renderAdviceForCaller } = await import("../../../src/tools/_advice-capability.js");
+    const raw = getSuggestsForCode("EntityNotFound");
+    const tryNext = renderAdviceForCaller(raw).map((action) => ({ action }));
     expect(tryNext.length).toBeGreaterThan(0);
+    // The round's claim, in the cell: a placeholder in the dictionary, none on the wire.
+    expect(raw.join(" ")).toContain("{tool:");
+    expect(tryNext.map((t) => t.action).join(" ")).not.toContain("{tool:");
     expect(parseContent(result.content)).toEqual({
       ok: false,
       reason: "entity_not_found",

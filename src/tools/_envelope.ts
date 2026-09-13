@@ -1073,7 +1073,7 @@ export function mapLeaseValidationToTypedReason(
   if (reason === "expired") {
     return {
       code: "LeaseExpired",
-      tryNext: [{ action: "desktop_discover", args: {}, confidence: "high" }],
+      tryNext: [{ action: "{tool:reidentify_element}", args: {}, confidence: "high" }],
     };
   }
   // ADR-036 item 16 — promoted. The same reason comes back from the touch itself (the entity

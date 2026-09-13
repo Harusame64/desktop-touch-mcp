@@ -29,14 +29,14 @@ const SUGGESTS: Record<string, string[]> = {
     "At least one of name or automationId must be provided",
   ],
   WindowNotFound: [
-    "Run desktop_discover to see available titles",
+    "Run {tool:list_window_titles} to see available titles",
     "Try a shorter partial title match (e.g. first word only)",
     "The window may be minimized — try focus_window first",
     "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
     "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_open to get the tabId, then browser_navigate to the target URL to switch tabs",
   ],
   ElementNotFound: [
-    "Call desktop_discover to see candidate names and automationIds",
+    "Call {tool:reidentify_element} to see candidate names and automationIds",
     "Use screenshot(detail='text') for actionable[] with clickAt coords",
     "Try a shorter partial name match",
     "The element may not be visible yet — use wait_until(condition='element_appears')",
@@ -44,7 +44,7 @@ const SUGGESTS: Record<string, string[]> = {
   InvokePatternNotSupported: [
     "Use mouse_click with clickAt coords from screenshot(detail='text')",
     "Use desktop_act({action:'setValue'}) for text input fields",
-    "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after desktop_discover)",
+    "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after {tool:reidentify_element})",
   ],
   BlockedKeyCombo: [
     "Use workspace_launch to open applications by name instead",
@@ -65,7 +65,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Or call browser_open({launch:{}}) to spawn a debug-mode Chrome on the configured port",
   ],
   TerminalWindowNotFound: [
-    "Call desktop_discover to see available titles",
+    "Call {tool:list_window_titles} to see available titles",
     "Try a partial title match (e.g. 'PowerShell' or 'pwsh')",
     "Filter by processName: pwsh / powershell / cmd / bash / WindowsTerminal",
   ],
@@ -160,8 +160,9 @@ const SUGGESTS: Record<string, string[]> = {
   // the guard runs and carries its own `DestinationRequired` code below.
   AutoGuardBlocked: [
     "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
-    "If the descriptor matched multiple targets (ambiguous_target), pass hwnd to name one window exactly (desktop_discover returns it), or narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
-    "If the target was not found (target_not_found), run desktop_discover — the window or element no longer matches the current desktop state.",
+    "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
+    "Or pass hwnd to name that window exactly, which {tool:disambiguate_window_by_handle} returns.",
+    "If the target was not found (target_not_found), run {tool:reidentify_element} — the window or element no longer matches the current desktop state.",
     "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
     "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
@@ -175,7 +176,7 @@ const SUGGESTS: Record<string, string[]> = {
   // shape as the key_locker producers below).
   DestinationRequired: [
     "Pass `windowTitle` or `hwnd` so the input has an explicit destination window.",
-    "Call `desktop_discover` (or `desktop_state`) to list windows and pick a target.",
+    "Call `{tool:list_window_titles}` (or `desktop_state`) to list windows and pick a target.",
     "To deliberately type into the current foreground window, set DESKTOP_TOUCH_REQUIRE_DESTINATION=0 (downgrades this stop to a warning — never a silent pass).",
   ],
   LensNotFound: [
@@ -208,8 +209,8 @@ const SUGGESTS: Record<string, string[]> = {
   // list cannot know which one it is in.
   CoordinateOutsideReachableBounds: [
     "Read the error message first: it says whether the point is off every monitor (stale coordinates) or whether this installation is limited to the primary monitor.",
-    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then act on the new coordinates.",
-    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then re-run desktop_discover and retry. Reinstalling or updating the server restores input on the other monitors.",
+    "Off every monitor → the coordinates are stale: re-run {tool:reidentify_element} or take a fresh screenshot, then act on the new coordinates.",
+    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then re-run {tool:reidentify_element} and retry. Reinstalling or updating the server restores input on the other monitors.",
     "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act / browser_click fails the same way — the coordinate is the problem, not the tool.",
     "If the target exposes UIA, click_element(name=…) invokes the element directly and never moves the cursor.",
   ],
@@ -224,7 +225,7 @@ const SUGGESTS: Record<string, string[]> = {
   // loop cannot terminate.
   RegionOutsideCapturableBounds: [
     "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor. In that last case it also says whether per-window capture still works here, which decides the recovery below.",
-    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then capture the new region.",
+    "Off every monitor → the coordinates are stale: re-run {tool:reidentify_element} or take a fresh screenshot, then capture the new region.",
     // No per-window route named here on purpose: an overhang can occur on
     // either backend, and whether screenshot(windowTitle=…) works depends on
     // the determinant — which the two lines below own. Shrinking is the one
@@ -263,16 +264,16 @@ const SUGGESTS: Record<string, string[]> = {
   // no entry here the envelope came back "Inspect the underlying error and retry with adjusted
   // args", which does not forbid the coordinate retry either — a weaker version of the same road.
   AimWindowGone: [
-    "Re-run desktop_discover: the window this act was aimed at no longer exists, so the lease and every entity taken from it describe something that is gone.",
+    "Re-run {tool:reidentify_element}: the window this act was aimed at no longer exists, so the lease and every entity taken from it describe something that is gone.",
     "Do NOT retry by coordinate. The entity's rect is where that window used to be, and another window may be occupying it now — the click would land on that one.",
     "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
-    "If the app was NOT expected to close, it may have crashed or restarted: desktop_discover will show the replacement window, which needs a fresh lease — the old handle is not reusable.",
+    "If the app was NOT expected to close, it may have crashed or restarted: {tool:reidentify_element} will show the replacement window, which needs a fresh lease — the old handle is not reusable.",
   ],
   // ADR-036 — the handle belongs to somebody else now. The advice has to say the thing that is
   // easy to miss: nothing failed. The action was refused because it would have worked, on a window
   // the caller never looked at.
   AimIdentityChanged: [
-    "Re-run desktop_discover. The window this act named has gone, and Windows has given its handle to a different window — the lease, the entities and their coordinates all describe a window that is gone.",
+    "Re-run {tool:reidentify_element}. The window this act named has gone, and Windows has given its handle to a different window — the lease, the entities and their coordinates all describe a window that is gone.",
     "Nothing was done. This is a refusal, not a failure: an action addressed to that handle would have reached whatever holds it now, which is not what was discovered. Any of three things happened — another process took the handle, the same process was restarted, or the same program put a different KIND of window on it — and the recovery is the same for all three.",
     "Do NOT retry with the same handle, and do NOT retry by coordinate: both address whatever occupies that window's place now.",
     "If the application was expected to restart (an update, a crash, a document reopened), the new window is a normal target — discover it and take a fresh lease. Handles are not stable across a restart.",
@@ -298,17 +299,17 @@ const SUGGESTS: Record<string, string[]> = {
     "The detail field in if_unexpected names the window that is on top — its handle always, its title when it has one — as the engine saw it at the moment of the refusal. That is the window in the way; the window you named is the one to bring forward. (Under include:[\"envelope\"] the failure hint sits at data.if_unexpected.)",
     "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
     "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top — and is also the way past an overlay that this build cannot tell is click-through.",
-    "Re-running desktop_discover does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
+    "Re-running {tool:reidentify_element} does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
   ],
   // ADR-036 — the aimed press would land outside the window the call named. Every line here has
   // to hold one door shut: `executor_failed` opens with "fall back to mouse_click using the entity
   // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone
   // the window is still there, so re-discovering is not a consolation — it is the fix.
   AimPointOutsideWindow: [
-    "Re-run desktop_discover and act on the entity it returns now: the window this act named is still open, but the coordinates taken from it can no longer be trusted.",
+    "Re-run {tool:reidentify_element} and act on the entity it returns now: the window this act named is still open, but the coordinates taken from it can no longer be trusted.",
     "A window that moved WITHOUT resizing does not reach here — the point is carried with it by the same offset, when the coordinates were measured in the same read that measured the window. Among the reasons that do reach here: the window was minimised; it changed SIZE, and a resize may have reflowed the contents, so it is refused even where the point still falls inside; it moved WHILE it was being discovered, in which case that snapshot's coordinates were measured against more than one position and no correction can describe them — discover again once the window has settled; the coordinates came from a lane whose measurement moment cannot be established, such as a stored visual snapshot captured while the window was somewhere else; or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point. A move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport — that check passes uia / cdp / terminal entities without looking, so it is not a second guarantee.",
     "Do NOT retry by coordinate. Whatever is under that point now would take the press.",
-    "If the window was minimised, restore it first (focus_window), then re-run desktop_discover: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
+    "If the window was minimised, restore it first (focus_window), then re-run {tool:reidentify_element}: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
     "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way.",
   ],
   // ADR-036 — every route to the named window failed and the coordinate fallback is refused. Same
@@ -319,7 +320,7 @@ const SUGGESTS: Record<string, string[]> = {
   // caller reading top-down would otherwise spend a round trip on the other three (win の外からの読み).
   AimRouteFailed: [
     "if_unexpected.detail says which failure it was when the backend's answer is one this server recognises — the element was not found, or the element the route matched does not support this action through UI Automation, is disabled, or is read-only — and says nothing more when it is not: on this road an unrecognised answer can be a shell rejection carrying the command that produced it. Not found: re-discover. No pattern for this action (a custom-drawn button, a canvas): act on a different affordance or reach it by keyboard navigation. Disabled: find what enables it before trying again. Read-only: it does not take typed text — act on the control that edits it, or read the value instead. The route matches by name, so when another element's name contains the same text, the answer can be about that element.",
-    "When the detail names no failure, or says the element was not found: re-run desktop_discover — this act named its window by handle, the attempt on it failed, and the entity may have changed name, moved in the tree, or gone. For the other failures it names, re-discovering does not help: a disabled element is left out of the list until it is enabled, and the others come back giving the same answer until their state changes.",
+    "When the detail names no failure, or says the element was not found: re-run {tool:reidentify_element} — this act named its window by handle, the attempt on it failed, and the entity may have changed name, moved in the tree, or gone. For the other failures it names, re-discovering does not help: a disabled element is left out of the list until it is enabled, and the others come back giving the same answer until their state changes.",
     "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
     "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator, and controlType narrows it when the route matched another element by the same text. It runs the same enabled and pattern checks, so a disabled element gives it the same answer.",
     "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
@@ -333,7 +334,7 @@ const SUGGESTS: Record<string, string[]> = {
     "other_window: bring the field's window forward first (focus_window) — it comes forward with the focus it last had, which is often enough, and the window that holds the focus is usually drawn over the field, which makes a click on it answer aim_occluded when the act has a window handle to check that point against.",
     "read_only: the field does not take typed text. Act on the control that edits it, or read its value instead; typing again gives the same answer until its state changes.",
     "Do NOT type through the foreground instead (keyboard with method:'foreground'), and do NOT retry by coordinate: whatever holds the focus would take the characters, which is what this refusal stopped.",
-    "If the field may have changed or gone, re-run desktop_discover and act on the fresh entity.",
+    "If the field may have changed or gone, re-run {tool:reidentify_element} and act on the fresh entity.",
   ],
   // ADR-036 item 16 — the entity could not be found: missing from the live view (or the view has
   // expired), or answered "not found" by the native UIA engine that also read it, on an act that named its
@@ -341,7 +342,7 @@ const SUGGESTS: Record<string, string[]> = {
   // asserted (gate 2 on #624). Re-discovering is the recovery, and a coordinate is exactly what
   // must not be tried.
   EntityNotFound: [
-    "Re-run desktop_discover and act on the fresh entity: the element this lease described could not be found — it may have been removed, renamed or moved, another window with the same title may have answered, or the view it came from may have expired.",
+    "Re-run {tool:reidentify_element} and act on the fresh entity: the element this lease described could not be found — it may have been removed, renamed or moved, another window with the same title may have answered, or the view it came from may have expired.",
     "Do NOT retry by coordinate: the entity's rect is where the element used to be, and whatever is there now would take the press.",
     "If the element should still be there, let the page or dialog settle and discover again — a list that is re-rendering can drop an element for a moment.",
   ],
@@ -365,20 +366,20 @@ const SUGGESTS: Record<string, string[]> = {
     "A window this server may not act through is over the point this act would have pressed, so nothing was done. Your window is NOT the excluded one — it is still there and still actionable; something else is drawn over that point right now.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the same point would reach that window through a route that does not check this, which is the press being refused here.",
     "Act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which does not move the cursor and does not press whatever is on top.",
-    "Or wait for the point to clear and act again — a window that covers it now need not cover it in a moment. Re-running desktop_discover does not help by itself: the entity's coordinates are correct; what is wrong is what is drawn over them.",
+    "Or wait for the point to clear and act again — a window that covers it now need not cover it in a moment. Re-running {tool:reidentify_element} does not help by itself: the entity's coordinates are correct; what is wrong is what is drawn over them.",
     "Nothing in this response describes the window in the way, by design.",
   ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
-    "Act on another window: desktop_discover (or any by-identity tool) on a different target returns what this server may touch.",
+    "Act on another window: {tool:list_window_titles} (or any by-identity tool) on a different target returns what this server may touch.",
     "If the excluded window is a prompt waiting for a person — the key locker's own dialog — it is theirs to answer; this session cannot answer it for them.",
   ],
   CursorPlacementBlocked: [
     "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
     "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
-    "If the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates. Where the failure says which, it is in if_unexpected.detail on the act path and in error on a flat tool result.",
+    "If the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run {tool:reidentify_element} and act on the new coordinates. Where the failure says which, it is in if_unexpected.detail on the act path and in error on a flat tool result.",
   ],
   // Reserved (currently unreachable): the producers (the keyboard.ts /
   // terminal.ts flash paths) reject with this compact code when the resolver
@@ -633,10 +634,10 @@ const SUGGESTS: Record<string, string[]> = {
   // The hints below point to the alternate channels for each action,
   // matching the wiring the dogfood confirmed actually works.
   ExecutorFailed: [
-    "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from desktop_discover — common when UIA InvokePattern is missing on the control",
+    "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from {tool:reidentify_element} — common when UIA InvokePattern is missing on the control",
     "For action='type' or action='setValue': desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click",
     "If the entity has a stable name or automationId, try click_element({name|automationId}) — uses a different UIA path than desktop_act and may succeed where this executor threw",
-    "Re-run desktop_discover — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator",
+    "Re-run {tool:reidentify_element} — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator",
   ],
   // Phase 2a F4 / Phase 5 I1: keyboard({action:'type'}) Focus Leash Phase B
   // mid-stream focus theft. matrix §3.1 line 141 規範:
@@ -808,7 +809,7 @@ const SUGGESTS: Record<string, string[]> = {
   // WHEN their producers land (the tool + the L3 inject loop) — the classify producer-pin invariant
   // (issue-211) forbids a branch without a producer.
   KeyLockerConsentRequired: [
-    "The key locker is off until you enable it once. Run key_locker with action='save' to open the enable dialog, or click Enable when it appears.",
+    "The key locker is off until you enable it once. Run {tool:credential_store} with action='save' to open the enable dialog, or click Enable when it appears.",
     "Enabling is a one-time confirmation shown by the locker itself; the assistant never sees your secret.",
   ],
   KeyLockerDisabled: [
@@ -833,17 +834,20 @@ const SUGGESTS: Record<string, string[]> = {
     "The connection to the locker helper was lost. Retry; if it persists, restart the MCP server.",
   ],
   KeyLockerConsoleLimit: [
-    "Too many anchored consoles are already open. Reuse an existing one (key_locker action='launch_console' without fresh:true returns the most recent), or close a console window before opening another.",
+    "Too many anchored consoles are already open. Close a console window before opening another.",
+    "Or reuse an existing one — {tool:credential_store} action='launch_console' without fresh:true returns the most recent.",
   ],
   KeyLockerWtUnavailable: [
-    "The Windows Terminal pane could not be opened (wt.exe not installed, or the new tab could not be identified). Retry with key_locker action='launch_console', host:'classic' to open a dedicated classic console window instead.",
+    "The Windows Terminal pane could not be opened — wt.exe may not be installed, or the new tab could not be identified. A dedicated classic console window is the fallback.",
+    "Retry with {tool:credential_store} action='launch_console', host:'classic' to open one.",
   ],
   KeyLockerSshUnresolved: [
     "The ssh host key is not in known_hosts yet. Connect to the host once (ssh user@host) so its key is recorded, then save.",
     "ProxyJump / ProxyCommand bindings are not supported — the first prompt may belong to the jump host.",
   ],
   KeyLockerNoSuchBinding: [
-    "No saved binding matches that URI. Run key_locker action='list' to see the exact display URIs, then retry with one of them.",
+    "No saved binding matches that URI — the display URI must match exactly, including scheme, user, host and port.",
+    "Run {tool:credential_store} action='list' to see the exact display URIs, then retry with one of them.",
   ],
   // Binding-URI parse failures reachable via key_locker `save`/`forget`/`set_policy` (L1 grammar).
   // Shared grammar hint — the typed message already names the offending character/component.
@@ -1381,13 +1385,14 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
   const error =
     err.toolName !== undefined ? `${err.toolName} failed: ${displayMessage}` : displayMessage;
 
-  // ADR-036 stage 2 B2b: the advice passes through the resolver on its way out. With
-  // no line converted yet this is byte-identical — a line with no `{tool:…}` in it is
-  // returned unchanged — and it is where the conversion will take effect for BOTH the
-  // dictionary and the 28 literal `suggest:` sites, including the ones a named builder
-  // produces. Rendering here rather than at each producer is the point: `WaitTimeout`
-  // is a measured case where a literal beats the dictionary, so a seam on the
-  // dictionary alone would miss the road it was aimed at.
+  // ADR-036 stage 2: the advice passes through the resolver on its way out, and as of
+  // B2c the lines carry `{tool:<capability>}` for it to resolve. A line with no
+  // placeholder is still returned unchanged, which is what keeps the conversion
+  // measurable: at the v2 corner every converted line renders back to the bytes it
+  // had, so the only codes that move there are the four split by hand (measured,
+  // 2026-09-13). Rendering here rather than at each producer is the point:
+  // `WaitTimeout` is a measured case where a literal beats the dictionary, so a seam
+  // on the dictionary alone would miss the road it was aimed at.
   const suggest = renderAdviceWithFloor(err.suggest);
 
   return {
