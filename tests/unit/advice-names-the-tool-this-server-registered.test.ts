@@ -544,7 +544,7 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // …AND THE ANSWER WAS NOT A CAPABILITY AT ALL, which took a third attempt to see.
     // `set_element_value` is registered only in the `else` arm of `server-windows.ts`
     // (v2 kill switch ON) and `run_macro` refuses its route unless
-    // `v2KillSwitchActive()`, so this handler has NO v2 corner —
+    // declared kill-switch-only in `macro.ts`, so this handler has NO v2 corner —
     // `{tool:disambiguate_window_by_handle}` is null at every corner it can run at, and
     // the line dropped for every real caller while this cell, reading source text,
     // reported it present (gate 2 on `7fda7f7`, 2026-09-13). The rendered check lives

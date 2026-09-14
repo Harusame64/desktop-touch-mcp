@@ -493,7 +493,8 @@ export const setElementValueHandler = async ({
               //      for every real caller and the answer above became two lines with
               //      no handle route in them. `set_element_value` is registered ONLY in
               //      the `else` arm of `server-windows.ts` (v2 kill switch ON), and
-              //      `run_macro`'s route to it refuses unless `v2KillSwitchActive()`.
+              //      `run_macro`'s route to it is declared kill-switch-only
+              //      (`macro.ts` `StepAvailability`) and refuses in v2 mode.
               //      There is no v2 corner for this handler. The cell that pinned the
               //      sentence passed because the RUNNER is at the v2 corner — it was
               //      pinning a state production cannot reach (gate 2, 2026-09-13).
