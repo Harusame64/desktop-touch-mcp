@@ -143,25 +143,20 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         expect(sentence).toContain("focusedElementValueAbsent");
         expect(sentence).toContain("view_road_has_no_value");
         expect(sentence).toContain("missing with no hint at all");
-        // The rule itself, all three conjuncts. Each alone is a road to a false confirmation: the
-        // wrong element with the right text; the right element with text it already had; and —
-        // the one the first two rounds missed — the right element with NEW text that is not the
-        // text you wrote, which is what a failed write plus an autofill or a user's keystroke
-        // leaves behind (gate 1 on `3217cf3`).
-        expect(sentence).toContain("the element it names is the field you wrote");
-        // — and the expected value is not the same for the two writes this advice covers. A `type`
-        // appends, so "the value is the text you wrote" is false there by construction, and a
-        // caller applying it literally would reject every successful type. The clause names both.
-        expect(sentence).toContain("what the field should hold if the write landed");
-        expect(sentence).toContain("the prior text plus the typed text for type");
-        expect(sentence).toContain("not what it already held");
-        // AND THE CASE WHERE THE RULE CANNOT BE APPLIED AT ALL. `desktop_state.focusedElement`
-        // carries no entity id, `EntityView` omits the UIA locator, and the write's own post block
-        // describes whatever held focus afterwards — with the name withheld when that was not the
-        // window named. A duplicate name with no automationId leaves a caller no way to compare,
-        // and advice that demands an impossible check reads as "you did not try hard enough".
-        expect(sentence).toContain("cannot be told apart");
-        expect(sentence).toContain("cannot confirm the write");
+        // AND IT STOPPED PREDICTING THE VALUE, because the value cannot be predicted. A background
+        // type inserts at the CARET and replaces the SELECTION, exactly as typing does — measured
+        // across 6 arms with background and foreground identical (win2, `c76b78d`): end → append,
+        // start → prepend, middle → insert, all-selected → replace. "Prior text plus typed text"
+        // holds in 2 of those 6, and the caller cannot see the caret to know which one they are in.
+        // A rule that predicted the value would have made a LANDED write read as failed in four
+        // situations out of six — the opposite error from the one this sentence started with.
+        //
+        // So it names the one case a read-back settles, and refuses the rest. That is shorter than
+        // the conjunction it replaces and true everywhere, which the conjunction was not.
+        expect(sentence).toContain("inserts at the caret and replaces the selection");
+        expect(sentence).toContain("you cannot see the caret");
+        expect(sentence).toContain("which you know was EMPTY before the write");
+        expect(sentence).toContain("nothing about whether your write put it there");
       }
     }
   });
