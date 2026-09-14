@@ -504,19 +504,26 @@ export function withPostState<T extends Record<string, unknown>>(
         // protected process and for a transient failure, and reporting movement there is a
         // confident wrong diagnosis of something that did not happen (gate on `968f9cb`). The
         // value is withheld in both cases — only the sentence differs.
-        // ORDER MATTERS BETWEEN THE TWO SENTENCES. A DIFFERENT handle settles the question by
-        // itself: the foreground moved, whoever it moved to, and the identity being unreadable
-        // afterwards does not take that observation back — the window that took focus may simply
-        // be elevated, which is one of the ways the identity read fails (gate on `5303bb2`). So
-        // the unverifiable sentence is for the cases where nothing was observed: no foreground at
-        // all, or the same handle with an identity that cannot be compared.
+        // ANY OBSERVATION OF A CHANGE BEATS A FAILURE TO OBSERVE — and the gate found the wrong
+        // precedence here three rounds running, so the observations are enumerated rather than
+        // folded into one expression. Each line answers "did we SEE the foreground change?", and
+        // a `false` from any of them means "we did not see it", never "it did not happen".
+        //
+        // A different handle says so on its own, whoever it moved to (`5303bb2`). So does a
+        // different PID, as long as neither is zero: `getProcessIdentityByPid` KEEPS its input pid
+        // when the rest of the lookup fails (`win32.ts`), so a nonzero pid is a real pid even in a
+        // row whose start time could not be read (`1d3b495`). Start times only speak when both
+        // were readable — 0 is the value the failure path returns, not a timestamp.
         const handlesDiffer = settled.hwnd !== null && settled.hwnd !== after.hwnd;
-        const identityUnreadable = settled.hwnd === null ||
-          settled.processStartTimeMs === 0 || after.processStartTimeMs === 0;
-        const identityDiffers = settled.processPid !== after.processPid ||
+        const pidsDiffer = settled.processPid !== 0 && after.processPid !== 0 &&
+          settled.processPid !== after.processPid;
+        const startTimesUnreadable = settled.processStartTimeMs === 0 || after.processStartTimeMs === 0;
+        const startTimesDiffer = !startTimesUnreadable &&
           settled.processStartTimeMs !== after.processStartTimeMs;
-        const moved = handlesDiffer || (!identityUnreadable && identityDiffers);
-        if (moved || identityUnreadable) {
+        const moved = handlesDiffer || pidsDiffer || startTimesDiffer;
+        // Nothing seen AND nothing comparable: that is the admitted answer, not a verdict.
+        const sawNothingComparable = settled.hwnd === null || startTimesUnreadable;
+        if (moved || sawNothingComparable) {
           delete focusedElement.value;
           valueWithheld = moved ? "foreground_moved_during_read" : "could_not_verify_the_window";
         }

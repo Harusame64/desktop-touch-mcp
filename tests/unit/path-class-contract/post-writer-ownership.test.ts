@@ -542,6 +542,18 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       expect(await elementOfSequence(() => win(9999n, "Elevated thing"))).not.toHaveProperty("value");
       expect(lastHints()).toMatchObject({ postValueWithheld: "foreground_moved_during_read" });
 
+      // A DIFFERENT PID IS ALSO AN OBSERVATION, even in a row whose start time could not be read:
+      // `getProcessIdentityByPid` keeps its input pid when the rest of the lookup fails, so a
+      // nonzero pid is a real pid. Reporting "could not verify" here would discard something the
+      // server actually saw — the third round in a row where two reasons applied and the weaker
+      // one won.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 4321, processName: "", processStartTimeMs: 0 } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      expect(lastHints()).toMatchObject({ postValueWithheld: "foreground_moved_during_read" });
+
       // The pairing: a real change of identity, both sides readable, still says movement.
       vi.mocked(getProcessIdentityByPid)
         .mockReturnValueOnce(NOTEPAD as never)
