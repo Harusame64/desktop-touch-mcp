@@ -589,12 +589,22 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
         .mockReturnValueOnce({ pid: 0, processName: "", processStartTimeMs: 0 } as never);
       const unreadable = await elementOfSequence(() => win(4242n, "Notepad"));
       expect(unreadable).not.toHaveProperty("value");
-      expect(lastHints()).toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
       // AND THE ELEMENT FLAG SAYS THE SAME THING, which is the whole reason it carries a reason
       // instead of a boolean. Its first form published `focusedElementInNamedWindow: false` here:
       // a definite "somewhere else" about a foreground that was never read, standing beside a
       // reason that says the opposite. The row must name the road, and must not claim a location.
-      expect(lastHints()).toMatchObject({ focusedElementWindowUnconfirmed: "could_not_verify_the_window" });
+      //
+      // EXHAUSTIVE, BECAUSE THE CLAIM IS ABOUT WHAT IS NOT THERE. `toMatchObject` permits extra
+      // keys, so the pair of them let the boolean come back on exactly the two roads that cannot
+      // support a location claim — the narrow reintroduction, which is the whole defect — and the
+      // suite stayed green while this comment promised otherwise (gate 2 on `314705c`, measured).
+      // A previous round deleted the assertion that named the old key, calling it a tombstone for
+      // a string nothing would write; that judgement was taken without measuring it, and it was
+      // wrong. This form needs no name: nothing may ride along.
+      expect(lastHints()).toEqual({
+        postValueWithheld: "could_not_verify_the_window",
+        focusedElementWindowUnconfirmed: "could_not_verify_the_window",
+      });
       // THE NAME GOES WITH THE VALUE, and the flag flips with them. The first version of this
       // guard ran only when a value existed and dropped only the value: an element with no value
       // pattern skipped the check entirely, and one with a value kept the wrong NAME while losing
@@ -614,7 +624,10 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       // AND IT NAMES THE ROAD, rather than asserting a location. The element was read SOMEWHERE
       // between the two foreground readings, so "it is not in your window" is a claim this layer
       // cannot support; "the foreground moved while I was reading" is one it measured.
-      expect(raced.hints).toMatchObject({ focusedElementWindowUnconfirmed: "foreground_moved_during_read" });
+      // Exhaustive for the same reason, on the other road that cannot support a location claim.
+      // There is no `postValueWithheld` here: the element has no value pattern, so nothing was
+      // withheld from it, and the element flag is the only thing that speaks.
+      expect(raced.hints).toEqual({ focusedElementWindowUnconfirmed: "foreground_moved_during_read" });
 
       // A DIFFERENT HANDLE SETTLES IT, even when the identity behind the new one cannot be read —
       // which is exactly what happens when the window that took focus is elevated. Calling that
