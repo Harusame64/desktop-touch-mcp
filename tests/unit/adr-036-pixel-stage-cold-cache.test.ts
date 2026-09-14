@@ -58,6 +58,11 @@ vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: vi.fn(() => []),
   restoreAndFocusWindow: vi.fn(),
   getWindowRectByHwnd: vi.fn(() => ({ x: 0, y: 0, width: 640, height: 480 })),
+  // Without this the handler throws inside `snapshotForVerify` BEFORE the click, and every
+  // assertion below is about a call that never happened — which is how the second cell was green
+  // while its invariant was false (gate 2).
+  getForegroundHwnd: vi.fn(() => 7n),
+  readScrollInfo: vi.fn(() => null),
 }));
 
 vi.mock("../../src/engine/window-cache.js", () => ({
@@ -109,20 +114,30 @@ describe("ADR-036: the pixel stage does not need another call to have warmed a c
   it("takes the reference frame with a cold cache, through the fresh reader", async () => {
     await mouseClickHandler(ARGS as never);
 
-    // The stage ran: it asked the FRESH reader and captured a frame for the window it named.
+    // What this proves, exactly: the GATE consulted the fresh reader and asked for a pre-frame at
+    // the hwnd it returned. Whether the comparison then runs is a separate question with six
+    // answers of its own — `classifyDelivery` may already say `delivered`, the native residual may
+    // be absent, a HiDPI surface may fail the parity guard, a window playing video may never
+    // settle. For a one-word change to the gate, the gate is the right scope; the prose says so
+    // rather than claiming the stage ran end to end (gate 2).
     expect(mockFindContainingWindowFresh).toHaveBeenCalledWith(100, 100);
     expect(mockCaptureFrame).toHaveBeenCalled();
     expect(mockCaptureFrame.mock.calls[0]![0]).toBe(4242n);
   });
 
-  it("does not reach for the cache-only reader on this road", async () => {
+  it("leaves no reader on this road answering from a cache that may be empty", async () => {
     // The pairing that makes the row above mean something: the cold cache is not consulted and
-    // then rescued, it is not the gate at all. If the gate still called it first, an empty cache
-    // would keep the power to skip the stage — which is the defect, not a detail of how it is
-    // fixed.
+    // then rescued, it is not the gate at all. If anything on this path still asked it, an empty
+    // cache would keep the power to degrade the answer — which is the defect, not a detail of how
+    // it is fixed.
+    //
+    // This was green for the wrong reason once: the fixture crashed before the click, so the
+    // SECOND cache-only reader on this path — `snapshotForVerify`'s scroll lookup — never ran and
+    // the invariant was false while the cell passed. The mock is repaired and the sibling is fixed
+    // together, which is what makes the invariant true rather than merely unobserved (gate 2).
     await mouseClickHandler(ARGS as never);
     for (const call of mockFindContainingWindow.mock.calls) {
-      expect(call, "the pixel stage asked the cache-only reader at the click point").not.toEqual([100, 100]);
+      expect(call, "a cache-only reader was asked at the click point").not.toEqual([100, 100]);
     }
   });
 });

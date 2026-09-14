@@ -671,12 +671,25 @@ export const mouseClickHandler = async ({
       // entry has to mean re-verify, not unclickable." The stage was the one caller still on the
       // other side of that sentence.
       //
-      // AND SWITCHING COSTS NOTHING HERE, which was measured rather than assumed — the prediction
-      // that it would break the stage was wrong. The cache does not hold a BETTER window: it holds
-      // nothing when cold and the same vendor overlay when warm. Resolving the overlay is harmless
-      // because the compared region is a 192×192 pad around the click point cropped by the window
-      // rect (`local-repaint.ts`), and a work-area-sized rect does not crop it, so the pad lands on
-      // the window under the cursor. Four configurations, no false `delivered` in any of them.
+      // AND SWITCHING DOES NOT CHANGE THE ANSWER, which was measured rather than assumed — the
+      // prediction that it would break the stage was wrong. The cache does not hold a BETTER
+      // window: it holds nothing when cold and the same vendor overlay when warm. Four
+      // configurations, no false `delivered` in any of them.
+      //
+      // WHAT IT COSTS is a full-window `captureFrame` on every click that reaches here, not an
+      // enumeration — the enumeration is usually already paid by `resolveActionTarget`, which asks
+      // the same fresh reader at the same point earlier in this handler and arms a 250 ms throttle.
+      // (The 192×192 figure belongs to the COMPARED region after `cropRawFrame`, not the captured
+      // one; an earlier version of this comment confused the two — gate 2.)
+      //
+      // AND RESOLVING THE OVERLAY IS HARMLESS FOR A REASON WORTH STATING, because it is the step
+      // the argument rested on without naming: `captureWindowRawWithFallback` runs PrintWindow
+      // first, which returns the WINDOW'S OWN surface, and degrades to a screen BitBlt only when
+      // that comes back empty or all-black. A transparent overlay PrintWindows black, so the
+      // capture falls to the screen and the cropped pad lands on the window under the cursor. An
+      // overlay whose own surface is NOT black would return this defect wearing a green coat: the
+      // stage runs, sees the overlay, and reports `no_change`. That direction is `focus_only`,
+      // never a false `delivered` — which is why it is a limit to know rather than a blocker.
       const containing = findContainingWindowFresh(tx, ty);
       stage4Hwnd = containing?.hwnd ?? null;
       if (stage4Hwnd !== null) {
@@ -687,7 +700,13 @@ export const mouseClickHandler = async ({
       }
     }
     if (verifyDelivery) {
-      preSnapshot = await snapshotForVerify(tx, ty);
+      // ADR-036 — and the SAME defect one frame away: `snapshotForVerify` reads the scroll
+      // position through the cache-only reader when it is not told which window to ask, so a cold
+      // cache leaves `verticalScrollPos` null in BOTH snapshots and `scrollChanged` is
+      // structurally false. A click that scrolls a list loses its positive signal and degrades to
+      // `focus_only` — the same cold/warm asymmetry as the pixel stage, on the same tool call
+      // (gate 2). The window is already in hand, and the function's own doc asks for it.
+      preSnapshot = await snapshotForVerify(tx, ty, stage4Hwnd ?? undefined);
     }
 
     // Step 4: Execute click.
@@ -736,7 +755,7 @@ export const mouseClickHandler = async ({
       if (!trackFocus) {
         await new Promise<void>((r) => setTimeout(r, 150));
       }
-      const postSnapshot = await snapshotForVerify(tx, ty);
+      const postSnapshot = await snapshotForVerify(tx, ty, stage4Hwnd ?? undefined);
       // ADR-019 Stage 4 wiring — when Stage 4 prerequisites are met
       // (`stage4Enabled` AND hwnd + windowRect resolved) call the wrapper
       // that runs `classifyDelivery` first and then layers SSIM on top of
