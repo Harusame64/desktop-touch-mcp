@@ -137,7 +137,7 @@ Every action tool (`mouse_click`, `keyboard(action='press')`, `click_element`, �
   "ok": true,
   "post": {
     "focusedWindow": "Notepad",
-    "focusedElement": { "name": "Text editor", "type": "Document", "value": "Hello" },
+    "focusedElement": { "name": "Text editor", "type": "Document", "hasValuePattern": true, "value": "memo" },
     "windowChanged": false,
     "elapsedMs": 42,
     "rich": {
@@ -163,9 +163,11 @@ Every action tool (`mouse_click`, `keyboard(action='press')`, `click_element`, �
 | Field | Meaning |
 |---|---|
 | `focusedWindow` | Foreground window title after the action |
-| `focusedElement` | UIA focused element (name / control type / value). `null` when UIA is unavailable |
+| `focusedElement` | UIA focused element: control type, `automationId`, and `hasValuePattern` — whether UIA exposes a value on it, an empty one included (unlike `browser_form`'s `hasValue`, which means a non-empty value). `value` and `name` are returned **only when this call named the window the focus ended up in** — by the window handle in any spelling the resolver accepts (`"4242"`, `"0x1092"`, zero-padded, spaced), or by the title argument THAT TOOL declares (`windowTitle`, and `title` for `focus_window` / `window_dock`) contained in that window's title; `"@active"` names nothing here, and neither do the window arguments of a call whose target came from elsewhere — `terminal`'s `paneId`, which the handler prefers, or a `fixId` the handler adopts. The focused element is otherwise whatever holds keyboard focus when the tool returns, which need not be what the tool acted on: `clipboard`, `notification_show` and a coordinate `mouse_click` were each measured carrying the whole value of a field they never touched. `name` rides with `value` because the advisory never reads it, while `type`, `hasValuePattern` and `automationId` always come back — withholding those would kill the success-path advisory. Naming the window narrows whose field, not what is in it — an acted-on field still comes back in full (UIA caps it at 4,096), CSS-masked ones in cleartext. `DESKTOP_TOUCH_POST_FOCUSED_VALUE` is gone; it was the way back to carrying the value everywhere. `null` when UIA is unavailable |
 | `windowChanged` | Whether the foreground window changed between before and after |
 | `elapsedMs` | Wall-clock duration of the action |
+| `hints.focusedElementWindowUnconfirmed` | **The road that left the reported element unconfirmed as belonging to a window this call named** — the same five words `postValueWithheld` uses, present on every such response, including one whose element has no value at all (where `postValueWithheld` is silent). It says *unconfirmed*, not *elsewhere*: `call_named_no_window` is the caller's to act on (name the window next time), while `could_not_verify_the_window` and `foreground_moved_during_read` mean the server could not tie the element to any window at all. The row is always whatever held keyboard focus when the tool returned, which is not always what the call acted on: measured with the window as witness, a coordinate click on a control that takes focus reports it exactly, and a click on a label or on the background reports the *previously* focused element, `type` included. This hint is the only thing that separates the two, because the read that would answer "what is under the point" is unusable where it matters — a vendor overlay covering the work area answers "desktop" for every point inside its rectangle |
+| `hints.postValueWithheld` | **Why `focusedElement.value` is not there** — present only when it was withheld from a field that had one, absent on every call that carries its value. `call_named_no_window` (the call named none: `clipboard`, `notification_show`, a coordinate `mouse_click`, `"@active"`), `not_the_window_you_named` (a window was named and focus ended in another — including the modal-dialog road, where the resolver prefers a blocked owner's popup), `target_came_from_elsewhere` (a selector the handler prefers decided the target: `terminal`'s `paneId`, `scroll`'s `selector` / `target`, an adopted `fixId`), `foreground_moved_during_read` (the foreground changed identity while the element was being read), `could_not_verify_the_window` (the server could not tell where focus was — the enumeration answered nothing, or the process identity was unreadable, which on Windows means a service/system-account process or one that has already exited; measured, every window on a normal desktop answers). An empty field says the same thing a full one does: the reason answers the rule, not the contents |
 | `rich` | **Opt-in** — present only when the caller passed `narrate:"rich"`. UIA diff block |
 | `perception` | **Opt-in** — present only when the caller passed a `lensId`. Perception envelope (see below) |
 
@@ -234,6 +236,7 @@ screenshot. On `ok:false` read `reason` and follow the recovery path:
 | `entity_outside_viewport` | `scroll(action='to_element' | 'raw')` then re-call `desktop_discover` (re-discover instead when the window itself moved or closed) |
 | `origin_window_not_visible` | the element's window is minimised / hidden → `focus_window(windowTitle)` to restore it, then re-call `desktop_discover` |
 | `coordinate_outside_reachable_bounds` | the element is off the primary monitor, which coordinate-based mouse input cannot reach yet → move its window to the primary monitor and re-call `desktop_discover`, or use `click_element` (UIA invoke, cursor-free). `browser_click` is refused by the same guard — it clicks through the OS cursor |
+| `keyboard_target_unsafe` | nothing was typed: the background write would have gone to a different control or window, or to a read-only control (`if_unexpected.detail` names which) → put the focus on the field you named, then type again; `if_unexpected.detail` names the way back for the road the act took (on a window named by title, `desktop_act` with `action='click'` does it; on a window named by handle nothing here focuses a text field yet — re-discover by title, which a common dialog's title does not allow either; for another window, `focus_window` first); never a foreground `keyboard` type. A `type` that took the background write route without being confirmed to have reached the field named answers `ok: true` with `landing: { confirmed: false, why }` — that landing is a report, not a state that can be resolved here, and it does not say the characters were sent (an empty `text` sends none and can still carry one). `DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED=1` turns the check off, and the background write goes wherever the focus is, as before; a comma-separated list of `other_control`, `other_window` and `read_only` turns only those grounds into marked successes |
 | `executor_failed` | fall back to `click_element` / `mouse_click` / `browser_click` |
 
 > **Kill switch:** `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` hides `desktop_discover` /
@@ -674,6 +677,27 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })  // passwo
 Reports native-engine health and feature activation — whether the Rust UIA / image
 engine loaded, which fallbacks are active, and version / capability flags. Use it to
 confirm the native path is live (vs the PowerShell fallback) when latency looks off.
+`engine.nativeUia` says why UIA is on PowerShell: `disabled` when `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` —
+a diagnostic switch that takes the native UIA engine out and keeps the rest of the native addon, used
+to test the fallback road: UIA calls that have a PowerShell version go through it, the two scroll reads
+that have none are skipped, and `foreground_flash` skips its paste-warning dialog scan — or
+`unavailable` when the addon has no UIA engine. The aim probe's first row
+(`DESKTOP_TOUCH_AIM_PROBE=1`) records the same field.
+`engine.nativeUiaEvidence` says whether the native UIA engine actually ran in the process. The engine
+and the OS answer it, not the switch:
+- `comThreadStarts` and `tasksSent` are the engine's own counts.
+- `uiaCoreLoaded` says whether Windows has `UIAutomationCore.dll` loaded.
+
+Under the switch, a thread start or a task means native UIA ran anyway. The field is read on every
+call, so a `server_status` taken after an act sees what that act did. `null` means the addon cannot
+say. The probe's first row records it too.
+- The counts are attempts: a task that failed to reach the thread is still counted. So 0 means "never
+  tried", and in normal running a thread start comes with at least one task.
+- The counts are the primary evidence. `uiaCoreLoaded` only supports them, because another component
+  (an IME, an assistive tool) can load the DLL into the process for its own reasons. Take its baseline
+  in a fresh process before relying on it.
+- The counts are per process. `health.pid` says which process a reading came from, so a server that
+  restarted between two readings is not mistaken for one in which native UIA never ran.
 
 #### Diagnostic log — resolution and dispatch trail
 `%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` (JSONL, on by default; rolls to
@@ -729,13 +753,13 @@ All three actions share the dispatcher's `withPostState` wrap, so guards run and
 Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) — use it to decide whether `scroll(action='to_element')` is needed before clicking.
 Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `menuitem` / `option` custom controls with a `state` block carrying `checked` / `pressed` / `selected` / `expanded` derived from the matching `aria-*` attributes. Use this when a page (Radix / shadcn / MUI / Headless UI / GitHub) renders toggles as ARIA buttons instead of native `<input>`.
 
-**Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` reflects the empty-field hint text when set (takes priority over any typed value); to read the actual typed content use `browser_eval('document.querySelector(sel).value')`.
+**Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` is the field's name — from `aria-labelledby`, `aria-label`, its `<label>`, `title`, then `placeholder` — and never what is typed in it; read values with `browser_form`, which withholds the value of a field the page masks (a password).
 
 #### `browser_fill`
-Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_form` / `browser_overview` / `browser_locate` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. Does not work on `contenteditable` rich-text editors.
+Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_form` / `browser_overview` / `browser_locate` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. For a field the page masks (a password), neither the value passed nor the one read back is echoed (`valueWithheld: "masked"`); the comparison is still made, in the page. Does not work on `contenteditable` rich-text editors.
 
 #### `browser_form`
-Inspect every form field (`input` / `select` / `textarea` / `button`) inside a CSS-selector container and return each field's name, type, id, current value, hint text, disabled / readOnly state, and resolved label (via `for[id]` → ancestor `<label>` → `aria-labelledby` → `aria-label`). Call this *before* `browser_fill` to discover exact selectors and avoid targeting the wrong input (e.g. a global search bar). `type=hidden` fields are excluded unless `includeHidden:true`.
+Inspect every form field (`input` / `select` / `textarea` / `button`) inside a CSS-selector container and return each field's name, type, id, current value (withheld for a field the page masks, such as a password — `value: null`, `valueWithheld: "masked"`, and `hasValue` says whether it holds one), hint text, disabled / readOnly state, and resolved label (via `for[id]` → ancestor `<label>` → `aria-labelledby` → `aria-label`). Call this *before* `browser_fill` to discover exact selectors and avoid targeting the wrong input (e.g. a global search bar). `type=hidden` fields are excluded unless `includeHidden:true`.
 
 #### `browser_eval(action:'appState')`
 One CDP call that scans the well-known places SPAs stash their hydration payloads:

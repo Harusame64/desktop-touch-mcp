@@ -24,6 +24,35 @@ pub struct NativeThreadProcessId {
     pub process_id: u32,
 }
 
+/// ADR-036 item 6 / ADR-039 — everything one hit test can say about who is under a point.
+///
+/// Read in ONE native call because a second round-trip could see a different desktop, and because
+/// every field here was needed by a measurement rather than guessed (win2, 2026-09-10):
+///
+///   - `child` — what `WindowFromPoint` returns: the control under the point, a button rather than
+///     its frame. A caller comparing this with a top-level handle reports the aim's own control as
+///     another window.
+///   - `root` — `GA_ROOT`, the top-level window containing that child. The one that takes the press.
+///   - `owner_chain` — `GetWindow(GW_OWNER)` walked upward from `root`, bounded. **Not**
+///     `GA_ROOTOWNER`: that walk was measured and is strictly worse. It loses the ownership of a
+///     WinForms owned dialog (overlapped rather than `WS_POPUP`, so its `GetParent` walk stops at
+///     once and answers *itself*) and it answers *the desktop window* for a `ComboLBox` dropdown,
+///     which has no owner at all. `GW_OWNER` was the only field in that round that separated an
+///     owned modal from an ordinary second window of the same application.
+///   - `root_thread_id` / `root_process_id` / `root_has_caption` — the fields a caller needs to say
+///     "cannot attribute this window" honestly. Thread and process do NOT establish ownership: the
+///     modal dialog and an unowned sibling window of the same app were identical in thread, in
+///     process and in their whole window style, and only `GW_OWNER` told them apart.
+#[napi(object)]
+pub struct NativeWindowAtPoint {
+    pub child: BigInt,
+    pub root: BigInt,
+    pub owner_chain: Vec<BigInt>,
+    pub root_thread_id: u32,
+    pub root_process_id: u32,
+    pub root_has_caption: bool,
+}
+
 /// Result of `win32_print_window_to_buffer`. `data` is RGBA8 top-down, length
 /// equals `width * height * 4`. The TS wrapper hands this through unchanged
 /// (the legacy koffi-based `printWindowToBuffer` returned the same shape).

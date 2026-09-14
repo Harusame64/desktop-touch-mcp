@@ -62,9 +62,24 @@ export class ExecutorFailedError extends HandlerError {
  * error code would be a breaking change.
  */
 export class CoordinateOutsideReachableBoundsError extends HandlerError {
+  /**
+   * ADR-036 item 13 — this sentence is fit to publish, and says so (`CallerFacingRefusal` in
+   * `aim.ts`; duck-typed here for the same reason `WindowExcludedError` does it).
+   *
+   * The published advice for this reason points the caller at `if_unexpected.detail`, and without
+   * this field the opt-in extraction found nothing to publish, every time — an envelope naming a
+   * field that never appears, which is the exact defect item 13 exists to close, reintroduced by
+   * the line that describes the fix (PR 側 codex on #618, P2).
+   *
+   * Safe to publish because every producer writes it: `describeUnreachable` states the point, the
+   * reachable region and which of the three cases applies. Nothing here is borrowed from a shell,
+   * a caller's text, or another process.
+   */
+  readonly callerDetail: string;
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "CoordinateOutsideReachableBounds";
+    this.callerDetail = message;
   }
 }
 
@@ -89,9 +104,196 @@ export class CoordinateOutsideReachableBoundsError extends HandlerError {
  * — that failure stays silent and is out of scope for this phase.
  */
 export class CursorPlacementBlockedError extends HandlerError {
+  /**
+   * ADR-036 item 13 — see {@link CoordinateOutsideReachableBoundsError}. The distinction this
+   * carries is the one the advice promises and could not deliver: the cursor read back at a
+   * DIFFERENT point (something is holding it) against the monitor layout being unreadable (the
+   * point was never checked at all). Same reason code, opposite recoveries.
+   *
+   * Written by `cursor.ts` from coordinates and a layout read; nothing foreign travels in it.
+   */
+  readonly callerDetail: string;
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "CursorPlacementBlocked";
+    this.callerDetail = message;
+  }
+}
+
+/**
+ * ADR-036 — the window the action was aimed at is gone.
+ *
+ * Its own envelope because its recovery is the opposite of `executor_failed`'s. That one says
+ * "fall back to mouse_click", and the only coordinates a caller holds are the entity's rect —
+ * which is where the window used to be, so the click lands on whatever moved in behind it. The
+ * recovery here is to look again: the session's target no longer exists, and nothing addressed
+ * to it can succeed until `desktop_discover` says what is there now.
+ *
+ * Distinct from an excluded window too. Both refuse, but "you may not touch that" and "there is
+ * nothing there" send the caller to different places, and they were arriving identical.
+ */
+export class AimWindowGoneError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimWindowGone";
+  }
+}
+
+/**
+ * ADR-036 — the aimed handle now belongs to a different process.
+ *
+ * Its own envelope because its recovery is unlike every neighbour's. `AimWindowGone` says there is
+ * nothing there; this says there is something there and it is a stranger, which is worse: the
+ * action would have landed. Windows recycles handles, so a window that closed between the read and
+ * the write can leave its number to anything — including to the next window of the SAME program,
+ * which is why process identity alone was not enough to notice it.
+ *
+ * The specification calls this **identity invalidation, not an ordinary update** — every belief
+ * keyed to that handle is void, not stale, and the lease cannot be repaired by waiting.
+ */
+export class AimIdentityChangedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimIdentityChanged";
+  }
+}
+
+/**
+ * ADR-036 — another window is drawn over the point the press would land on.
+ *
+ * Separate from {@link AimPointOutsideWindowError} because the recoveries are opposite. There the
+ * remembered coordinates are stale and re-discovering produces working ones; here they are correct,
+ * and re-discovering returns the same point with the same window on top of it. What has to change
+ * is the screen, not the lease.
+ */
+export class AimOccludedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimOccluded";
+  }
+}
+
+/**
+ * ADR-036 — the coordinates this act would have pressed can no longer be followed to the window
+ * the call named.
+ *
+ * Not only "the point is outside it", though the name says that and the name is kept because the
+ * recovery is one recovery: the window may be MINIMISED (parked off the desktop), RESIZED (the
+ * contents may have reflowed, so it is refused even where the point still falls inside), or it may
+ * have MOVED WHILE IT WAS BEING READ (that snapshot's coordinates were measured against more than
+ * one position). A window that moved WITHOUT resizing is followed automatically and never arrives
+ * here — when the coordinates were measured in the same read that measured the window. A move
+ * large enough to put the point off the window is answered earlier still, by the viewport gate as
+ * `entity_outside_viewport`.
+ *
+ * The window is alive; its coordinates are stale. That is why it is not {@link AimWindowGoneError}:
+ * there, nothing addressed to the old handle can succeed and the caller has to start from a new
+ * window; here, one `desktop_discover` returns a rect that works on the same window.
+ *
+ * Its own envelope because `executor_failed`'s first suggestion is "fall back to mouse_click using
+ * the entity rect center" — the exact press this refusal rejected, named verbatim (PR 側 codex,
+ * 2026-09-09). Thrown as `AimedPointOutsideWindowError` in `engine/aim.ts`; the loop turns that
+ * into `reason:"aim_point_outside_window"` and this class renders it.
+ */
+export class AimPointOutsideWindowError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimPointOutsideWindow";
+  }
+}
+
+/**
+ * ADR-036 — every route to the window the call named has failed, and the blind fallback is refused.
+ *
+ * An unpinned call finishes a failed UIA click on the entity's rect, and that is correct for it: a
+ * title never promised which window. A call that named its window by handle gets a refusal
+ * instead, because a coordinate is aimed at nothing and whatever occupies the point takes the
+ * press. Covers the click path and the type / setValue ladder, which end the same way and were
+ * giving opposite advice about the same aim.
+ *
+ * Separate from {@link AimPointOutsideWindowError}: there the aim went stale, here the aim is
+ * current and the attempt on it failed (element not found, no InvokePattern, a stale tree, the
+ * background write rung refused). The recoveries differ — re-discover in both cases, but this one
+ * also has element-level routes that a stale rect does not.
+ */
+export class AimRouteFailedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimRouteFailed";
+  }
+}
+
+/**
+ * ADR-036 item 16 — the element this act was for is not there: missing from the live view, or
+ * answered "not found" by UIA on the title-only road, where the press at its remembered point is
+ * refused. Before this it went out as the raw result, with no advice.
+ *
+ * `name` is `"EntityNotFound"` so the raw shape's `reason`, derived by `pascalToSnake`, is the
+ * `entity_not_found` that `desktop_act`'s catalogue documents, and so the SUGGESTS key matches.
+ */
+export class EntityNotFoundRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "EntityNotFound";
+  }
+}
+
+/**
+ * ADR-036 item 6 — the point a coordinate press would land on is covered by a window this server
+ * may not act through (R3 tool exclusion, met at a coordinate rather than at a target).
+ *
+ * Separate from {@link WindowExcludedRefusalError} because the two say opposite things about the
+ * window the caller named: that one means "the window you addressed is out of bounds", this one
+ * means "yours is fine, something else is over the point". Sharing a code shared the advice, and
+ * two of its four lines were then false — the caller was told their own window was excluded, and
+ * the only actionable line sent them to act on a different window (gate 2, 2026-09-10).
+ *
+ * `name` is `"AimBlockedByExcludedWindow"`, matching the SUGGESTS key — and carrying the whole
+ * reason, because the raw (non-opt-in) shape derives its public `reason` from this name by
+ * `pascalToSnake` while `desktop_act`'s documented catalogue spells it out. A name one word
+ * short published two different reasons for one refusal (PR 側 codex on #618, P2).
+ */
+export class AimBlockedByExcludedRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AimBlockedByExcludedWindow";
+  }
+}
+
+/**
+ * ADR-036 family 2 — the keyboard rung would have posted to something other than the field the act
+ * named, on a ground its rule could state (`engine/keyboard-target.ts`): another window, another
+ * control, or a control that does not take typed text. Nothing was typed.
+ *
+ * Its own code because `executor_failed`'s advice is to type through the foreground, which would put
+ * the characters exactly where this refused to. `name` is `"KeyboardTargetUnsafe"`, so the raw shape's
+ * `reason` (derived by `pascalToSnake`) is the `keyboard_target_unsafe` the catalogue documents, and
+ * the SUGGESTS key matches. The engine-side throw is `KeyboardTargetUnsafeError`.
+ */
+export class KeyboardTargetUnsafeRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "KeyboardTargetUnsafe";
+  }
+}
+
+/**
+ * R3 tool exclusion — the window may not be touched by this server at all.
+ *
+ * The engine-side throw is `WindowExcludedError` (`engine/tool-exclusion.ts`), whose module header
+ * has claimed since it was written that "L4 wires it into `_errors.ts`". It never was: the refusal
+ * reached `GuardedTouchLoop` untyped and left as `executor_failed`, whose first suggestion is a
+ * coordinate press at the entity's rect — the rect the excluded window occupies. A comment is a
+ * claim, not a check (PR 側 codex, 2026-09-09).
+ *
+ * Named `…RefusalError` only to keep one class per module identity: the engine class already owns
+ * the name `WindowExcludedError`, and these two are deliberately different objects — one is thrown
+ * by the engine, one renders the envelope. `name` is `"WindowExcluded"`, matching the SUGGESTS key.
+ */
+export class WindowExcludedRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "WindowExcluded";
   }
 }
 

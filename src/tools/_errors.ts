@@ -1,3 +1,8 @@
+import {
+  renderAdviceForCaller,
+  ADVICE_WITHHELD_FLOOR,
+  adviceExisted,
+} from "./_advice-capability.js";
 import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 import { ToolFailureError } from "../errors/typed-errors.js";
 
@@ -24,22 +29,96 @@ const SUGGESTS: Record<string, string[]> = {
     "At least one of name or automationId must be provided",
   ],
   WindowNotFound: [
-    "Run desktop_discover to see available titles",
+    "Run {tool:list_window_titles} to see available titles",
     "Try a shorter partial title match (e.g. first word only)",
     "The window may be minimized — try focus_window first",
     "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
     "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_open to get the tabId, then browser_navigate to the target URL to switch tabs",
   ],
   ElementNotFound: [
-    "Call desktop_discover to see candidate names and automationIds",
+    // TWO FAMILIES REACH THIS ONE CODE, and only one of them has a UIA tree. `classify`
+    // routes on the substring "element not found", and the DOM side produces exactly
+    // that string — `cdp-bridge.ts` (`Element not found: <selector>`), `browser.ts`'s
+    // eval returns, and `failWith("Element not found", "browser_form", …)`. For that
+    // caller both providers of `reidentify_element` are the wrong instrument:
+    // `desktop_discover` and `get_ui_elements` enumerate native UIA names and
+    // automationIds, and a CSS selector matches none of them. The product already says
+    // so where it is registered — `browser_locate`'s own description names
+    // `browser_overview` / `browser_search` as the re-discovery path — so the dictionary
+    // was contradicting the tool description it ships beside (gate 1, 2026-09-13).
+    //
+    // The condition goes FIRST because it is the disambiguator: the desktop reader skips
+    // one line, and the browser reader is not sent to a tree that cannot hold their
+    // target. Neither browser tool is behind either kill switch (`registerBrowserTools`
+    // runs before the `_desktopV2` branch in `server-windows.ts`), so these are plain
+    // names, not capabilities — there is nothing for the presenter to resolve.
+    "If the target was a CSS selector (browser_locate / browser_click / browser_form), re-discover it with browser_overview or browser_search — everything below is for native UIA targets and cannot match a DOM node.",
+    // AND THE LINE THE SPLIT WAS MEANT TO SCOPE HAS TO SAY SO ITSELF. Adding the
+    // browser line above left this one unconditional, so a selector miss read "use
+    // browser_search" and then, in the next breath, "call desktop_discover" — the
+    // contradiction the split existed to remove, moved down one line (gate 1 on
+    // `a1cc0f4`, 2026-09-13). The scope is stated twice on purpose: at the end of the
+    // line above, for a reader going in order, and at the head of this one, for a
+    // reader who lands on a single row.
+    "For a native target, call {tool:reidentify_element} to see candidate names and automationIds",
     "Use screenshot(detail='text') for actionable[] with clickAt coords",
     "Try a shorter partial name match",
     "The element may not be visible yet — use wait_until(condition='element_appears')",
   ],
   InvokePatternNotSupported: [
     "Use mouse_click with clickAt coords from screenshot(detail='text')",
-    "Use desktop_act({action:'setValue'}) for text input fields",
-    "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after desktop_discover)",
+    // REACHED, not inferred: win2 put a Label in a fixture window and called
+    // `click_element` at both kill-switch corners, and the caller got
+    // `desktop_act({action:'setValue'})` — a tool that surface never registered.
+    // `click_element` is registered at `server-windows.ts:241`, outside the v2 branch,
+    // so this line ships wherever that tool does.
+    //
+    // The registered reason for keeping it verbatim was sound and is not what changed:
+    // `set_element_value` takes no `action`, so substituting the NAME alone makes the
+    // sentence false. What changed is that the sentence had to say what the caller can
+    // do at THIS corner rather than name the tool of another one — the treatment
+    // `KeyLockerConsentRequired` got. Dropping the argument is what makes one sentence
+    // true of both providers: `set the value` is `desktop_act`'s `action:'setValue'`
+    // and is all `set_element_value` does.
+    //
+    // It is also the first line to use `set_value`. The capability was defined in B1
+    // and no advice line had ever carried it — an arm of the table the conversion
+    // never wired (gate 2, 2026-09-13).
+    //
+    // AND DROPPING THE ARGUMENT DROPPED TOO MUCH — the second line exists because of
+    // it. `desktop_act`'s `action` is OPTIONAL and defaults to `'auto'`, and its `text`
+    // is a separate optional field required only when the action is named; so a caller
+    // who reads "use desktop_act" literally sends `desktop_act({lease})`, the executor
+    // takes the auto affordance, and the auto affordance is the UIA invoke this very
+    // refusal was raised to say does not work. `set_element_value` has no `action` at
+    // all and takes its `value` directly. The NAMES differ across providers and the
+    // CALL SHAPES differ too, and only the first is something the presenter can
+    // substitute — so the argument the caller must supply is stated in one line, and
+    // the argument that only one provider has is stated conditionally in the next
+    // (gate 2, 2026-09-13; the general form of this axis is B4's sweep).
+    // "THE SET-VALUE TOOL", not "that tool". The two lines below are riders on this one,
+    // and drop is PER LINE: if `set_value` ever gained a null arm — a third surface, a
+    // switch that removes both providers — this line would go and the riders would ship
+    // alone, saying "if that tool also takes an `action` argument" with no tool named
+    // anywhere in the refusal. That is the rider shape this same round merged back into
+    // `KeyLockerConsentRequired`, and the survivors registry cannot catch it because it
+    // only pins pairs that drop TODAY (gate 2 on `44fa0fa`, 2026-09-13). Naming the
+    // subject in each rider costs two words and removes the dependency; merging all
+    // three into one line would cost the reader more than it saves.
+    "Use {tool:set_value} for text input fields — set the value rather than invoking the control, passing the new text as the value argument its schema names.",
+    "If the set-value tool also takes an `action` argument, name the set-value action explicitly: its default affordance is the invoke that has just failed.",
+    // THE THIRD ARGUMENT, and the one the caller cannot invent. This refusal comes from
+    // `click_element` — a name, an automationId and a window — while `desktop_act`'s
+    // `lease` is REQUIRED, and no lease is anywhere in what the caller has. Following
+    // the two lines above literally therefore fails at the protocol layer, unless a
+    // still-valid lease happened to survive from an earlier discovery (gate 1,
+    // 2026-09-13). win2's sweep had classified exactly this as `ONE_HOP` — obtainable,
+    // one call away — and a hop the advice does not name is a hop the caller does not
+    // take. The source is not named here on purpose: the tool that needs a lease says
+    // in its own schema which call returns one, and the tool that does not need one
+    // does not exist at the corner where that call does.
+    "If the set-value tool takes a `lease`, this refusal has none to hand over: run the discovery call its schema names first, then set the value on what that returns.",
+    "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after {tool:reidentify_element})",
   ],
   BlockedKeyCombo: [
     "Use workspace_launch to open applications by name instead",
@@ -60,7 +139,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Or call browser_open({launch:{}}) to spawn a debug-mode Chrome on the configured port",
   ],
   TerminalWindowNotFound: [
-    "Call desktop_discover to see available titles",
+    "Call {tool:list_window_titles} to see available titles",
     "Try a partial title match (e.g. 'PowerShell' or 'pwsh')",
     "Filter by processName: pwsh / powershell / cmd / bash / WindowsTerminal",
   ],
@@ -155,8 +234,88 @@ const SUGGESTS: Record<string, string[]> = {
   // the guard runs and carries its own `DestinationRequired` code below.
   AutoGuardBlocked: [
     "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
-    "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle / name / automationId until a single target resolves.",
-    "If the target was not found (target_not_found), run desktop_discover — the window or element no longer matches the current desktop state.",
+    "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle until one window matches — the guard counts WINDOWS, so name / automationId do not change the count.",
+    "Or pass hwnd to name that window exactly, which {tool:disambiguate_window_by_handle} returns.",
+    // THE ROUTE THAT SURVIVES WHERE THE LINE ABOVE DROPS. `disambiguate_window_by_handle`
+    // has no provider under the v2 kill switch — `get_windows` reads each handle and
+    // leaves it out of the result, and `screenshot(detail='meta')` returns title and
+    // region only — so the row above disappears there and, before this line, every
+    // mention of the hwnd recovery went with it. But `click_element`,
+    // `set_element_value` and `get_ui_elements` all still ACCEPT `hwnd` at that corner,
+    // and `desktop_state` (registered before the `_desktopV2` branch, so present at all
+    // four corners) reports `focusedWindow.hwnd` for a window the enumeration keeps —
+    // NOT unconditionally: `focusedWindow` is built from `wins.find(w => w.isActive)` over
+    // `enumWindowsInZOrder()`, the same enumeration this file says elsewhere drops
+    // untitled windows, so a titleless foreground gives `focusedWindow: null` and no
+    // handle. It holds for the windows `ambiguous_target` is raised over, which are
+    // titled by construction — the enumeration is what counted them. "Always" was the
+    // word, and it was the load-bearing one (gate 2 on `42524cb`, 2026-09-13). What the
+    // kill switch removes is
+    // the ENUMERATION of handles, not handles — and the capability table cannot tell
+    // those apart, which is why a `null` there read as "no recovery exists" for a whole
+    // round (gate 2, 2026-09-13).
+    //
+    // Stated with the condition it needs, not flat: it is a recovery exactly when the
+    // caller can get the intended window in front, which is the case title narrowing
+    // provably cannot serve — two windows whose normalized titles are equal ("Report"
+    // beside "REPORT", one page open in Chrome and in Edge) can never be told apart by
+    // title, and can be told apart by bringing one forward.
+    //
+    // It is a WEAKER DUPLICATE at the v2 corner, where the line above already hands back
+    // every window's handle, and that is a decision rather than an oversight: this is the
+    // STATIC catalogue, so conditioning it on the corner means a hand-branched call site,
+    // and `AutoGuardBlocked` reaches its producers through this one array. One redundant
+    // sentence where a better route exists is the cheaper half of that trade than no
+    // sentence where it does not.
+    "Or bring the intended window to the front and pass the hwnd desktop_state reports for it — worth doing when the titles cannot be told apart by narrowing (matching lowercases, trims, and strips a browser suffix from both sides).",
+    // ONE SUBJECT, because the sentence had two and the providers split under the kill
+    // switch: "the window" is `list_window_titles` (→ get_windows) and "the element" is
+    // `reidentify_element` (→ get_ui_elements). The conversion picked one, which is the
+    // mixed-line shape this round splits everywhere else (win2, measured on the wire,
+    // 2026-09-13).
+    //
+    // Narrowed rather than split, because splitting makes it two lines and BOTH resolve
+    // to `desktop_discover` at the v2 corner — "run desktop_discover" twice, which is
+    // worse than what it replaces. The window half is already answered in the same
+    // response: `summary.next` says "verify the window title" and resolves
+    // `list_window_titles`. So this line keeps the half `next` does not cover.
+    //
+    // NARROWED ON THE ANTECEDENT, not the consequent — the first attempt got the
+    // direction wrong. Cutting "the window or" made the CLAIM specific
+    // ("the element no longer matches") while the CONDITION stayed broad
+    // (`target_not_found` fires for a vanished window too), so the line asserted a
+    // cause that is false in half the cases it introduces itself with. Gate 1 found it
+    // from the other end: following the advice for a missing window returns another
+    // `WindowNotFound` and no titles, because `get_ui_elements` resolves the window
+    // first. Conditioning the line on the case it serves makes both halves agree, and
+    // `summary.next` — which resolves `list_window_titles` — is what answers the other
+    // case, in the same response.
+    //
+    // The earlier measurement still holds: `get_ui_elements` answers the window half
+    // too if you ask it (a missing window comes back as `WindowNotFound`). It is a
+    // diagnosis there, not a recovery, which is the distinction this line now respects.
+    //
+    // AND `target_not_found` HAS A SECOND PRODUCER, which the narrowed antecedent still
+    // covered: a `browser_*` call with a stale `tabId`. `resolveBrowserTabTarget`
+    // returns `candidates: 0` when no open tab carries the id
+    // (`engine/perception/action-target.ts`, the `tabId` filter), and the guard turns
+    // every `candidates === 0` into `target_not_found` — with the Chrome window still
+    // open, so "its window is still open" is satisfied too. Neither provider of
+    // `reidentify_element` returns tab ids: `browser_open` is the recovery there.
+    // Split by producer rather than narrowed again, because narrowing "desktop" into
+    // the first line leaves the browser caller with no line at all (gate 1, 2026-09-13
+    // — the third correction to this one sentence, and the second where the ANTECEDENT
+    // was broader than the cause named in the consequent).
+    "If a desktop element was not found (target_not_found) and its window is still open, run {tool:reidentify_element} — the element no longer matches the current desktop state.",
+    // AND THE DIAGNOSIS IS NOT NAMED, because the first version of this line named the
+    // wrong half again. "The stale part is the tabId" asserts one cause where
+    // `resolveBrowserTabTarget` has four: a supplied id that matches no open tab, an
+    // unavailable CDP, an empty tab list, and a title/URL binding that misses — and
+    // `tabId` is optional in the browser schemas, so a caller who never sent one was
+    // told theirs had gone stale. Same shape as the correction two comments up, made
+    // one round later on the line that correction produced: the RECOVERY is stable
+    // across all four, so the recovery is what the line carries (gate 1, 2026-09-13).
+    "If a browser_* call was refused with target_not_found, the target is a tab and not a desktop element: call browser_open to reconnect and list the current tabs, then retry with one of them. No tab appears in what {tool:reidentify_element} returns.",
     "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
     "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
     "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
@@ -170,7 +329,7 @@ const SUGGESTS: Record<string, string[]> = {
   // shape as the key_locker producers below).
   DestinationRequired: [
     "Pass `windowTitle` or `hwnd` so the input has an explicit destination window.",
-    "Call `desktop_discover` (or `desktop_state`) to list windows and pick a target.",
+    "Call `{tool:list_window_titles}` (or `desktop_state`) to list windows and pick a target.",
     "To deliberately type into the current foreground window, set DESKTOP_TOUCH_REQUIRE_DESTINATION=0 (downgrades this stop to a warning — never a silent pass).",
   ],
   LensNotFound: [
@@ -203,8 +362,19 @@ const SUGGESTS: Record<string, string[]> = {
   // list cannot know which one it is in.
   CoordinateOutsideReachableBounds: [
     "Read the error message first: it says whether the point is off every monitor (stale coordinates) or whether this installation is limited to the primary monitor.",
-    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then act on the new coordinates.",
-    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then re-run desktop_discover and retry. Reinstalling or updating the server restores input on the other monitors.",
+    // THE TITLE-FREE ROUTE LEADS, because this refusal's caller may have no title to
+    // give. A coordinate-only `mouse_click` / `mouse_drag` carries a point and nothing
+    // else, and the two providers of `reidentify_element` disagree about whether that is
+    // enough: `desktop_discover`'s `windowTitle` is optional, `get_ui_elements`'s is
+    // REQUIRED (`ui-elements.ts`, `getUiElementsSchema`). So at the kill-switch corners
+    // the substituted name is registered and still not callable from where the refusal
+    // leaves the caller — "the surface has this tool" and "this caller can call it" are
+    // different questions, and the capability table only answers the first (gate 1,
+    // 2026-09-13; the general sweep of this axis is B4's, this is the instance that
+    // shipped). `screenshot` takes no required argument, so it leads and the tool is
+    // offered to the caller who can name a window.
+    "Off every monitor → the coordinates are stale: take a fresh screenshot and act on the new coordinates. If you can name the window the target is in, {tool:reidentify_element} gives its elements with current bounds.",
+    "Limited to the primary monitor → move the target window onto the primary monitor (drag it, or press Win+Shift+Left/Right), then take a fresh screenshot and retry — or {tool:reidentify_element} on that window, once you can name it. Reinstalling or updating the server restores input on the other monitors.",
     "Retrying the same coordinate with mouse_click / mouse_drag / scroll / desktop_act / browser_click fails the same way — the coordinate is the problem, not the tool.",
     "If the target exposes UIA, click_element(name=…) invokes the element directly and never moves the cursor.",
   ],
@@ -219,7 +389,12 @@ const SUGGESTS: Record<string, string[]> = {
   // loop cannot terminate.
   RegionOutsideCapturableBounds: [
     "Read the error message first: it names which of three cases applies — the region is off every monitor, or it overlaps a monitor but extends past the capturable area, or this server is limited to capturing the primary monitor. In that last case it also says whether per-window capture still works here, which decides the recovery below.",
-    "Off every monitor → the coordinates are stale: re-run desktop_discover or take a fresh screenshot, then capture the new region.",
+    // Same title-free ordering as its cursor-side twin above, for the same reason and
+    // by the same rule: a region is a rectangle, and this refusal's caller may hold no
+    // window title at all, which `get_ui_elements` requires and `desktop_discover` does
+    // not. Gate 1 named the twin; this one is the identical sentence one entry down, and
+    // fixing only the instance that was reported is the shape that keeps coming back.
+    "Off every monitor → the coordinates are stale: take a fresh screenshot, then capture the new region. If you can name the window the region was around, {tool:reidentify_element} gives its current bounds.",
     // No per-window route named here on purpose: an overhang can occur on
     // either backend, and whether screenshot(windowTitle=…) works depends on
     // the determinant — which the two lines below own. Shrinking is the one
@@ -250,11 +425,153 @@ const SUGGESTS: Record<string, string[]> = {
   // re-discovering returns the same (correct) point and fails identically.
   // click_element leads because it is the one route that works while the cursor
   // is held, whichever cause applies.
+  // ADR-036 — the window this act was aimed at is gone. The advice has to do two things, and the
+  // second is why this entry exists at all: say where to go, and CLOSE the road the generic
+  // fallback would have opened. `executor_failed`'s advice is "fall back to mouse_click", and the
+  // only coordinates a caller holds are the entity's rect — which is where that window used to
+  // be, so following it presses whatever moved in behind it. Measured on Windows 2026-09-09: with
+  // no entry here the envelope came back "Inspect the underlying error and retry with adjusted
+  // args", which does not forbid the coordinate retry either — a weaker version of the same road.
+  AimWindowGone: [
+    "Re-run {tool:reidentify_element}: the window this act was aimed at no longer exists, so the lease and every entity taken from it describe something that is gone.",
+    "Do NOT retry by coordinate. The entity's rect is where that window used to be, and another window may be occupying it now — the click would land on that one.",
+    "If the app was expected to close (a dialog that was dismissed, a document that was saved), this is the normal outcome and there may be nothing left to do.",
+    "If the app was NOT expected to close, it may have crashed or restarted: {tool:reidentify_element} will show the replacement window, which needs a fresh lease — the old handle is not reusable.",
+  ],
+  // ADR-036 — the handle belongs to somebody else now. The advice has to say the thing that is
+  // easy to miss: nothing failed. The action was refused because it would have worked, on a window
+  // the caller never looked at.
+  AimIdentityChanged: [
+    "Re-run {tool:reidentify_element}. The window this act named has gone, and Windows has given its handle to a different window — the lease, the entities and their coordinates all describe a window that is gone.",
+    "Nothing was done. This is a refusal, not a failure: an action addressed to that handle would have reached whatever holds it now, which is not what was discovered. Any of three things happened — another process took the handle, the same process was restarted, or the same program put a different KIND of window on it — and the recovery is the same for all three.",
+    "Do NOT retry with the same handle, and do NOT retry by coordinate: both address whatever occupies that window's place now.",
+    "If the application was expected to restart (an update, a crash, a document reopened), the new window is a normal target — discover it and take a fresh lease. Handles are not stable across a restart.",
+  ],
+  // ADR-036 item 6 — the point is covered. The advice must not send the caller back to
+  // desktop_discover as its first move: the coordinates are already right, and a fresh lease
+  // returns them unchanged with the same window on top.
+  //
+  // **And the line that names the covering window is back, because item 13 landed.** It was removed
+  // on 2026-09-10: the engine's `AimOccludedError` named the window — title, handle and point — and
+  // `desktop-register.ts` rebuilt the error with fixed text that named nothing, keeping only the
+  // class. The advice survived that rebuild and the message did not, so a line saying "read the
+  // message" pointed at text the caller never receives (win2). Paired with the next line, which
+  // says to pass that name to `focus_window`, it told the caller to use a title the envelope
+  // withholds — the same family as the refusal that recommended the press it had just refused.
+  //
+  // What changed: the engine's sentence now travels as `TouchResult.detail` and lands in
+  // `if_unexpected.detail`. **The line below points at that field by name rather than at "the
+  // message"** — a caller cannot read a field that is not in the response, and the previous version
+  // of this line was a promise about a field that did not exist.
+  AimOccluded: [
+    "Another window is on top of the point this act would have pressed, so nothing was done. Whether it would REALLY have taken the press is not something this build can ask — that needs the OS hit test — so a window on top counts as being in the way. Some overlays pass presses straight through and are still reported here: measured 2026-09-10 on a full-screen monitor-utility overlay with per-pixel transparency, which no window style distinguishes from one that blocks.",
+    "The detail field in if_unexpected names the window that is on top — its handle always, its title when it has one — as the engine saw it at the moment of the refusal. That is the window in the way; the window you named is the one to bring forward. (Under include:[\"envelope\"] the failure hint sits at data.if_unexpected.)",
+    "Bring the intended window forward (focus_window with its title) and act again — this is the case the specification calls 'block or refocus', and the refocus is left to you because raising a window is itself a focus change.",
+    "Or act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which reaches a window that is not on top — and is also the way past an overlay that this build cannot tell is click-through.",
+    "Re-running {tool:reidentify_element} does NOT help by itself. The entity's coordinates are correct; what is wrong is what is drawn over them.",
+  ],
+  // ADR-036 — the aimed press would land outside the window the call named. Every line here has
+  // to hold one door shut: `executor_failed` opens with "fall back to mouse_click using the entity
+  // rect center", and that centre is the point this refusal just rejected. Unlike AimWindowGone
+  // the window is still there, so re-discovering is not a consolation — it is the fix.
+  AimPointOutsideWindow: [
+    "Re-run {tool:reidentify_element} and act on the entity it returns now: the window this act named is still open, but the coordinates taken from it can no longer be trusted.",
+    "A window that moved WITHOUT resizing does not reach here — the point is carried with it by the same offset, when the coordinates were measured in the same read that measured the window. Among the reasons that do reach here: the window was minimised; it changed SIZE, and a resize may have reflowed the contents, so it is refused even where the point still falls inside; it moved WHILE it was being discovered, in which case that snapshot's coordinates were measured against more than one position and no correction can describe them — discover again once the window has settled; the coordinates came from a lane whose measurement moment cannot be established, such as a stored visual snapshot captured while the window was somewhere else; or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point. A move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport — that check passes uia / cdp / terminal entities without looking, so it is not a second guarantee.",
+    "Do NOT retry by coordinate. Whatever is under that point now would take the press.",
+    "If the window was minimised, restore it first (focus_window), then re-run {tool:reidentify_element}: a minimised window reports its rectangle at -32000 and no point on screen belongs to it.",
+    "If the window keeps moving (a drag in progress, an animation), wait for it to settle before discovering — a rectangle read mid-move goes stale the same way.",
+  ],
+  // ADR-036 — every route to the named window failed and the coordinate fallback is refused. Same
+  // door as the stale-aim entry above, different cause: the aim is current, the attempt failed. So
+  // this advice may offer element-level routes, which a stale rect must not be given. Covers the
+  // click path and the write ladder — the message names which one, and both refuse the same press.
+  // The detail's line comes first: re-discovering helps only one of the failures it can name, and a
+  // caller reading top-down would otherwise spend a round trip on the other three (win の外からの読み).
+  AimRouteFailed: [
+    "if_unexpected.detail says which failure it was when the backend's answer is one this server recognises — the element was not found, or the element the route matched does not support this action through UI Automation, is disabled, or is read-only — and says nothing more when it is not: on this road an unrecognised answer can be a shell rejection carrying the command that produced it. Not found: re-discover. No pattern for this action (a custom-drawn button, a canvas): act on a different affordance or reach it by keyboard navigation. Disabled: find what enables it before trying again. Read-only: it does not take typed text — act on the control that edits it, or read the value instead. The route matches by name, so when another element's name contains the same text, the answer can be about that element.",
+    "When the detail names no failure, or says the element was not found: re-run {tool:reidentify_element} — this act named its window by handle, the attempt on it failed, and the entity may have changed name, moved in the tree, or gone. For the other failures it names, re-discovering does not help: a disabled element is left out of the list until it is enabled, and the others come back giving the same answer until their state changes.",
+    "Do NOT fall back to mouse_click on the entity's rect. A coordinate is not aimed at any window — that press is what naming the window was for, and the ladder stopped here rather than making it blind.",
+    "For a click: click_element(name=…) is worth one try while the entity is on screen — it re-resolves the element through the accessibility API instead of reusing the lease's locator, and controlType narrows it when the route matched another element by the same text. It runs the same enabled and pattern checks, so a disabled element gives it the same answer.",
+    "For type / setValue: both the UIA value route and the background write are already spent. A foreground type delivers to whatever holds focus, so bring the intended window forward first and confirm it is the one you named; otherwise re-discover and act on the fresh entity.",
+  ],
+  // ADR-036 family 2 — the keyboard rung refused to post, because the characters would not have
+  // reached the field named. Every line has to keep one door shut: `executor_failed` advises a
+  // foreground type, and whatever holds the focus would take those characters.
+  // ONE CORNER'S LANGUAGE, DELIBERATELY LEFT LITERAL. Every producer of this code is on
+  // the v2 road (`desktop-executor.ts` raises it, `desktop-register.ts` wraps it), so
+  // there is no corner where `desktop_discover` and `desktop_act` are not the tools the
+  // caller has — and nothing here for a presenter to vary.
+  //
+  // Two rounds got this wrong in opposite directions. First one line was converted and a
+  // sibling was not, which a non-v2 rendering would have read as `get_ui_elements` and
+  // `desktop_discover` in one breath. Then BOTH were converted "for consistency" — and
+  // the same sentence still carries `desktop_act action='click'`, which is v2-only and
+  // has no capability at all, so the mixed-corner refusal the fix claimed to remove was
+  // still there, one clause over, with the comment above it saying otherwise (gate 2 on
+  // `42524cb`, 2026-09-13, quoting my own comment back).
+  //
+  // Converting the rest needs a sixth capability for "click an entity by identity",
+  // which buys nothing at a corner that cannot exist. Producer reachability is the
+  // argument, and it is the same one the floor exception and `ui-elements.ts` use — so
+  // it is written here rather than left as the reason a line looks unconverted.
+  KeyboardTargetUnsafe: [
+    "Nothing was typed. if_unexpected.detail names the ground: other_control (the focus is on a different control in the same window), other_window (the focus is in a different window from the field you named), or read_only (the control that would have received the characters does not take typed text).",
+    "other_control / other_window: put the focus on the field you named, then type again — the background write goes to whatever holds the focus. if_unexpected.detail names the way back for the road this act took. When it named its window by title, desktop_act action='click' on the same entity does it: a text field has no UIA invoke, so it is clicked at its position — checked against the window it was captured in when that window's handle was recorded. When it named its window by handle, no route here moves the focus to a text field yet (that click answers aim_route_failed): re-run desktop_discover by the window's title and click the field from there — except for a common dialog (Save As, Open), whose title resolves to a handle as well, so that road does not open there either.",
+    "other_window: bring the field's window forward first (focus_window) — it comes forward with the focus it last had, which is often enough, and the window that holds the focus is usually drawn over the field, which makes a click on it answer aim_occluded when the act has a window handle to check that point against.",
+    "read_only: the field does not take typed text. Act on the control that edits it, or read its value instead; typing again gives the same answer until its state changes.",
+    "Do NOT type through the foreground instead (keyboard with method:'foreground'), and do NOT retry by coordinate: whatever holds the focus would take the characters, which is what this refusal stopped.",
+    "If the field may have changed or gone, re-run desktop_discover and act on the fresh entity.",
+  ],
+  // ADR-036 item 16 — the entity could not be found: missing from the live view (or the view has
+  // expired), or answered "not found" by the native UIA engine that also read it, on an act that named its
+  // window by title, whose press where it used to be is refused. The cause is not known, so none is
+  // asserted (gate 2 on #624). Re-discovering is the recovery, and a coordinate is exactly what
+  // must not be tried.
+  EntityNotFound: [
+    "Re-run {tool:reidentify_element} and act on the fresh entity: the element this lease described could not be found — it may have been removed, renamed or moved, another window with the same title may have answered, or the view it came from may have expired.",
+    "Do NOT retry by coordinate: the entity's rect is where the element used to be, and whatever is there now would take the press.",
+    "If the element should still be there, let the page or dialog settle and discover again — a list that is re-rendering can drop an element for a moment.",
+  ],
+  // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
+  // advice is deliberately short on alternatives — every "try the other tool" line would be an
+  // instruction to walk around a security boundary. Worded for BOTH families: `desktop_act`'s
+  // envelope reaches it through `reason:"window_excluded"`, and the two producers that spell
+  // `WindowExcluded: …` into the message (`_resolve-window.ts`) reach it through the declared-code
+  // arm of `classify`, so it must not claim a click was attempted.
+  // ADR-036 item 6 — the same registry met at a COORDINATE. Its own key, because sharing
+  // `WindowExcluded`'s meant publishing two lines that are false here: that the caller's own window
+  // is excluded ("Nothing was done to it"), and that the recovery is to act on a different window —
+  // when their window is fine and perfectly touchable. A third named the key locker in prose, which
+  // handed back the identification the refusal's own detail was written to withhold (gate 2, Opus
+  // sandbox review, 2026-09-10).
+  //
+  // **Nothing here describes the covering window.** Not its title, not its handle, not what it
+  // belongs to. A caller told only "something is over the point" can still act; a caller told what
+  // it is has been given the thing the registry exists to keep.
+  AimBlockedByExcludedWindow: [
+    "A window this server may not act through is over the point this act would have pressed, so nothing was done. Your window is NOT the excluded one — it is still there and still actionable; something else is drawn over that point right now.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the same point would reach that window through a route that does not check this, which is the press being refused here.",
+    "Act through a route that does not use coordinates: click_element(name=…) invokes through the accessibility API, which does not move the cursor and does not press whatever is on top.",
+    "Or wait for the point to clear and act again — a window that covers it now need not cover it in a moment. Re-running {tool:reidentify_element} does not help by itself: the entity's coordinates are correct; what is wrong is what is drawn over them.",
+    "Nothing in this response describes the window in the way, by design.",
+  ],
+  WindowExcluded: [
+    "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
+    "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
+    // "on a different target" WAS ATTACHED TO THE WRONG HALF. `get_windows`, the
+    // kill-switch provider here, takes no arguments — there is not even a flag to ask —
+    // so a clause telling the caller to aim it somewhere cannot be followed, and it is
+    // not a by-identity tool either. The listing and the by-identity retry are two
+    // different acts; the sentence now says so instead of hanging one modifier off
+    // both (gate 2, 2026-09-13).
+    "Act on another window: {tool:list_window_titles} shows what is open, and any by-identity tool aimed at a different target returns what this server may touch.",
+    "If the excluded window is a prompt waiting for a person — the key locker's own dialog — it is theirs to answer; this session cannot answer it for them.",
+  ],
   CursorPlacementBlocked: [
     "click_element(name=…) invokes an element through the accessibility API without moving the cursor, so it works while the pointer is held.",
     "If a full-screen game or another app is holding the cursor, leave or close it, then retry.",
     "If this is a remote-desktop session, reconnect to it and retry — a disconnected session has no interactive desktop to move the pointer on.",
-    "If the message says the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run desktop_discover and act on the new coordinates.",
+    "If the monitor layout could not be read, or a monitor was just added or removed, the point may be stale — re-run {tool:reidentify_element} and act on the new coordinates. Where the failure says which, it is in if_unexpected.detail on the act path and in error on a flat tool result.",
   ],
   // Reserved (currently unreachable): the producers (the keyboard.ts /
   // terminal.ts flash paths) reject with this compact code when the resolver
@@ -509,10 +826,10 @@ const SUGGESTS: Record<string, string[]> = {
   // The hints below point to the alternate channels for each action,
   // matching the wiring the dogfood confirmed actually works.
   ExecutorFailed: [
-    "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from desktop_discover — common when UIA InvokePattern is missing on the control",
+    "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from {tool:reidentify_element} — common when UIA InvokePattern is missing on the control",
     "For action='type' or action='setValue': desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click",
     "If the entity has a stable name or automationId, try click_element({name|automationId}) — uses a different UIA path than desktop_act and may succeed where this executor threw",
-    "Re-run desktop_discover — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator",
+    "Re-run {tool:reidentify_element} — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator",
   ],
   // Phase 2a F4 / Phase 5 I1: keyboard({action:'type'}) Focus Leash Phase B
   // mid-stream focus theft. matrix §3.1 line 141 規範:
@@ -684,8 +1001,35 @@ const SUGGESTS: Record<string, string[]> = {
   // WHEN their producers land (the tool + the L3 inject loop) — the classify producer-pin invariant
   // (issue-211) forbids a branch without a producer.
   KeyLockerConsentRequired: [
-    "The key locker is off until you enable it once. Run key_locker with action='save' to open the enable dialog, or click Enable when it appears.",
-    "Enabling is a one-time confirmation shown by the locker itself; the assistant never sees your secret.",
+    // MERGED, not split (win2, 2026-09-13, measuring the ORDER after a drop). The
+    // second line was a rider on the first: it describes what enabling is like, and
+    // when the first line drops it is left explaining a thing the caller cannot do —
+    // one surviving line, no recovery in it. The capability audit asked "does this
+    // code go empty?" and answered `2 → 1 ok`; the number was right and the `ok` was
+    // wrong, because the test decision (2) actually implies is "is what SURVIVES a
+    // recovery?". A rider belongs to the sentence it rides on, so it is one line now
+    // and the pair stands or falls together.
+    "The key locker is off until you enable it once. Run {tool:credential_store} with action='save' to open the enable dialog, or click Enable when it appears — enabling is a one-time confirmation shown by the locker itself, and the assistant never sees your secret.",
+    // NO SECOND LINE, and the one that was here is why this comment is long.
+    //
+    // It said "if this server was started with DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1,
+    // unset it and restart", added so the code would keep a recovery at the two
+    // locker-off corners. **That code cannot be produced at those corners.**
+    // `KeyLockerManager.withHost` checks `isDisabled()` FIRST and throws
+    // `KeyLockerDisabledError`, and `registerKeyLockerTools` returns before
+    // registering anything when the switch is on, so every producer of
+    // `KeyLockerConsentRequired` requires the locker enabled. The classifier arm in
+    // this file only re-derives the code from a message one of those producers wrote.
+    //
+    // So the line shipped ONLY where the flag is not set — to real callers, at the
+    // corners where the locker works, telling them to check a variable that is
+    // provably not the cause. **A line added to make a gate green at a corner no
+    // caller can reach, and noise at every corner they can.** Gate 2 found it twice
+    // and I answered the first one with a reachability claim that was wrong.
+    //
+    // The floor therefore fires for this code at the two locker-off corners, and that
+    // is registered as the one place it may (see the acceptance cell): a floor at a
+    // corner where the code cannot be produced is not a gap in the advice.
   ],
   KeyLockerDisabled: [
     "The key locker is turned off by DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. Remove that environment variable (and restart the MCP server) to use it.",
@@ -709,17 +1053,20 @@ const SUGGESTS: Record<string, string[]> = {
     "The connection to the locker helper was lost. Retry; if it persists, restart the MCP server.",
   ],
   KeyLockerConsoleLimit: [
-    "Too many anchored consoles are already open. Reuse an existing one (key_locker action='launch_console' without fresh:true returns the most recent), or close a console window before opening another.",
+    "Too many anchored consoles are already open. Close a console window before opening another.",
+    "Or reuse an existing one — {tool:credential_store} action='launch_console' without fresh:true returns the most recent.",
   ],
   KeyLockerWtUnavailable: [
-    "The Windows Terminal pane could not be opened (wt.exe not installed, or the new tab could not be identified). Retry with key_locker action='launch_console', host:'classic' to open a dedicated classic console window instead.",
+    "The Windows Terminal pane could not be opened — wt.exe may not be installed, or the new tab could not be identified. A dedicated classic console window is the fallback.",
+    "Retry with {tool:credential_store} action='launch_console', host:'classic' to open one.",
   ],
   KeyLockerSshUnresolved: [
     "The ssh host key is not in known_hosts yet. Connect to the host once (ssh user@host) so its key is recorded, then save.",
     "ProxyJump / ProxyCommand bindings are not supported — the first prompt may belong to the jump host.",
   ],
   KeyLockerNoSuchBinding: [
-    "No saved binding matches that URI. Run key_locker action='list' to see the exact display URIs, then retry with one of them.",
+    "No saved binding matches that URI — the display URI must match exactly, including scheme, user, host and port.",
+    "Run {tool:credential_store} action='list' to see the exact display URIs, then retry with one of them.",
   ],
   // Binding-URI parse failures reachable via key_locker `save`/`forget`/`set_policy` (L1 grammar).
   // Shared grammar hint — the typed message already names the offending character/component.
@@ -1257,11 +1604,27 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
   const error =
     err.toolName !== undefined ? `${err.toolName} failed: ${displayMessage}` : displayMessage;
 
+  // ADR-036 stage 2: the advice passes through the resolver on its way out, and as of
+  // B2c the lines carry `{tool:<capability>}` for it to resolve. A line with no
+  // placeholder is still returned unchanged, which is what keeps the conversion
+  // measurable: at the v2 corner every converted line renders back to the bytes it
+  // had, so the codes that move there are exactly the ones a person changed. HOW MANY
+  // is not written here any more — it said "the four", stated as measured, while ten
+  // had moved, and someone auditing what changed for existing v2 callers would have
+  // re-read four and shipped six unreviewed (gate 2 on `44fa0fa`, 2026-09-13). The
+  // list lives where it is CHECKED, in the acceptance file's claim-4 cell, against a
+  // committed pre-image of this dictionary at `1ee173c`; adding a code there is the
+  // deliberate act, and a byte that moves without one reddens.
+  // Rendering here rather than at each producer is the point:
+  // `WaitTimeout` is a measured case where a literal beats the dictionary, so a seam
+  // on the dictionary alone would miss the road it was aimed at.
+  const suggest = renderAdviceWithFloor(err.suggest);
+
   return {
     ok: false,
     code,
     error,
-    ...(err.suggest && err.suggest.length > 0 && { suggest: err.suggest }),
+    ...(suggest !== undefined && { suggest }),
     ...(err.context && { context: err.context }),
     ...(err.rootExtras ?? {}),
   };
@@ -1336,6 +1699,44 @@ export function failCode(
 }
 
 /**
+ * Advice for the caller, with the FLOOR the user's decision of 2026-09-13 asks for:
+ * a code that had advice keeps at least one line at every corner.
+ *
+ * The envelope road grew this first (`renderTryNext`), and gate 2 pointed out that the
+ * flat road did the opposite — it omitted `suggest` entirely when the resolver emptied
+ * it, so the same code answered two different ways depending on which presenter it
+ * went through. Two roads, two answers, one of them with a cell.
+ *
+ * `undefined` means "there was no advice to begin with", which is not the same as
+ * "the advice was withheld here" and must stay distinguishable.
+ *
+ * **And "withheld" is a CLAIM about the configuration**, so it is only made where a
+ * real sentence was dropped. A caller that passes entries which were never strings has
+ * a programming error, not a configuration without a provider; answering it with "no
+ * recovery is available in this configuration" tells the caller a false cause and
+ * hides the real one (gate 2, 2026-09-13, measured on the envelope road's twin).
+ */
+function renderAdviceWithFloor(lines: string[] | undefined): string[] | undefined {
+  // THE CONTAINER, and this road needed it MORE than the envelope road did — which is
+  // why it is here rather than only there (gate 2, 2026-09-13, seventh round: the
+  // envelope road was guarded and its twin was not, in the same commit that said
+  // "guarding the container ends it"). `toToolFailure` is exported and takes a plain
+  // object, so this is reachable from `tests/**` and from JS. Measured against `main`,
+  // where all three were harmless:
+  //
+  //   suggest: null            main → undefined      here → THREW on `.length`
+  //   suggest: "some advice"   main → "some advice"  here → ["s","o","m","e",…]
+  //   suggest: 7               main → undefined      here → THREW, not iterable
+  //
+  // The middle one is the worst of the three: no throw, no red, a sentence shipped to
+  // a caller one character per line.
+  if (!Array.isArray(lines) || lines.length === 0) return undefined;
+  const rendered = renderAdviceForCaller(lines);
+  if (rendered.length > 0) return rendered;
+  return adviceExisted(lines) ? [ADVICE_WITHHELD_FLOOR] : undefined;
+}
+
+/**
  * Return a structured ToolFailure for invalid / missing input arguments.
  * Use this instead of failWith() for validation errors so they get the
  * dedicated InvalidArgs code rather than the generic ToolError fallback.
@@ -1345,11 +1746,25 @@ export function failArgs(
   toolName: string,
   context?: Record<string, unknown>
 ): ToolResult {
+  // NOT MEMOISED, deliberately (gate 2, 2026-09-13, tenth round). `SUGGESTS.InvalidArgs`
+  // is fixed and placeholder-free, so this renders the same two lines every time and
+  // could be cached against the capture. It is not, because a cache keyed on a mutable
+  // module global is a new correctness surface — the exact kind this round exists to
+  // remove — bought against a cost that lands only on a REFUSAL: one `RegExp` and two
+  // `String.replace` calls on lines with nothing to replace. Revisit if the capture
+  // ever becomes per-server, when the key stops being global.
+  const invalidArgsAdvice = renderAdviceWithFloor(SUGGESTS.InvalidArgs);
   const failure: ToolFailure = {
     ok: false,
     code: "InvalidArgs",
     error: `${toolName}: ${message}`,
-    suggest: SUGGESTS.InvalidArgs,
+    // Through the resolver like every other road. This site builds the flat shape by
+    // hand rather than going through `toToolFailure`, which is exactly why it is
+    // named here: a seam that only covers the canonical builder misses the sites that
+    // predate it (ADR-036 stage 2 B2b).
+    // Rendered ONCE - this is the hottest validation path in the server, and the first
+    // version called the resolver twice, for the guard and for the value (gate 2).
+    ...(invalidArgsAdvice !== undefined && { suggest: invalidArgsAdvice }),
     ...(context && { context }),
   };
   return fail(failure);

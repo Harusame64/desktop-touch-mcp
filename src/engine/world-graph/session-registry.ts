@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Aim } from "../aim.js";
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "./types.js";
 import { LeaseStore } from "./lease-store.js";
@@ -14,6 +15,36 @@ import { resolveCandidates } from "./resolver.js";
 
 /** Subset of DesktopSeeInput.target; defined here to avoid circular import. */
 export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
+
+/**
+ * ADR-036 — the one place that decides whether a `TargetSpec` names a window by handle.
+ *
+ * `hwnd` is a decimal string on the wire, so "what counts as a handle" is a parse, and it was
+ * being answered separately at every site that asked: one threw, one returned `null`, one fell
+ * back to the foreground window, and one used the string as a window *title*. For a single
+ * malformed value the read half and the write half could then aim at different windows.
+ *
+ * Returns `undefined` for a spec with no handle, for one that does not parse, and for anything
+ * that is not a positive number: `BigInt("")` is `0n` and window zero is not a window, and `-1`
+ * is `INVALID_HANDLE_VALUE`, which arrives from a stringified sentinel and would otherwise send
+ * `keyboardTypeBg` and `terminalSend` down the by-handle branch to fail there instead of using
+ * the title that would have worked (2ゲート目の指摘). Hex is accepted deliberately — `"0x1337"`
+ * names a real window, and refusing it would turn a call that would have worked into a silent
+ * fall back to aiming by title, which is the failure this exists to remove.
+ *
+ * What each caller does with `undefined` stays that caller's decision; only the answer to "is
+ * this a handle" is shared.
+ */
+export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefined {
+  const raw = target?.hwnd;
+  if (raw === undefined || raw === "") return undefined;
+  try {
+    const h = BigInt(raw);
+    return h <= 0n ? undefined : h;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * UI-chrome control types that UIA exposes with `role:"unknown"` but which
@@ -141,6 +172,15 @@ export interface SessionState {
   generation: string;
   entities: UiEntity[];
   lastTarget: TargetSpec | undefined;
+  /**
+   * ADR-036 item 2 — the aim, as one value: the window the last read was made against, with who
+   * owned it at that moment.
+   *
+   * `lastTarget` stays beside it because several readers still want the caller-shaped spec (the
+   * OCR fold's key, the Stage 5 resolver). What they must not do is answer "which window" from it
+   * separately — that is how the two halves came to disagree in the first place.
+   */
+  lastAim: Aim | undefined;
   readonly leaseStore: LeaseStore;
   readonly loop: GuardedTouchLoop;
   lastAccessMs: number;
@@ -172,7 +212,7 @@ export interface SessionCreateOpts {
    * Use this (via createDesktopExecutor) so the executor sees the up-to-date target spec.
    * Ignored when executorFn is set.
    */
-  executorFactory?: (target: TargetSpec | undefined) => ExecutorFn;
+  executorFactory?: (aim: Aim | TargetSpec | undefined) => ExecutorFn;
   /**
    * Override modal detection. Default: session-aware check — blocks if any OTHER entity
    * in the current snapshot is a UIA "unknown"-role element (overlay/dialog pattern).
@@ -311,6 +351,7 @@ export class SessionRegistry {
       generation: "",
       entities: [],
       lastTarget: undefined,
+      lastAim: undefined,
       leaseStore: new LeaseStore({ defaultTtlMs: opts.defaultTtlMs, nowFn: opts.nowFn }),
       loop: null!,  // assigned immediately below
       lastAccessMs: opts.nowFn?.() ?? Date.now(),
@@ -351,7 +392,9 @@ export class SessionRegistry {
       // Resolve executor lazily so s.lastTarget is current at touch time.
       execute: (entity, action, text) => {
         const execFn = opts.executorFn
-          ?? opts.executorFactory?.(s.lastTarget)
+          // ADR-036 — the aim first: it carries the identity the executor compares against. The
+          // spec falls back for sessions created before a read resolved anything.
+          ?? opts.executorFactory?.(s.lastAim ?? s.lastTarget)
           ?? (async () => "mouse" as ExecutorKind);
         return execFn(entity, action, text);
       },

@@ -8,7 +8,7 @@ use windows::Win32::UI::Accessibility::*;
 use windows::core::Interface;
 
 use super::thread::{self, UiaContext, win_err};
-use super::tree::find_window;
+use super::tree::resolve_root;
 use super::control_type_name;
 
 // ─── Options from JS ─────────────────────────────────────────────────────────
@@ -18,6 +18,9 @@ use super::control_type_name;
 pub struct GetTextOptions {
     pub window_title: String,
     pub timeout_ms: u32,
+    /// ADR-036 — read THIS window's text, rather than the first one whose name contains `window_title`.
+    /// A decimal handle as a string; see `GetElementsOptions::hwnd`.
+    pub hwnd: Option<String>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -35,8 +38,14 @@ pub fn get_text_via_text_pattern(opts: GetTextOptions) -> napi::Result<Option<St
 // ─── Implementation ──────────────────────────────────────────────────────────
 
 fn get_text_impl(ctx: &UiaContext, opts: &GetTextOptions) -> napi::Result<Option<String>> {
-    let window = match find_window(ctx, &opts.window_title) {
+    let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
+        // ADR-036 — a read answers `null` for "no TextPattern here", so a handle that no longer
+        // names a window must not arrive as the same answer: the caller would read "this terminal
+        // has no buffer" for a window that is gone (gate 2 on this branch). On the handle road the
+        // failure is raised instead, and the bridge falls back to the by-handle script, which says
+        // which it was. The title road keeps the quiet `null` it has always answered.
+        Err(e) if opts.hwnd.is_some() => return Err(e),
         Err(_) => return Ok(None),
     };
 

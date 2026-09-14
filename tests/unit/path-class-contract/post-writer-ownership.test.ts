@@ -43,11 +43,15 @@ vi.mock("../../../src/engine/uia-bridge.js", () => ({
   getFocusedAndPointInfo: vi.fn().mockResolvedValue(null),
 }));
 
-import { withPostState } from "../../../src/tools/_post.js";
+import { withPostState, getHistorySnapshot } from "../../../src/tools/_post.js";
+import type { PostWindowArgKeys } from "../../../src/tools/_post.js";
 import { ok, fail } from "../../../src/tools/_types.js";
 import { errorFromMessage, toToolFailure, failWith } from "../../../src/tools/_errors.js";
 import { getFocusedAndPointInfo } from "../../../src/engine/uia-bridge.js";
 import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../../../src/engine/win32.js";
+
+/** One window's process, as `getProcessIdentityByPid` returns it: pid, name, and start time. */
+const NOTEPAD = { pid: 1234, processName: "notepad.exe", processStartTimeMs: 900 };
 
 function parse(result: { content: ReadonlyArray<{ type: string; text?: string }> }): Record<string, unknown> {
   const block = result.content[0];
@@ -201,6 +205,14 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // a name-empty editable element (name:"") must survive snapshotFocusedElement
     // (was dropped by `if (!focused?.name) return null`) into post.focusedElement
     // with name:"", AND the name-agnostic advisory gate then fires.
+    // The call has to NAME the window it ends in, or the name is withheld for a different reason
+    // and this cell would stop testing the G4 relax at all — an empty name and a withheld one are
+    // both "no name" to a careless assertion.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "App", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(
       { focused: { name: "", controlType: "Edit", value: "" } } as never,
     );
@@ -213,11 +225,480 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     const fe = post.focusedElement as Record<string, unknown> | null;
     expect(fe).not.toBeNull();
     expect(fe!.name).toBe(""); // survived G4 relax with empty name (was → null before)
+    expect(Object.keys(fe!)).toContain("name"); // …carried as an empty string, not omitted
     expect(fe!.type).toBe("Edit");
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+    // An empty value still says a value is there. It also comes back here, because option (b)
+    // gives a named window its own field — including an empty one, which is the case that proves
+    // `hasValuePattern` and the value are answering different questions.
+    expect(fe!.hasValuePattern).toBe(true);
     expect(fe!.value).toBe("");
     const advisory = parsed.advisory as Record<string, unknown> | undefined;
     expect(advisory).toBeDefined();
     expect(advisory!.preferredPath).toBe("desktop_act");
+  });
+
+  it("carries whether the focused field has a value, never the value — and keeps none in the history (ADR-036, option c)", async () => {
+    // Measured on a real machine: the focused field is whatever holds focus when the tool returns,
+    // so a tool that never touched it carried its whole value (internal dev/post-focusedelement).
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(
+      { focused: { name: "Notes", controlType: "Edit", value: "PROBE-SECRET-POST-1" } } as never,
+    );
+    const result = await withPostState("clipboard", async () => ok({ ok: true }))({ action: "read" });
+    expect(JSON.stringify(result)).not.toContain("PROBE-SECRET-POST-1");
+    // `clipboard(read)` names no window, so neither the value nor the NAME travels: measured, the
+    // name is the focused element's rather than the acted-on one's, and this call acted on nothing.
+    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ type: "Edit", hasValuePattern: true });
+    expect(JSON.stringify(getHistorySnapshot(20))).not.toContain("PROBE-SECRET-POST-1");
+    // …and an element with no value says so.
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Canvas", controlType: "Pane" } } as never);
+    const none = await withPostState("mouse_click", async () => ok({ ok: true }))({});
+    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ type: "Pane", hasValuePattern: false });
+  });
+
+  it("gives the value back only for the window THIS call named — the arms, as they were measured", async () => {
+    // OPTION (b), and every row here is one the Windows machine shot on `f2b7241` before the code
+    // was written (the switch was on so the arms were observable). The four leaking tools name no
+    // window and resolve none internally; `keyboard(type, windowTitle)` names the one it typed
+    // into. So the predicate splits exactly where the exposure is, and this cell is that table.
+    // The foreground window for the whole cell: "Notepad", handle 4242. `snapshotFocus` reads it
+    // from `enumWindowsInZOrder`, mocked at the top of this file to `[]` — which would make every
+    // row below WITHOUT for the wrong reason (no focused window at all), so the arm-A rows would
+    // have passed as WITHOUT and the cell would have reported the predicate working while it was
+    // only ever seeing null. Restored after the cell.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    const focusedWith = (value: string) =>
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Notes", controlType: "Edit", value } } as never);
+    const elementOf = async (tool: string, args: Record<string, unknown>, keys?: PostWindowArgKeys) => {
+      focusedWith("PROBE-TYPED-POST-2");
+      const wrapped = keys
+        ? withPostState(tool, async () => ok({ ok: true }), keys)
+        : withPostState(tool, async () => ok({ ok: true }));
+      return (parse(await wrapped(args)).post as Record<string, unknown>).focusedElement;
+    };
+    // CONTROL: the foreground really is what the rows below assume, or every WITHOUT is vacuous.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" }))
+      .toHaveProperty("value");
+    // The NAME follows the value, on the same predicate: measured, it is the focused element's and
+    // not the acted-on one's, so on a call that named no window it is right only when the caller
+    // could have guessed it (win2, `12f1ff7`).
+    const WITH = { name: "Notes", type: "Edit", hasValuePattern: true, value: "PROBE-TYPED-POST-2" };
+    const WITHOUT = { type: "Edit", hasValuePattern: true };
+
+    // Arm A — the reason the value exists. `snapshotFocus` is mocked to this title below.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toEqual(WITH);
+    // …and by handle, the only unambiguous naming there is.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "4242" })).toEqual(WITH);
+
+    // Arm B — the four measured carrying a field they never touched.
+    expect(await elementOf("clipboard", { action: "read" })).toEqual(WITHOUT);
+    expect(await elementOf("clipboard", { action: "write", text: "x" })).toEqual(WITHOUT);
+    expect(await elementOf("notification_show", { title: "t", message: "m" })).toEqual(WITHOUT);
+    expect(await elementOf("mouse_click", { x: 900, y: 450 })).toEqual(WITHOUT);
+
+    // `@active` names nothing: it is "whatever is in front", which is what every arm above was
+    // pointed at by accident. Conservative on purpose — `desktop_state` is the explicit read.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "@active" })).toEqual(WITHOUT);
+    // A named window that is NOT the one focus ended in.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Calculator" })).toEqual(WITHOUT);
+    // A handle that is not the focused one.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "9999" })).toEqual(WITHOUT);
+
+    // ONE HANDLE, HOWEVER IT WAS SPELLED. `resolveWindowTarget` accepts the argument through
+    // `BigInt`, so all four of these name window 4242 and the call succeeds; an exact string
+    // compare against the decimal snapshot answered WITHOUT for three of them, which is the
+    // value being withheld from the caller who named the window best.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "0x1092" })).toEqual(WITH);
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "004242" })).toEqual(WITH);
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "  4242  " })).toEqual(WITH);
+    // …and the pairing that says the widening stops at SPELLING: a different number is still a
+    // different window, however it is written.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "0x9999" })).toEqual(WITHOUT);
+    // What neither side can parse is not a name. `resolveWindowTarget` throws on this argument.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "4242px" })).toEqual(WITHOUT);
+
+    // THE TOOL'S OWN ARGUMENT NAME. `focus_window` names its destination `title`, and the two
+    // rows are the same call — only the declared key differs, so nothing else can explain the
+    // change. The second row is what shipped before this: the tool whose entire job is to name a
+    // window, carrying no value because the predicate was reading an argument it does not have.
+    const FOCUS_KEYS: PostWindowArgKeys = { windowTitleKey: "title", hwndKey: "hwnd" };
+    expect(await elementOf("focus_window", { title: "Notepad" }, FOCUS_KEYS)).toEqual(WITH);
+    expect(await elementOf("focus_window", { title: "Notepad" })).toEqual(WITHOUT);
+    // Declaring the key does not loosen WHICH window: a title that is not the focused one is
+    // still nothing, and `@active` is still "whatever is in front".
+    expect(await elementOf("focus_window", { title: "Calculator" }, FOCUS_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("focus_window", { title: "@active" }, FOCUS_KEYS)).toEqual(WITHOUT);
+    // And the reason a fixed key list could not simply be widened to `title`: the row above sits
+    // one line from `notification_show({title})`, where `title` is a message heading. It stays
+    // WITHOUT because that tool declares no window key — the same `title`, read as nothing.
+    expect(await elementOf("notification_show", { title: "Notepad", message: "m" })).toEqual(WITHOUT);
+
+    // THE NAME IS WITHHELD FOR THE SAME REASON AND NOT A WEAKER ONE: it is not blanked, it is
+    // absent, so a caller cannot read it as "this field has no name". The pairing is the arm that
+    // carries — same element, same mocks, only the naming differs.
+    const named = await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" });
+    const unnamed = await elementOf("clipboard", { action: "read" });
+    expect(Object.keys(named as object)).toContain("name");
+    expect(Object.keys(unnamed as object)).not.toContain("name");
+    expect(unnamed).toMatchObject({ type: "Edit", hasValuePattern: true });
+
+    // A SELECTOR THE HANDLER PREFERS MEANS THE TITLE NAMED NOTHING. `terminal(action:'send')`
+    // branches on `paneId !== undefined` before it reads `windowTitle`, and a background send does
+    // not move the foreground — so the title below is stale, matches whatever happens to be in
+    // front, and was credited with that untouched window's field. The pair differs only in the
+    // pane: without it the same call is an ordinary naming and keeps its value.
+    const TERMINAL_KEYS: PostWindowArgKeys = { windowTitleKey: "windowTitle", supersedingKeys: ["paneId"] };
+    expect(await elementOf("terminal", { action: "send", input: "x", windowTitle: "Notepad", paneId: "wt:31264:133" }, TERMINAL_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("terminal", { action: "send", input: "x", windowTitle: "Notepad" }, TERMINAL_KEYS)).toEqual(WITH);
+    // An empty pane is no pane: the schemas accept `""` and the handler's `!== undefined` branch
+    // would take it, but `findTerminalWindowByPaneId("")` finds nothing and the call fails — a
+    // failure carries no value either way. Pinned as WITHOUT so the two readings cannot diverge
+    // silently later.
+    expect(await elementOf("terminal", { action: "send", input: "x", windowTitle: "Notepad", paneId: "" }, TERMINAL_KEYS)).toEqual(WITH);
+
+    // A HANDLE ARGUMENT KEEPS THE HANDLE ROAD, even when it is unusable. Whitespace-only is not a
+    // handle (`BigInt("   ")` is `0n`, and `resolveWindowTarget` refuses the call), and it must not
+    // fall through to the title beside it — that would let an unusable handle plus a stale title
+    // attach a window the call never reached. Gate 2 caught exactly this, introduced by a `.trim()`
+    // that nothing else needed.
+    expect(await elementOf("keyboard", { action: "type", text: "x", hwnd: "   ", windowTitle: "Notepad" })).toEqual(WITHOUT);
+
+    // `@active` NAMES NOTHING — against a foreground whose title actually contains it, so the
+    // guard is what answers rather than the plain `includes` failing anyway. The first fixture's
+    // title ("Notepad") made this row pass with the guard deleted (gate 2).
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "board @active — staging", isActive: true }] as never,
+    );
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "@active" })).toEqual(WITHOUT);
+    // …and the same fixture with an ordinary substring of that title DOES carry the value, so the
+    // row above is the guard talking and not a fixture that stopped matching.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "staging" })).toEqual(WITH);
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+
+    // `scroll` is the second superseding selector, and it is a CDP road rather than a pane: with a
+    // `selector` the handler scrolls a TAB and never reads the title beside it. TWO argument names
+    // for the one thing — `to_element` says `selector`, `smart` says `target` — and declaring only
+    // the first left the second attaching a foreground field to a background tab scroll.
+    const SCROLL_KEYS: PostWindowArgKeys = { windowTitleKey: "windowTitle", supersedingKeys: ["selector", "target"] };
+    expect(await elementOf("scroll", { action: "to_element", selector: "#row-9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("scroll", { action: "smart", strategy: "cdp", target: "#row-9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITHOUT);
+    expect(await elementOf("scroll", { action: "to_element", name: "row 9", windowTitle: "Notepad" }, SCROLL_KEYS)).toEqual(WITH);
+
+    // A `fixId` that retargets: the handler acts on the stored fix's window, so these arguments
+    // describe the call the caller wrote rather than the one that ran. Same default as the rich
+    // path — assume it retargets unless the registration proves otherwise.
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad", fixId: "f1" })).toEqual(WITHOUT);
+    expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad", fixId: "" })).toEqual(WITH);
+    expect(await elementOf(
+      "keyboard",
+      { action: "press", keys: "ctrl+a", windowTitle: "Notepad", fixId: "f1" },
+      { windowTitleKey: "windowTitle", hwndKey: "hwnd", fixRetargets: (a) => a.action !== "press" },
+    )).toEqual(WITH);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+  });
+
+  it("names the road that withheld the value, once per road, and never when nothing was withheld", async () => {
+    // AN ABSENCE CANNOT BE READ. `value` goes missing for reasons that have nothing to do with the
+    // naming rule — no focused element, UIA silent, a field with no value at all — and a caller who
+    // addressed the wrong window sees the same nothing as a caller whose field is empty. So each
+    // road says its own name, in `hints`, where "how this answer was produced" already lives.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    const hintsOf = async (tool: string, args: Record<string, unknown>, keys?: PostWindowArgKeys, value: string | null = "PROBE-WHY") => {
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+        focused: { name: "Notes", controlType: "Edit", value },
+      } as never);
+      const wrapped = keys
+        ? withPostState(tool, async () => ok({ ok: true }), keys)
+        : withPostState(tool, async () => ok({ ok: true }));
+      return parse(await wrapped(args)).hints as Record<string, unknown> | undefined;
+    };
+
+    // One road at a time, each with the call that takes it.
+    expect(await hintsOf("clipboard", { action: "read" }))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "@active" }))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Calculator" }))
+      .toMatchObject({ postValueWithheld: "not_the_window_you_named" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "9999" }))
+      .toMatchObject({ postValueWithheld: "not_the_window_you_named" });
+    expect(await hintsOf(
+      "terminal",
+      { action: "send", input: "x", windowTitle: "Notepad", paneId: "wt:31264:133" },
+      { windowTitleKey: "windowTitle", supersedingKeys: ["paneId"] },
+    )).toMatchObject({ postValueWithheld: "target_came_from_elsewhere" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad", fixId: "f1" }))
+      .toMatchObject({ postValueWithheld: "target_came_from_elsewhere" });
+
+    // NOT AN ORACLE ABOUT THE CONTENT. An empty field is withheld by the same rule and says so;
+    // if it did not, the reason's presence would mean "the field you cannot see is not empty" —
+    // a bit about a window the caller never named, which `hasValuePattern` does not give.
+    expect(await hintsOf("clipboard", { action: "read" }, undefined, ""))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+
+    // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE: no value pattern, no reason. Otherwise a
+    // paragraph that never had a value reads as a field something was kept from. The ELEMENT flag
+    // is still there, and this is exactly the row that shows why it is a separate field: no value
+    // means no `postValueWithheld`, while `type` goes on saying "Edit" about an element the call
+    // never touched.
+    expect(await hintsOf("clipboard", { action: "read" }, undefined, null))
+      .toEqual({ focusedElementWindowUnconfirmed: "call_named_no_window" });
+
+    // COULD NOT LOOK IS NOT DID NOT MATCH. With the enumeration answering nothing, the comparison
+    // has nothing to compare — while UIA can still produce an element through its own road. Saying
+    // `not_the_window_you_named` there tells the caller their aim was wrong about something the
+    // server never saw, and a confident wrong diagnosis is worse for them than an admitted one.
+    vi.mocked(enumWindowsInZOrder).mockImplementation(() => { throw new Error("EnumWindows failed"); });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" }))
+      .toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "4242" }))
+      .toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+    // …and a call that named no window still says so: the roads do not collapse into each other
+    // just because the foreground is unreadable.
+    expect(await hintsOf("clipboard", { action: "read" }))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+
+    // …and none of the carrying calls says anything — neither hint, because the element IS in the
+    // window they named: the 8 arms that get their value.
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toBeUndefined();
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "4242" })).toBeUndefined();
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "0x1092" })).toBeUndefined();
+    expect(await hintsOf("focus_window", { title: "Notepad" }, { windowTitleKey: "title" })).toBeUndefined();
+
+    // NO ELEMENT, NO ROAD. The flag names the road that left AN ELEMENT unconfirmed, so publishing
+    // it beside `focusedElement: null` would name a road for something that does not exist — the
+    // same error the SUCCESS-ONLY rule refuses one branch over, where a refusal publishes no
+    // element and so no reason. UIA being unavailable is the ordinary way here, not a corner.
+    // Gate 2 deleted the `focusedElement !== null` conjunct and the ENTIRE unit project stayed
+    // green, which is why this row exists.
+    const hintsWithNoElement = async (tool: string, args: Record<string, unknown>, bridge: unknown) => {
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(bridge as never);
+      return parse(await withPostState(tool, async () => ok({ ok: true }))(args)).hints;
+    };
+    expect(await hintsWithNoElement("clipboard", { action: "read" }, null)).toBeUndefined();
+    expect(await hintsWithNoElement(
+      "keyboard", { action: "type", text: "x", windowTitle: "Nope" }, { focused: null },
+    )).toBeUndefined();
+
+    // THE ELEMENT FLAG RIDES WITH EVERY WITHHELD ROW, so the two hints are one statement in two
+    // halves: the value is not yours, and neither is the element it belongs to.
+    expect(await hintsOf("clipboard", { action: "read" }))
+      .toEqual({
+        postValueWithheld: "call_named_no_window",
+        focusedElementWindowUnconfirmed: "call_named_no_window",
+      });
+
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+  });
+
+  it("merges its hint into the handler's own, rather than replacing it", async () => {
+    // `hints` is a root-hoisted key the handler may have written. This wrapper owns one field of
+    // it — `verifyDelivery` and `focusedElementSource` are other writers', and both are columns
+    // that caught a misreading on the measuring side this week.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+      focused: { name: "Notes", controlType: "Edit", value: "PROBE-WHY" },
+    } as never);
+    const handlerHints = { verifyDelivery: { channel: "postmessage" } };
+    const out = parse(await withPostState("scroll", async () => ok({ ok: true, hints: handlerHints }))({ action: "raw", amount: 3 }));
+    expect(out.hints).toEqual({
+      verifyDelivery: { channel: "postmessage" },
+      postValueWithheld: "call_named_no_window",
+      focusedElementWindowUnconfirmed: "call_named_no_window",
+    });
+
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+  });
+
+  it("drops the value when the foreground moved while the UIA read was in flight", async () => {
+    // The permission is decided against the foreground BEFORE the asynchronous element read, and
+    // the element comes from whatever holds focus when UIA answers. Alt-tab in between and the
+    // value published for the window the caller named would be the other window's field.
+    // The sequence below is the wrapper's three reads: `before`, `after`, and the re-check.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    const win = (hwnd: bigint, title: string) => [{ hwnd, title, isActive: true }] as never;
+    let seen: Record<string, unknown> | undefined;
+    const lastHints = (): Record<string, unknown> | undefined => seen;
+    const elementOfSequence = async (third: () => unknown) => {
+      vi.mocked(enumWindowsInZOrder)
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(third as never);
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+        focused: { name: "Notes", controlType: "Edit", value: "PROBE-RACE" },
+      } as never);
+      const out = parse(await withPostState("keyboard", async () => ok({ ok: true }))({
+        action: "type", text: "x", windowTitle: "Notepad",
+      }));
+      seen = out.hints as Record<string, unknown> | undefined;
+      return (out.post as Record<string, unknown>).focusedElement;
+    };
+
+    try {
+      // CONTROL: nothing moved, so the value is carried — the row below is the movement talking.
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).toHaveProperty("value", "PROBE-RACE");
+      // The foreground moved between the permission and the element.
+      expect(await elementOfSequence(() => win(9999n, "Password Manager"))).not.toHaveProperty("value");
+      // …and a foreground that cannot be read at all counts as moved.
+      expect(await elementOfSequence(() => [] as never)).not.toHaveProperty("value");
+      // THE HANDLE CAN BE THE SAME WINDOW'S NUMBER AND A DIFFERENT WINDOW. The named window exits
+      // during the lookup, Windows hands its number to whatever takes focus, and a check on the
+      // number alone says nothing moved. Same hwnd, different process.
+      // A DIFFERENT PROCESS behind the same handle — the named window exited, its number was
+      // reused. Two rows, because the cheap readings of "same window" each pass one of them: the
+      // handle alone passes both, and the process NAME passes the second, where the replacement is
+      // another instance of the same executable (a second Notepad, which nobody would call a
+      // corner case). Only pid + start time — what `identity-tracker.ts` compares — refuses both.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 77, processName: "passwords.exe", processStartTimeMs: 900 } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 99, processName: "notepad.exe", processStartTimeMs: 900 } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      // …and an identity that could not be read at all withholds too (the failure path's shape,
+      // and what an elevated window answers to a server that is not). It withholds under a
+      // DIFFERENT name: nothing moved, the server could not look. Reporting movement there would
+      // be this PR's own defect — a reason that names something that did not happen.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 0, processName: "", processStartTimeMs: 0 } as never);
+      const unreadable = await elementOfSequence(() => win(4242n, "Notepad"));
+      expect(unreadable).not.toHaveProperty("value");
+      // AND THE ELEMENT FLAG SAYS THE SAME THING, which is the whole reason it carries a reason
+      // instead of a boolean. Its first form published `focusedElementInNamedWindow: false` here:
+      // a definite "somewhere else" about a foreground that was never read, standing beside a
+      // reason that says the opposite. The row must name the road, and must not claim a location.
+      //
+      // EXHAUSTIVE, BECAUSE THE CLAIM IS ABOUT WHAT IS NOT THERE. `toMatchObject` permits extra
+      // keys, so the pair of them let the boolean come back on exactly the two roads that cannot
+      // support a location claim — the narrow reintroduction, which is the whole defect — and the
+      // suite stayed green while this comment promised otherwise (gate 2 on `314705c`, measured).
+      // A previous round deleted the assertion that named the old key, calling it a tombstone for
+      // a string nothing would write; that judgement was taken without measuring it, and it was
+      // wrong. This form needs no name: nothing may ride along.
+      expect(lastHints()).toEqual({
+        postValueWithheld: "could_not_verify_the_window",
+        focusedElementWindowUnconfirmed: "could_not_verify_the_window",
+      });
+      // THE NAME GOES WITH THE VALUE, and the flag flips with them. The first version of this
+      // guard ran only when a value existed and dropped only the value: an element with no value
+      // pattern skipped the check entirely, and one with a value kept the wrong NAME while losing
+      // the right value — a row that reads as "this is the field you named, and it is empty".
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+        focused: { name: "SOMEONE-ELSES-FIELD", controlType: "Edit", value: null },
+      } as never);
+      vi.mocked(enumWindowsInZOrder)
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(9999n, "Password Manager"));
+      const raced = parse(await withPostState("keyboard", async () => ok({ ok: true }))({
+        action: "type", text: "x", windowTitle: "Notepad",
+      }));
+      const rowNoValue = (raced.post as Record<string, unknown>).focusedElement as Record<string, unknown>;
+      expect(rowNoValue).not.toHaveProperty("name");
+      // AND IT NAMES THE ROAD, rather than asserting a location. The element was read SOMEWHERE
+      // between the two foreground readings, so "it is not in your window" is a claim this layer
+      // cannot support; "the foreground moved while I was reading" is one it measured.
+      // Exhaustive for the same reason, on the other road that cannot support a location claim.
+      // There is no `postValueWithheld` here: the element has no value pattern, so nothing was
+      // withheld from it, and the element flag is the only thing that speaks.
+      expect(raced.hints).toEqual({ focusedElementWindowUnconfirmed: "foreground_moved_during_read" });
+
+      // A DIFFERENT HANDLE SETTLES IT, even when the identity behind the new one cannot be read —
+      // which is exactly what happens when the window that took focus is elevated. Calling that
+      // "could not verify" would take back an observation that was actually made.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 0, processName: "", processStartTimeMs: 0 } as never);
+      expect(await elementOfSequence(() => win(9999n, "Elevated thing"))).not.toHaveProperty("value");
+      expect(lastHints()).toMatchObject({ postValueWithheld: "foreground_moved_during_read" });
+
+      // A DIFFERENT PID IS ALSO AN OBSERVATION, even in a row whose start time could not be read:
+      // `getProcessIdentityByPid` keeps its input pid when the rest of the lookup fails, so a
+      // nonzero pid is a real pid. Reporting "could not verify" here would discard something the
+      // server actually saw — the third round in a row where two reasons applied and the weaker
+      // one won.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 4321, processName: "", processStartTimeMs: 0 } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      expect(lastHints()).toMatchObject({ postValueWithheld: "foreground_moved_during_read" });
+
+      // The pairing: a real change of identity, both sides readable, still says movement.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 99, processName: "notepad.exe", processStartTimeMs: 901 } as never);
+      expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      expect(lastHints()).toMatchObject({ postValueWithheld: "foreground_moved_during_read" });
+      vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    } finally {
+      // RESET IN A `finally`, and reset rather than restore: the sequences above are
+      // `mockImplementationOnce` queues, so a regression that skips the third read leaves one
+      // queued — and if the failure also skipped this cleanup, the NEXT test would consume it and
+      // fail for a reason that has nothing to do with itself. Measured while mutating this very
+      // guard: two cells went red, one of them innocent.
+      vi.mocked(enumWindowsInZOrder).mockReset();
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
+      vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows ?? (() => [] as never));
+    }
+  });
+
+  it("does not keep, in the history ring, the value a refusal withheld from the response", async () => {
+    // The response side was measured (`AutoGuardBlocked` carries no focused element) and the
+    // docstring then claimed no snapshot was taken at all. It is: the snapshot runs before either
+    // branch, so the ring held the value for a call the product had just refused — including a
+    // handle naming the key locker's window, which `refuseIfExcludedTarget` exists to reject.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue({
+      focused: { name: "Notes", controlType: "Edit", value: "PROBE-REFUSED-RING" },
+    } as never);
+
+    // CONTROL: the same call, succeeding, does put the value in the ring — so a clean ring below
+    // is the refusal's doing and not an instrument that stopped recording.
+    await withPostState("keyboard", async () => ok({ ok: true }))({ action: "type", text: "x", hwnd: "4242" });
+    const okEntry = getHistorySnapshot(1)[0];
+    expect(JSON.stringify(okEntry)).toContain("PROBE-REFUSED-RING");
+
+    await withPostState("keyboard", async () => fail({ ok: false, code: "AutoGuardBlocked", error: "blocked" }))({ action: "type", text: "x", hwnd: "4242" });
+    const refusedEntry = getHistorySnapshot(1)[0];
+    expect(refusedEntry.ok).toBe(false);
+    expect(JSON.stringify(refusedEntry)).not.toContain("PROBE-REFUSED-RING");
+    expect((refusedEntry.post as Record<string, unknown>).focusedElement).toBeNull();
+
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
   });
 
   it("does NOT set advisory when the focused element is not a text input", async () => {

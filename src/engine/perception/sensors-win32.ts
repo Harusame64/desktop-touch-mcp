@@ -137,7 +137,22 @@ export function evaluateModalAbove(
  * @param hwnd      The target window HWND (decimal string)
  * @param titleKey  The lens's titleIncludes search string (for identity-tracker)
  */
-export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation[] {
+export function refreshWin32Fluents(
+  hwnd: string,
+  titleKey: string,
+  /**
+   * ADR-036 — the identity-tracker key, when it must differ from `titleKey`.
+   *
+   * `titleKey` is the lens's own match string and is used for more than the
+   * observation, so it cannot simply be replaced. A caller that resolved this
+   * window BY HANDLE passes `handleObservationKey(hwnd)` here: `lastByKey`'s
+   * question is "the window I knew by this NAME is a different handle now", and
+   * for a handle-named target the answer was an invented `process_restarted`
+   * whenever the caller alternated between two same-titled windows. Defaults to
+   * `titleKey`, so every existing caller keeps the title's question.
+   */
+  observationKey: string = titleKey,
+): Observation[] {
   const nowMs = Date.now();
   const obs: Observation[] = [];
   const hwndBig = BigInt(hwnd);
@@ -198,7 +213,7 @@ export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation
   if (rect === null) evictWindowFromCache(hwndBig);
 
   // target.identity (via identity-tracker for processStartTimeMs)
-  const { identity } = observeTarget(titleKey, hwndBig, target.title);
+  const { identity } = observeTarget(observationKey, hwndBig, target.title);
   const identValue: WindowIdentity | null = identity
     ? {
         hwnd,

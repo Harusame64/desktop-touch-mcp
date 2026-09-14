@@ -247,7 +247,24 @@ export const scrollRegistrationHandler = makeCommitWrapper(
   withRichNarration(
     "scroll",
     scrollDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
-    { windowTitleKey: "windowTitle" },
+    // `selector` supersedes: `action:'to_element'` branches on `if (selector)` into the CDP path
+    // and never reads `windowTitle` (`scroll-to-element.ts`), and `action:'smart'` reaches a tab
+    // the same way. A background CDP scroll leaves the foreground alone, so a stale title beside a
+    // selector would have credited whatever window happened to be in front (gate on `75b9268`,
+    // the same shape as `terminal`'s `paneId`).
+    //
+    // TWO NAMES FOR THE SAME THING, which is why the first version of this missed half of it:
+    // `to_element` calls the element `selector` and `smart` calls it `target` (`smart-scroll.ts`
+    // builds the CDP strategy from `target`, and `strategy:'auto'` takes the CDP road whenever
+    // `isSelectorLike(target)`). Declaring only `selector` left `scroll({action:'smart',
+    // strategy:'cdp', target, windowTitle})` attaching the foreground's field to a background tab
+    // scroll — the same defect, one argument name over (gate on `a2a9376`).
+    //
+    // Declared as PRESENCE rather than as the handler's branch condition, which is
+    // action-dependent and shared with a UIA meaning (both arguments also name a UIA element for
+    // the native path). Re-deriving that branch here would be a second copy of it, and the cost of
+    // being conservative is a withheld read-back the caller can still ask for.
+    { windowTitleKey: "windowTitle", supersedingKeys: ["selector", "target"] },
   ) as (args: Record<string, unknown>) => Promise<ToolResult>,
   "scroll",
   {

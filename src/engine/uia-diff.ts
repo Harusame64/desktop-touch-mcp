@@ -30,7 +30,33 @@ export interface ValueDeltaItem {
 }
 
 export type DiffSource = "uia" | "cdp" | "none";
-export type DiffDegraded = "chromium_sparse" | "timeout" | "window_closed" | "process_restarted" | "no_target";
+export type DiffDegraded =
+  | "chromium_sparse"
+  | "timeout"
+  | "window_closed"
+  | "process_restarted"
+  | "no_target"
+  /**
+   * ADR-036 — the call named a window by handle and more than one open window
+   * carries its title, so the before/after snapshots (which find their window
+   * BY TITLE) cannot be shown to describe the window that was acted on.
+   */
+  | "ambiguous_title"
+  /**
+   * ADR-036 — the target moved between the pre-action snapshot and the action:
+   * a modal closed, or the foreground changed. NOT `window_closed`, which says
+   * the window the caller named is gone — a caller reading that would give up
+   * on a window that is still there and merely needs reacquiring.
+   */
+  | "target_changed"
+  /**
+   * ADR-036 — the call retried with a `fixId`. The handler then acts on the
+   * window the STORED FIX names, and a fix exists because the guard found a
+   * narrower one than the argument did, so the two normally differ. The
+   * narration wrapper cannot see the fix, so its snapshots would describe the
+   * window the caller asked for while the action went somewhere else.
+   */
+  | "fix_target_unknown";
 
 export interface UiaDiffResult {
   appeared: AppearedItem[];

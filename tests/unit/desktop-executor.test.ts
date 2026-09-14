@@ -60,7 +60,7 @@ describe("createDesktopExecutor — route selection", () => {
     const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(entity({ sources: ["uia"] }), "type", "hello");
     expect(result).toBe("uia");
-    expect(deps.uiaSetValue).toHaveBeenCalledWith("App", "hello", "Start", undefined);
+    expect(deps.uiaSetValue).toHaveBeenCalledWith("App", "hello", "Start", undefined, undefined);
   });
 
   it("CDP source + click → cdpClick with selector and tabId", async () => {
@@ -86,7 +86,7 @@ describe("createDesktopExecutor — route selection", () => {
     const exec = createDesktopExecutor({ windowTitle: "PowerShell" }, deps);
     const result = await exec(entity({ sources: ["terminal"] }), "invoke", "npm test");
     expect(result).toBe("terminal");
-    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell", "npm test");
+    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell", "npm test", undefined);
   });
 
   // P0-3 (audit §8.1): terminal route only fires when text is supplied. UIA and
@@ -113,7 +113,7 @@ describe("createDesktopExecutor — route selection", () => {
     const exec = createDesktopExecutor({ windowTitle: "PowerShell" }, deps);
     const result = await exec(entity({ sources: ["terminal"] }), "type", "");
     expect(result).toBe("terminal");
-    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell", "");
+    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell", "", undefined);
   });
 
   it("visual_gpu (no UIA/CDP/terminal) + rect → mouse click at center", async () => {
@@ -146,6 +146,12 @@ describe("createDesktopExecutor — route priority", () => {
   });
 });
 
+// ADR-036 — the cells below drive an UNPINNED session (`windowTitle` only), because the mouse
+// downgrade they describe is now only for those. A call that named its window by handle ends the
+// ladder instead of pressing `entity.rect`'s centre: that is a screen point, and any window can
+// be under it. Measured on Windows 2026-09-09 — with the frame in the read but not the write,
+// every pinned press of `Close`/`Minimize` came back ok:true while the mouse landed on the rect,
+// one of them at -32000,-32000.
 describe("createDesktopExecutor — error handling and UIA fallback", () => {
   it("mouse fallback throws when entity has no rect", async () => {
     const deps = mockDeps();
@@ -158,7 +164,7 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("element not found"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click"
@@ -176,7 +182,7 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("UIA error"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     await expect(exec(entity({ sources: ["uia"], rect: undefined }), "click"))
       .rejects.toThrow("no rect for mouse fallback");
   });
@@ -202,7 +208,7 @@ describe("createDesktopExecutor — UIA click → mouse downgrade marker (#327 i
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("InvokePatternNotSupported"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click",
@@ -217,7 +223,7 @@ describe("createDesktopExecutor — UIA click → mouse downgrade marker (#327 i
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("element not found"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     await expect(exec(entity({ sources: ["uia"], rect: undefined }), "click"))
       .rejects.toThrow("no rect for mouse fallback");
   });
@@ -226,7 +232,7 @@ describe("createDesktopExecutor — UIA click → mouse downgrade marker (#327 i
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw "string-only error"; }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 0, y: 0, width: 10, height: 10 } }),
       "click",
@@ -251,14 +257,23 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
   });
 
   it("uiaSetValue throws + keyboardTypeBg succeeds → returns 'keyboard' (the E1 fix)", async () => {
+    // Pinned on purpose with `Element not found`: on the WRITE ladder "not found" still falls to the
+    // keyboard, unlike the click ladder since ADR-036 item 16. This rung exists for exactly that
+    // answer (an edit UIA cannot re-find by name, Notepad's RichEditD2DPT), so copying item 16's
+    // rule here breaks what it was built for. The keys go to the input focus of the window chosen
+    // by title, with no downgrade marker — which is the open question of item 16's family (a write
+    // that did nothing still reports ok), not settled here.
     const deps = mockDeps({
       uiaSetValue: vi.fn(async () => { throw new Error("Element not found"); }),
     });
     const exec = createDesktopExecutor({ windowTitle: "Notepad" }, deps);
     const result = await exec(entity({ sources: ["uia"] }), "type", "hello");
-    expect(result).toBe("keyboard");
+    // ADR-036 family 2 — this double has no `keyboardResolve` / `keyboardPost`, so nothing can say
+    // where the characters went. The rung posts through `keyboardTypeBg` as before and marks the
+    // success, never a plain one (internal dev/fam2-refusal/DESIGN.md §4).
+    expect(result).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
     expect(deps.uiaSetValue).toHaveBeenCalledOnce();
-    expect(deps.keyboardTypeBg).toHaveBeenCalledWith("Notepad", "hello");
+    expect(deps.keyboardTypeBg).toHaveBeenCalledWith("Notepad", "hello", undefined);
   });
 
   it("setValue action also falls through to keyboardTypeBg on uiaSetValue failure", async () => {
@@ -267,8 +282,8 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
     });
     const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(entity({ sources: ["uia"] }), "setValue", "x");
-    expect(result).toBe("keyboard");
-    expect(deps.keyboardTypeBg).toHaveBeenCalledWith("App", "x");
+    expect(result).toEqual({ kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
+    expect(deps.keyboardTypeBg).toHaveBeenCalledWith("App", "x", undefined);
   });
 
   it("both uiaSetValue AND keyboardTypeBg throw → combined error surfaces both diagnostics", async () => {
@@ -285,7 +300,7 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("InvokePattern missing"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click",
@@ -304,21 +319,25 @@ describe("createDesktopExecutor — target spec to windowTitle", () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor({ windowTitle: "Notepad" }, deps);
     await exec(entity({ sources: ["uia"] }), "invoke");
-    expect(deps.uiaClick).toHaveBeenCalledWith("Notepad", "Start", undefined);
+    expect(deps.uiaClick).toHaveBeenCalledWith("Notepad", "Start", undefined, undefined);
   });
 
-  it("uses hwnd as windowTitle fallback when windowTitle is absent", async () => {
+  // ADR-036 — this used to assert that a handle-only target became a window TITLE of "hwnd-42",
+  // i.e. the backend was asked for a window whose title contains the handle's own text. The
+  // handle now travels in its own parameter and the title falls back to "@active"; a handle
+  // that is not a number (as here) is no handle at all and is dropped rather than coerced.
+  it("a handle-only target does not put the handle in the title", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor({ hwnd: "hwnd-42" }, deps);
     await exec(entity({ sources: ["uia"] }), "invoke");
-    expect(deps.uiaClick).toHaveBeenCalledWith("hwnd-42", "Start", undefined);
+    expect(deps.uiaClick).toHaveBeenCalledWith("@active", "Start", undefined, undefined);
   });
 
   it("uses @active when target is undefined", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor(undefined, deps);
     await exec(entity({ sources: ["uia"] }), "invoke");
-    expect(deps.uiaClick).toHaveBeenCalledWith("@active", "Start", undefined);
+    expect(deps.uiaClick).toHaveBeenCalledWith("@active", "Start", undefined, undefined);
   });
 });
 
@@ -331,7 +350,7 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
       locator: { uia: { automationId: "btn-submit", name: "Submit" } },
     });
     await exec(e, "invoke");
-    expect(deps.uiaClick).toHaveBeenCalledWith("App", "Submit", "btn-submit");
+    expect(deps.uiaClick).toHaveBeenCalledWith("App", "Submit", "btn-submit", undefined);
   });
 
   it("CDP locator: uses locator.cdp.selector and locator.cdp.tabId", async () => {
@@ -364,14 +383,14 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
       locator: { terminal: { windowTitle: "PowerShell 7" } },
     });
     await exec(e, "invoke", "ls");
-    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell 7", "ls");
+    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell 7", "ls", undefined);
   });
 
   it("UIA fallback uses entity.rect first, then locator.visual.rect as secondary fallback", async () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("not found"); }),
     });
-    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     // entity.rect absent → falls back to locator.visual.rect
     const e = entity({
       sources: ["uia"],
@@ -384,7 +403,7 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
 
     // entity.rect present → entity.rect wins over locator.visual.rect
     const deps2 = mockDeps({ uiaClick: vi.fn(async () => { throw new Error("fail"); }) });
-    const exec2 = createDesktopExecutor({ hwnd: "1" }, deps2);
+    const exec2 = createDesktopExecutor({ windowTitle: "App" }, deps2);
     const e2 = entity({
       sources: ["uia"],
       rect: { x: 10, y: 20, width: 40, height: 20 }, // live rect

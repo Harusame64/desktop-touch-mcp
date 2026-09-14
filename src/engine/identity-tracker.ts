@@ -112,6 +112,22 @@ function boundedSet<K>(map: Map<K, TargetIdentity>, key: K, value: TargetIdentit
  * @param hwnd      bigint HWND
  * @param resolved  fully resolved window title
  */
+/**
+ * ADR-036 — the observation key for a window the CALLER named by handle.
+ *
+ * One function because it is one rule with two call sites now: this module's own
+ * `buildHintsForTitle`, and the guard's by-handle resolution, which reaches
+ * `observeTarget` through `refreshWin32Fluents`. Both were keying by title and
+ * both invented `process_restarted` for a caller alternating between
+ * same-titled windows; fixing one and leaving the other is how this branch has
+ * been finding the same defect twice.
+ *
+ * NUL-separated: a window title can contain anything else, `hwnd:4369` included.
+ */
+export function handleObservationKey(hwnd: bigint): string {
+  return `\u0000hwnd\u0000${hwnd}`;
+}
+
 export function observeTarget(
   keyTitle: string,
   hwnd: bigint,
@@ -296,7 +312,35 @@ export function toTargetHints(ident: TargetIdentity): TargetHints {
  *
  * Returns null when no window matches — caller should leave hints empty in that case.
  */
-export function buildHintsForTitle(partialTitle: string): {
+export function buildHintsForTitle(
+  partialTitle: string,
+  /**
+   * ADR-036 — the handle the caller named, when they named one. These hints
+   * report which window was acted on and hand back a handle for the caller to
+   * reuse, so resolving them by title while the action went to a named handle
+   * described the wrong window: with two same-titled windows the caller was
+   * told the sibling's identity and cache state. In `get_ui_elements` the
+   * returned handle also SCOPES the read, so there the mismatch changed what
+   * was read, not just what was reported.
+   *
+   * A handle that is not in the enumeration yields no hints rather than
+   * falling back to a title match — no answer beats the wrong window's answer.
+   */
+  pinnedHwnd?: bigint,
+  /**
+   * ADR-036 — did the CALLER name that handle, or did we resolve one for them?
+   *
+   * It decides the observation key below and nothing else, and it is a separate
+   * question from `pinnedHwnd` being set: `resolveWindowTarget` hands back a
+   * handle for `windowTitle: "@active"` and for the dialog rescue too, and those
+   * callers named a TITLE. Keying those by handle made `@active` — the shape the
+   * tool's own examples teach — blind to `process_restarted`, which is this
+   * ADR's own subject. The predicate the handlers already use for the guard
+   * descriptor is the same one: the PUBLIC `hwnd` argument, not `resolvedWin`
+   * being non-null.
+   */
+  callerNamedHandle = false,
+): {
   target: TargetHints;
   caches: CacheStateHints;
   hwnd: bigint;
@@ -304,12 +348,51 @@ export function buildHintsForTitle(partialTitle: string): {
   let resolved: { hwnd: bigint; title: string } | null = null;
   try {
     const wins = enumWindowsInZOrder();
-    const q = partialTitle.toLowerCase();
-    const found = wins.find((w) => w.title.toLowerCase().includes(q));
-    if (found) resolved = { hwnd: found.hwnd, title: found.title };
+    if (pinnedHwnd !== undefined) {
+      const pinned = wins.find((w) => w.hwnd === pinnedHwnd);
+      if (pinned) resolved = { hwnd: pinned.hwnd, title: pinned.title };
+    } else {
+      const q = partialTitle.toLowerCase();
+      const found = wins.find((w) => w.title.toLowerCase().includes(q));
+      if (found) resolved = { hwnd: found.hwnd, title: found.title };
+    }
   } catch { /* ignore */ }
   if (!resolved) return null;
-  const obs = observeTarget(partialTitle, resolved.hwnd, resolved.title);
+  // The observation key follows how the window was NAMED by the caller, not what
+  // this function resolved. `lastByKey`'s whole question is "the window I knew by
+  // this name is a different handle now — did it restart, or is there a second
+  // instance?", and that question only exists for a title. A caller who named a
+  // HANDLE named one window; keyed by the query instead, alternating between two
+  // same-titled windows filed both under one slot, and observing A after B
+  // closed reported A as `process_restarted` — an invalidation that never
+  // happened, which then leaks into the next screenshot's cache state.
+  //
+  // Keyed on `pinnedHwnd` being set instead, this took the answer away from
+  // `@active` and the dialog rescue, whose callers named a title and for whom
+  // the question is live. That was purely subtractive — measured, the pinned
+  // path can then emit only `hwnd_reused` — and `@active` is the shape the
+  // tool's own examples teach.
+  //
+  // `lastByHwnd` still answers the question that does apply to a handle
+  // (`hwnd_reused`), and it is untouched. NUL-separated because a window title
+  // can contain anything except that.
+  // BOTH halves, and derived here rather than trusted from the caller.
+  // `callerNamedHandle` is a fact about the CALL; the key is a fact about this
+  // OBSERVATION, and they come apart wherever a handle-passing caller reaches a
+  // branch that resolved by title anyway — `set_element_value`'s channels 2 and
+  // 3, its all-channels-failed path, the outer catch's debt payment (whose own
+  // comment says the debt stops naming the handle there), and `click_element`
+  // under `fixId`. Measured on all five: `pinnedHwnd` undefined,
+  // `callerNamedHandle` true, and the observation filed under a handle slot for
+  // a handle nobody named — which is the subtraction the commit above this one
+  // is titled after, put back by it.
+  const obs = observeTarget(
+    callerNamedHandle && pinnedHwnd !== undefined
+      ? handleObservationKey(resolved.hwnd)
+      : partialTitle,
+    resolved.hwnd,
+    resolved.title,
+  );
   return {
     target: toTargetHints(obs.identity),
     caches: buildCacheStateHints(

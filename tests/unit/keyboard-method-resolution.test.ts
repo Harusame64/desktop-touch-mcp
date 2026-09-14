@@ -210,4 +210,56 @@ describe("resolveEffectiveInputMethod (Focus Leash Phase A)", () => {
       expect(resolveEffectiveInputMethod("auto", "PowerShell")).toBe("auto");
     });
   });
+
+  // ── ADR-036 I-4: the class is read off the NAMED window ──────────────────
+  //
+  // This function decides whether a write goes out through the background
+  // channel at all, and it decided that from the first window whose title
+  // contained the needle. With two same-titled windows that is a coin flip
+  // between an app and a console — so a handle-pinned call could be routed by a
+  // sibling's window class.
+  describe("auto + an explicit handle (ADR-036)", () => {
+    const PINNED = 0x2222n;
+
+    it("reads the class of the pinned handle, not of the first title match", () => {
+      vi.mocked(enumWindowsInZOrder).mockReturnValue([
+        fakeWindow("Command Prompt", 0x1111n),
+        fakeWindow("Command Prompt", PINNED),
+      ]);
+      // The enumeration must not be consulted at all: the handle is the answer.
+      vi.mocked(getWindowClassName).mockImplementation((h: bigint) =>
+        h === PINNED ? "ConsoleWindowClass" : "Chrome_WidgetWin_1",
+      );
+      expect(resolveEffectiveInputMethod("auto", "Command Prompt", PINNED)).toBe(
+        "background-auto",
+      );
+      expect(enumWindowsInZOrder).not.toHaveBeenCalled();
+      expect(getWindowClassName).toHaveBeenCalledWith(PINNED);
+    });
+
+    it("stays on 'auto' when the pinned window is not a console, whatever its siblings are", () => {
+      vi.mocked(enumWindowsInZOrder).mockReturnValue([
+        fakeWindow("Command Prompt", 0x1111n),
+      ]);
+      vi.mocked(getWindowClassName).mockImplementation((h: bigint) =>
+        h === PINNED ? "Chrome_WidgetWin_1" : "ConsoleWindowClass",
+      );
+      expect(resolveEffectiveInputMethod("auto", "Command Prompt", PINNED)).toBe("auto");
+    });
+
+    it("getWindowClassName throws on the pinned handle → 'auto' (no crash)", () => {
+      vi.mocked(getWindowClassName).mockImplementation(() => {
+        throw new Error("boom");
+      });
+      expect(resolveEffectiveInputMethod("auto", "Command Prompt", PINNED)).toBe("auto");
+    });
+
+    it("DTM_BG_AUTO=1 still wins over the handle probe", () => {
+      vi.mocked(isBgAutoEnabled).mockReturnValue(true);
+      expect(resolveEffectiveInputMethod("auto", "Command Prompt", PINNED)).toBe(
+        "background-auto",
+      );
+      expect(getWindowClassName).not.toHaveBeenCalled();
+    });
+  });
 });

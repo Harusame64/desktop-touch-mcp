@@ -200,6 +200,36 @@ pub fn uia_get_focused_element() -> AsyncTask<UiaGetFocusedElementTask> {
     AsyncTask::new(UiaGetFocusedElementTask)
 }
 
+/// ADR-036 H2 — what the native UIA engine has done in this process. Three facts:
+/// - how many times its COM thread was started;
+/// - how many tasks were sent to it;
+/// - whether `UIAutomationCore.dll` is loaded at all.
+/// The first two are kept by the engine (`uia::thread`). The third asks the OS and owes nothing to this
+/// crate's bookkeeping. So the two can disagree, and a disagreement is itself a finding.
+#[cfg(windows)]
+#[napi(object)]
+pub struct NativeUiaEvidence {
+    pub com_thread_starts: u32,
+    pub tasks_sent: u32,
+    pub uia_core_loaded: bool,
+}
+
+/// See [`NativeUiaEvidence`]. Sync and cheap: two atomic loads and one `GetModuleHandleW`.
+#[cfg(windows)]
+#[napi]
+pub fn uia_engine_evidence() -> Result<NativeUiaEvidence> {
+    win32::safety::napi_safe_call("uia_engine_evidence", || {
+        let (com_thread_starts, tasks_sent) = uia::thread::engine_evidence();
+        // SAFETY: GetModuleHandleW only reads the loader's module list. It loads nothing, and it takes
+        // no reference that the caller must release.
+        let uia_core_loaded = unsafe {
+            windows::Win32::System::LibraryLoader::GetModuleHandleW(windows::core::w!("UIAutomationCore.dll"))
+        }
+        .is_ok();
+        Ok(NativeUiaEvidence { com_thread_starts, tasks_sent, uia_core_loaded })
+    })
+}
+
 // ─── Scroll ─────────────────────────────────────────────────────────────────
 
 #[cfg(windows)]

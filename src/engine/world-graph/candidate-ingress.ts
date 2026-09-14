@@ -20,6 +20,8 @@
  */
 
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
+import type { TargetSpec } from "./session-registry.js";
+import type { WindowIdentity, AimOrigin } from "../aim.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,9 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *
  * Warning codes are stable machine-readable strings (not prose):
  *   uia_provider_failed       — UIA call threw or returned an error
+ *   uia_frame_names_synthesized — the window frame came from the MSAA synthesis, so its labels
+ *                             are that vocabulary (`Close`, not `閉じる`) — ADR-036
+ *   uia_tree_truncated        — the walk ran out of time; the entities are a prefix of the window
  *   cdp_provider_failed       — CDP evaluateInTab failed or timed out
  *   terminal_provider_failed  — getTextViaTextPattern threw
  *   visual_provider_unavailable — visual GPU lane is a Phase 3 stub
@@ -42,6 +47,61 @@ export interface ProviderResult {
   candidates: UiEntityCandidate[];
   /** Non-fatal diagnostic codes. Empty means all providers succeeded. */
   warnings: string[];
+  /**
+   * ADR-036 — the target these candidates were actually read from, after resolution.
+   *
+   * `composeCandidates` resolves what the caller sent (`@active` and a bare call become a handle
+   * and a title; a handle alone gains the title) and then reads every provider against THAT. The
+   * session used to keep only what the caller sent, so a bare `desktop_discover()` left the write
+   * path with no window at all while the view it had just returned described one — measured on the
+   * real machine 2026-09-09: providers scoped to `2624042`, session stored `null`, the executor was
+   * handed `"@active"` as a title and pressed a remembered coordinate instead.
+   *
+   * Carrying it here keeps the aim and the view the same window BY CONSTRUCTION, including on a
+   * cache hit: a stale entry hands back the target its candidates came from, which is the one the
+   * lease describes, rather than whatever is in the foreground now.
+   *
+   * Optional because a provider that does not resolve anything (a direct `CandidateProvider`, a
+   * test double) has nothing to say here, and saying nothing must stay different from saying
+   * "no window".
+   */
+  target?: TargetSpec;
+  /**
+   * ADR-036 — who owned that window WHEN THESE CANDIDATES WERE READ.
+   *
+   * Read here rather than when the session stores the result, because on a cache hit those are
+   * different moments: a window that closed and had its handle recycled in between would be read
+   * at store time as the baseline, the later comparison would answer "same", and the guard would
+   * wave through an action against a window nobody discovered (gate 1, 2026-09-09). The identity
+   * is evidence about the observation, so it is taken with it and cached with it — the
+   * specification files it as a fluent of the entity for the same reason.
+   */
+  identity?: WindowIdentity;
+  /**
+   * ADR-036 — whether the identity was LOOKED FOR, as opposed to found.
+   *
+   * `identity: undefined` has two meanings and they must not be merged: this path does not read
+   * identities at all (the direct `CandidateProvider`), or it read and the question could not be
+   * answered (no native binding, the window already gone). The first may be repaired by reading
+   * one later; the second may NOT — a later read describes whoever owns the handle NOW, which on a
+   * cache hit can be the window that inherited it, and recording that as the baseline makes the
+   * act-time comparison answer "same" about a stranger (PR 側 codex, 2026-09-09).
+   *
+   * So the flag says which of the two it is, rather than leaving the reader to infer it from an
+   * absence — the same rule the probe had to learn twice today.
+   */
+  identityRead?: boolean;
+  /**
+   * ADR-036 item 5 — where that window WAS when these candidates were read, or the fact that it
+   * would not hold still while they were being read.
+   *
+   * Carried with the candidates for the same reason the identity is: every rect in the snapshot is
+   * a screen coordinate, and the window origin they were measured against is what makes them
+   * meaningful later. Read at store time instead, a cache hit would pair coordinates from one
+   * moment with an origin from another, and the correction built on the difference would move the
+   * press by a delta that never happened.
+   */
+  origin?: AimOrigin;
 }
 
 export interface CandidateIngress {
@@ -70,6 +130,14 @@ export interface IngressEventSource {
 interface CacheEntry {
   candidates: UiEntityCandidate[];
   warnings: string[];
+  /** ADR-036 — the resolved target these candidates describe; see `ProviderResult.target`. */
+  target?: TargetSpec;
+  /** ADR-036 — the identity read at the same moment; see `ProviderResult.identity`. */
+  identity?: WindowIdentity;
+  /** ADR-036 — whether it was looked for; see `ProviderResult.identityRead`. */
+  identityRead?: boolean;
+  /** ADR-036 item 5 — the window origin those candidates were measured against. */
+  origin?: AimOrigin;
   fetchedAtMs: number;
   dirty: boolean;
 }
@@ -115,7 +183,7 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings };
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
@@ -123,6 +191,10 @@ export class SnapshotIngress implements CandidateIngress {
       this.cache.set(targetKey, {
         candidates: result.candidates,
         warnings: result.warnings,
+        target: result.target,
+        identity: result.identity,
+        identityRead: result.identityRead,
+        origin: result.origin,
         fetchedAtMs: now,
         dirty: false,
       });
@@ -132,7 +204,7 @@ export class SnapshotIngress implements CandidateIngress {
       // Stale cache fallback — mark dirty so next call retries.
       if (entry) {
         entry.dirty = true;
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"] };
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin };
       }
       return { candidates: [], warnings: ["ingress_fetch_error"] };
     }

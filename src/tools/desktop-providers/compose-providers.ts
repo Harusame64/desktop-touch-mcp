@@ -18,6 +18,9 @@
  *   partial_results_only              — primary provider returned 0 entities; fallback attempted
  *   visual_not_attempted              — (H4) visual lane was unready (unavailable/warming) on a blind target
  *   visual_attempted_empty            — (H4) visual lane ran warm but produced no candidates on a blind target
+ *   visual_backend_cannot_recognise   — the attached backend replays injected snapshots and looks
+ *                                       at nothing (the default build), so an empty answer from it
+ *                                       is not evidence about the window
  *   visual_attempted_empty_cdp_fallback — (H4) CDP failed and visual also empty (browser target)
  */
 
@@ -30,6 +33,9 @@ import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
+import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
+import { toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
+import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd } from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -51,7 +57,18 @@ async function fetchVisualCandidatesWithRetry(
   if (!isTransient) return first;
 
   await new Promise<void>((resolve) => setTimeout(resolve, VISUAL_RETRY_DELAY_MS));
-  return fetchVisualCandidates(target);
+  return fetchVisualCandidates(target, 2);
+}
+
+/**
+ * ADR-036 item 14a — a lane that REJECTED never reached its own return, so its row was never
+ * written. Every provider catches inside its body; this is the one road around those catches, and
+ * it used to answer with a warning and no row — the same "nothing here" a lane nobody called prints.
+ * The fallback warning is the one each call site always carried.
+ */
+function settledLane(lane: ProbeLane, s: PromiseSettledResult<ProviderResult>, fallbackWarning: string): ProviderResult {
+  if (s.status === "fulfilled") return s.value;
+  return probeLane(lane, "failed", { why: "rejected" }, { candidates: [], warnings: [fallbackWarning] });
 }
 
 /**
@@ -128,7 +145,14 @@ function applyVisualEscalation(
   const extra: string[] = [];
   const uiaBlind      = primaryResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w));
   const cdpFailed     = primaryResult.warnings.includes("cdp_provider_failed");
-  const visualUnready = visualResult.warnings.some((w) => VISUAL_UNREADY_WARNINGS.has(w));
+  // "Cannot recognise" joins "unready" HERE and nowhere else. Rule-A' below would otherwise report
+  // `visual_attempted_empty` — *the lane ran warm and produced no candidates* — about a backend that
+  // never looked at the window, which is the claim this whole change exists to stop making. It is
+  // deliberately not added to `VISUAL_UNREADY_WARNINGS`: that set is also read by `desktop.ts` and
+  // by `lastDiscoverVisualOnly`, where "not ready yet, retry" is the meaning, and this state never
+  // becomes ready by waiting.
+  const visualBlind   = visualResult.warnings.includes("visual_backend_cannot_recognise");
+  const visualUnready = visualResult.warnings.some((w) => VISUAL_UNREADY_WARNINGS.has(w)) || visualBlind;
   const visualEmpty   = visualResult.candidates.length === 0;
 
   // Rule-A: uia blind + visual backend unready → visual_not_attempted
@@ -139,11 +163,40 @@ function applyVisualEscalation(
   if (primaryKind === "uia" && uiaBlind && !visualUnready && visualEmpty) {
     extra.push("visual_attempted_empty");
   }
-  // Rule-C: browser CDP failed + visual also empty → visual_attempted_empty_cdp_fallback
-  if (primaryKind === "browser" && cdpFailed && visualEmpty) {
+  // Rule-C: browser CDP failed + visual also empty → visual_attempted_empty_cdp_fallback.
+  //
+  // `!visualBlind` for the same reason Rule-A' carries it: "ran and found no candidates" is a claim
+  // about an attempt, and a backend that recognises nothing made none. Without it the response said
+  // both — the backend cannot inspect the window, AND it inspected and found nothing — with advice
+  // to retry (PR 側 codex). The blind notice rides on its own, and it is news here because the
+  // visual lane was the fallback CDP had just handed off to.
+  if (primaryKind === "browser" && cdpFailed && visualEmpty && !visualBlind) {
     extra.push("visual_attempted_empty_cdp_fallback");
   }
   return extra;
+}
+
+/**
+ * ADR-036 — a fact about the deployment is not a warning about THIS read.
+ *
+ * `visual_backend_cannot_recognise` is true of every call in a default build: the attached backend
+ * replays injected snapshots and looks at nothing. Emitted as the provider sees it, it therefore
+ * appears on **every `desktop_discover` response of every user** — measured on a real machine
+ * (win2, 2026-09-10), where a window whose UIA tree answered completely, with nine entities, carried
+ * the same warning and the same constraint as one whose buttons are painted.
+ *
+ * That is the difference between a capability and a warning. It is newsworthy only where the visual
+ * lane was the one that could have answered — a target the primary lane came back blind on — and
+ * there the composer's own rules already fire. Everywhere else it is noise attached to a healthy
+ * result, and noise on every response is how a caller learns to stop reading warnings.
+ *
+ * The provider still reports it, because the composer needs to see it to make this decision; what
+ * changes is that the caller is not told about a lane whose silence cost them nothing.
+ */
+function withoutUnneededBlindNotice(result: ProviderResult, visualWasNeeded: boolean): ProviderResult {
+  if (visualWasNeeded) return result;
+  if (!result.warnings.includes("visual_backend_cannot_recognise")) return result;
+  return { ...result, warnings: result.warnings.filter((w) => w !== "visual_backend_cannot_recognise") };
 }
 
 function withPrependedWarnings(result: ProviderResult, warnings: string[]): ProviderResult {
@@ -165,6 +218,24 @@ async function normalizeTarget(
   if (target?.tabId) {
     return { target, warnings: [] };
   }
+
+  // PR 側 codex asked for the opposite of what is here — refuse a `hwnd` this cannot read, rather
+  // than falling through to the title (or, with no title, to the FOREGROUND window) and returning
+  // actionable entities for a window the caller did not name. The diagnosis is right: the session
+  // keeps the unreadable string, `parseTargetHwnd` reads it as `undefined` again at act time, and
+  // the act goes out unpinned, so a discover that NAMED a window can end in a press on whichever
+  // window resolution picks.
+  //
+  // The refusal was written, and it broke six tests across three files (`benchmark-gates`,
+  // `poc-backend`, `dirty-signal`, 2026-09-09): the visual / GPU lanes address targets like
+  // `{ hwnd: "hwnd-game" }`, where the field is an OPAQUE KEY for a snapshot and never a Win32
+  // handle. `TargetSpec.hwnd` is `string` and carries both meanings, so "cannot read it as a
+  // handle" is not the same fact as "the caller mistyped a handle", and refusing on the first
+  // takes the visual lane down.
+  //
+  // Left as it is deliberately, with the hole named instead of half-closed: the fix is to stop one
+  // field meaning two things (ADR-036's "make the aim a value"), not to guess which meaning was
+  // intended. Recorded in `desktop-touch-mcp-internal` ADR-036 under what is left.
 
   if (target?.hwnd && !target.windowTitle) {
     try {
@@ -236,34 +307,155 @@ export async function composeCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
   const normalized = await normalizeTarget(target);
+  // ADR-036 probe — the seam the session never used to see. What comes out of here is what every
+  // provider reads; what the session stored was what went in. When a bare `desktop_discover()`
+  // resolves the foreground window, `in` is empty and `out` names a handle — and that handle was
+  // the one the write path did NOT get (measured, 2026-09-09).
+  probeAim("compose.normalize", {
+    in: target ?? null,
+    out: normalized.target ?? null,
+    warnings: normalized.warnings,
+  });
   if (!normalized.target) {
+    // Nothing resolved: no candidates, and — deliberately — no `target`. "We could not work out
+    // which window" must not arrive as "the window is nothing" (ADR-036).
     return { candidates: [], warnings: normalized.warnings };
   }
-  target = normalized.target;
+
+  // ADR-036 — the resolution and the warnings it produced are applied HERE, once, rather than at
+  // each lane's return. A lane added later inherits both instead of having to remember them,
+  // which is the disease this ADR is about: identity that is carried by hand gets dropped by hand.
+  // ADR-036 — the identity is taken HERE, with the read, not later when the session files it. On a
+  // cache hit those are different moments, and a handle recycled in between would be baselined
+  // against its new owner (gate 1, 2026-09-09). Taken before the lanes run rather than after, so
+  // it describes the window they are about to be pointed at.
+  const identity = readIdentityForTarget(normalized.target);
+  // ADR-036 item 5 — and where that window was, so a press taken from these coordinates can be
+  // moved with the window instead of staying where the screen used to be.
+  //
+  // Read TWICE, around the lanes, and kept only when the two agree. The lanes take seconds, and a
+  // window that moves while they run leaves the candidates describing its new position and the
+  // origin describing its old one: the correction would then treat a move that happened BEFORE the
+  // coordinates were measured as one that happened after, and shift an already-correct point a
+  // second time (gate 1, 2026-09-09). That is a wrong press this rung would have introduced, in a
+  // case the code got right before it existed.
+  //
+  // What two samples establish is that the window was in the same place at both ENDS of the read —
+  // not that it held still throughout. A window that moves away and returns to the same rectangle
+  // reads as stable, and candidates captured at the intermediate position are then pressed without
+  // correction: the blind press this rung is narrowing, surviving in a case it cannot see (gate 1,
+  // fifth pass). Closing that needs each observation to carry the origin it was measured against,
+  // which is lane work — recorded in ADR-036 item 5 rather than approximated with a third sample
+  // that would prove no more than these two.
+  //
+  // A disagreement is not a value to repair — there is no single origin those coordinates were all
+  // measured against — so the aim records none and no correction runs. Unlike the identity beside
+  // it, which fails SAFE when it goes stale (the act-time comparison answers "changed" and the act
+  // is refused), a stale origin fails dangerous, which is why only this one is read twice.
+  const originBefore = readOriginRectForTarget(normalized.target);
+  const result = await composeCandidatesInner(normalized.target);
+  const originAfter = readOriginRectForTarget(normalized.target);
+  const origin: AimOrigin | undefined =
+    originBefore && originAfter
+      ? (sameRect(originBefore, originAfter)
+          ? { kind: "measured", rect: originBefore }
+          // Positive evidence, not a gap: these coordinates were measured across more than one
+          // window position and no single origin describes them. Recorded as a value so the act
+          // path can refuse on it — an absent rectangle would read as "nobody looked", which costs
+          // the correction and lets the blind press through (gate 1, third pass).
+          : { kind: "moved_during_read" })
+      // Neither read could answer, or the window went away mid-read: no evidence either way, and
+      // no evidence may not become a refusal.
+      : undefined;
+  return {
+    ...withPrependedWarnings(result, normalized.warnings),
+    target: normalized.target,
+    identity,
+    origin,
+    // Looked for, whether or not it was found. A later read cannot stand in for this one: it would
+    // describe whoever owns the handle at that later moment.
+    identityRead: true,
+  };
+}
+
+/**
+ * ADR-036 — who owns the target's window right now, or nothing when the question cannot be asked.
+ *
+ * Read through `win32` directly rather than through `identity-tracker.ts`: that module's entry
+ * point RECORDS what it sees, and a read that updates a baseline compares the world against
+ * itself. A zeroed identity (`pid: 0`) means "could not ask" — a missing native binding, a window
+ * already gone — and becomes `undefined` here, because absence has to stay distinguishable from a
+ * value.
+ */
+export function readIdentityForTarget(target: TargetSpec): WindowIdentity | undefined {
+  const hwnd = toAim(target).hwnd;
+  if (hwnd === undefined) return undefined;
+  // Through the shared reader, not a fourth copy of the same fifteen lines. The title in
+  // particular: this side used to file `target.windowTitle`, which is the caller's search string
+  // and not the window's title at all.
+  return readWindowIdentityFields(hwnd, {
+    identity: getWindowIdentity,
+    className: getWindowClassName,
+    title: getWindowTitleW,
+  });
+}
+
+/**
+ * ADR-036 item 5 — the aimed window's rectangle at the moment these candidates are read.
+ *
+ * `null` from the native read is two facts at once — no such window, and this build cannot ask —
+ * and both become nothing here. A missing origin means the homing correction does not run, which
+ * is the behaviour that existed before it did; inventing one from a later read would move a press
+ * by a delta nobody measured.
+ */
+function readOriginRectForTarget(target: TargetSpec): WindowRect | undefined {
+  const hwnd = toAim(target).hwnd;
+  if (hwnd === undefined) return undefined;
+  try {
+    return getWindowRectByHwnd(hwnd) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Two samples of the same window, taken around the lanes.
+ *
+ * Both sides are required to BE answers, and that is enforced by the caller rather than repeated
+ * here: the only call site is inside `originBefore && originAfter`, so a guard for the undefined
+ * case could never fire and CodeQL was right to call it useless. The rule it stood for — a read
+ * that failed on either end leaves the question open, and an open question is not agreement — is
+ * kept where it is actually decided.
+ */
+function sameRect(a: WindowRect, b: WindowRect): boolean {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+/** The provider fan-out, against a target that is already resolved. */
+async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResult> {
 
   if (isBrowserTarget(target)) {
     const [browser, visual] = await Promise.allSettled([
       fetchBrowserCandidates(target),
       fetchVisualCandidatesWithRetry(target),
     ]);
-    const browserResult = browser.status === "fulfilled"
-      ? browser.value
-      : { candidates: [], warnings: ["cdp_provider_failed"] };
-    const visualResult  = visual.status  === "fulfilled"
-      ? visual.value
-      : { candidates: [], warnings: ["visual_provider_unavailable"] };
+    const browserResult = settledLane("cdp", browser, "cdp_provider_failed");
+    const visualResult  = settledLane("visual_gpu", visual, "visual_provider_unavailable");
 
-    const merged     = mergeResults([browserResult, visualResult]);
+    // The visual lane is the FALLBACK here, so its incapacity is news exactly when CDP failed —
+    // the same test Rule-C uses below. A successful CDP discovery does not need to hear about it,
+    // and the browser branch was left out of the first version of this filter (PR 側 codex).
+    const merged     = withoutUnneededBlindNotice(
+      mergeResults([browserResult, visualResult]),
+      browserResult.warnings.includes("cdp_provider_failed"),
+    );
     const escalation = applyVisualEscalation(browserResult, visualResult, "browser");
     const extra      = escalation.filter((w) => !merged.warnings.includes(w));
     const finalMerged = extra.length > 0
       ? { ...merged, warnings: [...merged.warnings, ...extra] }
       : merged;
 
-    return withPrependedWarnings(
-      addWarningIfPartial(finalMerged, browserResult.candidates.length),
-      normalized.warnings
-    );
+    return addWarningIfPartial(finalMerged, browserResult.candidates.length);
   }
 
   if (isTerminalTarget(target)) {
@@ -272,16 +464,20 @@ export async function composeCandidates(
       fetchUiaCandidates(target),
       fetchVisualCandidatesWithRetry(target),
     ]);
-    const termResult   = terminal.status === "fulfilled" ? terminal.value : { candidates: [], warnings: ["terminal_provider_failed"] };
-    const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
-    const visualResult = visual.status   === "fulfilled" ? visual.value   : { candidates: [], warnings: ["visual_provider_unavailable"] };
+    const termResult   = settledLane("terminal", terminal, "terminal_provider_failed");
+    const uiaResult    = settledLane("uia", uia, "uia_provider_failed");
+    const visualResult = settledLane("visual_gpu", visual, "visual_provider_unavailable");
 
-    return withPrependedWarnings(
-      addWarningIfPartial(
+    // Terminal reads its own buffer; the visual lane is additive and nobody falls back to it here,
+    // so its incapacity is never news on this road. Left out of the first version of the filter for
+    // the same reason the browser branch was: the fix was written where the case had been measured
+    // and not where the warning is merged (PR 側 codex).
+    return addWarningIfPartial(
+      withoutUnneededBlindNotice(
         mergeResults([termResult, uiaResult, visualResult]),
-        termResult.candidates.length
+        termResult.warnings.includes("terminal_provider_failed"),
       ),
-      normalized.warnings
+      termResult.candidates.length
     );
   }
 
@@ -290,8 +486,8 @@ export async function composeCandidates(
     fetchUiaCandidates(target),
     fetchVisualCandidatesWithRetry(target),
   ]);
-  const uiaResult    = uia.status    === "fulfilled" ? uia.value    : { candidates: [], warnings: ["uia_provider_failed"] };
-  const visualResult = visual.status === "fulfilled" ? visual.value : { candidates: [], warnings: ["visual_provider_unavailable"] };
+  const uiaResult    = settledLane("uia", uia, "uia_provider_failed");
+  const visualResult = settledLane("visual_gpu", visual, "visual_provider_unavailable");
 
   // OCR lane: additive, UIA-blind targets only.
   // Builds a label dictionary from UIA candidates for snap-correction inside runSomPipeline.
@@ -302,18 +498,17 @@ export async function composeCandidates(
         uiaResult.candidates
           .filter((c) => c.label && c.rect)
           .map((c) => ({ label: c.label!, rect: c.rect })),
-      ).catch((): ProviderResult => ({ candidates: [], warnings: ["ocr_provider_failed"] }))
-    : { candidates: [], warnings: [] };
+      ).catch((): ProviderResult => probeLane("ocr", "failed", { why: "rejected" }, { candidates: [], warnings: ["ocr_provider_failed"] }))
+    // Not called, and said so: on this road "OCR did not look" is a decision about THIS window, and
+    // without a row it prints like a lane nobody instrumented (item 14a).
+    : probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
 
-  const merged     = mergeResults([uiaResult, visualResult, ocrResult]);
+  const merged     = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaBlindForOcr);
   const escalation = applyVisualEscalation(uiaResult, visualResult, "uia");
   const extra      = escalation.filter((w) => !merged.warnings.includes(w));
   const finalMerged = extra.length > 0
     ? { ...merged, warnings: [...merged.warnings, ...extra] }
     : merged;
 
-  return withPrependedWarnings(
-    addWarningIfPartial(finalMerged, uiaResult.candidates.length),
-    normalized.warnings
-  );
+  return addWarningIfPartial(finalMerged, uiaResult.candidates.length);
 }

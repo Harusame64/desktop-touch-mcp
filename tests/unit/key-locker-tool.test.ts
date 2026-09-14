@@ -5,10 +5,11 @@
  * no-secret-in-output invariant.
  */
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { STUB_TOOL_CATALOG } from "../../src/stub-tool-catalog.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { KeyLockerHost } from "../../src/engine/key-locker/key-locker-host.js";
+import type { KeyLockerHost } from "../../src/engine/key-locker-host.js";
 import { KeyLockerManager } from "../../src/engine/key-locker/key-locker-manager.js";
 import { BindingStore } from "../../src/engine/key-locker/binding-store.js";
 import { keyLockerHandler, __setKeyLockerManagerForTest, __setSshExecForTest } from "../../src/tools/key-locker-tool.js";
@@ -227,5 +228,99 @@ describe("key_locker — kill switch", () => {
     const r = await call({ action: "save", uri: "sudo://host/root" });
     expect(r.code).toBe("KeyLockerDisabled");
     expect(mgr.captureCalls).toHaveLength(0);
+  });
+});
+
+describe("the shipped promise says what it covers", () => {
+  it("never carries the NEVER-shown promise without the clause that scopes it, nor that clause without the behaviour it points at", () => {
+    // A TEXT PIN, and it pins a PAIRING rather than a sentence — which is the only part
+    // of this a machine can hold. The promise was already scoped by its subject
+    // ("Secrets are entered once into the locker's own secure dialog … they are NEVER
+    // shown"), and a reader generalised it anyway: "this product does not show
+    // passwords". That is not a promise the product keeps —
+    // `desktop_state.focusedElement.value` returns the value of a focused PLAIN field,
+    // measured on Windows at all four corners (2026-09-13). The description now says
+    // where the promise stops, and the clause is exactly what a later pass trimming
+    // tokens would delete, leaving the broad reading with nothing to check it.
+    //
+    // READ FROM THE ASSEMBLED CATALOGUE, NOT FROM THE SOURCE. The first version grepped
+    // `key-locker-tool.ts` and could never have failed: the description is built by
+    // string concatenation, so "NEVER shown to the assistant or sent to this tool"
+    // exists nowhere in that file — it spans a `" +` boundary. An anchor that matches
+    // nothing is a cell that cannot go red, and this is the third time that shape has
+    // appeared in this sequence. The generated catalogue holds the assembled text, and
+    // `check:stub-catalog` (CI) regenerates and diffs it, so catalogue == source is
+    // enforced elsewhere and reading the catalogue is reading what ships.
+    //
+    // WHAT IT CATCHES AND WHAT IT CANNOT, measured rather than guessed — and corrected
+    // twice, because an inventory a reader trusts cannot afford to be wrong. Deleting
+    // the clause, DETACHING it from the promise, and rewording either all go red; the
+    // rewording case for a mechanical reason, which is the point — whoever rewords has
+    // to come here, and that is the moment to re-read whether the new words still say
+    // where the promise stops.
+    //
+    // It does NOT catch a source edit that was never regenerated. This cell reads the
+    // catalogue, so a `key-locker-tool.ts` changed without `npm run generate:stub-catalog`
+    // leaves the OLD strings here and passes green. `check:stub-catalog` in CI holds
+    // that direction, and an earlier draft of this list claimed the catch anyway —
+    // contradicting its own paragraph two above (gate 2 on `1c22b3e`).
+    //
+    // It cannot judge MEANING. A description keeping both strings and re-broadening the
+    // claim in a later sentence passes.
+    // ONE JOINED STRING, because the comment above says "pairing" and two unordered
+    // `toContain` calls do not make that true. A cleanup deciding the clause belongs in
+    // the Caveats section could move it nine hundred characters and three headers away,
+    // leaving `Purpose:` ending on the unscoped sentence, and both separate assertions
+    // would still have passed (gate 2 on `1c22b3e`). Adjacency is the property, so
+    // adjacency is what gets asserted.
+    const PROMISE = "NEVER shown to the assistant or sent to this tool";
+    const SCOPE = "this covers what the locker holds, not every password on the machine";
+    const JOINED = `${PROMISE} — ${SCOPE}`;
+
+    const locker = STUB_TOOL_CATALOG.find((t) => t.name === "key_locker");
+    // CONTROL: the entry is really there, or "the pair holds" is also what a lookup that
+    // found nothing would answer.
+    expect(locker, "key_locker must be in the shipped catalogue").toBeDefined();
+    expect(locker!.description, "the promise must ship for this cell to mean anything")
+      .toContain(PROMISE);
+    expect(
+      locker!.description,
+      "the promise ships without the clause that scopes it, or with the clause detached from it",
+    ).toContain(JOINED);
+
+    // AND THE PLACE THE PROMISE STOPS MUST STILL SAY SO. The locker's clause points at a
+    // behaviour documented in `desktop_state`; delete that caveat in a token-trim pass
+    // and the clause survives pointing at nothing, with this file green — the half that
+    // matters going unheld by the cell whose stated rationale is "whoever rewords has to
+    // come here" (gate 2 on `1f42968`, 2026-09-13).
+    //
+    // Pinned as two clauses, not one joined string: unlike the locker's pair these are
+    // separate sentences, and the property is that BOTH are said, not that they are
+    // adjacent. The second is deliberately the hedged half — the categorical version of
+    // it ("a masked field comes back without it") was the defect this round removed, so
+    // pinning the hedge is what stops it coming back.
+    const state = STUB_TOOL_CATALOG.find((t) => t.name === "desktop_state");
+    expect(state, "desktop_state must be in the shipped catalogue").toBeDefined();
+    expect(
+      state!.description,
+      "desktop_state stopped saying that a focused field's value is returned",
+    ).toContain("a plain credential field's value comes back like any other");
+    expect(
+      state!.description,
+      "the masking half must stay hedged — the UIA road enforces nothing",
+    ).toContain("nothing here checks for a masked control");
+    expect(
+      state!.description,
+      "and it must say what arrives instead: mask characters, one per character of the secret, " +
+      "which is the asymmetry the CDP road's named reason throws into relief",
+    ).toContain("one per character of the secret");
+    // A NEGATIVE PIN, because the claim that had to be withdrawn is the one a tightening pass
+    // would write again: it is shorter, and it reads as helpful. On the UIA road a masked
+    // WinForms box serves nothing and sets no hint, so "no hint" cannot mean "the field was
+    // empty" (gate on `93c5f41`, P1).
+    expect(
+      state!.description,
+      "the absence of a reason must not be sold as a verdict about the field",
+    ).not.toContain("means the field itself had nothing");
   });
 });

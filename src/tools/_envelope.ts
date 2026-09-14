@@ -116,6 +116,11 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
+import {
+  renderAdviceEachForCaller,
+  ADVICE_WITHHELD_FLOOR,
+  adviceExisted,
+} from "./_advice-capability.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
 import { Err, type Result } from "../types/result.js";
 import { HandlerError, CodedHandlerError } from "../errors/typed-errors.js";
@@ -222,15 +227,29 @@ export interface EnvelopeMinimalShape<T = unknown> {
  *
  * `most_likely_cause` is a typed-enum code (PascalCase) drawn from
  * ADR-010 §5.4. S4 trunk wires `LeaseExpired` end-to-end (sub-plan
- * §1.1 F); the other lease-direct codes (`LeaseGenerationMismatch` /
- * `EntityNotFound` / `LeaseDigestMismatch`) are name-pinned in
- * `LEASE_REASON_TO_TYPED_CODE` for expansion mechanical-copy work,
- * but the runtime path for them collapses to `"Unknown"` (sub-plan
- * §7 R4).
+ * §1.1 F), and ADR-036 item 16 wires `EntityNotFound`; the other
+ * lease-direct codes (`LeaseGenerationMismatch` / `LeaseDigestMismatch`)
+ * are name-pinned in `LEASE_REASON_TO_TYPED_CODE` for expansion
+ * mechanical-copy work, but the runtime path for them collapses to
+ * `"Unknown"` (sub-plan §7 R4).
  */
 export interface IfUnexpectedShape {
   most_likely_cause: string;
   try_next: TryNextAction[];
+  /**
+   * ADR-036 item 13 — what the layer that refused actually knew.
+   *
+   * `most_likely_cause` is a CODE and `try_next` is generic advice; between them a caller learns
+   * what kind of thing went wrong and nothing about their case. The engine's refusals already name
+   * the specifics — the window drawn over the point and its handle, which identity field changed,
+   * the rectangle the point left — and until this field existed those sentences stopped at
+   * `GuardedTouchLoop` (measured 2026-09-10: an `aim_occluded` response carried neither the
+   * blocker's title nor its handle, and had no message field at all).
+   *
+   * Optional and additive: an envelope with nothing specific to say omits it rather than carrying
+   * an empty string, so "no detail" and "detail: nothing in particular" stay different facts.
+   */
+  detail?: string;
 }
 
 /**
@@ -1012,12 +1031,12 @@ export type LeaseValidationLike = LeaseValidationResult;
  *
  *   `expired`              → `LeaseExpired`              ← S4 trunk: full runtime
  *   `generation_mismatch`  → `LeaseGenerationMismatch`   ← contract pin only
- *   `entity_not_found`     → `EntityNotFound`            ← contract pin only
+ *   `entity_not_found`     → `EntityNotFound`            ← full runtime (ADR-036 item 16)
  *   `digest_mismatch`      → `LeaseDigestMismatch`       ← contract pin only
  *
  * **Contract pin**: typed-code names live here in source for expansion
- * mechanical-copy work. **Runtime**: only `LeaseExpired` is emitted
- * end-to-end with `try_next`; the residual 3 reasons collapse to
+ * mechanical-copy work. **Runtime**: `LeaseExpired` and `EntityNotFound` are
+ * emitted end-to-end with `try_next`; the residual 2 reasons collapse to
  * `"Unknown"` at runtime (sub-plan §7 R4) so trunk skeleton stays
  * minimal — expansion lifts each into its own try_next path
  * mechanically.
@@ -1038,8 +1057,9 @@ export const LEASE_REASON_TO_TYPED_CODE = {
  * Map a `LeaseStore.validate()` reason to the runtime typed code +
  * `try_next` shape carried in the failure envelope (sub-plan §2.4).
  *
- * S4 trunk only fully wires `expired → LeaseExpired` with `try_next:
- * [{action: "desktop_discover"}]` — the other 3 reasons map to
+ * S4 trunk fully wired `expired → LeaseExpired` with `try_next:
+ * [{action: "desktop_discover"}]`, and ADR-036 item 16 wires
+ * `entity_not_found → EntityNotFound` — the other 2 reasons map to
  * `Unknown` with empty `try_next` per sub-plan §7 R4. Expansion
  * promotes each to its own typed code via a mechanical change here.
  *
@@ -1051,12 +1071,35 @@ export function mapLeaseValidationToTypedReason(
   reason: "expired" | "generation_mismatch" | "entity_not_found" | "digest_mismatch",
 ): { code: string; tryNext: TryNextAction[] } {
   if (reason === "expired") {
+    // `args: {}` IS A CLAIM ABOUT ONE CORNER'S PROVIDER, filed rather than changed.
+    // `desktop_discover`'s `windowTitle` is optional, so "no arguments needed" is true
+    // of it; `get_ui_elements`' is required, so at a kill-switch corner this row would
+    // hand a caller a call it cannot make — the "registered is not the same as
+    // callable" axis this round handles by hand elsewhere. It is unreachable today:
+    // `makeCommitWrapper`'s only `leaseValidator` is `desktop_act`'s
+    // (`desktop-register.ts`), which exists only at the v2 corner, where the row
+    // renders back to `desktop_discover`. Both fixes cost more than the defect —
+    // dropping `args` moves a frozen envelope-shape expectation, and reverting the
+    // capability undoes the conversion — so the reachability is written here instead,
+    // and whoever gives this row a second producer owes the check (gate 2 on
+    // `a1cc0f4`, 2026-09-13).
     return {
       code: "LeaseExpired",
-      tryNext: [{ action: "desktop_discover", args: {}, confidence: "high" }],
+      tryNext: [{ action: "{tool:reidentify_element}", args: {}, confidence: "high" }],
     };
   }
-  // Sub-plan §7 R4: residual 3 reasons collapse to `Unknown` at runtime
+  // ADR-036 item 16 — promoted. The same reason comes back from the touch itself (the entity
+  // missing from the live view, or UIA answering "not found" on the title-only road), and
+  // `desktop_act` rebuilds that one as `EntityNotFound`. Left here, one condition had two answers
+  // — `Unknown` with no advice when this check caught it first, `EntityNotFound` when the touch did.
+  // The advice is the table's, as the touch path derives it, so the two envelopes are the same.
+  if (reason === "entity_not_found") {
+    return {
+      code: "EntityNotFound",
+      tryNext: getSuggestsForCode("EntityNotFound").map((action) => ({ action })),
+    };
+  }
+  // Sub-plan §7 R4: residual 2 reasons collapse to `Unknown` at runtime
   // in S4 trunk. The PascalCase names are pinned in
   // `LEASE_REASON_TO_TYPED_CODE` so expansion can mechanically promote
   // each branch into its own typed code without re-deriving the mapping.
@@ -1199,6 +1242,97 @@ export function compatFailureRaw(
 }
 
 /**
+ * `try_next` rendered for this server's configuration — the `action` text is advice.
+ *
+ * ONE call for the whole list, and a PER-LINE result: `renderAdviceEachForCaller`
+ * returns an array the same length as its input, with `null` where a line was dropped.
+ * A row is more than its text — `args` and `confidence` must travel with the sentence
+ * they belong to — so the pairing is by position and cannot slide.
+ *
+ * **This block described the previous two contracts in turn, and the second time it
+ * described a defect as if it were the design** (gate 1, 2026-09-13, on the head that
+ * fixed the defect). Whoever changes the loop below changes this paragraph in the same
+ * edit: it sits outside the hunk, which is exactly why it keeps being left behind.
+ */
+function renderTryNext(tryNext: TryNextAction[]): TryNextAction[] {
+  // THE CONTAINER, and this is where the species stops. Three rounds of gates have
+  // each moved the same guard one expression further up this road: `[{}]` reached
+  // `.replace`, `[null]` reached `.action`, and `undefined` reaches `.map` — the same
+  // shape each time, from `tests/**` and from JS, on a road whose stated rule is that
+  // it never throws because every caller is already building a refusal. Guarding the
+  // instance again would invite a fourth round; guarding the container ends it. `[]`
+  // is also the RIGHT shape, where the pre-B2b answer for this input was
+  // `try_next: undefined` against a type that says `TryNextAction[]`.
+  if (!Array.isArray(tryNext)) return [];
+  // Why the batched call is kept rather than reverted to one call per row: the
+  // resolver's pattern stays hoisted. Its first version re-paired by index against a
+  // COMPACTED array — every row after a drop took the next survivor's text while
+  // keeping its own `args`, and the last survivor was discarded (gate 2 and gate 1
+  // independently, 2026-09-13, measured on the built code). Identifying survivors,
+  // not counting them, is what the doc block above states as the contract.
+  // `row?.action`, not `row.action`: the non-string guard downstream cannot help if
+  // the dereference happens first. Measured on the built code (gate 2, 2026-09-13):
+  // `[{}]` was handled, `[null]` threw `Cannot read properties of null`, and
+  // `[{action:"keep me"}, null]` threw too — taking a GOOD line down with it. That is
+  // the shape this round's guard exists to prevent, one expression upstream of it.
+  // The cast is the honest spelling of the situation, not a way around the checker:
+  // `AdviceLine` is `string`, and the renderer's non-string arm exists precisely
+  // because values `tsc` cannot vouch for reach it from `tests/**` and from JS. A
+  // `?.` that produced `undefined` and then a signature that forbids it would have to
+  // lie somewhere; it lies here, in one place, with the reason beside it.
+  // A PLAIN STRING IS A ROW TOO, and leaving it out made this branch WORSE than
+  // `main` at the one shape most likely to arrive: the sibling field on the flat road
+  // IS `string[]`, so a caller moving a `suggest` array into `options.tryNext` writes
+  // exactly this. Measured (gate 2, 2026-09-13, tenth round):
+  //
+  //   main    ["do this"] → ["do this"]        ["do this", {action}] → both
+  //   before  ["do this"] → []                 ["do this", {action}] → the object only
+  //
+  // Every line silently gone, and no floor: the mapped `undefined` is not a sentence,
+  // so `adviceExisted` correctly says nothing was withheld. The row is rendered like
+  // any other and put back AS A STRING, because this round's claim is byte stability
+  // and `main` shipped a string here.
+  const actions = tryNext.map((row) =>
+    typeof row === "string" ? row : (row as TryNextAction | null | undefined)?.action,
+  ) as readonly string[];
+  const rendered = renderAdviceEachForCaller(actions);
+  const out: TryNextAction[] = [];
+  for (const [i, row] of tryNext.entries()) {
+    const text = rendered[i];
+    if (text === null || text === undefined) continue; // dropped here, or not a string at all
+    if (typeof row === "string") {
+      // Out of contract and preserved as found: spreading a string would have made an
+      // object of its character indices.
+      out.push(text as unknown as TryNextAction);
+      continue;
+    }
+    out.push(text === row.action ? row : { ...row, action: text });
+  }
+  // THE FLOOR. `toFailureEnvelope` substitutes a generic hint when the DICTIONARY has
+  // none, so a code with no advice still ships a line; that is the guarantee, and it
+  // is narrower than "`try_next` is never empty" — a caller who passes `tryNext: []`
+  // gets `[]`, on `main` as well as here (measured, 2026-09-13, after gate 2 reasoned
+  // from the wider claim this comment used to make). Dropping rows would have taken
+  // the real guarantee away by construction — the
+  // fallback computed and then dropped, a caller's `try_next[0].action` throwing
+  // (gate 2, 2026-09-13). The user's decision of the same day is the rule: EVERY code
+  // keeps at least one line at every corner. Where the conversion cannot honour that
+  // by hand, this catches it — and says, in the line itself, that something was
+  // withheld rather than pretending there was never any advice.
+  // ...but only where advice ACTUALLY EXISTED. The floor's sentence names the
+  // configuration as the cause, and that is a claim: it is true when real lines were
+  // dropped for want of a provider, and false when the caller passed rows that never
+  // carried a sentence. `buildFailureEnvelope("X", [{}])` used to answer "no recovery
+  // is available in this configuration" to a PROGRAMMING ERROR (gate 2, 2026-09-13,
+  // measured). A row with no string action is not a withheld recovery, so it does not
+  // buy one.
+  if (out.length === 0 && adviceExisted(actions)) {
+    return [{ action: ADVICE_WITHHELD_FLOOR }];
+  }
+  return out;
+}
+
+/**
  * Build a commit-failure envelope (ADR-010 §5.3, sub-plan §2.4).
  *
  *   {
@@ -1219,6 +1353,8 @@ export function buildFailureEnvelope(
   mostLikelyCause: string,
   tryNext: TryNextAction[],
   options?: EnvelopeOptions,
+  /** ADR-036 item 13 — the refusing layer's own sentence. Omitted from the envelope when absent. */
+  detail?: string,
 ): EnvelopeMinimalShape<null> {
   const wallclockSupplied =
     options?.asOfWallclockMs != null && Number.isFinite(options.asOfWallclockMs);
@@ -1228,7 +1364,16 @@ export function buildFailureEnvelope(
     data: null,
     as_of: { wallclock_ms: wallclock },
     confidence: "stale",
-    if_unexpected: { most_likely_cause: mostLikelyCause, try_next: tryNext },
+    if_unexpected: {
+      most_likely_cause: mostLikelyCause,
+      // ADR-036 stage 2 B2b — the envelope's advice goes through the resolver too, and
+      // for the same reason as the flat road: this is where every `try_next` becomes
+      // caller-visible, whatever built it. Byte-identical while no line carries a
+      // placeholder. A line whose capability has no provider here is DROPPED, so the
+      // array can shrink — the empty case is the decision the conversion owes.
+      try_next: renderTryNext(tryNext),
+      ...(detail !== undefined && detail.trim() !== "" ? { detail } : {}),
+    },
   };
 }
 
@@ -1268,13 +1413,23 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
      *  (`asOfWallclockMs` 等の L1 event wallclock 経路、将来 root extras hoist 伝播)。 */
     envelopeOptions?: EnvelopeOptions;
     /** Explicit `try_next` override (ADR-021 P1-2). When provided it is used
-     *  verbatim — **including an empty `[]`** — instead of deriving from
-     *  `getSuggestsForCode(errorName)`. Lets hand-built failure callsites that
+     *  instead of deriving from `getSuggestsForCode(errorName)` — **including an
+     *  empty `[]`**, which still ships empty. **It is no longer verbatim** (ADR-036
+     *  stage 2 B2b): every row's `action` goes through the advice resolver on its way
+     *  out, so a row naming a capability this configuration cannot provide is
+     *  dropped, taking its `args` / `confidence` with it, and a list that empties
+     *  that way gets one line saying so rather than none. Lets hand-built failure callsites that
      *  already hold a typed/rich `try_next` (e.g. lease validation's
      *  `{action, args, confidence}`, or a deliberately-empty list) migrate to
      *  this single converter without changing their envelope shape (north star
      *  1: one failure path). Absent → derive from SUGGESTS as before. */
     tryNext?: TryNextAction[];
+    /**
+     * ADR-036 item 13 — the sentence the layer that refused wrote, passed through to
+     * `if_unexpected.detail`. Callers that rebuild an envelope from a reason code (the act path's
+     * nine refusals) hand the engine's message here instead of dropping it.
+     */
+    detail?: string;
   },
 ): Ok | EnvelopeMinimalShape<null> | CompatRawFailureShape {
   if (result.ok) return result.value;
@@ -1283,8 +1438,10 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
   // `_errors.ts`) は本 dict の正しい lookup API で、unknown code には汎用
   // fallback 配列を返す。empty fallback の場合は本 helper 側で再 fallback。
   const errorName = result.error.name;
-  // Caller-supplied `tryNext` wins verbatim (incl. empty []); otherwise derive
-  // from SUGGESTS, falling back to a generic hint when the dict has no entry.
+  // Caller-supplied `tryNext` is used instead of SUGGESTS (an empty [] still ships
+  // empty) — but NOT verbatim any more: `buildFailureEnvelope` resolves each row's
+  // advice against this server's configuration. This comment said "verbatim" thirty
+  // lines below the doc that had been corrected to say the opposite (gate 2).
   let tryNext: TryNextAction[];
   if (options.tryNext !== undefined) {
     tryNext = options.tryNext;
@@ -1294,7 +1451,7 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
       ? tryNextStrings.map((action) => ({ action }))
       : [{ action: "Inspect the underlying error and retry with adjusted args" }];
   }
-  const failure = buildFailureEnvelope(errorName, tryNext, options.envelopeOptions);
+  const failure = buildFailureEnvelope(errorName, tryNext, options.envelopeOptions, options.detail);
   return options.optIn ? failure : compatFailureRaw(failure);
 }
 

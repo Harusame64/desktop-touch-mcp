@@ -12,7 +12,29 @@ export type UiEntityRole = "button" | "textbox" | "link" | "menuitem" | "label" 
  */
 export interface EntityLocator {
   /** UIA: element identified by AutomationId and/or accessible name. */
-  uia?: { automationId?: string; name?: string };
+  uia?: {
+    automationId?: string;
+    name?: string;
+    /**
+     * Which client read the element (ADR-036 item 16). The native engine and the PowerShell script
+     * can see different trees and name one element differently, so a click's "not found" is
+     * believed only when the native engine both read the element and answered the click. Absent
+     * when the read could not say.
+     */
+    via?: "native" | "powershell";
+    /**
+     * ADR-036 family 2 — the element's own window handle, when it is one (UIA `NativeWindowHandle`).
+     * The keyboard rung posts to whatever holds the focus of the window's thread, and this is what
+     * lets it tell whether that is the element named. A handle does not move with the window, so it
+     * answers on the title road too, where no window position is recorded. Absent for a windowless
+     * element, and on a read that could not say.
+     *
+     * Written as the unsigned low 32 bits, in decimal. A handle can be RECREATED while the control
+     * lives (WinForms `RecreateHandle`, a dialog opened again), so the value describes the control as
+     * it was when the read ran, and can go stale.
+     */
+    nativeWindowHandle?: string;
+  };
   /** CDP: element identified by CSS selector, optionally scoped to a tab. */
   cdp?: { selector?: string; tabId?: string };
   /** Terminal: identified by containing window title. */
@@ -55,6 +77,20 @@ export interface ExecutorOutcome {
     /** Short human-readable reason — the underlying error message is the canonical source. */
     reason: string;
   };
+  /**
+   * ADR-036 family 2 — the keyboard rung posted, but could not confirm that the characters reached
+   * the element named: the rule (`engine/keyboard-target.ts`) could not say, and the user's contract
+   * is to post and mark the success ("分からないときは2"). `why` says what could not be read, and
+   * `referenceFrom` which window was taken to be the named control's. Absent on a confirmed write.
+   */
+  landing?: LandingUnconfirmed;
+}
+
+/** See {@link ExecutorOutcome.landing}. */
+export interface LandingUnconfirmed {
+  confirmed: false;
+  why: string;
+  referenceFrom: string;
 }
 
 export interface UiAffordance {
@@ -180,6 +216,22 @@ export interface UiEntity {
    * query rather than an identity: re-resolving a title at act time can select a
    * different window if the Z-order changed since discovery, and the click would
    * then be judged against — and land in — the wrong one.
+   *
+   * Absent `hwnd` means no lane that records one looked — **with one state left in the code that
+   * would also produce it, deliberately.** If a group's handles ever DID disagree, `resolver.ts`
+   * takes none of them rather than an arbitrary one, and that arrives here as the same absence.
+   * The derivation there says the state cannot occur; the test is kept because it costs one
+   * comparison and the failure it prevents is a press into another window. That is not the trade
+   * the `hwndConflict` machinery offered: a refusal path with published advice, reachable only from
+   * a fixture, which every reader had to model as a case that happens (Opus sandbox review,
+   * 2026-09-10, for catching that this sentence and that line were arguing with each other). A round of
+   * ADR-036 item 12 also carried `hwndConflict` here, for a merged group whose lanes named
+   * different windows — deleted, because the two lanes that record a handle (`ocr` and
+   * `visual_gpu`) cannot share a group: the producer's digest keys one of them and the
+   * source-omitting fallback keys the other, so every handle in a group comes from a single OCR
+   * read (the derivation is in `resolver.ts`, corrected once by a gate). The shape it was defending
+   * against is real and worth remembering — a silence and an answer must not share a representation
+   * — but this was not an instance of it.
    */
   origin?: { kind: "window" | "browserTab"; id: string; hwnd?: string };
 }

@@ -33,6 +33,7 @@ import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
+import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 import { buildCandidateCollectionJs, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -712,7 +713,7 @@ async function osClickAndVerify(
  * and ≤ requested) from outright rejection.
  */
 async function finalizeFillResult(
-  actResult: { ok: boolean; error?: string; actual?: string; fullActualLen?: number; fullMatches?: boolean },
+  actResult: { ok: boolean; error?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean },
   value: string,
   identity: Record<string, unknown>,
   includeContext: boolean,
@@ -722,6 +723,10 @@ async function finalizeFillResult(
   if (!actResult.ok) {
     return failWith(actResult.error ?? "browser_fill: fill failed", "browser_fill");
   }
+  // A masked field's value never leaves the page — neither what the page kept instead of the
+  // requested one, which can be what the user had typed there, nor the requested one itself, which
+  // the caller already has and a transcript or a log need not (win2's round on #623).
+  const withheld = actResult.actualWithheld === true;
   if (actResult.fullMatches === false) {
     const requestedLen = value.length;
     const actualLen = actResult.fullActualLen ?? 0;
@@ -729,14 +734,17 @@ async function finalizeFillResult(
       actualLen > 0 && actualLen <= requestedLen ? "controlled_input_transform" : "value_not_retained";
     return failWith(new Error("BrowserFillNotDelivered"), "browser_fill", {
       ...identity,
-      requested: value.slice(0, 100),
+      ...(withheld ? { valueWithheld: "masked" } : { requested: value.slice(0, 100) }),
       requestedLen,
-      actual: actResult.actual,
+      ...(withheld ? {} : { actual: actResult.actual }),
       actualLen,
       subReason,
       note:
         subReason === "controlled_input_transform"
-          ? "False-positive watch: React/Vue controlled inputs may rewrite the value in onChange (numbers-only filter, max-length, format mask). The bytes reached the page but the framework chose not to keep them. Treat actual as authoritative."
+          ? "False-positive watch: React/Vue controlled inputs may rewrite the value in onChange (numbers-only filter, max-length, format mask). The bytes reached the page but the framework chose not to keep them. " +
+            (withheld
+              ? "The field is masked, so neither value is shown; actualLen is how much the page kept."
+              : "Treat actual as authoritative.")
           : "The DOM did not retain the requested value after fill — input may be readOnly, disabled, or guarded by a synthetic-event proxy that rejects programmatic writes.",
       hints: {
         verifyDelivery: {
@@ -754,8 +762,7 @@ async function finalizeFillResult(
     JSON.stringify({
       ok: true,
       ...identity,
-      value,
-      actual: actResult.actual,
+      ...(withheld ? { valueWithheld: "masked" } : { value, actual: actResult.actual }),
       // matrix doc §4.2 規範 hint shape — always emit `delivered` on success.
       hints: { verifyDelivery: { status: "delivered", channel: "cdp" } },
     }),
@@ -807,7 +814,7 @@ async function handleBrowserFillByAxis(args: {
     outcome.index, outcome.climbDepth, value, outcome.matched,
   );
   const actResult = await evaluateInTab(actExpr, tabId ?? null, port) as
-    { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; fullActualLen?: number; fullMatches?: boolean };
+    { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
 
   if (!actResult.ok) {
     if (actResult.error === "not_fillable") {
@@ -902,8 +909,15 @@ export const browserFillInputHandler = async ({
     // the verification verdict uses the full string.
     const fillExpr = `
 (function() {
+${ELEMENT_NAME_JS}
   const el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return { ok: false, error: 'Element not found after focus' };
+  // Read before any page handler runs: one can replace the element, and a detached element has no
+  // computed style left to show that it was masked (PR 側 codex on #623).
+  // The focus evaluate above has already let the page's focus handlers run, so a mask one of them
+  // adds is in place by this read. The by-axis road focuses inside one script, and reads again
+  // after its focus (browser-resolver.ts).
+  const maskedBefore = __isMasked(el);
   el.focus();
   // Select all existing content before replacing
   if (typeof el.select === 'function') {
@@ -929,15 +943,18 @@ export const browserFillInputHandler = async ({
   // node. Comparing this against the requested value is the post-fill
   // verification (matrix doc §3.1 browser_fill).
   const fullActual = el.value !== undefined ? el.value : (el.textContent || '');
+  // A masked field's value never leaves the page; the comparison is made here, in the page.
+  const masked = maskedBefore || __isMasked(el);
   return {
     ok: true,
-    actual: (fullActual || '').slice(0, 100),
+    actual: masked ? undefined : (fullActual || '').slice(0, 100),
+    actualWithheld: masked || undefined,
     fullActualLen: fullActual.length,
     fullMatches: fullActual === ${JSON.stringify(value)}
   };
 })()`;
     const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as
-      { ok: boolean; error?: string; actual?: string; fullActualLen?: number; fullMatches?: boolean };
+      { ok: boolean; error?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
     // Verify + shape the result (shared with the by-axis path). `identity` =
     // { selector } so the failure context + success response keep the exact
     // selector-mode keys/order (bit-equal, AC-9).
@@ -965,6 +982,7 @@ export const browserGetFormHandler = async ({
   try {
     const expr = `
 (function() {
+${ELEMENT_NAME_JS}
   const scope = document.querySelector(${JSON.stringify(selector)});
   if (!scope) return { ok: false, error: 'element not found' };
   const FIELD_SEL = 'input, select, textarea, button';
@@ -988,30 +1006,36 @@ export const browserGetFormHandler = async ({
     const id = el.id || null;
     let value = null;
     let checked = null;
-    if (tagName === 'button') {
-      value = el.textContent.trim() || null;
-    } else if (tagName === 'input' && (type === 'checkbox' || type === 'radio')) {
+    let withheld = false;
+    if (tagName === 'input' && (type === 'checkbox' || type === 'radio')) {
+      // A check mark is not what -webkit-text-security hides, so these stay readable.
       checked = el.checked;
       value = el.getAttribute('value');
+    } else if (__isMasked(el)) {
+      // What the page draws as dots does not leave the page; hasValue says whether it holds one.
+      withheld = true;
+    } else if (tagName === 'button') {
+      // Its text without the entries or masked text inside it (win's outside read on #623).
+      value = __textWithoutFields(el) || null;
     } else if (tagName === 'input' || tagName === 'textarea') {
       const raw = el.value || '';
       value = raw ? (raw.length > MAX_VALUE_LEN ? raw.slice(0, MAX_VALUE_LEN) + '\u2026' : raw) : null;
     } else if (tagName === 'select') {
       value = el.value || null;
     }
-    // Resolve label: for[id] > ancestor LABEL (strip child inputs) > aria-labelledby > aria-label
+    // Resolve label: for[id] > ancestor LABEL > aria-labelledby > aria-label — each label's text
+    // without the entries or masked text inside it (_element-name-js.ts)
     let label = null;
     if (id) {
       const labelEl = document.querySelector('label[for=' + JSON.stringify(id) + ']');
-      if (labelEl) label = labelEl.textContent.trim() || null;
+      if (labelEl) label = __textWithoutFields(labelEl) || null;
     }
     if (!label) {
       let p = el.parentElement;
       while (p) {
         if (p.tagName === 'LABEL') {
-          const clone = p.cloneNode(true);
-          clone.querySelectorAll(FIELD_SEL).forEach(function(n) { n.remove(); });
-          label = clone.textContent.trim() || null;
+          // Read on the live node: a detached clone has no computed style, so masking would not show.
+          label = __textWithoutFields(p) || null;
           break;
         }
         p = p.parentElement;
@@ -1021,14 +1045,14 @@ export const browserGetFormHandler = async ({
       const lbAttr = el.getAttribute('aria-labelledby');
       if (lbAttr) {
         label = lbAttr.trim().split(/\\s+/).map(function(i) {
-          var e = document.getElementById(i); return e ? e.textContent.trim() : '';
+          var e = document.getElementById(i); return e ? __textWithoutFields(e) : '';
         }).filter(Boolean).join(' ') || null;
       }
     }
     if (!label) {
       label = el.getAttribute('aria-label') || null;
     }
-    fields.push({
+    const field = {
       tagName,
       type,
       name,
@@ -1039,7 +1063,16 @@ export const browserGetFormHandler = async ({
       disabled: el.disabled,
       readOnly: !!el.readOnly,
       label,
-    });
+    };
+    // A button's value is its caption, and el.value is only its value attribute (PR 側 codex on
+    // #623's 122185e). A submit or reset input with no value attribute draws the browser's default
+    // caption (PR 側 codex on e83cb56). One bit either way: the dots are on the screen.
+    if (withheld) {
+      field.valueWithheld = 'masked';
+      field.hasValue = tagName === 'button' ? (el.textContent || '').trim() !== ''
+        : (tagName === 'input' && (el.type === 'submit' || el.type === 'reset') && !el.hasAttribute('value')) || !!el.value;
+    }
+    fields.push(field);
   }
   return { ok: true, selector: ${JSON.stringify(selector)}, count: fields.length, fields };
 })()`;
@@ -2354,12 +2387,9 @@ export const browserGetInteractiveHandler = async ({
     return Object.keys(out).length ? out : undefined;
   }
 
-  function elText(el) {
-    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-    if (!t && el.tagName === 'INPUT')
-      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
-    return t;
-  }
+  // An input's text is its name, never its value — the one definition every CDP script shares.
+${ELEMENT_NAME_JS}
+  const elText = __elText;
 
   // Use element center-point for consistency with the UIA/OCR viewport-position helper.
   function viewportPos(rect) {
@@ -3208,7 +3238,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_overview",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Also returns a modal: section — whether a true modal dialog is blocking the page (isModal + blocker {name, role} + the signals it was judged on); it is ALWAYS present (isModal:false when no modal), and a navigation drawer is NOT reported as a modal (only an aria-modal / alertdialog / native showModal dialog, or a backdrop-backed dialog that locks the page, is treated as modal). Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content. Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text (an input's name — never what is typed in it), and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Also returns a modal: section — whether a true modal dialog is blocking the page (isModal + blocker {name, role} + the signals it was judged on); it is ALWAYS present (isModal:false when no modal), and a navigation drawer is NOT reported as a modal (only an aria-modal / alertdialog / native showModal dialog, or a backdrop-backed dialog that locks the page, is treated as modal). Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. An input's text is its name — from aria-labelledby, aria-label, its <label>, title, then its hint text — never what is typed in it: read values with browser_form, which withholds the value of a field the page masks (a password). Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
     browserOverviewRegistrationSchema,
     browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler
   );
@@ -3282,7 +3312,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_fill",
     {
       description:
-        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value. Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
+        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
       inputSchema: browserFillRegistrationSchema,
     },
     browserFillRegistrationHandler as typeof browserFillInputHandler
@@ -3290,7 +3320,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_form",
-    "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_open (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
+    "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value (withheld for a field the page masks, such as a password: value is null, valueWithheld is 'masked', and hasValue says whether it holds one), hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_open (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
     browserFormRegistrationSchema,
     browserFormRegistrationHandler as typeof browserGetFormHandler
   );

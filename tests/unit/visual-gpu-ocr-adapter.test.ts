@@ -209,6 +209,35 @@ describe("Case 8: findBestMatchingElement uses IoU not array index", () => {
   });
 });
 
+// ── ADR-036: the origin a candidate claims is the handle that was aimed at ────
+describe("ADR-036: originHwnd carries the parsed handle, not the raw string", () => {
+  it("drops a handle the aim itself refused, rather than stamping candidates with it", async () => {
+    // `"0"` is not a window, and `parseTargetHwnd` says so — so the pipeline reads `@active`,
+    // the FOREGROUND window. Stamping the candidates with origin "0" would then send
+    // `desktop-register`'s reachability gate down the by-handle path for a handle that names
+    // nothing, instead of the virtual-screen bounds. Two sites of "one malformed value, two
+    // answers to which window" were closed in this ADR; this was the third.
+    const elements = [
+      { id: 1, text: "Left", clickAt: { x: 20, y: 10 }, region: { x: 0, y: 0, width: 40, height: 20 }, confidence: 0.9 },
+    ];
+    const target = { hwnd: "0" };
+    const adapter = new OcrVisualAdapter(target, { minPollIntervalMs: 0 });
+    const result = await adapter.pollOnce(target, [], elements);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.originHwnd).toBeUndefined();
+  });
+
+  it("keeps a handle that is one", async () => {
+    const elements = [
+      { id: 1, text: "Left", clickAt: { x: 20, y: 10 }, region: { x: 0, y: 0, width: 40, height: 20 }, confidence: 0.9 },
+    ];
+    const target = { hwnd: "8008" };
+    const adapter = new OcrVisualAdapter(target, { minPollIntervalMs: 0 });
+    const result = await adapter.pollOnce(target, [], elements);
+    expect(result[0]!.originHwnd).toBe("8008");
+  });
+});
+
 // ── targetKeyFromSpec helper ──────────────────────────────────────────────────
 describe("targetKeyFromSpec", () => {
   it("prefers hwnd", () => {

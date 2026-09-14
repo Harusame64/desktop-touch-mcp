@@ -9,11 +9,14 @@ import { computeLeaseTtlMs, computeSoftExpiresAtMs } from "../engine/world-graph
 import { resolveCandidates } from "../engine/world-graph/resolver.js";
 import {
   SessionRegistry,
+  parseTargetHwnd,
   type TargetSpec,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
+import { probeAim } from "../engine/aim-probe.js";
+import { toAim, readWindowIdentityFields, homingCorrectionForSources, observedHwndOfOrigin, type Aim } from "../engine/aim.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import type { TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
@@ -171,6 +174,15 @@ export interface DesktopFacadeOptions {
    */
   executorDeps?: ExecutorDeps;
   /**
+   * ADR-036 — how to read a window's identity, for the paths that have to read one themselves.
+   *
+   * Production leaves it unset and `win32.getWindowIdentity` is used. A test sets it to make the
+   * difference between "the fallback did not run" and "it ran and could not answer" visible —
+   * on any machine without the native binding those two are the same output, which is how a
+   * guard that stopped running would keep passing.
+   */
+  readWindowIdentity?: (hwnd: bigint) => { pid: number; processName: string; processStartTimeMs: number };
+  /**
    * Override modal detection. Default: session-aware check (UIA unknown-role entity in snapshot).
    * Set to () => false to disable. Issue #63 (Codex P1): when overridden alone, `blockingElement`
    * on the modal_blocking response is intentionally dropped to prevent identity mismatch with
@@ -274,13 +286,11 @@ function resolveTargetHwnd(
   target: TargetSpec | undefined,
   getFocusedHwnd: (() => bigint | null) | undefined,
 ): bigint | null {
-  if (target?.hwnd) {
-    try {
-      return BigInt(target.hwnd);
-    } catch {
-      return null;
-    }
-  }
+  // ADR-036 — one answer to "is this a handle" (`parseTargetHwnd`); what to do when the answer
+  // is "no" stays this site's own decision, and here it is to fall through to the foreground.
+  const pinned = parseTargetHwnd(target);
+  if (pinned !== undefined) return pinned;
+  if (target?.hwnd) return null;
   if (!getFocusedHwnd) return null;
   try {
     return getFocusedHwnd();
@@ -349,6 +359,15 @@ export class DesktopFacade {
     const peekedRoundTrip = session.leaseStore.peekObservedRoundTripMs();
     const observedRoundTripMs = peekedRoundTrip?.elapsedMs;
 
+    // ADR-036 probe — the first seam. `lastTarget` is set from the RAW target here, while the
+    // providers below read a normalized one; the two are recorded separately so the divergence is
+    // a row rather than a claim.
+    probeAim("see.enter", {
+      key,
+      viewId: session.viewId,
+      rawTarget: input.target ?? null,
+      hasIngress: Boolean(this.opts.ingress),
+    });
     session.lastTarget = input.target;
     const prevViewId = session.viewId;
     const newViewId = randomUUID();
@@ -376,6 +395,60 @@ export class DesktopFacade {
         rawResult = { ...rawResult, warnings: [...rawResult.warnings, "visual_not_attempted"] };
       }
     }
+    // ADR-036 — the session remembers the target the PROVIDERS read, not the words the caller
+    // typed. Until this line, `lastTarget` held the raw input: a bare `desktop_discover()` left
+    // the write path with no window while the view it had just returned described one, so the
+    // executor was handed `"@active"` as a title, failed at UIA for nine seconds, and pressed a
+    // remembered coordinate (measured on the real machine, 2026-09-09).
+    //
+    // `??` and not an unconditional assignment: a provider that resolved nothing says nothing, and
+    // "we could not work out which window" must not overwrite what the caller did tell us. The
+    // non-ingress path (`candidateProvider`) returns candidates only, so it also falls back here.
+    //
+    // On a cache hit the target comes from the entry the candidates came from, which is the point:
+    // the aim and the view describe the same window even when the foreground has moved on.
+    if (rawResult.target) session.lastTarget = rawResult.target;
+
+    // ADR-036 item 2 — and the aim, as one value, with who owned the window when it was read.
+    //
+    // The identity comes from the provider result, not from a read taken here: on a cache hit
+    // those are different moments, and a window that closed and had its handle recycled in between
+    // would be baselined against its new owner — the comparison would then answer "same" and wave
+    // an action through to a window nobody discovered (gate 1, 2026-09-09). The identity belongs to
+    // the observation, so it travels with it.
+    //
+    // `_aimFor` reads one only when the result carried none — the direct `candidateProvider` path,
+    // which has no cache and so has no gap to fall through. Absence stays absence: no native
+    // binding, a window already gone, an unreadable handle all leave the aim without an identity,
+    // which the comparison reads as "cannot tell" rather than as "changed".
+    session.lastAim = rawResult.identityRead
+      // The read looked. Whatever it found — including nothing — is the baseline, and reading again
+      // here would replace "could not tell who owned it" with "here is who owns it NOW". On a cache
+      // hit that is a different window: the one that inherited the handle after the candidates were
+      // taken, recorded as though it had been discovered (PR 側 codex, 2026-09-09).
+      // The origin rectangle rides with it, for the same reason: it is the window position these
+      // candidates' coordinates were measured against, and item 5's correction is the difference
+      // between it and the position at act time.
+      ? { ...toAim(session.lastTarget), identity: rawResult.identity, origin: rawResult.origin }
+      // Nothing looked: the direct `candidateProvider` path, which has no cache and therefore no
+      // gap between the read and this line.
+      : await this._aimFor(session.lastTarget);
+
+
+    // ADR-036 probe — what the session is left holding, next to what the candidates say they
+    // describe. `targetIds` is the set the providers stamped: if it disagrees with `lastTarget`,
+    // the read and the write are about different windows and nothing downstream can tell.
+    probeAim("see.store", {
+      key,
+      viewId: session.viewId,
+      lastTarget: session.lastTarget ?? null,
+      lastTargetFrom: rawResult.target ? "resolved" : "caller",
+      aimHasIdentity: session.lastAim?.identity !== undefined,
+      identityRead: rawResult.identityRead === true,
+      candidateCount: rawResult.candidates.length,
+      targetIds: [...new Set(rawResult.candidates.map((c) => String(c.target?.id ?? "")))].slice(0, 8),
+      warnings: rawResult.warnings,
+    });
     let resolved = resolveCandidates(rawResult.candidates, session.generation);
 
     if (input.query) {
@@ -604,9 +677,23 @@ export class DesktopFacade {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
     const target = session.lastTarget;
+    // ADR-036 item 2 — read the aim, not the spec. The aim already answered "which window" once,
+    // at the read, and asking a second time is how two answers appear: this site used to parse the
+    // spec itself while the executor parsed it separately, and for a bare `desktop_discover()`
+    // neither of them found anything the providers had already resolved.
+    const aimed = session.lastAim?.hwnd;
+    if (aimed !== undefined) return aimed;
     if (target?.hwnd) {
+      // The aim did not resolve one, so the spec is inspected here for the audit line only: this
+      // site's own handling of "not a handle", deliberately different from `resolveTargetHwnd`'s
+      // null.
+      const pinned = parseTargetHwnd(target);
+      if (pinned !== undefined) return pinned;
       try {
-        return BigInt(target.hwnd);
+        BigInt(target.hwnd);
+        console.error(
+          `[desktop] Stage 5 — target.hwnd is "${target.hwnd}", which names no window; falling back to foreground resolver`,
+        );
       } catch (err) {
         // Audit trail (PR #325 Round 1 P3-2 — preserves the original
         // stderr surface so a production race where `lastTarget.hwnd`
@@ -648,13 +735,15 @@ export class DesktopFacade {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
     const target = session.lastTarget;
-    if (target?.hwnd) {
-      try {
-        return BigInt(target.hwnd);
-      } catch {
-        // Malformed pinned hwnd — fall through to title / foreground resolution.
-      }
-    }
+    // ADR-036 item 2 — the aim answered this at the read, including for the bare flow whose
+    // comment below says "falls back to the foreground": since the session took the resolved
+    // target, that flow HAS a handle, and it is the one discover enumerated rather than whatever
+    // is in front now. The ladder underneath is kept for sessions whose read resolved nothing.
+    const aimed = session.lastAim?.hwnd;
+    if (aimed !== undefined) return aimed;
+    // "Not a handle" falls through to title / foreground here.
+    const pinned = parseTargetHwnd(target);
+    if (pinned !== undefined) return pinned;
     if (target?.windowTitle) {
       // `resolveWindowTarget` deliberately returns null for a plain top-level
       // window (it only special-cases `@active` + dialogs, _resolve-window.ts
@@ -722,16 +811,89 @@ export class DesktopFacade {
    * `indeterminate`. The clicked entity's centre is where the change is expected,
    * so a padded region around it captures the repaint. Returns `null` when the
    * session/entity is gone or the entity carries no rect.
+   *
+   * ADR-036 item 5 — **corrected by the same homing rule as the press**, when the caller has a
+   * current window rectangle to correct against. This was the one consumer of the remembered point
+   * that did not move with the press (gate 2, second pass): in the measured win2 case the window
+   * was dragged 71 px, the press was correctly redirected, and the SSIM region stayed centred
+   * where the repaint no longer was — for a drag past the padding the region stops intersecting
+   * the window at all, the diff falls back to whole-window SSIM, and a correct press is reported
+   * as `indeterminate`. The same decision function, not a second copy of the rule.
    */
-  resolveEntityCenterForViewId(viewId: string, entityId: string): { x: number; y: number } | null {
+  resolveEntityCenterForViewId(
+    viewId: string,
+    entityId: string,
+    windowRect?: { x: number; y: number; width: number; height: number },
+  ): { x: number; y: number } | null {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
     const entity = session.entities.find((e) => e.entityId === entityId);
     if (!entity?.rect) return null;
-    return {
-      x: Math.round(entity.rect.x + entity.rect.width / 2),
-      y: Math.round(entity.rect.y + entity.rect.height / 2),
-    };
+    const x = Math.round(entity.rect.x + entity.rect.width / 2);
+    const y = Math.round(entity.rect.y + entity.rect.height / 2);
+    // No rectangle to compare against means the caller could not read one; every non-applied
+    // branch of the correction hands the point back unchanged, so this is the old behaviour.
+    if (!windowRect) return { x, y };
+    // Through the SAME entry point as the press — there is only the one, which is why the policy
+    // now lives inside it rather than in front of it. This caller is
+    // how the defect got reproduced inside its own fix: the press path learned to decline for
+    // coordinates the bracketed origin cannot describe, and this one went on correcting them
+    // (win2, auditing the review, 2026-09-10).
+    //
+    // **And the two points can still disagree, by a moment rather than by a rule.** `windowRect`
+    // was read for the PRE-frame, before the press; `resolvePressPoint` reads its own rectangle at
+    // dispatch. A window that moves between them is homed here against the older one, so the SSIM
+    // region can sit off the repaint the press caused — and on the BitBlt fallback the post-frame
+    // is captured from that same older rectangle, so a real repaint reads `indeterminate` (PR 側
+    // codex, 2026-09-10, P2). Left as it is on purpose: the cost is a diagnostic verdict and never
+    // a press, closing it means threading the executor's resolved point back into verification,
+    // and the window that moves in that gap is the same one the ladder is about — measure it
+    // before rebuilding the seam for it.
+    const homed = homingCorrectionForSources(entity.sources, session.lastAim?.origin, windowRect, x, y, {
+      capturedIn: observedHwndOfOrigin(entity.origin),
+      originOf: session.lastAim?.hwnd,
+    });
+    return { x: homed.x, y: homed.y };
+  }
+
+  /**
+   * ADR-036 item 2 — build the aim for a resolved target, reading the window's identity once.
+   *
+   * Only for results that carried no identity of their own: the direct `candidateProvider` path,
+   * and any test double. The ingress path takes its identity with the snapshot instead, because a
+   * cache hit would otherwise baseline against a window that arrived after the read.
+   *
+   * The identity is read through `win32` directly rather than through `identity-tracker.ts`, whose
+   * entry point (`observeTarget`) RECORDS what it sees: this is the read half of a comparison, and
+   * a read that updates a baseline would compare the world against itself.
+   */
+  private async _aimFor(target: TargetSpec | undefined): Promise<Aim> {
+    const aim = toAim(target);
+    if (aim.hwnd === undefined) return aim;
+    try {
+      // Injectable so a test can tell "the fallback did not run" from "the fallback ran and this
+      // machine cannot answer". Without that, the two look identical everywhere except Windows,
+      // and a guard that stopped running would pass its own suite (found by mutating it).
+      const win32 = await import("../engine/win32.js");
+      const identity = readWindowIdentityFields(aim.hwnd, {
+        identity: this.opts.readWindowIdentity ?? win32.getWindowIdentity,
+        className: win32.getWindowClassName,
+        title: win32.getWindowTitleW,
+      });
+      // Absence is not a value: a build that cannot ask leaves the aim without an identity, and
+      // nothing downstream may read that as a changed window.
+      //
+      // NO `origin` here, deliberately. This fallback runs AFTER the candidates were fetched,
+      // so a rectangle read now describes the window at a later moment than the coordinates it
+      // would be compared against — and a homing correction built on that difference shifts an
+      // already-correct point (gate 1, 2026-09-09). The ingress path can bracket its lanes and
+      // check the window did not move; this one has nothing to bracket, so it records no origin
+      // and no correction runs. Production always has the ingress; this is the direct
+      // `candidateProvider` road.
+      return identity ? { ...aim, identity } : aim;
+    } catch {
+      return aim;
+    }
   }
 
   /**
@@ -757,14 +919,20 @@ export class DesktopFacade {
    * pre-snapshot — otherwise the touched entity reads as `entity_disappeared`
    * (R1). Returns `null` when the session is gone (handler then skips the fold).
    *
-   * Parity is structural (Codex PR #438 P2 / Opus refute): the discover OCR lane
-   * receives the SAME raw `target` object (`see()` stores `lastTarget = input.target`
-   * at `desktop.ts:351` and `composeCandidates(target)` → `fetchOcrCandidates(target)`
-   * gets it UN-normalized at `compose-providers.ts:289`), so `@active` /
-   * `windowTitle` / `hwnd` all key identically here and there — there is no
-   * normalized-HWND-vs-`@active` divergence. (A `lastTarget` change between
-   * discover and act bumps the generation → the stale lease fails validation
-   * before the fold, so the read here always matches the lease's discover.)
+   * Parity used to be CLAIMED here and was false. The comment said the OCR lane "receives the
+   * SAME raw `target` object", so `@active` / `windowTitle` / `hwnd` keyed identically in both
+   * places. They did not: `composeCandidates` normalized the target before the fan-out, so the
+   * lane computed its id from a resolved handle while this computed one from the raw
+   * `lastTarget` — and a bare `desktop_discover()` therefore keyed `"@active"` here against
+   * `"2624042"` there, which the S5b fold reads as `entity_disappeared` (ADR-036).
+   *
+   * Parity is now REAL, and by construction rather than by argument: `see()` stores the resolved
+   * target the providers were read against, so this and the lane derive their id from the same
+   * object. Left as `hwnd ?? windowTitle ?? "@active"` — the lane's own expression — because the
+   * two have to agree on the shape as well as the value.
+   *
+   * (A `lastTarget` change between discover and act bumps the generation → the stale lease fails
+   * validation before the fold, so the read here always matches the lease's discover.)
    */
   resolveOcrTargetIdForViewId(viewId: string): string | null {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);

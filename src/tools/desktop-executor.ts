@@ -22,16 +22,102 @@ import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-gr
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
+import { classifyUiaRouteFailure, describeUiaRouteFailure } from "../engine/uia-route-failure.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { probeAim, aimProbeEnabled, readWindowIdentity } from "../engine/aim-probe.js";
+import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
+import {
+  toAim,
+  compareAimIdentity,
+  readWindowIdentityFields,
+  homingCorrectionForSources,
+  observedHwndOfOrigin,
+  containsPoint,
+  type Aim,
+  type WindowIdentity,
+  AimIdentityChangedError,
+  AimOccludedError,
+  AimBlockedByExcludedWindowError,
+  AimedWindowGoneError,
+  AimedPointOutsideWindowError,
+  AimedRouteFailedError,
+  TargetGoneError,
+  AIM_WINDOW_GONE,
+} from "../engine/aim.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
+import {
+  judgeKeyboardTarget,
+  readKeyboardRungSwitch,
+  parseHandle,
+  KeyboardTargetUnsafeError,
+  type KeyboardFacts,
+} from "../engine/keyboard-target.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
+/**
+ * ADR-036 family 2 — what the keyboard rung wrote to. {@link ExecutorDeps.keyboardTypeBg} resolves
+ * to it, and while the aim probe is on, the rung's route row carries it.
+ */
+export interface KeyboardReceipt {
+  /** The window the rung looked up: by handle when the act was aimed, by title otherwise. */
+  windowHwnd: bigint;
+  /**
+   * The handle the characters were posted to: the focus of the window's thread, or the window itself
+   * when that thread has no focus. Focus belongs to a thread, not a window, so it is usually a child
+   * of the window, but a dialog or another top-level window on the same thread can hold it. `null`
+   * when the post did not say which.
+   */
+  receiverHwnd: bigint | null;
+  /**
+   * Read by {@link ExecutorDeps.keyboardResolve} on every keyboard write, because the rule needs them.
+   * {@link ExecutorDeps.keyboardTypeBg}, the switch's path, reads them only while the aim probe is on.
+   * `receiverRootHwnd` is the top-level window that holds the receiver (GA_ROOT). `receiverStyle` is
+   * its style bits (GWL_STYLE): on an edit control, ES_READONLY marks a field that will not take the
+   * characters, whichever road the value went by.
+   */
+  receiverClass?: string;
+  receiverRect?: { x: number; y: number; width: number; height: number } | null;
+  receiverRootHwnd?: bigint | null;
+  receiverStyle?: number | null;
+  /**
+   * The receiver's parents, nearest first, up to but not including its top-level window (GA_PARENT
+   * repeatedly, bounded). A compound control keeps the focus in a child window of its own, so this is
+   * what tells "the receiver is inside the named control" from "the receiver is another control".
+   * The walk can stop short: a chain longer than 16, or a parent that cannot be read. Then
+   * `ancestorsComplete` is false, and the list holds what was walked, which can still show "inside"
+   * but never "not inside". `null` when the receiver's top-level window could not be read.
+   */
+  receiverAncestors?: bigint[] | null;
+  /** Whether the parent walk reached the receiver's top-level window. */
+  ancestorsComplete?: boolean;
+  /**
+   * ADR-036 family 2 — what the rule (`engine/keyboard-target.ts`) compares against. They are read by
+   * {@link ExecutorDeps.keyboardResolve} before anything is posted:
+   *   - GA_ROOT of the named control's own window, of the window it was captured in, of the aimed
+   *     window and of the window looked up. Each is null when its window is not alive;
+   *   - the owners of the receiver's top-level window, nearest first (GW_OWNER, bounded).
+   */
+  entityRootHwnd?: bigint | null;
+  originRootHwnd?: bigint | null;
+  aimRootHwnd?: bigint | null;
+  lookupRootHwnd?: bigint | null;
+  ownerChain?: bigint[];
+}
+
 export interface ExecutorDeps {
-  /** UIA Invoke: click/invoke by label (name) or automationId. */
-  uiaClick(windowTitle: string, name?: string, automationId?: string): Promise<void>;
-  /** UIA ValuePattern: type text into a textbox. */
-  uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string): Promise<void>;
+  /**
+   * UIA Invoke: click/invoke by label (name) or automationId.
+   *
+   * ADR-036 — `hwnd` names the window the caller actually resolved. When it is present the
+   * backend addresses that handle and does not look a window up by title, so a second window
+   * answering to the same title cannot take the action. Trailing and optional so a backend
+   * (or a test double) that ignores it still satisfies the interface.
+   */
+  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint): Promise<void>;
+  /** UIA ValuePattern: type text into a textbox. `hwnd` as in {@link ExecutorDeps.uiaClick}. */
+  uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string, hwnd?: bigint): Promise<void>;
   /** CDP: click a DOM element by CSS selector. */
   cdpClick(selector: string, tabId?: string): Promise<void>;
   /** CDP: fill a text input by CSS selector.
@@ -42,7 +128,7 @@ export interface ExecutorDeps {
    * Does not steal focus. Throws explicitly for unsupported windows (Chromium, UWP).
    * On failure, caller sees ok:false reason:"executor_failed" and can fall back to V1 terminal({action:'send'}).
    */
-  terminalSend(windowTitle: string, text: string): Promise<void>;
+  terminalSend(windowTitle: string, text: string, hwnd?: bigint): Promise<void>;
   /**
    * Issue #327 item E: UIA `setValue` fallback. Posts WM_CHAR to the focused child
    * of the target window via `bg-input.ts::postCharsToHwnd`. Used when the primary
@@ -58,10 +144,88 @@ export interface ExecutorDeps {
    * `UiAffordance.executors` / `UiEntity.unsupportedExecutors` (both remain the
    * 4-executor union). See `types.ts::ExecutorKind` JSDoc for the
    * advertised-surface rationale.
+   *
+   * ADR-036 family 2 — resolves to a {@link KeyboardReceipt} that names where the characters went.
+   * A backend (or a test double) that resolves to nothing still satisfies the interface. The record
+   * then says the receiver is unknown.
    */
-  keyboardTypeBg(windowTitle: string, text: string): Promise<void>;
+  keyboardTypeBg(windowTitle: string, text: string, hwnd?: bigint): Promise<KeyboardReceipt | void>;
+  /**
+   * ADR-036 family 2 — resolve the handle the keyboard rung would post to, and read what the rule
+   * needs about it, without posting anything.
+   *   - `refs` names the windows the rule compares against: the named control's own window, and the
+   *     window the entity was captured in.
+   *   - The window is looked up as {@link ExecutorDeps.keyboardTypeBg} looks it up: by handle when the
+   *     act named one (compared in the low 32 bits), by title otherwise.
+   *   - The same inject check runs on the resolved handle.
+   *
+   * Optional only so a double written before it still loads. A backend without it and
+   * {@link ExecutorDeps.keyboardPost} cannot say where the characters would go. The rung then posts
+   * through `keyboardTypeBg` and marks the success, never returning a plain one unchecked.
+   */
+  keyboardResolve?(
+    windowTitle: string,
+    hwnd: bigint | undefined,
+    refs: { entityHwnd?: bigint; originHwnd?: bigint },
+  ): Promise<KeyboardReceipt>;
+  /** Post `text` to exactly `receipt.receiverHwnd`, the handle that was judged, without asking the focus again. */
+  keyboardPost?(receipt: KeyboardReceipt, text: string): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
+  /**
+   * ADR-036 — where the aimed window is NOW, so a coordinate press can be checked against it.
+   *
+   * `null` means "no rectangle came back", which is NOT the same as "the window is gone":
+   * `getWindowRectByHwnd` also answers null when the native win32 binding is missing or the call
+   * throws, and this repo ships builds without that module. Reading null as gone refused every
+   * pinned coordinate press on such a build, with the message "the window you aimed at no longer
+   * exists" about a window on screen (2ゲート目の指摘) — the same conflation `isWindowGone` was
+   * written to avoid, reintroduced one file over. {@link ExecutorDeps.aimIsGone} is what earns the
+   * difference.
+   *
+   * Optional, and omitting it skips the check rather than blocking the press: a test double that
+   * does not care about coordinates should not have to grow one. Production passes
+   * `getWindowRectByHwnd`.
+   */
+  aimRect?(hwnd: bigint): Promise<{ x: number; y: number; width: number; height: number } | null>;
+  /**
+   * ADR-036 — whether the handle is known NOT to name a window any more.
+   *
+   * Consulted only when {@link ExecutorDeps.aimRect} returned null, to tell "gone" from "cannot
+   * tell". Production passes `isWindowGone`, which answers **false** whenever the binding could
+   * not be asked, so only a successful call is evidence. Absent (or false) means the containment
+   * check is skipped for this press: it goes out the way it did before this ADR existed, which is
+   * a known blind press and strictly better than refusing every press on a build that cannot
+   * answer the question.
+   *
+   * Async so production can reach `win32` through the same dynamic import every other dep uses;
+   * a test double may return a plain boolean.
+   */
+  aimIsGone?(hwnd: bigint): Promise<boolean> | boolean;
+  /**
+   * ADR-036 — who owns the aimed handle right now.
+   *
+   * `undefined` means the question could not be answered — no native binding, the window already
+   * gone, a build that cannot ask — and that is NOT evidence of a different window: the comparison
+   * treats it as `"unknown"` and lets the action through, because refusing on an unanswered
+   * question would take every aimed action down on such a build.
+   *
+   * Optional, so a test double that does not care about identity need not grow one; absent means
+   * no comparison is made, and the probe records that as its own row rather than as a silent pass.
+   */
+  aimIdentity?(hwnd: bigint): Promise<WindowIdentity | undefined> | WindowIdentity | undefined;
+  /**
+   * ADR-036 item 6 — who would take a press at this point, from the aim's point of view.
+   *
+   * `"other"` blocks the press: the window on top would have taken it. `"owned"` allows it even
+   * where the aim's own rectangle does not reach, because that is where a dropdown or a context
+   * menu lives. `"unknown"` is not a verdict — the containment check decides, exactly as it did
+   * before this dep existed.
+   *
+   * Optional so a test double need not grow one, and so a build whose enumeration cannot answer
+   * loses only this rung rather than the whole press.
+   */
+  pointOwner?(aimHwnd: bigint, x: number, y: number): PointOwner | undefined;
 }
 
 // ── G2: Background terminal send — injectable for testing ─────────────────────
@@ -116,8 +280,876 @@ export function terminalBgExecute(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function resolveWindowTitle(target?: TargetSpec): string {
-  return target?.windowTitle ?? target?.hwnd ?? "@active";
+// ADR-036 item 2 — the two helpers that used to live here, `resolveWindowTitle(target)` and the
+// call to `parseTargetHwnd(target)`, are gone into the aim itself (`engine/aim.ts`). Both read the
+// same `TargetSpec` and each answered half of "which window is this?", which is precisely how the
+// two halves came to disagree: the title helper answered `windowTitle ?? "@active"` while the
+// registry keyed sessions `hwnd > tabId > windowTitle`. One value with both fields cannot hold two
+// opinions. `"@active"` is still what the title-only backends are told when there is no title.
+
+/**
+ * ADR-036 — where a coordinate press on a pinned session actually goes.
+ *
+ * The specification's ladder for `mouse_click(x, y)`, in its order:
+ *
+ * >   -> check cached target rect and z-order
+ * >   -> refresh target rect via Win32 if stale or dirty
+ * >   -> if rect moved, apply homing correction
+ * >   -> if another top-level window covers point, block or refocus
+ * >   -> if target identity changed, invalidate coordinates
+ *
+ * All three rungs are here now — identity one level up, before a route is even chosen, because a
+ * changed identity makes every rectangle in this function meaningless. This RETURNS the point to
+ * press rather than asserting about the one it was handed: the correction and the checks have to
+ * be talking about the same point, and a function that validates one while the caller presses
+ * another validates nothing.
+ *
+ * The mouse route is not a downgrade: for an entity whose only affordance is visual — an OCR
+ * label, a `read`-only control — it is the route, and refusing it outright would take the
+ * capability away from exactly the windows UIA cannot see. What it must not be is BLIND. The
+ * point comes from a rect remembered at discover time, and a window that has since moved,
+ * minimised or closed leaves that point over something else, which then takes the press.
+ *
+ * Measured on Windows 2026-09-09: pinned `desktop_act` on `read` entities pressed the remembered
+ * rect and returned `ok:true` with no `downgrade` — invisible to the caller and to the guard
+ * that ends the ladder after a failed UIA attempt, because there was no failed attempt.
+ *
+ * What this does NOT prove, in the order the holes were found:
+ *
+ *   - Containment is not identity WITHIN the window, and a different CONTROL takes the press.
+ *     Measured on Windows 2026-09-09 (win2, five stacked buttons whose own click handlers write to
+ *     a log): a lease taken on the title bar, the window moved 71 px up, the remembered point left
+ *     where it was — `desktop_act` returned `ok:true`, `executor:"mouse"`, and the button that
+ *     logged the press was `BTN1`, which the lease had never named. Three independent channels
+ *     agreed: the rect read from outside (top 200 → 129), `AutomationElement::FromPoint`
+ *     (`CELL BUTTONS` → `BTN1`), and the button's own log line. Nothing in the envelope shows it —
+ *     `observation.motion` was `no_change` and `residual.fractionChanged` was 0.
+ *
+ *     So containment catches the move that takes the point OUT of the window (and minimise, which
+ *     parks the rect at -32000, and a window that is gone); it never catches the move that keeps
+ *     the point inside, and that case pressed whatever had arrived under the point.
+ *
+ *     The population is narrower than it looks: only entities that reach the mouse route get here,
+ *     which in that fixture meant the `read` / `primaryAction:"read"` class. A button whose
+ *     `preferredExecutors` lead with `uia` goes down the UIA road and never asks this question.
+ *
+ *     **Closed by the homing correction (item 5).** The aim carries the window origin those
+ *     coordinates were measured against, and a window that moved without resizing moves the point
+ *     with it. What is still NOT closed: a window that RESIZED — the contents may have reflowed,
+ *     and translating a point through a reflow is inventing a layout — and a control that moved
+ *     inside a window that did not. Both leave the point where it was and say so in the row.
+ *   - That the aimed window is the topmost one at that point. **Closed by item 6**
+ *     (`point-owner.ts`), approximately: the z-order enumeration answers who is under the point,
+ *     `WindowFromPoint` is the exact primitive and is not bound, and the three blind spots that
+ *     leaves are named in that file.
+ *
+ * This paragraph is written twice as long as it wants to be because its first version claimed the
+ * middle case ("catches what was measured — moved, minimised, gone") and the measurement above
+ * says otherwise. A comment is a claim, not a check.
+ */
+async function resolvePressPoint(
+  deps: ExecutorDeps,
+  aim: Aim,
+  /**
+   * ADR-036 item 12 — the window these COORDINATES were measured in, which is not always the window
+   * the call named. Passed in rather than read off the aim, because for a title-only discover the
+   * aim has no handle at all and the entity does.
+   */
+  aimHwnd: bigint | undefined,
+  /** ADR-036 item 5 — its sources say whether the bracketed origin can describe its coordinates. */
+  entity: UiEntity,
+  x: number,
+  y: number,
+  label: string,
+  /**
+   * ADR-036 item 12 — the failure this call is already recovering FROM, when it is one.
+   *
+   * Only the UIA downgrade road has one: UIA click failed, and the mouse press that would have
+   * covered for it is what the ladder below may refuse. Without it the caller sees the refusal and
+   * not the failure that made the coordinate road the road (gate 2, 2026-09-10) — and "UIA could
+   * not find the element" is usually the more useful half for whoever has to decide what to do
+   * next. Attached to every refusal this function makes, because any of its rungs can be the one
+   * that ends that recovery.
+   */
+  cause?: unknown,
+): Promise<{ x: number; y: number }> {
+  /** `undefined` rather than `{ cause: undefined }`: an absent cause must not print as one. */
+  const because: ErrorOptions | undefined = cause !== undefined ? { cause } : undefined;
+  // Narrowed rather than asserted. The caller only reaches here with a handle, and an assertion
+  // would keep that true by decree: this way a caller that stops checking loses the ladder, which
+  // is what it did before the ladder existed, instead of throwing inside it.
+  if (aimHwnd === undefined) return { x, y };
+  // ADR-036 item 12 — where this handle came from, written into every row and every refusal below.
+  //
+  // Without a source field, a title-only run produces a handle that appears from nowhere: one act
+  // says the call named none, the next row shows one, and nothing in the trace says the executor
+  // inferred it from `entity.origin` (gate 2, 2026-09-10). The refusals had the same problem in
+  // prose — they said "the window this call named" about a window the call never named, and on this
+  // road the call named a TITLE.
+  //
+  // **The row's NAME was half of that defect, and it survived the first fix** (gate 2, same day).
+  // The ladder wrote its handle as `aimHwnd`, the field `act.aim` uses for the handle the CALL
+  // named, so one act produced `act.aim{aimHwnd:null}` and then `act.route{aimHwnd:"4919"}` — one
+  // name carrying two facts, beside the `hwndFrom` that had just been added to separate them. From
+  // `df2b4d4` the ladder writes `coordHwnd` / `coordHwndFrom` (the names the mouse rows already
+  // used) and `aimHwnd` means "the handle the call named" in every row.
+  //
+  // **Sweeps taken before that commit quote the old names**, and they are not wrong — they are what
+  // the build wrote. Read `act.route{aimHwnd:"4919", hwndFrom:"entity_origin"}` from an older
+  // record as today's `coordHwnd` / `coordHwndFrom`. Records are annotated rather than rewritten,
+  // because rewriting a record makes it agree with code that never produced it (win2, 2026-09-10).
+  const handleFrom = aimHwnd === aim.hwnd ? "aim" : "entity_origin";
+  /** Named the way the caller would recognise it, which is not the same sentence on both roads. */
+  const theWindow = handleFrom === "aim"
+    ? `the window this call named (hwnd ${aimHwnd})`
+    : `the window these coordinates were measured in (hwnd ${aimHwnd}, from the entity's origin)`;
+  // ADR-036 item 14c — every refusal below writes a row naming the rung that made it.
+  //
+  // `homing` and `containment_check` are written before all of them, so the ladder is never silent
+  // about having run. What the rows could not say is WHICH rung stopped it: seven refuse, five of
+  // them throw one class, and the envelope folds those five into `aim_point_outside_window` — so a
+  // round had to read the refusal's prose against the rows to tell a minimise from a resize (win2,
+  // 2026-09-11, a reading of this code that the next round measures). `refused` is spelled the way
+  // `guarded-touch.ts` spells the reason, so one search finds every refusal in a record, the
+  // `aim_check` row's included. Called at the throw, so `point` is the one the rung judged.
+  const refusal = (rung: string, refused: string, err: Error): Error => {
+    probeAim("act.route", {
+      route: "refusal",
+      rung,
+      refused,
+      coordHwnd: String(aimHwnd),
+      coordHwndFrom: handleFrom,
+      point: { x, y },
+      label,
+    });
+    return err;
+  };
+  if (!deps.aimRect) {
+    // A skipped check writes a row saying so. Without it the log shows a press with a handle and
+    // no containment row, which reads exactly like a build that never reached this line.
+    // Both rows, because both rungs were skipped. A press with an aim and no `homing` row reads
+    // exactly like a build that never reached the rung — the failure the reasons in that row were
+    // written to prevent, one level up.
+    probeAim("act.route", { route: "homing", checked: false, why: "no_aim_rect_dep", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, from: { x, y }, label });
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_aim_rect_dep", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
+    return { x, y };
+  }
+  const rect = await deps.aimRect(aimHwnd);
+  if (!rect) {
+    // No rectangle is two different facts. Only a source that can say so reports the window gone;
+    // everything else is "cannot tell", and a check that cannot be made is skipped rather than
+    // turned into a refusal about a window that may well be on screen (see the deps' JSDoc).
+    if (await deps.aimIsGone?.(aimHwnd)) {
+      // A refusal writes a row too, and this one did not. Measured (win2, 2026-09-10, D2 re-run):
+      // the refusal is correct, the detail is correct, and `act.route` carries NOT ONE ROW — the
+      // ladder stops above every rung that writes one, so the trace shows a refusal with no ladder
+      // in it. `provider.read` is written in the same run, so the probe path is alive; what is
+      // missing is the record, not the mechanism.
+      //
+      // Same shape as `via` on a verdict, found by the same round: a field the DECISION does not
+      // need and the RECORD does. Whoever reads this months later, without the run, cannot tell
+      // "the ladder refused here" from "the ladder never ran" — and this branch is exactly the one
+      // that used to press blind, so its silence reads like the defect it replaced.
+      probeAim("act.route", {
+        route: "aim_check",
+        checked: true,
+        coordHwnd: aimHwnd.toString(),
+        coordHwndFrom: handleFrom,
+        point: { x, y },
+        alive: false,
+        refused: "aim_window_gone",
+        label,
+        // ADR-036 item 14c — named like every other refusal row, so "the rung that refused" is one
+        // field in every record (win, 2026-09-11: this row, the oldest, was the one without it).
+        rung: "window_gone",
+      });
+      throw new AimedWindowGoneError(aimHwnd, `no rectangle for it`, because,
+        `${theWindow.charAt(0).toUpperCase()}${theWindow.slice(1)}`);
+    }
+    probeAim("act.route", { route: "homing", checked: false, why: "no_rectangle_and_not_gone", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, from: { x, y }, label });
+    probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
+    return { x, y };
+  }
+
+  // ADR-036 item 5 — the specification's FIRST rung, and the one the implementation did not have:
+  // *if rect moved, apply homing correction*. The point came from a rectangle measured against the
+  // window origin at discover time; when the window has moved and kept its size, the point the
+  // caller means is the same offset inside it. Everything below — occlusion, containment, the
+  // press itself — uses the corrected point, because a ladder that checks one point and presses
+  // another is checking nothing.
+  // ADR-036 item 12 — WHOSE origin this is. The rectangle in `aim.origin` was measured around the
+  // window `toAim` resolved, and `rect` above is now read from `aimHwnd`, which on this road came
+  // from the ENTITY. When those are two different windows the origin's delta was measured somewhere
+  // else, and subtracting it moves the point by a distance nothing here has a reason for:
+  // reproduced by construction with a hand-built `Aim` — a silent 500 px displacement (gate 2,
+  // 2026-09-10). `measured_in_another_window` cannot catch it, because the aim that has no handle
+  // gives the guard nothing to compare and absence is deliberately "no evidence" there.
+  //
+  // Production never reaches it — `readOriginRectForTarget` returns nothing for a target that
+  // resolved to no handle, so an origin without a handle is not recorded — but that invariant lives
+  // in another file, and a ladder that presses coordinates must not depend on a caller it does not
+  // control. No origin for THIS window is exactly `no_origin_rect`: the correction is declined and
+  // nothing else about the ladder changes.
+  const origin = aimHwnd === aim.hwnd ? aim.origin : undefined;
+  let homing = homingCorrectionForSources(entity.sources, origin, rect, x, y, {
+    capturedIn: observedHwndOfOrigin(entity.origin),
+    originOf: aim.hwnd,
+  });
+  // ADR-036 item 5 — the correction is about the AIMED window, and a point can belong to a window
+  // merely drawn inside it. A modal dialog, or a dropdown that opens OVER its combo, is a top-level
+  // window of its own whose centre falls inside the owner's rectangle — and it does NOT move when
+  // its owner moves. Applying the owner's delta there moves a point that was already right, and the
+  // ownership test below then runs at the moved point and can see the owner as clear (PR 側 codex
+  // on #609, second round). That is a press the code got right before this rung existed.
+  //
+  // The question is put to the screen at the REMEMBERED point, and only when a correction would
+  // otherwise be adopted. An owned window sitting there is reason to leave the point alone: the
+  // entity MAY belong to it, that window has not moved, and the press then goes out exactly as it
+  // did before this rung, where the `owned` allowance below lets it through.
+  //
+  // **"May" is doing real work, and it now has evidence against it in some cases.** When the entity
+  // records the window its pixels came from and that window IS the aim, the entity did not come out
+  // of the popup — so a popup that happens to sit on the remembered point says nothing, and
+  // dropping the correction there sends the press into the popup instead of following the aim's own
+  // control to where it moved (PR 側 codex, 2026-09-10). The evidence arrived one commit earlier,
+  // in `capturedIn`, and this line was still reading only the screen.
+  //
+  // An unrecorded origin still suppresses, because absence is not evidence either way and that is
+  // the behaviour every entity had before the handle existed. The mistake this risks is a declined
+  // correction, which costs the press nothing.
+  const capturedIn = observedHwndOfOrigin(entity.origin);
+  if (homing.applied && capturedIn !== aimHwnd && deps.pointOwner?.(aimHwnd, x, y)?.kind === "owned") {
+    homing = { applied: false, x, y, why: "owned_popup_at_remembered_point" };
+  }
+  probeAim("act.route", {
+    route: "homing",
+    coordHwnd: aimHwnd.toString(),
+    coordHwndFrom: handleFrom,
+    // The origin as the aim holds it, so a row can be read without the run that produced it.
+    // `null` for one that was never taken, and `{kind:"moved_during_read"}` for one that was taken
+    // and says the coordinates are unusable: "nobody looked", "the correction declined to move it"
+    // and "the window would not hold still" are three different facts and only two of them are
+    // about the window.
+    origin: origin ?? null,
+    windowRect: rect,
+    from: { x, y },
+    to: { x: homing.x, y: homing.y },
+    applied: homing.applied,
+    delta: homing.applied ? { dx: homing.dx, dy: homing.dy } : null,
+    why: homing.applied ? null : homing.why,
+    label,
+  });
+  x = homing.x;
+  y = homing.y;
+
+  const inside = containsPoint(rect, x, y);
+
+  // ADR-036 item 6 — who would actually take this press. The specification's ladder asks this
+  // between the moved-rectangle correction and the identity check, and it answers a different
+  // question from containment: a rectangle can contain a point that another window is drawn over.
+  //
+  // It runs BEFORE the containment verdict is acted on, because it can also overrule it. A combo
+  // dropdown, a context menu and a tooltip are separate top-level windows that sit outside their
+  // owner's rectangle, and they are what the caller means to press when they discovered one —
+  // refusing those as "the point left the window" is a false refusal the containment check makes
+  // today (gate 2).
+  //
+  // Asked before this rung's own refusals are acted on, and the reason is a regression the resize
+  // refusal introduced (gate 2, third pass): a dropdown or a modal drawn OVER its owner has its
+  // centre INSIDE the owner's rectangle, so the correction gets past `point_was_outside_origin`
+  // and answers `window_resized` about a window the entity does not live on. The entity is on a
+  // separate top-level window that did not resize, and before this commit `owned` let it through.
+  const owner = deps.pointOwner?.(aimHwnd, x, y);
+  probeAim("act.route", {
+    route: "containment_check",
+    checked: true,
+    coordHwnd: aimHwnd.toString(),
+    coordHwndFrom: handleFrom,
+    point: { x, y },
+    windowRect: rect,
+    inside,
+    // `via` is hoisted OUT of the handle-carrying branch: it used to be written only beside a
+    // handle and a title, so a `blocked` or an `aim` row said nothing about which mechanism
+    // produced it — and once both roads refuse on an excluded window, the verdict's shape stopped
+    // telling a reader which one did (win2's real-machine round, 2026-09-10, had to cross-reference
+    // another day's file). New keys go at the END of this object: an excerpt taken at a fixed width
+    // is what several rounds actually read.
+    pointOwner: owner ? { kind: owner.kind, ...("hwnd" in owner ? { hwnd: owner.hwnd.toString(), title: owner.title } : {}), ...("why" in owner ? { why: owner.why } : {}), ...(owner.via ? { via: owner.via } : {}) } : null,
+    // WHOSE window it was checked against, said out loud. `checked:true` alone claims the point was
+    // validated against the entity's window, and on this road nothing has verified that the handle
+    // still NAMES that window: identity invalidation is gated on `aim.hwnd`, and a title-only act
+    // has none, so a recycled handle produces a row that says "checked" about a stranger (Opus
+    // sandbox review, 2026-09-10 — a residual, since the pre-ADR code pressed there with no row at
+    // all). "Checked" and "checked against the right window" must not share a representation.
+    identityBaseline: aim.identity !== undefined && aimHwnd === aim.hwnd ? "compared" : "none",
+    label,
+  });
+  if (owner?.kind === "blocked") {
+    // A security refusal, and it is asked before every rung below. Those rungs change what the
+    // caller should do next — restore a minimised window, re-discover after a resize — and none of
+    // them changes whether THIS press may go out. Answering one of them first would also make the
+    // ladder's order the thing that decides whether a locker dialog is pressed.
+    //
+    // **Nothing about the covering window is said**: not its handle, not its title, not its
+    // process. Naming it would hand back what the exclusion registry exists to withhold, and would
+    // confirm by naming that the window over the point IS the locker (gate 2, Opus sandbox review).
+    // What the caller gets is the coordinates it already had and the fact that something there is
+    // out of bounds — the least that can be said while still refusing.
+    //
+    // Its own class and its own reason, NOT `WindowExcludedError`. The first version of this rung
+    // reused that one because `reason:"window_excluded"` already carried the line this case needs —
+    // "Do NOT retry by coordinate ... a route that does not check the exclusion". It carries three
+    // others, and two of them are false here: they tell the caller that THEIR window is excluded and
+    // that they should go act on a different one, when their window is fine and something else is
+    // over the point. One apt line out of four is not "the advice this case needs" (gate 2, Opus
+    // sandbox review, 2026-09-10) — and the fourth line names the key locker, delivering in prose
+    // the identification the detail was carefully written not to give.
+    //
+    // **The residual, stated rather than hidden**: a caller that presses point after point still
+    // learns WHERE something out of bounds is, because a refusal is an answer. All three options
+    // leak that much; the other two add the window's title, or the keystroke itself.
+    throw refusal("excluded_window", "aim_blocked_by_excluded_window", new AimBlockedByExcludedWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": a window this server may not act through is ` +
+      `over that point. Nothing was clicked. Nothing about that window is named here — not its ` +
+      `title, not its handle — and it is not the window these coordinates were measured in.`,
+      because,
+    ));
+  }
+  if (!homing.applied && homing.why === "window_off_desktop") {
+    // Refused HERE, not left to the containment check below. Between the two sits the occlusion
+    // rung, and `whoIsUnderPoint` filters minimised windows out of its own candidate list — so on
+    // a real desktop something else is almost always over the remembered point, and the caller
+    // would get `aim_occluded` ("bring the intended window forward") about a window that is
+    // minimised, instead of the refusal that names the minimise and says to restore it (gate 2,
+    // second pass). The unit cell for this passed only because its deps carried no `pointOwner`.
+    throw refusal("window_off_desktop", "aim_point_outside_window", new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": ${theWindow} is ` +
+      `parked off the desktop at (${rect.x}, ${rect.y}) — that is what Windows reports for a ` +
+      `MINIMISED window, and no point on screen belongs to it. Nothing was clicked. Restore it ` +
+      `(focus_window) and re-run desktop_discover.`,
+      aimHwnd,
+      because,
+    ));
+  }
+  if (!homing.applied && homing.why === "moved_during_read") {
+    // The window would not hold still while it was being read, so the coordinates in this snapshot
+    // were measured across more than one position: an early lane's candidate describes the window
+    // where it was, a late one's where it went, and nothing here can say which is which. Pressing
+    // the remembered point is the stale-coordinate press this rung exists to remove, and no
+    // correction can repair it — there is no single delta (gate 1, third pass, 2026-09-09).
+    throw refusal("moved_during_read", "aim_point_outside_window", new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": these coordinates belong to ${theWindow}, and ` +
+      `that window MOVED while it was being read, so the coordinates in that snapshot were measured ` +
+      `against more than one position — no single correction describes them. Nothing was clicked. ` +
+      `Re-run desktop_discover once the window has settled.`,
+      aimHwnd,
+      because,
+    ));
+  }
+  // ADR-036 item 5 — the coordinates say which window they came from, so the screen has to agree.
+  //
+  // `measured_in_another_window` is the one verdict that invalidates every comparison the ladder
+  // makes: the origin, the current rectangle, the resize and the containment are all about the aim,
+  // and these pixels are not. That leaves exactly one usable piece of evidence — who is under the
+  // point NOW.
+  //
+  // **It had its own copy of that test until the review below.** The press is allowed where the
+  // answer is the window the pixels came from and refused where it is a DIFFERENT one — and that
+  // sentence is now written once, at the allowance a few lines down, which every road reaches.
+  // Two copies had already drifted apart: this one refused on any answer, the other allowed any
+  // owned window at all (PR 側 codex on #609 and on #612; Opus sandbox review, 2026-09-10). Both
+  // halves of the rule are corrections of a round that got the other half wrong.
+  //
+  // **`aim` is NOT the third answer, and that is measured.** The version of this that shipped for a
+  // few hours also refused when the enumeration said the aim itself was on top — reading that as
+  // "the entity's window is not there". It does not mean that. `whoIsUnderPoint` cannot see an
+  // untitled popup at all, so a dropdown or tooltip drawn over its owner makes it answer `aim`
+  // while the popup really is on top, and the press that follows is correct (win2, 2026-09-10,
+  // `dev/adr036-items56-popups/`). Refusing there would have been a false refusal for the commonest
+  // popup on Windows, invented out of the enumeration's blind spot.
+  //
+  // `unknown` and a missing dep stay out of it for the same reason, and `other` falls through to
+  // the occlusion refusal below, which names the covering window and says what to do about it.
+  // Only now the popup allowance. The press is on a window this one owns: allowed, and allowed
+  // even where the aim's own rectangle does not contain the point, because that is where dropdowns
+  // live — and allowed before the verdicts BELOW, which are statements about the AIM's layout and
+  // say nothing about a window that merely hangs off it.
+  //
+  // **`unknown` does NOT get this allowance, and that is a decision rather than an oversight**
+  // (PR 側 codex, 2026-09-10). A `ComboLBox` dropdown answers `unattributable_window`, so an item
+  // of it that hangs OUTSIDE the owner's rectangle still ends at the containment refusal below.
+  // That is a residual and not a regression: before the hit test existed, an untitled popup was
+  // invisible to the enumeration, so a point outside the aim's rectangle found either a stranger
+  // (`other`, refused) or nothing (`unknown`, refused by containment). The press was refused then
+  // and is refused now; what changed is only that we can see why.
+  //
+  // Widening the allowance to `unknown` would be a NEW press in a case that was refused, and the
+  // measurement says what would come with it: the rung answers on "captionless, same thread", which
+  // a splash screen and a custom-chrome frame satisfy too. Pressing outside the aim's rectangle
+  // into one of those is exactly what item 6 exists to stop. What would close it honestly is
+  // knowing the popup belongs to the aim — and no rule on ownership, thread or process establishes
+  // that for a `ComboLBox`, which is the open question this ADR carries.
+  //
+  // Deliberately NOT before the two above. Those are statements about the whole SNAPSHOT: a
+  // minimised aim and a smeared read make every coordinate in it unusable, the popup's included.
+  // `owned` says which top-level window is under the point NOW — not that the leased entity came
+  // from it — so letting it past those two reports success after pressing an unrelated dropdown
+  // (PR 側 codex on #609). The previous round moved this line one rung too far up.
+  //
+  // **The allowance is not unconditional, and the narrowing has a condition of its own.** An owned
+  // window that is NOT where the pixels came from is an occluder: the entity's own origin says the
+  // control is in another window, so the press would land in a dialog while the caller is told
+  // their control was clicked (PR 側 codex, 2026-09-10, P1).
+  //
+  // Refused only on the OS's answer. `whoIsUnderPoint` has two mechanisms and they do not deserve
+  // the same trust: `WindowFromPoint` resolves real hit regions, while the ENUMERATION reads
+  // rectangles and is measured blind to a click-through overlay's transparency — it names a window
+  // presses fall straight through. Refusing on that would invent a refusal out of a known blind
+  // spot, which is the same mistake as reading `aim` as evidence of absence, and it would break
+  // presses that work today on every build without the native addon (Opus sandbox review,
+  // 2026-09-10). On the enumeration's answer the allowance stands, exactly as before.
+  //
+  // Both earlier rungs consult the same verdict on their way past — `measured_in_another_window`
+  // used to carry its own copy of this test, which is one rule in two places (and the two drifted:
+  // one refused on any answer). It reads it here now, once.
+  if (owner?.kind === "owned") {
+    // Absence is not evidence: an entity that recorded no origin keeps the allowance it always had.
+    if (capturedIn === undefined || owner.hwnd === capturedIn || owner.via !== "os_hit_test") {
+      return { x, y };
+    }
+    throw refusal("owned_window_not_origin", "aim_point_outside_window", new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
+      `${capturedIn}, and the window under that point now is ${owner.hwnd} ("${owner.title}") — ` +
+      `a different window that ${aimHwnd} also owns. A menu, dialog or dropdown has an origin of ` +
+      `its own and does not move with the window that owns it, so nothing here can follow these ` +
+      `coordinates to where they went. Nothing was clicked. Re-run desktop_discover.`,
+      aimHwnd,
+      because,
+    ));
+  }
+
+  if (!homing.applied && homing.why === "window_resized" && origin?.kind === "measured") {
+    // The point WAS inside this window, and the window has relaid out since. Nothing here can say
+    // where the control went — that is what the correction declined to guess — and pressing the
+    // remembered coordinate anyway is exactly the silent wrong press this ladder exists to remove
+    // (gate 1, 2026-09-09). Containment cannot catch it: a resized window usually still contains
+    // the point, which is why the press went through before.
+    //
+    // Same refusal as a point that left the window, deliberately: the recovery is identical
+    // (re-discover and act on what comes back), and the published advice for that reason already
+    // names the resize. A second reason with the same advice would be one more thing to keep in
+    // step for no reader's benefit.
+    throw refusal("window_resized", "aim_point_outside_window", new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": these coordinates belong to ${theWindow}, which is ` +
+      `still on screen but has been RESIZED since the lease was taken — it was ` +
+      `${origin.rect.width}x${origin.rect.height} and is ${rect.width}x${rect.height} now. A ` +
+      `window that moved without resizing would have been followed, had these coordinates been ` +
+      `measured in the same read that measured it; a resize can lay the contents out differently, ` +
+      `and nothing here can say what is under that point now. Re-run desktop_discover.`,
+      aimHwnd,
+      because,
+    ));
+  }
+  // Now the stranger on top — after this rung's verdicts, because "bring the intended window
+  // forward" is not the recovery for a window that resized or is minimised.
+  if (owner?.kind === "other") {
+    throw refusal("occluded", "aim_occluded", new AimOccludedError(aimHwnd, owner.hwnd, owner.title, x, y, because, theWindow));
+  }
+  if (!inside) {
+    // Typed, not a plain `Error`: the loop reports `executor_failed` for anything it cannot name,
+    // and that reason's first suggestion is a coordinate click at the entity's rect — this point.
+    throw refusal("point_outside_window", "aim_point_outside_window", new AimedPointOutsideWindowError(
+      `Refusing to click (${x}, ${y}) for "${label}": these coordinates belong to ${theWindow}, and ` +
+      `that window is now at (${rect.x}, ${rect.y}) ${rect.width}x${rect.height}. The point comes from a ` +
+      `rectangle remembered at discover time, and it was not corrected: ${homing.applied ? "it was" : homing.why}. ` +
+      `A window that moved WITHOUT resizing is followed when the coordinates were measured in the ` +
+      `same read that measured the window. Whatever is under that point now would take the click. ` +
+      `Re-run desktop_discover.`,
+      aimHwnd,
+      because,
+    ));
+  }
+  return { x, y };
+}
+
+/**
+ * ADR-036 probe — a road that succeeded says so.
+ *
+ * The first version of this probe only wrote at the two mouse presses and the containment check,
+ * so a run that went cleanly through UIA left no row at all and had to be inferred from the gap
+ * between `act.aim` and the next seam. That is the probe breaking its own rule — absence is
+ * recorded, not inferred — and it made the road that works the only one with no evidence (win2,
+ * from the first real-machine sweep, 2026-09-09).
+ */
+function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity, extra: Record<string, unknown> = {}): void {
+  probeAim("act.route", {
+    route,
+    // `hasAim`, not `aimed`: this is a reading of the handle, and it was called `aimed` while the
+    // comment beside it claimed it meant "the containment check ran". Those are different facts,
+    // and on a build whose `aimRect` cannot answer they come apart (gate 2).
+    hasAim: aimHwnd !== undefined,
+    aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
+    entityId: entity.entityId,
+    entityLabel: entity.label ?? null,
+    ...extra,
+  });
+}
+
+/**
+ * ADR-036 item 14c — a refusal on a ROUTE writes a row too, naming the route and the reason.
+ *
+ * Without it an aimed act that the UIA route could not finish ended in a typed refusal and no
+ * `act.route` row at all, which is how a record says "nothing ran" (win2, 2026-09-11, a reading of
+ * this code — the round that provokes it records the before side on `main`).
+ *
+ * The backend's own message is NOT written. On the PowerShell road it is the whole script, and on the
+ * `type` road it carries the text being typed (item 13) — a probe file is still a file on the user's
+ * disk. A reader who needs the message needs the fixture's record, not this one.
+ */
+function probeRefusal(
+  rung: string,
+  refused: string,
+  aimHwnd: bigint | undefined,
+  entity: UiEntity,
+  /** Engine-written fields only — a class name, never a backend's text. */
+  extra: Record<string, unknown> = {},
+): void {
+  probeRoute("refusal", aimHwnd, entity, { rung, refused, ...extra });
+}
+
+/**
+ * ADR-036 family 2 — where a keyboard rung's characters went, next to where the caller asked for them.
+ *
+ * The keyboard rung posts WM_CHAR to whatever holds the focus of the window's thread. That is usually
+ * a child of the window, but a dialog or another top-level window on the same thread can hold it. The
+ * rung never asks whether it is the field the caller named. win2 measured what that does (internal
+ * #74, on `66219a1`):
+ *   - a type aimed at a read-only field wrote into the field beside it;
+ *   - a type at a field that had gone wrote into whichever field held focus;
+ *   - both answered `ok:true`.
+ * Whether to refuse those, or to say so, is the user's call, and the user asked for the facts first
+ * (2026-09-11). This writes those facts and changes nothing.
+ *
+ * The facts are raw, not a verdict, so a later rule can be tried against the same record:
+ *   - the receiver's handle, class, rect and style, and the top-level window that holds it;
+ *   - the entity's rect and control type;
+ *   - the class of the value road's failure.
+ * `inWindow`, `editReadOnly` and `entityCenterInReceiver` are readings of those facts, not the rule.
+ * Each is `null`, never `false` or `true`, when the facts cannot answer it.
+ *
+ * `editReadOnly` is there because the class of the value road's failure is not enough on its own. The
+ * classifier knows the PowerShell road's words for a read-only field, but the native road answers with
+ * an HRESULT it does not know. So on the title road, a type at a read-only field that held the focus
+ * wrote nothing, yet it read like a rescue that landed (2ゲート目の指摘).
+ *
+ * A receiver that is the window itself means the thread had no focused window. A WPF window, whose
+ * controls have no handles, reads that way, and there a handle cannot say which field got the text.
+ * That rect holds every field in the window, so `entityCenterInReceiver` is `null` there, rather than
+ * a `true` that would hold whatever happened.
+ *
+ * Neither the typed text (item 13) nor any backend's message is written. And the record must not break
+ * the act it records. The characters are already posted when this runs, and a throw here would reach
+ * the rung's `catch` and report a write that happened as one that failed. A fact that cannot be read
+ * is written as `landingError`.
+ */
+function keyboardLanding(
+  entity: UiEntity,
+  receipt: KeyboardReceipt | void,
+  /** The value road's error, on the rung that falls back from it. Absent on the keyboard-only road. */
+  valueRoadError?: unknown,
+): Record<string, unknown> {
+  if (!aimProbeEnabled()) return {};
+  // Filled in order, so the facts read before a throw are still written beside `landingError`.
+  const facts: Record<string, unknown> = {};
+  try {
+    facts.valueRoadFailure =
+      valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified");
+    facts.entityRect = entity.rect ?? null;
+    facts.entityControlType = entity.controlType ?? null;
+    // The named element's own window handle, when the read recorded one — the other half of
+    // `receiverIsEntity` below.
+    facts.entityHwnd = entity.locator?.uia?.nativeWindowHandle ?? null;
+    Object.assign(facts, receiverFacts(receipt, entity.rect ?? null, entity.locator?.uia?.nativeWindowHandle ?? null));
+  } catch {
+    facts.landingError = true;
+  }
+  return facts;
+}
+
+/** ES_READONLY: on an edit control, the field will not take typed characters. */
+const ES_READONLY = 0x0800;
+
+/**
+ * The window classes whose style bit 0x0800 is ES_READONLY: Win32 `Edit`, the RichEdit family, and the
+ * WinForms classes built on them (`WindowsForms10.EDIT.…`, `WindowsForms10.RichEdit20W.…`).
+ *
+ * In any other class the low style bits mean something else; on a Button, 0x0800 is BS_BOTTOM. And a
+ * class whose name merely contains "edit" keeps its read-only state somewhere else, so for it
+ * `editReadOnly` is `null` (2ゲート目, second read). Two examples are a WPF
+ * `HwndWrapper[SomeEditor.exe;;…]` and a custom editor pane.
+ */
+const EDIT_CONTROL_CLASS = /^(?:WindowsForms10\.)?(?:Edit|RichEdit\w*)(?:\.|$)/i;
+
+/**
+ * A window handle as this record writes it and compares it: the unsigned low 32 bits.
+ *
+ * USER handles are 32-bit values sign-extended for interop, so the low 32 bits are the whole handle.
+ * The two sides compared below do not arrive in one width:
+ *   - the named control's handle is written from UIA as unsigned 32-bit (`tree.rs`, and the PowerShell
+ *     script);
+ *   - the receiver comes from `GetFocus` as the native pointer widened to 64 bits.
+ * A handle with bit 31 set would then read as two different numbers for the same control, and the
+ * refusal that is built on this comparison would refuse the right control (2ゲート目). So both sides
+ * are written and compared in one form.
+ */
+function hwnd32(h: bigint): string {
+  return BigInt.asUintN(32, h).toString();
+}
+
+function sameHwnd(a: bigint, b: bigint): boolean {
+  return BigInt.asUintN(32, a) === BigInt.asUintN(32, b);
+}
+
+function receiverFacts(
+  receipt: KeyboardReceipt | void,
+  entityRect: { x: number; y: number; width: number; height: number } | null,
+  /** The named element's own window handle, when the read recorded one (`locator.uia.nativeWindowHandle`). */
+  entityHwnd: string | null,
+): Record<string, unknown> {
+  // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
+  if (!receipt) {
+    return { receiver: null, receiverIsEntity: null, receiverInEntity: null, entityCenterInReceiver: null };
+  }
+  const hwnd = receipt.receiverHwnd;
+  const root = receipt.receiverRootHwnd ?? null;
+  const ancestors = receipt.receiverAncestors ?? null;
+  // A receipt from before the walk could stop short carried a list only when it was complete.
+  const ancestorsComplete = receipt.ancestorsComplete ?? ancestors !== null;
+  const className = receipt.receiverClass ?? null;
+  const style = receipt.receiverStyle ?? null;
+  const rect = receipt.receiverRect ?? null;
+  const isWindowItself = hwnd !== null ? sameHwnd(hwnd, receipt.windowHwnd) : null;
+  const inWindow = root !== null ? sameHwnd(root, receipt.windowHwnd) : null;
+  // ADR-036 family 2 — whether the receiver IS the named element, by handle. Positions cannot say it
+  // on the title road, where no window position is recorded, and a handle does not move with the
+  // window. `null` when either handle is unknown: a windowless element, or a read that could not say.
+  // A control whose handle was recreated after discover (WinForms `RecreateHandle`, a dialog opened
+  // again) reads `false` here, though it is the same control. So does `receiverInEntity`, because the
+  // receiver's parents carry the new handle too (2ゲート目).
+  const receiverIsEntity = hwnd !== null && entityHwnd !== null ? hwnd32(hwnd) === entityHwnd : null;
+  return {
+    receiver: {
+      hwnd: hwnd !== null ? hwnd32(hwnd) : null,
+      windowHwnd: hwnd32(receipt.windowHwnd),
+      isWindowItself,
+      rootHwnd: root !== null ? hwnd32(root) : null,
+      inWindow,
+      className,
+      rect,
+      style,
+      editReadOnly: editReadOnlyOf(className, style),
+      ancestors: ancestors !== null ? ancestors.map(hwnd32) : null,
+      ancestorsComplete: ancestors !== null ? ancestorsComplete : null,
+    },
+    receiverIsEntity,
+    receiverInEntity: insideEntity(hwnd, root, ancestors, ancestorsComplete, entityHwnd),
+    // Only a receiver known to be a child inside the aimed window is compared. In two cases the
+    // reading would say "inside" whatever happened, so it is null there:
+    //   - the window itself holds every field;
+    //   - a dialog on the same thread can sit over the field on screen.
+    entityCenterInReceiver:
+      isWindowItself === false && inWindow === true && rect !== null && entityRect !== null
+        ? centerInside(entityRect, rect)
+        : null,
+  };
+}
+
+/**
+ * Whether the receiver is the named control or a window INSIDE it. A compound control keeps the focus
+ * in a child window of its own: an editable ComboBox, a NumericUpDown, an IP-address box, a grid's
+ * editing cell. There `receiverIsEntity` is `false` while the characters went into the control named
+ * (2ゲート目). `null` when that cannot be said: either handle unknown, or the parents not read.
+ *
+ * Only parents are followed, not owners. So an owned popup that holds the focus (a dropdown list)
+ * reads `false` against the control that opened it; it also reads `inWindow: false`, which says so.
+ */
+function insideEntity(
+  hwnd: bigint | null,
+  root: bigint | null,
+  ancestors: bigint[] | null,
+  /** Whether the walk reached the top-level window. A partial walk can show "inside", never "not". */
+  ancestorsComplete: boolean,
+  entityHwnd: string | null,
+): boolean | null {
+  if (hwnd === null || entityHwnd === null) return null;
+  if (hwnd32(hwnd) === entityHwnd) return true;
+  // `ancestors` stops short of the top-level window, so the root is checked on its own. UIA lists an
+  // owned dialog as a child of its owner, so a dialog can be the element named (2ゲート目, second read).
+  if (root !== null && hwnd32(root) === entityHwnd) return true;
+  if (ancestors === null) return null;
+  if (ancestors.some((a) => hwnd32(a) === entityHwnd)) return true;
+  return ancestorsComplete ? false : null;
+}
+
+/** `editReadOnly` as the row writes it and the rule reads it: only an Edit-family class's bit answers. */
+function editReadOnlyOf(className: string | null, style: number | null): boolean | null {
+  return style !== null && className !== null && EDIT_CONTROL_CLASS.test(className) ? (style & ES_READONLY) !== 0 : null;
+}
+
+/** The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read. */
+function keyboardFactsOf(entity: UiEntity, receipt: KeyboardReceipt): KeyboardFacts {
+  const ancestors = receipt.receiverAncestors ?? null;
+  return {
+    entityHwnd: parseHandle(entity.locator?.uia?.nativeWindowHandle),
+    entityRoot: receipt.entityRootHwnd ?? null,
+    originRoot: receipt.originRootHwnd ?? null,
+    aimRoot: receipt.aimRootHwnd ?? null,
+    lookupRoot: receipt.lookupRootHwnd ?? null,
+    receiver: receipt.receiverHwnd,
+    receiverRoot: receipt.receiverRootHwnd ?? null,
+    receiverAncestors: ancestors ?? [],
+    ancestorsComplete: receipt.ancestorsComplete ?? ancestors !== null,
+    receiverReadOnly: editReadOnlyOf(receipt.receiverClass ?? null, receipt.receiverStyle ?? null),
+    ownerChain: receipt.ownerChain ?? [],
+  };
+}
+
+/**
+ * ADR-036 family 2 — the keyboard rung: resolve where the characters would go, judge it, and then post
+ * to exactly that handle, or refuse (internal `dev/fam2-refusal/DESIGN.md` §4).
+ *
+ * Both roads that reach the rung come here: the fallback after the value road, and the keyboard-only
+ * entity. The rule itself is `judgeKeyboardTarget`, and nothing here second-guesses it:
+ *   - a refusal throws `KeyboardTargetUnsafeError` before any character is posted;
+ *   - "cannot say" posts and returns the `landing` marker;
+ *   - a confirmed write returns the bare `"keyboard"`, as today.
+ */
+async function keyboardRung(
+  d: ExecutorDeps,
+  entity: UiEntity,
+  winTitle: string,
+  aimHwnd: bigint | undefined,
+  text: string,
+  why: "uia_set_value_failed" | "keyboard_only_entity",
+  valueRoadError?: unknown,
+): Promise<ExecutorKind | ExecutorOutcome> {
+  const sw = readKeyboardRungSwitch();
+  // The switch's whole form: today's path exactly — no check, a bare "keyboard".
+  if (sw.unchecked) {
+    const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
+    probeRoute("keyboard", aimHwnd, entity, { why, verdict: "unchecked", ...keyboardLanding(entity, receipt, valueRoadError) });
+    return "keyboard";
+  }
+  // A backend that cannot resolve the receiver before posting. It posts as before, and the success says
+  // it could not be confirmed.
+  if (!d.keyboardResolve || !d.keyboardPost) {
+    const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
+    probeRoute("keyboard", aimHwnd, entity, {
+      why,
+      verdict: "unconfirmed:receiver_unknown",
+      referenceFrom: "none",
+      ...keyboardLanding(entity, receipt, valueRoadError),
+    });
+    return { kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } };
+  }
+  const receipt = await d.keyboardResolve(winTitle, aimHwnd, {
+    entityHwnd: parseHandle(entity.locator?.uia?.nativeWindowHandle) ?? undefined,
+    originHwnd: observedHwndOfOrigin(entity.origin),
+  });
+  const verdict = judgeKeyboardTarget(keyboardFactsOf(entity, receipt), sw.disabled);
+  if (verdict.kind === "refuse") {
+    // One row, the refusal, carrying the facts it was decided on: nothing was posted, so no route row.
+    probeRefusal("keyboard", "keyboard_target_unsafe", aimHwnd, entity, {
+      why,
+      ground: verdict.ground,
+      referenceFrom: verdict.referenceFrom,
+      ...keyboardLanding(entity, receipt, valueRoadError),
+    });
+    throw new KeyboardTargetUnsafeError(
+      verdict.ground,
+      verdict.subject,
+      // Which way back the caller has: only the title road reaches a click that can focus a text
+      // field (the UIA route has no invoke for one, and the aimed ladder stops rather than pressing).
+      aimHwnd !== undefined ? "handle" : "title",
+      `Refusing to type for entity ${entity.entityId}: ${verdict.ground}, receiver ${receipt.receiverHwnd ?? "unknown"}, ` +
+        `reference window from ${verdict.referenceFrom}`,
+    );
+  }
+  await d.keyboardPost(receipt, text);
+  probeRoute("keyboard", aimHwnd, entity, {
+    why,
+    verdict: verdict.confirmed ? "posted" : `unconfirmed:${verdict.why}`,
+    referenceFrom: verdict.referenceFrom,
+    ...keyboardLanding(entity, receipt, valueRoadError),
+  });
+  return verdict.confirmed
+    ? "keyboard"
+    : { kind: "keyboard", landing: { confirmed: false, why: verdict.why, referenceFrom: verdict.referenceFrom } };
+}
+
+function centerInside(
+  inner: { x: number; y: number; width: number; height: number },
+  outer: { x: number; y: number; width: number; height: number },
+): boolean {
+  const cx = inner.x + inner.width / 2;
+  const cy = inner.y + inner.height / 2;
+  return cx >= outer.x && cx < outer.x + outer.width && cy >= outer.y && cy < outer.y + outer.height;
+}
+
+/**
+ * The entity's label as a caller's sentence quotes it. A label has no bound (a UIA Name can be a
+ * paragraph) and the envelope cuts `detail` at 1000 characters, so an uncut label could push out the
+ * class the sentence exists to name, and the caller would read "no class" (2ゲート目, round 3 on #622).
+ */
+function quotedLabel(entity: UiEntity): string {
+  const label = entity.label ?? entity.entityId;
+  return label.length > 200 ? `${label.slice(0, 200)}…` : label;
+}
+
+/**
+ * ADR-036 item 14c — the two ADR-029 refusals, by the names `guarded-touch.ts` matches them on.
+ *
+ * They are thrown below the routes, by the reachability check and by the cursor itself, so they
+ * reached the caller as refusals and left the record with no row that said so (win, 2026-09-11,
+ * counting every typed throw the executor can let out).
+ */
+function adr029Refusal(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  if (err.name === "CoordinateOutsideReachableBounds") return "coordinate_outside_reachable_bounds";
+  if (err.name === "CursorPlacementBlocked") return "cursor_placement_blocked";
+  return undefined;
+}
+
+/** Run one step; if it throws an ADR-029 refusal, write that refusal's row before letting it go. */
+async function probedStep<T>(
+  rung: string,
+  aimHwnd: bigint | undefined,
+  entity: UiEntity,
+  step: () => T | Promise<T>,
+): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    const refused = adr029Refusal(err);
+    if (refused !== undefined) probeRefusal(rung, refused, aimHwnd, entity);
+    throw err;
+  }
+}
+
+/**
+ * One side of an `act.identity` row — every field {@link compareAimIdentity} looks at, and nothing
+ * it does not. A row that omitted a field the decision used made a real refusal look like a bug.
+ */
+function identityRow(id: WindowIdentity): Record<string, unknown> {
+  return {
+    pid: id.pid,
+    processName: id.processName,
+    processStartTimeMs: id.processStartTimeMs,
+    // Written as null rather than left out when absent: "could not read the class" and "this build
+    // never read one" are different readings, and only one of them is about the window.
+    className: id.className ?? null,
+    titleFingerprint: id.titleFingerprint ?? null,
+  };
 }
 
 function rectCenter(rect: { x: number; y: number; width: number; height: number }) {
@@ -126,7 +1158,6 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
     y: Math.round(rect.y + rect.height / 2),
   };
 }
-
 // ── Executor factory ──────────────────────────────────────────────────────────
 
 /**
@@ -141,13 +1172,170 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
  * UIA click failure gracefully falls through to mouse when entity has a rect.
  */
 export function createDesktopExecutor(
-  target: TargetSpec | undefined,
+  target: Aim | TargetSpec | undefined,
   deps?: ExecutorDeps
 ): (entity: UiEntity, action: TouchAction, text?: string) => Promise<ExecutorKind | ExecutorOutcome> {
   const d = deps ?? getSharedRealDeps();
+  // ADR-036 item 2 — the aim is a value now. A raw `TargetSpec` is still accepted, because most
+  // callers (nearly all of them tests) hand one over, and `toAim` reads it as an aim with no
+  // identity — which is the truth about it: the caller's words were never evidence about who owns
+  // the window. Production passes a real `Aim`, and only that arm can carry identity.
+  const aim = toAim(target);
 
   return async (entity, action, text) => {
-    const winTitle = resolveWindowTitle(target);
+    const winTitle = aim.title ?? "@active";
+    // ADR-036 — read once per touch, next to the title it replaces, so a route added later has to
+    // walk past it rather than reach for `winTitle` alone.
+    const aimHwnd = aim.hwnd;
+
+    // ADR-036 item 12 — which window this entity's COORDINATES were measured in.
+    //
+    // `aimHwnd` is what the call NAMED, and for the commonest way of naming a window it is nothing:
+    // `desktop_discover({windowTitle: "…"})` against an ordinary top-level window goes through
+    // `_resolve-window.ts` case 3, which finds the window and returns null ON PURPOSE so the
+    // providers keep searching by title. The aim then carries no handle, and every rung of this
+    // ADR — identity invalidation, occlusion, containment, the homing correction — is gated behind
+    // one and silently does not run.
+    //
+    // **This buys TWO of those four, and the count was wrong twice before it was read carefully**
+    // (gate 2, 2026-09-10; corrected again on re-derivation). Occlusion and containment ask the OS
+    // where the window is NOW and can run on any handle that names one — those two are what a
+    // title-only call gains here.
+    //
+    // The homing correction cannot: it subtracts the delta between the window's rectangle at
+    // discover time and its rectangle now, and the first of those is `aim.origin` — measured around
+    // the window `toAim` resolved. This road has no such window, so `origin` is `undefined` below
+    // and the correction is declined with `no_origin_rect`. What the entity records is a HANDLE, not
+    // the rectangle it was measured against, and the correction needs the rectangle.
+    //
+    // **Declined is not "the only verdict this road can produce"** — an earlier version of this
+    // paragraph said the latter and it is false (Opus sandbox review, 2026-09-10).
+    // `homingCorrectionForSources` asks `window_off_desktop` FIRST, before it looks at any origin,
+    // so a MINIMISED window on this road answers that instead and the act refuses with the message
+    // that names the minimise. The window-gone refusal is reached the same way. Only the verdicts
+    // that need the origin RECTANGLE are out of reach here. (Do not "fix" that
+    // by passing `aim.origin` anyway: it belongs to a different window, and the cell above this
+    // one exists because doing so displaced a press by 100 px in each direction.)
+    //
+    // Identity invalidation cannot either: it compares the window against a BASELINE taken when the
+    // lease was read, and `readIdentityForTarget` only takes one for a target that resolved to a
+    // handle — so a title-only aim carries no `identity` to compare against. A recycled handle on
+    // this road is still uncaught, and closing it means recording an identity per OBSERVATION,
+    // which is the same lane work ADR-036 item 5 carries.
+    //
+    // The entity knows. ADR-029 already answered this for the viewport gate, and `origin.hwnd` is
+    // its answer: the handle the CAPTURE resolved, not a re-derivation of the query. Re-resolving
+    // the title here instead would be worse than doing nothing: three searches resolve a title in
+    // this codebase and none of them agree by construction — the UIA bridge takes the first
+    // UIA-tree child whose name matches, `runSomPipeline` the first Z-ORDER window, and
+    // `findPlainTopLevelWindowsByTitle` walks Z-order while excluding dialogs and owned windows. A
+    // fourth search would pin the act to a window the read may never have touched.
+    //
+    // Kept SEPARATE from `aimHwnd`: this one only decides where a coordinate press may land and is
+    // never handed to a backend, so the read path's addressing is untouched and a wrong value costs
+    // a refusal rather than a press into another window.
+    //
+    // **Which entities this actually reaches, stated narrowly.** Only lanes that RECORD a handle
+    // put one here: `runSomPipeline` resolves one and the visual and OCR lanes carry it through as
+    // `originHwnd`. **The UIA lane records one too, since item 15** — `getUiElements` reports the
+    // handle it resolved, on both the Rust and the PowerShell road, and the provider stamps it. It
+    // did not until 2026-09-10, and the cost was measured rather than argued: a UIA entity whose
+    // window had been CLOSED was pressed blind at the remembered coordinates and the caller was
+    // told `ok:true` (win2, `dev/item13-detail/RESULTS-round2.md`).
+    //
+    // A build whose read cannot report a handle is unchanged — no handle, no ladder, exactly as
+    // before. A merged group is covered either way, since the handle is read from the group rather
+    // than from whichever lane observed last.
+    const coordHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
+
+    // A round of item 12 also carried a `hwndConflict` refusal here, for an entity whose lanes had
+    // named different windows. Deleted with the state that produced it — and **the derivation lives
+    // in `world-graph/resolver.ts` alone.** This comment carried a second copy of it; the copy was
+    // wrong about how many lanes write `originHwnd`, and it was still wrong after the other copy
+    // had been corrected (Opus sandbox review, 2026-09-10). One rule, one place.
+    //
+    // What matters here is only the consequence: no entity reaches this line carrying "the lanes
+    // disagreed". Only a hand-built entity could reach the refusal that used to be here, and
+    // `guarded-touch` flattened its recovery advice to `aim_point_outside_window` on the way out,
+    // so nothing it said reached a caller either.
+
+    // ADR-036 item 2 — the specification's identity invalidation, at the only moment it can be
+    // checked: after the lease was taken and before anything is done about it.
+    //
+    // > If the same `hwnd` appears with a different process identity, RPG treats it as identity
+    // > invalidation, not an ordinary update.
+    //
+    // Windows recycles handles, so "the handle still names a window" is not "the handle still
+    // names YOUR window" — and every check downstream, the containment one included, asks the OS
+    // about whatever owns the number now. `"unknown"` is not `"changed"`: a build with no native
+    // binding, or a process that has already gone, cannot answer, and refusing on an unanswered
+    // question would take every action down on those builds.
+    if (aim.hwnd !== undefined && aim.identity !== undefined) {
+      const now = await d.aimIdentity?.(aim.hwnd);
+      const verdict = compareAimIdentity(aim, now);
+      // Every field the comparator reads, on both sides. The row used to carry pid, process name
+      // and start time only, so a `changed` decided by the CLASS landed as a row whose two sides
+      // were byte-identical — indistinguishable from a broken comparator, in the one instrument
+      // that exists to explain this refusal (gate 2, 2026-09-09). `titleFingerprint` rides along
+      // because it is recorded and never decisive, and a reader has to be able to see that.
+      probeAim("act.identity", {
+        aimHwnd: aim.hwnd.toString(),
+        then: identityRow(aim.identity),
+        now: now ? identityRow(now) : null,
+        verdict,
+        comparedByExecutor: true,
+        // ADR-036 item 14c — the refusal, spelled the way the envelope spells it, so one search for
+        // `refused` finds every refusal in a record. `null` when this row let the act through.
+        refused: verdict === "changed" ? "aim_identity_changed" : null,
+        // …and named like every other refusal, so a reader who takes every row with a `refused` also
+        // gets its rung (PR 側 codex on #621). This one is decided here, not on a route.
+        rung: verdict === "changed" ? "identity_changed" : null,
+      });
+      if (verdict === "changed") {
+        throw new AimIdentityChangedError(aim.hwnd, aim.identity, now);
+      }
+    }
+
+    // ADR-036 probe — the seam where the read path's work either arrives or does not.
+    if (aimProbeEnabled()) {
+      probeAim("act.aim", {
+        // Spelled out rather than handing the whole value over. The replacer in `aim-probe.ts`
+        // makes a raw `Aim` serialisable now, but a row is a statement about what the executor
+        // read, and every field here is one this code actually uses — a value dumped whole says
+        // "here is everything", which is how a reader ends up believing a field that was never
+        // consulted (gate 2).
+        aim: {
+          title: aim.title ?? null,
+          hwnd: aim.hwnd?.toString() ?? null,
+          tabId: aim.tabId ?? null,
+          identity: aim.identity
+            ? { pid: aim.identity.pid, processName: aim.identity.processName, processStartTimeMs: aim.identity.processStartTimeMs }
+            : null,
+        },
+        aimFrom: (target as Aim | undefined)?.kind === "aim" ? "aim" : "target_spec",
+        aimHasIdentity: aim.identity !== undefined,
+        winTitle,
+        aimHwnd: aimHwnd !== undefined ? aimHwnd.toString() : null,
+        entityId: entity.entityId,
+        entityLabel: entity.label ?? null,
+        action,
+        sources: entity.sources,
+        preferredExecutors: entity.preferredExecutors ?? null,
+        rect: entity.rect ?? null,
+      });
+      if (aimHwnd !== undefined && aim.identity === undefined) {
+        // No identity to compare against — the aim came in as a raw target, or the read could not
+        // answer when it was taken. Recorded anyway: "nothing to compare" and "compared, same" are
+        // different facts, and only one of them is evidence.
+        probeAim("act.identity", {
+          aimHwnd: aimHwnd.toString(),
+          then: null,
+          now: readWindowIdentity(aimHwnd),
+          verdict: "unknown",
+          comparedByExecutor: false,
+        });
+      }
+    }
 
     // Issue #296 Phase 2 — `desktop_discover` derives `unsupportedExecutors`
     // from UIA `controlType` + `patterns` (e.g. `ListItem`/`TabItem` without
@@ -200,27 +1388,189 @@ export function createDesktopExecutor(
       // error message so the LLM sees both rungs' diagnostics in one envelope.
       if ((action === "type" || action === "setValue") && text !== undefined) {
         try {
-          await d.uiaSetValue(winTitle, text, name, automationId);
+          await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
+          probeRoute("uia", aimHwnd, entity, { why: "uia_set_value" });
           return "uia";
         } catch (uiaErr) {
+          // R3 tool-exclusion — as in the click path below: refusals are not rungs.
+          if (uiaErr instanceof WindowExcludedError) {
+            probeRefusal("uia_set_value", "window_excluded", aimHwnd, entity);
+            throw uiaErr;
+          }
+          // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses
+          // the same handle (`keyboardTypeBg` looks the window up by hwnd and throws when the
+          // enumeration does not hold it), so it cannot write into a different window — and a
+          // window whose UIA provider has gone while the HWND lives is exactly the case WM_CHAR
+          // injection was added for. The click path's downgrade is blind by coordinate; this one
+          // is not.
           try {
-            await d.keyboardTypeBg(winTitle, text);
-            return "keyboard";
+            return await keyboardRung(d, entity, winTitle, aimHwnd, text, "uia_set_value_failed", uiaErr);
           } catch (kbErr) {
-            throw new Error(
-              `Type fallback ladder exhausted for "${entity.label ?? entity.entityId}": ` +
+            // ADR-036 family 2 — a refusal is the rung's answer, not its failure. It is re-thrown
+            // before anything below can rename it. The window-gone check would make it
+            // `aim_window_gone`. The ladder's own ending would make it `aim_route_failed` or
+            // `executor_failed`, whose advice is a foreground type into the control this refused
+            // (gate 2, F2 and its second read).
+            if (kbErr instanceof Error && kbErr.name === "KeyboardTargetUnsafeError") throw kbErr;
+            // Both rungs are spent, so the refusal that was let through above is now the whole
+            // answer: a window that has gone gets the same typed refusal here as it does on the
+            // click path, instead of an `executor_failed` that reads like a UIA hiccup
+            // (2ゲート目の指摘). One condition, one answer, whichever action asked.
+            if (uiaErr instanceof AimedWindowGoneError) {
+              probeRefusal("uia_set_value_then_keyboard", "aim_window_gone", aimHwnd, entity);
+              throw uiaErr;
+            }
+            // ADR-036 — and an aimed WRITE ends the same way an aimed click does. Both rungs
+            // addressed the handle and both are spent; reported as `executor_failed` the caller is
+            // told to fall back to `click_element` / `mouse_click` at the entity's rect, which is
+            // the blind press the click path refuses two branches down. One aim, two actions,
+            // opposite advice (2ゲート目の指摘). Unpinned calls keep the generic reason: they never
+            // promised which window, so the coordinate road is theirs to take — and since item 12
+            // that road is CHECKED when it is taken through `desktop_act`, against the window the
+            // entity was captured in. Deliberately left as `executor_failed` rather than made a
+            // typed refusal here: nothing is pressed on this branch either way, so the only thing
+            // at stake is the reason, and `AimedRouteFailedError` says "this call named its
+            // window" about a call that named a title (gate 2, 2026-09-10).
+            // Wording kept from PR #330 — two suites pin it, and the fact they pin is that the
+            // joint diagnostic survives; renaming it would have been churn wearing a fix's clothes.
+            const ladder =
+              `Type fallback ladder exhausted for "${entity.label ?? entity.entityId}"` +
+              `${aimHwnd !== undefined ? ` on window ${aimHwnd}` : ""}: ` +
               `uia=${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)} / ` +
-              `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`,
-              { cause: kbErr },
-            );
+              `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`;
+            if (aimHwnd !== undefined) {
+              // Which failure the UIA value route ran into, when it is one the backend is known to
+              // give — in the classifier's words, never the backend's (`uia-route-failure.ts`). The
+              // keyboard rung is not classified: none of its failures has a measured shape.
+              const failure = classifyUiaRouteFailure(uiaErr);
+              probeRefusal("uia_set_value_then_keyboard", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null });
+              throw new AimedRouteFailedError(
+                `${ladder}. Not falling back to a coordinate press — this call named its window, ` +
+                `and the entity's rect is a screen point that any window can be under. ` +
+                `Re-run desktop_discover.`,
+                aimHwnd,
+                { cause: kbErr },
+                // What the caller is shown: the ladder that was spent, without the backend's own
+                // text. `ladder` is written here for a reader; `kbErr.message` is not (item 13).
+                `Every write route to window ${aimHwnd} was spent for "${quotedLabel(entity)}" — ` +
+                (failure !== undefined
+                  ? `the UIA value route failed because ${describeUiaRouteFailure(failure)}, and the background write failed too`
+                  : `the UIA value route and the background write both failed`) +
+                ` — and the act was not finished as a coordinate press.`,
+              );
+            }
+            throw new Error(ladder, { cause: kbErr });
           }
         }
       }
       try {
-        await d.uiaClick(winTitle, name, automationId);
+        await d.uiaClick(winTitle, name, automationId, aimHwnd);
+        probeRoute("uia", aimHwnd, entity, { why: "uia_invoke" });
         return "uia";
       } catch (uiaErr) {
-        // UIA click failed (element not found, stale tree, etc.).
+        // R3 tool-exclusion — a refusal is not a failure to route around. Every other throw
+        // here means "UIA could not do it, try the mouse"; this one means "you may not touch
+        // that window", and the mouse fallback would touch it anyway, by coordinate, at the
+        // rect the secure dialog now occupies (2ゲート目の指摘).
+        if (uiaErr instanceof WindowExcludedError) {
+          probeRefusal("uia_click", "window_excluded", aimHwnd, entity);
+          throw uiaErr;
+        }
+        // ADR-036 — nor is a dead aim a rung. The rect below is where the window WAS; a window
+        // that has closed since the lease was taken has usually been replaced on screen by
+        // whatever was behind it, and the downgrade would click that instead. "Window drift" is
+        // one of the five failures the perception graph is built to stop, so this ends the
+        // ladder and says so (2ゲート目の指摘).
+        if (uiaErr instanceof AimedWindowGoneError) {
+          probeRefusal("uia_click", "aim_window_gone", aimHwnd, entity);
+          throw uiaErr;
+        }
+        // ADR-036 — and an aimed click does not finish as a blind one.
+        //
+        // The downgrade below clicks `entity.rect`'s centre. That is a screen coordinate, and a
+        // coordinate is not aimed at anything: whatever occupies the point takes the press. For a
+        // call that named its window by handle — the whole subject of this ADR — that is the
+        // failure it exists to remove, arriving as the recovery path.
+        //
+        // Measured on Windows 2026-09-09, and worse than the argument: with the window frame
+        // synthesised into the read but not the write, EVERY press of `Close` and `Minimize` on a
+        // pinned session came back `ok:true` while `executor` said `mouse` and `downgrade` said
+        // `Element not found` — the mouse landed on the rect, one of them at `-32000,-32000`, and
+        // only a caller reading `downgrade` could have known. Success was being reported for a
+        // press that UIA never made.
+        //
+        // So the ladder ends here when the aim was a handle. An honest failure lets the caller
+        // re-discover; a blind press lets it believe. Unpinned calls keep the downgrade — a title
+        // was never a promise about which window — but it is no longer BLIND: see below.
+        if (aimHwnd !== undefined) {
+          // Which failure it was, when the backend's answer is a known one (`uia-route-failure.ts`).
+          // An element that has gone and one that cannot be invoked have opposite recoveries, and
+          // they reached the caller as the same sentence, word for word (win2, 2026-09-11,
+          // `dev/route-failure-strings/RESULTS.md`, arms Pi-a and Pi-b).
+          const failure = classifyUiaRouteFailure(uiaErr);
+          probeRefusal("uia_click", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null });
+          // Typed for the same reason the two refusals above are: an untyped throw arrives as
+          // `executor_failed`, and that reason's published first suggestion is "fall back to
+          // mouse_click using the entity rect center" — the blind press this branch exists to
+          // refuse, handed back as the recovery (PR 側 codex, 2026-09-09).
+          throw new AimedRouteFailedError(
+            `UIA click failed for "${entity.label ?? entity.entityId}" on window ${aimHwnd}: ` +
+            `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. ` +
+            `Not falling back to a coordinate click — this call named its window, and the ` +
+            `entity's rect is a screen point that any window can be under. Re-run desktop_discover.`,
+            aimHwnd,
+            { cause: uiaErr },
+            // The message above quotes the UIA failure, which on this road can be a PowerShell
+            // rejection carrying the whole script. The caller-facing sentence names the failure in
+            // the engine's words when it is a known one, and says nothing more when it is not.
+            `The UIA route to window ${aimHwnd} failed for "${quotedLabel(entity)}"` +
+            (failure !== undefined ? ` because ${describeUiaRouteFailure(failure)}` : "") +
+            `, and the act was not finished as a coordinate click.`,
+          );
+        }
+        // ADR-036 item 16 — the Guard `target.exists`. When UIA says the element is not in the
+        // window, the point below is where it WAS: whatever is there now takes the press, and the
+        // act reports success (MEASURED 2026-09-11 win2, arm Pii-a: the press landed on the empty
+        // form, `ok:true`). So "not found" ends the ladder here, nothing pressed. "No pattern for this
+        // action" is the case the downgrade exists for and keeps it (arm Pii-b pressed the label,
+        // correctly); so does an answer the classifier does not recognise, since it cannot say the
+        // element is gone.
+        //
+        // What is given up, said plainly. The press refused here was not blind: a title-only UIA
+        // entity carries the window it was read from (item 15), so the point below is checked
+        // against that window (item 12). "Not found" on this road is also the answer for a control
+        // whose name changed since discover (a counter, Play → Pause) — pressed before, refused now,
+        // re-discovered and pressed after — and for another window with the same title answering.
+        // Neither answer proves which window UIA looked in: a refusal is not evidence of the right
+        // window, and a success is not either (a same-titled window with a same-named element takes
+        // the UIA press and reports it). That ends when UIA presses by handle (item 4).
+        //
+        // And only where "not found" came from the client that read the entity (gate 2 on #624).
+        // Without the native engine, discover reads through a PowerShell script that registers the
+        // clientside providers and the title-road PowerShell click does not — 2 elements against 26
+        // on Notepad, measured once (`uia-bridge.ts`) — so an element discover returned answers "not
+        // found" to the click; and a native read that fell back once names elements in the MSAA
+        // vocabulary while a native click searches COM names. Each tells a present element it has
+        // gone, and the refusal would come back on every re-discover. So both halves must be
+        // native, the combination measured (win2, Pii-a); anything else keeps the downgrade it had
+        // before item 16, and its probe row says which halves it saw.
+        const routeFailure = classifyUiaRouteFailure(uiaErr);
+        const readVia = entity.locator?.uia?.via;
+        const clickViaRaw = (uiaErr as { uiaVia?: unknown } | null)?.uiaVia;
+        const clickVia = clickViaRaw === "native" || clickViaRaw === "powershell" ? clickViaRaw : undefined;
+        if (routeFailure === "element_not_found" && readVia === "native" && clickVia === "native") {
+          probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found", readVia, clickVia });
+          throw new TargetGoneError(
+            `UIA found no element for "${entity.label ?? entity.entityId}" on the title-only road: ` +
+            `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing where it used to be.`,
+            { cause: uiaErr },
+            // The engine's own words — the message above quotes the backend (item 13).
+            `UIA found no element for "${quotedLabel(entity)}" in the window this act named by title ` +
+            `(it may have gone, been renamed, or moved), and the act was not finished as a press where ` +
+            `the element used to be.`,
+          );
+        }
+        // UIA click failed (stale tree, no pattern, an answer not recognised, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
         // which may be stale (captured at recognition time, before the element moved).
         const rect = entity.rect ?? entity.locator?.visual?.rect;
@@ -228,13 +1578,58 @@ export function createDesktopExecutor(
           `UIA click failed for "${entity.label ?? entity.entityId}" and no rect for mouse fallback`,
           { cause: uiaErr },
         );
-        const { x, y } = rectCenter(rect);
+        const remembered = rectCenter(rect);
+        // ADR-036 item 12 — and this downgrade is a coordinate press like the one 140 lines below.
+        //
+        // The comment above used to end "the rect is all they ever had", and this commit is what
+        // makes that false: the entity records the window its pixels were captured in, so an
+        // unpinned call has a window to check the point against after all. Without this the same
+        // entity was refused on one road and pressed unchecked on the other — reproduced by gate 2
+        // (2026-09-10) with a `設定` window over the point: `mouseClick` went out and `pointOwner`
+        // was never asked. That is the 2026-09-09 measurement recorded above, surviving in the case
+        // this commit has just shown is not really unpinned.
+        //
+        // **How often this road is taken was a guess, and the machine answered differently.**
+        // The sentence here used to say merged UIA entities were "the ladder's real traffic". On a
+        // desktop with no vision backend there ARE no merged entities: a title-only discover
+        // returned `["uia"]` for every entity on two fixtures (13 of them), the visual lanes are
+        // called and produce nothing, and `act.route` shows one row per act — `route:"uia"`,
+        // `hasAim:false`. UIA invoke does not use coordinates, so the ladder is never reached at
+        // all (win2, 2026-09-10, `dev/pr612-entity-origin/`).
+        //
+        // That is scope, not a defect: this branch fixes the road for the entities that take it —
+        // ones a visual or OCR lane produced, which is where `origin.hwnd` comes from in the first
+        // place. Where UIA can serve the window by title, the coordinate road is not taken and none
+        // of this runs. Written here because the next reader will otherwise measure the same thing
+        // again to find out whether their change matters.
+        const { x, y } = coordHwnd !== undefined
+          ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId, uiaErr)
+          : remembered;
         // ADR-029: the UIA route works on any monitor. The mouse downgrade
         // reaches every monitor too since Phase 2a, but the point still has to
         // BE on one — a stale rect that now sits off-screen is refused here
         // rather than clicked somewhere else.
-        assertCoordinateReachable(x, y);
-        await d.mouseClick(x, y);
+        await probedStep("reachable_bounds", undefined, entity, () => assertCoordinateReachable(x, y));
+        // ADR-036 probe — the downgrade press. Recorded so the two mouse roads can be told apart in
+        // the log. `aimHwnd` is always null here: the pinned case threw four branches up, so this
+        // road is unreachable with an aim — but `coordHwnd` is not, and a row where it is set is
+        // the ladder having run on the window the entity came from.
+        probeRoute("mouse", undefined, entity, {
+          why: "uia_downgrade",
+          // The class of the UIA answer that let the downgrade through, `null` when the classifier
+          // did not recognise it — so the unrecognised answers collect in the log, where the next
+          // class to add can be read from. Never the answer's own text.
+          routeFailure: routeFailure ?? null,
+          // Which client read the entity and which answered the click — a "not found" that came
+          // down this road, rather than being refused, is a mismatch (or an unmarked half) here.
+          readVia: readVia ?? null,
+          clickVia: clickVia ?? null,
+          point: { x, y },
+          remembered,
+          coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
+          coordHwndFrom: coordHwnd !== undefined ? "entity_origin" : null,
+        });
+        await probedStep("mouse_press", undefined, entity, () => d.mouseClick(x, y));
         // Issue #327 item C: signal the silent downgrade so the LLM sees
         // `executor: "mouse"` AND `downgrade: { from: "uia", reason: ... }`
         // — without the marker the dogfood envelope cannot distinguish
@@ -247,14 +1642,16 @@ export function createDesktopExecutor(
     // ── CDP route ────────────────────────────────────────────────────────────
     const cdpSelector = entity.locator?.cdp?.selector;
     if (cdpSelector && !cdpBlocked && preferredAllows("cdp")) {
-      const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
+      const cdpTabId = entity.locator?.cdp?.tabId ?? aim.tabId;
       // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
       // browser_fill for controlled inputs (React/Vue/Svelte).
       if ((action === "type" || action === "setValue") && text !== undefined) {
         await d.cdpFill(cdpSelector, text, cdpTabId);
+        probeRoute("cdp", aimHwnd, entity, { why: "cdp_fill", tabId: cdpTabId ?? null });
         return "cdp";
       }
-      await d.cdpClick(cdpSelector, cdpTabId);
+      await probedStep("cdp_click", aimHwnd, entity, () => d.cdpClick(cdpSelector, cdpTabId));
+      probeRoute("cdp", aimHwnd, entity, { why: "cdp_click", tabId: cdpTabId ?? null });
       return "cdp";
     }
 
@@ -265,8 +1662,28 @@ export function createDesktopExecutor(
     // fall through to the mouse fallback so click/invoke on a terminal entity
     // doesn't silently send an empty string.
     if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined && preferredAllows("terminal")) {
+      // The handle goes with it. This executor is built for one session — `target` is that
+      // session's `lastTarget`, and the entities reaching it were read from that session's own
+      // discover — so there is no entity here belonging to another window to protect.
+      //
+      // Two narrower shapes were tried and both were wrong. Comparing the two title strings
+      // passes whenever they happen to match, and equal titles do not make one window, which is
+      // the premise of this ADR. Asking "did the entity name a terminal window?" fails the
+      // other way: the terminal provider always fills that field, so the handle was dropped for
+      // every ordinary terminal entity and `terminalSend` went back to the first z-order match
+      // (gate 1). The title is still passed for the backend that has no handle to use.
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
-      await d.terminalSend(termWin, text);
+      try {
+        await d.terminalSend(termWin, text, aimHwnd);
+      } catch (err) {
+        // ADR-036 item 14c — the terminal lookup refuses a destroyed handle with its own typed
+        // refusal, and it went straight out of here with no row: the record showed `act.aim` and
+        // then nothing, the silence the UIA route's rows were added to remove (gate 2 on #621).
+        if (err instanceof AimedWindowGoneError) probeRefusal("terminal_send", "aim_window_gone", aimHwnd, entity);
+        else if (err instanceof WindowExcludedError) probeRefusal("terminal_send", "window_excluded", aimHwnd, entity);
+        throw err;
+      }
+      probeRoute("terminal", aimHwnd, entity, { why: "terminal_send", termWin });
       return "terminal";
     }
 
@@ -300,8 +1717,7 @@ export function createDesktopExecutor(
       text !== undefined &&
       (action === "type" || action === "setValue")
     ) {
-      await d.keyboardTypeBg(winTitle, text);
-      return "keyboard";
+      return await keyboardRung(d, entity, winTitle, aimHwnd, text, "keyboard_only_entity");
     }
 
     // ── Mouse fallback ───────────────────────────────────────────────────────
@@ -344,15 +1760,78 @@ export function createDesktopExecutor(
         `No executor available for entity "${entity.label ?? entity.entityId}": no rect for mouse fallback`
       );
     }
-    const { x, y } = rectCenter(entity.rect);
-    // ADR-029 Phase 1 — see the downgrade path above.
-    assertCoordinateReachable(x, y);
-    await d.mouseClick(x, y);
+    const remembered = rectCenter(entity.rect);
+    // ADR-036 — if this call named a window, the specification's ladder runs here and decides
+    // where the press actually goes: homing correction, then who is under the point, then whether
+    // the point is in the window at all. Identity invalidation ran at the top of this closure,
+    // before any route was chosen, because a changed identity makes every rectangle meaningless.
+    const { x, y } = coordHwnd !== undefined
+      ? await resolvePressPoint(d, aim, coordHwnd, entity, remembered.x, remembered.y, entity.label ?? entity.entityId)
+      : remembered;
+    // ADR-029 Phase 1 — and the point that gets PRESSED is the one that has to be on a monitor.
+    // Checked here rather than on the remembered point, because those stopped being the same
+    // question: a window discovered on a second monitor that Windows relocated when the monitor was
+    // unplugged leaves the REMEMBERED point on no screen at all, and refusing there would report an
+    // unreachable coordinate about a window the correction had just followed to a perfectly
+    // reachable one (gate 2, 2026-09-09).
+    await probedStep("reachable_bounds", aimHwnd, entity, () => assertCoordinateReachable(x, y));
+    // ADR-036 probe — the press this ADR is about: a coordinate taken from a rect remembered at
+    // discover time. Both points are written: `point` is where it went, `remembered` is where the
+    // snapshot said it was, and a row where they differ is the homing correction doing its work.
+    probeRoute("mouse", aimHwnd, entity, {
+      why: "visual_or_read_entity",
+      point: { x, y },
+      remembered,
+      rect: entity.rect,
+      // Both, because they are different facts: what the call named, and what the ladder ran
+      // against. A row where `aimHwnd` is null and `coordHwnd` is not is item 12 doing its work.
+      coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
+      coordHwndFrom: aimHwnd !== undefined ? "aim" : coordHwnd !== undefined ? "entity_origin" : null,
+    });
+    await probedStep("mouse_press", aimHwnd, entity, () => d.mouseClick(x, y));
     return "mouse";
   };
 }
 
 // ── Real deps (Windows native) ────────────────────────────────────────────────
+
+/**
+ * ADR-036 family 2 — what the keyboard rung reads about the handle it would post to:
+ *   - its class, rect and style;
+ *   - its top-level window (GA_ROOT);
+ *   - its parents up to that window, nearest first.
+ *
+ * The walk is bounded, so a chain that loops cannot hang the act. When it stops short, the list keeps
+ * what was walked and `ancestorsComplete` says so.
+ */
+async function readReceiverFacts(receiver: bigint): Promise<Partial<KeyboardReceipt>> {
+  const { getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle, getWindowParent } = await import("../engine/win32.js");
+  const root = getWindowRoot(receiver);
+  const chain: bigint[] = [];
+  let complete = false;
+  if (root !== null) {
+    let cur: bigint = receiver;
+    complete = sameHwnd(cur, root);
+    for (let i = 0; i < 16 && !complete; i++) {
+      const parent = getWindowParent(cur);
+      if (parent === null) break;
+      if (sameHwnd(parent, root)) {
+        complete = true;
+        break;
+      }
+      chain.push(parent);
+      cur = parent;
+    }
+  }
+  return {
+    receiverClass: getWindowClassName(receiver),
+    receiverRect: getWindowRectByHwnd(receiver),
+    receiverRootHwnd: root,
+    receiverStyle: getWindowStyle(receiver),
+    receiverAncestors: root !== null ? chain : null,
+    ancestorsComplete: root !== null ? complete : false,
+  };
+}
 
 /**
  * Module-level cache so all sessions share one set of native handles
@@ -363,15 +1842,24 @@ let _realDepsCache: ExecutorDeps | undefined;
 function getSharedRealDeps(): ExecutorDeps {
   if (_realDepsCache) return _realDepsCache;
   _realDepsCache = {
-    async uiaClick(windowTitle, name, automationId) {
+    async uiaClick(windowTitle, name, automationId, hwnd) {
       const { clickElement } = await import("../engine/uia-bridge.js");
-      const r = await clickElement(windowTitle, name, automationId);
-      if (!r.ok) throw new Error(r.error ?? "UIA click failed");
+      // ADR-036 — the bridge has taken a handle since H3 ("bypass title-based root search",
+      // added for Save As and the other common dialogs), and `ui-elements.ts` has passed one
+      // for every resolved window since then. What could not reach it was THIS path: the
+      // interface above had nowhere to put a handle, so `desktop_act` always asked by title.
+      const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
+      // ADR-036 — "the window is gone" is not "UIA could not do it": see `aim.ts`.
+      if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
+      // Which client answered, carried on the error: item 16 believes a "not found" only from the
+      // native client, about an entity the native client read.
+      if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA click failed"), { uiaVia: r.via });
     },
 
-    async uiaSetValue(windowTitle, value, name, automationId) {
+    async uiaSetValue(windowTitle, value, name, automationId, hwnd) {
       const { setElementValue } = await import("../engine/uia-bridge.js");
-      const r = await setElementValue(windowTitle, value, name, automationId);
+      const r = await setElementValue(windowTitle, value, name, automationId, hwnd !== undefined ? { hwnd } : undefined);
+      if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
       if (!r.ok) throw new Error(r.error ?? "UIA setElementValue failed");
     },
 
@@ -409,12 +1897,12 @@ function getSharedRealDeps(): ExecutorDeps {
       if (!r.ok) throw new Error(r.error ?? "CDP fill failed");
     },
 
-    async terminalSend(windowTitle, text) {
+    async terminalSend(windowTitle, text, hwnd) {
       // G2: Background WM_CHAR path — no focus steal.
       // canInjectViaPostMessage() gates supported terminals (Windows Terminal, conhost).
       // Unsupported windows (Chromium, UWP) throw explicitly — caller gets executor_failed
       // and the LLM description directs them to V1 terminal({action:'send'}) as fallback.
-      const { enumWindowsInZOrder } = await import("../engine/win32.js");
+      const { enumWindowsInZOrder, isWindowGone: isWindowGoneSync } = await import("../engine/win32.js");
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       terminalBgExecute(windowTitle, text, {
@@ -424,6 +1912,40 @@ function getSharedRealDeps(): ExecutorDeps {
         // out would put a hole in the H2 evidence exactly where a v2 caller
         // writes (Opus Round 2 P2).
         findWindow: (title) => {
+          // ADR-036 — when the caller resolved a handle, this is no longer a lookup: the
+          // enumeration is consulted only to fetch that window's record, and a same-titled
+          // sibling cannot be returned instead. `pinnedByHwnd` keeps the ADR-035 evidence
+          // able to count the two shapes apart.
+          if (hwnd !== undefined) {
+            const named = wins.filter((w) => w.hwnd === hwnd);
+            logResolve({
+              resolver: "desktopActTerminalSend",
+              query: title,
+              matches: named,
+              pinnedByHwnd: true,
+              identity: "lookup",
+              intent: "write",
+            });
+            // ADR-036 — a by-handle miss is ordinary (`enumWindowsInZOrder` drops untitled,
+            // sub-50 px and excluded windows), and the throw downstream only knows the title,
+            // so it named a window that is plainly on screen. Thrown here, AFTER the resolve
+            // is logged: an earlier pre-check said the same sentence but left the miss out of
+            // the H2 evidence, counting handle successes and not handle failures (2ゲート目).
+            if (!named[0]) {
+              // ADR-036 — and say WHICH kind of miss it is. A generic Error becomes
+              // `executor_failed`, whose published terminal recovery is "use V1
+              // terminal(action='send')" — a title-based road that can type into a same-titled
+              // sibling or into the replacement window. That advice is right for a window that
+              // is merely filtered out of the enumeration (untitled, sub-50 px, excluded) and
+              // wrong for one that has been destroyed, so the two stop sharing an answer
+              // (PR 側 codex の P1).
+              if (isWindowGoneSync(hwnd)) throw new AimedWindowGoneError(hwnd);
+              throw new Error(
+                `Terminal window not found: hwnd ${hwnd} is not in the enumeration (title was "${title}")`,
+              );
+            }
+            return named[0];
+          }
           const matches = wins.filter((w) => w.title.toLowerCase().includes(title.toLowerCase()));
           logResolve({
             resolver: "desktopActTerminalSend",
@@ -449,7 +1971,7 @@ function getSharedRealDeps(): ExecutorDeps {
       });
     },
 
-    async keyboardTypeBg(windowTitle, text) {
+    async keyboardTypeBg(windowTitle, text, hwnd) {
       // Issue #327 item E: UIA setValue fallback. Uses the same WM_CHAR primitive
       // as terminalSend but resolves to the focused child via `canInjectAtTarget`
       // so the BG class check classifies the actual key-receiving HWND (Notepad's
@@ -469,17 +1991,30 @@ function getSharedRealDeps(): ExecutorDeps {
       const { canInjectAtTarget, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       // ADR-035 Phase 1 — the `terminalSend` twin above; see its comment.
-      const matches = wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      // ADR-036 — and its handle branch: a resolved handle names the window outright, so the
+      // enumeration is only asked for that window's record.
+      const byHandle = hwnd !== undefined;
+      const matches = byHandle
+        ? wins.filter((w) => w.hwnd === hwnd)
+        : wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
       const win = matches[0];
       logResolve({
         resolver: "desktopActKeyboardType",
         query: windowTitle,
         matches,
+        ...(byHandle && { pinnedByHwnd: true }),
         identity: "lookup",
         intent: "write",
       });
       if (!win) {
-        throw new Error(`Window not found for keyboardTypeBg: "${windowTitle}"`);
+        // ADR-036 — say which question was asked. `enumWindowsInZOrder` drops untitled,
+        // sub-50 px and excluded windows, so a by-handle miss is ordinary, and reporting the
+        // title alone told an operator that a window plainly on screen was "not found".
+        throw new Error(
+          byHandle
+            ? `Window not found for keyboardTypeBg: hwnd ${hwnd} is not in the enumeration (title was "${windowTitle}")`
+            : `Window not found for keyboardTypeBg: "${windowTitle}"`,
+        );
       }
       const check = canInjectAtTarget(win.hwnd);
       if (!check.supported) {
@@ -495,6 +2030,117 @@ function getSharedRealDeps(): ExecutorDeps {
           `Background keyboard type incomplete: sent ${r.sent}/${text.length} chars to "${windowTitle}"`,
         );
       }
+      // ADR-036 family 2 — the handle the characters went to, as the post resolved it. What the
+      // record says about it costs a native call per fact and serves only the record, so it is read
+      // only while the probe is on.
+      const receipt: KeyboardReceipt = {
+        windowHwnd: win.hwnd,
+        receiverHwnd: typeof r.target === "bigint" ? r.target : null,
+      };
+      if (receipt.receiverHwnd !== null && aimProbeEnabled()) {
+        Object.assign(receipt, await readReceiverFacts(receipt.receiverHwnd));
+      }
+      return receipt;
+    },
+
+    async keyboardResolve(windowTitle, hwnd, refs) {
+      const { enumWindowsInZOrder, getWindowRoot, getWindowOwner } = await import("../engine/win32.js");
+      const { resolveKeyTarget, canInjectViaPostMessage } = await import("../engine/bg-input.js");
+      const wins = enumWindowsInZOrder();
+      // As `keyboardTypeBg` looks the window up, except that a handle is compared in its low 32 bits
+      // (remaining-work §B, "HWND width"). `keyboardTypeBg` keeps its own lookup, so the switch
+      // restores today exactly.
+      const byHandle = hwnd !== undefined;
+      const matches = byHandle
+        ? wins.filter((w) => sameHwnd(w.hwnd, hwnd))
+        : wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      const win = matches[0];
+      // The same act's lookup, under the name the resolve log already knows it by.
+      logResolve({
+        resolver: "desktopActKeyboardType",
+        query: windowTitle,
+        matches,
+        ...(byHandle && { pinnedByHwnd: true }),
+        identity: "lookup",
+        intent: "write",
+      });
+      if (!win) {
+        throw new Error(
+          byHandle
+            ? `Window not found for keyboardResolve: hwnd ${hwnd} is not in the enumeration (title was "${windowTitle}")`
+            : `Window not found for keyboardResolve: "${windowTitle}"`,
+        );
+      }
+      // Resolved once: this is the handle the rule judges and `keyboardPost` posts to. It is always a
+      // handle — the window itself when its thread has no focus, or when the question could not be
+      // asked — which the rule reads as "cannot say" (step 4), not as an unknown receiver.
+      const receiver = resolveKeyTarget(win.hwnd);
+      const check = canInjectViaPostMessage(receiver);
+      if (!check.supported) {
+        throw new Error(
+          `Background keyboard type not supported for "${windowTitle}" ` +
+          `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).`,
+        );
+      }
+      const receipt: KeyboardReceipt = { windowHwnd: win.hwnd, receiverHwnd: receiver };
+      Object.assign(receipt, await readReceiverFacts(receiver));
+      const rootOf = (h: bigint | undefined): bigint | null => (h === undefined ? null : getWindowRoot(h));
+      receipt.entityRootHwnd = rootOf(refs.entityHwnd);
+      receipt.originRootHwnd = rootOf(refs.originHwnd);
+      receipt.aimRootHwnd = rootOf(hwnd);
+      receipt.lookupRootHwnd = getWindowRoot(win.hwnd);
+      // The owners of the receiver's top-level window, nearest first. Bounded, and a null ends the walk:
+      // `getWindowOwner` answers null both for "no owner" and for "the call failed".
+      const owners: bigint[] = [];
+      let cur = receipt.receiverRootHwnd ?? null;
+      for (let i = 0; i < 8 && cur !== null; i++) {
+        const owner = getWindowOwner(cur);
+        if (owner === null) break;
+        owners.push(owner);
+        cur = owner;
+      }
+      receipt.ownerChain = owners;
+      return receipt;
+    },
+
+    async keyboardPost(receipt, text) {
+      const { postCharsToResolvedTarget } = await import("../engine/bg-input.js");
+      const target = receipt.receiverHwnd ?? receipt.windowHwnd;
+      logDispatchSink({ sink: "wm_char", tool: "desktop_act:keyboard_type", targetHwnd: receipt.windowHwnd, payloadChars: text.length });
+      const r = postCharsToResolvedTarget(target, text);
+      if (!r.full) {
+        throw new Error(`Background keyboard type incomplete: sent ${r.sent}/${text.length} chars to hwnd ${target}`);
+      }
+    },
+
+    async aimRect(hwnd) {
+      const { getWindowRectByHwnd } = await import("../engine/win32.js");
+      return getWindowRectByHwnd(hwnd);
+    },
+
+    pointOwner(aimHwnd, x, y) {
+      // Synchronous on purpose: it reads one enumeration snapshot, and an await here would let the
+      // screen change between the question and the press it is protecting.
+      return whoIsUnderPoint(aimHwnd, x, y);
+    },
+
+    async aimIdentity(hwnd) {
+      // `getWindowIdentity` answers a zeroed identity for both "no such window" and "this build
+      // cannot ask", and the two have to arrive as one thing the caller can recognise: nothing.
+      const { getWindowIdentity, getWindowClassName, getWindowTitleW } = await import("../engine/win32.js");
+      return readWindowIdentityFields(hwnd, {
+        identity: getWindowIdentity,
+        className: getWindowClassName,
+        title: getWindowTitleW,
+      });
+    },
+
+    async aimIsGone(hwnd) {
+      // `isWindowGone` says false whenever it could not ask, which is the whole point of pairing
+      // it with `aimRect`: a null rectangle plus "cannot tell" must not become "the window you
+      // aimed at is gone".
+      const { isWindowGone } = await import("../engine/win32.js");
+      return isWindowGone(hwnd);
     },
 
     async mouseClick(x, y) {

@@ -46,7 +46,7 @@ Windows UI Automation の全 13 関数を **Rust (napi-rs)** でネイティブ�
 |---|---|
 | `uiaClickElement` | InvokePattern による要素クリック |
 | `uiaSetValue` | ValuePattern による値設定 |
-| `uiaInsertText` | ValuePattern による文字挿入 |
+| `uiaInsertText` | TextPattern2 による文字挿入（ValuePattern を持たない窓向けの経路） |
 | `uiaGetElementBounds` | 要素の BoundingRectangle 取得 |
 | `uiaGetElementChildren` | 指定要素の子要素ツリー取得 |
 | `uiaGetTextViaTextPattern` | TextPattern によるテキスト取得 |

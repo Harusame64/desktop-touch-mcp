@@ -72,6 +72,10 @@ import {
   type CommitL1Emitter,
 } from "../../../src/tools/_envelope.js";
 import { Err } from "../../../src/types/result.js";
+import {
+  captureAdviceConfiguration,
+  resetAdviceConfiguration,
+} from "../../../src/tools/_advice-capability.js";
 import { CodedHandlerError } from "../../../src/errors/typed-errors.js";
 import {
   desktopActRawHandler,
@@ -108,6 +112,15 @@ const NOOP_L1: CommitL1Emitter = {
  * decoupled from the production source it guards). If SUGGESTS legitimately
  * changes, update these literals deliberately (and note any user-facing hint
  * change in the CHANGELOG).
+ *
+ * **They are the V2-CORNER rendering, and the corner is now pinned in `beforeEach`.**
+ * ADR-036 stage 2 B2c made these lines carry `{tool:<capability>}` in the dictionary
+ * and resolve at the presenter, so `desktop_discover` here is one corner's answer, not
+ * a constant. Left unpinned they passed only while the ambient environment had no kill
+ * switch and nothing in the module graph had captured a configuration — a latent
+ * dependency the same round removed from `desktop-act-commit-wrapper.test.ts` and left
+ * in this file (gate 2 on `7fda7f7`, 2026-09-13). The decoupling above is unchanged:
+ * the literals are still literals, so a SUGGESTS edit still surfaces here.
  */
 const FROZEN_TRY_NEXT: Record<string, ReadonlyArray<{ action: string }>> = {
   WorkingMemoryNUpperBoundExceeded: [
@@ -141,10 +154,14 @@ const FROZEN_TRY_NEXT: Record<string, ReadonlyArray<{ action: string }>> = {
 beforeEach(() => {
   _resetHistoryBuffersForTest();
   _resetToolCallSeqForTest();
+  // The frozen tables above are one corner's rendering — say which, rather than
+  // inheriting it from the runner. See the note on `FROZEN_TRY_NEXT`.
+  captureAdviceConfiguration({ v2: true, credentialStore: true });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetAdviceConfiguration();
 });
 
 // ── Sites 1-4: memory N/K bound checks (already via toFailureEnvelope) ─────────
@@ -247,9 +264,10 @@ describe("PR-P1-1 site 5a: lease validation 'expired' (RICH try_next — hazard 
 });
 
 describe("PR-P1-1 site 5b: lease validation residual reasons (empty try_next — hazard B)", () => {
-  // generation_mismatch / entity_not_found / digest_mismatch all collapse to
-  // Unknown with try_next: [] in S4 trunk (mapLeaseValidationToTypedReason).
-  const RESIDUAL_REASONS = ["generation_mismatch", "entity_not_found", "digest_mismatch"] as const;
+  // generation_mismatch / digest_mismatch collapse to Unknown with try_next: []
+  // in S4 trunk (mapLeaseValidationToTypedReason). entity_not_found left this
+  // list in ADR-036 item 16 — site 5c.
+  const RESIDUAL_REASONS = ["generation_mismatch", "digest_mismatch"] as const;
 
   for (const reason of RESIDUAL_REASONS) {
     function wrapResidual() {
@@ -274,6 +292,41 @@ describe("PR-P1-1 site 5b: lease validation residual reasons (empty try_next —
       });
     });
   }
+});
+
+describe("PR-P1-1 site 5c: lease validation 'entity_not_found' (ADR-036 item 16)", () => {
+  // Promoted out of 5b. The touch returns the same reason and desktop_act rebuilds it as
+  // EntityNotFound with the advice table's lines, so this path answers with the same lines.
+  it("raw-compat shape frozen", async () => {
+    const { getSuggestsForCode } = await import("../../../src/tools/_errors.js");
+    const result = await makeCommitWrapper(
+      async () => ({ content: [{ type: "text", text: '{"ok":true}' }] }),
+      "snapshot_lease_entity_not_found",
+      {
+        leaseValidator: async () => ({ ok: false, reason: "entity_not_found" }),
+        getEnvValue: () => undefined,
+        l1Emitter: NOOP_L1,
+      },
+    )({} as Record<string, unknown>);
+    // RESOLVED, because that is the wire. The SSOT accessor is still the source — a
+    // dictionary edit still moves this expectation with it — but as of ADR-036 stage 2
+    // B2c the dictionary holds `{tool:<capability>}` and the envelope holds the name
+    // this server registered. Comparing the wire to the raw dictionary would pin a
+    // shape no caller receives.
+    const { renderAdviceForCaller } = await import("../../../src/tools/_advice-capability.js");
+    const raw = getSuggestsForCode("EntityNotFound");
+    const tryNext = renderAdviceForCaller(raw).map((action) => ({ action }));
+    expect(tryNext.length).toBeGreaterThan(0);
+    // The round's claim, in the cell: a placeholder in the dictionary, none on the wire.
+    expect(raw.join(" ")).toContain("{tool:");
+    expect(tryNext.map((t) => t.action).join(" ")).not.toContain("{tool:");
+    expect(parseContent(result.content)).toEqual({
+      ok: false,
+      reason: "entity_not_found",
+      diff: [],
+      if_unexpected: { most_likely_cause: "EntityNotFound", try_next: tryNext },
+    });
+  });
 });
 
 // ── Site 6: handler throw fallback (buildFailureEnvelope("Unknown", [], ...)) ──
@@ -341,6 +394,40 @@ describe("PR-P1-1 site 7: desktopActRawHandler executor_failed (DATA-level — h
         try_next: FROZEN_TRY_NEXT.ExecutorFailed,
       },
     });
+  });
+
+  // ADR-036 item 13 — THE SEAM THIS ITEM IS ABOUT, end to end. The nine act-path refusals are
+  // rebuilt here from the reason code, and the engine's sentence used to stop at the loop: measured
+  // on the real machine (win2, 2026-09-10) as an `aim_occluded` response carrying neither the
+  // blocker's title nor its handle, with no message field anywhere in it.
+  //
+  // Pinned at the HANDLER, not at `toFailureEnvelope`, because that is where the loss happened: the
+  // first version of this change was covered only by cells that called the converter directly and
+  // by cells that stopped inside the loop, so deleting `detail: result.detail` from all nine sites
+  // left every one of them green (gate 2, Opus sandbox review, 2026-09-10). This one goes through
+  // `desktopActRawHandler` in the mode `desktop_act` actually uses.
+  it("carries the refusal's own sentence to the caller, in the shape desktop_act returns", async () => {
+    const facade = getDesktopFacade();
+    const detail = 'Refusing to press (426, 287) for the window this act named (hwnd 4919): the window on top at that point is "BLOCKER-CELL" (hwnd 777).';
+    vi.spyOn(facade, "touch").mockResolvedValue({ ok: false, reason: "aim_occluded", diff: [], detail });
+
+    const result = await desktopActRawHandler({ lease: fakeLease, action: "click" });
+    const parsed = parseContent(result.content) as { if_unexpected: { detail?: string; most_likely_cause: string } };
+
+    expect(parsed.if_unexpected.detail).toBe(detail);
+    expect(parsed.if_unexpected.most_likely_cause).toBe("AimOccluded");
+  });
+
+  it("leaves the field out when the refusal had nothing of its own to say", async () => {
+    // A silence and an answer must not share a representation: `detail: ""` would read as "the
+    // engine had nothing to say", and a missing field says "there was no sentence".
+    const facade = getDesktopFacade();
+    vi.spyOn(facade, "touch").mockResolvedValue({ ok: false, reason: "aim_occluded", diff: [] });
+
+    const result = await desktopActRawHandler({ lease: fakeLease, action: "click" });
+    const parsed = parseContent(result.content) as { if_unexpected: Record<string, unknown> };
+
+    expect("detail" in parsed.if_unexpected).toBe(false);
   });
 
   it("serialises pretty-printed (2-space indent) — current format pin", async () => {

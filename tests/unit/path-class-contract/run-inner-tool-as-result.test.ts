@@ -16,11 +16,18 @@ import { describe, it, expect } from "vitest";
 import { runInnerToolAsResult } from "../../../src/tools/macro.js";
 /** A fake TOOL_REGISTRY entry whose handler returns a single text content block. */
 function textEntry(text: string): any {
-  return { schema: { parse: (x: unknown) => x }, handler: async () => ({ content: [{ type: "text", text }] }) };
+  // ADR-036: `availability` is a required field on a real entry, and this fake is typed `any`, so
+  // nothing made it declare one — the adapter then read `.corner` off `undefined` and every case
+  // in this file threw. A double that skips what the real thing must state is not a double.
+  return {
+    availability: "always",
+    schema: { parse: (x: unknown) => x },
+    handler: async () => ({ content: [{ type: "text", text }] }),
+  };
 }
 describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
   it("ok:true envelope → Result.ok=true, carries the text", async () => {
-    const r = await runInnerToolAsResult(textEntry(JSON.stringify({ ok: true, data: 1 })), {});
+    const r = await runInnerToolAsResult(textEntry(JSON.stringify({ ok: true, data: 1 })), {}, "probe_tool");
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.textLines[0]).toContain('"ok":true');
@@ -32,6 +39,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
     const r = await runInnerToolAsResult(
       textEntry(JSON.stringify({ ok: false, code: "WindowNotFound", error: "Window not found: x" })),
       {},
+      "probe_tool",
     );
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -41,7 +49,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
     }
   });
   it("ok:false without code/error fields → Result.ok=false, fields undefined", async () => {
-    const r = await runInnerToolAsResult(textEntry(JSON.stringify({ ok: false })), {});
+    const r = await runInnerToolAsResult(textEntry(JSON.stringify({ ok: false })), {}, "probe_tool");
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error.code).toBeUndefined();
@@ -49,20 +57,22 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
     }
   });
   it("non-JSON first text block → treated as success (Result.ok=true)", async () => {
-    const r = await runInnerToolAsResult(textEntry("raw screenshot text, not json"), {});
+    const r = await runInnerToolAsResult(textEntry("raw screenshot text, not json"), {}, "probe_tool");
     expect(r.ok).toBe(true);
   });
   it("image blocks are carried in the outcome", async () => {
     const entry: any = {
+      availability: "always",
       schema: { parse: (x: unknown) => x },
       handler: async () => ({ content: [{ type: "image", data: "abc", mimeType: "image/png" }] }),
     };
-    const r = await runInnerToolAsResult(entry, {});
+    const r = await runInnerToolAsResult(entry, {}, "probe_tool");
     expect(r.ok).toBe(true); // no text block → not a failure
     if (r.ok) expect(r.value.images[0]).toEqual({ data: "abc", mimeType: "image/png" });
   });
   it("resource_link blocks are carried in the outcome (ADR-026 by-ref macro forwarding)", async () => {
     const entry: any = {
+      availability: "always",
       schema: { parse: (x: unknown) => x },
       handler: async () => ({
         content: [
@@ -71,7 +81,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
         ],
       }),
     };
-    const r = await runInnerToolAsResult(entry, {});
+    const r = await runInnerToolAsResult(entry, {}, "probe_tool");
     expect(r.ok).toBe(true); // first block is non-JSON text → not a failure
     if (r.ok) {
       expect(r.value.links).toHaveLength(1);
@@ -86,6 +96,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
   });
   it("ok:true with a trailing image block → success + both carried", async () => {
     const entry: any = {
+      availability: "always",
       schema: { parse: (x: unknown) => x },
       handler: async () => ({
         content: [
@@ -94,7 +105,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
         ],
       }),
     };
-    const r = await runInnerToolAsResult(entry, {});
+    const r = await runInnerToolAsResult(entry, {}, "probe_tool");
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.textLines).toHaveLength(1);

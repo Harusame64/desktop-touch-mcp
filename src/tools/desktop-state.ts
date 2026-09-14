@@ -24,7 +24,41 @@ import type {
   NativeUiaFocusInfo,
 } from "../engine/native-types.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
+import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
+import type { HotTargetSlot } from "../engine/perception/hot-target-cache.js";
+
+/**
+ * ADR-036 I-2 — pick the slot that describes a window's LATEST state.
+ *
+ * One window can own more than one slot: addressing it by title and by handle
+ * keys `window:<title>` and `window#hwnd:<h>` separately, and both carry the
+ * same identity. Taking the first match (Map insertion order, i.e. whichever
+ * was created first) could answer from the slot the last call never touched —
+ * reporting `ok` from a stale slot while the fresh one held `identity_changed`.
+ * The attention signal is about the window, not about the name it was reached
+ * by, so the most recently used slot wins.
+ *
+ * On an exact tie the timestamps cannot separate them, so the slot carrying a
+ * signal wins over one saying `ok`. Falling back to iteration order there would
+ * be the rule this function exists to replace, reappearing in the one case it
+ * is hardest to notice.
+ *
+ * Exported for the test that pins this: the rule is one line, and one line is
+ * exactly what gets silently reverted.
+ */
+export function selectFreshestWindowSlot(
+  slots: readonly HotTargetSlot[],
+  hwnd: string,
+): HotTargetSlot | undefined {
+  let best: HotTargetSlot | undefined;
+  for (const s of slots) {
+    if (s.kind !== "window" || !s.identity || !("hwnd" in s.identity) || s.identity.hwnd !== hwnd) continue;
+    if (!best || s.lastUsedAtMs > best.lastUsedAtMs) { best = s; continue; }
+    if (s.lastUsedAtMs === best.lastUsedAtMs && best.attention === "ok" && s.attention !== "ok") best = s;
+  }
+  return best;
+}
 import type { AttentionState } from "../engine/perception/types.js";
 import { isUiaCacheStale } from "../engine/identity-tracker.js";
 import {
@@ -195,6 +229,25 @@ export function buildElementInfoFromCdp(cdp: {
 }
 
 /**
+ * The CDP read of `document.activeElement`, for when neither the view nor UIA could name the focus.
+ * A masked element's value is not read, and `text` is the element's name from the shared definition
+ * — never an entry's own text (a <textarea>'s text node is its initial value, an editor's is what
+ * was typed) and nothing masked, inside the element or of it — which `buildElementInfoFromCdp`
+ * falls back to after the name attribute and the id. MEASURED 2026-09-11 win2 (internal
+ * `dev/cdp-password/`): a password field UIA could not name came back through here with its value.
+ */
+export const CDP_FOCUSED_ELEMENT_SCRIPT = `(function(){
+${ELEMENT_NAME_JS}
+  var el=document.activeElement;
+  if(!el||el===document.body)return null;
+  var masked=__isMasked(el);
+  return {tag:el.tagName,id:el.id,name:el.name||el.getAttribute('name')||'',
+          value:(el.value===undefined||masked)?'':String(el.value).slice(0,60),
+          masked:masked,
+          text:__elText(el).slice(0,60)};
+})()`;
+
+/**
  * Read the engine-perception `latest_focus` view. Returns `null`
  * (so the caller falls back to UIA / CDP) when:
  *   - the addon doesn't expose `nativeViewFocus` (older builds),
@@ -227,10 +280,12 @@ function tryViewFocus(): NativeFocusedElement | null {
  *    falls through to CDP / `null` rather than publishing. Without
  *    this check, the view-first path would surface `name: ""`
  *    rows that the old path would have skipped — bit-equal
- *    violation. (Note: empty-name rows are not common in practice
- *    — the focus_pump's `payload.after?.name?` filter already
- *    drops most of them — but they're still possible for some
- *    UIA providers, so the parity guard is required.)
+ *    violation. (An earlier note here credited a `payload.after?.name?`
+ *    filter in the focus_pump with dropping most empty-name rows.
+ *    There is no such filter: the pump skips only `after: None`,
+ *    the UIA handler always writes `after: Some(...)`, and nothing
+ *    between them looks at `name`. This check is the ONLY guard,
+ *    not a parity backstop behind one — gate 2, 2026-09-14.)
  *
  * 2. **Chromium foreground + `controlType === "Pane"`** → reject
  *    (Codex review v3 P1-3 / Opus phase-boundary review 2026-04-30
@@ -580,10 +635,7 @@ export const desktopStateHandler = async (args: {
     let attention: AttentionState = "ok";
     if (fg) {
       const fgHwnd = String(fg.hwnd);
-      const slots = getSlotSnapshot();
-      const matchingSlot = slots.find(
-        (s) => s.kind === "window" && s.identity && "hwnd" in s.identity && s.identity.hwnd === fgHwnd
-      );
+      const matchingSlot = selectFreshestWindowSlot(getSlotSnapshot(), fgHwnd);
       if (matchingSlot) {
         // Map SlotAttention → AttentionState (7 enum values in design §3.1)
         const sa = matchingSlot.attention;
@@ -708,6 +760,27 @@ export const desktopStateHandler = async (args: {
     if (viewFocused && shouldAcceptViewFocus(viewFocused, isChromium, fgTitle)) {
       focusedElement = buildElementInfoFromView(viewFocused);
       hints.focusedElementSource = "view";
+      // THIS ROAD NEVER CARRIES A VALUE — `buildElementInfoFromView` has no `value` field, because
+      // the engine-perception `UiElementRef` does not carry one. So the row names an element and
+      // says nothing about its contents, and a caller cannot tell that from an empty field.
+      // Measured: 24 of 24 reads carried a value while this hint said `uia`, 0 of 8 while it said
+      // `view`, the element's NAME identical in all thirty-two (win2, 2026-09-14, `a4802dd`).
+      //
+      // Unconditional: the absence is a property of the road, not of this element. WHAT PUTS A
+      // CALLER ON THIS ROAD is the predicate three lines up, `shouldAcceptViewFocus` — a sticky
+      // latest-focus row whose recorded window title still equals the foreground title read in
+      // this call. Measured inside one window with the click point as the only variable: blank
+      // space in the same form keeps the UIA road, a different text field moves to this one from
+      // then on (win2, `e1daeb4`). Typing into the field you then read keeps the value because
+      // editing moves that window's TITLE, not because it moved focus — measured by renaming a
+      // window from outside and back, with no input at all (`a23bda2`). A window whose title is
+      // fixed KEEPS matching its row, so it tends to stay on this road — but the title is only the
+      // third filter: an unnamed control, a Chromium `Pane`, or a view no event has reached leaves
+      // this road with the title unchanged, and the value MAY come back. Not will: the UIA branch
+      // gates on a name too, so an unnamed control leaves this road and publishes nothing at all;
+      // a provider may serve no value; CDP omits an empty or masked one (gate 1). See `_post.ts`, which states
+      // the same fact with that hedge; this line used to state it flat (gate 2).
+      hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
     if (isChromium) {
@@ -731,19 +804,19 @@ export const desktopStateHandler = async (args: {
         // CDP fallback
         try {
           const cdpInfo = await evaluateInTab(
-            `(function(){
-              var el=document.activeElement;
-              if(!el||el===document.body)return null;
-              return {tag:el.tagName,id:el.id,name:el.name||el.getAttribute('name')||'',
-                      value:(el.value!==undefined?String(el.value).slice(0,60):''),
-                      text:(el.innerText||el.textContent||'').slice(0,60)};
-            })()`,
+            CDP_FOCUSED_ELEMENT_SCRIPT,
             null,
             _defaultPort
-          ) as { tag?: string; id?: string; name?: string; value?: string; text?: string } | null;
+          ) as { tag?: string; id?: string; name?: string; value?: string; masked?: boolean; text?: string } | null;
           if (cdpInfo) {
             focusedElement = buildElementInfoFromCdp(cdpInfo);
             hints.focusedElementSource = "cdp";
+            // A MASKED FIELD AND A FIELD WITH NOTHING IN IT LEAVE THE SAME HOLE HERE. Measured on
+            // Windows: on this road a `type=password` box and a paragraph carrying only a
+            // `tabindex` produce identical output, because the script substitutes an empty value
+            // for the first and the projection drops an empty one either way (win2, 2026-09-14).
+            // The script now says which it did, so the hole has a name.
+            if (cdpInfo.masked) hints.focusedElementValueAbsent = "masked_on_this_road";
           }
         } catch {
           hints.cdpUnavailable = true;
@@ -1142,9 +1215,116 @@ export function registerDesktopStateTools(server: McpServer): void {
         "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. " +
         "attention='ok' means safe to proceed; other values require recovery (see suggest[]). " +
         "Set include* flags only when you need the extra data (each adds one syscall or CDP round-trip).",
+      // WHERE THE LOCKER'S PROMISE STOPS, said in the place it stops. `key_locker` now
+      // says its promise covers what the locker holds and not every password on the
+      // machine; this is the behaviour that makes that necessary, and its description
+      // advertised `focusedElement (… value …)` while saying nothing about what a
+      // credential field puts there. A reader who took the hint seriously and came
+      // looking would have found nothing and concluded the exposure was elsewhere
+      // (gate 2 on `1c22b3e`, 2026-09-13).
+      //
+      // THE TWO ROADS ARE NOT THE SAME AND THE CAVEAT MAY NOT SAY THEY ARE. The first
+      // version of this sentence read "a masked field comes back without it" —
+      // categorical, and true of only one of them. On the CDP road it is enforced and
+      // tested: `__isMasked` in `_element-name-js.ts`, pinned by
+      // `never-hand-back-a-password.test.ts`. On the UIA road nothing checks:
+      // `src/uia/focus.rs` calls `vp.CurrentValue()` on the focused element with no
+      // `IsPassword` or control-type gate, so the value is whatever the provider serves.
+      // A WinForms `UseSystemPasswordChar` box returns nothing — measured, one
+      // mechanism — but a WPF `PasswordBox` or a Qt / Java / Electron provider that does
+      // serve `ValuePattern` for a masked control would put plaintext here, and a caller
+      // who read the categorical version had been told that cannot happen.
+      //
+      // That is the same over-generalised promise this change removes from `key_locker`,
+      // re-introduced one sentence over on the half nothing enforces (gate 2 on
+      // `1f42968`, 2026-09-13). A trailing hedge does not undo a flat leading assertion,
+      // so the assertion is gone instead.
+      //
+      // `IsPassword` is also not the gate anyone would reach for: it comes back False
+      // for a genuinely masked WinForms box, so a guard written against it skips nothing.
+      //
+      // WHICH LEAVES AN ASYMMETRY THIS TOOL CANNOT CLOSE, and the caveat says so rather than
+      // implying it. On the CDP road a masked field is named — `hints.focusedElementValueAbsent`
+      // is `masked_on_this_road`, because the script that dropped the value reports that it did.
+      // On the UIA road the same field arrives as mask characters, one per character of the
+      // secret, and NOTHING HERE CAN TELL: `IsPassword` is False, and deciding it from the string
+      // (all one repeated glyph?) would be a guess dressed as a fact — the shape four review
+      // rounds punished this week. So the sentence warns the caller instead of the code
+      // pretending to know. A machine-readable form waits for a check that can actually establish
+      // masking on that road; filed, not faked.
+      //
+      // AND THE HINT'S ABSENCE IS NOT A VERDICT EITHER. The first version of the sentence ended
+      // "No hint means the field itself had nothing" — categorical, and false on the UIA road,
+      // where a masked WinForms box serves nothing and no hint is set (gate on `93c5f41`, P1).
+      // That is the third time on this branch family that a flat claim had to be taken back to a
+      // scoped one, always in the direction of saying more than the code establishes. The absence
+      // of a reason now means only what it can mean: nothing was DROPPED by the road that
+      // answered.
+      //
+      // AND THE OTHER HALF, WHICH THE FIRST VERSION OF THIS CAVEAT LEFT OUT. "Do not rely on it
+      // being absent" says nothing about relying on it being PRESENT, and the value is not always
+      // there: `focusedElement` is preferred from the perception view (`buildElementInfoFromView`),
+      // and that shape has no `value` field at all. The invariant is about THAT road and no other:
+      // the CDP read carries a value too (`CDP_FOCUSED_ELEMENT_SCRIPT` returns `el.value` for an
+      // unmasked element, and `buildElementInfoFromCdp` keeps a non-empty one), so what is true is
+      // that the VIEW road can never carry one — not that only UIA can (gate on `05f31f6`).
+      //
+      // MEASURED, all three roads, one focused field at a time (win2, 2026-09-14, `8765f8c`):
+      //
+      //   road   plain field                     `type=password` field
+      //   uia    the value, 12 of 12 characters  12 bullets — i.e. the secret's LENGTH
+      //   cdp    the value, 12 of 12 characters  no value at all
+      //   view   (0 of 8, no value ever)         —
+      //
+      // So the masking sentence above is road-dependent in a way worth saying here even though the
+      // shipped string stays short: the CDP rule withholds, and the UIA road hands back a row whose
+      // length is the secret's. Anyone tightening this caveat should know that "masked fields are
+      // withheld" is true of exactly one of the two roads that can carry a value.
+      //
+      // Getting there cost four rounds on the measuring side, and two of them are worth carrying:
+      // Chrome's renderer accessibility makes UIA answer for every field, so the CDP branch is
+      // never reached while it is on — `--disable-renderer-accessibility` is the condition that
+      // branch is written for, not a trick to reach it. And the CDP fallback here asks
+      // `_defaultPort`, not the port the caller connected `browser_open` with: on any other port
+      // this road is simply absent (`hints.cdpUnavailable`), which is filed as its own item.
+      // Measured on Windows 2026-09-14 (win2, `dev/pr639-post-value-named-window` `a4802dd`): with
+      // the same element focused, 24 of 24 reads answered with a value while
+      // `hints.focusedElementSource` was `uia`, and 0 of 8 did while it was `view` — the element's
+      // NAME identical in every one of them, so a caller cannot tell "this road carries no values"
+      // from "the field is empty". `hints.focusedElementSource` is the only thing that separates
+      // the two, so the caveat says to read it.
+      //
+      // WHEN THE VIEW WINS is a predicate, not an event — `shouldAcceptViewFocus` (:317): a
+      // latest-focus row with a name, not a Chromium `Pane`, and a recorded window title EXACTLY
+      // equal to the foreground title enumerated in the same call — with one equal case refused,
+      // because an empty `fgTitle` is rejected before the comparison and the UIA handler writes an
+      // empty `window_title` for `hwnd == 0`. The row is global and NO FOCUS
+      // EVENT clears it (a dropped focus is skipped, not written); what does clear it — a view
+      // that no event has reached yet, a failed handler registration, a poison-eviction respawn —
+      // all falls through to the UIA road, and on a Chromium foreground onward to CDP. Either CAN
+      // carry a value; only THIS road never does, which is the distinction `05f31f6` drew 30 lines
+      // up and this sentence had quietly undone (gate 2). "Can", because both of those roads have
+      // their own ways of answering without one. So the road moves
+      // with no focus change at all, in BOTH directions: a window that renames itself out of the
+      // equality leaves this road and the value appears (Notepad's `*`), and a foreground whose
+      // title matches its recorded row again arrives here and the value disappears.
+      //
+      // Measured inside one window with the click point as the only variable: blank space in the
+      // form keeps the UIA road, a different text field moves to the view road from then on (win2,
+      // `e1daeb4`); acting on another window moves it too, and so does invoking a button on one,
+      // which writes nothing (`3859672`). And the arm that looked like typing was measured in both
+      // directions (win2, `a23bda2`): renaming a window from OUTSIDE, with no keystroke and no
+      // focus move, takes it off this road and puts the value back; renaming it to its old title
+      // puts it back on. Typing was never the cause — a title that MOVES when you edit is.
+      //
+      // THREE EARLIER FORMS OF THIS SENTENCE WERE WRONG, all wider than the evidence and all in
+      // the same direction — "after this server writes", "after acting on another window", "when
+      // the focused element changes". The habit they share is naming the most visible change in a
+      // round that moved more than one thing; this form is read off the predicate instead.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
-        "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
+        "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
+        "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control — a masked field can arrive as mask characters, one per character of the secret, which nothing here distinguishes from its real value. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means nothing was dropped on the road that answered — on the UIA road an absent value can still be a field whose provider will not serve one.",
     }),
     desktopStateRegistrationSchema,
     desktopStateRegistrationHandlerWithIncludeRoute as typeof desktopStateHandler

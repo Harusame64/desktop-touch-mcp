@@ -12,6 +12,8 @@
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
+import { probeLane } from "../../engine/aim-probe.js";
+import { ELEMENT_NAME_JS } from "../_element-name-js.js";
 
 interface BrowserElement {
   type: string;
@@ -28,6 +30,11 @@ function cdpRoleFromType(type: string): string {
   if (type.startsWith("input[") || type === "select" || type === "textarea") return "textbox";
   if (type === "menuitem" || type === "option" || type === "tab") return "menuitem";
   return "unknown";
+}
+
+/** An element the page takes typed text into — named by its type when it has no name. */
+function isField(type: string): boolean {
+  return type.startsWith("input[") || type === "textarea";
 }
 
 function cdpActionability(type: string): Array<"click" | "invoke" | "type" | "read"> {
@@ -64,19 +71,16 @@ const INTERACTIVE_SCRIPT = `
     if(tag==='input') return 'input['+(el.type||'text')+']';
     return tag;
   }
-  function elText(el) {
-    const t=(el.textContent||'').trim().replace(/\\s+/g,' ').slice(0,80);
-    if(!t&&el.tagName==='INPUT') return (el.placeholder||el.value||el.getAttribute('aria-label')||'').slice(0,80);
-    return t;
-  }
+  // Names, and which values are never read, come from the one definition every CDP script shares.
+${ELEMENT_NAME_JS}
   const out=[];
   for(const el of document.querySelectorAll(CSS_Q)) {
     if(!isVisible(el)) continue;
     const r=el.getBoundingClientRect();
     const inVP=r.top<window.innerHeight&&r.bottom>0&&r.left<window.innerWidth&&r.right>0;
-    const item={type:elType(el),text:elText(el),selector:bestSel(el),inViewport:inVP};
+    const item={type:elType(el),text:__elText(el),selector:bestSel(el),inViewport:inVP};
     if(el.tagName==='A') item.href=el.href;
-    if(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT') item.value=el.value;
+    if((el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')&&!__isMasked(el)) item.value=el.value;
     out.push(item);
     if(out.length>=60) break;
   }
@@ -87,7 +91,9 @@ const INTERACTIVE_SCRIPT = `
 export async function fetchBrowserCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
-  if (!target?.tabId) return { candidates: [], warnings: [] };
+  if (!target?.tabId) {
+    return probeLane("cdp", "skipped", { why: "no_tab" }, { candidates: [], warnings: [] });
+  }
   const tabId = target.tabId;
 
   try {
@@ -95,17 +101,23 @@ export async function fetchBrowserCandidates(
     const elements = await evaluateInTab(INTERACTIVE_SCRIPT, tabId, DEFAULT_CDP_PORT) as BrowserElement[];
 
     if (!Array.isArray(elements)) {
-      return { candidates: [], warnings: ["cdp_provider_failed"] };
+      return probeLane("cdp", "failed", { tabId, why: "not_an_array" }, { candidates: [], warnings: ["cdp_provider_failed"] });
     }
 
     const candidates: UiEntityCandidate[] = elements
-      .filter((el) => el.text || el.href)
+      // A field with no name keeps its place under its type and selector. It used to borrow its
+      // value for a name, which is how a password became a label. The selector is part of the label
+      // because a CDP candidate has no rect: two unnamed password fields labelled by type alone
+      // resolved to one entity, and the second could not be reached (2ゲート目 on #623). This keeps
+      // two fields apart only as far as `bestSel` does: its one-level `:nth-child` fallback can
+      // repeat, and then the locator itself cannot reach the second field either — as before.
+      .filter((el) => el.text || el.href || isField(el.type))
       .map((el): UiEntityCandidate => ({
         source: "cdp",
         target: { kind: "browserTab", id: tabId },
         locator: { cdp: { selector: el.selector, tabId } },
         role: cdpRoleFromType(el.type),
-        label: el.text || el.href || el.selector,
+        label: el.text || el.href || `${el.type} ${el.selector}`,
         value: el.value,
         actionability: cdpActionability(el.type),
         confidence: el.inViewport ? 1.0 : 0.7,
@@ -114,9 +126,10 @@ export async function fetchBrowserCandidates(
       }));
 
     const warnings = candidates.length === 0 ? ["cdp_no_elements"] : [];
-    return { candidates, warnings };
+    // Counts only: a label on a page can carry anything the user has in front of them.
+    return probeLane("cdp", "read", { tabId, elementCount: elements.length }, { candidates, warnings });
   } catch (err) {
     console.error(`[browser-provider] CDP error for tab "${tabId}":`, err);
-    return { candidates: [], warnings: ["cdp_provider_failed"] };
+    return probeLane("cdp", "failed", { tabId, why: "threw" }, { candidates: [], warnings: ["cdp_provider_failed"] });
   }
 }

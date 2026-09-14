@@ -33,6 +33,7 @@ import type {
   NativeSessionInit,
   NativeSessionResult,
   NativeWin32Rect,
+  NativeWindowAtPoint,
   NativeThreadProcessId,
   NativePrintWindowResult,
   NativeWgcResult,
@@ -139,6 +140,13 @@ export interface NativeWin32 {
   win32IsIconic?(hwnd: bigint): boolean;
   win32IsZoomed?(hwnd: bigint): boolean;
   win32GetClassName?(hwnd: bigint): string;
+  /**
+   * ADR-036 item 6 — who Windows says is under a screen point, hit regions and per-pixel alpha
+   * included. Optional like every other member here: a build without it falls back to the
+   * enumeration in `point-owner.ts`, which is a reconstruction and is measurably wrong under a
+   * full-screen layered overlay.
+   */
+  win32WindowFromPoint?(x: number, y: number): NativeWindowAtPoint | null;
   /**
    * ADR-018 Phase 5+N: resolve a top-level HWND to the descendant HWND that
    * actually receives WM_MOUSEWHEEL for MDI / OLE apps (Excel:
@@ -291,6 +299,13 @@ export interface NativeUia {
     maxDepth?: number;
     maxElements?: number;
     fetchValues?: boolean;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeUiElementsResult>;
   uiaGetFocusedAndPoint?(opts: {
     cursorX: number;
@@ -304,18 +319,39 @@ export interface NativeUia {
     name?: string;
     automationId?: string;
     controlType?: string;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeActionResult>;
   uiaSetValue?(opts: {
     windowTitle: string;
     value: string;
     name?: string;
     automationId?: string;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeActionResult>;
   uiaInsertText?(opts: {
     windowTitle: string;
     value: string;
     name?: string;
     automationId?: string;
+    /**
+     * ADR-036 — a decimal window handle. When present the engine resolves the window through
+     * `IUIAutomation::ElementFromHandle` and does not search titles at all, so a same-titled
+     * sibling cannot answer instead. A string because a Win32 handle does not fit a JS number;
+     * the same shape `scrollByWheelAtHwnd` already uses.
+     */
+    hwnd?: string;
   }): Promise<NativeActionResult>;
   uiaGetElementBounds?(opts: {
     windowTitle: string;
@@ -335,6 +371,8 @@ export interface NativeUia {
   uiaGetTextViaTextPattern?(opts: {
     windowTitle: string;
     timeoutMs: number;
+    /** ADR-036 — read this window's text, not the first one answering to the title. */
+    hwnd?: string;
   }): Promise<string | null>;
 
   // Phase D: Scroll / VDesktop
@@ -412,6 +450,20 @@ try {
   // Native addon not built or platform unsupported — callers fall back to TS/PowerShell.
 }
 
+/**
+ * ADR-036 item 14b — every callable the loaded binding exposes, by name and sorted; `null` when no
+ * binding loaded at all.
+ *
+ * The whole set, not a list of the ones someone thought to check. A curated list answers the
+ * question its author already had, and the one that cost a round on 2026-09-10 — does this `.node`
+ * carry `win32WindowFromPoint`? — was on nobody's list until a sandbox had been read wrong for it.
+ */
+export function nativeExportNames(): string[] | null {
+  const binding = nativeBinding;
+  if (!binding) return null;
+  return Object.keys(binding).filter((k) => typeof binding[k] === "function").sort();
+}
+
 export const nativeEngine: NativeEngine | null =
   nativeBinding &&
   typeof nativeBinding.computeChangeFraction === "function" &&
@@ -420,10 +472,81 @@ export const nativeEngine: NativeEngine | null =
     ? (nativeBinding as unknown as NativeEngine)
     : null;
 
+/**
+ * `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` takes the native UIA engine out even when the addon carries it,
+ * and leaves the rest of the binding (win32, capture, image diff, …) loaded — the state of an addon
+ * built without the engine. UIA calls that have a PowerShell version go through it; the two scroll
+ * reads that have none (`_input-pipeline.ts`) are skipped; and `foreground_flash` does not scan for
+ * the paste-warning dialog, which only the engine can do (`bg-input.ts`), so the UIA thread never
+ * starts and the focus view it feeds stays empty. Only "1" turns it on. Read once at load, like
+ * `DESKTOP_TOUCH_DISABLE_VISUAL_GPU`.
+ *
+ * It exists so the native-absent configuration is a switch rather than a patched build. ADR-036's
+ * all-route check runs every road with the native UIA engine present and absent, because a defect
+ * lived only in the second — item 16's first cut refused a control that was there, on every retry,
+ * whenever the read and the click went through PowerShell (gate 2 on public PR #624) — and the rounds
+ * that measured it had to patch `dist` to get there (win2, internal PRs #73 and #74).
+ */
+const NATIVE_UIA_DISABLED = process.env["DESKTOP_TOUCH_DISABLE_NATIVE_UIA"] === "1";
+
+const bindingHasUia = nativeBinding !== null && typeof nativeBinding.uiaGetElements === "function";
+
 export const nativeUia: NativeUia | null =
-  nativeBinding && typeof nativeBinding.uiaGetElements === "function"
-    ? (nativeBinding as unknown as NativeUia)
-    : null;
+  bindingHasUia && !NATIVE_UIA_DISABLED ? (nativeBinding as unknown as NativeUia) : null;
+
+/** Which of the three this process is: the native UIA engine in use, switched off, or not in the addon. */
+export type NativeUiaState = "native" | "disabled" | "unavailable";
+
+/**
+ * The one answer `server_status` and the probe's row zero both give. The addon's export list alone
+ * cannot say it: with the switch on, the binding is loaded and still names `uiaGetElements`, so a
+ * record showing only that list would read as a native run.
+ */
+export function nativeUiaState(): NativeUiaState {
+  if (!bindingHasUia) return "unavailable";
+  return NATIVE_UIA_DISABLED ? "disabled" : "native";
+}
+
+/** ADR-036 H2 — what the native UIA engine has done in this process, as the engine and the OS answer. */
+export interface NativeUiaEvidence {
+  /** How many times the engine's UIA COM thread was started. 0: the engine never ran here. */
+  comThreadStarts: number;
+  /** How many UIA tasks were sent to that thread. */
+  tasksSent: number;
+  /** Whether UIAutomationCore.dll is loaded in this process, as the OS answers. */
+  uiaCoreLoaded: boolean;
+}
+
+/**
+ * ADR-036 H2 — whether the native UIA engine actually ran in this process, answered by the engine and
+ * the OS rather than by the switch.
+ *
+ * `nativeUiaState()` says what the process was configured to do, and it reads the same env var the
+ * switch does. So a build where native UIA still ran under `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`
+ * reported "disabled" all the same. #626's second gate found that very case:
+ *   - `foreground_flash`'s paste-warning scan started the UIA thread from inside a win32 call;
+ *   - that thread then fed the focus view that `desktop_state` reads first.
+ * This reads what happened instead: the engine's own counts, kept where its COM thread is started and
+ * where a task is sent to it, and whether the OS has UIAutomationCore loaded.
+ *
+ * It is read from the binding, not from `nativeUia`. The switch nulls `nativeUia`, and a run under the
+ * switch is exactly where this has to answer. It is read on every call, so a check made after the act
+ * sees what the act did. It is `null` when the addon has no such export, the call throws, or the answer
+ * is not the expected shape — "could not say", never "did not run".
+ */
+export function nativeUiaEvidence(): NativeUiaEvidence | null {
+  const read = nativeBinding?.["uiaEngineEvidence"];
+  if (typeof read !== "function") return null;
+  try {
+    const e = (read as () => unknown)() as Partial<NativeUiaEvidence> | null;
+    if (!e || typeof e.comThreadStarts !== "number" || typeof e.tasksSent !== "number" || typeof e.uiaCoreLoaded !== "boolean") {
+      return null;
+    }
+    return { comThreadStarts: e.comThreadStarts, tasksSent: e.tasksSent, uiaCoreLoaded: e.uiaCoreLoaded };
+  } catch {
+    return null;
+  }
+}
 
 // Treat the binding as "vision available" when EITHER end of the surface is
 // callable. `detectCapability` is exported even when `vision-gpu` cargo

@@ -37,6 +37,24 @@ beforeEach(() => {
   vi.mocked(fetchOcrCandidates).mockResolvedValue({ candidates: [], warnings: [] });
 });
 
+describe("composeCandidates — a handle that cannot be read (ADR-036, left open)", () => {
+  // The PR-side review asked for these to be refused. They are not, and the reason is a
+  // measurement rather than a preference: `TargetSpec.hwnd` is a string that carries two meanings,
+  // and the visual / GPU lanes address snapshots by opaque keys like `"hwnd-game"`. Refusing every
+  // unreadable handle turned six tests red across `benchmark-gates`, `poc-backend` and
+  // `dirty-signal` — all of them legitimate uses of the field as a key.
+  //
+  // So this pins the CURRENT behaviour and names what is wrong with it, rather than pinning a
+  // half-fix: an unreadable handle still reaches the providers, which warn and read by title. The
+  // act that follows is unpinned. Closing it means separating the two meanings (ADR-036 item 2).
+  it("passes an unreadable handle through to the providers, which is the hole", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    const result = await composeCandidates({ hwnd: "hwnd-game" });
+    expect(result.candidates).toEqual([]);
+    expect(fetchUiaCandidates).toHaveBeenCalled();
+  });
+});
+
 describe("composeCandidates — R3 WindowExcludedError propagation", () => {
   it("propagates WindowExcludedError from a hwnd target (does NOT swallow it)", async () => {
     mockResolveWindowTarget.mockRejectedValue(new WindowExcludedError("WindowExcluded: key locker"));

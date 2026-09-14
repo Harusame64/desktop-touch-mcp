@@ -71,6 +71,60 @@ describe("resolveCandidates — basic resolution", () => {
     expect(e.origin).toEqual({ kind: "window", id: "2000" });
   });
 
+  it("keeps the handle a lane resolved even when a lane without one observed later", () => {
+    // ADR-036 item 12 (PR 側 codex, 2026-09-10). A merged entity lost the handle one lane HAD
+    // resolved whenever a lane without one happened to arrive later — and with it the whole
+    // coordinate ladder, decided by a race between two lanes. Every candidate in a group describes
+    // the same element in the same window.
+    //
+    // **The lane in this cell used to be `uia`, and item 15 gave that lane a handle of its own**
+    // (2026-09-10). The rule is unchanged and still has traffic — terminal, cdp and browser
+    // candidates record none — so the cell keeps its shape with a lane that still cannot answer.
+    const ocr = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "4919" });
+    const noHandleLane = candidate("Play", { source: "terminal", observedAtMs: 2000 });
+    const [e] = resolveCandidates([ocr, noHandleLane], GEN);
+    expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
+  });
+
+  it("does not take a recorded handle that names no window", () => {
+    // ADR-036 item 12 (gate 2, 2026-09-10). `"0"` is what a lane writes when it looked and
+    // resolved nothing, and this file was reading it as a window while `observedHwndOfOrigin` two
+    // files away was reading it as absence. The primary's `"0"` won the choice below and then
+    // resolved to no handle, so the entity carried an origin that skipped the whole ladder.
+    const zero = candidate("Play", { source: "ocr", observedAtMs: 2000, originHwnd: "0" });
+    const [e] = resolveCandidates([zero], GEN);
+    expect(e.origin).toEqual(TARGET);
+  });
+
+  it("a handle that names no window does not make an agreeing group look like a disagreeing one", () => {
+    // The other half of the same rule. One lane recorded `"0"`, one resolved a real window, and
+    // counting distinct strings made the group look like two answers — so the real handle was
+    // dropped and the coordinate ladder never ran.
+    const zero = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "0" });
+    const real = candidate("Play", { source: "ocr", observedAtMs: 2000, originHwnd: "4919" });
+    const primaryWithout = candidate("Play", { source: "uia", observedAtMs: 3000 });
+    const [e] = resolveCandidates([zero, real, primaryWithout], GEN);
+    expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
+  });
+
+  it("prefers the primary's own handle to one borrowed from another lane", () => {
+    // The entity's rect and locator come from the primary, so its handle is the one that certainly
+    // describes them. A borrowed handle assumes both lanes resolved the same window, and a
+    // title-only query against two overlapping same-titled windows is where that fails.
+    //
+    // **This stopped being a fixture-only state on 2026-09-10.** It was one while the only two lanes
+    // recording a handle keyed differently (`visual_gpu` carries the producer's digest, `ocr` falls
+    // to the source-omitting key), so they never merged. Item 15 gave the UIA lane a handle, and a
+    // uia+ocr merge is what this resolver exists to do — two independent title resolutions that do
+    // not agree by construction can now land in one group. The rule below is what makes that
+    // harmless: the winning handle and `rect: primary.rect` come from the same candidate, so the
+    // ladder always measures one lane's rectangle against that same lane's window.
+    const older = candidate("Play", { source: "ocr", observedAtMs: 1000, originHwnd: "777" });
+    const primary = candidate("Play", { source: "visual_gpu", observedAtMs: 2000, originHwnd: "4919" });
+    const [e] = resolveCandidates([older, primary], GEN);
+    expect(e.origin).toEqual({ ...TARGET, hwnd: "4919" });
+  });
+
   it("evidenceDigest is always set (required for lease issuance)", () => {
     const [e] = resolveCandidates([candidate("Start")], GEN);
     expect(e.evidenceDigest).toBeTruthy();

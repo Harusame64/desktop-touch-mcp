@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Accessibility::*;
 use windows::core::Interface;
 
@@ -34,6 +34,16 @@ pub struct GetElementsOptions {
     pub max_depth: Option<u32>,
     pub max_elements: Option<u32>,
     pub fetch_values: Option<bool>,
+    /// ADR-036 — read THIS window, rather than the first one whose name contains `window_title`.
+    ///
+    /// A decimal handle as a string, the shape `ScrollByWheelAtHwndOptions` already uses. When
+    /// present the title is not searched at all, so a second window answering to the same title
+    /// cannot be read instead — and the caller does not have to leave this engine to get that,
+    /// which is what it had to do before: the TS bridge fell back to a PowerShell script for
+    /// every pinned read, at 184 ms against 517 ms on the same window, and that road cannot see
+    /// a window's frame without registering MSAA clientside providers, which gives the frame
+    /// English names this one does not use.
+    pub hwnd: Option<String>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -53,12 +63,37 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     let max_elements = opts.max_elements.unwrap_or(DEFAULT_MAX_ELEMENTS);
     let fetch_values = opts.fetch_values.unwrap_or(false);
 
-    let root = find_window(ctx, &opts.window_title)?;
+    let root = resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title)?;
 
     // Extract window metadata from element-scoped cache.
     let window_title = unsafe { root.CachedName().map_err(win_err)?.to_string() };
     let window_class_name = unsafe { root.CachedClassName().ok().map(|b| b.to_string()) };
     let window_rect = cached_bounding_rect(&root).ok();
+    // ADR-036 item 15 — WHICH window this is, not just what it looks like. Read here, before `root`
+    // is moved into the walk's queue, and from the cache: `UIA_NativeWindowHandlePropertyId` has
+    // been in the standard cache request since ADR-007 P5c-0b, so this costs no extra RPC.
+    //
+    // Zero is filtered rather than reported: `CachedNativeWindowHandle` answers NULL for an element
+    // with no host window, and "no window" and "the window numbered 0" must not arrive as the same
+    // value — the consumer treats this as the handle to run the coordinate ladder against.
+    //
+    // **`as u32`, not `as isize`.** The UIA property is a VT_I4, so a handle with the high bit set
+    // comes back sign-extended and `isize` renders it as a NEGATIVE decimal string;
+    // `parseWindowHandle` rejects non-positive handles, so exactly those windows would record none
+    // and keep the behaviour this item exists to end — invisibly, since a missing handle is
+    // indistinguishable from a build that cannot report one (PR 側 codex on #619, P2; my own claim
+    // that this road "was already right" was wrong).
+    //
+    // The low 32 bits are the whole handle — USER handles are 32-bit values sign-extended for
+    // interop — so the truncation loses nothing, and it makes the two roads agree: the same window
+    // read through Rust and through PowerShell now yields the same string, which two different
+    // representations would have quietly broken for merged entities.
+    let window_hwnd = unsafe { root.CachedNativeWindowHandle().ok() }
+        // `as usize as u32`: HWND is a raw pointer in windows 0.62, so the address is taken first
+        // and then truncated to the 32 bits that are the handle.
+        .map(|h| h.0 as usize as u32)
+        .filter(|h| *h != 0)
+        .map(|h| h.to_string());
 
     // ★ Batch BFS: FindAllBuildCache(TreeScope_Children) per parent.
     // Each RPC fetches all ControlView children of one parent at once.
@@ -120,6 +155,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     Ok(UiElementsResult {
         window_title,
         window_class_name,
+        window_hwnd,
         window_rect,
         element_count: elements.len() as u32,
         elements,
@@ -127,6 +163,64 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
 }
 
 // ─── Window finding ──────────────────────────────────────────────────────────
+
+/// ADR-036 — the window this call is about: the handle when the caller named one, otherwise the
+/// first top-level window whose name contains the title.
+///
+/// Both roads return an element with the cache already populated, because everything downstream
+/// reads `Cached*`; an element straight from `ElementFromHandle` has an empty cache and would
+/// answer `CachedName()` with an error rather than a name.
+pub(crate) fn resolve_root(
+    ctx: &UiaContext,
+    hwnd: Option<&str>,
+    title: &str,
+) -> napi::Result<IUIAutomationElement> {
+    match hwnd {
+        Some(h) => element_from_handle(ctx, h),
+        None => find_window(ctx, title),
+    }
+}
+
+/// Resolve a decimal window handle to its element, with the cache built.
+///
+/// The handle is a string on the wire for the same reason `ScrollByWheelAtHwndOptions.hwnd` is:
+/// a Win32 handle does not fit a JS number, and napi's BigInt crossing is more ceremony than a
+/// decimal string that both sides already agree on.
+pub(crate) fn element_from_handle(
+    ctx: &UiaContext,
+    hwnd: &str,
+) -> napi::Result<IUIAutomationElement> {
+    let raw: i64 = hwnd
+        .parse()
+        .map_err(|e| napi::Error::from_reason(format!("hwnd parse error: {e}")))?;
+    if raw <= 0 {
+        // Zero is not a window and -1 is INVALID_HANDLE_VALUE; the TS side rejects both before
+        // it gets here (`parseTargetHwnd`), and this is the same answer from the other end.
+        return Err(napi::Error::from_reason(format!(
+            "Window not found by hwnd: {hwnd}"
+        )));
+    }
+    let handle = HWND(raw as *mut std::ffi::c_void);
+    unsafe {
+        let elem = ctx
+            .automation
+            .ElementFromHandle(handle)
+            .map_err(|_| napi::Error::from_reason(format!("Window not found by hwnd: {hwnd}")))?;
+        // ADR-036 — the cache build is a SEPARATE failure, and it must not be called a window that
+        // went away. `ElementFromHandle` refusing the handle means the window is not there; a
+        // provider or RPC fault inside `BuildUpdatedCache` happens to a window that is perfectly
+        // alive, and telling the caller it vanished sends it to re-discover instead of to retry
+        // (PR 側 codex, P2 on #631). The `CACHE_BUILD_FAILED_PREFIX` is how the two arrive apart;
+        // it is produced and consumed in this crate only, so no caller parses a backend's words.
+        elem.BuildUpdatedCache(&ctx.cache_request)
+            .map_err(|e| napi::Error::from_reason(format!("{CACHE_BUILD_FAILED_PREFIX}{e}")))
+    }
+}
+
+/// Marks a `resolve_root` failure that happened AFTER the window was found — see
+/// [`element_from_handle`]. `actions.rs` reads it to decide whether the answer may carry
+/// `aim_window_gone`.
+pub(crate) const CACHE_BUILD_FAILED_PREFIX: &str = "UIA cache build failed: ";
 
 /// Find a top-level window whose name contains `title` (case-insensitive substring match).
 pub(crate) fn find_window(ctx: &UiaContext, title: &str) -> napi::Result<IUIAutomationElement> {
@@ -172,6 +266,16 @@ fn extract_element(
         let class_name = elem.CachedClassName().ok().map(|b| b.to_string());
         let is_enabled = elem.CachedIsEnabled().map(|b| b == true).unwrap_or(true);
         let bounding_rect = cached_bounding_rect(elem).ok();
+        // ADR-036 family 2 — the element's own window, when it is one. Same reading and same width as
+        // the window's handle in `get_elements` (`as usize as u32`, zero dropped), so the two roads
+        // and the keyboard rung's receiver compare as the same string. The property is in the cache
+        // request already, so this costs no RPC.
+        let native_window_handle = elem
+            .CachedNativeWindowHandle()
+            .ok()
+            .map(|h| h.0 as usize as u32)
+            .filter(|h| *h != 0)
+            .map(|h| h.to_string());
 
         let mut patterns = Vec::with_capacity(6);
         if elem.GetCachedPattern(UIA_InvokePatternId).is_ok() {
@@ -210,6 +314,7 @@ fn extract_element(
             patterns,
             depth,
             value,
+            native_window_handle,
         })
     }
 }

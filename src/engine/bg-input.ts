@@ -24,7 +24,7 @@ import {
   vkToScanCode,
   WM_CHAR, WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_CONTROL, VK_SHIFT, VK_MENU,
 } from "./win32.js";
-import { nativeWin32 } from "./native-engine.js";
+import { nativeWin32, nativeUiaState } from "./native-engine.js";
 import { logDispatchSink } from "../tools/_resolve-log.js";
 import type {
   NativeForegroundFlashOptions,
@@ -165,6 +165,20 @@ export function canInjectAtTarget(hwnd: unknown): InjectCheckResult {
   return canInjectViaPostMessage(resolveTarget(hwnd));
 }
 
+/**
+ * ADR-036 family 2 — the handle `hwnd`'s keystrokes would go to, resolved once: the focus of its
+ * thread, or `hwnd` itself when there is none or the question could not be asked. The keyboard rung
+ * judges this handle and then posts to exactly it with {@link postCharsToResolvedTarget}, so the
+ * check and the post cannot look at two different answers.
+ */
+export function resolveKeyTarget(hwnd: bigint): bigint {
+  try {
+    return getFocusedChildHwnd(hwnd) ?? hwnd;
+  } catch {
+    return hwnd;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Character injection
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,6 +189,13 @@ export interface PostCharsResult {
   sent: number;
   /** true when all code units were sent. */
   full: boolean;
+  /**
+   * The handle the characters were posted to: the focus of `hwnd`'s thread when it has one, `hwnd`
+   * itself otherwise. That is usually a child of `hwnd`, but a dialog or another top-level window on
+   * the same thread can hold the focus. ADR-036 family 2: a caller that records where a keystroke went
+   * reads it here, rather than resolving the focus a second time and perhaps getting a different answer.
+   */
+  target: unknown;
 }
 
 /**
@@ -185,7 +206,14 @@ export interface PostCharsResult {
  * Does NOT change the foreground window.
  */
 export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
-  const target = resolveTarget(hwnd);
+  return postCharsToResolvedTarget(resolveTarget(hwnd), text);
+}
+
+/**
+ * Send `text` to `target` as {@link postCharsToHwnd} does, to that handle and no other: the focus is
+ * not asked again. ADR-036 family 2 — the keyboard rung posts here after judging `target`.
+ */
+export function postCharsToResolvedTarget(target: unknown, text: string): PostCharsResult {
   let sent = 0;
   const total = text.length; // UTF-16 code unit count
 
@@ -196,12 +224,12 @@ export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
     const wParam = ch === 0x0A ? 0x0D : ch;
 
     if (!postMessageToHwnd(target, WM_CHAR, wParam, 0)) {
-      return { sent, full: false };
+      return { sent, full: false, target };
     }
     sent++;
   }
 
-  return { sent, full: sent === total };
+  return { sent, full: sent === total, target };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -491,8 +519,14 @@ export function injectViaForegroundFlash(
         "[bg-input] desktop-touch-engine native addon missing win32_foreground_flash_inject (rebuild with `npm run build:rs`)",
     };
   }
+  // DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1 takes the native UIA engine out, and the paste-warning dialog
+  // scan is that engine: it runs on the UIA thread (`wt_dialog_scan.rs`), and once that thread is up
+  // it keeps the focus view fed, so later focus reads would come from native UIA while
+  // `server_status` says "disabled" (gate 2 on public PR #626). An addon without the engine has no
+  // scan either, so under the switch the flash runs without it.
+  const effective = nativeUiaState() === "disabled" ? { ...options, scanPasteWarningDialog: false } : options;
   try {
-    const result = nativeWin32.win32ForegroundFlashInject(hwnd, pid, text, options);
+    const result = nativeWin32.win32ForegroundFlashInject(hwnd, pid, text, effective);
     return { ok: true, result };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

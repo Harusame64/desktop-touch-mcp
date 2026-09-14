@@ -15,12 +15,13 @@ use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChildWindowFromPointEx, EnumWindows, FindWindowExW, GetAncestor, GetClassNameW,
     GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, CWP_SKIPDISABLED,
-    CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, WINDOW_LONG_PTR_INDEX,
+    GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, WindowFromPoint,
+    CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, GW_OWNER,
+    WINDOW_LONG_PTR_INDEX,
 };
 
 use super::safety::{napi_safe_call, PANIC_COUNTER};
-use super::types::{NativeThreadProcessId, NativeWin32Rect};
+use super::types::{NativeThreadProcessId, NativeWin32Rect, NativeWindowAtPoint};
 
 // ─── HWND ↔ BigInt conversion helpers ────────────────────────────────────────
 
@@ -165,6 +166,69 @@ pub fn win32_get_class_name(hwnd: BigInt) -> napi::Result<String> {
             return Ok(String::new());
         }
         Ok(String::from_utf16_lossy(&buf[..len as usize]))
+    })
+}
+
+/// ADR-036 item 6 / ADR-039 — ask WINDOWS who is under a screen point.
+///
+/// This is the primitive `point-owner.ts` reconstructs today from `EnumWindows` plus rectangles,
+/// and the reconstruction is measurably wrong on ordinary desktops. `WindowFromPoint` resolves the
+/// real hit regions: rounded corners, custom regions, and — the case that made this necessary —
+/// per-pixel-alpha layered windows, whose transparency lives in the pixels and is exposed by no
+/// window style. A full-screen overlay from a common monitor utility (`WS_EX_LAYERED` without
+/// `WS_EX_TRANSPARENT`, built with `UpdateLayeredWindow`) makes the enumeration answer "occluded"
+/// at every point on the screen while presses go straight through it (measured 2026-09-10, win2).
+///
+/// Returns `None` when no window is under the point. Note what the primitive itself skips, because
+/// the caller inherits it: hidden windows, disabled windows, and windows carrying
+/// `WS_EX_TRANSPARENT`. That is the desired reading here — those do not take the press either.
+#[napi]
+pub fn win32_window_from_point(x: i32, y: i32) -> napi::Result<Option<NativeWindowAtPoint>> {
+    napi_safe_call("win32_window_from_point", || {
+        let pt = POINT { x, y };
+        // Safety: plain screen-coordinate query; returns NULL when nothing is there.
+        let child = unsafe { WindowFromPoint(pt) };
+        if child.0.is_null() {
+            return Ok(None);
+        }
+        // Everything in the same call: a second round-trip could see a different desktop.
+        //
+        // `GetAncestor` answers NULL for a window that has gone in between; the child handle is
+        // then the most specific true thing left to say.
+        let root = unsafe { GetAncestor(child, GA_ROOT) };
+        let root = if root.0.is_null() { child } else { root };
+
+        // The OWNER chain, by `GW_OWNER` rather than `GA_ROOTOWNER` — see the struct's note. Every
+        // hop is reported rather than only the last, because the aim itself can be an owned window:
+        // a chain that passes THROUGH the aim and continues would otherwise read as unrelated.
+        // Bounded at eight, the same as the enumeration's walk: a corrupt chain must not spin.
+        let mut owner_chain: Vec<BigInt> = Vec::new();
+        let mut cursor = root;
+        for _ in 0..8 {
+            let owner = unsafe { GetWindow(cursor, GW_OWNER) };
+            match owner {
+                Ok(o) if !o.0.is_null() => {
+                    owner_chain.push(hwnd_to_bigint(o));
+                    cursor = o;
+                }
+                _ => break,
+            }
+        }
+
+        let mut process_id: u32 = 0;
+        let thread_id = unsafe { GetWindowThreadProcessId(root, Some(&mut process_id)) };
+        // Length rather than the text: the caller only needs to know whether there IS a caption,
+        // and that is the field that separated a dropdown from an ordinary sibling window.
+        let has_caption = unsafe { GetWindowTextLengthW(root) } > 0;
+
+        Ok(Some(NativeWindowAtPoint {
+            child: hwnd_to_bigint(child),
+            root: hwnd_to_bigint(root),
+            owner_chain,
+            root_thread_id: thread_id,
+            root_process_id: process_id,
+            root_has_caption: has_caption,
+        }))
     })
 }
 

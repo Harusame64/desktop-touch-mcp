@@ -14,6 +14,7 @@
  *   parent_disabled_prefer_popup    — parent window blocked by modal; popup preferred (case 1)
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd, isExcludedWindowHandle, isExcludedTitle,
   // H3: hierarchy-aware dialog resolution
@@ -282,11 +283,126 @@ function getDockTitleLiteral(): string | undefined {
  * Returns `null` when neither special case applies (plain windowTitle → no-op).
  * Throws `WindowNotFound` when explicit hwnd is invalid or foreground cannot be determined.
  */
+/**
+ * ADR-036 — a resolution handed forward, once, to the next caller that asks the
+ * same question.
+ *
+ * `withRichNarration` has to resolve the target before the action, to know which
+ * window to snapshot. The handler then resolves again, and between the two the
+ * desktop can move — a modal closing, the foreground changing — which puts the
+ * snapshots on one window and the write on another. That gap is not a hair: the
+ * post-state wrapper takes a full focus enumeration in between (`_post.ts`).
+ *
+ * The obvious fix — put the resolved handle into the handler's `args` — is not
+ * available, because a handler that sees `hwnd` believes the CALLER named one,
+ * and that belief decides the guard descriptor, the pinning rules and the
+ * wording of the refusal. So the resolution travels beside the args instead,
+ * inside the invocation that resolved it: see `withPinnedResolution` below for
+ * why the scope is the invocation and not the process.
+ *
+ * Single use and key-matched, which narrows what a NESTED call inside the same
+ * invocation can take — `macro` dispatches wrapped handlers, so scopes nest.
+ * The key alone was never enough on its own, for the reason `withPinnedResolution`
+ * gives: the same question has different answers at different times.
+ */
+const pinnedResolution = new AsyncLocalStorage<{
+  key: string;
+  value: ResolvedWindow | null;
+  emitLog?: () => void;
+}>();
+
+function resolutionKey(p: { hwnd?: string; windowTitle?: string }): string {
+  return `${p.hwnd ?? ""}\u0000${p.windowTitle ?? ""}`;
+}
+
+/**
+ * Run `fn` with this answer available to the first matching `resolveWindowTarget`
+ * inside it.
+ *
+ * Scoped to the invocation, not to the process. A module-global pin looked
+ * enough while it was key-matched and single-use, and it was not: a rich call
+ * that exits before its resolver — `keyboard:type` taking the IME fast-fail,
+ * `keyboard:press` refusing an unsafe combo — leaves the pin armed while the
+ * post-state wrapper awaits its focused-element snapshot, and a CONCURRENT call
+ * asking the same question eats it. The key does not save that, because the
+ * same question has different answers at different times: `@active` is the
+ * whole point.
+ */
+export function withPinnedResolution<T>(
+  p: { hwnd?: string; windowTitle?: string },
+  value: ResolvedWindow,
+  fn: () => Promise<T>,
+  emitLog?: () => void
+): Promise<T> {
+  return pinnedResolution.run({ key: resolutionKey(p), value, emitLog }, fn);
+}
+
+/**
+ * ADR-035: an event is worth writing when a dispatch happened on the resolution
+ * it records. `logAs` and `deferLog` are how a caller that resolves WITHOUT
+ * dispatching says so.
+ *
+ * Same rule as the intermediate probe inside Case 3, and `withRichNarration`
+ * resolves twice under it. The first is a probe — it exists to choose what to
+ * snapshot — and passes `logAs: "off"`. The second is a re-check, and whether it
+ * is worth an event is not known when it runs: it becomes the resolution the
+ * action uses only if it AGREES with the first and is handed to the handler. So
+ * it passes `deferLog`, which hands the event back instead of writing it, and
+ * `withPinnedResolution` carries it to the moment the handler takes the pin. If
+ * the handler never resolves — the IME fast-fail, a refused combo — or the
+ * re-check disagreed and the diff was withheld as `target_changed`, the event is
+ * dropped and the handler's own resolution is the only one counted.
+ *
+ * Silencing the probe alone was not enough, and the first version of this shipped
+ * with the gap: `narrate: "rich"` still wrote one more event than `minimal` on
+ * the Case 4 dialog rescue whenever the desktop moved or the handler bailed —
+ * rarer than the double count it replaced, and correlated with the same
+ * parameter, in the histogram Phase C is still using to choose a predicate.
+ */
 export async function resolveWindowTarget(params: {
   hwnd?: string;
   windowTitle?: string;
-}): Promise<ResolvedWindow | null> {
+}, options: {
+  logAs?: "off";
+  deferLog?: (emit: () => void) => void;
+} = {}): Promise<ResolvedWindow | null> {
+  const store = pinnedResolution.getStore();
+  // A probe does not take the pin AT ALL — not its event, and not its answer.
+  // Consuming it and then declining to log left the more serious half in place:
+  // the probe walks away with the resolution and the handler behind it resolves
+  // afresh, so the snapshots and the action can part company. The pin belongs to
+  // whoever dispatches.
+  if (options.logAs !== "off" && store && store.value && store.key === resolutionKey(params)) {
+    const pinned = store.value;
+    store.value = null;   // single use, within this invocation only
+    // The ADR-035 event for the resolution being handed over, written HERE
+    // because this is the moment it acquired a dispatch. `deferLog` held it
+    // back at the wrapper precisely so a resolution nothing acted on would not
+    // be counted.
+    //
+    // The CONSUMER's intent decides, the same as it does for a resolution this
+    // function computes. A consumer that is itself a probe (`logAs: "off"`)
+    // dispatches nothing, so the event it inherits is dropped rather than
+    // written; one that defers passes it on. Writing unconditionally here made
+    // a silenced probe emit the outer call's event, and a nested narrated
+    // handler count the rescue twice — not reachable today, because the only
+    // cross-tool call from inside a narrated handler goes to a RAW handler and
+    // macro steps are sequential, and one `if` away from being reachable.
+    const emit = store.emitLog;
+    store.emitLog = undefined;
+    if (emit) {
+      if (options.deferLog) options.deferLog(emit);
+      else emit();
+    }
+    return pinned;
+  }
   const warnings: string[] = [];
+  /** `logAs`/`deferLog` in one place, so the three outcomes cannot drift apart. */
+  const emitResolve = (record: Parameters<typeof logResolve>[0]): void => {
+    if (options.logAs === "off") return;
+    if (options.deferLog) { options.deferLog(() => logResolve(record)); return; }
+    logResolve(record);
+  };
 
   // ── Case 1: explicit hwnd ─────────────────────────────────────────────────
   if (params.hwnd !== undefined) {
@@ -378,7 +494,7 @@ export async function resolveWindowTarget(params: {
         logAs: "off",
       });
       if (plainMatches.length > 0) {
-        logResolve({
+        emitResolve({
           resolver: "pickPlainTopLevelWindowByTitle",
           query: params.windowTitle,
           matches: plainMatches,
@@ -395,7 +511,7 @@ export async function resolveWindowTarget(params: {
         // just not as plain top-level windows); `fallback:"owner-chain"` is
         // what says the window came from the dialog rescue rather than the
         // primary rule, so the two events are not confused for one another.
-        logResolve({
+        emitResolve({
           resolver: "resolveWindowTargetDialog",
           query: params.windowTitle,
           matches: [dialog, ...runnersUp],
@@ -411,7 +527,7 @@ export async function resolveWindowTarget(params: {
         };
       }
       // Neither route matched — a true miss, and the H2 case worth counting.
-      logResolve({
+      emitResolve({
         resolver: "pickPlainTopLevelWindowByTitle",
         query: params.windowTitle,
         matches: [],

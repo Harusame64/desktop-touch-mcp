@@ -1,5 +1,5 @@
 import { nativeL1, nativeWin32 } from "./native-engine.js";
-import type { NativeWgcCaptureOptions } from "./native-types.js";
+import type { NativeWgcCaptureOptions, NativeWindowAtPoint } from "./native-types.js";
 import { hasExcludedPids, isExcludedPid } from "./tool-exclusion.js";
 
 // Every Win32 binding this module used to carry has migrated to the
@@ -24,8 +24,11 @@ function requireNativeWin32(): NonNullable<typeof nativeWin32> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const GWL_EXSTYLE   = -20;
+const GWL_STYLE     = -16;
 const WS_EX_TOPMOST = 0x00000008;
 const GW_OWNER      = 4;
+const GA_PARENT     = 1;
+const GA_ROOT       = 2;
 const GA_ROOTOWNER  = 3;
 
 /**
@@ -230,6 +233,36 @@ export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; widt
 }
 
 /**
+ * ADR-036 item 6 — ask Windows who is under a screen point.
+ *
+ * `WindowFromPoint`, resolved against real hit regions rather than rectangles: rounded corners,
+ * custom regions, and per-pixel-alpha layered windows, whose transparency lives in the pixels and
+ * is exposed by no window style. `point-owner.ts` reconstructs this answer from `enumWindowsInZOrder`
+ * when it is absent, and that reconstruction is measurably wrong under an ordinary desktop overlay.
+ *
+ * More than a handle, because one hit test can say several things and a second round-trip could see
+ * a different desktop: the CHILD under the point (a button, not its frame), the `root` that would
+ * take the press, the `GW_OWNER` chain above it, and the thread, process and caption of that root —
+ * the fields a caller needs to say "cannot attribute this window" honestly rather than refusing.
+ *
+ * `undefined` means "could not ask" — an addon built before this function, or a failed call. That is
+ * NOT "nothing is there", which is `null`: the caller has to keep those apart, because one is a
+ * missing instrument and the other is an answer.
+ */
+export function windowFromPoint(
+  x: number,
+  y: number,
+): NativeWindowAtPoint | null | undefined {
+  const w32 = nativeWin32;
+  if (!w32?.win32WindowFromPoint) return undefined;
+  try {
+    return w32.win32WindowFromPoint(Math.round(x), Math.round(y));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * ADR-029 Phase 1 — whether a window is currently drawn, by HWND.
  *
  * `enumWindowsInZOrder` deliberately drops windows that are invisible, untitled
@@ -338,6 +371,26 @@ export function clearWindowTopmost(hwnd: unknown): boolean {
  * `tests/e2e/process-tree.test.ts` rely on this). napi-rs's BigInt coercion
  * rejects non-bigint values with `BigintExpected`, so we filter here.
  */
+/**
+ * ADR-036 item 6 — the THREAD that owns a window, for the one comparison that is about "cannot
+ * tell" rather than about ownership.
+ *
+ * Thread does NOT establish ownership: a modal dialog and an ordinary second window of the same
+ * application were measured identical in thread, in process, in `GA_ROOTOWNER` and in their whole
+ * window style, and only `GW_OWNER` told them apart (win2, 2026-09-10). It is used only to
+ * recognise a captionless window on the aim's own thread as unattributable rather than foreign.
+ *
+ * `0` means the read failed, and every caller has to treat that as no evidence — never as a match.
+ */
+export function getWindowThreadId(hwnd: unknown): number {
+  if (typeof hwnd !== "bigint") return 0;
+  try {
+    return requireNativeWin32().win32GetWindowThreadProcessId!(hwnd).threadId >>> 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function getWindowProcessId(hwnd: unknown): number {
   if (typeof hwnd !== "bigint") return 0;
   try {
@@ -374,6 +427,67 @@ export function isExcludedWindowHandle(hwnd: unknown): boolean {
   }
   const pid = getWindowProcessId(h);
   return pid === 0 || isExcludedPid(pid);
+}
+
+/**
+ * True when the handle is known NOT to name a window any more.
+ *
+ * `GetWindowThreadProcessId` answers 0 for a destroyed window, which is also what
+ * `isExcludedWindowHandle` reads as "cannot tell, refuse" while a key locker is armed. Both
+ * refusals are right; they are not the same sentence, and a caller told its target belongs to a
+ * secure dialog will not go and re-discover (ADR-036).
+ *
+ * The difference has to be earned, though. `getWindowProcessId` also answers 0 when the native
+ * binding is missing or the call throws, and reading that as "gone" would turn every fail-closed
+ * refusal into "the window you aimed at is gone" — about a window that is on screen and locked,
+ * with the two cases swapped (2ゲート目の指摘). So this asks the binding directly and says
+ * **false** whenever it cannot get an answer: only a call that succeeded and returned PID 0 is
+ * evidence of a destroyed window, and "cannot tell" leaves the stricter refusal standing.
+ */
+export function isWindowGone(hwnd: bigint): boolean {
+  try {
+    return requireNativeWin32().win32GetWindowThreadProcessId!(hwnd).processId >>> 0 === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * (R3 tool-exclusion) True when a tool-excluded window's rectangle contains `(x, y)`.
+ *
+ * The by-POINT counterpart of {@link isExcludedTitle}, and it exists for the same reason stated
+ * there: the filtered `enumWindowsInZOrder` HIDES the locker, so a check made against that list
+ * never sees the one window it must refuse. For a title that meant the refusal never fired; for a
+ * POINT it is worse — the reconstruction in `point-owner.ts` answers about whatever is BEHIND the
+ * hidden window, which on an ordinary desktop is the caller's own, and the press then goes out into
+ * the secure dialog. Same defect as the one found on the OS hit-test road, through the other door
+ * (gate 2, Opus sandbox review, 2026-09-10; that road is `isExcludedWindowHandle` on the hit test).
+ *
+ * **Deliberately coarser than a hit test.** ANY visible, non-minimised excluded window whose
+ * RECTANGLE contains the point blocks, whether or not it is on top and whether or not it would take
+ * the press. This road has no hit test — that is why it is the fallback — so the choice is between
+ * over-refusing inside the locker's rectangle and pressing into it. The over-refusal is bounded by
+ * that rectangle and only while a locker is armed, which is the same trade `isExcludedTitle` makes.
+ *
+ * Zero-overhead when idle (empty registry short-circuits); fail-closed on an enumeration failure
+ * while armed.
+ */
+export function isExcludedWindowAtPoint(x: number, y: number): boolean {
+  if (!hasExcludedPids()) return false;
+  try {
+    const w32 = requireNativeWin32();
+    for (const hwnd of w32.win32EnumTopLevelWindows!()) {
+      if (!w32.win32IsWindowVisible!(hwnd)) continue;
+      if (!isExcludedWindowHandle(hwnd)) continue;
+      if (w32.win32IsIconic!(hwnd)) continue;
+      const rect = w32.win32GetWindowRect!(hwnd);
+      if (!rect) continue;
+      if (x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom) return true;
+    }
+  } catch {
+    return true; // enumeration failed while armed → fail closed
+  }
+  return false;
 }
 
 /**
@@ -716,6 +830,51 @@ export function getWindowRootOwner(hwnd: unknown): bigint | null {
   if (typeof hwnd !== "bigint") return null;
   try {
     return requireNativeWin32().win32GetAncestor!(hwnd, GA_ROOTOWNER);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the top-level window that contains `hwnd` (GetAncestor GA_ROOT=2), or `hwnd` itself when it
+ * is top-level. Unlike {@link getWindowRootOwner} it does not follow the owner chain, so a dialog is
+ * its own root. Returns null on failure.
+ */
+export function getWindowRoot(hwnd: unknown): bigint | null {
+  if (typeof hwnd !== "bigint") return null;
+  try {
+    return requireNativeWin32().win32GetAncestor!(hwnd, GA_ROOT);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the window's parent (GetAncestor GA_PARENT=1), or null when it has none or the call fails.
+ * The parent of a top-level window is the desktop window, so a walk up the chain stops at the root.
+ */
+export function getWindowParent(hwnd: unknown): bigint | null {
+  if (typeof hwnd !== "bigint") return null;
+  try {
+    return requireNativeWin32().win32GetAncestor!(hwnd, GA_PARENT);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the window's style bits (GetWindowLongPtr GWL_STYLE), as an unsigned 32-bit value. Returns
+ * null on failure.
+ *
+ * The native call does not read GetLastError, so a handle that has gone answers 0. A window this
+ * reads has style bits in practice: a child carries WS_CHILD, a popup WS_POPUP, and CreateWindow gives
+ * an overlapped window WS_CAPTION. So 0 is read as "could not say", not as a window with no style.
+ */
+export function getWindowStyle(hwnd: unknown): number | null {
+  if (typeof hwnd !== "bigint") return null;
+  try {
+    const style = requireNativeWin32().win32GetWindowLongPtrW!(hwnd, GWL_STYLE) >>> 0;
+    return style === 0 ? null : style;
   } catch {
     return null;
   }

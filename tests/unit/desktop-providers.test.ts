@@ -18,16 +18,21 @@ const uiaBridgeMocks = vi.hoisted(() => ({
     windowRect:   null,
   }),
   detectUiaBlind: vi.fn().mockReturnValue({ blind: false }),
+  getTextViaTextPattern: vi.fn().mockResolvedValue("PS C:\\> "),
 }));
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getUiElements:  uiaBridgeMocks.getUiElements,
   detectUiaBlind: uiaBridgeMocks.detectUiaBlind,
+  getTextViaTextPattern: uiaBridgeMocks.getTextViaTextPattern,
 }));
 
 beforeEach(() => {
+  uiaBridgeMocks.getUiElements.mockReset();
   uiaBridgeMocks.getUiElements.mockResolvedValue({ elements: [], elementCount: 0, windowRect: null });
   uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: false });
+  uiaBridgeMocks.getTextViaTextPattern.mockReset();
+  uiaBridgeMocks.getTextViaTextPattern.mockResolvedValue("PS C:\\> ");
 });
 
 // ── Routing helpers ───────────────────────────────────────────────────────────
@@ -88,6 +93,99 @@ describe("composeCandidates — routing policy (P2-B)", () => {
 });
 
 // ── Individual provider error resilience ─────────────────────────────────────
+
+describe("fetchUiaCandidates — what it asks the bridge for (ADR-036)", () => {
+  it("asks for the read to be scoped to the window the session names", async () => {
+    // `pinnedHwnd` is a scoping request, and a scoped read is also the only one that can vouch
+    // for which window it describes — so it keys the cache too. There was a moment when this
+    // passed `hwnd` alongside it, to prime the cache back when the read could still go by
+    // title; with the read always scoped that said nothing the scoping did not.
+    uiaBridgeMocks.getUiElements.mockClear();
+    await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ pinnedHwnd: 4919n });
+  });
+
+  it("asks for nothing when the target carries no handle", async () => {
+    uiaBridgeMocks.getUiElements.mockClear();
+    await fetchUiaCandidates({ windowTitle: "Untitled - Notepad" });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toBeUndefined();
+  });
+
+  it("says so when the handle cannot be read, as the OCR lane does", async () => {
+    // With the handle unread there is no scoping, so this reads the title — or the FOREGROUND
+    // window when there is none — while the candidates still carry the caller's raw string as
+    // their target id. Two providers went two ways about the same malformed value in the same
+    // discover: one warned, one was silent.
+    uiaBridgeMocks.getUiElements.mockClear();
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "0" });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toBeUndefined();
+    expect(r.warnings).toContain("target_hwnd_unparseable");
+  });
+});
+
+describe("fetchUiaCandidates — a prefix of a window says it is one (ADR-036)", () => {
+  it("warns when the walk ran out of time", async () => {
+    // A pinned read is the PowerShell walk, and that walk stops at the caller's deadline.
+    // Publishing the prefix is fine; publishing it as though it were the whole window is not —
+    // the caller cannot tell a truncated tree from a window with fewer elements.
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Start", controlType: "Button", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null, truncated: true,
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.candidates).toHaveLength(1);
+    expect(r.warnings).toContain("uia_tree_truncated");
+  });
+
+  it("says when the frame's names came from the MSAA synthesis, not the provider", async () => {
+    // 26 elements on both roads, and not the same 26: `Button:Close` here against
+    // `Button:閉じる` there, `Document` against `Edit`. Twenty of the twenty-six differ. A caller
+    // that addresses elements by name is looking at two vocabularies for one window depending on
+    // whether it passed a handle, and nothing else in the response says so.
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Close", controlType: "Button", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null, clientProviders: "registered",
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.warnings).toContain("uia_frame_names_synthesized");
+  });
+
+  it("says nothing about vocabulary when the registration did nothing", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Pane", controlType: "Pane", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null, clientProviders: "noop",
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.warnings).not.toContain("uia_frame_names_synthesized");
+  });
+
+  it("says nothing when the tree is whole", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Start", controlType: "Button", isEnabled: true, patterns: [] }],
+      elementCount: 1, windowRect: null,
+    });
+    const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
+    expect(r.warnings).not.toContain("uia_tree_truncated");
+  });
+});
+
+describe("fetchTerminalCandidates — which arm gets the shortened budget (ADR-036)", () => {
+  it("shortens the read only when it is scoped", async () => {
+    // The scoped arm leaves the native engine and its wait is the budget plus the process start,
+    // so the 6000 default became a 10 s stall in front of a discover.
+    await fetchTerminalCandidates({ windowTitle: "Windows Terminal", hwnd: "4919" });
+    expect(uiaBridgeMocks.getTextViaTextPattern.mock.lastCall)
+      .toEqual(["Windows Terminal", 2000, { pinnedHwnd: 4919n }]);
+  });
+
+  it("leaves the unscoped read on its old budget", async () => {
+    // A plain top-level window resolves to no handle, so this is the common arm — and here 2000
+    // is not a stall budget but a hard cut: a buffer that read fine at 6000 would come back null
+    // and be reported as `terminal_buffer_empty`, "no buffer", for a read that ran out of time.
+    await fetchTerminalCandidates({ windowTitle: "Windows Terminal" });
+    expect(uiaBridgeMocks.getTextViaTextPattern.mock.lastCall).toEqual(["Windows Terminal"]);
+  });
+});
 
 describe("fetchUiaCandidates — error resilience (P2-C)", () => {
   it("returns empty candidates + no warnings when target is undefined", async () => {

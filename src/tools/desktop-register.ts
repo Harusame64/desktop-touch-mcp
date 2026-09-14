@@ -39,7 +39,20 @@ import type { ToolResult } from "./_types.js";
 import { persistCapture, REF_URI_PREFIX } from "../engine/screenshot-cache.js";
 import { pngDimensions } from "./screenshot-response.js";
 import { Err } from "../types/result.js";
-import { ExecutorFailedError, CoordinateOutsideReachableBoundsError, CursorPlacementBlockedError } from "../errors/typed-errors.js";
+import {
+  ExecutorFailedError,
+  CoordinateOutsideReachableBoundsError,
+  CursorPlacementBlockedError,
+  AimWindowGoneError,
+  AimPointOutsideWindowError,
+  AimOccludedError,
+  AimIdentityChangedError,
+  AimRouteFailedError,
+  WindowExcludedRefusalError,
+  AimBlockedByExcludedRefusalError,
+  EntityNotFoundRefusalError,
+  KeyboardTargetUnsafeRefusalError,
+} from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
@@ -749,9 +762,15 @@ export const desktopActRawHandler = async (
         // diff clips to a padded region around the expected change rather than
         // diluting a small localized repaint across the whole window (→ false
         // `indeterminate`). Resolved before the touch from the discover snapshot.
+        //
+        // ADR-036 item 5 — `wr` is passed so the centre gets the SAME homing correction the press
+        // gets. Without it the region is centred where the entity WAS and the repaint happens
+        // where the press went, which for a drag past the padding is a correct press reported as
+        // unverified (gate 2, second pass).
         frameDiffPoint = facade.resolveEntityCenterForViewId(
           input.lease.viewId,
           input.lease.entityId,
+          wr,
         );
         preFrame = await captureFrame(frameDiffHwnd, wr);
       }
@@ -917,7 +936,7 @@ export const desktopActRawHandler = async (
   if (!result.ok && result.reason === "executor_failed") {
     const failure = toFailureEnvelope(
       Err(new ExecutorFailedError("desktop_act executor failed")),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -935,7 +954,7 @@ export const desktopActRawHandler = async (
       Err(new CoordinateOutsideReachableBoundsError(
         "CoordinateOutsideReachableBounds: the entity sits outside the area mouse input can currently reach"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -951,7 +970,162 @@ export const desktopActRawHandler = async (
       Err(new CursorPlacementBlockedError(
         "CursorPlacementBlocked: the pointer could not be placed on the entity — nothing was clicked"
       )),
-      { optIn: false },
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // ADR-036: the window this act was aimed at is gone. Its own envelope for the same reason as
+  // the two above, and the sharpest case of it: `executor_failed`'s advice is "fall back to
+  // mouse_click", and the only coordinates the caller has are the entity's rect — where the
+  // window WAS. Measured on Windows 2026-09-09: an excluded window and a closed one came back
+  // identical here, down to all four `try_next` items, both pointing at the rect.
+  if (!result.ok && result.reason === "aim_window_gone") {
+    const failure = toFailureEnvelope(
+      Err(new AimWindowGoneError(
+        "AimWindowGone: the window this action was aimed at no longer exists — nothing was clicked. " +
+        "Re-call desktop_discover to see what is there now; do not click the entity's rect, which is where that window used to be"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // ADR-036 item 2 — the handle now names a different WINDOW. Its own envelope because the
+  // recovery is unlike the neighbours': there is something at that handle, and acting on it would
+  // have worked, on a stranger. Not always another process: one program can destroy a top-level
+  // window and get the same number back for the next one, which is why the class is compared too.
+  if (!result.ok && result.reason === "aim_identity_changed") {
+    const failure = toFailureEnvelope(
+      Err(new AimIdentityChangedError(
+        "AimIdentityChanged: the window this act was aimed at has gone and its handle now names a different window — nothing was done. " +
+        "Re-run desktop_discover; the lease and every entity taken from it describe a window that is gone"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // PR 側 codex 2026-09-09 — the three refusals below were reaching the caller as
+  // `executor_failed`, and its first `try_next` line names a coordinate click at the entity's
+  // rect. All three exist to refuse exactly that press, so the envelope was undoing the executor.
+  // Each gets its own entry for the same reason the three above have one.
+  //
+  // ADR-036 item 6 — the coordinates are right and something is drawn over them. Its own envelope
+  // because re-discovering, which every neighbour's advice opens with, changes nothing here.
+  if (!result.ok && result.reason === "aim_occluded") {
+    const failure = toFailureEnvelope(
+      Err(new AimOccludedError(
+        "AimOccluded: another window is drawn over the point this act would have pressed — nothing was done. Whether that window would really have taken the press cannot be asked here (it needs the OS hit test), so anything on top counts as in the way, including overlays that presses pass through. " +
+        "Bring the intended window forward, or use click_element, which does not press a coordinate"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // The aim went stale in a way the homing correction cannot repair: the window is alive, but it
+  // was minimised, or it RESIZED — and a resize may have reflowed the contents, so translating the
+  // point through it would be inventing a layout — or it moved while it was being read, or these
+  // coordinates came from a lane the bracketed origin cannot describe. A window that moved without
+  // resizing reaches here too, whenever the correction declined for one of the last two reasons:
+  // the point then stays where it was and leaves the window. Re-discovering is the fix, not a
+  // consolation.
+  if (!result.ok && result.reason === "aim_point_outside_window") {
+    const failure = toFailureEnvelope(
+      Err(new AimPointOutsideWindowError(
+        "AimPointOutsideWindow: the point this act would have pressed can no longer be followed to the window it named — nothing was clicked. " +
+        "Re-run desktop_discover; among the reasons, the window was minimised, was resized so its contents may have moved independently of its origin, was moving while it was being read, the coordinates came from a lane whose measurement moment cannot be established — a stored visual snapshot may have been captured while the window was somewhere else — or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // ADR-036 item 16 — the entity is not there: missing from the live view, or answered "not found"
+  // by UIA on the title-only road, where the press at its remembered point is now refused. Both went
+  // out as the raw result, with no advice at all.
+  if (!result.ok && result.reason === "entity_not_found") {
+    const failure = toFailureEnvelope(
+      Err(new EntityNotFoundRefusalError(
+        "EntityNotFound: the element this act was for could not be found — nothing was clicked or typed. " +
+        "Re-run desktop_discover and act on the fresh entity"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // The aim is current and every route to it failed. The ladder stops rather than finishing the
+  // aimed act as a blind coordinate press — which is ADR-036's subject arriving as its own cure.
+  // Click and write end here alike.
+  if (!result.ok && result.reason === "aim_route_failed") {
+    const failure = toFailureEnvelope(
+      Err(new AimRouteFailedError(
+        "AimRouteFailed: the route to the window this act named failed, and the act was not finished as a coordinate press — nothing was clicked or typed. " +
+        "Re-run desktop_discover, or try click_element on the same entity"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // The same security boundary, met at a coordinate. Its own reason and its own advice: the lines
+  // below `window_excluded` would tell this caller their own window is excluded and to go act on a
+  // different one, and their window is fine.
+  if (!result.ok && result.reason === "aim_blocked_by_excluded_window") {
+    const failure = toFailureEnvelope(
+      Err(new AimBlockedByExcludedRefusalError(
+        "AimBlockedByExcludedWindow: a window this server may not act through is over the point this act would have pressed — nothing was clicked. " +
+        "The window you named is not the excluded one. Act through click_element, or retry once the point is clear"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // ADR-036 family 2 — the keyboard rung would have posted to something other than the field this
+  // act named, and its rule could say so. Its own reason: `executor_failed` would advise a foreground
+  // type, which puts the characters exactly where this refused to.
+  if (!result.ok && result.reason === "keyboard_target_unsafe") {
+    const failure = toFailureEnvelope(
+      Err(new KeyboardTargetUnsafeRefusalError(
+        "KeyboardTargetUnsafe: the characters would not have reached the field this act named — nothing was typed. " +
+        "if_unexpected.detail names the ground"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // A security refusal, not a failed route. `tool-exclusion.ts` has claimed since it was written
+  // that this error is wired into `_errors.ts`; it was not, so the one refusal that must never
+  // suggest a coordinate press was the loudest about it.
+  if (!result.ok && result.reason === "window_excluded") {
+    const failure = toFailureEnvelope(
+      Err(new WindowExcludedRefusalError(
+        "WindowExcluded: this window is excluded from every tool surface of this server — nothing was clicked, and no route here can click it. " +
+        "Act on another window"
+      )),
+      { optIn: false, detail: result.detail },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1393,6 +1567,7 @@ export function registerDesktopTools(server: McpServer): void {
       "If response.warnings[] is non-empty, results may be partial.",
       "response.constraints (when present) is a structured summary of provider limitations — use it to decide fallback without parsing warnings[] strings.",
       "constraints.entityZeroReason (when entities is empty) explains WHY: foreground_unresolved → add target.windowTitle;",
+      "uia_blind_visual_incapable → the attached visual backend recognises nothing (the default build); waiting never changes it, so enable a recognising backend or use screenshot(ocrFallback=always) / V1 tools;",
       "uia_blind_visual_unready → retry when visual backend is ready or use screenshot(ocrFallback=always);",
       "uia_blind_visual_empty → use screenshot(ocrFallback=always) or V1 click_element;",
       "cdp_failed_visual_empty → check --remote-debugging-port=9222 and retry;",
@@ -1423,13 +1598,45 @@ export function registerDesktopTools(server: McpServer): void {
       "[EXPERIMENTAL] Act on a discovered entity (click/type/setValue/scroll). Use desktop_act.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
+      // ADR-036 — THE SHIPPED SENTENCE IS THE RULE; THE REASONS ARE HERE.
+      //
+      // Fourteen review rounds went into this paragraph, and every one removed a claim the code
+      // cannot support: that reading the field back tells you; that the hint's silence means
+      // something; that a matching value settles it; that foregrounding and focusing first is
+      // enough; that the element can be compared to the one written (`desktop_state.focusedElement`
+      // carries no entity id, and a duplicate name with no `automationId` cannot be told apart);
+      // that the value is predictable (a background type inserts at the CARET and replaces the
+      // SELECTION, exactly as typing does — 6 arms measured, background and foreground identical,
+      // win2 `c76b78d`, so "prior text plus typed text" held in 2 of 6); that a field known empty
+      // settles it (`text: \"\"` is accepted and sends zero messages, so an already-empty field
+      // matches with no write, and autofill can fill between observations); that `diff` has a
+      // baseline at the write (its PRE side is the stored discover snapshot); that a retry is free;
+      // that taking focus makes the next write confirmable (only a field with a window of its own,
+      // and `landing.why` does not separate that from a window that merely had no focused child);
+      // that a clear resets (a clear is itself an empty write); and finally the two instructions
+      // that had framed it since before the first round.
+      //
+      // WHAT SHIPS IS THE RULE, because the reasons are what a maintainer needs and the rule is
+      // what a caller acts on — and the shipped copy is not free: measured at the four corners on
+      // a running server, the long form cost ~667 tokens per session with v2 on and ~336 under the
+      // kill switch (win2, `2406b98`). The reasons stay here, where they cost nothing and stop the
+      // next round from re-adding a claim.
+      "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
       "If ok=false, read 'reason':",
-      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
+      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
       "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",
       "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
+      "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
+      "  aim_identity_changed → the window this act named has gone and its handle now names a different window (another process, or another window of the same program); nothing was done, and the lease describes a window that is gone. Re-call desktop_discover — do NOT retry with the same handle or by coordinate;",
+      "  aim_occluded → another window is drawn over the point, so nothing was done. Whether it would really have taken the press cannot be asked here (that needs the OS hit test), so anything on top counts as in the way — an overlay presses pass through is reported the same. Bring the intended window forward, or use V1 click_element, which is also the way past such an overlay — re-calling desktop_discover alone does not help, the coordinates are already right;",
+      "  aim_point_outside_window → the window is still open but its coordinates can no longer be followed (among them: minimised; resized, so the contents may have reflowed — refused even where the point still falls inside; moved while it was being read, so that snapshot has no single origin; measured by a lane whose moment cannot be established, such as a stored visual snapshot; or captured in a window other than the one this act named — a menu or dropdown has an origin of its own and is followed only while it is still what sits under the point); nothing was clicked. A window that moved WITHOUT resizing is followed automatically when the coordinates were measured in the same read that measured the window; a move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport (that check does not look at uia / cdp / terminal entities). Re-call desktop_discover — do NOT retry by coordinate;",
+      "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. if_unexpected.detail names the failure when this server recognises it (not found, no pattern, disabled, read-only). When it says not found or names none: re-call desktop_discover, or try V1 click_element(name=…) on the same entity; when the route may have matched another element by the same text, click_element with controlType narrows it;",
+      "  keyboard_target_unsafe → the background write would not have reached the field this act named (the focus is on a different control or in a different window, or the receiving control does not take typed text); nothing was typed. if_unexpected.detail names which. Put the focus on the field you named, then type again — if_unexpected.detail names the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle too, so that road does not open there). For other_window, V1 focus_window on the field's window first — it comes forward with the focus it last had, and a window over the field makes a click answer aim_occluded — do NOT type through the foreground instead;",
+      "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
+      "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",

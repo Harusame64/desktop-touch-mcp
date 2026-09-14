@@ -30,6 +30,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dispatchableStepNames } from "../../src/tools/macro.js";
 
 // Stub the cursor-based failsafe so behavioural run_macro tests below are
 // deterministic regardless of where the host's pointer happens to be.
@@ -700,12 +701,25 @@ describe("Phase 4 — Codex PR #41 round 6 P1×2: V1 fallback when v2 is killed"
     }
   });
 
-  it("macro TOOL_REGISTRY has v1 fallback entries gated on v2 kill switch", () => {
+  /**
+   * ADR-036: the gate moved out of the handler bodies and became `entry.availability`, read by
+   * the catalogue and by the dispatcher — one declaration, two readers, so a step cannot be
+   * advertised and refused at once. This cell asked for the old SHAPE; it now asks for the fact,
+   * which is what it was standing in for. `adr-036-macro-step-catalogue.test.ts` holds the rest.
+   */
+  it("macro TOOL_REGISTRY declares its v1 fallbacks as kill-switch-only, and names the replacement", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
-    // Each v1 fallback entry has the inverse-gate (v2 alive → fail) call site.
-    expect(src).toMatch(/get_windows:\s*\{[\s\S]*?if \(!v2KillSwitchActive\(\)\)/);
-    expect(src).toMatch(/get_ui_elements:\s*\{[\s\S]*?if \(!v2KillSwitchActive\(\)\)/);
-    expect(src).toMatch(/set_element_value:\s*\{[\s\S]*?if \(!v2KillSwitchActive\(\)\)/);
+    for (const fallback of ["get_windows", "get_ui_elements", "set_element_value"]) {
+      const re = new RegExp(`${fallback}:\\s*\\{[\\s\\S]*?availability:\\s*\\{[\\s\\S]*?"v1FallbackOnly"`);
+      expect(src, `${fallback} is not declared v1-fallback-only`).toMatch(re);
+    }
+    // And the declaration is what the catalogue reads: these three are offered only under the
+    // kill switch, which is the behaviour the shape above used to stand in for.
+    expect(dispatchableStepNames({ DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1" }))
+      .toEqual(expect.arrayContaining(["get_windows", "get_ui_elements", "set_element_value"]));
+    for (const fallback of ["get_windows", "get_ui_elements", "set_element_value"]) {
+      expect(dispatchableStepNames({})).not.toContain(fallback);
+    }
   });
 
   it("v1FallbackOnlyError points users at the v2 replacement", () => {
@@ -719,14 +733,14 @@ describe("Phase 4 — Codex PR #41 round 6 P1×2: V1 fallback when v2 is killed"
 });
 
 describe("Phase 4 — Codex PR #41 round 3 P1: macro DSL honours v2 kill switch", () => {
-  it("macro.ts gates desktop_discover / desktop_act on v2KillSwitchActive()", () => {
+  it("macro.ts declares desktop_discover / desktop_act as v2-only, and honours it", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
-    expect(src).toMatch(/function v2KillSwitchActive/);
-    // Both v2 handlers should call the gate before reaching getDesktopFacade.
-    const discoverGate = /desktop_discover:\s*\{[\s\S]*?if \(v2KillSwitchActive\(\)\)/;
-    const actGate = /desktop_act:\s*\{[\s\S]*?if \(v2KillSwitchActive\(\)\)/;
-    expect(src).toMatch(discoverGate);
-    expect(src).toMatch(actGate);
+    for (const v2Tool of ["desktop_discover", "desktop_act"]) {
+      const re = new RegExp(`${v2Tool}:\\s*\\{[\\s\\S]*?availability:\\s*\\{\\s*corner:\\s*"v2Only"`);
+      expect(src, `${v2Tool} is not declared v2-only`).toMatch(re);
+      expect(dispatchableStepNames({})).toContain(v2Tool);
+      expect(dispatchableStepNames({ DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1" })).not.toContain(v2Tool);
+    }
   });
 
   it("kill-switch error message names the env var so the operator knows which flag", () => {
@@ -835,17 +849,32 @@ describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names",
 // (which would touch Win32). All 4 cases set/restore process.env so they are
 // deterministic regardless of how the host invokes vitest.
 
-describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at runtime", () => {
+describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 as the server read it", () => {
   const KILL_VAR = "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2";
 
-  function withKillSwitch<T>(value: "1" | undefined, fn: () => Promise<T>): Promise<T> {
+  /**
+   * ADR-036: the flag is read ONCE, at module initialisation, which is how `server-windows.ts`
+   * reads it for the registered surface and how the step catalogue is built. So these cases set
+   * the variable and then IMPORT — the previous form imported first and set it after, which only
+   * passed while the dispatcher re-read `process.env` on every step. That re-read was the defect
+   * gate 1 named: the catalogue froze at startup and the dispatcher did not, so same-process code
+   * flipping the flag could make the two disagree about one server.
+   */
+  async function withKillSwitch<T>(
+    value: "1" | undefined,
+    fn: (macro: typeof import("../../src/tools/macro.js")) => Promise<T>,
+  ): Promise<T> {
     const prev = process.env[KILL_VAR];
     if (value === undefined) delete process.env[KILL_VAR];
     else process.env[KILL_VAR] = value;
-    return fn().finally(() => {
+    vi.resetModules();
+    try {
+      return await fn(await import("../../src/tools/macro.js"));
+    } finally {
       if (prev === undefined) delete process.env[KILL_VAR];
       else process.env[KILL_VAR] = prev;
-    });
+      vi.resetModules();
+    }
   }
 
   function summaryOf(result: { content: Array<{ type: string; text?: string }> }): {
@@ -865,8 +894,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
   // landed in the inner envelope.
 
   it("kill-switch ON → run_macro({tool:'desktop_discover'}) returns kill-switch error without invoking the facade", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch("1", async () => {
+    await withKillSwitch("1", async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{ tool: "desktop_discover", params: {} }],
         stop_on_error: true,
@@ -890,8 +918,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
   });
 
   it("kill-switch ON → run_macro({tool:'desktop_act'}) returns kill-switch error without invoking the facade", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch("1", async () => {
+    await withKillSwitch("1", async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{
           tool: "desktop_act",
@@ -920,8 +947,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
   });
 
   it("kill-switch OFF (default) → run_macro({tool:'set_element_value'}) returns v1-fallback hint without invoking the legacy handler", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch(undefined, async () => {
+    await withKillSwitch(undefined, async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{
           tool: "set_element_value",
@@ -935,12 +961,16 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
       const payload = summary.results[0]!.text!.join("\n");
       expect(payload).toContain("V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
       expect(payload).toContain("desktop_act({action:'setValue'");
+      // AND IT NAMES THE STEP IT REFUSED. The dispatcher passes the tool name to the refusal, and
+      // TypeScript enforces that an argument is there, not that it is the right one: passing a
+      // constant made every V1 refusal read "run_macro is a V1 fallback only available when …"
+      // with the whole suite green (gate 2). The invariant half of the sentence cannot see that.
+      expect(payload).toContain("set_element_value is a V1 fallback");
     });
   });
 
   it("kill-switch OFF (default) → run_macro({tool:'get_windows'}) returns v1-fallback hint pointing at desktop_discover.windows[]", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch(undefined, async () => {
+    await withKillSwitch(undefined, async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{ tool: "get_windows", params: {} }],
         stop_on_error: true,
@@ -949,6 +979,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
       // F1 fix: v1-fallback envelope is ok:false → step-level ok:false.
       expect(summary.results[0]!.ok).toBe(false);
       expect(summary.results[0]!.text!.join("\n")).toContain("desktop_discover.windows[]");
+      expect(summary.results[0]!.text!.join("\n")).toContain("get_windows is a V1 fallback");
     });
   });
 });

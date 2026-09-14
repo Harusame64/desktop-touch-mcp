@@ -281,6 +281,17 @@ export class OnnxBackend implements VisualBackend {
     return this.snapshots.get(targetKey) ?? [];
   }
 
+  /**
+   * This backend does look — the snapshots it serves are filled by `recognizeRois`.
+   *
+   * It says so even while its sessions are down: a failed model load moves the state to `evicted`,
+   * which the provider already reports, and answering "cannot look" here as well would put two
+   * different failures under one word.
+   */
+  recognitionCapability(): "recognises" | "replays_injected_only" {
+    return "recognises";
+  }
+
   onDirty(cb: (targetKey: string) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);

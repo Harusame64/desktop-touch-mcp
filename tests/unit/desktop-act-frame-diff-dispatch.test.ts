@@ -213,6 +213,15 @@ describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", ()
     const vlrArg = mockVerifyLocalRepaint.mock.calls[0]![0] as { includeRoiBbox?: boolean };
     expect(vlrArg.includeRoiBbox).toBe(true);
 
+    // ADR-036 item 5 — the focal point is resolved WITH the window rectangle, so it gets the same
+    // homing correction the press got. Without the rect the region stays centred where the entity
+    // was while the repaint happens where the press went, and past the padding the diff dilutes
+    // across the whole window: a correct press reported as unverified (gate 2, second pass).
+    const facade = getDesktopFacade();
+    expect(facade.resolveEntityCenterForViewId).toHaveBeenCalledWith(
+      FAKE_LEASE.viewId, FAKE_LEASE.entityId, WINDOW_RECT,
+    );
+
     // Public observation carries the motion verdict but NOT the internal roiBbox
     // (R2-P1 telemetry byte-equal — the split keeps it off the envelope).
     const observation = parsed["observation"] as Record<string, unknown>;

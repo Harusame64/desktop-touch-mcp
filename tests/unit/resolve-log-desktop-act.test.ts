@@ -40,6 +40,8 @@ vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
     canInjectViaPostMessage: vi.fn(() => ({ supported: true })),
     canInjectAtTarget: vi.fn(() => ({ supported: true })),
     postCharsToHwnd: (...a: unknown[]) => mockPostChars(...(a as [never, string])),
+    // ADR-036 family 2 — the keyboard rung now posts to the handle it resolved and judged.
+    postCharsToResolvedTarget: (...a: unknown[]) => mockPostChars(...(a as [never, string])),
   };
 });
 

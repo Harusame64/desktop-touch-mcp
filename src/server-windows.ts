@@ -17,7 +17,7 @@ import {
   setElementValueHandler,
   setElementValueSchema,
 } from "./tools/ui-elements.js";
-import { withRichNarration } from "./tools/_narration.js";
+import { withRichNarration, UIA_WRITE_NARRATION } from "./tools/_narration.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 import { registerMacroTools } from "./tools/macro.js";
 import { registerBrowserTools } from "./tools/browser.js";
@@ -37,6 +37,8 @@ import { registerScreenshotResources } from "./tools/screenshot-resources.js";
 import { registerScreenshotQueryTool } from "./tools/screenshot-query.js";
 import { registerScreenshotGcTool } from "./tools/screenshot-gc.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
+import { captureAdviceConfiguration } from "./tools/_advice-capability.js";
+import { keyLockerDisabled } from "./engine/key-locker/key-locker-switch.js";
 import { registerKeyLockerTools } from "./tools/key-locker-tool.js";
 import { registerKeyLockerWiring } from "./tools/key-locker-wiring.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
@@ -127,12 +129,19 @@ function createMcpServer(): McpServer {
         "",
         "## When desktop_act returns ok:false",
         "Read reason and follow the recovery path:",
-        "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
+        "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
         "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via click_element(name=blockingElement.name), then retry;",
         "  entity_outside_viewport → the element moved off screen: scroll it back via scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
         "  origin_window_not_visible → the window the element came from is minimised or hidden: focus_window(windowTitle) to restore it, then re-call desktop_discover;",
         "  coordinate_outside_reachable_bounds → the point is not on any connected monitor: the coordinates are stale (window moved or closed) — re-call desktop_discover and retry. On builds without the native input module, mouse input reaches the primary monitor only; move the window there first. click_element (UIA invoke) never moves the cursor;",
         "  cursor_placement_blocked → the coordinate is fine but the pointer could not be placed there, so nothing was clicked: click_element (UIA invoke) acts without moving the cursor and works meanwhile. Otherwise leave or close the app holding the cursor (common in full-screen games), reconnect the remote-desktop session if it is disconnected, or — if a monitor was just added or removed — re-call desktop_discover for fresh coordinates;",
+        "  aim_window_gone → the window this act was aimed at no longer exists, so nothing was clicked: re-call desktop_discover to see what is there now. Do NOT retry by coordinate — the entity's rect is where that window used to be, and whatever occupies it now would take the click;",
+        "  aim_identity_changed → the window this act was aimed at has gone and its handle now names a DIFFERENT window — usually another process, sometimes another window of the same program; nothing was done. This is a refusal, not a failure — the action would have reached a stranger. Re-call desktop_discover for the replacement window and take a fresh lease; do NOT retry with the same handle, and do NOT retry by coordinate;",
+        "  aim_occluded → the coordinates are right, but another window is drawn over that point; nothing was done. Whether that window would really have taken the press cannot be asked here — it needs the OS hit test — so anything on top counts as in the way, and an overlay with per-pixel transparency that presses pass through is reported the same (measured 2026-09-10). Bring the intended window forward (focus_window), or act with click_element, which does not use coordinates and is the way past such an overlay. Re-calling desktop_discover by itself changes nothing — the entity's rect is correct;",
+        "  aim_point_outside_window → the window this act named is still open, but the coordinates taken from it can no longer be followed; nothing was clicked. A window that moved WITHOUT resizing is followed automatically — the point is carried by the same offset — when the coordinates were measured in the same read that measured the window; a move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport, though that check passes uia / cdp / terminal entities without looking and never corrects anything itself. Among the reasons: the window was minimised; it changed SIZE (a resize can lay the contents out differently, so it is refused even where the point still falls inside the window); it MOVED WHILE IT WAS BEING READ, in which case that snapshot's coordinates were measured against more than one position and no single correction describes them; the coordinates came from a lane whose measurement moment cannot be established (a stored visual snapshot may have been captured while the window was elsewhere); Or they were captured in a window OTHER than the one this act named — a menu, dialog or dropdown has an origin of its own and does not move with the window that owns it, so it is followed only while it is still what sits under the point. Discover again once it has settled. Re-call desktop_discover. Do NOT retry by coordinate — the refused point is exactly the entity's rect centre;",
+        "  aim_route_failed → the route to the window this act named by handle failed (UIA for a click; UIA setValue and the background write for type/setValue), and the act was NOT finished as a coordinate press; nothing was clicked or typed. if_unexpected.detail names the failure when this server recognises it — not found, no pattern for this action, disabled, or read-only. When it says not found or names none: re-call desktop_discover, or try click_element(name=…) which re-resolves the element. For the others, trying the same element again gives the same answer until its state changes — unless the route matched another element by the same text, which click_element(name=…, controlType=…) narrows. Do NOT press the entity's rect — a coordinate is aimed at no window;",
+        "  keyboard_target_unsafe → the background write would not have reached the field this act named — the focus is on a different control or in a different window, or the receiving control does not take typed text — so nothing was typed. Put the focus on the field you named, then type again — if_unexpected.detail names the ground and the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle as well, so that road does not open there). For other_window, bring the field's window forward first (focus_window) — it comes forward with the focus it last had, and the window holding the focus is usually over the field, which makes a click answer aim_occluded; do NOT type through the foreground instead, whatever holds the focus would take the characters. A type that answers ok:true with landing {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does;",
+        "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are, so a secret being typed cannot be driven by the same session); nothing was clicked and nothing here can click it. Act on another window;",
         "  executor_failed → fall back to click_element / mouse_click / browser_click",
         "",
         "## Observation — priority order",
@@ -249,6 +258,19 @@ function createMcpServer(): McpServer {
   registerScreenshotGcTool(s);
   // ADR-014 R3 — the key locker management tool (self-gates on the kill switch, so a disabled
   // locker registers nothing).
+  // ADR-036 stage 2 B2b: take the configuration HERE, where registration reads the
+  // switches, so the presenter answers about the surface this server actually
+  // published. Reading ambient env at call time instead would let a flag changed after
+  // startup make the advice name tools that were never registered — this ADR's own
+  // defect, through the door the "the flag IS the surface" argument does not watch.
+  captureAdviceConfiguration({
+    // `_desktopV2 !== null`, not the flag: what registration BRANCHED on is the
+    // surface the caller sees, and the two can only be told apart here (gate 2,
+    // 2026-09-13, on the first version of this line, which captured `process.env`).
+    v2: _desktopV2 !== null,
+    // The same predicate `registerKeyLockerTools` reads, at the same moment.
+    credentialStore: !keyLockerDisabled(),
+  });
   registerKeyLockerTools(s);
   // ADR-014 R3 L3-4 W-4 — the live autofill wiring (S-A dispatch hook + reconcile/idle timers). No-op when
   // kill-switched; returns a teardown the shutdown path clears (timers + event-bus + hooks).
@@ -273,8 +295,15 @@ function createMcpServer(): McpServer {
     // when v2 is disabled, re-publish the V1 tools whose capability is
     // ONLY available through the dispatcher path so the operator does not
     // lose function coverage by flipping the kill switch.
-    //   - get_windows: enumerate visible HWNDs (no other tool exposes hwnd
-    //     listing for title-collision / hwnd-targeted workflows)
+    //   - get_windows: enumerate visible windows in z-order. NOT their handles:
+    //     the response projects zOrder / title / region / isActive / isMinimized /
+    //     isMaximized / isOnCurrentDesktop and drops the hwnd it read
+    //     (`window.ts:54-62`), while v2's window meta carries one
+    //     (`desktop-register.ts:361`). The earlier wording here said it enumerates
+    //     HWNDs and that no other tool exposes hwnd listing; both halves are wrong,
+    //     and it is corrected rather than left standing because
+    //     `_advice-capability.ts` now encodes the measured reading — there is no
+    //     kill-switch provider for naming one window by handle (gate 2, 2026-09-13)
     //   - get_ui_elements: raw UIA tree (screenshot(detail='text') is the
     //     screenshot-time alternative but does not return the unfiltered tree)
     //   - set_element_value: UIA ValuePattern (keyboard(action='type') is
@@ -289,7 +318,7 @@ function createMcpServer(): McpServer {
     );
     s.tool(
       "get_ui_elements",
-      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Prefer screenshot(detail='text') for normal automation; this fallback is here so kill-switch deployments retain access to the unfiltered tree.",
+      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. When a window is resolved, the read is scoped to its handle so a same-titled sibling cannot answer instead; a deep tree can then come back with truncated:true, meaning the walk ran out of time and the tree is a prefix rather than the window. Prefer screenshot(detail='text') for normal automation; this fallback is here so kill-switch deployments retain access to the unfiltered tree.",
       getUiElementsSchema,
       getUiElementsHandler
     );
@@ -297,7 +326,7 @@ function createMcpServer(): McpServer {
       "set_element_value",
       "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard(action='type') for programmatic form input.",
       setElementValueSchema,
-      withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
+      withRichNarration("set_element_value", setElementValueHandler, UIA_WRITE_NARRATION)
     );
   }
 

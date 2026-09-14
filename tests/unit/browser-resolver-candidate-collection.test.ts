@@ -135,7 +135,7 @@ describe("ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snap
   });
 });
 
-const EXPECT = { name: "Email address", role: null, ariaLabel: "Email address", tag: "input", total: 1 };
+const EXPECT = { name: "Email address", role: null, ariaLabel: "Email address", tag: "input", id: null, formName: null, total: 1 };
 
 describe("ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot)", () => {
   it("emits the full fill-act IIFE for a representative by:ariaLabel target (snapshot)", () => {
@@ -158,10 +158,10 @@ describe("ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot)", 
   it("identity gate (Codex P1): verifies pool count + matched signature before writing", () => {
     const js = buildFillActJs(
       { by: "ariaLabel", pattern: "X", caseSensitive: false }, 2, 1, "hi",
-      { name: "Email address", role: null, ariaLabel: "Email address", tag: "input", total: 3 },
+      { name: "Email address", role: null, ariaLabel: "Email address", tag: "input", id: "email", formName: "login", total: 3 },
     );
     expect(js).toContain("if (pool.length !== 3) return { ok: false, error: 'identity_changed', detail: 'candidate_count' };");
-    expect(js).toContain('if (mName !== "Email address" || mRole !== null || mAria !== "Email address" || mTag !== "input")');
+    expect(js).toContain('if (mName !== "Email address" || mRole !== null || mAria !== "Email address" || mTag !== "input" || mId !== "email" || mForm !== "login")');
     expect(js).toContain("error: 'identity_changed', detail: 'signature'");
     // the gate runs BEFORE any focus/setter write
     expect(js.indexOf("identity_changed")).toBeLessThan(js.indexOf("descriptor.set.call(el, val)"));

@@ -4,19 +4,16 @@
  *
  * Pure builder over the focused-element snapshot withPostState already captures
  * + the focused window's processName. No UIA, no timers — fully deterministic.
- * Gate (ADR-022 dogfood): keyboard(type) + Edit/Document + value + NOT a browser
- * process + automationId !== RootWebArea.
+ * Gate (ADR-022 dogfood): keyboard(type) + Edit/Document + hasValuePattern + NOT a browser
+ * process + automationId !== RootWebArea. The post carries whether there is a value,
+ * never the value (ADR-036, option c).
  */
 
 import { describe, it, expect } from "vitest";
 import { maybeAdvisory, getAdvisoryEmitCount } from "../../src/tools/_advisory.js";
 import type { PostElementInfo } from "../../src/tools/_post.js";
 
-const edit = (value: string | undefined = "existing"): PostElementInfo => ({
-  name: "Text Editor",
-  type: "Edit",
-  ...(value !== undefined ? { value } : {}),
-});
+const edit = (): PostElementInfo => ({ name: "Text Editor", type: "Edit", hasValuePattern: true });
 
 // A non-browser process so the browser-suppression gate is not the thing under test.
 const NATIVE = "notepad";
@@ -41,7 +38,7 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
     const hint = maybeAdvisory(
       "keyboard",
       { action: "type", windowTitle: "Word", text: "x" },
-      { name: "Doc", type: "Document", value: "" },
+      { name: "Doc", type: "Document", hasValuePattern: true },
       "winword",
     );
     expect(hint).not.toBeNull();
@@ -74,24 +71,24 @@ describe("maybeAdvisory — unnamed text input (#352 follow-up, ADR-022 §5.5)",
   // name-empty rows before they reached this gate. This pins that an unnamed Edit
   // that DOES reach the gate fires, so the upstream relax (includeUnnamed) is the
   // only thing needed to widen coverage to unlabeled inputs.
-  it("fires for an unnamed Edit with value:'' (empty string = ValuePattern PRESENT)", () => {
+  it("fires for an unnamed Edit with hasValuePattern:true (an empty value still counts as ValuePattern PRESENT)", () => {
     const hint = maybeAdvisory(
       "keyboard",
       { action: "type", windowTitle: "App", text: "x" },
-      { name: "", type: "Edit", value: "" }, // name-empty editable, ValuePattern exposed
+      { name: "", type: "Edit", hasValuePattern: true }, // name-empty editable, ValuePattern exposed
       NATIVE,
     );
     expect(hint).not.toBeNull();
     expect(hint!.preferredPath).toBe("desktop_act");
   });
 
-  it("does NOT fire for an unnamed Edit with value ABSENT (undefined = no ValuePattern)", () => {
-    // Guard against conflating value:'' (fires) with value missing (drops). The
-    // gate is `value === undefined` (_advisory.ts) — empty string passes, absent drops.
+  it("does NOT fire for an unnamed Edit with hasValuePattern:false (no ValuePattern)", () => {
+    // The post carries whether there is a value, not the value (ADR-036, option c); `_post.ts`
+    // sets it from UIA's `value != null`, so an empty value is `true` and an absent one `false`.
     const hint = maybeAdvisory(
       "keyboard",
       { action: "type", text: "x" },
-      { name: "", type: "Edit" }, // no `value` field at all
+      { name: "", type: "Edit", hasValuePattern: false },
       NATIVE,
     );
     expect(hint).toBeNull();
@@ -101,14 +98,14 @@ describe("maybeAdvisory — unnamed text input (#352 follow-up, ADR-022 §5.5)",
 describe("maybeAdvisory — suppression (no hint)", () => {
   it("returns null when the focused element is not a text input (UIA-blind / wrong control)", () => {
     expect(
-      maybeAdvisory("keyboard", { action: "type", text: "x" }, { name: "Canvas", type: "Pane", value: "" }, NATIVE),
+      maybeAdvisory("keyboard", { action: "type", text: "x" }, { name: "Canvas", type: "Pane", hasValuePattern: true }, NATIVE),
     ).toBeNull();
   });
 
   it("returns null when the focused element exposes no value (no ValuePattern)", () => {
-    // An Edit with NO `value` field = UIA did not expose ValuePattern → suppress.
+    // An Edit with hasValuePattern:false = UIA did not expose ValuePattern → suppress.
     expect(
-      maybeAdvisory("keyboard", { action: "type", text: "x" }, { name: "Text Editor", type: "Edit" }, NATIVE),
+      maybeAdvisory("keyboard", { action: "type", text: "x" }, { name: "Text Editor", type: "Edit", hasValuePattern: false }, NATIVE),
     ).toBeNull();
   });
 
@@ -119,7 +116,7 @@ describe("maybeAdvisory — suppression (no hint)", () => {
       maybeAdvisory(
         "keyboard",
         { action: "type", text: "x" },
-        { name: "ホーム / X", type: "Document", value: "https://x.com/home", automationId: "RootWebArea" },
+        { name: "ホーム / X", type: "Document", hasValuePattern: true, automationId: "RootWebArea" },
         NATIVE,
       ),
     ).toBeNull();

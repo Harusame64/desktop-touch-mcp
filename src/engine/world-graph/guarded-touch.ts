@@ -51,6 +51,14 @@ export type TouchFailReason =
   | "origin_window_not_visible"
   | "coordinate_outside_reachable_bounds"
   | "cursor_placement_blocked"
+  | "aim_window_gone"
+  | "aim_identity_changed"
+  | "aim_point_outside_window"
+  | "aim_occluded"
+  | "aim_blocked_by_excluded_window"
+  | "aim_route_failed"
+  | "keyboard_target_unsafe"
+  | "window_excluded"
   | "executor_failed";
 
 /**
@@ -200,6 +208,11 @@ export type TouchResult =
        */
       downgrade?: ExecutorOutcome["downgrade"];
       /**
+       * ADR-036 family 2 — the keyboard rung posted, but could not confirm the characters reached the
+       * element named; see {@link ExecutorOutcome.landing}. Absent on a confirmed write.
+       */
+      landing?: ExecutorOutcome["landing"];
+      /**
        * ADR-024 Seed-2 — post-action ROI capture (diff-region crop + lease-less
        * entity preview) attached by the registration wrapper when the target is
        * visual-only and the act produced a visible change. Absent otherwise
@@ -222,6 +235,21 @@ export type TouchResult =
       diff: SemanticDiff;
       /** Set only when reason='modal_blocking' AND env.findBlockingModal returned a blocker. */
       blockingElement?: BlockingElementInfo;
+      /**
+       * ADR-036 item 13 — WHAT THE ENGINE KNEW, carried instead of rebuilt.
+       *
+       * The refusal that reaches this loop is a typed error whose message names the specifics: the
+       * window drawn over the point and its handle, which of the three identity fields changed, the
+       * rectangle the point left. The loop used to keep only the reason code, and
+       * `desktop-register.ts` then wrote fresh text from that code alone — so a caller was told
+       * "another window is drawn over the point" and never which window (measured 2026-09-10, win2,
+       * `dev/item13-envelope/`: the blocker's title and handle appear NOWHERE in the response, and
+       * the envelope has no message field at all).
+       *
+       * `undefined` when the throw carried no message, and absent rather than empty, so a row that
+       * has nothing to say does not claim to.
+       */
+      detail?: string;
     };
 
 /**
@@ -230,7 +258,13 @@ export type TouchResult =
  * between click and observation (Win32 SendInput returns before WM_PAINT).
  */
 export interface TouchEnvironment {
-  /** Return freshly resolved live entities (pre-touch snapshot). */
+  /**
+   * Return the entities a diff's PRE side is taken from. NOT a fresh resolve: the only
+   * implementation hands back the session's stored `desktop_discover` snapshot
+   * (`session-registry.ts:362`). The shipped `landing` sentence says exactly that about
+   * `diff.value_changed`, and this line used to say the opposite — an auditor starting here
+   * would have "fixed" the shipped string back (gate 2, 2026-09-14).
+   */
   resolveLiveEntities(): UiEntity[];
   /** Return the current world-state generation string. */
   currentGeneration(): string;
@@ -479,7 +513,11 @@ export class GuardedTouchLoop {
   async touch(input: TouchInput): Promise<TouchResult> {
     const { lease, action = "auto", text } = input;
 
-    // 1. Re-resolve current state and validate lease atomically.
+    // 1. Read the current generation and the session's stored entities, and validate the lease
+    //    against them atomically. `resolveLiveEntities` is NOT a fresh resolve — see its
+    //    declaration: the only implementation hands back the `desktop_discover` snapshot, which
+    //    is why the shipped `landing` sentence says `diff.value_changed` has its baseline there
+    //    and not at the write. This comment said "re-resolve" for as long as the interface did.
     const gen  = this.env.currentGeneration();
     const live = this.env.resolveLiveEntities();
     const validation = this.leaseStore.validate(lease, gen, live);
@@ -526,6 +564,32 @@ export class GuardedTouchLoop {
     try {
       outcome = await this.env.execute(entity, concreteAction, text);
     } catch (err) {
+      /**
+       * ADR-036 item 13 — the sentence the thrower declared fit to publish, or nothing.
+       *
+       * **Not `err.message`, and the first version of this line was.** Reading any throw's message
+       * publishes whatever a backend happened to say: the UIA road runs a ~2.5 KB PowerShell script
+       * through `execFileAsync`, whose rejection message is `Command failed:` plus the whole
+       * command line and stderr — and on the `type` road the script carries the text being typed
+       * (gate 2, Opus sandbox review, 2026-09-10). A caller-facing field is not a place to forward
+       * an exception to.
+       *
+       * So the contract is opt-in: `CallerFacingRefusal.callerDetail` (`aim.ts`) is a class saying
+       * "this sentence is written for a caller". Anything else — every backend exception, every
+       * `throw "string"` — produces no detail, and that reason arrives exactly as it did before
+       * this item. Duck-typed rather than `instanceof`, for the same module-identity reason the
+       * catch below matches on `name`.
+       *
+       * Capped as defence in depth: the longest sentence any of these classes writes was 654
+       * characters when they were last counted (2026-09-12, the keyboard rung's by-handle recovery),
+       * so a value past the cap means something unexpected is being published, and a truncated field
+       * is easier to notice than a page of text. The number is a measurement, not a budget — it
+       * moves when a sentence is reworded; the cap is what holds.
+       */
+      const declared = (err as { callerDetail?: unknown } | null)?.callerDetail;
+      const detail = typeof declared === "string" && declared.trim() !== ""
+        ? declared.slice(0, 1000)
+        : undefined;
       // ADR-029 Phase 1: an unreachable-coordinate refusal keeps its own reason.
       // Collapsing it into executor_failed would hand the caller that reason's
       // recovery advice — "fall back to mouse_click" — which walks straight back
@@ -533,22 +597,94 @@ export class GuardedTouchLoop {
       // error crosses module boundaries where a duplicated class identity would
       // silently fail the check.
       if (err instanceof Error && err.name === "CoordinateOutsideReachableBounds") {
-        return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [] };
+        return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [], ...(detail !== undefined && { detail }) };
       }
       // ADR-029 Phase 2a: same reasoning for a cursor that could not be placed
       // at all. Its recovery (free the cursor, reconnect the session) shares
       // nothing with either executor_failed or the unreachable-coordinate
       // advice, so it must not be folded into them.
       if (err instanceof Error && err.name === "CursorPlacementBlocked") {
-        return { ok: false, reason: "cursor_placement_blocked", diff: [] };
+        return { ok: false, reason: "cursor_placement_blocked", diff: [], ...(detail !== undefined && { detail }) };
       }
-      return { ok: false, reason: "executor_failed", diff: [] };
+      // ADR-036 — the window the action was aimed at is gone, and this is the third refusal that
+      // must not become `executor_failed` for exactly the reason written above: that reason's
+      // advice is "fall back to mouse_click", and the only coordinates the caller has are the
+      // entity's rect — which is where the window USED to be. Whatever occupies it now takes the
+      // click. `aim.ts` says so in its own words; the type was built, thrown and then flattened
+      // here, so the advice arrived unchanged (measured on Windows 2026-09-09: an excluded window
+      // and a closed one produced identical envelopes down to all four `try_next` items).
+      if (err instanceof Error && err.name === "AimedWindowGoneError") {
+        return { ok: false, reason: "aim_window_gone", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // ADR-036 item 2 — the handle now belongs to a different process. The specification calls
+      // this invalidation rather than an ordinary update, and the distinction is the whole point:
+      // an action addressed to this aim would not fail, it would succeed against a stranger.
+      if (err instanceof Error && err.name === "AimIdentityChangedError") {
+        // The engine's message names the field that decided (`describeIdentityChange` in `aim.ts`).
+        // It used to stop here — the reason was all `TouchResult` carried, and `desktop-register.ts`
+        // rendered its own text from the reason alone, so the published advice had to be stripped of
+        // any promise that the message said WHICH of the three happened (PR 側 codex on #608, P2).
+        // **ADR-036 item 13 carries it now**: `detail` above is that sentence, and the envelope puts
+        // it in `if_unexpected.detail`. The open question recorded here is closed.
+        return { ok: false, reason: "aim_identity_changed", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // PR 側 codex 2026-09-09 — the three refusals below reached this catch as plain errors, so
+      // all three arrived as `executor_failed`, whose first suggestion names the coordinate click
+      // they refused. The executor closed the door; the envelope handed back the key. Same
+      // `name`-not-`instanceof` matching as above, for the same module-identity reason.
+      //
+      // ADR-036 item 6 — the aim's rectangle covers the point and another window is drawn over it.
+      // Its own reason because re-discovering does not help: the coordinates are correct and the
+      // press would still land in the window on top.
+      if (err instanceof Error && err.name === "AimOccludedError") {
+        return { ok: false, reason: "aim_occluded", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // R3 tool exclusion, met at a COORDINATE rather than at a target. `window_excluded` is the
+      // other half of the same registry and says the opposite thing about the caller's own window
+      // — "the one you addressed is out of bounds" against "yours is fine, something else is over
+      // the point" — so they do not share a reason. The advice for the first is false for this one
+      // in two of its four lines (gate 2, Opus sandbox review, 2026-09-10).
+      if (err instanceof Error && err.name === "AimBlockedByExcludedWindowError") {
+        return { ok: false, reason: "aim_blocked_by_excluded_window", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // The point the press would land on is no longer inside the window this call named. Unlike
+      // `aim_window_gone` the window is alive, so re-discovering returns a rect that works.
+      if (err instanceof Error && err.name === "AimedPointOutsideWindowError") {
+        return { ok: false, reason: "aim_point_outside_window", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // Every route to the named window failed and the blind coordinate press is refused —
+      // ADR-036's whole subject arriving as the recovery is what this stops. Click and type end
+      // here alike; they were giving opposite advice about the same aim.
+      if (err instanceof Error && err.name === "AimedRouteFailedError") {
+        return { ok: false, reason: "aim_route_failed", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // ADR-036 family 2 — the keyboard rung refused to post, on a ground its rule could state
+      // (`engine/keyboard-target.ts`). Flattened, it would arrive as `executor_failed`, whose advice
+      // is a foreground type: the characters would go to the control this refused.
+      if (err instanceof Error && err.name === "KeyboardTargetUnsafeError") {
+        return { ok: false, reason: "keyboard_target_unsafe", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // ADR-036 item 16 — UIA says the element is gone, and the press where it was is refused. The
+      // fact the lease check reports when the entity is missing from the live view, found one step
+      // later: the same reason, and the same recovery — re-discover.
+      if (err instanceof Error && err.name === "TargetGoneError") {
+        return { ok: false, reason: "entity_not_found", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
+      // it told the caller to press the rect the excluded window occupies, which is the one
+      // outcome the exclusion exists to prevent (`tool-exclusion.ts` R3).
+      if (err instanceof Error && err.name === "WindowExcludedError") {
+        return { ok: false, reason: "window_excluded", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      return { ok: false, reason: "executor_failed", diff: [], ...(detail !== undefined && { detail }) };
     }
     // Issue #327 item C: normalise bare-kind / rich-outcome return shapes so
     // downstream stays single-shape.
     const executor: ExecutorKind = typeof outcome === "string" ? outcome : outcome.kind;
     const downgrade: ExecutorOutcome["downgrade"] | undefined =
       typeof outcome === "string" ? undefined : outcome.downgrade;
+    const landing: ExecutorOutcome["landing"] | undefined =
+      typeof outcome === "string" ? undefined : outcome.landing;
 
     // 6. Compute semantic diff against the pre-touch snapshot.
     //
@@ -585,6 +721,7 @@ export class GuardedTouchLoop {
       diff,
       next: diff.length > 0 ? "refresh_view" : "none",
       ...(downgrade ? { downgrade } : {}),
+      ...(landing ? { landing } : {}),
       ...(roiMaterial ? { roiMaterial } : {}),
     };
   }

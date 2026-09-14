@@ -9,7 +9,12 @@
  * (getFocusedAndPointInfo) instead of being hard-coded to null.
  * A short timeout (800 ms) prevents this from blocking fast actions.
  *
- * Also maintains a ring buffer of recent action posts for get_history().
+ * Also maintains a ring buffer of recent action posts. `get_history` is the tool that reads it —
+ * and it is registered on NO corner: asked with `tools/list` on the four real servers, all four
+ * answered NOT REGISTERED (win2, 2026-09-14, `45ff635`; Phase 4 privatised it and
+ * `desktop-state.ts` keeps the handler as an internal export). So the ring is written on every
+ * action and readable by no caller — which is a reach, not a safety property: it is still in the
+ * server's memory, and anything that later prints it publishes what was in it.
  */
 
 import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
@@ -25,8 +30,66 @@ import { maybeAdvisory } from "./_advisory.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PostElementInfo {
-  name: string;
+  /**
+   * The focused element's accessible name — carried ONLY when the call named the window focus
+   * ended in, the same predicate as `value`.
+   *
+   * WHY IT IS WITHHELD OTHERWISE, and it is not the privacy argument that decided it. Measured on
+   * a real machine with the window itself as witness (each control writes its own name to a file
+   * when clicked): a coordinate `mouse_click` on a control that TAKES focus reports it correctly,
+   * and a click on a label or on the form's background reports the element that happened to be
+   * focused before — with nothing in the response to tell the two apart. `verifyDelivery` says
+   * `delivered`, the screen really did repaint, and the name is simply the wrong element's (win2,
+   * 2026-09-14, `12f1ff7`).
+   *
+   * So on the calls that do not name a window, this field is right exactly when the caller could
+   * have guessed it and wrong exactly when they needed it — worse than absent. The caller's own
+   * criterion decided it: keep what is useful, drop what is noise.
+   *
+   * `automationId`, `type` and `hasValuePattern` stay, because they are what the success-path
+   * advisory reads and they do not assert a thing was acted on. The name is the half that reads
+   * like a claim.
+   */
+  name?: string;
   type: string;
+  /**
+   * Whether UIA exposes a value on the focused element (it may be empty). By default this bit is
+   * all the post carries — ADR-036, the user's decision of 2026-09-11 (option c). Named for the
+   * pattern, not `hasValue`: `browser_form` already says `hasValue` for a field holding a non-empty
+   * value, and here an empty one counts, so one name would have meant two things (gate 2 on #625;
+   * the maintainer chose the name).
+   *
+   * Why the value was carried: so an agent could check in one short cycle, without taking another
+   * screenshot, what it had typed and where — at a time when input often failed to reach the
+   * focused field (the user's account, 2026-09-11).
+   *
+   * Why it is withheld now: the focused element is whatever holds keyboard focus when the tool
+   * returns, not the tool's target. Measured on a real machine, tools that never touched a field
+   * (`clipboard`, `notification_show`, a `mouse_click` landing in the same window) carried that
+   * field's whole value, up to 4,096 characters, and `scroll` carried another window's; a field
+   * masked only by CSS came back in plain text, and a Chrome password as one bullet per character.
+   * The one console measured gave no value at all — its focused element was a button — so for
+   * terminal input the value did not serve that purpose there (internal
+   * `dev/post-focusedelement/RESULTS.md`).
+   */
+  hasValuePattern: boolean;
+  /**
+   * The value itself — only when the focused element is in the window THIS CALL NAMED
+   * (`valueBelongsToTheWindowActedOn`). Option (b) of the 2026-09-11 material, taken on
+   * 2026-09-13 after the predicate was measured to split the arms cleanly.
+   *
+   * What that buys, and what it does not. It closes the cross-tool exposure above: the four tools
+   * measured carrying a field they never touched — `clipboard` read and write,
+   * `notification_show`, and a coordinate `mouse_click` — name no window at all and resolve none
+   * internally, so the value never attaches to them (win2, on `f2b7241`, with the old switch on so
+   * the arms were observable). It keeps the reason the value existed: `keyboard(type, windowTitle)`
+   * still confirms its own write in one cycle.
+   *
+   * It does NOT make a value safe to read. A field the caller DID act on still comes back in full
+   * (up to the 4,096 UIA cap), CSS-masked fields in cleartext, and a Chrome password as one bullet
+   * per character whose count is the secret's length. Naming the window narrows WHOSE field, not
+   * WHAT is in it.
+   */
   value?: string;
   automationId?: string;
 }
@@ -73,16 +136,326 @@ export function getHistorySnapshot(n = 5): HistoryEntry[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Capture the current foreground window. Cheap (~1 EnumWindows call). */
-function snapshotFocus(): { title: string | null; hwnd: string | null; processName: string } {
+function snapshotFocus(): {
+  title: string | null; hwnd: string | null; processName: string;
+  /** The identity `identity-tracker.ts` uses, kept so "same window" is answerable later. */
+  processPid: number; processStartTimeMs: number;
+} {
   try {
     const wins = enumWindowsInZOrder();
     const fg = wins.find((w) => w.isActive);
-    if (!fg) return { title: null, hwnd: null, processName: "" };
+    if (!fg) return { title: null, hwnd: null, processName: "", processPid: 0, processStartTimeMs: 0 };
     const pid = getWindowProcessId(fg.hwnd);
     const ident = getProcessIdentityByPid(pid);
-    return { title: fg.title, hwnd: String(fg.hwnd), processName: ident.processName };
+    return {
+      title: fg.title, hwnd: String(fg.hwnd), processName: ident.processName,
+      processPid: ident.pid ?? 0, processStartTimeMs: ident.processStartTimeMs ?? 0,
+    };
   } catch {
-    return { title: null, hwnd: null, processName: "" };
+    return { title: null, hwnd: null, processName: "", processPid: 0, processStartTimeMs: 0 };
+  }
+}
+
+/**
+ * Which arguments name a window FOR THIS TOOL. The same two keys `RichNarrationOptions` declares,
+ * threaded down so the post layer reads the tool's own argument rather than a fixed pair of names.
+ */
+export interface PostWindowArgKeys {
+  /** Arg holding the target window title — `title` for `focus_window` / `window_dock`. */
+  windowTitleKey?: string;
+  /** Arg holding the target window handle. */
+  hwndKey?: string;
+  /**
+   * Args that decide the target INSTEAD of the window arguments, so the window arguments are not a
+   * naming of anything. `terminal`'s `paneId` is the one today: the schema says it takes precedence,
+   * and the handler branches on `paneId !== undefined` before it looks at `windowTitle` at all.
+   */
+  supersedingKeys?: string[];
+  /**
+   * Does a `fixId` on THIS call retarget the handler? Same question, same default and same source
+   * as `RichNarrationOptions.fixRetargets` — the registration answers it, because which variants
+   * adopt a fix is known there and nowhere else.
+   */
+  fixRetargets?: (args: Record<string, unknown>) => boolean;
+}
+
+/**
+ * What a tool that declares nothing gets: the names most of the schemas use. Resolved HERE rather
+ * than at the call site, so the fallback has one home and a caller can pass the options object it
+ * already has, holes and all.
+ */
+const DEFAULT_WINDOW_TITLE_KEY = "windowTitle";
+const DEFAULT_HWND_KEY = "hwnd";
+
+/**
+ * WHY the value is not in the post, when it is not — the four roads by which the predicate below
+ * says no, named rather than left as an absence.
+ *
+ * An absence cannot be read. `value` can be missing for reasons that have nothing to do with this
+ * rule: no element has focus, UIA did not answer, the field has no value at all. A caller that
+ * addressed the wrong window sees the same nothing as a caller whose field is empty, and it will
+ * read it as the commonest of those — which is exactly how `desktop_state`'s view road was
+ * misread on the measuring side before `hints.focusedElementSource` separated them (2026-09-14).
+ * So the withholding says its own name.
+ *
+ * WHERE IT IS PUBLISHED, and why not on the element: `hints`. The element is a projection of what
+ * is focused; this is a statement about the server's decision, and the two do not belong in one
+ * shape — the same separation PR #618 had to make between refusing and saying nothing about it.
+ * `hints` is also the root-hoisted key that survives every response shape, and it is already where
+ * "how this answer was produced" lives (`focusedElementSource`, `verifyDelivery.channel`), both of
+ * which are the columns that caught a misreading on the measuring side this week.
+ *
+ * IT IS NOT AN ORACLE ABOUT THE CONTENT. Published whenever the focused element has a value
+ * pattern at all — empty field included — so its presence never distinguishes an empty field from
+ * a full one in a window the call did not name. `hasValuePattern` already says a value exists;
+ * this must not add a bit saying whether it is worth having.
+ */
+export type PostValueWithheldReason =
+  /** The call named no window: `clipboard`, `notification_show`, a coordinate `mouse_click`, `@active`. */
+  | "call_named_no_window"
+  /** A window was named and focus ended in a different one — including the modal-popup road. */
+  | "not_the_window_you_named"
+  /** A selector the handler prefers decided the target: `paneId`, `selector`/`target`, an adopted `fixId`. */
+  | "target_came_from_elsewhere"
+  /** The foreground changed identity while the element read was in flight. */
+  | "foreground_moved_during_read"
+  /**
+   * The server could not tell WHERE focus was, so it withheld rather than guess: the foreground
+   * enumeration answered nothing, or the process identity could not be read. Distinct from the
+   * four above on purpose — each of those asserts something about the caller's aim, and asserting
+   * one of them here would be a confident wrong diagnosis, which is worse for a caller than an
+   * admitted one. The value is withheld either way; only the sentence differs.
+   *
+   * WHAT ACTUALLY MAKES THE IDENTITY UNREADABLE, asked of the function rather than assumed (win2,
+   * 2026-09-14, `846e874`): `services.exe`, `csrss.exe`, `lsass.exe` — processes on service and
+   * system accounts, whose owner `tasklist` cannot read either — AND **a PID that no longer
+   * exists**. All 173 of the signed-in user's live processes answered, and so did the owner of
+   * every one of the 17 windows on screen, so this is not a branch a normal desktop reaches
+   * through the foreground. An earlier draft of this comment said an elevated window answers this
+   * way; that was a guess of mine and the census says it is probably wrong — what blocks the read
+   * is the ACCOUNT and process protection, not elevation. It remains untested, because starting an
+   * elevated process needs a human at the UAC prompt.
+   *
+   * SO THIS WORD ITSELF COVERS TWO CAUSES THIS LAYER CANNOT SEPARATE: a process that is protected,
+   * and a process that has exited. That is the same conflation the vocabulary exists to end, one
+   * level down, and it is left standing rather than papered over — the measuring side's own census
+   * reported two of the user's processes as "unreadable" on its first pass when they had simply
+   * ended between the listing and the question.
+   */
+  | "could_not_verify_the_window";
+
+/** The predicate's answer: carry it, or do not and say which road said no. */
+type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheldReason };
+
+/**
+ * Did THIS call name the window the focus ended up in?
+ *
+ * The predicate option (b) rests on, and it was measured before it was written (win2, `f2b7241`,
+ * with `DESKTOP_TOUCH_POST_FOCUSED_VALUE=1` so the arms were observable):
+ *
+ * | arm | tool | names a window | focus after | predicate |
+ * |---|---|---|---|---|
+ * | B | `clipboard(read)` / `clipboard(write)` | no | the untouched field's window | false |
+ * | B | `notification_show` | no | same | false |
+ * | B | `mouse_click(x,y)` | no | same | false |
+ * | A | `keyboard(type, windowTitle)` | yes | that window | TRUE |
+ *
+ * The four leaking arms name no window and resolve none internally, so the predicate splits
+ * exactly where the exposure is. `DESKTOP_TOUCH_POST_FOCUSED_VALUE` is gone with this: it existed
+ * as the way back to carrying the value everywhere, and what it was a way back TO is the row set
+ * above.
+ *
+ * The two ways the first form of this predicate then said "no window" about a call that HAD named
+ * one were measured on the same machine before the fix (on `7480ce1`, internal
+ * `dev/pr639-post-value-named-window` `e6074a3`): `hwnd:"0x20a4a"`, `hwnd:"  133706  "` and
+ * `hwnd:"000133706"` each returned `ok:true` with the keystrokes delivered and no value, and so
+ * did `focus_window({title})`. Each of those arms really did write — the arithmetic says so rather
+ * than the `ok` flag: the fixture field's length counts the needles that arrived, and the three
+ * handle spellings added theirs.
+ *
+ * A REFUSED CALL PUBLISHES NO VALUE — and that sentence had to be made true rather than written.
+ * Two refusal shapes were measured, and they are not the same: `WindowNotFound` publishes no
+ * `post` block at all, while `AutoGuardBlocked` publishes one with `focusedElement: null` (win2).
+ * The measured fact is about the RESPONSE: an `AutoGuardBlocked` reply carries no focused element.
+ * The snapshot below is taken before either branch runs, so the ring was recording, for a refused
+ * call, exactly the field the refusal withheld — including for a handle `refuseIfExcludedTarget`
+ * rejected, which is the key locker's window (gate 2 on `447698f`; the spelling fix widened which
+ * arguments reach that path). The ring now follows the response. No caller could read it either
+ * way — see the header: `get_history` is registered on no corner — so this closed a store, not a
+ * leak. It was worth closing because the store is what a future reader would publish. What is still unconditional is
+ * the UIA read itself: `getFocusedAndPointInfo` asks the FOREGROUND, whatever the call targeted,
+ * and has no exclusion gate of its own — older than this change, filed, not closed here.
+ *
+ * CONSERVATIVE ON PURPOSE, in the direction where being wrong is cheap. Withholding costs a
+ * read-back the caller can still get from `desktop_state`; attaching costs a field the caller never
+ * asked about. So:
+ *
+ *   - THE ARGUMENT NAMES ARE THE ONES THE TOOL DECLARED, not the literal `windowTitle` / `hwnd`.
+ *     `focus_window` calls its destination `title` (`window_dock` too), so reading only
+ *     `windowTitle` withheld the value from the two tools whose whole purpose is to name a window
+ *     — as explicit a naming as this codebase has, and the predicate could not see it (gate on
+ *     `7480ce1`, 2026-09-13). The keys come from `RichNarrationOptions`, the table every other
+ *     layer already reads them from; a second table here would be a second place to forget a tool.
+ *     A tool that declares no key keeps the defaults, which is why `notification_show({title})` —
+ *     whose `title` is a message heading and not a window — is still read as naming nothing.
+ *   - THE HANDLE IS COMPARED AS A NUMBER, through the same `BigInt` that ACCEPTED it
+ *     (`_resolve-window.ts` case 1). An exact string compare was the first form, and it withheld
+ *     the value from calls that had named the window unambiguously: the schemas take `hwnd` as
+ *     `z.string()` with no decimal rule, `BigInt` takes `"0x1092"`, `"004242"` and whitespace, and
+ *     the foreground snapshot always writes decimal — so every spelling but one lost its own value
+ *     (gate on `7480ce1`, 2026-09-13). Enumerating the spellings does not end; sharing the parser
+ *     with the side that accepted the argument does, and it cannot widen WHICH window matches,
+ *     only how that one window may be written. A handle neither side can parse names nothing.
+ *   - `windowTitle` must be contained in the focused window's title, case-folded and nothing more,
+ *     and it is the ARGUMENT that is compared — never a window the server chose on the caller's
+ *     behalf. `resolveWindowTarget` PREFERS THE ACTIVE POPUP when the named window is blocked by
+ *     its own modal, so `click_element(hwnd=<owner>)` with a dialog up acts on the DIALOG; the
+ *     handle in the argument then matches nothing and the value is withheld. Deliberate, and the
+ *     more careful side of a fork: the caller named the owner, and a modal that took focus is
+ *     exactly the class of window — a credential prompt, a save dialog — whose field nobody asked
+ *     for. The gate raised it on `447698f` and it is filed rather than changed — and then
+ *     measured, with the two controls that make it mean something (win2, 2026-09-14, `b218767`):
+ *     naming the owner while its dialog is up returns `ok:true` with `parent_disabled_prefer_popup`
+ *     and no value; naming the DIALOG carries one; naming the owner after the dialog closes carries
+ *     one. Either control alone leaves an alternative reading alive ("the popup road never
+ *     carries", "this owner's handle never carries"); together they say only where focus landed
+ *     decides.
+ *   - Borrowing the guard's title matching is still refused, but NOT because it is looser: asked
+ *     directly, with the fixture window open, `findPlainTopLevelWindowsByTitle` returned zero
+ *     matches for a padded title and for dash variants, and agreed with this predicate on case —
+ *     the two matchings are not known to differ on any axis measured (win2, 2026-09-14,
+ *     `dev/pr639-post-value-named-window` `1258868`, after two rounds that read a `scroll` call
+ *     with `ok:true` as evidence of the opposite; `hints.verifyDelivery.channel` said
+ *     `wheel_send_input`, i.e. no window had been resolved at all). The reason to keep a rule of
+ *     its own is that the guard's exists to DECIDE a target and may be loosened for that job —
+ *     and a predicate that borrows it would loosen with it, silently.
+ *   - `"@active"` counts as naming NOTHING. It means "whatever is in front", which is the same
+ *     thing every leaking arm above was pointed at by accident. A caller who really wants the
+ *     value of the foreground field can ask `desktop_state` for it — SOMETIMES. It answers while
+ *     naming no window, so this is a change in WHO HAS TO ASK for a field rather than a reduction
+ *     in what can be read; `desktop_state`'s own caveat is where that is written down. But it
+ *     answers only from the UIA road: `desktop_state` prefers the perception view's focus, and
+ *     `buildElementInfoFromView` has no `value` field at all, so when that road answers the
+ *     read-back returns the element WITH NO VALUE — which a caller cannot tell from an empty
+ *     field. Measured 24/24 with a value on the UIA road and 0/8 without on the view road, the
+ *     element's name identical in all of them and `hints.focusedElementSource` the only column
+ *     that moved (win2, 2026-09-14, `a4802dd`).
+ *
+ *     WHICH ROAD ANSWERS IS A PREDICATE, NOT AN EVENT — `shouldAcceptViewFocus`
+ *     (`desktop-state.ts:317`). The view answers when the perception pipeline holds a latest-focus
+ *     row with a non-empty name, not a Chromium `Pane`, AND a recorded window title EXACTLY equal
+ *     to the foreground title enumerated in the same call — one equal case excepted, since an
+ *     empty foreground title is refused before the comparison and the UIA handler records an empty
+ *     title for `hwnd == 0`. That row is global, and NO FOCUS EVENT
+ *     clears it — a dropped focus is skipped rather than written (`focus_pump`). Other things do:
+ *     the view is empty until the first event arrives, empty for good if handler registration
+ *     failed, and a poison-eviction respawns a fresh one. All of those fall through to UIA — and
+ *     onward to CDP on a Chromium foreground — either of which CAN carry a value, so they cost a
+ *     caller nothing and are not the interesting half. Can, not will: the UIA branch gates on a
+ *     name as well, a provider may serve none, and CDP omits an empty or masked one. (Only THIS road never carries one; "only UIA does"
+ *     is the wider claim `desktop-state.ts` corrected at `05f31f6`.)
+ *
+ *     THE INTERESTING HALF IS THAT THE ROAD MOVES WITH NO FOCUS CHANGE AT ALL, in both directions.
+ *     A window that renames itself while you work in it leaves the view road — Notepad's `*` for
+ *     unsaved changes is the everyday case, and that direction GIVES a caller the value. Coming
+ *     back the other way is the one that costs: a foreground whose title matches its recorded row
+ *     again lands on the view road, and the value disappears with nothing in the call to say why.
+ *
+ *     THE MEASUREMENTS, AND THE ARM THEY DO NOT SETTLE. Inside one window with the click point as
+ *     the only variable: blank space in the form keeps the UIA road, a different text field moves
+ *     to the view road from then on (win2, 2026-09-14, `e1daeb4`). Acting on another window moves
+ *     it too, and so does invoking a button on one, which writes nothing (`3859672`). Typing into
+ *     the field you then read KEEPS the value — and the round that says WHY has now been run, in
+ *     both directions (win2, `a23bda2`). Notepad, whose title gains a `*`: UIA road, value
+ *     present. A form whose title never moves, verified unchanged from outside with
+ *     `GetWindowTextW` before and after the write: VIEW road, no value. Then the intervention —
+ *     rename that same window from outside, no keystroke and no focus move: UIA road, value back.
+ *     Rename it to its old title: view road, value gone again. **The title equality is what
+ *     decides, and typing was never the cause.**
+ *
+ *     SO THE READ-BACK PROMISE HAS A CONDITION, and it is not the caller's to meet: a window whose
+ *     title MOVES when you edit it — the unsaved-changes `*`, a document name, a tab title —
+ *     breaks the equality and gets the value; a window whose title is fixed, which most native
+ *     dialogs and forms are, keeps it and does not. Same call, same instant, one application
+ *     answers and the other returns a field with no value.
+ *
+ *     A FIXED TITLE IS NOT A GUARANTEE OF THE VIEW ROAD, THOUGH, which is why the shipped advice
+ *     keys on the HINT and not on the title (gate 1 on `2ac5663`). The other two filters can
+ *     reject a matching row — a Chromium foreground answering with a `Pane`, an empty name — and
+ *     a view that no event has reached yet has no row to offer, and each of those falls through to
+ *     UIA or CDP, where a value may well be there. Telling a caller "your title is fixed, so there
+ *     is no value" would be wrong in exactly those cases, in both directions.
+ *     `desktop_act`'s own advice said "read the field back before relying on it" and stopped
+ *     there; it now names `hints.focusedElementValueAbsent`, which the caller can actually check,
+ *     because a caller who reads an empty field silently concludes the write never landed. THAT
+ *     HINT IS NOT A COMPLETE DETECTOR, and this block came close to selling it as one: it is
+ *     written on the view road and on a masked CDP value only (`desktop-state.ts:783`, `:819`).
+ *     On the UIA road a provider that serves no value leaves an absent value with NO hint — which
+ *     `desktop-state.ts`'s own shipped caveat says outright, so the two would have disagreed in
+ *     the same repository (gate 2, 2026-09-14).
+ *
+ *     THREE FORMS OF THIS SENTENCE HAVE BEEN WRONG, all in the same direction — "after this
+ *     server writes", "after acting on another window", "when the focused element changes". Each
+ *     named the most visible change in a round that moved more than one thing, and each named an
+ *     action of the CALLER'S. The answer was a property of the application all along.
+ *
+ *     THE IDENTITY IS PARTLY NARROWED NOW, and this sentence has been rewritten twice for it.
+ *     `name` follows the value and is withheld with it; `automationId`, `type` and
+ *     `hasValuePattern` still come back for a window this call never named. The split is not
+ *     aesthetic: the last three are what the success-path advisory (ADR-022) decides from —
+ *     `buildHint` reads `type`, `hasValuePattern` and `automationId`, and never `name` — so
+ *     withholding `name` costs the advisory nothing, and withholding any of the other three would
+ *     kill it (gate 2 on `447698f` for the reading, gate 2 on `b40bce8` for the sentence).
+ */
+function valueBelongsToTheWindowActedOn(
+  args: Record<string, unknown>,
+  after: { title: string | null; hwnd: string | null },
+  keys: PostWindowArgKeys,
+): PostValueVerdict {
+  // A SELECTOR THE HANDLER PREFERS MEANS THE WINDOW ARGUMENTS NAMED NOTHING. `terminal(action:
+  // 'send', paneId, windowTitle)` never reads that title — and a background send does not move the
+  // foreground, so a stale title that happens to match whatever is in front would have attached
+  // that untouched window's field. Same for a `fixId` that retargets: the handler acts on the
+  // stored fix's window and these arguments describe the call the caller wrote, not the one that
+  // ran. Withholding is the recoverable direction; the rich path answers this identically.
+  if (keys.supersedingKeys?.some((k) => args[k] !== undefined && args[k] !== "")) {
+    return { carry: false, why: "target_came_from_elsewhere" };
+  }
+  if (args["fixId"] && (keys.fixRetargets ?? (() => true))(args)) {
+    return { carry: false, why: "target_came_from_elsewhere" };
+  }
+  const hwnd = args[keys.hwndKey ?? DEFAULT_HWND_KEY];
+  if (typeof hwnd === "string" && hwnd !== "") {
+    // A FOREGROUND THAT COULD NOT BE READ IS NOT A MISMATCH. `snapshotFocus` answers all-null when
+    // the enumeration throws, and UIA can still produce an element through its own road — so the
+    // comparison below has nothing to compare, and saying `not_the_window_you_named` would tell
+    // the caller their aim was wrong when the server simply could not look (gate on `968f9cb`).
+    if (after.hwnd === null) return { carry: false, why: "could_not_verify_the_window" };
+    return isTheSameHandle(hwnd, after.hwnd)
+      ? { carry: true }
+      : { carry: false, why: "not_the_window_you_named" };
+  }
+  const title = args[keys.windowTitleKey ?? DEFAULT_WINDOW_TITLE_KEY];
+  if (typeof title !== "string" || title === "" || title === "@active") {
+    return { carry: false, why: "call_named_no_window" };
+  }
+  if (after.title === null) return { carry: false, why: "could_not_verify_the_window" };
+  return after.title.toLowerCase().includes(title.toLowerCase())
+    ? { carry: true }
+    : { carry: false, why: "not_the_window_you_named" };
+}
+
+/**
+ * One handle, however it was spelled. `BigInt` is the parser `resolveWindowTarget` uses to accept
+ * the argument, so the two sides cannot disagree about what a handle IS; anything it refuses is
+ * not a name and gets no value.
+ */
+function isTheSameHandle(arg: string, afterHwnd: string | null): boolean {
+  if (afterHwnd === null) return false;
+  try {
+    return BigInt(arg) === BigInt(afterHwnd);
+  } catch {
+    return false;
   }
 }
 
@@ -90,7 +463,7 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
  * Best-effort: call getFocusedAndPointInfo with a tight timeout.
  * Returns null on timeout or error — never throws.
  */
-async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
+async function snapshotFocusedElement(carryValue: boolean): Promise<PostElementInfo | null> {
   try {
     // #352 follow-up (ADR-022 §5.5): pass includeUnnamed=true so an UNNAMED UIA
     // text input (Edit/Document with ValuePattern but an empty Name) survives the
@@ -102,9 +475,15 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
     // degenerate no-name-no-controlType rows under includeUnnamed). A name-empty
     // editable element flows through with name:"" so the #352 advisory can fire.
     if (!focused) return null;
-    const info: PostElementInfo = { name: focused.name, type: focused.controlType };
+    // Whether there is a value, and by default not what it is (see `PostElementInfo.hasValuePattern`). The
+    // history ring stores this same object, so it holds a value only under the switch as well.
+    const info: PostElementInfo = { type: focused.controlType, hasValuePattern: focused.value != null };
+    // The name follows the same permission as the value — see `PostElementInfo.name`. Omitted,
+    // never blanked: an empty string is a name, and a reader cannot tell it from a field that has
+    // none.
+    if (carryValue) info.name = focused.name;
     if (focused.automationId) info.automationId = focused.automationId;
-    if (focused.value != null) info.value = focused.value;
+    if (carryValue && focused.value != null) info.value = focused.value;
     return info;
   } catch {
     return null;
@@ -164,7 +543,8 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
  */
 export function withPostState<T extends Record<string, unknown>>(
   toolName: string,
-  handler: (args: T) => Promise<ToolResult>
+  handler: (args: T) => Promise<ToolResult>,
+  windowArgKeys: PostWindowArgKeys = {}
 ): (args: T) => Promise<ToolResult> {
   return async (args: T) => {
     const startedAt = Date.now();
@@ -172,7 +552,138 @@ export function withPostState<T extends Record<string, unknown>>(
     const result = await handler(args);
     try {
       const after = snapshotFocus();
-      const focusedElement = await snapshotFocusedElement();
+      const verdict = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
+      const focusedElement = await snapshotFocusedElement(verdict.carry);
+      /**
+       * WHY THE PERMISSION DID NOT HOLD, or `undefined` when it did — ONE variable for one fact.
+       * `verdict` answered about the foreground at `after`; the re-read below can take it away,
+       * and everything the permission gates (the value, the name, and the flag that says the
+       * element is not confirmed to be the caller's) reads THIS. An earlier form kept a second
+       * boolean beside it and the two had to be updated in step; a fact stored twice is a fact
+       * that can disagree with itself, which is how four consecutive rounds of this file went
+       * wrong. The rule for publishing it lives at the publication and nowhere else (search
+       * `elementIsUnconfirmed`) — writing a second copy here is how a later round codes to the
+       * copy instead of the code.
+       */
+      let valueWithheld: PostValueWithheldReason | undefined =
+        verdict.carry ? undefined : verdict.why;
+      // THE PERMISSION AND THE ELEMENT ARE READ AT DIFFERENT MOMENTS, and between them is an
+      // asynchronous UIA call with its own 800 ms budget. `carryValue` was decided against the
+      // foreground at `after`; the element comes from whatever holds focus when UIA answers. If
+      // the user alt-tabbed, or the app raised a dialog, that is a DIFFERENT window — and the
+      // value the caller was authorised to see for the window they named would be published from
+      // the window that took focus instead. Re-read the foreground and drop the value if it
+      // moved; withholding is the recoverable direction, and the read costs one enumeration only
+      // on the calls that were going to carry a value anyway (gate on `a2a9376`, P1).
+      //
+      // `post.focusedWindow` keeps its `after` reading rather than being re-derived here: it is
+      // the foreground the action left behind, which is the question it answers. The element and
+      // the window CAN disagree in that window of time — they could before this change too, for
+      // every call, value or no value — and binding them properly needs the owning HWND, which
+      // `NativeUiaFocusInfo` does not carry. Filed rather than faked.
+      // …AND IT GUARDS THE NAME TOO, which the first version of this did not: the check ran only
+      // when a value existed and dropped only the value, so an element with no value pattern
+      // skipped it entirely and an element with one kept the WRONG NAME while losing the right
+      // value (gate on `f220577`). The name is permissioned now, so it is guarded now.
+      // THE GUARD IS THE PERMISSION, NOT THE FIELDS. An earlier form asked whether a permissioned
+      // field was present, which reads right and is dead weight: under `carry` the name is
+      // assigned unconditionally (`snapshotFocusedElement`) and `UiaFocusInfo.name` is a required
+      // string on both bridge roads, so the field test was a tautology — and the day anyone makes
+      // the name conditional it would silently stop guarding the rows with no value.
+      if (verdict.carry && focusedElement) {
+        const settled = snapshotFocus();
+        // IDENTITY, NOT THE NUMBER — and identity is the PAIR, not the name. A handle is
+        // recyclable: the named window can exit during the lookup and Windows can hand its number
+        // to whatever takes focus next, so `settled.hwnd === after.hwnd` alone is true about a
+        // different window (gate on `93e39ef`). Comparing the process NAME does not close it
+        // either: a second instance of the same executable — the second Notepad — answers the same
+        // name, and a user with two of anything open is not a corner case (gate on `6f33565`).
+        // `getProcessIdentityByPid` already returns what `identity-tracker.ts` compares, pid and
+        // process start time, and `snapshotFocus` was throwing both away. An unreadable identity
+        // (start time 0, which is also what the failure path returns) withholds.
+        // AND THE SAME DISTINCTION ON THE WAY OUT. An identity that could not be READ is not an
+        // identity that CHANGED: `getProcessIdentityByPid` answers `processStartTimeMs: 0` for a
+        // protected process and for a transient failure, and reporting movement there is a
+        // confident wrong diagnosis of something that did not happen (gate on `968f9cb`). The
+        // value is withheld in both cases — only the sentence differs.
+        // ANY OBSERVATION OF A CHANGE BEATS A FAILURE TO OBSERVE — and the gate found the wrong
+        // precedence here three rounds running, so the observations are enumerated rather than
+        // folded into one expression. Each line answers "did we SEE the foreground change?", and
+        // a `false` from any of them means "we did not see it", never "it did not happen".
+        //
+        // A different handle says so on its own, whoever it moved to (`5303bb2`). So does a
+        // different PID, as long as neither is zero: `getProcessIdentityByPid` KEEPS its input pid
+        // when the rest of the lookup fails (`win32.ts`), so a nonzero pid is a real pid even in a
+        // row whose start time could not be read (`1d3b495`). Start times only speak when both
+        // were readable — 0 is the value the failure path returns, not a timestamp.
+        const handlesDiffer = settled.hwnd !== null && settled.hwnd !== after.hwnd;
+        const pidsDiffer = settled.processPid !== 0 && after.processPid !== 0 &&
+          settled.processPid !== after.processPid;
+        const startTimesUnreadable = settled.processStartTimeMs === 0 || after.processStartTimeMs === 0;
+        const startTimesDiffer = !startTimesUnreadable &&
+          settled.processStartTimeMs !== after.processStartTimeMs;
+        const moved = handlesDiffer || pidsDiffer || startTimesDiffer;
+        // Nothing seen AND nothing comparable: that is the admitted answer, not a verdict.
+        const sawNothingComparable = settled.hwnd === null || startTimesUnreadable;
+        if (moved || sawNothingComparable) {
+          delete focusedElement.value;
+          delete focusedElement.name;
+          valueWithheld = moved ? "foreground_moved_during_read" : "could_not_verify_the_window";
+        }
+      }
+      // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE. A field with no value pattern has no
+      // value for any caller, named or not, and a reason attached there would read as "a value was
+      // kept from you" (win2, measured on the CDP round: a paragraph carrying only a `tabindex`
+      // answers exactly like a masked field does). The element being absent altogether — every
+      // refusal road — is likewise not a withholding: `ok:false` is the answer to that question.
+      //
+      // Published for an EMPTY field as well as a full one. The reason answers the rule, not the
+      // contents; suppressing it for `value:""` would make its presence mean "the field you cannot
+      // see is not empty", which is a bit about a window the caller never named and one that
+      // `hasValuePattern` does not already give.
+      //
+      // THE ELEMENT'S REASON IS TAKEN FIRST, because the suppression below is about the VALUE
+      // only. The two questions part company exactly here: an element with no value pattern had
+      // no value withheld from it, and still is not confirmed to be the caller's.
+      const windowUnconfirmedWhy = valueWithheld;
+      if (!focusedElement?.hasValuePattern) valueWithheld = undefined;
+      /**
+       * AND THE ELEMENT ITSELF IS FLAGGED, not only its value. Withholding the name removes the
+       * worst half of a misreading but not its kind: with the name gone, a coordinate click on a
+       * label still reports `type: "Edit"` — the previously focused element's type — and a caller
+       * reads that as the thing they clicked. Measured with the window as witness: exact when the
+       * clicked control takes focus, another element's when it does not (win2, `12f1ff7`).
+       *
+       * So the post says the one thing it knows: this element is NOT CONFIRMED to be in a window
+       * this call named, and which of the five roads left it unconfirmed. It is not a statement
+       * about what was acted on — that cannot be had here. The read that would answer it, the
+       * element under the point, is dead across the whole work area on the measuring machine: a
+       * vendor overlay covers 0,0–1920×1032 and every point inside it answers "desktop", while
+       * points below the overlay's rectangle name controls correctly (win2, `689aa02`). A design
+       * built on that read passes its unit cells, passes on a machine without the overlay, and
+       * says "desktop" for every click where it is needed.
+       *
+       * AND IT SAYS *UNCONFIRMED*, NOT *ELSEWHERE* — the flag's first form published
+       * `focusedElementInNamedWindow: false`, which asserts a LOCATION, and two of the five roads
+       * cannot support that assertion (gate on `7f70adc`). `could_not_verify_the_window` means the
+       * foreground could not be read at all, so "not in your window" is a confident wrong
+       * diagnosis of something never observed — the exact failure this vocabulary exists to end,
+       * and it contradicted the reason published beside it. `foreground_moved_during_read` cannot
+       * support it either, for a reason the gate did not name: the element was read SOMEWHERE
+       * between the two foreground readings, so it may well be the named window's, seen before the
+       * move. Only the predicate's three roads establish a location, and a single word that is
+       * true on all five is worth more to a caller than a boolean that is wrong on two.
+       *
+       * The reason is what makes it actionable, and it is the element's own copy: on a row with no
+       * value `postValueWithheld` is silent by design, and `call_named_no_window` there is the
+       * difference between "pass `windowTitle` next time" and "nothing you could have done".
+       * On rows that carry both, the two keys say the same word about one fact — the value is not
+       * yours, and neither is the element it belongs to.
+       *
+       * Published whenever an element is published and confirmation did not hold — INCLUDING for
+       * an element with no value at all, where the type is just as misleading.
+       */
+      const elementIsUnconfirmed = focusedElement !== null && windowUnconfirmedWhy !== undefined;
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
@@ -210,6 +721,21 @@ export function withPostState<T extends Record<string, unknown>>(
             }
           } else {
             obj.post = post;
+            // The withholding says its own name, in `hints` — MERGED, never assigned: `hints` is a
+            // root-hoisted key the handler may already have written, and this wrapper owns exactly
+            // one field of it.
+            //
+            // SUCCESS ONLY. A failure publishes no focused element at all, so "why is the value
+            // missing" is answered by `ok:false` and not by this rule; writing a reason there
+            // would name a withholding that did not happen.
+            if (valueWithheld || elementIsUnconfirmed) {
+              const existing = obj.hints;
+              obj.hints = {
+                ...(existing !== null && typeof existing === "object" ? existing as Record<string, unknown> : {}),
+                ...(valueWithheld ? { postValueWithheld: valueWithheld } : {}),
+                ...(elementIsUnconfirmed ? { focusedElementWindowUnconfirmed: windowUnconfirmedWhy } : {}),
+              };
+            }
             // ADR-022 / issue #352: success-path advisory. Reuses the
             // focused-element snapshot already taken above (post.focusedElement) —
             // zero extra UIA cost. `_advisory.ts` owns the per-tool logic; this
@@ -253,8 +779,13 @@ export function withPostState<T extends Record<string, unknown>>(
         }
       }
 
-      // Strip rich and perception blocks from history to avoid bloating the ring buffer.
-      const { rich: _rich, perception: _perception, ...postForHistory } = post;
+      // Strip rich and perception blocks from history to avoid bloating the ring buffer — and the
+      // focused element on a refusal, because the response does not publish one (the failure
+      // branch above writes `focusedElement: null`, and a failure with no perception marker
+      // publishes no `post` at all). Keeping it here meant a refused call still stored the field
+      // the refusal was withholding.
+      const { rich: _rich, perception: _perception, ...postFields } = post;
+      const postForHistory = okFlag ? postFields : { ...postFields, focusedElement: null };
       recordHistory({
         tool: toolName,
         argsDigest: digest(args),

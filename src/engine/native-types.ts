@@ -19,12 +19,23 @@ export interface NativeUiElement {
   patterns: Array<string>
   depth: number
   value?: string
+  /** ADR-036 family 2 — the element's own window handle (decimal string), when it is a window of its own. */
+  nativeWindowHandle?: string | null
 }
 
 export interface NativeUiElementsResult {
   windowTitle: string
   windowClassName?: string | null
   windowRect?: NativeBoundingRect | null
+  /**
+   * ADR-036 item 15 — the HWND this read resolved, as a decimal string.
+   *
+   * The read reported the window's title, class and rectangle and not which window it was, so a
+   * UIA entity carried no `origin.hwnd` and the coordinate ladder returned before its first rung
+   * on that road (measured: a UIA entity whose window was closed was pressed blind and reported
+   * `ok:true`). Absent when the property could not be read; never `"0"`.
+   */
+  windowHwnd?: string | null
   elementCount: number
   elements: Array<NativeUiElement>
 }
@@ -259,6 +270,25 @@ export interface NativeSsimResidualResult {
 
 /** Rust `RECT` mirror — left/top/right/bottom in screen pixels. The TS wrapper
  *  in `src/engine/win32.ts` converts to `{ x, y, width, height }` for callers. */
+/** ADR-036 item 6 — the three handles `WindowFromPoint` leads to.
+ *
+ *  The primitive returns the CHILD window under the point (a button, not its frame), so a caller
+ *  comparing it with a top-level handle would report the aim's own control as another window.
+ *  Both ancestor walks are done in the same native call: `root` (`GA_ROOT`) is the top-level
+ *  window that would take the press, `rootOwner` (`GA_ROOTOWNER`) follows the owner chain too, so
+ *  a dialog maps to whatever raised it. They differ exactly for the popups ADR-036 is about. */
+export interface NativeWindowAtPoint {
+  child: bigint
+  root: bigint
+  /** `GetWindow(GW_OWNER)` walked up from `root`, bounded at eight hops. Every hop, not just the
+   *  last: the aim itself can be an owned window, and a chain passing THROUGH it would otherwise
+   *  read as unrelated. NOT `GA_ROOTOWNER`, which was measured and is strictly worse. */
+  ownerChain: bigint[]
+  rootThreadId: number
+  rootProcessId: number
+  rootHasCaption: boolean
+}
+
 export interface NativeWin32Rect {
   left: number
   top: number

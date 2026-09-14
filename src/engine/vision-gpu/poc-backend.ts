@@ -40,6 +40,11 @@ export class PocVisualBackend implements VisualBackend {
     return this.snapshots.get(targetKey) ?? [];
   }
 
+  /** Injected snapshots only — this backend never looks at a window. */
+  recognitionCapability(): "recognises" | "replays_injected_only" {
+    return "replays_injected_only";
+  }
+
   onDirty(cb: (targetKey: string) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);

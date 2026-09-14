@@ -29,6 +29,24 @@ export interface VisualBackend {
   getStableCandidates(targetKey: string): Promise<UiEntityCandidate[]>;
 
   /**
+   * Whether this backend can produce candidates by LOOKING at a window, as opposed to replaying
+   * whatever was handed to it.
+   *
+   * `"replays_injected_only"` is the default build: `PocVisualBackend` serves
+   * `snapshots.get(targetKey) ?? []` and recognises nothing, so an empty answer from it means
+   * "this backend cannot look" — a different fact from "it looked and found nothing", which is
+   * what an empty answer from a recognising backend means.
+   *
+   * The two were indistinguishable in the response, and the caller was told neither: a window
+   * whose buttons are PAINTED (nothing for UIA to see) came back with the title bar's four
+   * elements and no note, when the honest answer was "the part you care about was never looked at"
+   * (win2, 2026-09-10). Optional so a backend written before this keeps working, and read as
+   * `"recognises"` when absent — the reading that emits no warning, so an older backend cannot be
+   * made to look broken by this field's absence.
+   */
+  recognitionCapability?(): "recognises" | "replays_injected_only";
+
+  /**
    * Subscribe to dirty signals from the backend (e.g. ROI changed, new track stable).
    * Returns an unsubscribe function. Multiple listeners are allowed.
    *

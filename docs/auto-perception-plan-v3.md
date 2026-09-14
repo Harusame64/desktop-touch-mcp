@@ -159,7 +159,9 @@ type ActionKind =
   | "browserCdp";
 
 type ActionTargetDescriptor =
-  | { kind: "window"; titleIncludes: string }
+  // `hwnd?` added later (ADR-036): set only when the caller named a handle, so
+  // the guard resolves that window instead of counting title matches.
+  | { kind: "window"; titleIncludes: string; hwnd?: bigint }
   | {
       kind: "browserTab";
       tabId?: string;
@@ -1064,7 +1066,9 @@ type ActionKind =
   | "browserCdp";
 
 type ActionTargetDescriptor =
-  | { kind: "window"; titleIncludes: string }
+  // `hwnd?` added later (ADR-036): set only when the caller named a handle, so
+  // the guard resolves that window instead of counting title matches.
+  | { kind: "window"; titleIncludes: string; hwnd?: bigint }
   | {
       kind: "browserTab";
       tabId?: string;
