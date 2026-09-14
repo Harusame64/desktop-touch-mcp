@@ -113,7 +113,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@napi-rs/cli": "^3.9.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.5.1",
     "@types/ws": "^8.18.1",
     "eslint": "^10.9.1",
     "fast-check": "^4.9.0",
