@@ -17,6 +17,7 @@
  * server's memory, and anything that later prints it publishes what was in it.
  */
 
+import { withTitleMatchReport } from "./_resolve-window.js";
 import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
@@ -499,7 +500,10 @@ export function withPostState<T extends Record<string, unknown>>(
   return async (args: T) => {
     const startedAt = Date.now();
     const before = snapshotFocus();
-    const result = await handler(args);
+    // ADR-036: the scope in which the handler's first title resolution records how it matched.
+    // Opened HERE, around the handler, because the resolvers are called from inside it and the
+    // answer has to outlive them to reach the envelope this wrapper writes.
+    const { value: result, report: titleMatch } = await withTitleMatchReport(() => handler(args));
     try {
       const after = snapshotFocus();
       const verdict = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
@@ -678,6 +682,28 @@ export function withPostState<T extends Record<string, unknown>>(
             // SUCCESS ONLY. A failure publishes no focused element at all, so "why is the value
             // missing" is answered by `ok:false` and not by this rule; writing a reason there
             // would name a withholding that did not happen.
+            // ADR-036: HOW THE WINDOW WAS MATCHED, beside what it matched.
+            //
+            // The caller holds only the string they passed, so the only check available to them is
+            // "does what came back contain what I passed?" — and in the accident this ADR was
+            // started for, it does: the decoy's title contains the query. Measured on the accident
+            // itself, five of six answers name the resolved window and none of them lets a caller
+            // notice (win2, `95927b9`). What separates the accident from the ordinary case is
+            // whether the resolved title IS the query or merely contains it.
+            //
+            // PUBLISHED ON EVERY TITLE RESOLUTION, not only the suspicious ones. A field that
+            // appears only when something looks wrong is a verdict, and this layer has no grounds
+            // for one: a correct `windowTitle:"Notepad"` resolves a decorated 24-character title
+            // from a 14-character query, so "not exact" is the ordinary case for every application
+            // that renames itself (win2, `8ae3cbf`). Withholding it on the exact rows would also
+            // make its presence the signal, which is the same verdict wearing a different hat.
+            if (titleMatch) {
+              const existing = obj.hints;
+              obj.hints = {
+                ...(existing !== null && typeof existing === "object" ? existing as Record<string, unknown> : {}),
+                windowMatch: titleMatch,
+              };
+            }
             if (valueWithheld || elementIsUnconfirmed) {
               const existing = obj.hints;
               obj.hints = {

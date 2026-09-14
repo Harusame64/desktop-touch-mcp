@@ -311,6 +311,80 @@ const pinnedResolution = new AsyncLocalStorage<{
   emitLog?: () => void;
 }>();
 
+/**
+ * ADR-036 — HOW THE TITLE MATCHED, carried to the envelope instead of only to the log.
+ *
+ * The founding accident is two windows whose titles both match the caller's query. The guard fires
+ * when both are alive, and stands aside when only the WRONG one is — `ok:true`, keystrokes in the
+ * decoy. Measured on the accident itself (win2, `95927b9`): five of the six answers name the
+ * resolved window somewhere, and **not one of them lets the caller notice**, because the only
+ * check a caller can run is "does what came back contain what I passed?" and `AIM notes` contains
+ * `AIM`. The substring that caused the accident is the substring that passes the check.
+ *
+ * A MATCH COUNT DOES NOT SPLIT IT EITHER, which is the trap in the obvious fix. Measured across
+ * the whole desktop (win2, `8ae3cbf`): both alive → 2 windows; the accident → 1; the normal case
+ * → 1. The count is the GUARD's signal, and the accident is defined by the intended window being
+ * gone, which takes it back to one. What splits them is whether the resolved title IS the query
+ * or merely contains it: 0 exact in the accident, 1 exact when it went right.
+ *
+ * AND THIS IS A REPORT, NOT A VERDICT. A correct `windowTitle:"Notepad"` resolves a 24-character
+ * title from a 14-character query — every application that decorates its own title is a correct
+ * non-exact match, so a product-side "not exact → warn" would fire on the most ordinary right call
+ * there is (win2, same round). The four fields are handed over and the caller decides.
+ *
+ * The data was already here: Case 3 builds the match list, hands it to `logResolve`, and returns
+ * `null`. The count and the runners-up went to a diagnostic file; the caller got nothing.
+ */
+export interface TitleMatchReport {
+  /** What the caller passed, verbatim — the question, returned beside the answer. */
+  query: string;
+  /** The title of the window the query resolved to. */
+  resolvedTitle: string;
+  /** Was the resolved title the query itself, or does it merely contain it? */
+  exact: boolean;
+  /** How many windows the query matched. 1 in both halves of the accident — see above. */
+  matchCount: number;
+}
+
+const titleMatch = new AsyncLocalStorage<{ report: TitleMatchReport | null }>();
+
+/**
+ * Open a scope in which the first title resolution records how it matched. The envelope writer
+ * opens it around the handler; `takeTitleMatchReport` collects it afterwards.
+ *
+ * Scoped, not global, for the reason `withPinnedResolution` gives one line down: a concurrent call
+ * would otherwise read a neighbour's answer. FIRST resolution, not last: a handler that resolves
+ * twice (the narration probe, then the re-check) asks the same question twice, and the one that
+ * decided the target is the one that answered first.
+ */
+export async function withTitleMatchReport<T>(
+  fn: () => Promise<T>,
+): Promise<{ value: T; report: TitleMatchReport | null }> {
+  // The box is held HERE, not read back through `getStore()` afterwards: `run` scopes the store to
+  // the callback, so a read that happens after it returns sees no store at all and answers `null`
+  // for every call. The first version of this did exactly that, and the cells caught it — an
+  // always-absent field looks identical to "this road was not taken", which is the reading the
+  // absent field is supposed to carry.
+  const box: { report: TitleMatchReport | null } = { report: null };
+  const value = await titleMatch.run(box, fn);
+  return { value, report: box.report };
+}
+
+/** Record a title resolution, unless this scope already has one (see `withTitleMatchReport`). */
+function recordTitleMatch(query: string, resolvedTitle: string, matchCount: number): void {
+  const store = titleMatch.getStore();
+  if (!store || store.report !== null) return;
+  store.report = {
+    query,
+    resolvedTitle,
+    // The comparison the RESOLVER makes, so "exact" means exact to the rule that chose the window
+    // and not to some other notion of sameness: `matchPlainTopLevelWindowsByTitle` lowercases both
+    // sides and asks `includes`. Exact is that same comparison with `includes` replaced by `===`.
+    exact: resolvedTitle.toLowerCase() === query.toLowerCase(),
+    matchCount,
+  };
+}
+
 function resolutionKey(p: { hwnd?: string; windowTitle?: string }): string {
   return `${p.hwnd ?? ""}\u0000${p.windowTitle ?? ""}`;
 }
@@ -499,6 +573,10 @@ export async function resolveWindowTarget(params: {
           query: params.windowTitle,
           matches: plainMatches,
         });
+        // ADR-036: the same list the event gets, told to the caller too. `[0]` is the window this
+        // road resolves to — the seams downstream take the z-order-first match, which is what
+        // `matches` is ordered by and what the event records as chosen.
+        recordTitleMatch(params.windowTitle, plainMatches[0].title, plainMatches.length);
         return null;
       }
 
@@ -519,6 +597,10 @@ export async function resolveWindowTarget(params: {
           fallback: "owner-chain",
         });
         warnings.push("dialog_resolved_via_owner_chain");
+        // The dialog rescue matched by title too, so it reports the same four fields — with the
+        // DIALOG candidates as the count, which is what `matchCount` means on this road and what
+        // the event beside it records.
+        recordTitleMatch(params.windowTitle, dialog.title, candidates.length);
         return {
           title: dialog.title,
           hwnd: dialog.hwnd,
