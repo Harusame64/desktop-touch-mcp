@@ -226,9 +226,15 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * added, and there is no cheaper unit that can — every narrower one is a list of the insertions
    * somebody already thought of. Update the fixture in the same commit as the change.
    *
-   * WHAT IT STILL DOES NOT COVER: a fifth surface. `docs/anti-fukuwarai-3x-supplement.md` §5.2
-   * makes a claim about reading the field back and is annotated rather than pinned (gate 1 P3);
-   * it is a document for maintainers, not a string the server ships.
+   * WHAT IT COVERS, SAID EXACTLY, because the previous version of this docstring claimed more than
+   * it held and that is how the last hole survived: the two v2 tool descriptions as `tools/list`
+   * serves them, the whole `new McpServer(...)` call that carries the instructions, and the ONE
+   * section of each README that the paragraph is in. Outside that: another tool's description (the
+   * V1 tools are registered elsewhere and are not read here), another section of either README, and
+   * any prose that is not markdown. `docs/anti-fukuwarai-3x-supplement.md` §5.2 makes a read-back
+   * claim and is annotated rather than pinned — it is a maintainers' document, not a shipped string.
+   * The inventory assertion at the end is what notices a NEW document; nothing here notices a new
+   * paragraph in an old section that the paragraph does not live in.
    */
   it("keeps the whole shipped unit around the landing paragraph, not only the paragraph", async () => {
     const fixture = (name: string): string =>
@@ -260,14 +266,20 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     })._requestHandlers.get("tools/list");
     expect(listTools, "this SDK no longer answers tools/list through _requestHandlers").toBeTypeOf("function");
     const listed = await listTools!({ method: "tools/list", params: {} }, { signal: new AbortController().signal });
-    const served = listed.tools.find((t) => t.name === "desktop_act")?.description;
-    expect(served, "desktop_act is not in tools/list").toBeTypeOf("string");
-    expect(served, "the desktop_act description served by tools/list changed").toBe(
-      fixture("desktop_act.description.txt"),
-    );
-    expect(served, "tools/list serves something other than what registration was handed").toBe(
-      registered["desktop_act"],
-    );
+    // BOTH V2 TOOLS, not only the one the paragraph lives in. `registerDesktopTools` hands the same
+    // caller a `desktop_discover` description in the same session, and a sentence there contradicting
+    // the paragraph two tools over ships with every other assertion here green (gate 2, 2026-09-15,
+    // reproduced). The road this paragraph is about runs through both of them.
+    for (const tool of ["desktop_act", "desktop_discover"] as const) {
+      const served = listed.tools.find((t) => t.name === tool)?.description;
+      expect(served, `${tool} is not in tools/list`).toBeTypeOf("string");
+      expect(served, `the ${tool} description served by tools/list changed`).toBe(
+        fixture(`${tool}.description.txt`),
+      );
+      expect(served, `tools/list serves something other than what registration handed for ${tool}`).toBe(
+        registered[tool],
+      );
+    }
 
     // 2. The server instructions, from source — see the docstring for why this side is not runtime.
     //    THE UNIT IS THE WHOLE CONSTRUCTOR CALL, not the array inside it: a spread or a second key
