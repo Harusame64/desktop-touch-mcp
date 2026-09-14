@@ -11,6 +11,8 @@
  * assignments sit beside `hints.focusedElementSource`, and a pure-builder test cannot see them.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const { view, uiaFocus, cdpResult, fgTitle } = vi.hoisted(() => ({
   view: { value: null as unknown },
@@ -101,6 +103,36 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     expect(out.hints.focusedElementSource).toBe("cdp");
     expect(out.focusedElement.value).toBe("PROBE-CDP");
     expect(out.hints).not.toHaveProperty("focusedElementValueAbsent");
+  });
+
+  /**
+   * THE ADVICE THAT SENDS A CALLER HERE HAS TO SAY WHAT AN EMPTY ANSWER MEANS. Two shipped
+   * strings tell a caller whose background write was not confirmed to "read the field back before
+   * relying on it". Measured in both directions (win2, `a23bda2`): a window whose title does not
+   * change is answered from the perception view, which carries no value at all — so the read-back
+   * returns a field with no value even though the write landed, and a caller reads that as proof
+   * it did not. Renaming that same window from OUTSIDE, with no keystroke and no focus move, puts
+   * the value back; renaming it to its old title takes it away again.
+   *
+   * The condition is the application's, not the caller's, so the advice cannot be met by trying
+   * harder — it can only be read correctly. Both copies must name the hint that distinguishes
+   * "no value on this road" from "the field is empty".
+   */
+  it("sends no caller to a read-back without telling them how an empty answer can lie", () => {
+    const readBack = [
+      readFileSync(fileURLToPath(new URL("../../src/tools/desktop-register.ts", import.meta.url)), "utf8"),
+      readFileSync(fileURLToPath(new URL("../../src/server-windows.ts", import.meta.url)), "utf8"),
+    ];
+    for (const source of readBack) {
+      const sentences = source
+        .split("\n")
+        .filter((line) => line.includes("read the field back before relying on it"));
+      expect(sentences.length).toBeGreaterThan(0);
+      for (const sentence of sentences) {
+        expect(sentence).toContain("focusedElementValueAbsent");
+        expect(sentence).toContain("view_road_has_no_value");
+      }
+    }
   });
 
   it("says nothing when a CDP field is simply empty, because nothing was withheld there", async () => {

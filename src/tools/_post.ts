@@ -324,30 +324,43 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     WHICH ROAD ANSWERS IS A PREDICATE, NOT AN EVENT — `shouldAcceptViewFocus`
  *     (`desktop-state.ts:315`). The view answers when the perception pipeline holds a latest-focus
  *     row with a non-empty name, not a Chromium `Pane`, AND a recorded window title EXACTLY equal
- *     to the foreground title enumerated in the same call. That row is global and sticky: a focus
- *     event writes it and nothing clears it, so "which element has focus" and "which road answers"
- *     are two questions with two different answers.
+ *     to the foreground title enumerated in the same call. That row is global, and NO FOCUS EVENT
+ *     clears it — a dropped focus is skipped rather than written (`focus_pump`). Other things do:
+ *     the view is empty until the first event arrives, empty for good if handler registration
+ *     failed, and a poison-eviction respawns a fresh one. All of those fail toward the UIA road,
+ *     which is the direction that carries a value, so they cost a caller nothing and are not the
+ *     interesting half.
  *
- *     SO A CALLER CAN LEAVE THE VIEW ROAD WITH NO FOCUS CHANGE AT ALL — as soon as the foreground
- *     title stops matching the one recorded with the row. A window that renames itself while you
- *     work in it does exactly that, and Notepad's `*` for unsaved changes is the everyday case.
+ *     THE INTERESTING HALF IS THAT THE ROAD MOVES WITH NO FOCUS CHANGE AT ALL, in both directions.
+ *     A window that renames itself while you work in it leaves the view road — Notepad's `*` for
+ *     unsaved changes is the everyday case, and that direction GIVES a caller the value. Coming
+ *     back the other way is the one that costs: a foreground whose title matches its recorded row
+ *     again lands on the view road, and the value disappears with nothing in the call to say why.
  *
  *     THE MEASUREMENTS, AND THE ARM THEY DO NOT SETTLE. Inside one window with the click point as
  *     the only variable: blank space in the form keeps the UIA road, a different text field moves
  *     to the view road from then on (win2, 2026-09-14, `e1daeb4`). Acting on another window moves
  *     it too, and so does invoking a button on one, which writes nothing (`3859672`). Typing into
- *     the field you then read KEEPS the value — and that arm has two explanations this layer
- *     cannot choose between: typing moved no focus, so the sticky row still wins; or typing
- *     changed the title, so the equality broke and UIA answered. They predict opposite things for
- *     a window that does NOT rename itself on typing, and that round has not been run.
+ *     the field you then read KEEPS the value — and the round that says WHY has now been run, in
+ *     both directions (win2, `a23bda2`). Notepad, whose title gains a `*`: UIA road, value
+ *     present. A form whose title never moves, verified unchanged from outside with
+ *     `GetWindowTextW` before and after the write: VIEW road, no value. Then the intervention —
+ *     rename that same window from outside, no keystroke and no focus move: UIA road, value back.
+ *     Rename it to its old title: view road, value gone again. **The title equality is what
+ *     decides, and typing was never the cause.**
  *
- *     The read-back recommendation above rests on the OBSERVATION, which holds however it is
- *     explained: in every arm measured, the value came back after typing into the field.
+ *     SO THE READ-BACK PROMISE HAS A CONDITION, and it is not the caller's to meet: the value
+ *     comes back in a window whose title MOVES when you edit it — the unsaved-changes `*`, a
+ *     document name, a tab title — and does not in a window whose title is fixed, which most
+ *     native dialogs and forms are. Same call, same instant, one application answers and the other
+ *     returns a field with no value. `desktop_act`'s own advice said "read the field back before
+ *     relying on it" and stopped there; it now says what an empty answer can mean, because a
+ *     caller who reads one silently concludes the write never landed.
  *
  *     THREE FORMS OF THIS SENTENCE HAVE BEEN WRONG, all in the same direction — "after this
  *     server writes", "after acting on another window", "when the focused element changes". Each
- *     named the most visible change in a round that moved more than one thing. This form is read
- *     off the predicate instead, which is why it does not depend on the next measurement.
+ *     named the most visible change in a round that moved more than one thing, and each named an
+ *     action of the CALLER'S. The answer was a property of the application all along.
  *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
  *     `hasValuePattern` still come back for a window this call never named. Three of those four
  *     are what the success-path advisory (ADR-022) decides from — `buildHint` reads `type`,

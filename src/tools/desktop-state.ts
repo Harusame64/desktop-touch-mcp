@@ -280,10 +280,12 @@ function tryViewFocus(): NativeFocusedElement | null {
  *    falls through to CDP / `null` rather than publishing. Without
  *    this check, the view-first path would surface `name: ""`
  *    rows that the old path would have skipped — bit-equal
- *    violation. (Note: empty-name rows are not common in practice
- *    — the focus_pump's `payload.after?.name?` filter already
- *    drops most of them — but they're still possible for some
- *    UIA providers, so the parity guard is required.)
+ *    violation. (An earlier note here credited a `payload.after?.name?`
+ *    filter in the focus_pump with dropping most empty-name rows.
+ *    There is no such filter: the pump skips only `after: None`,
+ *    the UIA handler always writes `after: Some(...)`, and nothing
+ *    between them looks at `name`. This check is the ONLY guard,
+ *    not a parity backstop behind one — gate 2, 2026-09-14.)
  *
  * 2. **Chromium foreground + `controlType === "Pane"`** → reject
  *    (Codex review v3 P1-3 / Opus phase-boundary review 2026-04-30
@@ -769,9 +771,10 @@ export const desktopStateHandler = async (args: {
       // latest-focus row whose recorded window title still equals the foreground title read in
       // this call. Measured inside one window with the click point as the only variable: blank
       // space in the same form keeps the UIA road, a different text field moves to this one from
-      // then on (win2, `e1daeb4`). Typing into the field you then read keeps the value, and this
-      // layer cannot say whether that is because no focus moved or because the title changed and
-      // the equality broke — see `_post.ts`, where the arm that separates them is named.
+      // then on (win2, `e1daeb4`). Typing into the field you then read keeps the value because
+      // editing moves that window's TITLE, not because it moved focus — measured by renaming a
+      // window from outside and back, with no input at all (`a23bda2`). A window whose title is
+      // fixed stays on this road and its value never comes back.
       hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
@@ -1288,18 +1291,21 @@ export function registerDesktopStateTools(server: McpServer): void {
       //
       // WHEN THE VIEW WINS is a predicate, not an event — `shouldAcceptViewFocus` (:315): a
       // latest-focus row with a name, not a Chromium `Pane`, and a recorded window title EXACTLY
-      // equal to the foreground title enumerated in the same call. The row is global and sticky, a
-      // focus event writes it and nothing clears it, so a caller can leave this road with no focus
-      // change at all — as soon as the window renames itself out of the equality (Notepad's `*`
-      // for unsaved changes is the everyday case).
+      // equal to the foreground title enumerated in the same call. The row is global and NO FOCUS
+      // EVENT clears it (a dropped focus is skipped, not written); what does clear it — a view
+      // that no event has reached yet, a failed handler registration, a poison-eviction respawn —
+      // all fails toward the UIA road, which is the one that carries a value. So the road moves
+      // with no focus change at all, in BOTH directions: a window that renames itself out of the
+      // equality leaves this road and the value appears (Notepad's `*`), and a foreground whose
+      // title matches its recorded row again arrives here and the value disappears.
       //
       // Measured inside one window with the click point as the only variable: blank space in the
       // form keeps the UIA road, a different text field moves to the view road from then on (win2,
       // `e1daeb4`); acting on another window moves it too, and so does invoking a button on one,
-      // which writes nothing (`3859672`). The arm that is NOT settled is typing into the field you
-      // then read, which keeps the value: no focus moved, and the title may have changed. Both
-      // explain it, they disagree about a window that does not rename itself, and that round has
-      // not been run.
+      // which writes nothing (`3859672`). And the arm that looked like typing was measured in both
+      // directions (win2, `a23bda2`): renaming a window from OUTSIDE, with no keystroke and no
+      // focus move, takes it off this road and puts the value back; renaming it to its old title
+      // puts it back on. Typing was never the cause — a title that MOVES when you edit is.
       //
       // THREE EARLIER FORMS OF THIS SENTENCE WERE WRONG, all wider than the evidence and all in
       // the same direction — "after this server writes", "after acting on another window", "when
