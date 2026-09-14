@@ -280,10 +280,12 @@ function tryViewFocus(): NativeFocusedElement | null {
  *    falls through to CDP / `null` rather than publishing. Without
  *    this check, the view-first path would surface `name: ""`
  *    rows that the old path would have skipped — bit-equal
- *    violation. (Note: empty-name rows are not common in practice
- *    — the focus_pump's `payload.after?.name?` filter already
- *    drops most of them — but they're still possible for some
- *    UIA providers, so the parity guard is required.)
+ *    violation. (An earlier note here credited a `payload.after?.name?`
+ *    filter in the focus_pump with dropping most empty-name rows.
+ *    There is no such filter: the pump skips only `after: None`,
+ *    the UIA handler always writes `after: Some(...)`, and nothing
+ *    between them looks at `name`. This check is the ONLY guard,
+ *    not a parity backstop behind one — gate 2, 2026-09-14.)
  *
  * 2. **Chromium foreground + `controlType === "Pane"`** → reject
  *    (Codex review v3 P1-3 / Opus phase-boundary review 2026-04-30
@@ -765,10 +767,19 @@ export const desktopStateHandler = async (args: {
       // `view`, the element's NAME identical in all thirty-two (win2, 2026-09-14, `a4802dd`).
       //
       // Unconditional: the absence is a property of the road, not of this element. WHAT PUTS A
-      // CALLER ON THIS ROAD is acting on a window other than the one focus ends in — writing to
-      // another window, or invoking a button on one, which writes nothing. Typing into the window
-      // you then read does NOT, which is the opposite of what the first measurement seemed to say
-      // (win2, `3859672` correcting `a4802dd`).
+      // CALLER ON THIS ROAD is the predicate three lines up, `shouldAcceptViewFocus` — a sticky
+      // latest-focus row whose recorded window title still equals the foreground title read in
+      // this call. Measured inside one window with the click point as the only variable: blank
+      // space in the same form keeps the UIA road, a different text field moves to this one from
+      // then on (win2, `e1daeb4`). Typing into the field you then read keeps the value because
+      // editing moves that window's TITLE, not because it moved focus — measured by renaming a
+      // window from outside and back, with no input at all (`a23bda2`). A window whose title is
+      // fixed KEEPS matching its row, so it tends to stay on this road — but the title is only the
+      // third filter: an unnamed control, a Chromium `Pane`, or a view no event has reached leaves
+      // this road with the title unchanged, and the value MAY come back. Not will: the UIA branch
+      // gates on a name too, so an unnamed control leaves this road and publishes nothing at all;
+      // a provider may serve no value; CDP omits an empty or masked one (gate 1). See `_post.ts`, which states
+      // the same fact with that hedge; this line used to state it flat (gate 2).
       hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
@@ -1283,13 +1294,33 @@ export function registerDesktopStateTools(server: McpServer): void {
       // from "the field is empty". `hints.focusedElementSource` is the only thing that separates
       // the two, so the caveat says to read it.
       //
-      // WHEN THE VIEW WINS was measured separately and corrects the first reading (`3859672`): the
-      // trigger is ACTING ON A WINDOW OTHER THAN THE ONE FOCUS ENDS IN, not writing. Typing into
-      // the window you then read leaves the value; bouncing focus away and back without acting
-      // leaves it; screenshotting another window leaves it. Writing to another window loses it,
-      // and so does invoking a button on another window — an action that writes nothing. The first
-      // round changed three things at once (a write happened, another window was acted on, focus
-      // bounced) and reported the one that was easiest to name.
+      // WHEN THE VIEW WINS is a predicate, not an event — `shouldAcceptViewFocus` (:317): a
+      // latest-focus row with a name, not a Chromium `Pane`, and a recorded window title EXACTLY
+      // equal to the foreground title enumerated in the same call — with one equal case refused,
+      // because an empty `fgTitle` is rejected before the comparison and the UIA handler writes an
+      // empty `window_title` for `hwnd == 0`. The row is global and NO FOCUS
+      // EVENT clears it (a dropped focus is skipped, not written); what does clear it — a view
+      // that no event has reached yet, a failed handler registration, a poison-eviction respawn —
+      // all falls through to the UIA road, and on a Chromium foreground onward to CDP. Either CAN
+      // carry a value; only THIS road never does, which is the distinction `05f31f6` drew 30 lines
+      // up and this sentence had quietly undone (gate 2). "Can", because both of those roads have
+      // their own ways of answering without one. So the road moves
+      // with no focus change at all, in BOTH directions: a window that renames itself out of the
+      // equality leaves this road and the value appears (Notepad's `*`), and a foreground whose
+      // title matches its recorded row again arrives here and the value disappears.
+      //
+      // Measured inside one window with the click point as the only variable: blank space in the
+      // form keeps the UIA road, a different text field moves to the view road from then on (win2,
+      // `e1daeb4`); acting on another window moves it too, and so does invoking a button on one,
+      // which writes nothing (`3859672`). And the arm that looked like typing was measured in both
+      // directions (win2, `a23bda2`): renaming a window from OUTSIDE, with no keystroke and no
+      // focus move, takes it off this road and puts the value back; renaming it to its old title
+      // puts it back on. Typing was never the cause — a title that MOVES when you edit is.
+      //
+      // THREE EARLIER FORMS OF THIS SENTENCE WERE WRONG, all wider than the evidence and all in
+      // the same direction — "after this server writes", "after acting on another window", "when
+      // the focused element changes". The habit they share is naming the most visible change in a
+      // round that moved more than one thing; this form is read off the predicate instead.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +

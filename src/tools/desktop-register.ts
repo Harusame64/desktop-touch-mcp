@@ -1598,7 +1598,30 @@ export function registerDesktopTools(server: McpServer): void {
       "[EXPERIMENTAL] Act on a discovered entity (click/type/setValue/scroll). Use desktop_act.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
-      "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} was sent by the background keyboard write but not confirmed to have reached the field named: read the field back before relying on it.",
+      // ADR-036 — THE SHIPPED SENTENCE IS THE RULE; THE REASONS ARE HERE.
+      //
+      // Fourteen review rounds went into this paragraph, and every one removed a claim the code
+      // cannot support: that reading the field back tells you; that the hint's silence means
+      // something; that a matching value settles it; that foregrounding and focusing first is
+      // enough; that the element can be compared to the one written (`desktop_state.focusedElement`
+      // carries no entity id, and a duplicate name with no `automationId` cannot be told apart);
+      // that the value is predictable (a background type inserts at the CARET and replaces the
+      // SELECTION, exactly as typing does — 6 arms measured, background and foreground identical,
+      // win2 `c76b78d`, so "prior text plus typed text" held in 2 of 6); that a field known empty
+      // settles it (`text: \"\"` is accepted and sends zero messages, so an already-empty field
+      // matches with no write, and autofill can fill between observations); that `diff` has a
+      // baseline at the write (its PRE side is the stored discover snapshot); that a retry is free;
+      // that taking focus makes the next write confirmable (only a field with a window of its own,
+      // and `landing.why` does not separate that from a window that merely had no focused child);
+      // that a clear resets (a clear is itself an empty write); and finally the two instructions
+      // that had framed it since before the first round.
+      //
+      // WHAT SHIPS IS THE RULE, because the reasons are what a maintainer needs and the rule is
+      // what a caller acts on — and the shipped copy is not free: measured at the four corners on
+      // a running server, the long form cost ~667 tokens per session with v2 on and ~336 under the
+      // kill switch (win2, `2406b98`). The reasons stay here, where they cost nothing and stop the
+      // next round from re-adding a claim.
+      "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",

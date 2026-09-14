@@ -258,7 +258,13 @@ export type TouchResult =
  * between click and observation (Win32 SendInput returns before WM_PAINT).
  */
 export interface TouchEnvironment {
-  /** Return freshly resolved live entities (pre-touch snapshot). */
+  /**
+   * Return the entities a diff's PRE side is taken from. NOT a fresh resolve: the only
+   * implementation hands back the session's stored `desktop_discover` snapshot
+   * (`session-registry.ts:362`). The shipped `landing` sentence says exactly that about
+   * `diff.value_changed`, and this line used to say the opposite — an auditor starting here
+   * would have "fixed" the shipped string back (gate 2, 2026-09-14).
+   */
   resolveLiveEntities(): UiEntity[];
   /** Return the current world-state generation string. */
   currentGeneration(): string;
@@ -507,7 +513,11 @@ export class GuardedTouchLoop {
   async touch(input: TouchInput): Promise<TouchResult> {
     const { lease, action = "auto", text } = input;
 
-    // 1. Re-resolve current state and validate lease atomically.
+    // 1. Read the current generation and the session's stored entities, and validate the lease
+    //    against them atomically. `resolveLiveEntities` is NOT a fresh resolve — see its
+    //    declaration: the only implementation hands back the `desktop_discover` snapshot, which
+    //    is why the shipped `landing` sentence says `diff.value_changed` has its baseline there
+    //    and not at the write. This comment said "re-resolve" for as long as the interface did.
     const gen  = this.env.currentGeneration();
     const live = this.env.resolveLiveEntities();
     const validation = this.leaseStore.validate(lease, gen, live);

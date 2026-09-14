@@ -341,14 +341,64 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     element's name identical in all of them and `hints.focusedElementSource` the only column
  *     that moved (win2, 2026-09-14, `a4802dd`).
  *
- *     WHEN THAT HAPPENS was measured separately and corrects an earlier reading of mine
- *     (`3859672`): the trigger is ACTING ON A WINDOW OTHER THAN THE ONE FOCUS ENDS IN, not
- *     writing. Typing into the window you then read leaves the value in place; so does bouncing
- *     focus away and back without acting; so does screenshotting another window. Writing to
- *     another window loses it — and so does invoking a button on another window, which writes
- *     nothing. So the recommendation above is not at its weakest where it first appeared to be:
- *     reading a field back straight after typing into it works. It is weakest for a caller who
- *     touched something else and came back.
+ *     WHICH ROAD ANSWERS IS A PREDICATE, NOT AN EVENT — `shouldAcceptViewFocus`
+ *     (`desktop-state.ts:317`). The view answers when the perception pipeline holds a latest-focus
+ *     row with a non-empty name, not a Chromium `Pane`, AND a recorded window title EXACTLY equal
+ *     to the foreground title enumerated in the same call — one equal case excepted, since an
+ *     empty foreground title is refused before the comparison and the UIA handler records an empty
+ *     title for `hwnd == 0`. That row is global, and NO FOCUS EVENT
+ *     clears it — a dropped focus is skipped rather than written (`focus_pump`). Other things do:
+ *     the view is empty until the first event arrives, empty for good if handler registration
+ *     failed, and a poison-eviction respawns a fresh one. All of those fall through to UIA — and
+ *     onward to CDP on a Chromium foreground — either of which CAN carry a value, so they cost a
+ *     caller nothing and are not the interesting half. Can, not will: the UIA branch gates on a
+ *     name as well, a provider may serve none, and CDP omits an empty or masked one. (Only THIS road never carries one; "only UIA does"
+ *     is the wider claim `desktop-state.ts` corrected at `05f31f6`.)
+ *
+ *     THE INTERESTING HALF IS THAT THE ROAD MOVES WITH NO FOCUS CHANGE AT ALL, in both directions.
+ *     A window that renames itself while you work in it leaves the view road — Notepad's `*` for
+ *     unsaved changes is the everyday case, and that direction GIVES a caller the value. Coming
+ *     back the other way is the one that costs: a foreground whose title matches its recorded row
+ *     again lands on the view road, and the value disappears with nothing in the call to say why.
+ *
+ *     THE MEASUREMENTS, AND THE ARM THEY DO NOT SETTLE. Inside one window with the click point as
+ *     the only variable: blank space in the form keeps the UIA road, a different text field moves
+ *     to the view road from then on (win2, 2026-09-14, `e1daeb4`). Acting on another window moves
+ *     it too, and so does invoking a button on one, which writes nothing (`3859672`). Typing into
+ *     the field you then read KEEPS the value — and the round that says WHY has now been run, in
+ *     both directions (win2, `a23bda2`). Notepad, whose title gains a `*`: UIA road, value
+ *     present. A form whose title never moves, verified unchanged from outside with
+ *     `GetWindowTextW` before and after the write: VIEW road, no value. Then the intervention —
+ *     rename that same window from outside, no keystroke and no focus move: UIA road, value back.
+ *     Rename it to its old title: view road, value gone again. **The title equality is what
+ *     decides, and typing was never the cause.**
+ *
+ *     SO THE READ-BACK PROMISE HAS A CONDITION, and it is not the caller's to meet: a window whose
+ *     title MOVES when you edit it — the unsaved-changes `*`, a document name, a tab title —
+ *     breaks the equality and gets the value; a window whose title is fixed, which most native
+ *     dialogs and forms are, keeps it and does not. Same call, same instant, one application
+ *     answers and the other returns a field with no value.
+ *
+ *     A FIXED TITLE IS NOT A GUARANTEE OF THE VIEW ROAD, THOUGH, which is why the shipped advice
+ *     keys on the HINT and not on the title (gate 1 on `2ac5663`). The other two filters can
+ *     reject a matching row — a Chromium foreground answering with a `Pane`, an empty name — and
+ *     a view that no event has reached yet has no row to offer, and each of those falls through to
+ *     UIA or CDP, where a value may well be there. Telling a caller "your title is fixed, so there
+ *     is no value" would be wrong in exactly those cases, in both directions.
+ *     `desktop_act`'s own advice said "read the field back before relying on it" and stopped
+ *     there; it now names `hints.focusedElementValueAbsent`, which the caller can actually check,
+ *     because a caller who reads an empty field silently concludes the write never landed. THAT
+ *     HINT IS NOT A COMPLETE DETECTOR, and this block came close to selling it as one: it is
+ *     written on the view road and on a masked CDP value only (`desktop-state.ts:783`, `:819`).
+ *     On the UIA road a provider that serves no value leaves an absent value with NO hint — which
+ *     `desktop-state.ts`'s own shipped caveat says outright, so the two would have disagreed in
+ *     the same repository (gate 2, 2026-09-14).
+ *
+ *     THREE FORMS OF THIS SENTENCE HAVE BEEN WRONG, all in the same direction — "after this
+ *     server writes", "after acting on another window", "when the focused element changes". Each
+ *     named the most visible change in a round that moved more than one thing, and each named an
+ *     action of the CALLER'S. The answer was a property of the application all along.
+ *
  *     THE IDENTITY IS PARTLY NARROWED NOW, and this sentence has been rewritten twice for it.
  *     `name` follows the value and is withheld with it; `automationId`, `type` and
  *     `hasValuePattern` still come back for a window this call never named. The split is not
