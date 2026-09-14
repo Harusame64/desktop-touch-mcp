@@ -240,8 +240,10 @@ export const CDP_FOCUSED_ELEMENT_SCRIPT = `(function(){
 ${ELEMENT_NAME_JS}
   var el=document.activeElement;
   if(!el||el===document.body)return null;
+  var masked=__isMasked(el);
   return {tag:el.tagName,id:el.id,name:el.name||el.getAttribute('name')||'',
-          value:(el.value===undefined||__isMasked(el))?'':String(el.value).slice(0,60),
+          value:(el.value===undefined||masked)?'':String(el.value).slice(0,60),
+          masked:masked,
           text:__elText(el).slice(0,60)};
 })()`;
 
@@ -756,6 +758,16 @@ export const desktopStateHandler = async (args: {
     if (viewFocused && shouldAcceptViewFocus(viewFocused, isChromium, fgTitle)) {
       focusedElement = buildElementInfoFromView(viewFocused);
       hints.focusedElementSource = "view";
+      // THIS ROAD NEVER CARRIES A VALUE — `buildElementInfoFromView` has no `value` field, because
+      // the engine-perception `UiElementRef` does not carry one. So the row names an element and
+      // says nothing about its contents, and a caller cannot tell that from an empty field.
+      // Measured: 24 of 24 reads carried a value while this hint said `uia`, 0 of 8 while it said
+      // `view`, the element's NAME identical in all thirty-two (win2, 2026-09-14, `a4802dd`).
+      //
+      // And the view is filled by THIS SERVER'S OWN WRITING, so the gap is widest immediately
+      // after a write — which is when a caller reads a field back. Unconditional: the absence is
+      // a property of the road, not of this element.
+      hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
     if (isChromium) {
@@ -782,10 +794,16 @@ export const desktopStateHandler = async (args: {
             CDP_FOCUSED_ELEMENT_SCRIPT,
             null,
             _defaultPort
-          ) as { tag?: string; id?: string; name?: string; value?: string; text?: string } | null;
+          ) as { tag?: string; id?: string; name?: string; value?: string; masked?: boolean; text?: string } | null;
           if (cdpInfo) {
             focusedElement = buildElementInfoFromCdp(cdpInfo);
             hints.focusedElementSource = "cdp";
+            // A MASKED FIELD AND A FIELD WITH NOTHING IN IT LEAVE THE SAME HOLE HERE. Measured on
+            // Windows: on this road a `type=password` box and a paragraph carrying only a
+            // `tabindex` produce identical output, because the script substitutes an empty value
+            // for the first and the projection drops an empty one either way (win2, 2026-09-14).
+            // The script now says which it did, so the hole has a name.
+            if (cdpInfo.masked) hints.focusedElementValueAbsent = "masked_on_this_road";
           }
         } catch {
           hints.cdpUnavailable = true;
@@ -1249,7 +1267,7 @@ export function registerDesktopStateTools(server: McpServer): void {
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
-        "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control, so do not rely on it being absent. It is also not always present: focusedElement is preferred from the perception view, which carries no value at all — check hints.focusedElementSource, where 'view' means no value was available rather than an empty field.",
+        "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control, so do not rely on it being absent. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means the field itself had nothing.",
     }),
     desktopStateRegistrationSchema,
     desktopStateRegistrationHandlerWithIncludeRoute as typeof desktopStateHandler

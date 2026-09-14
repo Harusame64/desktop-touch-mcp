@@ -33,6 +33,15 @@ import {
 
 import type { NativeFocusedElement } from "../../src/engine/native-types.js";
 
+describe("buildElementInfoFromCdp ignores the masking flag", () => {
+  it("does not let `masked` become a key of the element", () => {
+    // The flag exists for the hint beside the element, not for the element: `ElementInfo` is the
+    // shape three roads must agree on, and a key only one of them can produce would break that.
+    expect(buildElementInfoFromCdp({ tag: "INPUT", id: "pw", value: "", masked: true } as never))
+      .toEqual({ name: "pw", type: "INPUT" });
+  });
+});
+
 describe("buildElementInfoFromView", () => {
   it("projects a view row with all fields populated", () => {
     const out = buildElementInfoFromView({
