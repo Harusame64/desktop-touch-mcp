@@ -349,11 +349,13 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     nothing. So the recommendation above is not at its weakest where it first appeared to be:
  *     reading a field back straight after typing into it works. It is weakest for a caller who
  *     touched something else and came back.
- *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
- *     `hasValuePattern` still come back for a window this call never named. Three of those four
- *     are what the success-path advisory (ADR-022) decides from — `buildHint` reads `type`,
- *     `hasValuePattern` and `automationId`, and never `name`, so `name` travels for the caller's
- *     benefit alone (gate 2 on `447698f`, correcting this sentence's first form).
+ *     THE IDENTITY IS PARTLY NARROWED NOW, and this sentence has been rewritten twice for it.
+ *     `name` follows the value and is withheld with it; `automationId`, `type` and
+ *     `hasValuePattern` still come back for a window this call never named. The split is not
+ *     aesthetic: the last three are what the success-path advisory (ADR-022) decides from —
+ *     `buildHint` reads `type`, `hasValuePattern` and `automationId`, and never `name` — so
+ *     withholding `name` costs the advisory nothing, and withholding any of the other three would
+ *     kill it (gate 2 on `447698f` for the reading, gate 2 on `b40bce8` for the sentence).
  */
 function valueBelongsToTheWindowActedOn(
   args: Record<string, unknown>,
@@ -509,8 +511,9 @@ export function withPostState<T extends Record<string, unknown>>(
        * element is not confirmed to be the caller's) reads THIS. An earlier form kept a second
        * boolean beside it and the two had to be updated in step; a fact stored twice is a fact
        * that can disagree with itself, which is how four consecutive rounds of this file went
-       * wrong. Published in `hints` — as `postValueWithheld` when there was a value to withhold,
-       * and as `focusedElementWindowUnconfirmed` whenever an element is published at all.
+       * wrong. The rule for publishing it lives at the publication and nowhere else (search
+       * `elementIsUnconfirmed`) — writing a second copy here is how a later round codes to the
+       * copy instead of the code.
        */
       let valueWithheld: PostValueWithheldReason | undefined =
         verdict.carry ? undefined : verdict.why;
@@ -532,8 +535,12 @@ export function withPostState<T extends Record<string, unknown>>(
       // when a value existed and dropped only the value, so an element with no value pattern
       // skipped it entirely and an element with one kept the WRONG NAME while losing the right
       // value (gate on `f220577`). The name is permissioned now, so it is guarded now.
-      if (verdict.carry && focusedElement &&
-          (focusedElement.value !== undefined || focusedElement.name !== undefined)) {
+      // THE GUARD IS THE PERMISSION, NOT THE FIELDS. An earlier form asked whether a permissioned
+      // field was present, which reads right and is dead weight: under `carry` the name is
+      // assigned unconditionally (`snapshotFocusedElement`) and `UiaFocusInfo.name` is a required
+      // string on both bridge roads, so the field test was a tautology — and the day anyone makes
+      // the name conditional it would silently stop guarding the rows with no value.
+      if (verdict.carry && focusedElement) {
         const settled = snapshotFocus();
         // IDENTITY, NOT THE NUMBER — and identity is the PAIR, not the name. A handle is
         // recyclable: the named window can exit during the lookup and Windows can hand its number

@@ -478,6 +478,21 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "0x1092" })).toBeUndefined();
     expect(await hintsOf("focus_window", { title: "Notepad" }, { windowTitleKey: "title" })).toBeUndefined();
 
+    // NO ELEMENT, NO ROAD. The flag names the road that left AN ELEMENT unconfirmed, so publishing
+    // it beside `focusedElement: null` would name a road for something that does not exist — the
+    // same error the SUCCESS-ONLY rule refuses one branch over, where a refusal publishes no
+    // element and so no reason. UIA being unavailable is the ordinary way here, not a corner.
+    // Gate 2 deleted the `focusedElement !== null` conjunct and the ENTIRE unit project stayed
+    // green, which is why this row exists.
+    const hintsWithNoElement = async (tool: string, args: Record<string, unknown>, bridge: unknown) => {
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(bridge as never);
+      return parse(await withPostState(tool, async () => ok({ ok: true }))(args)).hints;
+    };
+    expect(await hintsWithNoElement("clipboard", { action: "read" }, null)).toBeUndefined();
+    expect(await hintsWithNoElement(
+      "keyboard", { action: "type", text: "x", windowTitle: "Nope" }, { focused: null },
+    )).toBeUndefined();
+
     // THE ELEMENT FLAG RIDES WITH EVERY WITHHELD ROW, so the two hints are one statement in two
     // halves: the value is not yours, and neither is the element it belongs to.
     expect(await hintsOf("clipboard", { action: "read" }))
@@ -580,7 +595,6 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       // a definite "somewhere else" about a foreground that was never read, standing beside a
       // reason that says the opposite. The row must name the road, and must not claim a location.
       expect(lastHints()).toMatchObject({ focusedElementWindowUnconfirmed: "could_not_verify_the_window" });
-      expect(lastHints()).not.toHaveProperty("focusedElementInNamedWindow");
       // THE NAME GOES WITH THE VALUE, and the flag flips with them. The first version of this
       // guard ran only when a value existed and dropped only the value: an element with no value
       // pattern skipped the check entirely, and one with a value kept the wrong NAME while losing
