@@ -205,6 +205,14 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // a name-empty editable element (name:"") must survive snapshotFocusedElement
     // (was dropped by `if (!focused?.name) return null`) into post.focusedElement
     // with name:"", AND the name-agnostic advisory gate then fires.
+    // The call has to NAME the window it ends in, or the name is withheld for a different reason
+    // and this cell would stop testing the G4 relax at all — an empty name and a withheld one are
+    // both "no name" to a careless assertion.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "App", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(
       { focused: { name: "", controlType: "Edit", value: "" } } as never,
     );
@@ -217,10 +225,14 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     const fe = post.focusedElement as Record<string, unknown> | null;
     expect(fe).not.toBeNull();
     expect(fe!.name).toBe(""); // survived G4 relax with empty name (was → null before)
+    expect(Object.keys(fe!)).toContain("name"); // …carried as an empty string, not omitted
     expect(fe!.type).toBe("Edit");
-    // An empty value still says a value is there; the value itself never leaves (ADR-036, option c).
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+    // An empty value still says a value is there. It also comes back here, because option (b)
+    // gives a named window its own field — including an empty one, which is the case that proves
+    // `hasValuePattern` and the value are answering different questions.
     expect(fe!.hasValuePattern).toBe(true);
-    expect(fe).not.toHaveProperty("value");
+    expect(fe!.value).toBe("");
     const advisory = parsed.advisory as Record<string, unknown> | undefined;
     expect(advisory).toBeDefined();
     expect(advisory!.preferredPath).toBe("desktop_act");
@@ -234,12 +246,14 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     );
     const result = await withPostState("clipboard", async () => ok({ ok: true }))({ action: "read" });
     expect(JSON.stringify(result)).not.toContain("PROBE-SECRET-POST-1");
-    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true });
+    // `clipboard(read)` names no window, so neither the value nor the NAME travels: measured, the
+    // name is the focused element's rather than the acted-on one's, and this call acted on nothing.
+    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ type: "Edit", hasValuePattern: true });
     expect(JSON.stringify(getHistorySnapshot(20))).not.toContain("PROBE-SECRET-POST-1");
     // …and an element with no value says so.
     vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Canvas", controlType: "Pane" } } as never);
     const none = await withPostState("mouse_click", async () => ok({ ok: true }))({});
-    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ name: "Canvas", type: "Pane", hasValuePattern: false });
+    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ type: "Pane", hasValuePattern: false });
   });
 
   it("gives the value back only for the window THIS call named — the arms, as they were measured", async () => {
@@ -269,8 +283,11 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // CONTROL: the foreground really is what the rows below assume, or every WITHOUT is vacuous.
     expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" }))
       .toHaveProperty("value");
+    // The NAME follows the value, on the same predicate: measured, it is the focused element's and
+    // not the acted-on one's, so on a call that named no window it is right only when the caller
+    // could have guessed it (win2, `12f1ff7`).
     const WITH = { name: "Notes", type: "Edit", hasValuePattern: true, value: "PROBE-TYPED-POST-2" };
-    const WITHOUT = { name: "Notes", type: "Edit", hasValuePattern: true };
+    const WITHOUT = { type: "Edit", hasValuePattern: true };
 
     // Arm A — the reason the value exists. `snapshotFocus` is mocked to this title below.
     expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toEqual(WITH);
@@ -319,6 +336,15 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // one line from `notification_show({title})`, where `title` is a message heading. It stays
     // WITHOUT because that tool declares no window key — the same `title`, read as nothing.
     expect(await elementOf("notification_show", { title: "Notepad", message: "m" })).toEqual(WITHOUT);
+
+    // THE NAME IS WITHHELD FOR THE SAME REASON AND NOT A WEAKER ONE: it is not blanked, it is
+    // absent, so a caller cannot read it as "this field has no name". The pairing is the arm that
+    // carries — same element, same mocks, only the naming differs.
+    const named = await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" });
+    const unnamed = await elementOf("clipboard", { action: "read" });
+    expect(Object.keys(named as object)).toContain("name");
+    expect(Object.keys(unnamed as object)).not.toContain("name");
+    expect(unnamed).toMatchObject({ type: "Edit", hasValuePattern: true });
 
     // A SELECTOR THE HANDLER PREFERS MEANS THE TITLE NAMED NOTHING. `terminal(action:'send')`
     // branches on `paneId !== undefined` before it reads `windowTitle`, and a background send does
@@ -421,8 +447,12 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       .toMatchObject({ postValueWithheld: "call_named_no_window" });
 
     // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE: no value pattern, no reason. Otherwise a
-    // paragraph that never had a value reads as a field something was kept from.
-    expect(await hintsOf("clipboard", { action: "read" }, undefined, null)).toBeUndefined();
+    // paragraph that never had a value reads as a field something was kept from. The ELEMENT flag
+    // is still there, and this is exactly the row that shows why it is a separate field: no value
+    // means no `postValueWithheld`, while `type` goes on saying "Edit" about an element the call
+    // never touched.
+    expect(await hintsOf("clipboard", { action: "read" }, undefined, null))
+      .toEqual({ focusedElementWindowUnconfirmed: "call_named_no_window" });
 
     // COULD NOT LOOK IS NOT DID NOT MATCH. With the enumeration answering nothing, the comparison
     // has nothing to compare — while UIA can still produce an element through its own road. Saying
@@ -441,11 +471,35 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
     );
 
-    // …and none of the carrying calls says anything: the 8 arms that DO get their value.
+    // …and none of the carrying calls says anything — neither hint, because the element IS in the
+    // window they named: the 8 arms that get their value.
     expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toBeUndefined();
     expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "4242" })).toBeUndefined();
     expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "0x1092" })).toBeUndefined();
     expect(await hintsOf("focus_window", { title: "Notepad" }, { windowTitleKey: "title" })).toBeUndefined();
+
+    // NO ELEMENT, NO ROAD. The flag names the road that left AN ELEMENT unconfirmed, so publishing
+    // it beside `focusedElement: null` would name a road for something that does not exist — the
+    // same error the SUCCESS-ONLY rule refuses one branch over, where a refusal publishes no
+    // element and so no reason. UIA being unavailable is the ordinary way here, not a corner.
+    // Gate 2 deleted the `focusedElement !== null` conjunct and the ENTIRE unit project stayed
+    // green, which is why this row exists.
+    const hintsWithNoElement = async (tool: string, args: Record<string, unknown>, bridge: unknown) => {
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(bridge as never);
+      return parse(await withPostState(tool, async () => ok({ ok: true }))(args)).hints;
+    };
+    expect(await hintsWithNoElement("clipboard", { action: "read" }, null)).toBeUndefined();
+    expect(await hintsWithNoElement(
+      "keyboard", { action: "type", text: "x", windowTitle: "Nope" }, { focused: null },
+    )).toBeUndefined();
+
+    // THE ELEMENT FLAG RIDES WITH EVERY WITHHELD ROW, so the two hints are one statement in two
+    // halves: the value is not yours, and neither is the element it belongs to.
+    expect(await hintsOf("clipboard", { action: "read" }))
+      .toEqual({
+        postValueWithheld: "call_named_no_window",
+        focusedElementWindowUnconfirmed: "call_named_no_window",
+      });
 
     vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
@@ -465,7 +519,11 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     } as never);
     const handlerHints = { verifyDelivery: { channel: "postmessage" } };
     const out = parse(await withPostState("scroll", async () => ok({ ok: true, hints: handlerHints }))({ action: "raw", amount: 3 }));
-    expect(out.hints).toEqual({ verifyDelivery: { channel: "postmessage" }, postValueWithheld: "call_named_no_window" });
+    expect(out.hints).toEqual({
+      verifyDelivery: { channel: "postmessage" },
+      postValueWithheld: "call_named_no_window",
+      focusedElementWindowUnconfirmed: "call_named_no_window",
+    });
 
     vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
@@ -531,7 +589,46 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
         .mockReturnValueOnce({ pid: 0, processName: "", processStartTimeMs: 0 } as never);
       const unreadable = await elementOfSequence(() => win(4242n, "Notepad"));
       expect(unreadable).not.toHaveProperty("value");
-      expect(lastHints()).toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+      // AND THE ELEMENT FLAG SAYS THE SAME THING, which is the whole reason it carries a reason
+      // instead of a boolean. Its first form published `focusedElementInNamedWindow: false` here:
+      // a definite "somewhere else" about a foreground that was never read, standing beside a
+      // reason that says the opposite. The row must name the road, and must not claim a location.
+      //
+      // EXHAUSTIVE, BECAUSE THE CLAIM IS ABOUT WHAT IS NOT THERE. `toMatchObject` permits extra
+      // keys, so the pair of them let the boolean come back on exactly the two roads that cannot
+      // support a location claim — the narrow reintroduction, which is the whole defect — and the
+      // suite stayed green while this comment promised otherwise (gate 2 on `314705c`, measured).
+      // A previous round deleted the assertion that named the old key, calling it a tombstone for
+      // a string nothing would write; that judgement was taken without measuring it, and it was
+      // wrong. This form needs no name: nothing may ride along.
+      expect(lastHints()).toEqual({
+        postValueWithheld: "could_not_verify_the_window",
+        focusedElementWindowUnconfirmed: "could_not_verify_the_window",
+      });
+      // THE NAME GOES WITH THE VALUE, and the flag flips with them. The first version of this
+      // guard ran only when a value existed and dropped only the value: an element with no value
+      // pattern skipped the check entirely, and one with a value kept the wrong NAME while losing
+      // the right value — a row that reads as "this is the field you named, and it is empty".
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+        focused: { name: "SOMEONE-ELSES-FIELD", controlType: "Edit", value: null },
+      } as never);
+      vi.mocked(enumWindowsInZOrder)
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(9999n, "Password Manager"));
+      const raced = parse(await withPostState("keyboard", async () => ok({ ok: true }))({
+        action: "type", text: "x", windowTitle: "Notepad",
+      }));
+      const rowNoValue = (raced.post as Record<string, unknown>).focusedElement as Record<string, unknown>;
+      expect(rowNoValue).not.toHaveProperty("name");
+      // AND IT NAMES THE ROAD, rather than asserting a location. The element was read SOMEWHERE
+      // between the two foreground readings, so "it is not in your window" is a claim this layer
+      // cannot support; "the foreground moved while I was reading" is one it measured.
+      // Exhaustive for the same reason, on the other road that cannot support a location claim.
+      // There is no `postValueWithheld` here: the element has no value pattern, so nothing was
+      // withheld from it, and the element flag is the only thing that speaks.
+      expect(raced.hints).toEqual({ focusedElementWindowUnconfirmed: "foreground_moved_during_read" });
+
       // A DIFFERENT HANDLE SETTLES IT, even when the identity behind the new one cannot be read —
       // which is exactly what happens when the window that took focus is elevated. Calling that
       // "could not verify" would take back an observation that was actually made.

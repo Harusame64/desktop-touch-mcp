@@ -30,7 +30,27 @@ import { maybeAdvisory } from "./_advisory.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PostElementInfo {
-  name: string;
+  /**
+   * The focused element's accessible name — carried ONLY when the call named the window focus
+   * ended in, the same predicate as `value`.
+   *
+   * WHY IT IS WITHHELD OTHERWISE, and it is not the privacy argument that decided it. Measured on
+   * a real machine with the window itself as witness (each control writes its own name to a file
+   * when clicked): a coordinate `mouse_click` on a control that TAKES focus reports it correctly,
+   * and a click on a label or on the form's background reports the element that happened to be
+   * focused before — with nothing in the response to tell the two apart. `verifyDelivery` says
+   * `delivered`, the screen really did repaint, and the name is simply the wrong element's (win2,
+   * 2026-09-14, `12f1ff7`).
+   *
+   * So on the calls that do not name a window, this field is right exactly when the caller could
+   * have guessed it and wrong exactly when they needed it — worse than absent. The caller's own
+   * criterion decided it: keep what is useful, drop what is noise.
+   *
+   * `automationId`, `type` and `hasValuePattern` stay, because they are what the success-path
+   * advisory reads and they do not assert a thing was acted on. The name is the half that reads
+   * like a claim.
+   */
+  name?: string;
   type: string;
   /**
    * Whether UIA exposes a value on the focused element (it may be empty). By default this bit is
@@ -370,11 +390,14 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     server writes", "after acting on another window", "when the focused element changes". Each
  *     named the most visible change in a round that moved more than one thing, and each named an
  *     action of the CALLER'S. The answer was a property of the application all along.
- *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
- *     `hasValuePattern` still come back for a window this call never named. Three of those four
- *     are what the success-path advisory (ADR-022) decides from — `buildHint` reads `type`,
- *     `hasValuePattern` and `automationId`, and never `name`, so `name` travels for the caller's
- *     benefit alone (gate 2 on `447698f`, correcting this sentence's first form).
+ *
+ *     THE IDENTITY IS PARTLY NARROWED NOW, and this sentence has been rewritten twice for it.
+ *     `name` follows the value and is withheld with it; `automationId`, `type` and
+ *     `hasValuePattern` still come back for a window this call never named. The split is not
+ *     aesthetic: the last three are what the success-path advisory (ADR-022) decides from —
+ *     `buildHint` reads `type`, `hasValuePattern` and `automationId`, and never `name` — so
+ *     withholding `name` costs the advisory nothing, and withholding any of the other three would
+ *     kill it (gate 2 on `447698f` for the reading, gate 2 on `b40bce8` for the sentence).
  */
 function valueBelongsToTheWindowActedOn(
   args: Record<string, unknown>,
@@ -446,7 +469,11 @@ async function snapshotFocusedElement(carryValue: boolean): Promise<PostElementI
     if (!focused) return null;
     // Whether there is a value, and by default not what it is (see `PostElementInfo.hasValuePattern`). The
     // history ring stores this same object, so it holds a value only under the switch as well.
-    const info: PostElementInfo = { name: focused.name, type: focused.controlType, hasValuePattern: focused.value != null };
+    const info: PostElementInfo = { type: focused.controlType, hasValuePattern: focused.value != null };
+    // The name follows the same permission as the value — see `PostElementInfo.name`. Omitted,
+    // never blanked: an empty string is a name, and a reader cannot tell it from a field that has
+    // none.
+    if (carryValue) info.name = focused.name;
     if (focused.automationId) info.automationId = focused.automationId;
     if (carryValue && focused.value != null) info.value = focused.value;
     return info;
@@ -519,7 +546,17 @@ export function withPostState<T extends Record<string, unknown>>(
       const after = snapshotFocus();
       const verdict = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
       const focusedElement = await snapshotFocusedElement(verdict.carry);
-      /** Set when a value was withheld from an element that HAD one. Published in `hints`. */
+      /**
+       * WHY THE PERMISSION DID NOT HOLD, or `undefined` when it did — ONE variable for one fact.
+       * `verdict` answered about the foreground at `after`; the re-read below can take it away,
+       * and everything the permission gates (the value, the name, and the flag that says the
+       * element is not confirmed to be the caller's) reads THIS. An earlier form kept a second
+       * boolean beside it and the two had to be updated in step; a fact stored twice is a fact
+       * that can disagree with itself, which is how four consecutive rounds of this file went
+       * wrong. The rule for publishing it lives at the publication and nowhere else (search
+       * `elementIsUnconfirmed`) — writing a second copy here is how a later round codes to the
+       * copy instead of the code.
+       */
       let valueWithheld: PostValueWithheldReason | undefined =
         verdict.carry ? undefined : verdict.why;
       // THE PERMISSION AND THE ELEMENT ARE READ AT DIFFERENT MOMENTS, and between them is an
@@ -536,7 +573,16 @@ export function withPostState<T extends Record<string, unknown>>(
       // the window CAN disagree in that window of time — they could before this change too, for
       // every call, value or no value — and binding them properly needs the owning HWND, which
       // `NativeUiaFocusInfo` does not carry. Filed rather than faked.
-      if (verdict.carry && focusedElement && focusedElement.value !== undefined) {
+      // …AND IT GUARDS THE NAME TOO, which the first version of this did not: the check ran only
+      // when a value existed and dropped only the value, so an element with no value pattern
+      // skipped it entirely and an element with one kept the WRONG NAME while losing the right
+      // value (gate on `f220577`). The name is permissioned now, so it is guarded now.
+      // THE GUARD IS THE PERMISSION, NOT THE FIELDS. An earlier form asked whether a permissioned
+      // field was present, which reads right and is dead weight: under `carry` the name is
+      // assigned unconditionally (`snapshotFocusedElement`) and `UiaFocusInfo.name` is a required
+      // string on both bridge roads, so the field test was a tautology — and the day anyone makes
+      // the name conditional it would silently stop guarding the rows with no value.
+      if (verdict.carry && focusedElement) {
         const settled = snapshotFocus();
         // IDENTITY, NOT THE NUMBER — and identity is the PAIR, not the name. A handle is
         // recyclable: the named window can exit during the lookup and Windows can hand its number
@@ -573,6 +619,7 @@ export function withPostState<T extends Record<string, unknown>>(
         const sawNothingComparable = settled.hwnd === null || startTimesUnreadable;
         if (moved || sawNothingComparable) {
           delete focusedElement.value;
+          delete focusedElement.name;
           valueWithheld = moved ? "foreground_moved_during_read" : "could_not_verify_the_window";
         }
       }
@@ -586,7 +633,49 @@ export function withPostState<T extends Record<string, unknown>>(
       // contents; suppressing it for `value:""` would make its presence mean "the field you cannot
       // see is not empty", which is a bit about a window the caller never named and one that
       // `hasValuePattern` does not already give.
+      //
+      // THE ELEMENT'S REASON IS TAKEN FIRST, because the suppression below is about the VALUE
+      // only. The two questions part company exactly here: an element with no value pattern had
+      // no value withheld from it, and still is not confirmed to be the caller's.
+      const windowUnconfirmedWhy = valueWithheld;
       if (!focusedElement?.hasValuePattern) valueWithheld = undefined;
+      /**
+       * AND THE ELEMENT ITSELF IS FLAGGED, not only its value. Withholding the name removes the
+       * worst half of a misreading but not its kind: with the name gone, a coordinate click on a
+       * label still reports `type: "Edit"` — the previously focused element's type — and a caller
+       * reads that as the thing they clicked. Measured with the window as witness: exact when the
+       * clicked control takes focus, another element's when it does not (win2, `12f1ff7`).
+       *
+       * So the post says the one thing it knows: this element is NOT CONFIRMED to be in a window
+       * this call named, and which of the five roads left it unconfirmed. It is not a statement
+       * about what was acted on — that cannot be had here. The read that would answer it, the
+       * element under the point, is dead across the whole work area on the measuring machine: a
+       * vendor overlay covers 0,0–1920×1032 and every point inside it answers "desktop", while
+       * points below the overlay's rectangle name controls correctly (win2, `689aa02`). A design
+       * built on that read passes its unit cells, passes on a machine without the overlay, and
+       * says "desktop" for every click where it is needed.
+       *
+       * AND IT SAYS *UNCONFIRMED*, NOT *ELSEWHERE* — the flag's first form published
+       * `focusedElementInNamedWindow: false`, which asserts a LOCATION, and two of the five roads
+       * cannot support that assertion (gate on `7f70adc`). `could_not_verify_the_window` means the
+       * foreground could not be read at all, so "not in your window" is a confident wrong
+       * diagnosis of something never observed — the exact failure this vocabulary exists to end,
+       * and it contradicted the reason published beside it. `foreground_moved_during_read` cannot
+       * support it either, for a reason the gate did not name: the element was read SOMEWHERE
+       * between the two foreground readings, so it may well be the named window's, seen before the
+       * move. Only the predicate's three roads establish a location, and a single word that is
+       * true on all five is worth more to a caller than a boolean that is wrong on two.
+       *
+       * The reason is what makes it actionable, and it is the element's own copy: on a row with no
+       * value `postValueWithheld` is silent by design, and `call_named_no_window` there is the
+       * difference between "pass `windowTitle` next time" and "nothing you could have done".
+       * On rows that carry both, the two keys say the same word about one fact — the value is not
+       * yours, and neither is the element it belongs to.
+       *
+       * Published whenever an element is published and confirmation did not hold — INCLUDING for
+       * an element with no value at all, where the type is just as misleading.
+       */
+      const elementIsUnconfirmed = focusedElement !== null && windowUnconfirmedWhy !== undefined;
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
@@ -631,11 +720,12 @@ export function withPostState<T extends Record<string, unknown>>(
             // SUCCESS ONLY. A failure publishes no focused element at all, so "why is the value
             // missing" is answered by `ok:false` and not by this rule; writing a reason there
             // would name a withholding that did not happen.
-            if (valueWithheld) {
+            if (valueWithheld || elementIsUnconfirmed) {
               const existing = obj.hints;
               obj.hints = {
                 ...(existing !== null && typeof existing === "object" ? existing as Record<string, unknown> : {}),
-                postValueWithheld: valueWithheld,
+                ...(valueWithheld ? { postValueWithheld: valueWithheld } : {}),
+                ...(elementIsUnconfirmed ? { focusedElementWindowUnconfirmed: windowUnconfirmedWhy } : {}),
               };
             }
             // ADR-022 / issue #352: success-path advisory. Reuses the
