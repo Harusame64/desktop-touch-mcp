@@ -11,7 +11,7 @@
  * assignments sit beside `hints.focusedElementSource`, and a pure-builder test cannot see them.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -325,16 +325,29 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       );
     }
 
-    // 4. AND THE INVENTORY OF PROSE THAT SPEAKS ABOUT AN UNCONFIRMED LANDING. Pinning four surfaces
-    //    cannot see a FIFTH one appearing, and gate 1 found one that had been there all along:
-    //    `docs/system-overview.md` told its readers a landing-bearing `type` "was sent", which is
-    //    the claim removed from the other four ([[the-same-defect-has-three-audiences]] — the
-    //    envelope, the record and the memory). So the set of MARKDOWN files that mention an
-    //    unconfirmed landing is fixed here: a new document reddens this and a human decides whether
-    //    it needs the paragraph. Tests are excluded on purpose — they are not read as instructions.
-    const docs = [...walkMarkdown(fileURLToPath(new URL("../..", import.meta.url)))]
-      .filter((f) => /confirmed: ?false/.test(readFileSync(f, "utf8")))
-      .map((f) => f.replace(fileURLToPath(new URL("../..", import.meta.url)), "").replace(/\\/g, "/"))
+    // 4. AND AN INVENTORY OF THE DOCUMENTS THAT SPEAK ABOUT AN UNCONFIRMED LANDING — A DETECTOR,
+    //    NOT A GUARANTEE, and the difference is written here so the next reader does not inherit the
+    //    mistake the rest of this cell already made once. Pinning surfaces cannot see a new one
+    //    appear, and gate 1 found one that had been there all along: `docs/system-overview.md` told
+    //    its readers a landing-bearing `type` "was sent", the claim removed from the other four
+    //    ([[the-same-defect-has-three-audiences]] — the envelope, the record and the memory).
+    //
+    //    WHAT IT ACTUALLY MATCHES is `landing` within 80 characters of `confirmed`, over TRACKED
+    //    markdown. That covers the serialisations the documents use (`confirmed: false`,
+    //    `"confirmed": false`, "`landing.confirmed` is false"), and it will not catch a document
+    //    that describes the same state in words that use neither token. Enumerating spellings does
+    //    not end; the root is that the paragraph is copied by hand instead of generated from one
+    //    source, and that is filed rather than fixed here.
+    //
+    //    TRACKED, via `git ls-files`: walking the working tree made this gate depend on whatever
+    //    untracked markdown a developer happens to have, so the same commit could fail in one
+    //    checkout and pass in a clean clone (gate 1, 2026-09-15).
+    const root = fileURLToPath(new URL("../..", import.meta.url));
+    const tracked = execFileSync("git", ["ls-files", "-z", "*.md"], { cwd: root, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => f.length > 0 && !f.startsWith("tests/"));
+    const docs = tracked
+      .filter((f) => /landing[\s\S]{0,80}confirmed/i.test(readFileSync(join(root, f), "utf8")))
       .sort();
     expect(docs, "a document that speaks about an unconfirmed landing was added or removed").toEqual([
       "README.ja.md",
@@ -353,23 +366,3 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     expect(out.hints).not.toHaveProperty("focusedElementValueAbsent");
   });
 });
-
-/**
- * Every tracked `.md` under the repository root, minus the fixtures this cell owns and anything
- * under `node_modules`. Used for the inventory assertion: the point is to notice a NEW document
- * speaking about an unconfirmed landing, so the walk must not be a list of the ones already known.
- */
-function* walkMarkdown(root: string): Generator<string> {
-  const skip = new Set(["node_modules", ".git", "target", "dist", "tests"]);
-  const stack = [root];
-  while (stack.length > 0) {
-    const dir = stack.pop() as string;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        if (!skip.has(entry.name)) stack.push(join(dir, entry.name));
-      } else if (entry.name.endsWith(".md")) {
-        yield join(dir, entry.name);
-      }
-    }
-  }
-}
