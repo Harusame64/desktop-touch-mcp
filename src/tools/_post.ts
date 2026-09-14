@@ -30,7 +30,27 @@ import { maybeAdvisory } from "./_advisory.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PostElementInfo {
-  name: string;
+  /**
+   * The focused element's accessible name — carried ONLY when the call named the window focus
+   * ended in, the same predicate as `value`.
+   *
+   * WHY IT IS WITHHELD OTHERWISE, and it is not the privacy argument that decided it. Measured on
+   * a real machine with the window itself as witness (each control writes its own name to a file
+   * when clicked): a coordinate `mouse_click` on a control that TAKES focus reports it correctly,
+   * and a click on a label or on the form's background reports the element that happened to be
+   * focused before — with nothing in the response to tell the two apart. `verifyDelivery` says
+   * `delivered`, the screen really did repaint, and the name is simply the wrong element's (win2,
+   * 2026-09-14, `12f1ff7`).
+   *
+   * So on the calls that do not name a window, this field is right exactly when the caller could
+   * have guessed it and wrong exactly when they needed it — worse than absent. The caller's own
+   * criterion decided it: keep what is useful, drop what is noise.
+   *
+   * `automationId`, `type` and `hasValuePattern` stay, because they are what the success-path
+   * advisory reads and they do not assert a thing was acted on. The name is the half that reads
+   * like a claim.
+   */
+  name?: string;
   type: string;
   /**
    * Whether UIA exposes a value on the focused element (it may be empty). By default this bit is
@@ -405,7 +425,11 @@ async function snapshotFocusedElement(carryValue: boolean): Promise<PostElementI
     if (!focused) return null;
     // Whether there is a value, and by default not what it is (see `PostElementInfo.hasValuePattern`). The
     // history ring stores this same object, so it holds a value only under the switch as well.
-    const info: PostElementInfo = { name: focused.name, type: focused.controlType, hasValuePattern: focused.value != null };
+    const info: PostElementInfo = { type: focused.controlType, hasValuePattern: focused.value != null };
+    // The name follows the same permission as the value — see `PostElementInfo.name`. Omitted,
+    // never blanked: an empty string is a name, and a reader cannot tell it from a field that has
+    // none.
+    if (carryValue) info.name = focused.name;
     if (focused.automationId) info.automationId = focused.automationId;
     if (carryValue && focused.value != null) info.value = focused.value;
     return info;

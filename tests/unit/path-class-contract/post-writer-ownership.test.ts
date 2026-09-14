@@ -205,6 +205,14 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // a name-empty editable element (name:"") must survive snapshotFocusedElement
     // (was dropped by `if (!focused?.name) return null`) into post.focusedElement
     // with name:"", AND the name-agnostic advisory gate then fires.
+    // The call has to NAME the window it ends in, or the name is withheld for a different reason
+    // and this cell would stop testing the G4 relax at all — an empty name and a withheld one are
+    // both "no name" to a careless assertion.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "App", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(
       { focused: { name: "", controlType: "Edit", value: "" } } as never,
     );
@@ -217,10 +225,14 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     const fe = post.focusedElement as Record<string, unknown> | null;
     expect(fe).not.toBeNull();
     expect(fe!.name).toBe(""); // survived G4 relax with empty name (was → null before)
+    expect(Object.keys(fe!)).toContain("name"); // …carried as an empty string, not omitted
     expect(fe!.type).toBe("Edit");
-    // An empty value still says a value is there; the value itself never leaves (ADR-036, option c).
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+    // An empty value still says a value is there. It also comes back here, because option (b)
+    // gives a named window its own field — including an empty one, which is the case that proves
+    // `hasValuePattern` and the value are answering different questions.
     expect(fe!.hasValuePattern).toBe(true);
-    expect(fe).not.toHaveProperty("value");
+    expect(fe!.value).toBe("");
     const advisory = parsed.advisory as Record<string, unknown> | undefined;
     expect(advisory).toBeDefined();
     expect(advisory!.preferredPath).toBe("desktop_act");
@@ -234,12 +246,14 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     );
     const result = await withPostState("clipboard", async () => ok({ ok: true }))({ action: "read" });
     expect(JSON.stringify(result)).not.toContain("PROBE-SECRET-POST-1");
-    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ name: "Notes", type: "Edit", hasValuePattern: true });
+    // `clipboard(read)` names no window, so neither the value nor the NAME travels: measured, the
+    // name is the focused element's rather than the acted-on one's, and this call acted on nothing.
+    expect((parse(result).post as Record<string, unknown>).focusedElement).toEqual({ type: "Edit", hasValuePattern: true });
     expect(JSON.stringify(getHistorySnapshot(20))).not.toContain("PROBE-SECRET-POST-1");
     // …and an element with no value says so.
     vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Canvas", controlType: "Pane" } } as never);
     const none = await withPostState("mouse_click", async () => ok({ ok: true }))({});
-    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ name: "Canvas", type: "Pane", hasValuePattern: false });
+    expect((parse(none).post as Record<string, unknown>).focusedElement).toEqual({ type: "Pane", hasValuePattern: false });
   });
 
   it("gives the value back only for the window THIS call named — the arms, as they were measured", async () => {
@@ -269,8 +283,11 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // CONTROL: the foreground really is what the rows below assume, or every WITHOUT is vacuous.
     expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" }))
       .toHaveProperty("value");
+    // The NAME follows the value, on the same predicate: measured, it is the focused element's and
+    // not the acted-on one's, so on a call that named no window it is right only when the caller
+    // could have guessed it (win2, `12f1ff7`).
     const WITH = { name: "Notes", type: "Edit", hasValuePattern: true, value: "PROBE-TYPED-POST-2" };
-    const WITHOUT = { name: "Notes", type: "Edit", hasValuePattern: true };
+    const WITHOUT = { type: "Edit", hasValuePattern: true };
 
     // Arm A — the reason the value exists. `snapshotFocus` is mocked to this title below.
     expect(await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toEqual(WITH);
@@ -319,6 +336,15 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // one line from `notification_show({title})`, where `title` is a message heading. It stays
     // WITHOUT because that tool declares no window key — the same `title`, read as nothing.
     expect(await elementOf("notification_show", { title: "Notepad", message: "m" })).toEqual(WITHOUT);
+
+    // THE NAME IS WITHHELD FOR THE SAME REASON AND NOT A WEAKER ONE: it is not blanked, it is
+    // absent, so a caller cannot read it as "this field has no name". The pairing is the arm that
+    // carries — same element, same mocks, only the naming differs.
+    const named = await elementOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" });
+    const unnamed = await elementOf("clipboard", { action: "read" });
+    expect(Object.keys(named as object)).toContain("name");
+    expect(Object.keys(unnamed as object)).not.toContain("name");
+    expect(unnamed).toMatchObject({ type: "Edit", hasValuePattern: true });
 
     // A SELECTOR THE HANDLER PREFERS MEANS THE TITLE NAMED NOTHING. `terminal(action:'send')`
     // branches on `paneId !== undefined` before it reads `windowTitle`, and a background send does
