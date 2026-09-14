@@ -143,20 +143,22 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         expect(sentence).toContain("focusedElementValueAbsent");
         expect(sentence).toContain("view_road_has_no_value");
         expect(sentence).toContain("missing with no hint at all");
-        // AND IT STOPPED PREDICTING THE VALUE, because the value cannot be predicted. A background
-        // type inserts at the CARET and replaces the SELECTION, exactly as typing does — measured
-        // across 6 arms with background and foreground identical (win2, `c76b78d`): end → append,
-        // start → prepend, middle → insert, all-selected → replace. "Prior text plus typed text"
-        // holds in 2 of those 6, and the caller cannot see the caret to know which one they are in.
-        // A rule that predicted the value would have made a LANDED write read as failed in four
-        // situations out of six — the opposite error from the one this sentence started with.
-        //
-        // So it names the one case a read-back settles, and refuses the rest. That is shorter than
-        // the conjunction it replaces and true everywhere, which the conjunction was not.
+        // AND IT CLAIMS NO CAUSATION AT ALL, which is where seven rounds landed. Each round found
+        // the previous version asserting something a read-back cannot support:
+        //   - the value is predictable — a background type inserts at the CARET and replaces the
+        //     SELECTION, exactly as typing does (measured, 6 arms, background and foreground
+        //     identical, win2 `c76b78d`), so "prior text plus typed text" held in 2 of 6 and would
+        //     have made a LANDED write read as failed in the other four;
+        //   - an empty field settles it — a write of empty text is accepted and sends nothing, so
+        //     an already-empty field matches with no write at all;
+        //   - a match settles it — autofill can fill the field between the two observations.
+        // What survives is what the call actually gives a caller: the field's current text. The
+        // sentence says that and forbids the causal reading, which is shorter than every version
+        // that tried to carve out an exception.
+        expect(sentence).toContain("never establishes that your write put it there");
         expect(sentence).toContain("inserts at the caret and replaces the selection");
-        expect(sentence).toContain("you cannot see the caret");
-        expect(sentence).toContain("which you know was EMPTY before the write");
-        expect(sentence).toContain("nothing about whether your write put it there");
+        expect(sentence).toContain("sends nothing and matches an already-empty field");
+        expect(sentence).toContain("not to prove delivery");
       }
     }
   });
