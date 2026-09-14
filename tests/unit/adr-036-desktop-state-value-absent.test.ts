@@ -168,8 +168,17 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         expect(sentence).toContain("another with the same title");
         // …and the one thing on this response that does have a baseline, with its asymmetry: a
         // `value_changed` is evidence, its absence is not.
-        expect(sentence).toContain("value_changed");
-        expect(sentence).toContain("ABSENCE is not evidence");
+        // …and the thing that looked like a baseline is not one: `computeDiff`'s PRE side is the
+        // stored `desktop_discover` snapshot, not a reading taken across the write, so a change
+        // anyone made in between is indistinguishable (gate 1 on `bec8552`). Naming it as evidence
+        // was the eighth version of the same error in this sentence — pointing at something whose
+        // limit had already been written down one round earlier.
+        expect(sentence).toContain("`diff.value_changed` on the same response is not delivery either");
+        expect(sentence).toContain("its baseline is your `desktop_discover` snapshot");
+        // The honest end: nothing here answers the question, and the way to GET an answer is to
+        // make the write confirmable rather than to inspect it afterwards.
+        expect(sentence).toContain("NOTHING on this response establishes that the characters arrived");
+        expect(sentence).toContain("make the write confirmable");
       }
     }
 
@@ -177,7 +186,11 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // left with "read it back" and nothing else. The Japanese copy is checked by the same rule:
     // a fix applied in one language and not the other is the shape this repo keeps meeting.
     for (const { rel, text } of shipped.filter(({ rel: r }) => r.startsWith("README"))) {
-      expect(text, `${rel} does not name the one pair with a baseline`).toContain("diff.value_changed");
+      expect(text, `${rel} does not say what diff.value_changed is`).toContain("diff.value_changed");
+      // …and says the same thing about it as the tool description: not delivery. A README that
+      // named it without the limit would be the round-0 mistake with a newer noun.
+      expect(text, `${rel} names diff.value_changed without its limit`)
+        .toMatch(/diff\.value_changed`?\s*(is not delivery either|\u3082\u5c4a\u3044\u305f\u8a3c\u62e0\u306b\u306f\u306a\u3089\u306a\u3044)/);
     }
   });
 
