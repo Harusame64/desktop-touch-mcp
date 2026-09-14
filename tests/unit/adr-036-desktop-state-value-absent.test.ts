@@ -131,30 +131,23 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         .filter((line) => line.includes("read the field back before relying on it"));
       expect(sentences.length).toBeGreaterThan(0);
       for (const sentence of sentences) {
+        // FOUR ROUNDS OF REVIEW FOUND FOUR WAYS THIS READ-BACK MISLEADS, and adding a clause per
+        // round was losing: the foreground-only read, the sticky asynchronous focus row that can
+        // name an element focused BEFORE the write, an absence that means nothing, and a match on
+        // a field that already held the text. The advice states a RULE instead — one conjunction
+        // a caller can apply — and these rows pin its parts, each with its own subject so a
+        // rewrite cannot keep the words and invert the claim (gate 1 on `e4dc072`).
+        expect(sentence).toContain("a read-back confirms nothing on its own");
+        expect(sentence).toContain("FOREGROUND window");
+        expect(sentence).toContain("sticky and asynchronous");
         expect(sentence).toContain("focusedElementValueAbsent");
         expect(sentence).toContain("view_road_has_no_value");
-        // THE CLAIM WITH ITS SUBJECT, not a fragment of it — a rewrite can keep every word of a
-        // trailing phrase and invert what it is about (gate 1 on `e4dc072`).
-        expect(sentence).toContain("an empty answer is not evidence of failure");
-        // AND THE HINT'S ABSENCE MUST NOT READ AS EVIDENCE. Naming the hint alone makes "no hint"
-        // mean "the empty field is real", which is false on the UIA road: a provider that serves
-        // no value omits it and sets no hint (the `desktop_state` caveat says so). An advice that
-        // sends a caller to a check has to say what the check cannot settle (gate 1, `51bdcd5`).
-        // THE WHOLE CLAUSE, SUBJECT INCLUDED. The trailing phrase alone survives a rewrite that
-        // keeps every required substring and inverts the meaning — "absence never settles it
-        // either way; without that hint absence proves failure" would pass (gate 1 on `e4dc072`).
-        // A grep for a fragment pins the fragment, not the sentence.
-        // AND WHERE TO READ IT. `desktop_state` has no window selector — only `include*` flags — so
-        // it answers about the FOREGROUND, while a background write can land in a window that is
-        // not it. Sending a caller to a read-back without that turns the advice into "inspect an
-        // unrelated field, and read a coincidental match as confirmation" (gate 1 on `69b533b`).
-        expect(sentence).toContain("FOREGROUND window only");
-        // …and the two things the check cannot settle. A value can be missing with no hint at all
-        // (a UIA provider that serves none), so the hint's SILENCE is not evidence; and a match is
-        // not proof either, because a write that never landed leaves a field that already held
-        // that text reading exactly the same.
         expect(sentence).toContain("missing with no hint at all");
-        expect(sentence).toContain("did not already hold that text");
+        // The rule itself, both halves — identity AND novelty. Either alone is a road to a false
+        // confirmation: the wrong element with the right text, or the right element with text it
+        // already had.
+        expect(sentence).toContain("the element it names is the field you wrote");
+        expect(sentence).toContain("did not already hold");
       }
     }
   });
