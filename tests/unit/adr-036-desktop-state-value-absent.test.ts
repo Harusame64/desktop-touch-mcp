@@ -151,21 +151,25 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // measurement refuted (gate 2).
     const detailed = shipped.filter(({ rel }) => rel.startsWith("src/"));
     for (const { rel, text } of detailed) {
-      const sentences = text.split("\n").filter((line) => line.includes("A read-back reports what the field holds"));
+      const sentences = text.split("\n").filter((line) => line.includes("NOTHING on this response establishes"));
       expect(sentences.length, `${rel} has no read-back advice at all`).toBeGreaterThan(0);
       for (const sentence of sentences) {
-        expect(sentence).toContain("never establishes that your write put it there");
+        expect(sentence).toContain("NOTHING on this response establishes that the characters arrived");
         expect(sentence).toContain("a BACKGROUND type inserts at the caret and replaces the selection");
         expect(sentence).toContain("a write of empty text sends nothing");
-        expect(sentence).toContain("not to prove delivery");
-        // The positive half: what the call IS for. Pinned on its own, so a rewrite cannot drop it
-        // and stay green on the negatives alone.
-        expect(sentence).toContain("reports what the field holds NOW");
+        
+        // NO IMPERATIVE ANYWHERE. The opening "read the field back before relying on it" and the
+        // "use it to see what the field currently holds" outlived twelve rounds of narrowing the
+        // clauses around them — and both send a caller to trust a read the same paragraph says can
+        // name a field in another window (gate 1, `5f426ae`). The paragraph describes a state now
+        // and instructs nothing, which is what the code can support.
+        expect(sentence).not.toContain("read the field back");
+        expect(sentence).not.toContain("Use it to see");
         // `desktop_state` answers about the foreground, from a row matched BY TITLE — so another
         // window with the same title can supply the element. The sharpest fact in the sentence,
         // and nothing pinned it before this round.
         expect(sentence).toContain("hints.focusedElementValueAbsent");
-        expect(sentence).toContain("another with the same title");
+        expect(sentence).toContain("another window with the same title");
         // …and the one thing on this response that does have a baseline, with its asymmetry: a
         // `value_changed` is evidence, its absence is not.
         // …and the thing that looked like a baseline is not one: `computeDiff`'s PRE side is the
@@ -184,9 +188,9 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // successful result. And focus does not make every write confirmable: the rung confirms
         // only a field with a window of its own, so for the WPF case the README uses as its
         // EXAMPLE, a retry answers `landing` again however it is aimed.
-        expect(sentence).toContain("AND NOTHING ELSE HERE DOES EITHER");
-        expect(sentence).toContain("A retry appends rather than replaces");
-        expect(sentence).toContain("a clear is a write of empty text");
+        expect(sentence).toContain("nothing else here does either");
+        expect(sentence).toContain("a retry appends rather than replaces");
+        expect(sentence).toContain("a clear is itself a write of empty text");
         expect(sentence).toContain("`landing.why` does not reliably tell you");
         // AND NO ACTION AT ALL, which is where twelve rounds landed. The last version ended
         // "read the field and act on what it holds" — but the same paragraph had already said the
