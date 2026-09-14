@@ -532,6 +532,16 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       const unreadable = await elementOfSequence(() => win(4242n, "Notepad"));
       expect(unreadable).not.toHaveProperty("value");
       expect(lastHints()).toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+      // A DIFFERENT HANDLE SETTLES IT, even when the identity behind the new one cannot be read —
+      // which is exactly what happens when the window that took focus is elevated. Calling that
+      // "could not verify" would take back an observation that was actually made.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 0, processName: "", processStartTimeMs: 0 } as never);
+      expect(await elementOfSequence(() => win(9999n, "Elevated thing"))).not.toHaveProperty("value");
+      expect(lastHints()).toMatchObject({ postValueWithheld: "foreground_moved_during_read" });
+
       // The pairing: a real change of identity, both sides readable, still says movement.
       vi.mocked(getProcessIdentityByPid)
         .mockReturnValueOnce(NOTEPAD as never)

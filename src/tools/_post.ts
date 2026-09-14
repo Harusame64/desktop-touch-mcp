@@ -489,14 +489,21 @@ export function withPostState<T extends Record<string, unknown>>(
         // protected process and for a transient failure, and reporting movement there is a
         // confident wrong diagnosis of something that did not happen (gate on `968f9cb`). The
         // value is withheld in both cases — only the sentence differs.
-        const unreadable = settled.hwnd === null ||
+        // ORDER MATTERS BETWEEN THE TWO SENTENCES. A DIFFERENT handle settles the question by
+        // itself: the foreground moved, whoever it moved to, and the identity being unreadable
+        // afterwards does not take that observation back — the window that took focus may simply
+        // be elevated, which is one of the ways the identity read fails (gate on `5303bb2`). So
+        // the unverifiable sentence is for the cases where nothing was observed: no foreground at
+        // all, or the same handle with an identity that cannot be compared.
+        const handlesDiffer = settled.hwnd !== null && settled.hwnd !== after.hwnd;
+        const identityUnreadable = settled.hwnd === null ||
           settled.processStartTimeMs === 0 || after.processStartTimeMs === 0;
-        const sameWindow = !unreadable && settled.hwnd === after.hwnd &&
-          settled.processPid === after.processPid &&
-          settled.processStartTimeMs === after.processStartTimeMs;
-        if (!sameWindow) {
+        const identityDiffers = settled.processPid !== after.processPid ||
+          settled.processStartTimeMs !== after.processStartTimeMs;
+        const moved = handlesDiffer || (!identityUnreadable && identityDiffers);
+        if (moved || identityUnreadable) {
           delete focusedElement.value;
-          valueWithheld = unreadable ? "could_not_verify_the_window" : "foreground_moved_during_read";
+          valueWithheld = moved ? "foreground_moved_during_read" : "could_not_verify_the_window";
         }
       }
       // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE. A field with no value pattern has no
