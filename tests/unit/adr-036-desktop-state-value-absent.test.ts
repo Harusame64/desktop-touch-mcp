@@ -138,9 +138,9 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
   it("keeps all four copies of the landing paragraph exactly as measurement left them", () => {
     const EXPECTED: Record<string, string> = {
       "src/tools/desktop-register.ts":
-        "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent`); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
+        "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` says so only when the road that never carries one answered, so the hint's silence is not evidence either); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
       "src/server-windows.ts":
-        "  keyboard_target_unsafe → the background write would not have reached the field this act named — the focus is on a different control or in a different window, or the receiving control does not take typed text — so nothing was typed. Put the focus on the field you named, then type again — if_unexpected.detail names the ground and the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle as well, so that road does not open there). For other_window, bring the field's window forward first (focus_window) — it comes forward with the focus it last had, and the window holding the focus is usually over the field, which makes a click answer aim_occluded; do NOT type through the foreground instead, whatever holds the focus would take the characters. A type that answers ok:true with landing {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent`); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does;",
+        "  keyboard_target_unsafe → the background write would not have reached the field this act named — the focus is on a different control or in a different window, or the receiving control does not take typed text — so nothing was typed. Put the focus on the field you named, then type again — if_unexpected.detail names the ground and the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle as well, so that road does not open there). For other_window, bring the field's window forward first (focus_window) — it comes forward with the focus it last had, and the window holding the focus is usually over the field, which makes a click answer aim_occluded; do NOT type through the foreground instead, whatever holds the focus would take the characters. A type that answers ok:true with landing {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` says so only when the road that never carries one answered, so the hint's silence is not evidence either); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does;",
       "README.md":
         "A successful `type` can carry `landing: { confirmed: false, why }`. The write took the background route, but the server could not confirm that it reached the field you named — for example, in a WPF window, whose fields have no window of their own. **This is a report, not a state that can be resolved here**: nothing in the response establishes whether the characters arrived, reading the field back does not settle it (`desktop_state` answers about the foreground, and may come back with no value at all — `hints.focusedElementValueAbsent` says so when the road that never carries one answered — or name a field in another window with the same title), `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write, and retrying a nonempty write is not a repeat — a background write lands at the caret and replaces the selection, exactly as typing does.",
       "README.ja.md":
@@ -157,11 +157,16 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       const start = text.indexOf(expected.slice(0, 40));
       expect(start, `${rel} no longer opens the landing paragraph the same way`).toBeGreaterThan(-1);
       if (rel.startsWith("src/")) {
-        // THE SHIPPED UNIT IS THE WHOLE STRING LITERAL, not the paragraph inside it. Anchoring on
-        // the paragraph's own opening words leaves everything BEFORE it unpinned, and gate 2
+        // Quote to quote over the whole literal, not from the paragraph's own opening words:
+        // anchoring there left everything BEFORE it unpinned inside the same literal, and gate 2
         // walked `Retry the write now.` in at the head of the `keyboard_target_unsafe` bullet with
-        // the cell green (2026-09-14). So the pin runs quote to quote: in `server-windows.ts` the
-        // paragraph is the tail of a bullet whose whole prefix ships to the same caller.
+        // the cell green (2026-09-14).
+        //
+        // THE LITERAL IS NOT THE SHIPPED UNIT, and saying it was is what let the next hole stand:
+        // both descriptions are `[...].join(...)`, so a SIBLING element added next to this one
+        // ships to the same caller with every assertion in this cell green. Both gates reproduced
+        // it independently on 2026-09-15, in both source files. This cell pins the paragraph, and
+        // the cell below pins the unit that ships around it — neither is enough alone.
         const open = text.lastIndexOf('"', start);
         const end = text.indexOf('",', start);
         expect(open, `${rel}: the landing paragraph's string literal has no opening quote`).toBeGreaterThan(-1);
@@ -176,7 +181,102 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // deleted Japanese read-back sentence back that way and the cell stayed green.
         expect(text.slice(start - 2, start), `${rel}: something was added directly above the paragraph`).toBe("\n\n");
         expect(text.slice(end, end + 2), `${rel}: something was added directly below the paragraph`).toBe("\n\n");
+        // AND ADJACENCY IS NOT ABSENCE: an instruction one blank line further out is a separate
+        // paragraph, ships to the same reader, and passes both lines above (win2 and gate 1, both
+        // 2026-09-15). The section pin below is what answers that.
       }
+      // AND THERE IS ONLY ONE OF IT PER FILE. A first-match lookup cannot tell one copy from two,
+      // and a second copy would be the one nobody edits (gate 1 P3, 2026-09-15).
+      expect(
+        text.indexOf(expected.slice(0, 40)),
+        `${rel} carries more than one copy of the landing paragraph`,
+      ).toBe(text.lastIndexOf(expected.slice(0, 40)));
+    }
+  });
+
+  /**
+   * THE UNIT THAT SHIPS, pinned whole — because the cell above cannot assert an absence.
+   *
+   * What the caller receives is not the string literal: it is `[...].join(" ")` for the tool
+   * description, `[...].join("\n")` for the server instructions, and the rendered section for a
+   * README. Every one of those has room next to the paragraph that the literal-level pin does not
+   * see, and on 2026-09-15 both review gates, independently, walked the same sentence in through
+   * it — `Retry the write now.` as a sibling array element immediately before the pinned literal,
+   * in both source files, with the cell above green. win2 had already measured the README half of
+   * the same hole from the other side: an instruction added as its own paragraph, one blank line
+   * further out, ships and passes.
+   *
+   * So the unit here is the whole shipped surface, and the fixtures under
+   * `tests/fixtures/landing-paragraph/` are what it is expected to be, byte for byte:
+   *
+   *   - `desktop_act.description.txt` — ASSEMBLED AT RUNTIME by registering the real tools on a
+   *     recording server, so this is the string the client is handed and not a re-join of the
+   *     source. (It matched win2's four-corner measurement of a running server exactly: 7,356
+   *     characters before this round's edit.)
+   *   - `server-windows.instructions.txt` — the `instructions:` array, sliced from source. That
+   *     entry point cannot be imported here (it is the Windows server, with top-level awaits on
+   *     native modules), so this side is source text and says so.
+   *   - `README.section.md` / `README.ja.section.md` — the whole `## Standard workflow` section,
+   *     heading to next heading.
+   *
+   * THE PRICE, STATED: any deliberate edit to those four surfaces reddens this cell, including
+   * edits that have nothing to do with `landing`. That is the cost of asserting that nothing was
+   * added, and there is no cheaper unit that can — every narrower one is a list of the insertions
+   * somebody already thought of. Update the fixture in the same commit as the change.
+   *
+   * WHAT IT STILL DOES NOT COVER: a fifth surface. `docs/anti-fukuwarai-3x-supplement.md` §5.2
+   * makes a claim about reading the field back and is annotated rather than pinned (gate 1 P3);
+   * it is a document for maintainers, not a string the server ships.
+   */
+  it("keeps the whole shipped unit around the landing paragraph, not only the paragraph", async () => {
+    const fixture = (name: string): string =>
+      readFileSync(fileURLToPath(new URL(`../fixtures/landing-paragraph/${name}`, import.meta.url)), "utf8")
+        .replace(/\r\n/g, "\n");
+    const source = (rel: string): string =>
+      readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8").replace(/\r\n/g, "\n");
+
+    // 1. The tool description, as the client receives it.
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    const { registerDesktopTools } = await import("../../src/tools/desktop-register.js");
+    const registered: Record<string, string> = {};
+    const server = new McpServer({ name: "pin", version: "0.0.0" });
+    const realTool = server.tool.bind(server);
+    (server as unknown as { tool: unknown }).tool = (...args: unknown[]) => {
+      if (typeof args[0] === "string" && typeof args[1] === "string") {
+        registered[args[0]] = args[1] as string;
+      }
+      return (realTool as (...a: unknown[]) => unknown)(...args);
+    };
+    registerDesktopTools(server);
+    expect(registered["desktop_act"], "desktop_act was not registered at all").toBeTypeOf("string");
+    expect(registered["desktop_act"], "the assembled desktop_act description changed").toBe(
+      fixture("desktop_act.description.txt"),
+    );
+
+    // 2. The server instructions, from source — see the docstring for why this side is not runtime.
+    const sw = source("src/server-windows.ts");
+    const open = sw.indexOf("      instructions: [\n");
+    expect(open, "server-windows.ts no longer opens an `instructions:` array").toBeGreaterThan(-1);
+    const close = sw.indexOf('\n      ].join("\\n"),', open);
+    expect(close, "the `instructions:` array is not terminated the way this pin reads it").toBeGreaterThan(open);
+    expect(sw.slice(open, close + '\n      ].join("\\n"),'.length), "the shipped instructions changed").toBe(
+      fixture("server-windows.instructions.txt"),
+    );
+
+    // 3. The README sections, heading to next heading.
+    for (const [rel, name, needle] of [
+      ["README.md", "README.section.md", "A successful `type` can carry"],
+      ["README.ja.md", "README.ja.section.md", "成功した `type` に `landing"],
+    ] as const) {
+      const text = source(rel);
+      const at = text.indexOf(needle);
+      expect(at, `${rel} no longer contains the landing paragraph`).toBeGreaterThan(-1);
+      const headings = [...text.matchAll(/^#{2,4} .*$/gm)].map((m) => m.index ?? 0);
+      const from = headings.filter((h) => h < at).pop();
+      const to = headings.find((h) => h > at);
+      expect(from, `${rel}: the landing paragraph is not under a heading`).toBeTypeOf("number");
+      expect(to, `${rel}: the landing paragraph's section is not closed by another heading`).toBeTypeOf("number");
+      expect(text.slice(from ?? 0, to ?? text.length), `${rel}'s landing section changed`).toBe(fixture(name));
     }
   });
 
