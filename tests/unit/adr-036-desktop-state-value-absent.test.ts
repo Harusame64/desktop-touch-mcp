@@ -138,25 +138,45 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
   it("keeps all four copies of the landing paragraph exactly as measurement left them", () => {
     const EXPECTED: Record<string, string> = {
       "src/tools/desktop-register.ts":
-        "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent`); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and a retry is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
+        "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent`); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
       "src/server-windows.ts":
-        "A type that answers ok:true with landing {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent`); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and a retry is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does;",
+        "  keyboard_target_unsafe → the background write would not have reached the field this act named — the focus is on a different control or in a different window, or the receiving control does not take typed text — so nothing was typed. Put the focus on the field you named, then type again — if_unexpected.detail names the ground and the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle as well, so that road does not open there). For other_window, bring the field's window forward first (focus_window) — it comes forward with the focus it last had, and the window holding the focus is usually over the field, which makes a click answer aim_occluded; do NOT type through the foreground instead, whatever holds the focus would take the characters. A type that answers ok:true with landing {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent`); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does;",
       "README.md":
-        "A successful `type` can carry `landing: { confirmed: false, why }`. The write took the background route, but the server could not confirm that it reached the field you named — for example, in a WPF window, whose fields have no window of their own. **This is a report, not a state that can be resolved here**: nothing in the response establishes whether the characters arrived, reading the field back does not settle it (`desktop_state` answers about the foreground, and may come back with no value at all or name a field in another window with the same title), and a retry is not a repeat — a background write lands at the caret and replaces the selection, exactly as typing does.",
+        "A successful `type` can carry `landing: { confirmed: false, why }`. The write took the background route, but the server could not confirm that it reached the field you named — for example, in a WPF window, whose fields have no window of their own. **This is a report, not a state that can be resolved here**: nothing in the response establishes whether the characters arrived, reading the field back does not settle it (`desktop_state` answers about the foreground, and may come back with no value at all — `hints.focusedElementValueAbsent` says so when the road that never carries one answered — or name a field in another window with the same title), `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write, and retrying a nonempty write is not a repeat — a background write lands at the caret and replaces the selection, exactly as typing does.",
       "README.ja.md":
-        "成功した `type` に `landing: { confirmed: false, why }` が付くことがある。書き込みは背景の経路を通ったが、指定した欄に届いたことをサーバが確かめられなかった（例: WPF のウィンドウは欄ごとのウィンドウを持たない）。**これは報告であり、ここで解消できる状態ではない**——応答の中に文字が届いたかを示すものは無く、欄を読み返しても決着しない（`desktop_state` は前面について答え、値を一切返さないことも、同じ題の別の窓の欄を名乗ることもある）。そして**再試行は反復ではない**——背景の書き込みは打鍵と同じくキャレット位置に入り、選択を置換する。",
+        "成功した `type` に `landing: { confirmed: false, why }` が付くことがある。書き込みは背景の経路を通ったが、指定した欄に届いたことをサーバが確かめられなかった（例: WPF のウィンドウは欄ごとのウィンドウを持たない）。**これは報告であり、ここで解消できる状態ではない**——応答の中に文字が届いたかを示すものは無く、欄を読み返しても決着しない（`desktop_state` は前面について答え、値を一切返さないことも、同じ題の別の窓の欄を名乗ることもある。値を運ばない road が答えたときは `hints.focusedElementValueAbsent` がそう言う）。`diff.value_changed` も配達ではない——その基準は書き込みではなく `desktop_discover` のスナップショットである。そして**空でない書き込みの再試行は反復ではない**——背景の書き込みは打鍵と同じくキャレット位置に入り、選択を置換する。",
     };
     for (const [rel, expected] of Object.entries(EXPECTED)) {
-      const text = readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8");
-      // EXTRACT AND COMPARE, not `toContain`: a substring check passes when text is APPENDED, and
-      // the first version of this cell did exactly that — gate 1's `Retry the write now.` walked
-      // in behind the pinned paragraph and the suite stayed green. The paragraph runs from its
-      // opening words to the end of the shipped string (a `",` in the sources) or the end of the
-      // line (in the READMEs), and that whole slice has to match.
+      // NORMALISE LINE ENDINGS FIRST. Only `.githooks/**` is pinned to LF in `.gitattributes`, so
+      // on a Windows checkout with core.autocrlf=true the READMEs come back CRLF and a slice that
+      // ends at "\n" keeps a trailing "\r" — the cell passed on CI and on macOS and failed on the
+      // one machine that runs it before a merge (win2, 2026-09-14). CI proves nothing here either:
+      // the unit job in `.github/workflows/ci.yml` is commented out.
+      const text = readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8")
+        .replace(/\r\n/g, "\n");
       const start = text.indexOf(expected.slice(0, 40));
       expect(start, `${rel} no longer opens the landing paragraph the same way`).toBeGreaterThan(-1);
-      const end = rel.startsWith("src/") ? text.indexOf('",', start) : text.indexOf("\n", start);
-      expect(text.slice(start, end), `${rel}'s landing paragraph changed`).toBe(expected);
+      if (rel.startsWith("src/")) {
+        // THE SHIPPED UNIT IS THE WHOLE STRING LITERAL, not the paragraph inside it. Anchoring on
+        // the paragraph's own opening words leaves everything BEFORE it unpinned, and gate 2
+        // walked `Retry the write now.` in at the head of the `keyboard_target_unsafe` bullet with
+        // the cell green (2026-09-14). So the pin runs quote to quote: in `server-windows.ts` the
+        // paragraph is the tail of a bullet whose whole prefix ships to the same caller.
+        const open = text.lastIndexOf('"', start);
+        const end = text.indexOf('",', start);
+        expect(open, `${rel}: the landing paragraph's string literal has no opening quote`).toBeGreaterThan(-1);
+        expect(end, `${rel}: the landing paragraph's string literal is not terminated`).toBeGreaterThan(start);
+        expect(text.slice(open + 1, end), `${rel}'s shipped string changed`).toBe(expected);
+      } else {
+        const end = text.indexOf("\n", start);
+        expect(end, `${rel}: the landing paragraph does not end a line`).toBeGreaterThan(start);
+        expect(text.slice(start, end), `${rel}'s landing paragraph changed`).toBe(expected);
+        // AND IT IS ITS OWN BLOCK, blank line above and below. `end` stops at the newline, so an
+        // instruction added on the next line is invisible to the comparison above — gate 2 put the
+        // deleted Japanese read-back sentence back that way and the cell stayed green.
+        expect(text.slice(start - 2, start), `${rel}: something was added directly above the paragraph`).toBe("\n\n");
+        expect(text.slice(end, end + 2), `${rel}: something was added directly below the paragraph`).toBe("\n\n");
+      }
     }
   });
 

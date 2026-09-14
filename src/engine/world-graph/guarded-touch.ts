@@ -258,7 +258,13 @@ export type TouchResult =
  * between click and observation (Win32 SendInput returns before WM_PAINT).
  */
 export interface TouchEnvironment {
-  /** Return freshly resolved live entities (pre-touch snapshot). */
+  /**
+   * Return the entities a diff's PRE side is taken from. NOT a fresh resolve: the only
+   * implementation hands back the session's stored `desktop_discover` snapshot
+   * (`session-registry.ts:362`). The shipped `landing` sentence says exactly that about
+   * `diff.value_changed`, and this line used to say the opposite — an auditor starting here
+   * would have "fixed" the shipped string back (gate 2, 2026-09-14).
+   */
   resolveLiveEntities(): UiEntity[];
   /** Return the current world-state generation string. */
   currentGeneration(): string;

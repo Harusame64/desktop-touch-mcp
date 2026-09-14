@@ -316,6 +316,12 @@ For the **Nth action** in the same window (warm UIA cache, no re-orient):
 | Verify | `screenshot(detail='text')` 1500 (read the field back) | `get_context()` 130 — reads `focusedElement.value` |
 | **Total** | **1530** | **160** — (−90%) |
 
+> **The "After" row is a token count, not a verification.** Measured 2026-09-14: `desktop_state`
+> can answer from the perception view, which carries no value at all, so `focusedElement.value`
+> comes back empty on a window whose title does not move — including when the write LANDED. The
+> shipped `landing` advice now says a read-back does not settle delivery; this table predates that
+> and is kept for the token arithmetic only. Fifth audience for the same fact (gate 2, 2026-09-14).
+
 ### 5.3 Teams — post a message (Chromium, CDP diff)
 
 | Step | Today | After |

@@ -386,9 +386,13 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     UIA or CDP, where a value may well be there. Telling a caller "your title is fixed, so there
  *     is no value" would be wrong in exactly those cases, in both directions.
  *     `desktop_act`'s own advice said "read the field back before relying on it" and stopped
- *     there; it now names `hints.focusedElementValueAbsent`, which is true on every road and is
- *     something the caller can actually check, because a caller who reads an empty field silently
- *     concludes the write never landed.
+ *     there; it now names `hints.focusedElementValueAbsent`, which the caller can actually check,
+ *     because a caller who reads an empty field silently concludes the write never landed. THAT
+ *     HINT IS NOT A COMPLETE DETECTOR, and this block came close to selling it as one: it is
+ *     written on the view road and on a masked CDP value only (`desktop-state.ts:783`, `:819`).
+ *     On the UIA road a provider that serves no value leaves an absent value with NO hint — which
+ *     `desktop-state.ts`'s own shipped caveat says outright, so the two would have disagreed in
+ *     the same repository (gate 2, 2026-09-14).
  *
  *     THREE FORMS OF THIS SENTENCE HAVE BEEN WRONG, all in the same direction — "after this
  *     server writes", "after acting on another window", "when the focused element changes". Each
