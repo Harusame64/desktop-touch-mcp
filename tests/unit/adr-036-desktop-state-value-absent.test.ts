@@ -188,8 +188,13 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         expect(sentence).toContain("A retry appends rather than replaces");
         expect(sentence).toContain("a clear is a write of empty text");
         expect(sentence).toContain("`landing.why` does not reliably tell you");
-        // The one action that remains, stated positively so it is not lost among the refusals.
-        expect(sentence).toContain("act on what it HOLDS");
+        // AND NO ACTION AT ALL, which is where twelve rounds landed. The last version ended
+        // "read the field and act on what it holds" — but the same paragraph had already said the
+        // read may carry no value, may omit one the provider never served, and may name a field in
+        // another window with the same title. The closing action inherited every caveat above it
+        // and would have sent a caller to act on missing or unrelated state (gate 1, `518da7e`).
+        expect(sentence).toContain("treat this landing as a REPORT");
+        expect(sentence).toContain("not a state you can resolve here");
       }
     }
 
@@ -201,6 +206,7 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       // The README carries the two teeth as well — shorter, but a reader there is the one most
       // likely to take "write again" literally.
       expect(text, `${rel} does not warn that a retry appends`).toMatch(/retry appends|\u518d\u8a66\u884c\u306f\u8ffd\u8a18/);
+      expect(text, `${rel} still offers a recovery`).toMatch(/a report, not a state you can resolve|\u5831\u544a\u3067\u3042\u3063\u3066/);
       // …and says the same thing about it as the tool description: not delivery. A README that
       // named it without the limit would be the round-0 mistake with a newer noun.
       expect(text, `${rel} names diff.value_changed without its limit`)
