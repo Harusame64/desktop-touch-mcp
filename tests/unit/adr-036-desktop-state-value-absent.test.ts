@@ -143,11 +143,21 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         expect(sentence).toContain("focusedElementValueAbsent");
         expect(sentence).toContain("view_road_has_no_value");
         expect(sentence).toContain("missing with no hint at all");
-        // The rule itself, both halves — identity AND novelty. Either alone is a road to a false
-        // confirmation: the wrong element with the right text, or the right element with text it
-        // already had.
+        // The rule itself, all three conjuncts. Each alone is a road to a false confirmation: the
+        // wrong element with the right text; the right element with text it already had; and —
+        // the one the first two rounds missed — the right element with NEW text that is not the
+        // text you wrote, which is what a failed write plus an autofill or a user's keystroke
+        // leaves behind (gate 1 on `3217cf3`).
         expect(sentence).toContain("the element it names is the field you wrote");
-        expect(sentence).toContain("did not already hold");
+        expect(sentence).toContain("its value is the text you wrote");
+        expect(sentence).toContain("not one the field already held");
+        // AND THE CASE WHERE THE RULE CANNOT BE APPLIED AT ALL. `desktop_state.focusedElement`
+        // carries no entity id, `EntityView` omits the UIA locator, and the write's own post block
+        // describes whatever held focus afterwards — with the name withheld when that was not the
+        // window named. A duplicate name with no automationId leaves a caller no way to compare,
+        // and advice that demands an impossible check reads as "you did not try hard enough".
+        expect(sentence).toContain("cannot be told apart");
+        expect(sentence).toContain("cannot confirm the write");
       }
     }
   });
