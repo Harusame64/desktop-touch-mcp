@@ -187,19 +187,25 @@ function v1FallbackOnlyError(tool: string, replacement: string): ToolResult {
  * out — a handler that delegates its refusal to a helper has no literal `v2KillSwitchActive()`
  * for a source-reading test to find either.
  *
- * A field on the entry ends the class rather than another check for it: there is one place to
- * write, and a step whose availability is not declared here is available everywhere, which is
- * both the truth for the 25 ordinary steps and the safe default for a new one.
+ * A field on the entry ends the OMISSION rather than adding another check for it: there is one
+ * place to write, and it is required, so a new step has to choose a corner deliberately instead
+ * of falling into one.
  */
 type StepAvailability =
   /**
-   * Exists at every corner — the answer for 25 of the 30 steps, and the one that has to be
-   * WRITTEN rather than defaulted. An optional field lets a new step say nothing, and saying
+   * Exists at every corner — the answer for most steps, and the one that has to be WRITTEN
+   * rather than defaulted. (No count in this sentence: a number in prose is a claim that goes
+   * stale on the next edit to the file it names and nothing checks it, which
+   * `_advice-capability.ts:436` already says about a number this repo has been bitten by — and
+   * gate 2 found two wrong ones right here.) An optional field lets a new step say nothing, and saying
    * nothing is exactly how the catalogue and the dispatcher came apart: gate 1 walked through the
    * denylist that replaced the first source-scan by having a handler delegate its refusal to a
    * helper defined elsewhere, which no lexical rule inside the registry can see. A required field
    * does not catch that either — nothing can — but it turns an OMISSION into a compile error and
-   * leaves only a deliberate lie, which is a different thing to guard against.
+   * leaves only a deliberate lie, which is a different thing to guard against. Measured (gate 2):
+   * an entry that omits the field fails to compile AND throws at module initialisation, and so
+   * does one cast past the type; an entry that declares `"always"` while building its own refusal
+   * with `failCode` in another module passes everything there is to pass.
    */
   | "always"
   /** Exists only while v2 is on; the kill switch refuses it (`v2DisabledError`). */
@@ -238,7 +244,9 @@ function refusalForAvailability(
  * process. The catalogue in `steps[].tool` is built during module initialisation from the same
  * value, and `server-windows.ts` freezes the registered v2 surface at its own module scope the
  * same way — so a dispatcher that re-read `process.env` per call would be the ONLY thing in the
- * server that could change its mind. Same-process code that flips the flag after startup would
+ * server that could change its mind. (On the ENVIRONMENT axis only: `server-windows.ts` also
+ * requires its dynamic import of `desktop-register.js` to have succeeded, which this module,
+ * importing it statically, cannot observe. That asymmetry predates this change.) Same-process code that flips the flag after startup would
  * then get a step refused although the catalogue offers it, or a fallback executed for a surface
  * the server never registered: this PR's own defect, moved from the configuration axis to the
  * time axis (gate 1 on `8818db0`).

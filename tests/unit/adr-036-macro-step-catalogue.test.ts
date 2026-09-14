@@ -164,8 +164,10 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
     // AND THE TWO REFUSALS THEMSELVES, which is what gate 2 showed the list above does not catch:
     // a handler that asks a helper `gateSaysNo()` and returns `v2DisabledError()` carries none of
     // the three spellings, declares no availability, and ships green — the ADR-036 defect,
-    // reintroduced. Denying the refusal a caller can be SHOWN is narrower than denying the
-    // spelling of one gate, because a refusal has to reach the caller to matter.
+    // reintroduced. Denying the two refusal HELPERS is narrower than denying the spelling of one
+    // gate — but only by a step: a handler that builds `failCode("FukuwaraiV2Disabled", …)` by
+    // hand, in another module, reaches the caller and passes every rule here (gate 2, measured).
+    // The compiler is what ends the omission; this ends the careless inline version of the lie.
     expect(code).not.toContain("v2DisabledError");
     expect(code).not.toContain("v1FallbackOnlyError");
 
@@ -173,7 +175,10 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
     // refusal in a helper defined OUTSIDE the registry, where no lexical rule inside it can see
     // — so `availability` is a required field now, `"always"` included. The compiler is the real
     // guard; this counts, so that the claim "every entry declares" is a row someone can read
-    // rather than a property they have to infer from a type.
+    // rather than a property they have to infer from a type. It counts LITERAL declarations
+    // against LITERAL entry headers, so an entry built by a factory — `x: killSwitchOnlyEntry(…)`
+    // — is invisible to both halves and the row is vacuous for it (gate 2). Every shape it does
+    // notice fails red; this one it does not notice at all, and the type is what still holds.
     const entries = (code.match(/^ {2}[a-z_]+:\s*\{/gm) ?? []).length;
     expect(entries).toBeGreaterThan(25);
     expect((code.match(/availability:/g) ?? []).length).toBe(entries);

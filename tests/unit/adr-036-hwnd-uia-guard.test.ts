@@ -373,8 +373,8 @@ describe("ADR-036 I-1 — UIA writes carry the caller's handle into the guard", 
     // INVOKING IT THERE. The second line used to carry
     // `{tool:disambiguate_window_by_handle}`, whose provider is null at both corners
     // this handler can be produced at — `set_element_value` is registered only in the
-    // `else` arm of `server-windows.ts`, and `run_macro` refuses its route unless
-    // declared kill-switch-only in `macro.ts` — so it dropped for every real caller while the array
+    // `else` arm of `server-windows.ts`, and `run_macro` declares its route kill-switch-only
+    // (`macro.ts`, `StepAvailability`) — so it dropped for every real caller while the array
     // above, read at the runner's v2 corner, looked complete.
     //
     // The first attempt to close that pinned nothing: it called `renderAdviceWith` on
