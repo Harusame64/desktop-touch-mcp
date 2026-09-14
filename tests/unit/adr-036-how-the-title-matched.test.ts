@@ -31,6 +31,7 @@ vi.mock("../../src/engine/win32.js", () => ({
   getWindowRectByHwnd: vi.fn(() => null),
   getForegroundHwnd: vi.fn(() => null),
   getWindowClassName: vi.fn(() => "Notepad"),
+  restoreAndFocusWindow: vi.fn(() => null),
   getWindowOwner: vi.fn(() => null),
   isWindowEnabled: vi.fn(() => true),
   getLastActivePopup: vi.fn(() => null),
@@ -46,7 +47,8 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
 import { withPostState } from "../../src/tools/_post.js";
 import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
 import { ok } from "../../src/tools/_types.js";
-import { enumWindowsInZOrder } from "../../src/engine/win32.js";
+import { enumWindowsInZOrder, restoreAndFocusWindow } from "../../src/engine/win32.js";
+import { focusWindowHandler } from "../../src/tools/window.js";
 
 type Win = { hwnd: bigint; title: string; isActive: boolean; className: string; isVisible: boolean };
 
@@ -137,6 +139,39 @@ describe("ADR-036: the response says how the title matched, and lets the caller 
     expect(out.hints).toMatchObject({
       verifyDelivery: { channel: "postmessage" },
       windowMatch: { query: AIM, exact: true },
+    });
+  });
+});
+
+describe("ADR-036: the road the aim advice sends a caller to says it too", () => {
+  /**
+   * `focus_window` runs its OWN `includes` loop over the window list and never calls
+   * `resolveWindowTarget`, so the report does not arrive there for free — measured absent before
+   * this branch (win2, `b3bae16`): the response carried no `hints` block at all. It is the road
+   * that most needs the field, because it is where the aim advice sends a caller whose title went
+   * wrong: the one moment they are asking "which window did my title mean?".
+   */
+  it("reports the match from focus_window, which resolves titles on its own", async () => {
+    const windows = [
+      // Active from the start, so the handler's foreground re-check succeeds and the call ends on
+      // the SUCCESS road. (On `ok:false` — `ForegroundRestricted` — the post wrapper writes no
+      // hints at all, so the field is absent exactly where a caller would most want it. Filed.)
+      { hwnd: 5001n, title: "AIM7F3 notes", isActive: true, className: "Notepad", isVisible: true },
+      { hwnd: 5002n, title: "scratch pad", isActive: false, className: "Notepad", isVisible: true },
+    ];
+    vi.mocked(enumWindowsInZOrder).mockImplementation(() => windows as never);
+    vi.mocked(restoreAndFocusWindow).mockReturnValue({ x: 0, y: 0, width: 10, height: 10 } as never);
+
+    const wrapped = withPostState("focus_window", async (a: Record<string, unknown>) =>
+      focusWindowHandler(a as never),
+    );
+    const out = JSON.parse((await wrapped({ title: "AIM7F3", cdpPort: 9222 }))
+      .content[0]!.text as string) as Record<string, unknown>;
+
+    // The window it focused is the decoy, and the field says the title only CONTAINED the query —
+    // which is the whole signal, on the road where a caller has just been told their aim was off.
+    expect((out.hints as Record<string, unknown>).windowMatch).toMatchObject({
+      query: "AIM7F3", resolvedTitle: "AIM7F3 notes", exact: false, matchCount: 1,
     });
   });
 });

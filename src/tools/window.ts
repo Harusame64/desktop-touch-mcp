@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { recordTitleMatch } from "./_resolve-window.js";
 import { z } from "zod";
 import { getActiveWindow } from "../engine/nutjs.js";
 import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow, isExcludedWindowHandle } from "../engine/win32.js";
@@ -141,8 +142,15 @@ export const focusWindowHandler = async ({
     updateWindowCache(windows);
     const query = title.toLowerCase();
 
-    for (const win of windows) {
-      if (!win.title.toLowerCase().includes(query)) continue;
+    // ADR-036: this tool does its own title matching rather than calling `resolveWindowTarget`, so
+    // it reports the match itself. Same predicate as before, computed once so the COUNT exists to
+    // report — the loop below walks the same windows in the same order and picks the same one.
+    const titleMatches = windows.filter((w) => w.title.toLowerCase().includes(query));
+    if (titleMatches.length > 0) {
+      recordTitleMatch(title, titleMatches[0].title, titleMatches.length);
+    }
+
+    for (const win of titleMatches) {
 
       // ── Issue #197: foreground-transfer auto-escalation ─────────────────
       // Pre-fix behaviour was: call SetForegroundWindow once and return

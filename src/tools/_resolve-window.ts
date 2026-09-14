@@ -370,8 +370,18 @@ export async function withTitleMatchReport<T>(
   return { value, report: box.report };
 }
 
-/** Record a title resolution, unless this scope already has one (see `withTitleMatchReport`). */
-function recordTitleMatch(query: string, resolvedTitle: string, matchCount: number): void {
+/**
+ * Record a title resolution, unless this scope already has one (see `withTitleMatchReport`).
+ *
+ * EXPORTED BECAUSE THIS IS NOT THE ONLY PLACE A TITLE CHOOSES A WINDOW. `focus_window` runs its
+ * own `includes` loop over `enumWindowsInZOrder` and never calls `resolveWindowTarget`; so does
+ * `findTerminalWindow`. A caller cannot see which resolver answered, so a field that appears on
+ * one road and not another is worse than no field — and `focus_window` is exactly where the aim
+ * advice sends a caller whose title went wrong, which makes it the road that most needs to say how
+ * the title matched. Measured absent there before this (win2, `b3bae16`): the response carried no
+ * `hints` block at all.
+ */
+export function recordTitleMatch(query: string, resolvedTitle: string, matchCount: number): void {
   const store = titleMatch.getStore();
   if (!store || store.report !== null) return;
   store.report = {
