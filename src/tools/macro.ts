@@ -137,16 +137,6 @@ import {
 } from "./desktop-register.js";
 import { resolveV2Activation } from "./desktop-activation.js";
 
-/**
- * Phase 4 (Codex PR #41 round 3 P1): the v2 World-Graph dispatchers
- * registered above must honour the same DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1
- * kill switch that gates the top-level registerDesktopTools registration.
- * Without this gate, run_macro provides an alternate execution path that
- * silently re-enables v2 even when the operator has opted out.
- */
-function v2KillSwitchActive(): boolean {
-  return !resolveV2Activation(process.env).enabled;
-}
 
 function v2DisabledError(): ToolResult {
   return failCode(
@@ -185,6 +175,48 @@ function v1FallbackOnlyError(tool: string, replacement: string): ToolResult {
 // Tool registry
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ADR-036 — which server configuration a step exists in, when it is not both.
+ *
+ * THE GATE IS DATA BECAUSE TWO READERS NEED IT. The catalogue in `steps[].tool` has to know
+ * before the macro is written, and the dispatcher has to know when the step runs; when the
+ * dispatcher's half was a `v2KillSwitchActive()` call inside each handler body, the catalogue's
+ * half had to be a second list, and nothing made the two agree. Gate 2 demonstrated the cost by
+ * adding a v2-gated entry and not adding it to the list: clean `tsc`, green suite, and a
+ * catalogue advertising a step that refuses. Gate 1 then found the same hole one level further
+ * out — a handler that delegates its refusal to a helper has no literal `v2KillSwitchActive()`
+ * for a source-reading test to find either.
+ *
+ * A field on the entry ends the OMISSION rather than adding another check for it: there is one
+ * place to write, and it is required, so a new step has to choose a corner deliberately instead
+ * of falling into one.
+ */
+type StepAvailability =
+  /**
+   * Exists at every corner — the answer for most steps, and the one that has to be WRITTEN
+   * rather than defaulted. (No count in this sentence: a number in prose is a claim that goes
+   * stale on the next edit to the file it names and nothing checks it, which
+   * `_advice-capability.ts:436` already says about a number this repo has been bitten by — and
+   * gate 2 found two wrong ones right here.) An optional field lets a new step say nothing, and saying
+   * nothing is exactly how the catalogue and the dispatcher came apart: gate 1 walked through the
+   * denylist that replaced the first source-scan by having a handler delegate its refusal to a
+   * helper defined elsewhere, which no lexical rule inside the registry can see. A required field
+   * does not catch that either — nothing can — but it turns an OMISSION into a compile error and
+   * leaves only a deliberate lie, which is a different thing to guard against. Measured (gate 2):
+   * an entry that omits the field fails to compile AND throws at module initialisation, and so
+   * does one cast past the type; an entry that declares `"always"` while building its own refusal
+   * with `failCode` in another module passes everything there is to pass.
+   */
+  | "always"
+  /** Exists only while v2 is on; the kill switch refuses it (`v2DisabledError`). */
+  | { corner: "v2Only" }
+  /**
+   * Exists only while the kill switch is on; v2 mode refuses it and names what to use instead.
+   * The replacement string lives HERE so the sentence a caller gets at run time and the
+   * catalogue they read beforehand cannot disagree about which tool belongs to which corner.
+   */
+  | { corner: "v1FallbackOnly"; replacement: string };
+
 interface ToolEntry {
   // Phase 4: widened from z.ZodObject to z.ZodTypeAny so dispatchers backed by
   // z.discriminatedUnion (keyboard / clipboard / window_dock / scroll /
@@ -192,7 +224,38 @@ interface ToolEntry {
   schema: z.ZodTypeAny;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: ToolHandler<any>;
+  /** Required: every step states its corner, and `"always"` is a statement, not a default. */
+  availability: StepAvailability;
 }
+
+/** The refusal for a step this configuration does not have, or `null` when it has it. */
+function refusalForAvailability(
+  tool: string,
+  availability: StepAvailability,
+  v2On: boolean,
+): ToolResult | null {
+  if (availability === "always") return null;
+  if (availability.corner === "v2Only") return v2On ? null : v2DisabledError();
+  return v2On ? v1FallbackOnlyError(tool, availability.replacement) : null;
+}
+
+/**
+ * THE CONFIGURATION IS READ ONCE, HERE, and the dispatcher uses this reading for the life of the
+ * process. The catalogue in `steps[].tool` is built during module initialisation from the same
+ * value, and `server-windows.ts` freezes the registered v2 surface at its own module scope the
+ * same way — so a dispatcher that re-read `process.env` per call would be the ONLY thing in the
+ * server that could change its mind. (On the ENVIRONMENT axis only: `server-windows.ts` also
+ * requires its dynamic import of `desktop-register.js` to have succeeded, which this module,
+ * importing it statically, cannot observe. That asymmetry predates this change.) Same-process code that flips the flag after startup would
+ * then get a step refused although the catalogue offers it, or a fallback executed for a surface
+ * the server never registered: this PR's own defect, moved from the configuration axis to the
+ * time axis (gate 1 on `8818db0`).
+ *
+ * `dispatchableStepNames` still takes an `env` so a test can ask what a DIFFERENT server would
+ * advertise. That is a question about another process, and it is answered without touching this
+ * one's answer.
+ */
+const V2_ON_AT_STARTUP = resolveV2Activation(process.env).enabled;
 
 /**
  * The text / image content extracted from an inner step's `ToolResult`, plus the
@@ -232,8 +295,15 @@ export interface InnerToolOutcome {
 export async function runInnerToolAsResult(
   entry: ToolEntry,
   validated: unknown,
+  tool: string,
 ): Promise<Result<InnerToolOutcome, InnerToolOutcome>> {
-  const result = await entry.handler(validated);
+  // ADR-036 — THE CONFIGURATION GATE, where the handler's own `if` used to be. It sits here, not
+  // at the call site, so a refused step is adapted by exactly the path a handler's refusal was:
+  // same envelope, same `ok:false` parse, same `stop_on_error` behaviour. The name is a required
+  // argument rather than an optional one because the V1 sentence names the tool, and a refusal
+  // that forgot its own name is the kind of thing that reads fine and ships.
+  const refusal = refusalForAvailability(tool, entry.availability, V2_ON_AT_STARTUP);
+  const result = refusal ?? (await entry.handler(validated));
 
   const textLines: string[] = [];
   const images: Array<{ data: string; mimeType: string }> = [];
@@ -282,111 +352,113 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // "desktop_state", args:{include:["envelope"]}})` would silently strip
   // include — same-pattern bug as the server.tool registration path.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandlerWithIncludeRoute as any },
+  desktop_state:        { availability: "always", schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandlerWithIncludeRoute as any },
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope schema + handler from screenshot.ts so `include` survives
   // this dispatcher's `z.object(schema).parse(args)` call. Without this,
   // `run_macro({tool:"screenshot", args:{include:["envelope"]}})` would
   // silently strip include — same-pattern bug as PR #112 desktop_state path.
-  screenshot:           { schema: z.object(screenshotRegistrationSchema), handler: screenshotRegistrationHandler as typeof screenshotHandler },
+  screenshot:           { availability: "always", schema: z.object(screenshotRegistrationSchema), handler: screenshotRegistrationHandler as typeof screenshotHandler },
   // Action — native
-  mouse_click:          { schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
+  mouse_click:          { availability: "always", schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from mouse.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  mouse_drag:           { schema: z.object(mouseDragRegistrationSchema), handler: mouseDragRegistrationHandler as typeof mouseDragHandler },
-  click_element:        { schema: z.object(clickElementRegistrationSchema), handler: clickElementRegistrationHandler as typeof clickElementHandler },
+  mouse_drag:           { availability: "always", schema: z.object(mouseDragRegistrationSchema), handler: mouseDragRegistrationHandler as typeof mouseDragHandler },
+  click_element:        { availability: "always", schema: z.object(clickElementRegistrationSchema), handler: clickElementRegistrationHandler as typeof clickElementHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from window.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  focus_window:         { schema: z.object(focusWindowRegistrationSchema), handler: focusWindowRegistrationHandler as typeof focusWindowHandler },
+  focus_window:         { availability: "always", schema: z.object(focusWindowRegistrationSchema), handler: focusWindowRegistrationHandler as typeof focusWindowHandler },
   // Action — text/clipboard dispatchers (Phase 2)
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from keyboard.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  keyboard:             { schema: keyboardRegistrationSchema,          handler: keyboardRegistrationHandler as typeof keyboardHandler },
+  keyboard:             { availability: "always", schema: keyboardRegistrationSchema,          handler: keyboardRegistrationHandler as typeof keyboardHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from clipboard.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  clipboard:            { schema: clipboardRegistrationSchema,         handler: clipboardRegistrationHandler as typeof clipboardHandler },
+  clipboard:            { availability: "always", schema: clipboardRegistrationSchema,         handler: clipboardRegistrationHandler as typeof clipboardHandler },
   // Action — window/scroll/terminal dispatchers (Phase 2)
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from window-dock.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  window_dock:          { schema: windowDockRegistrationSchema,         handler: windowDockRegistrationHandler as typeof windowDockHandler },
+  window_dock:          { availability: "always", schema: windowDockRegistrationSchema,         handler: windowDockRegistrationHandler as typeof windowDockHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from scroll.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  scroll:               { schema: scrollRegistrationSchema,             handler: scrollRegistrationHandler as typeof scrollDispatchHandler },
+  scroll:               { availability: "always", schema: scrollRegistrationSchema,             handler: scrollRegistrationHandler as typeof scrollDispatchHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from terminal.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  terminal:             { schema: terminalRegistrationSchema,           handler: terminalRegistrationHandler as typeof terminalDispatchHandler },
+  terminal:             { availability: "always", schema: terminalRegistrationSchema,           handler: terminalRegistrationHandler as typeof terminalDispatchHandler },
   // Action — browser (Phase 3)
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_open:         { schema: z.object(browserOpenRegistrationSchema), handler: browserOpenRegistrationHandler as typeof browserOpenHandler },
+  browser_open:         { availability: "always", schema: z.object(browserOpenRegistrationSchema), handler: browserOpenRegistrationHandler as typeof browserOpenHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper、discriminatedUnion):
   // use the module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_eval:         { schema: browserEvalRegistrationSchema,         handler: browserEvalRegistrationHandler as typeof browserEvalHandler },
+  browser_eval:         { availability: "always", schema: browserEvalRegistrationSchema,         handler: browserEvalRegistrationHandler as typeof browserEvalHandler },
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_search:       { schema: z.object(browserSearchRegistrationSchema), handler: browserSearchRegistrationHandler as typeof browserSearchHandler },
-  browser_overview:     { schema: z.object(browserOverviewRegistrationSchema), handler: browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler },
-  browser_locate:       { schema: z.object(browserLocateRegistrationSchema), handler: browserLocateRegistrationHandler as typeof browserFindElementHandler },
+  browser_search:       { availability: "always", schema: z.object(browserSearchRegistrationSchema), handler: browserSearchRegistrationHandler as typeof browserSearchHandler },
+  browser_overview:     { availability: "always", schema: z.object(browserOverviewRegistrationSchema), handler: browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler },
+  browser_locate:       { availability: "always", schema: z.object(browserLocateRegistrationSchema), handler: browserLocateRegistrationHandler as typeof browserFindElementHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_click:        { schema: z.object(browserClickRegistrationSchema), handler: browserClickRegistrationHandler as typeof browserClickElementHandler },
-  browser_navigate:     { schema: z.object(browserNavigateRegistrationSchema), handler: browserNavigateRegistrationHandler as typeof browserNavigateHandler },
+  browser_click:        { availability: "always", schema: z.object(browserClickRegistrationSchema), handler: browserClickRegistrationHandler as typeof browserClickElementHandler },
+  browser_navigate:     { availability: "always", schema: z.object(browserNavigateRegistrationSchema), handler: browserNavigateRegistrationHandler as typeof browserNavigateHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_fill:         { schema: z.object(browserFillRegistrationSchema), handler: browserFillRegistrationHandler as typeof browserFillInputHandler },
+  browser_fill:         { availability: "always", schema: z.object(browserFillRegistrationSchema), handler: browserFillRegistrationHandler as typeof browserFillInputHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_form:         { schema: z.object(browserFormRegistrationSchema), handler: browserFormRegistrationHandler as typeof browserGetFormHandler },
+  browser_form:         { availability: "always", schema: z.object(browserFormRegistrationSchema), handler: browserFormRegistrationHandler as typeof browserGetFormHandler },
   // Workspace / wait / notification
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope wrapped handler from workspace.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  workspace_snapshot:   { schema: z.object(workspaceSnapshotRegistrationSchema), handler: workspaceSnapshotRegistrationHandler as typeof workspaceSnapshotHandler },
+  workspace_snapshot:   { availability: "always", schema: z.object(workspaceSnapshotRegistrationSchema), handler: workspaceSnapshotRegistrationHandler as typeof workspaceSnapshotHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from workspace.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  workspace_launch:     { schema: z.object(workspaceLaunchRegistrationSchema), handler: workspaceLaunchRegistrationHandler as typeof workspaceLaunchHandler },
+  workspace_launch:     { availability: "always", schema: z.object(workspaceLaunchRegistrationSchema), handler: workspaceLaunchRegistrationHandler as typeof workspaceLaunchHandler },
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope wrapped handler from wait-until.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  wait_until:           { schema: z.object(waitUntilRegistrationSchema), handler: waitUntilRegistrationHandler as typeof waitUntilHandler },
+  wait_until:           { availability: "always", schema: z.object(waitUntilRegistrationSchema), handler: waitUntilRegistrationHandler as typeof waitUntilHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from notification.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  notification_show:    { schema: z.object(notificationShowRegistrationSchema), handler: notificationShowRegistrationHandler as typeof notificationShowHandler },
+  notification_show:    { availability: "always", schema: z.object(notificationShowRegistrationSchema), handler: notificationShowRegistrationHandler as typeof notificationShowHandler },
   // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
-  // Both handlers re-check the kill switch on every call so run_macro cannot
-  // bypass the operator's opt-out. (Codex PR #41 round 3 P1.)
+  // Both DECLARE the corner they belong to; the dispatcher refuses before the
+  // handler, so run_macro still cannot bypass the operator's opt-out, and the
+  // catalogue reads the same declaration. (Codex PR #41 round 3 P1; the gate
+  // became data in ADR-036 — see `StepAvailability`.)
   //
   // ADR-010 P1 S4 (sub-plan §2.5 + §3.3): use the module-scope wrapped
   // handlers + injected schemas from `desktop-register.ts` so this
@@ -398,10 +470,8 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // emits ToolCall events for blocked calls.
   desktop_discover:     {
     schema: z.object(desktopDiscoverRegistrationSchema),
+    availability: { corner: "v2Only" },
     handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
-      if (v2KillSwitchActive()) {
-        return v2DisabledError();
-      }
       // The wrapped handler returns the looser `McpToolResult` shape
       // (`_envelope.ts`); the runtime content blocks are bit-equal with
       // the strict `ToolResult` discriminated union, so the cast is
@@ -412,43 +482,35 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   },
   desktop_act:          {
     schema: z.object(desktopActRegistrationSchema),
+    availability: { corner: "v2Only" },
     handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
-      if (v2KillSwitchActive()) {
-        return v2DisabledError();
-      }
       return (await desktopActRegistrationHandler(input)) as ToolResult;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any,
   },
   // V1 fallback macros — only callable when v2 is killed (mirrors the
-  // server-windows.ts kill-switch fallback). In v2 mode these short-circuit
-  // with a v2 replacement hint. (Codex PR #41 round 6 P1×2.)
+  // server-windows.ts kill-switch fallback). In v2 mode the dispatcher answers
+  // a v2 replacement hint built from the `replacement` declared here, so the
+  // sentence and the catalogue cannot disagree. (Codex PR #41 round 6 P1×2.)
   get_windows: {
     schema: z.object(getWindowsSchema),
-    handler: async (): Promise<ToolResult> => {
-      if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("get_windows", "desktop_discover.windows[]");
-      }
-      return getWindowsHandler();
-    },
+    availability: { corner: "v1FallbackOnly", replacement: "desktop_discover.windows[]" },
+    handler: async (): Promise<ToolResult> => getWindowsHandler(),
   },
   get_ui_elements: {
     schema: z.object(getUiElementsSchema),
-    handler: async (input: unknown): Promise<ToolResult> => {
-      if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("get_ui_elements", "desktop_discover.entities[]");
-      }
-      return getUiElementsHandler(input as Parameters<typeof getUiElementsHandler>[0]);
-    },
+    availability: { corner: "v1FallbackOnly", replacement: "desktop_discover.entities[]" },
+    handler: async (input: unknown): Promise<ToolResult> =>
+      getUiElementsHandler(input as Parameters<typeof getUiElementsHandler>[0]),
   },
   set_element_value: {
     schema: z.object(setElementValueSchema),
-    handler: async (input: unknown): Promise<ToolResult> => {
-      if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("set_element_value", "desktop_act({action:'setValue', lease, text})");
-      }
-      return setElementValueHandler(input as Parameters<typeof setElementValueHandler>[0]);
+    availability: {
+      corner: "v1FallbackOnly",
+      replacement: "desktop_act({action:'setValue', lease, text})",
     },
+    handler: async (input: unknown): Promise<ToolResult> =>
+      setElementValueHandler(input as Parameters<typeof setElementValueHandler>[0]),
   },
   // run_macro is intentionally excluded → prevents recursion
 };
@@ -457,12 +519,58 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
 // Schema & Handler
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ADR-036 B3 — the step catalogue must name what THIS configuration can dispatch.
+ *
+ * The list in `steps[].tool` was `Object.keys(TOOL_REGISTRY)`, which is the v1.0.0 surface and
+ * not a surface any running server has. It lied in BOTH directions, measured at the four corners
+ * (win2, 2026-09-13): with v2 on it offered `get_windows`, `get_ui_elements` and
+ * `set_element_value`, which the handlers below refuse; with the kill switch on it offered
+ * `desktop_discover` and `desktop_act`, which they also refuse.
+ *
+ * The refusals are correct and stay — this changes only what is ADVERTISED. That distinction is
+ * the whole defect: a caller who reads the catalogue writes a macro that cannot run, and finds out
+ * one step at a time, at run time, having already acted on the steps before it. `stop_on_error`
+ * defaults to true, so the first refusal ends the macro with whatever the earlier steps did left
+ * in place.
+ *
+ * ONE DECLARATION, TWO READERS. The catalogue and the refusal both read `entry.availability`, so
+ * there is no second list to forget and no lexical pattern for a test to chase — see
+ * `StepAvailability` for what two rounds of review cost before the gate became data.
+ *
+ * WHAT THIS LIST IS NOT: the server's tool surface. Five registered tools are absent from
+ * `TOOL_REGISTRY` and therefore from the catalogue at every corner — `excel`, `key_locker`,
+ * `server_status`, `screenshot_query`, `screenshot_gc` — because `run_macro` cannot dispatch them,
+ * which is a different fact from whether a caller can call them directly (they can). A step naming
+ * one is answered `Unknown tool`, and that is correct rather than a hole: the catalogue answers
+ * "what can be a step", and the honesty this commit adds is in the other direction — it stops
+ * offering steps that ARE in the registry but cannot run in this configuration.
+ *
+ * The measuring side raised the asymmetry as a possible second defect; it is not one, and the cell
+ * below pins the five so that a later reading does not have to re-derive that.
+ *
+ * The step names this server can actually dispatch, in registry order.
+ *
+ * Read at module scope, like every other description in this repo: a running server answers for
+ * the environment it was started with, and the kill switches are read the same way everywhere
+ * (`resolveV2Activation`, `keyLockerDisabled`). A server started with the flag flipped is a
+ * different server.
+ */
+export function dispatchableStepNames(env?: Record<string, string | undefined>): string[] {
+  // No argument means THIS server: the reading taken at startup, which is what the description
+  // was built from and what the dispatcher enforces. An argument asks about a different one.
+  const v2On = env ? resolveV2Activation(env).enabled : V2_ON_AT_STARTUP;
+  return Object.entries(TOOL_REGISTRY)
+    .filter(([name, entry]) => refusalForAvailability(name, entry.availability, v2On) === null)
+    .map(([name]) => name);
+}
+
 export const runMacroSchema = {
   steps: z
     .array(
       z.object({
         tool: z.string().describe(
-          `Tool name to call. One of: ${Object.keys(TOOL_REGISTRY).join(", ")}, or the special pseudo-command "sleep".`
+          `Tool name to call. One of: ${dispatchableStepNames().join(", ")}, or the special pseudo-command "sleep".`
         ),
         params: z
           .record(z.string(), z.unknown())
@@ -564,7 +672,7 @@ export const runMacroHandler = async ({
       // silent-success contract (matrix §3.1 line 157: an inner ok:false envelope
       // halts `stop_on_error: true` like a throw does) now lives at the typed
       // boundary. See `runInnerToolAsResult` for the relocated parse logic.
-      const outcome = await runInnerToolAsResult(entry, validated);
+      const outcome = await runInnerToolAsResult(entry, validated, tool);
       const { textLines, images, links } = outcome.ok ? outcome.value : outcome.error;
 
       if (outcome.ok) {
@@ -754,7 +862,7 @@ export function registerMacroTools(server: McpServer): void {
     "run_macro",
     buildDesc({
       purpose: "Execute multiple tools sequentially in one MCP call — eliminates round-trip latency for predictable multi-step workflows.",
-      details: "steps[] is an array of {tool, params} objects. Accepts all desktop-touch tools plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.",
+      details: "steps[] is an array of {tool, params} objects. Not every tool is a valid step: `excel`, `key_locker`, `server_status`, `screenshot_query`, `screenshot_gc` and `run_macro` itself never are, and whether `desktop_discover`/`desktop_act` or `get_windows`/`get_ui_elements`/`set_element_value` are depends on this server's configuration — each pair is refused in the other one. Everything else in the tool list is a step. The `tool` field's own description names the exact set THIS server dispatches. Plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.",
       prefer: "Use for predictable fixed sequences (focus → sleep → type → screenshot). Do not use for conditional logic — return to the LLM between branches so it can inspect intermediate state.",
       caveats: "If any step may fail conditionally (e.g. a dialog that may or may not appear), split the macro at that point. Each screenshot step within a macro incurs the same token cost as a standalone call.",
       examples: [
