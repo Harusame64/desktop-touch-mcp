@@ -215,9 +215,15 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    *     recording server, so this is the string the client is handed and not a re-join of the
    *     source. (It matched win2's four-corner measurement of a running server exactly: 7,356
    *     characters before this round's edit.)
-   *   - `server-windows.instructions.txt` — the `instructions:` array, sliced from source. That
-   *     entry point cannot be imported here (it is the Windows server, with top-level awaits on
-   *     native modules), so this side is source text and says so.
+   *   - `server-windows.instructions.txt` — the whole `new McpServer(...)` call, sliced from source.
+   *     That entry point cannot be imported here (it is the Windows server, with top-level awaits on
+   *     native modules), so this side is source text. THAT THE SOURCE SLICE IS WHAT SHIPS WAS AN
+   *     ASSUMPTION UNTIL 2026-09-15: win2 extracted the array from this slice, joined it the way
+   *     production does, and compared it to what a real Windows server puts on the wire — byte
+   *     identical at all four corners (`2658e49`). The unit stays the source slice, which is WIDER
+   *     than the wire string (it catches a spread, or a second options key, that the wire would only
+   *     show as a replacement); what was missing was the correspondence, and that is now measured.
+   *     The two tool descriptions were checked the same way in the same run: 8/8 byte identical.
    *   - `README.section.md` / `README.ja.section.md` — the whole `## Standard workflow` section,
    *     heading to next heading.
    *
