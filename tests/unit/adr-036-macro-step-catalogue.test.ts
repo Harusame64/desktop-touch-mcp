@@ -166,6 +166,45 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
   });
 
   /**
+   * THE DISPATCHER AND THE CATALOGUE READ THE SAME MOMENT. The catalogue is frozen at module
+   * initialisation — it is a string in a schema — and `server-windows.ts` freezes the registered
+   * surface the same way, so a dispatcher that re-read `process.env` per step would be the only
+   * thing in the server that could change its mind mid-process. Same-process code flipping the
+   * flag would then get a step refused although the catalogue offers it, or a v1 fallback run for
+   * a surface the server never registered: this file's own defect moved from the configuration
+   * axis to the time axis (gate 1 on `8818db0`).
+   */
+  it("does not change its mind when the environment moves after startup", async () => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    const fresh = await import("../../src/tools/macro.js");
+    const advertisedAtStartup = fresh.dispatchableStepNames();
+    expect(advertisedAtStartup).toContain("desktop_act");
+    try {
+      vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "1");
+      // The catalogue this build published cannot move, so neither may the answer it gives about
+      // itself — and asking about ANOTHER server still works, because that is a different question.
+      expect(fresh.dispatchableStepNames()).toEqual(advertisedAtStartup);
+      expect(fresh.dispatchableStepNames(process.env)).not.toContain("desktop_act");
+
+      // AND THE DISPATCHER'S HALF, which is the half that matters and the one a mutation slipped
+      // through: re-reading `process.env` per step passed every cell above, because they all ask
+      // the catalogue. The refusal is what a caller meets, so the refusal is what this asks.
+      const ran = { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+      const entry = {
+        schema: {},
+        handler: async () => ran,
+        availability: { corner: "v2Only" },
+      } as unknown as Parameters<typeof fresh.runInnerToolAsResult>[0];
+      const outcome = await fresh.runInnerToolAsResult(entry, {}, "desktop_act");
+      expect(outcome.ok, "a v2-only step must still run for a server that started with v2 on").toBe(true);
+    } finally {
+      vi.resetModules();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  /**
    * AND THE ADVERTISEMENT IS BUILT AT MODULE LOAD, so testing it once tests one corner. Gate 1:
    * hard-coding the description to `dispatchableStepNames({})` would leave every cell above green
    * while a server started under the kill switch advertised the wrong steps. Re-import the module

@@ -216,13 +216,28 @@ interface ToolEntry {
 function refusalForAvailability(
   tool: string,
   availability: StepAvailability | undefined,
-  env: Record<string, string | undefined> = process.env,
+  v2On: boolean,
 ): ToolResult | null {
   if (!availability) return null;
-  const v2On = resolveV2Activation(env).enabled;
   if (availability.corner === "v2Only") return v2On ? null : v2DisabledError();
   return v2On ? v1FallbackOnlyError(tool, availability.replacement) : null;
 }
+
+/**
+ * THE CONFIGURATION IS READ ONCE, HERE, and the dispatcher uses this reading for the life of the
+ * process. The catalogue in `steps[].tool` is built during module initialisation from the same
+ * value, and `server-windows.ts` freezes the registered v2 surface at its own module scope the
+ * same way — so a dispatcher that re-read `process.env` per call would be the ONLY thing in the
+ * server that could change its mind. Same-process code that flips the flag after startup would
+ * then get a step refused although the catalogue offers it, or a fallback executed for a surface
+ * the server never registered: this PR's own defect, moved from the configuration axis to the
+ * time axis (gate 1 on `8818db0`).
+ *
+ * `dispatchableStepNames` still takes an `env` so a test can ask what a DIFFERENT server would
+ * advertise. That is a question about another process, and it is answered without touching this
+ * one's answer.
+ */
+const V2_ON_AT_STARTUP = resolveV2Activation(process.env).enabled;
 
 /**
  * The text / image content extracted from an inner step's `ToolResult`, plus the
@@ -269,7 +284,7 @@ export async function runInnerToolAsResult(
   // same envelope, same `ok:false` parse, same `stop_on_error` behaviour. The name is a required
   // argument rather than an optional one because the V1 sentence names the tool, and a refusal
   // that forgot its own name is the kind of thing that reads fine and ships.
-  const refusal = refusalForAvailability(tool, entry.availability);
+  const refusal = refusalForAvailability(tool, entry.availability, V2_ON_AT_STARTUP);
   const result = refusal ?? (await entry.handler(validated));
 
   const textLines: string[] = [];
@@ -520,9 +535,12 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
  * (`resolveV2Activation`, `keyLockerDisabled`). A server started with the flag flipped is a
  * different server.
  */
-export function dispatchableStepNames(env: Record<string, string | undefined> = process.env): string[] {
+export function dispatchableStepNames(env?: Record<string, string | undefined>): string[] {
+  // No argument means THIS server: the reading taken at startup, which is what the description
+  // was built from and what the dispatcher enforces. An argument asks about a different one.
+  const v2On = env ? resolveV2Activation(env).enabled : V2_ON_AT_STARTUP;
   return Object.entries(TOOL_REGISTRY)
-    .filter(([name, entry]) => refusalForAvailability(name, entry.availability, env) === null)
+    .filter(([name, entry]) => refusalForAvailability(name, entry.availability, v2On) === null)
     .map(([name]) => name);
 }
 

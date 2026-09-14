@@ -849,17 +849,32 @@ describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names",
 // (which would touch Win32). All 4 cases set/restore process.env so they are
 // deterministic regardless of how the host invokes vitest.
 
-describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at runtime", () => {
+describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 as the server read it", () => {
   const KILL_VAR = "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2";
 
-  function withKillSwitch<T>(value: "1" | undefined, fn: () => Promise<T>): Promise<T> {
+  /**
+   * ADR-036: the flag is read ONCE, at module initialisation, which is how `server-windows.ts`
+   * reads it for the registered surface and how the step catalogue is built. So these cases set
+   * the variable and then IMPORT — the previous form imported first and set it after, which only
+   * passed while the dispatcher re-read `process.env` on every step. That re-read was the defect
+   * gate 1 named: the catalogue froze at startup and the dispatcher did not, so same-process code
+   * flipping the flag could make the two disagree about one server.
+   */
+  async function withKillSwitch<T>(
+    value: "1" | undefined,
+    fn: (macro: typeof import("../../src/tools/macro.js")) => Promise<T>,
+  ): Promise<T> {
     const prev = process.env[KILL_VAR];
     if (value === undefined) delete process.env[KILL_VAR];
     else process.env[KILL_VAR] = value;
-    return fn().finally(() => {
+    vi.resetModules();
+    try {
+      return await fn(await import("../../src/tools/macro.js"));
+    } finally {
       if (prev === undefined) delete process.env[KILL_VAR];
       else process.env[KILL_VAR] = prev;
-    });
+      vi.resetModules();
+    }
   }
 
   function summaryOf(result: { content: Array<{ type: string; text?: string }> }): {
@@ -879,8 +894,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
   // landed in the inner envelope.
 
   it("kill-switch ON → run_macro({tool:'desktop_discover'}) returns kill-switch error without invoking the facade", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch("1", async () => {
+    await withKillSwitch("1", async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{ tool: "desktop_discover", params: {} }],
         stop_on_error: true,
@@ -904,8 +918,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
   });
 
   it("kill-switch ON → run_macro({tool:'desktop_act'}) returns kill-switch error without invoking the facade", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch("1", async () => {
+    await withKillSwitch("1", async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{
           tool: "desktop_act",
@@ -934,8 +947,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
   });
 
   it("kill-switch OFF (default) → run_macro({tool:'set_element_value'}) returns v1-fallback hint without invoking the legacy handler", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch(undefined, async () => {
+    await withKillSwitch(undefined, async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{
           tool: "set_element_value",
@@ -953,8 +965,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
   });
 
   it("kill-switch OFF (default) → run_macro({tool:'get_windows'}) returns v1-fallback hint pointing at desktop_discover.windows[]", async () => {
-    const { runMacroHandler } = await import("../../src/tools/macro.js");
-    await withKillSwitch(undefined, async () => {
+    await withKillSwitch(undefined, async ({ runMacroHandler }) => {
       const out = await runMacroHandler({
         steps: [{ tool: "get_windows", params: {} }],
         stop_on_error: true,
