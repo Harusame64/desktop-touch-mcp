@@ -502,16 +502,18 @@ export function withPostState<T extends Record<string, unknown>>(
       const after = snapshotFocus();
       const verdict = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
       const focusedElement = await snapshotFocusedElement(verdict.carry);
-      /** Set when a value was withheld from an element that HAD one. Published in `hints`. */
+      /**
+       * WHY THE PERMISSION DID NOT HOLD, or `undefined` when it did — ONE variable for one fact.
+       * `verdict` answered about the foreground at `after`; the re-read below can take it away,
+       * and everything the permission gates (the value, the name, and the flag that says the
+       * element is not confirmed to be the caller's) reads THIS. An earlier form kept a second
+       * boolean beside it and the two had to be updated in step; a fact stored twice is a fact
+       * that can disagree with itself, which is how four consecutive rounds of this file went
+       * wrong. Published in `hints` — as `postValueWithheld` when there was a value to withhold,
+       * and as `focusedElementWindowUnconfirmed` whenever an element is published at all.
+       */
       let valueWithheld: PostValueWithheldReason | undefined =
         verdict.carry ? undefined : verdict.why;
-      /**
-       * The permission as it stands AFTER the element arrived. `verdict` answered about the
-       * foreground at `after`; the re-read below can take it away, and everything the permission
-       * gates — the value, the name, and the flag that says the element is not the caller's — has
-       * to follow the same answer or they start disagreeing about one fact.
-       */
-      let stillTheNamedWindow = verdict.carry;
       // THE PERMISSION AND THE ELEMENT ARE READ AT DIFFERENT MOMENTS, and between them is an
       // asynchronous UIA call with its own 800 ms budget. `carryValue` was decided against the
       // foreground at `after`; the element comes from whatever holds focus when UIA answers. If
@@ -569,7 +571,6 @@ export function withPostState<T extends Record<string, unknown>>(
         if (moved || sawNothingComparable) {
           delete focusedElement.value;
           delete focusedElement.name;
-          stillTheNamedWindow = false;
           valueWithheld = moved ? "foreground_moved_during_read" : "could_not_verify_the_window";
         }
       }
@@ -583,6 +584,11 @@ export function withPostState<T extends Record<string, unknown>>(
       // contents; suppressing it for `value:""` would make its presence mean "the field you cannot
       // see is not empty", which is a bit about a window the caller never named and one that
       // `hasValuePattern` does not already give.
+      //
+      // THE ELEMENT'S REASON IS TAKEN FIRST, because the suppression below is about the VALUE
+      // only. The two questions part company exactly here: an element with no value pattern had
+      // no value withheld from it, and still is not confirmed to be the caller's.
+      const windowUnconfirmedWhy = valueWithheld;
       if (!focusedElement?.hasValuePattern) valueWithheld = undefined;
       /**
        * AND THE ELEMENT ITSELF IS FLAGGED, not only its value. Withholding the name removes the
@@ -591,19 +597,36 @@ export function withPostState<T extends Record<string, unknown>>(
        * reads that as the thing they clicked. Measured with the window as witness: exact when the
        * clicked control takes focus, another element's when it does not (win2, `12f1ff7`).
        *
-       * So the post says the one thing it knows exactly: this element is NOT in a window this call
-       * named. It is not a statement about what was acted on — that cannot be had here. The read
-       * that would answer it, the element under the point, is dead across the whole work area on
-       * the measuring machine: a vendor overlay covers 0,0–1920×1032 and every point inside it
-       * answers "desktop", while points below the overlay's rectangle name controls correctly
-       * (win2, `689aa02`). A design built on that read passes its unit cells, passes on a machine
-       * without the overlay, and says "desktop" for every click where it is needed.
+       * So the post says the one thing it knows: this element is NOT CONFIRMED to be in a window
+       * this call named, and which of the five roads left it unconfirmed. It is not a statement
+       * about what was acted on — that cannot be had here. The read that would answer it, the
+       * element under the point, is dead across the whole work area on the measuring machine: a
+       * vendor overlay covers 0,0–1920×1032 and every point inside it answers "desktop", while
+       * points below the overlay's rectangle name controls correctly (win2, `689aa02`). A design
+       * built on that read passes its unit cells, passes on a machine without the overlay, and
+       * says "desktop" for every click where it is needed.
        *
-       * Published whenever an element is published and the predicate said no — INCLUDING for an
-       * element with no value at all, which is where `postValueWithheld` is silent by design and
-       * where the type is just as misleading.
+       * AND IT SAYS *UNCONFIRMED*, NOT *ELSEWHERE* — the flag's first form published
+       * `focusedElementInNamedWindow: false`, which asserts a LOCATION, and two of the five roads
+       * cannot support that assertion (gate on `7f70adc`). `could_not_verify_the_window` means the
+       * foreground could not be read at all, so "not in your window" is a confident wrong
+       * diagnosis of something never observed — the exact failure this vocabulary exists to end,
+       * and it contradicted the reason published beside it. `foreground_moved_during_read` cannot
+       * support it either, for a reason the gate did not name: the element was read SOMEWHERE
+       * between the two foreground readings, so it may well be the named window's, seen before the
+       * move. Only the predicate's three roads establish a location, and a single word that is
+       * true on all five is worth more to a caller than a boolean that is wrong on two.
+       *
+       * The reason is what makes it actionable, and it is the element's own copy: on a row with no
+       * value `postValueWithheld` is silent by design, and `call_named_no_window` there is the
+       * difference between "pass `windowTitle` next time" and "nothing you could have done".
+       * On rows that carry both, the two keys say the same word about one fact — the value is not
+       * yours, and neither is the element it belongs to.
+       *
+       * Published whenever an element is published and confirmation did not hold — INCLUDING for
+       * an element with no value at all, where the type is just as misleading.
        */
-      const elementIsNotYours = focusedElement !== null && !stillTheNamedWindow;
+      const elementIsUnconfirmed = focusedElement !== null && windowUnconfirmedWhy !== undefined;
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
@@ -648,12 +671,12 @@ export function withPostState<T extends Record<string, unknown>>(
             // SUCCESS ONLY. A failure publishes no focused element at all, so "why is the value
             // missing" is answered by `ok:false` and not by this rule; writing a reason there
             // would name a withholding that did not happen.
-            if (valueWithheld || elementIsNotYours) {
+            if (valueWithheld || elementIsUnconfirmed) {
               const existing = obj.hints;
               obj.hints = {
                 ...(existing !== null && typeof existing === "object" ? existing as Record<string, unknown> : {}),
                 ...(valueWithheld ? { postValueWithheld: valueWithheld } : {}),
-                ...(elementIsNotYours ? { focusedElementInNamedWindow: false } : {}),
+                ...(elementIsUnconfirmed ? { focusedElementWindowUnconfirmed: windowUnconfirmedWhy } : {}),
               };
             }
             // ADR-022 / issue #352: success-path advisory. Reuses the

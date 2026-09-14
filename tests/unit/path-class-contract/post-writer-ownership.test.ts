@@ -452,7 +452,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // means no `postValueWithheld`, while `type` goes on saying "Edit" about an element the call
     // never touched.
     expect(await hintsOf("clipboard", { action: "read" }, undefined, null))
-      .toEqual({ focusedElementInNamedWindow: false });
+      .toEqual({ focusedElementWindowUnconfirmed: "call_named_no_window" });
 
     // COULD NOT LOOK IS NOT DID NOT MATCH. With the enumeration answering nothing, the comparison
     // has nothing to compare — while UIA can still produce an element through its own road. Saying
@@ -481,7 +481,10 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // THE ELEMENT FLAG RIDES WITH EVERY WITHHELD ROW, so the two hints are one statement in two
     // halves: the value is not yours, and neither is the element it belongs to.
     expect(await hintsOf("clipboard", { action: "read" }))
-      .toEqual({ postValueWithheld: "call_named_no_window", focusedElementInNamedWindow: false });
+      .toEqual({
+        postValueWithheld: "call_named_no_window",
+        focusedElementWindowUnconfirmed: "call_named_no_window",
+      });
 
     vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
@@ -504,7 +507,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect(out.hints).toEqual({
       verifyDelivery: { channel: "postmessage" },
       postValueWithheld: "call_named_no_window",
-      focusedElementInNamedWindow: false,
+      focusedElementWindowUnconfirmed: "call_named_no_window",
     });
 
     vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
@@ -572,6 +575,12 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       const unreadable = await elementOfSequence(() => win(4242n, "Notepad"));
       expect(unreadable).not.toHaveProperty("value");
       expect(lastHints()).toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+      // AND THE ELEMENT FLAG SAYS THE SAME THING, which is the whole reason it carries a reason
+      // instead of a boolean. Its first form published `focusedElementInNamedWindow: false` here:
+      // a definite "somewhere else" about a foreground that was never read, standing beside a
+      // reason that says the opposite. The row must name the road, and must not claim a location.
+      expect(lastHints()).toMatchObject({ focusedElementWindowUnconfirmed: "could_not_verify_the_window" });
+      expect(lastHints()).not.toHaveProperty("focusedElementInNamedWindow");
       // THE NAME GOES WITH THE VALUE, and the flag flips with them. The first version of this
       // guard ran only when a value existed and dropped only the value: an element with no value
       // pattern skipped the check entirely, and one with a value kept the wrong NAME while losing
@@ -588,7 +597,10 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       }));
       const rowNoValue = (raced.post as Record<string, unknown>).focusedElement as Record<string, unknown>;
       expect(rowNoValue).not.toHaveProperty("name");
-      expect(raced.hints).toMatchObject({ focusedElementInNamedWindow: false });
+      // AND IT NAMES THE ROAD, rather than asserting a location. The element was read SOMEWHERE
+      // between the two foreground readings, so "it is not in your window" is a claim this layer
+      // cannot support; "the foreground moved while I was reading" is one it measured.
+      expect(raced.hints).toMatchObject({ focusedElementWindowUnconfirmed: "foreground_moved_during_read" });
 
       // A DIFFERENT HANDLE SETTLES IT, even when the identity behind the new one cannot be read —
       // which is exactly what happens when the window that took focus is elevated. Calling that
