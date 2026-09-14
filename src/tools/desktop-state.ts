@@ -764,9 +764,11 @@ export const desktopStateHandler = async (args: {
       // Measured: 24 of 24 reads carried a value while this hint said `uia`, 0 of 8 while it said
       // `view`, the element's NAME identical in all thirty-two (win2, 2026-09-14, `a4802dd`).
       //
-      // And the view is filled by THIS SERVER'S OWN WRITING, so the gap is widest immediately
-      // after a write — which is when a caller reads a field back. Unconditional: the absence is
-      // a property of the road, not of this element.
+      // Unconditional: the absence is a property of the road, not of this element. WHAT PUTS A
+      // CALLER ON THIS ROAD is acting on a window other than the one focus ends in — writing to
+      // another window, or invoking a button on one, which writes nothing. Typing into the window
+      // you then read does NOT, which is the opposite of what the first measurement seemed to say
+      // (win2, `3859672` correcting `a4802dd`).
       hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
@@ -1260,10 +1262,16 @@ export function registerDesktopStateTools(server: McpServer): void {
       // the same element focused, 24 of 24 reads answered with a value while
       // `hints.focusedElementSource` was `uia`, and 0 of 8 did while it was `view` — the element's
       // NAME identical in every one of them, so a caller cannot tell "this road carries no values"
-      // from "the field is empty". What fills that window's view is this server's own writing, so
-      // the read-back is at its weakest immediately after a write, which is when a caller asks.
-      // `hints.focusedElementSource` is the only thing that separates the two, so the caveat says
-      // to read it.
+      // from "the field is empty". `hints.focusedElementSource` is the only thing that separates
+      // the two, so the caveat says to read it.
+      //
+      // WHEN THE VIEW WINS was measured separately and corrects the first reading (`3859672`): the
+      // trigger is ACTING ON A WINDOW OTHER THAN THE ONE FOCUS ENDS IN, not writing. Typing into
+      // the window you then read leaves the value; bouncing focus away and back without acting
+      // leaves it; screenshotting another window leaves it. Writing to another window loses it,
+      // and so does invoking a button on another window — an action that writes nothing. The first
+      // round changed three things at once (a write happened, another window was acted on, focus
+      // bounced) and reported the one that was easiest to name.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
