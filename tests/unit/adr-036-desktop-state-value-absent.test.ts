@@ -120,46 +120,64 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * reject a matching row and fall through to UIA or CDP, where a value may be there. Both copies
    * must name the hint that distinguishes "no value on this road" from "the field is empty".
    */
-  it("sends no caller to a read-back without telling them how an empty answer can lie", () => {
-    const readBack = [
-      readFileSync(fileURLToPath(new URL("../../src/tools/desktop-register.ts", import.meta.url)), "utf8"),
-      readFileSync(fileURLToPath(new URL("../../src/server-windows.ts", import.meta.url)), "utf8"),
-    ];
-    for (const source of readBack) {
-      const sentences = source
-        .split("\n")
-        .filter((line) => line.includes("read the field back before relying on it"));
-      expect(sentences.length).toBeGreaterThan(0);
+  it("sends no caller to a read-back without telling them what it cannot settle", () => {
+    // FOUR AUDIENCES, NOT TWO. The same advice ships in the tool description, in the server
+    // instructions, AND in both READMEs — and the READMEs carried the round-0 imperative ("read
+    // the field back before relying on it", with no caveat) through seven rounds of correcting it
+    // elsewhere, because this cell only read `src/` (gate 2 on `8937dfe`). A reader there got
+    // exactly the inference the branch exists to prevent, in two languages.
+    const shipped = [
+      "src/tools/desktop-register.ts",
+      "src/server-windows.ts",
+      "README.md",
+      "README.ja.md",
+    ].map((rel) => ({
+      rel,
+      text: readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8"),
+    }));
+
+    // No copy may still tell a caller a read-back settles it. The bare imperative is the exact
+    // wording every round was spent removing, so it is denied by name.
+    for (const { rel, text } of shipped) {
+      expect(text, `${rel} still carries the uncaveated round-0 sentence`)
+        .not.toContain("Read the field back before relying on it.");
+    }
+
+    // The two English prose copies say what the read-back cannot settle, each claim with its own
+    // SUBJECT — a fragment survives a rewrite that keeps every word and inverts the meaning, which
+    // is how "missing with no hint at all" and "inserts at the caret" were pinned before this
+    // round: "a value is never missing with no hint at all" and "a FOREGROUND type inserts at the
+    // caret … a background type appends" both passed, and the second is the claim the caret
+    // measurement refuted (gate 2).
+    const detailed = shipped.filter(({ rel }) => rel.startsWith("src/"));
+    for (const { rel, text } of detailed) {
+      const sentences = text.split("\n").filter((line) => line.includes("A read-back reports what the field holds"));
+      expect(sentences.length, `${rel} has no read-back advice at all`).toBeGreaterThan(0);
       for (const sentence of sentences) {
-        // FOUR ROUNDS OF REVIEW FOUND FOUR WAYS THIS READ-BACK MISLEADS, and adding a clause per
-        // round was losing: the foreground-only read, the sticky asynchronous focus row that can
-        // name an element focused BEFORE the write, an absence that means nothing, and a match on
-        // a field that already held the text. The advice states a RULE instead — one conjunction
-        // a caller can apply — and these rows pin its parts, each with its own subject so a
-        // rewrite cannot keep the words and invert the claim (gate 1 on `e4dc072`).
-        expect(sentence).toContain("a read-back confirms nothing on its own");
-        expect(sentence).toContain("FOREGROUND window");
-        expect(sentence).toContain("sticky and asynchronous");
-        expect(sentence).toContain("focusedElementValueAbsent");
-        expect(sentence).toContain("view_road_has_no_value");
-        expect(sentence).toContain("missing with no hint at all");
-        // AND IT CLAIMS NO CAUSATION AT ALL, which is where seven rounds landed. Each round found
-        // the previous version asserting something a read-back cannot support:
-        //   - the value is predictable — a background type inserts at the CARET and replaces the
-        //     SELECTION, exactly as typing does (measured, 6 arms, background and foreground
-        //     identical, win2 `c76b78d`), so "prior text plus typed text" held in 2 of 6 and would
-        //     have made a LANDED write read as failed in the other four;
-        //   - an empty field settles it — a write of empty text is accepted and sends nothing, so
-        //     an already-empty field matches with no write at all;
-        //   - a match settles it — autofill can fill the field between the two observations.
-        // What survives is what the call actually gives a caller: the field's current text. The
-        // sentence says that and forbids the causal reading, which is shorter than every version
-        // that tried to carve out an exception.
         expect(sentence).toContain("never establishes that your write put it there");
-        expect(sentence).toContain("inserts at the caret and replaces the selection");
-        expect(sentence).toContain("sends nothing and matches an already-empty field");
+        expect(sentence).toContain("a BACKGROUND type inserts at the caret and replaces the selection");
+        expect(sentence).toContain("a write of empty text sends nothing");
         expect(sentence).toContain("not to prove delivery");
+        // The positive half: what the call IS for. Pinned on its own, so a rewrite cannot drop it
+        // and stay green on the negatives alone.
+        expect(sentence).toContain("reports what the field holds NOW");
+        // `desktop_state` answers about the foreground, from a row matched BY TITLE — so another
+        // window with the same title can supply the element. The sharpest fact in the sentence,
+        // and nothing pinned it before this round.
+        expect(sentence).toContain("hints.focusedElementValueAbsent");
+        expect(sentence).toContain("another with the same title");
+        // …and the one thing on this response that does have a baseline, with its asymmetry: a
+        // `value_changed` is evidence, its absence is not.
+        expect(sentence).toContain("value_changed");
+        expect(sentence).toContain("ABSENCE is not evidence");
       }
+    }
+
+    // Both READMEs name the baseline too, so a reader who never sees a tool description is not
+    // left with "read it back" and nothing else. The Japanese copy is checked by the same rule:
+    // a fix applied in one language and not the other is the shape this repo keeps meeting.
+    for (const { rel, text } of shipped.filter(({ rel: r }) => r.startsWith("README"))) {
+      expect(text, `${rel} does not name the one pair with a baseline`).toContain("diff.value_changed");
     }
   });
 
