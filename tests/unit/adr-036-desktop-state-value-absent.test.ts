@@ -184,9 +184,12 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // successful result. And focus does not make every write confirmable: the rung confirms
         // only a field with a window of its own, so for the WPF case the README uses as its
         // EXAMPLE, a retry answers `landing` again however it is aimed.
-        expect(sentence).toContain("RETRYING IS NOT FREE");
-        expect(sentence).toContain("appended to, not replaced");
-        expect(sentence).toContain("only when the field has a window of its own");
+        expect(sentence).toContain("AND NOTHING ELSE HERE DOES EITHER");
+        expect(sentence).toContain("A retry appends rather than replaces");
+        expect(sentence).toContain("a clear is a write of empty text");
+        expect(sentence).toContain("`landing.why` does not reliably tell you");
+        // The one action that remains, stated positively so it is not lost among the refusals.
+        expect(sentence).toContain("act on what it HOLDS");
       }
     }
 
@@ -197,7 +200,7 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       expect(text, `${rel} does not say what diff.value_changed is`).toContain("diff.value_changed");
       // The README carries the two teeth as well — shorter, but a reader there is the one most
       // likely to take "write again" literally.
-      expect(text, `${rel} does not warn that a retry appends`).toMatch(/appended to|\u8ffd\u8a18\u3055\u308c\u308b/);
+      expect(text, `${rel} does not warn that a retry appends`).toMatch(/retry appends|\u518d\u8a66\u884c\u306f\u8ffd\u8a18/);
       // …and says the same thing about it as the tool description: not delivery. A README that
       // named it without the limit would be the round-0 mistake with a newer noun.
       expect(text, `${rel} names diff.value_changed without its limit`)
