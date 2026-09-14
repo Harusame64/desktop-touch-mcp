@@ -424,6 +424,23 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     // paragraph that never had a value reads as a field something was kept from.
     expect(await hintsOf("clipboard", { action: "read" }, undefined, null)).toBeUndefined();
 
+    // COULD NOT LOOK IS NOT DID NOT MATCH. With the enumeration answering nothing, the comparison
+    // has nothing to compare — while UIA can still produce an element through its own road. Saying
+    // `not_the_window_you_named` there tells the caller their aim was wrong about something the
+    // server never saw, and a confident wrong diagnosis is worse for them than an admitted one.
+    vi.mocked(enumWindowsInZOrder).mockImplementation(() => { throw new Error("EnumWindows failed"); });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" }))
+      .toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "4242" }))
+      .toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+    // …and a call that named no window still says so: the roads do not collapse into each other
+    // just because the foreground is unreadable.
+    expect(await hintsOf("clipboard", { action: "read" }))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+
     // …and none of the carrying calls says anything: the 8 arms that DO get their value.
     expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toBeUndefined();
     expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "4242" })).toBeUndefined();
@@ -462,6 +479,8 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
     vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     const win = (hwnd: bigint, title: string) => [{ hwnd, title, isActive: true }] as never;
+    let seen: Record<string, unknown> | undefined;
+    const lastHints = (): Record<string, unknown> | undefined => seen;
     const elementOfSequence = async (third: () => unknown) => {
       vi.mocked(enumWindowsInZOrder)
         .mockImplementationOnce(() => win(4242n, "Notepad"))
@@ -470,9 +489,11 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
         focused: { name: "Notes", controlType: "Edit", value: "PROBE-RACE" },
       } as never);
-      return (parse(await withPostState("keyboard", async () => ok({ ok: true }))({
+      const out = parse(await withPostState("keyboard", async () => ok({ ok: true }))({
         action: "type", text: "x", windowTitle: "Notepad",
-      })).post as Record<string, unknown>).focusedElement;
+      }));
+      seen = out.hints as Record<string, unknown> | undefined;
+      return (out.post as Record<string, unknown>).focusedElement;
     };
 
     try {
@@ -500,12 +521,24 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
         .mockReturnValueOnce(NOTEPAD as never)
         .mockReturnValueOnce({ pid: 99, processName: "notepad.exe", processStartTimeMs: 900 } as never);
       expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
-      // …and an identity that could not be read at all withholds too (the failure path's shape).
+      // …and an identity that could not be read at all withholds too (the failure path's shape,
+      // and what an elevated window answers to a server that is not). It withholds under a
+      // DIFFERENT name: nothing moved, the server could not look. Reporting movement there would
+      // be this PR's own defect — a reason that names something that did not happen.
       vi.mocked(getProcessIdentityByPid)
         .mockReturnValueOnce(NOTEPAD as never)
         .mockReturnValueOnce(NOTEPAD as never)
         .mockReturnValueOnce({ pid: 0, processName: "", processStartTimeMs: 0 } as never);
+      const unreadable = await elementOfSequence(() => win(4242n, "Notepad"));
+      expect(unreadable).not.toHaveProperty("value");
+      expect(lastHints()).toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+      // The pairing: a real change of identity, both sides readable, still says movement.
+      vi.mocked(getProcessIdentityByPid)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce(NOTEPAD as never)
+        .mockReturnValueOnce({ pid: 99, processName: "notepad.exe", processStartTimeMs: 901 } as never);
       expect(await elementOfSequence(() => win(4242n, "Notepad"))).not.toHaveProperty("value");
+      expect(lastHints()).toMatchObject({ postValueWithheld: "foreground_moved_during_read" });
       vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
     } finally {
       // RESET IN A `finally`, and reset rather than restore: the sequences above are

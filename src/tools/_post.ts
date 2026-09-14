@@ -198,7 +198,16 @@ export type PostValueWithheldReason =
   /** A selector the handler prefers decided the target: `paneId`, `selector`/`target`, an adopted `fixId`. */
   | "target_came_from_elsewhere"
   /** The foreground changed identity while the element read was in flight. */
-  | "foreground_moved_during_read";
+  | "foreground_moved_during_read"
+  /**
+   * The server could not tell WHERE focus was, so it withheld rather than guess: the foreground
+   * enumeration answered nothing, or the process identity could not be read (an elevated window
+   * answers that way to a server that is not). Distinct from the four above on purpose — each of
+   * those asserts something about the caller's aim, and asserting one of them here would be a
+   * confident wrong diagnosis, which is worse for a caller than an admitted one. The value is
+   * withheld either way; only the sentence differs.
+   */
+  | "could_not_verify_the_window";
 
 /** The predicate's answer: carry it, or do not and say which road said no. */
 type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheldReason };
@@ -323,6 +332,11 @@ function valueBelongsToTheWindowActedOn(
   }
   const hwnd = args[keys.hwndKey ?? DEFAULT_HWND_KEY];
   if (typeof hwnd === "string" && hwnd !== "") {
+    // A FOREGROUND THAT COULD NOT BE READ IS NOT A MISMATCH. `snapshotFocus` answers all-null when
+    // the enumeration throws, and UIA can still produce an element through its own road — so the
+    // comparison below has nothing to compare, and saying `not_the_window_you_named` would tell
+    // the caller their aim was wrong when the server simply could not look (gate on `968f9cb`).
+    if (after.hwnd === null) return { carry: false, why: "could_not_verify_the_window" };
     return isTheSameHandle(hwnd, after.hwnd)
       ? { carry: true }
       : { carry: false, why: "not_the_window_you_named" };
@@ -331,7 +345,7 @@ function valueBelongsToTheWindowActedOn(
   if (typeof title !== "string" || title === "" || title === "@active") {
     return { carry: false, why: "call_named_no_window" };
   }
-  if (after.title === null) return { carry: false, why: "not_the_window_you_named" };
+  if (after.title === null) return { carry: false, why: "could_not_verify_the_window" };
   return after.title.toLowerCase().includes(title.toLowerCase())
     ? { carry: true }
     : { carry: false, why: "not_the_window_you_named" };
@@ -470,13 +484,19 @@ export function withPostState<T extends Record<string, unknown>>(
         // `getProcessIdentityByPid` already returns what `identity-tracker.ts` compares, pid and
         // process start time, and `snapshotFocus` was throwing both away. An unreadable identity
         // (start time 0, which is also what the failure path returns) withholds.
-        const sameWindow = settled.hwnd !== null && settled.hwnd === after.hwnd &&
-          settled.processStartTimeMs !== 0 &&
+        // AND THE SAME DISTINCTION ON THE WAY OUT. An identity that could not be READ is not an
+        // identity that CHANGED: `getProcessIdentityByPid` answers `processStartTimeMs: 0` for a
+        // protected process and for a transient failure, and reporting movement there is a
+        // confident wrong diagnosis of something that did not happen (gate on `968f9cb`). The
+        // value is withheld in both cases — only the sentence differs.
+        const unreadable = settled.hwnd === null ||
+          settled.processStartTimeMs === 0 || after.processStartTimeMs === 0;
+        const sameWindow = !unreadable && settled.hwnd === after.hwnd &&
           settled.processPid === after.processPid &&
           settled.processStartTimeMs === after.processStartTimeMs;
         if (!sameWindow) {
           delete focusedElement.value;
-          valueWithheld = "foreground_moved_during_read";
+          valueWithheld = unreadable ? "could_not_verify_the_window" : "foreground_moved_during_read";
         }
       }
       // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE. A field with no value pattern has no
