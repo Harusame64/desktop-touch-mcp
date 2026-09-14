@@ -133,6 +133,11 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       for (const sentence of sentences) {
         expect(sentence).toContain("focusedElementValueAbsent");
         expect(sentence).toContain("view_road_has_no_value");
+        // AND THE HINT'S ABSENCE MUST NOT READ AS EVIDENCE. Naming the hint alone makes "no hint"
+        // mean "the empty field is real", which is false on the UIA road: a provider that serves
+        // no value omits it and sets no hint (the `desktop_state` caveat says so). An advice that
+        // sends a caller to a check has to say what the check cannot settle (gate 1, `51bdcd5`).
+        expect(sentence).toContain("never settles it either way");
       }
     }
   });
