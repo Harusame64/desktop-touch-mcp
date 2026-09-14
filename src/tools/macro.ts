@@ -487,6 +487,17 @@ const V1_FALLBACK_ONLY: Record<string, string> = {
 const V2_ONLY = ["desktop_discover", "desktop_act"];
 
 /**
+ * WHAT THIS LIST IS NOT: the server's tool surface. Five registered tools are absent from
+ * `TOOL_REGISTRY` and therefore from the catalogue at every corner — `excel`, `key_locker`,
+ * `server_status`, `screenshot_query`, `screenshot_gc` — because `run_macro` cannot dispatch them,
+ * which is a different fact from whether a caller can call them directly (they can). A step naming
+ * one is answered `Unknown tool`, and that is correct rather than a hole: the catalogue answers
+ * "what can be a step", and the honesty this commit adds is in the other direction — it stops
+ * offering steps that ARE in the registry but cannot run in this configuration.
+ *
+ * The measuring side raised the asymmetry as a possible second defect; it is not one, and the cell
+ * below pins the five so that a later reading does not have to re-derive that.
+ *
  * The step names this server can actually dispatch, in registry order.
  *
  * Read at module scope, like every other description in this repo: a running server answers for

@@ -50,6 +50,19 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
     expect(onlyInKill.sort()).toEqual(["get_ui_elements", "get_windows", "set_element_value"]);
   });
 
+  it("offers no tool it cannot dispatch, which is not the same as offering every tool", () => {
+    // Five tools are registered on the server and absent from the macro registry, so they are
+    // absent from the catalogue at every corner. That asymmetry is deliberate — the catalogue
+    // answers "what can be a step", and a step naming one of these is told `Unknown tool`. Pinned
+    // so the next reader does not have to re-derive it, and so adding one to the registry without
+    // meaning to shows up here.
+    for (const env of [V2_ON, KILL_SWITCH]) {
+      for (const notAStep of ["excel", "key_locker", "server_status", "screenshot_query", "screenshot_gc"]) {
+        expect(dispatchableStepNames(env), `${notAStep} is not macro-dispatchable`).not.toContain(notAStep);
+      }
+    }
+  });
+
   it("never offers `run_macro` itself, which is how recursion stays impossible", () => {
     expect(dispatchableStepNames(V2_ON)).not.toContain("run_macro");
     expect(dispatchableStepNames(KILL_SWITCH)).not.toContain("run_macro");
