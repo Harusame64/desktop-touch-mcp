@@ -201,11 +201,26 @@ export type PostValueWithheldReason =
   | "foreground_moved_during_read"
   /**
    * The server could not tell WHERE focus was, so it withheld rather than guess: the foreground
-   * enumeration answered nothing, or the process identity could not be read (an elevated window
-   * answers that way to a server that is not). Distinct from the four above on purpose — each of
-   * those asserts something about the caller's aim, and asserting one of them here would be a
-   * confident wrong diagnosis, which is worse for a caller than an admitted one. The value is
-   * withheld either way; only the sentence differs.
+   * enumeration answered nothing, or the process identity could not be read. Distinct from the
+   * four above on purpose — each of those asserts something about the caller's aim, and asserting
+   * one of them here would be a confident wrong diagnosis, which is worse for a caller than an
+   * admitted one. The value is withheld either way; only the sentence differs.
+   *
+   * WHAT ACTUALLY MAKES THE IDENTITY UNREADABLE, asked of the function rather than assumed (win2,
+   * 2026-09-14, `846e874`): `services.exe`, `csrss.exe`, `lsass.exe` — processes on service and
+   * system accounts, whose owner `tasklist` cannot read either — AND **a PID that no longer
+   * exists**. All 173 of the signed-in user's live processes answered, and so did the owner of
+   * every one of the 17 windows on screen, so this is not a branch a normal desktop reaches
+   * through the foreground. An earlier draft of this comment said an elevated window answers this
+   * way; that was a guess of mine and the census says it is probably wrong — what blocks the read
+   * is the ACCOUNT and process protection, not elevation. It remains untested, because starting an
+   * elevated process needs a human at the UAC prompt.
+   *
+   * SO THIS WORD ITSELF COVERS TWO CAUSES THIS LAYER CANNOT SEPARATE: a process that is protected,
+   * and a process that has exited. That is the same conflation the vocabulary exists to end, one
+   * level down, and it is left standing rather than papered over — the measuring side's own census
+   * reported two of the user's processes as "unreadable" on its first pass when they had simply
+   * ended between the listing and the question.
    */
   | "could_not_verify_the_window";
 
