@@ -349,13 +349,22 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     Rename it to its old title: view road, value gone again. **The title equality is what
  *     decides, and typing was never the cause.**
  *
- *     SO THE READ-BACK PROMISE HAS A CONDITION, and it is not the caller's to meet: the value
- *     comes back in a window whose title MOVES when you edit it — the unsaved-changes `*`, a
- *     document name, a tab title — and does not in a window whose title is fixed, which most
- *     native dialogs and forms are. Same call, same instant, one application answers and the other
- *     returns a field with no value. `desktop_act`'s own advice said "read the field back before
- *     relying on it" and stopped there; it now says what an empty answer can mean, because a
- *     caller who reads one silently concludes the write never landed.
+ *     SO THE READ-BACK PROMISE HAS A CONDITION, and it is not the caller's to meet: a window whose
+ *     title MOVES when you edit it — the unsaved-changes `*`, a document name, a tab title —
+ *     breaks the equality and gets the value; a window whose title is fixed, which most native
+ *     dialogs and forms are, keeps it and does not. Same call, same instant, one application
+ *     answers and the other returns a field with no value.
+ *
+ *     A FIXED TITLE IS NOT A GUARANTEE OF THE VIEW ROAD, THOUGH, which is why the shipped advice
+ *     keys on the HINT and not on the title (gate 1 on `2ac5663`). The other two filters can
+ *     reject a matching row — a Chromium foreground answering with a `Pane`, an empty name — and
+ *     a view that no event has reached yet has no row to offer, and each of those falls through to
+ *     UIA or CDP, where a value may well be there. Telling a caller "your title is fixed, so there
+ *     is no value" would be wrong in exactly those cases, in both directions.
+ *     `desktop_act`'s own advice said "read the field back before relying on it" and stopped
+ *     there; it now names `hints.focusedElementValueAbsent`, which is true on every road and is
+ *     something the caller can actually check, because a caller who reads an empty field silently
+ *     concludes the write never landed.
  *
  *     THREE FORMS OF THIS SENTENCE HAVE BEEN WRONG, all in the same direction — "after this
  *     server writes", "after acting on another window", "when the focused element changes". Each

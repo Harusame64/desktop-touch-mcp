@@ -109,14 +109,16 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * THE ADVICE THAT SENDS A CALLER HERE HAS TO SAY WHAT AN EMPTY ANSWER MEANS. Two shipped
    * strings tell a caller whose background write was not confirmed to "read the field back before
    * relying on it". Measured in both directions (win2, `a23bda2`): a window whose title does not
-   * change is answered from the perception view, which carries no value at all — so the read-back
-   * returns a field with no value even though the write landed, and a caller reads that as proof
-   * it did not. Renaming that same window from OUTSIDE, with no keystroke and no focus move, puts
-   * the value back; renaming it to its old title takes it away again.
+   * change keeps matching its recorded focus row, so the read can be answered from the perception
+   * view, which carries no value at all — the field comes back empty even though the write landed,
+   * and a caller reads that as proof it did not. Renaming that same window from OUTSIDE, with no
+   * keystroke and no focus move, puts the value back; renaming it to its old title takes it away.
    *
    * The condition is the application's, not the caller's, so the advice cannot be met by trying
-   * harder — it can only be read correctly. Both copies must name the hint that distinguishes
-   * "no value on this road" from "the field is empty".
+   * harder — it can only be read correctly. And the advice keys on the HINT rather than on the
+   * title, because a fixed title does not guarantee the view road either: the other filters can
+   * reject a matching row and fall through to UIA or CDP, where a value may be there. Both copies
+   * must name the hint that distinguishes "no value on this road" from "the field is empty".
    */
   it("sends no caller to a read-back without telling them how an empty answer can lie", () => {
     const readBack = [
