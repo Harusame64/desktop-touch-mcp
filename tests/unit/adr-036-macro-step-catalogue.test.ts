@@ -89,6 +89,27 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
    * corner-INDEPENDENT set is safe to freeze into a generated file; naming a corner's list would
    * not be, which is why the sentence defers for the rest.
    */
+  /**
+   * AND THE SHIPPED SENTENCE NAMES THE CONFIGURATION-BOUND FIVE, which is safe to freeze into a
+   * generated catalogue because the SET of five does not change — only which half is available
+   * does. That matters because the generator drops nested `.describe()`, so the stub a directory
+   * host reads carries `details` and nothing else: a sentence that merely POINTS at the `tool`
+   * field promises a list that is not there (gate 1, twice). Naming both halves tells that reader
+   * everything without freezing a corner.
+   */
+  it("names, in the shipped sentence, exactly the steps whose availability is declared", () => {
+    const details = MACRO_SOURCE.slice(MACRO_SOURCE.indexOf('details: "'), MACRO_SOURCE.indexOf('prefer: "'));
+    const declared = [...new Set([
+      ...dispatchableStepNames(V2_ON).filter((n) => !dispatchableStepNames(KILL_SWITCH).includes(n)),
+      ...dispatchableStepNames(KILL_SWITCH).filter((n) => !dispatchableStepNames(V2_ON).includes(n)),
+    ])];
+    expect(declared).toHaveLength(5);
+    for (const name of declared) {
+      expect(details, `${name} is configuration-bound and the shipped sentence does not name it`)
+        .toContain(name);
+    }
+  });
+
   it("never offers the six the shipped sentence says are never steps, at either corner", () => {
     for (const env of [V2_ON, KILL_SWITCH]) {
       const names = dispatchableStepNames(env);
