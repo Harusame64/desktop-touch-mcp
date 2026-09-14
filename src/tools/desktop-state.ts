@@ -765,10 +765,13 @@ export const desktopStateHandler = async (args: {
       // `view`, the element's NAME identical in all thirty-two (win2, 2026-09-14, `a4802dd`).
       //
       // Unconditional: the absence is a property of the road, not of this element. WHAT PUTS A
-      // CALLER ON THIS ROAD is the FOCUSED ELEMENT CHANGING — measured inside one window with the
-      // click point as the only variable: blank space in the same form keeps the UIA road, a
-      // different text field moves to this one from then on (win2, `e1daeb4`). Typing into the
-      // field you then read keeps the value, because it moves no focus.
+      // CALLER ON THIS ROAD is the predicate three lines up, `shouldAcceptViewFocus` — a sticky
+      // latest-focus row whose recorded window title still equals the foreground title read in
+      // this call. Measured inside one window with the click point as the only variable: blank
+      // space in the same form keeps the UIA road, a different text field moves to this one from
+      // then on (win2, `e1daeb4`). Typing into the field you then read keeps the value, and this
+      // layer cannot say whether that is because no focus moved or because the title changed and
+      // the equality broke — see `_post.ts`, where the arm that separates them is named.
       hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
@@ -1283,17 +1286,25 @@ export function registerDesktopStateTools(server: McpServer): void {
       // from "the field is empty". `hints.focusedElementSource` is the only thing that separates
       // the two, so the caveat says to read it.
       //
-      // WHEN THE VIEW WINS: when the FOCUSED ELEMENT CHANGES. Measured inside one window with the
-      // click point as the only variable — blank space in the form keeps the UIA road, a different
-      // text field moves to the view road from then on (win2, `e1daeb4`). It explains the arms
-      // that did not move: typing into an already-focused field changes no element, and a
-      // `focus_window` round trip acts on none.
+      // WHEN THE VIEW WINS is a predicate, not an event — `shouldAcceptViewFocus` (:315): a
+      // latest-focus row with a name, not a Chromium `Pane`, and a recorded window title EXACTLY
+      // equal to the foreground title enumerated in the same call. The row is global and sticky, a
+      // focus event writes it and nothing clears it, so a caller can leave this road with no focus
+      // change at all — as soon as the window renames itself out of the equality (Notepad's `*`
+      // for unsaved changes is the everyday case).
       //
-      // TWO EARLIER FORMS OF THIS SENTENCE WERE WRONG, both wider than the evidence and both in
-      // the same direction. "After this server writes" came from a round that changed three
-      // things at once; "after acting on another window" from a round where the click's landing
-      // point was never a variable. The habit they share is naming the most visible change in a
-      // round that moved more than one thing.
+      // Measured inside one window with the click point as the only variable: blank space in the
+      // form keeps the UIA road, a different text field moves to the view road from then on (win2,
+      // `e1daeb4`); acting on another window moves it too, and so does invoking a button on one,
+      // which writes nothing (`3859672`). The arm that is NOT settled is typing into the field you
+      // then read, which keeps the value: no focus moved, and the title may have changed. Both
+      // explain it, they disagree about a window that does not rename itself, and that round has
+      // not been run.
+      //
+      // THREE EARLIER FORMS OF THIS SENTENCE WERE WRONG, all wider than the evidence and all in
+      // the same direction — "after this server writes", "after acting on another window", "when
+      // the focused element changes". The habit they share is naming the most visible change in a
+      // round that moved more than one thing; this form is read off the predicate instead.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +

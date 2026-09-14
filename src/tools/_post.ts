@@ -321,18 +321,33 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     element's name identical in all of them and `hints.focusedElementSource` the only column
  *     that moved (win2, 2026-09-14, `a4802dd`).
  *
- *     WHEN THAT HAPPENS: the road changes when THE FOCUSED ELEMENT CHANGES. Measured inside one
- *     window, with the click point as the only variable — clicking blank space in the form keeps
- *     the UIA road, clicking a different text field moves to the view road from then on (win2,
- *     2026-09-14, `e1daeb4`). Not writing, and not the window: typing into the field you then
- *     read keeps the value because it does not move focus, and that is also why a `focus_window`
- *     round trip keeps it — it acts on no element.
+ *     WHICH ROAD ANSWERS IS A PREDICATE, NOT AN EVENT — `shouldAcceptViewFocus`
+ *     (`desktop-state.ts:315`). The view answers when the perception pipeline holds a latest-focus
+ *     row with a non-empty name, not a Chromium `Pane`, AND a recorded window title EXACTLY equal
+ *     to the foreground title enumerated in the same call. That row is global and sticky: a focus
+ *     event writes it and nothing clears it, so "which element has focus" and "which road answers"
+ *     are two questions with two different answers.
  *
- *     THIS SENTENCE HAS BEEN WRONG TWICE, both times in the same direction. "After this server
- *     writes" came from a round that changed three things at once; "after acting on another
- *     window" from a round where the click's landing point was never a variable. Each version
- *     named the most visible change in a round that moved more than one thing, so the third form
- *     is stated with the variable that was isolated to get it.
+ *     SO A CALLER CAN LEAVE THE VIEW ROAD WITH NO FOCUS CHANGE AT ALL — as soon as the foreground
+ *     title stops matching the one recorded with the row. A window that renames itself while you
+ *     work in it does exactly that, and Notepad's `*` for unsaved changes is the everyday case.
+ *
+ *     THE MEASUREMENTS, AND THE ARM THEY DO NOT SETTLE. Inside one window with the click point as
+ *     the only variable: blank space in the form keeps the UIA road, a different text field moves
+ *     to the view road from then on (win2, 2026-09-14, `e1daeb4`). Acting on another window moves
+ *     it too, and so does invoking a button on one, which writes nothing (`3859672`). Typing into
+ *     the field you then read KEEPS the value — and that arm has two explanations this layer
+ *     cannot choose between: typing moved no focus, so the sticky row still wins; or typing
+ *     changed the title, so the equality broke and UIA answered. They predict opposite things for
+ *     a window that does NOT rename itself on typing, and that round has not been run.
+ *
+ *     The read-back recommendation above rests on the OBSERVATION, which holds however it is
+ *     explained: in every arm measured, the value came back after typing into the field.
+ *
+ *     THREE FORMS OF THIS SENTENCE HAVE BEEN WRONG, all in the same direction — "after this
+ *     server writes", "after acting on another window", "when the focused element changes". Each
+ *     named the most visible change in a round that moved more than one thing. This form is read
+ *     off the predicate instead, which is why it does not depend on the next measurement.
  *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
  *     `hasValuePattern` still come back for a window this call never named. Three of those four
  *     are what the success-path advisory (ADR-022) decides from — `buildHint` reads `type`,
