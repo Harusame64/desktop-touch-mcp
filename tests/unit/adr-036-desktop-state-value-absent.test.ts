@@ -137,7 +137,14 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // mean "the empty field is real", which is false on the UIA road: a provider that serves
         // no value omits it and sets no hint (the `desktop_state` caveat says so). An advice that
         // sends a caller to a check has to say what the check cannot settle (gate 1, `51bdcd5`).
-        expect(sentence).toContain("never settles it either way");
+        // THE WHOLE CLAUSE, SUBJECT INCLUDED. The trailing phrase alone survives a rewrite that
+        // keeps every required substring and inverts the meaning — "absence never settles it
+        // either way; without that hint absence proves failure" would pass (gate 1 on `e4dc072`).
+        // A grep for a fragment pins the fragment, not the sentence.
+        expect(sentence).toContain("an absent value never settles it either way");
+        // …and the other half: a match is not proof either, because a write that never landed
+        // leaves a field that already held that text reading exactly the same.
+        expect(sentence).toContain("did not already hold that text");
       }
     }
   });
