@@ -11,6 +11,8 @@
  * assignments sit beside `hints.focusedElementSource`, and a pure-builder test cannot see them.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -288,13 +290,39 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       const text = source(rel);
       const at = text.indexOf(needle);
       expect(at, `${rel} no longer contains the landing paragraph`).toBeGreaterThan(-1);
-      const headings = [...text.matchAll(/^#{2,4} .*$/gm)].map((m) => m.index ?? 0);
-      const from = headings.filter((h) => h < at).pop();
-      const to = headings.find((h) => h > at);
-      expect(from, `${rel}: the landing paragraph is not under a heading`).toBeTypeOf("number");
-      expect(to, `${rel}: the landing paragraph's section is not closed by another heading`).toBeTypeOf("number");
-      expect(text.slice(from ?? 0, to ?? text.length), `${rel}'s landing section changed`).toBe(fixture(name));
+      // STOP AT THE NEXT HEADING OF THE SAME LEVEL OR HIGHER, not at the next heading of any level.
+      // Taking any heading as the end lets a new SUBheading be inserted just before the section's
+      // real end: the slice above it stays byte-identical to the fixture while an instruction under
+      // the new subheading ships in the same section (gate 1 on the PR, 2026-09-15).
+      const headings = [...text.matchAll(/^(#{1,6}) .*$/gm)].map((m) => ({
+        at: m.index ?? 0,
+        level: m[1].length,
+      }));
+      const opened = headings.filter((h) => h.at < at).pop();
+      expect(opened, `${rel}: the landing paragraph is not under a heading`).toBeTruthy();
+      const closed = headings.find((h) => h.at > at && h.level <= (opened?.level ?? 1));
+      expect(closed, `${rel}: the landing section is not closed by a heading of its own level`).toBeTruthy();
+      expect(text.slice(opened?.at ?? 0, closed?.at ?? text.length), `${rel}'s landing section changed`).toBe(
+        fixture(name),
+      );
     }
+
+    // 4. AND THE INVENTORY OF PROSE THAT SPEAKS ABOUT AN UNCONFIRMED LANDING. Pinning four surfaces
+    //    cannot see a FIFTH one appearing, and gate 1 found one that had been there all along:
+    //    `docs/system-overview.md` told its readers a landing-bearing `type` "was sent", which is
+    //    the claim removed from the other four ([[the-same-defect-has-three-audiences]] — the
+    //    envelope, the record and the memory). So the set of MARKDOWN files that mention an
+    //    unconfirmed landing is fixed here: a new document reddens this and a human decides whether
+    //    it needs the paragraph. Tests are excluded on purpose — they are not read as instructions.
+    const docs = [...walkMarkdown(fileURLToPath(new URL("../..", import.meta.url)))]
+      .filter((f) => /confirmed: ?false/.test(readFileSync(f, "utf8")))
+      .map((f) => f.replace(fileURLToPath(new URL("../..", import.meta.url)), "").replace(/\\/g, "/"))
+      .sort();
+    expect(docs, "a document that speaks about an unconfirmed landing was added or removed").toEqual([
+      "README.ja.md",
+      "README.md",
+      "docs/system-overview.md",
+    ]);
   });
 
   it("says nothing when a CDP field is simply empty, because nothing was withheld there", async () => {
@@ -307,3 +335,23 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     expect(out.hints).not.toHaveProperty("focusedElementValueAbsent");
   });
 });
+
+/**
+ * Every tracked `.md` under the repository root, minus the fixtures this cell owns and anything
+ * under `node_modules`. Used for the inventory assertion: the point is to notice a NEW document
+ * speaking about an unconfirmed landing, so the walk must not be a list of the ones already known.
+ */
+function* walkMarkdown(root: string): Generator<string> {
+  const skip = new Set(["node_modules", ".git", "target", "dist", "tests"]);
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!skip.has(entry.name)) stack.push(join(dir, entry.name));
+      } else if (entry.name.endsWith(".md")) {
+        yield join(dir, entry.name);
+      }
+    }
+  }
+}

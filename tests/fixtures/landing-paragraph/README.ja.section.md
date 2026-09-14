@@ -37,3 +37,14 @@ Lease ライフサイクル:
 - TTL は `view` モード (`action`/`explore`/`debug`)、entity 数、レスポンスサイズに応じて伸縮 (上限 60 秒)。
 - `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` で V1 ツール (`get_windows` / `get_ui_elements` / `set_element_value`) にフォールバック可能 — トラブルシューティング目的のみ。標準は V2。
 
+### Reactive Perception Graph (4)
+| ツール | 概要 |
+|---|---|
+| `perception_register` | 対象ウィンドウ/タブの live perception lens を登録し、action tool に渡す `lensId` を返す |
+| `perception_read` | attention が dirty/stale/blocked の時に lens を強制更新し、perception envelope を返す |
+| `perception_forget` | ワークフロー完了時や対象が置き換わった時に lens を解除 |
+| `perception_list` | 登録中 lens を一覧し、再利用やクリーンアップに使う |
+
+Reactive Perception Graph は desktop-touch の低コストな状況把握レイヤーです。対象の同一性・フォーカス・矩形・準備状態・guard 結果を操作間で維持し、Claude が小さな操作のたびにスクリーンショットで確認し直さなくて済むようにします。
+
+---
