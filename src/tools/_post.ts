@@ -505,6 +505,13 @@ export function withPostState<T extends Record<string, unknown>>(
       /** Set when a value was withheld from an element that HAD one. Published in `hints`. */
       let valueWithheld: PostValueWithheldReason | undefined =
         verdict.carry ? undefined : verdict.why;
+      /**
+       * The permission as it stands AFTER the element arrived. `verdict` answered about the
+       * foreground at `after`; the re-read below can take it away, and everything the permission
+       * gates — the value, the name, and the flag that says the element is not the caller's — has
+       * to follow the same answer or they start disagreeing about one fact.
+       */
+      let stillTheNamedWindow = verdict.carry;
       // THE PERMISSION AND THE ELEMENT ARE READ AT DIFFERENT MOMENTS, and between them is an
       // asynchronous UIA call with its own 800 ms budget. `carryValue` was decided against the
       // foreground at `after`; the element comes from whatever holds focus when UIA answers. If
@@ -519,7 +526,12 @@ export function withPostState<T extends Record<string, unknown>>(
       // the window CAN disagree in that window of time — they could before this change too, for
       // every call, value or no value — and binding them properly needs the owning HWND, which
       // `NativeUiaFocusInfo` does not carry. Filed rather than faked.
-      if (verdict.carry && focusedElement && focusedElement.value !== undefined) {
+      // …AND IT GUARDS THE NAME TOO, which the first version of this did not: the check ran only
+      // when a value existed and dropped only the value, so an element with no value pattern
+      // skipped it entirely and an element with one kept the WRONG NAME while losing the right
+      // value (gate on `f220577`). The name is permissioned now, so it is guarded now.
+      if (verdict.carry && focusedElement &&
+          (focusedElement.value !== undefined || focusedElement.name !== undefined)) {
         const settled = snapshotFocus();
         // IDENTITY, NOT THE NUMBER — and identity is the PAIR, not the name. A handle is
         // recyclable: the named window can exit during the lookup and Windows can hand its number
@@ -556,6 +568,8 @@ export function withPostState<T extends Record<string, unknown>>(
         const sawNothingComparable = settled.hwnd === null || startTimesUnreadable;
         if (moved || sawNothingComparable) {
           delete focusedElement.value;
+          delete focusedElement.name;
+          stillTheNamedWindow = false;
           valueWithheld = moved ? "foreground_moved_during_read" : "could_not_verify_the_window";
         }
       }
@@ -589,7 +603,7 @@ export function withPostState<T extends Record<string, unknown>>(
        * element with no value at all, which is where `postValueWithheld` is silent by design and
        * where the type is just as misleading.
        */
-      const elementIsNotYours = focusedElement !== null && !verdict.carry;
+      const elementIsNotYours = focusedElement !== null && !stillTheNamedWindow;
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,

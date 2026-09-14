@@ -572,6 +572,24 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       const unreadable = await elementOfSequence(() => win(4242n, "Notepad"));
       expect(unreadable).not.toHaveProperty("value");
       expect(lastHints()).toMatchObject({ postValueWithheld: "could_not_verify_the_window" });
+      // THE NAME GOES WITH THE VALUE, and the flag flips with them. The first version of this
+      // guard ran only when a value existed and dropped only the value: an element with no value
+      // pattern skipped the check entirely, and one with a value kept the wrong NAME while losing
+      // the right value — a row that reads as "this is the field you named, and it is empty".
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+        focused: { name: "SOMEONE-ELSES-FIELD", controlType: "Edit", value: null },
+      } as never);
+      vi.mocked(enumWindowsInZOrder)
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(4242n, "Notepad"))
+        .mockImplementationOnce(() => win(9999n, "Password Manager"));
+      const raced = parse(await withPostState("keyboard", async () => ok({ ok: true }))({
+        action: "type", text: "x", windowTitle: "Notepad",
+      }));
+      const rowNoValue = (raced.post as Record<string, unknown>).focusedElement as Record<string, unknown>;
+      expect(rowNoValue).not.toHaveProperty("name");
+      expect(raced.hints).toMatchObject({ focusedElementInNamedWindow: false });
+
       // A DIFFERENT HANDLE SETTLES IT, even when the identity behind the new one cannot be read —
       // which is exactly what happens when the window that took focus is elevated. Calling that
       // "could not verify" would take back an observation that was actually made.
