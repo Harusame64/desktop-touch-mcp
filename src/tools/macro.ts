@@ -192,6 +192,16 @@ function v1FallbackOnlyError(tool: string, replacement: string): ToolResult {
  * both the truth for the 25 ordinary steps and the safe default for a new one.
  */
 type StepAvailability =
+  /**
+   * Exists at every corner — the answer for 25 of the 30 steps, and the one that has to be
+   * WRITTEN rather than defaulted. An optional field lets a new step say nothing, and saying
+   * nothing is exactly how the catalogue and the dispatcher came apart: gate 1 walked through the
+   * denylist that replaced the first source-scan by having a handler delegate its refusal to a
+   * helper defined elsewhere, which no lexical rule inside the registry can see. A required field
+   * does not catch that either — nothing can — but it turns an OMISSION into a compile error and
+   * leaves only a deliberate lie, which is a different thing to guard against.
+   */
+  | "always"
   /** Exists only while v2 is on; the kill switch refuses it (`v2DisabledError`). */
   | { corner: "v2Only" }
   /**
@@ -208,17 +218,17 @@ interface ToolEntry {
   schema: z.ZodTypeAny;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: ToolHandler<any>;
-  /** Absent — the common case — means the step exists at every corner. */
-  availability?: StepAvailability;
+  /** Required: every step states its corner, and `"always"` is a statement, not a default. */
+  availability: StepAvailability;
 }
 
 /** The refusal for a step this configuration does not have, or `null` when it has it. */
 function refusalForAvailability(
   tool: string,
-  availability: StepAvailability | undefined,
+  availability: StepAvailability,
   v2On: boolean,
 ): ToolResult | null {
-  if (!availability) return null;
+  if (availability === "always") return null;
   if (availability.corner === "v2Only") return v2On ? null : v2DisabledError();
   return v2On ? v1FallbackOnlyError(tool, availability.replacement) : null;
 }
@@ -334,108 +344,108 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // "desktop_state", args:{include:["envelope"]}})` would silently strip
   // include — same-pattern bug as the server.tool registration path.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandlerWithIncludeRoute as any },
+  desktop_state:        { availability: "always", schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandlerWithIncludeRoute as any },
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope schema + handler from screenshot.ts so `include` survives
   // this dispatcher's `z.object(schema).parse(args)` call. Without this,
   // `run_macro({tool:"screenshot", args:{include:["envelope"]}})` would
   // silently strip include — same-pattern bug as PR #112 desktop_state path.
-  screenshot:           { schema: z.object(screenshotRegistrationSchema), handler: screenshotRegistrationHandler as typeof screenshotHandler },
+  screenshot:           { availability: "always", schema: z.object(screenshotRegistrationSchema), handler: screenshotRegistrationHandler as typeof screenshotHandler },
   // Action — native
-  mouse_click:          { schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
+  mouse_click:          { availability: "always", schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from mouse.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  mouse_drag:           { schema: z.object(mouseDragRegistrationSchema), handler: mouseDragRegistrationHandler as typeof mouseDragHandler },
-  click_element:        { schema: z.object(clickElementRegistrationSchema), handler: clickElementRegistrationHandler as typeof clickElementHandler },
+  mouse_drag:           { availability: "always", schema: z.object(mouseDragRegistrationSchema), handler: mouseDragRegistrationHandler as typeof mouseDragHandler },
+  click_element:        { availability: "always", schema: z.object(clickElementRegistrationSchema), handler: clickElementRegistrationHandler as typeof clickElementHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from window.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  focus_window:         { schema: z.object(focusWindowRegistrationSchema), handler: focusWindowRegistrationHandler as typeof focusWindowHandler },
+  focus_window:         { availability: "always", schema: z.object(focusWindowRegistrationSchema), handler: focusWindowRegistrationHandler as typeof focusWindowHandler },
   // Action — text/clipboard dispatchers (Phase 2)
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from keyboard.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  keyboard:             { schema: keyboardRegistrationSchema,          handler: keyboardRegistrationHandler as typeof keyboardHandler },
+  keyboard:             { availability: "always", schema: keyboardRegistrationSchema,          handler: keyboardRegistrationHandler as typeof keyboardHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from clipboard.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  clipboard:            { schema: clipboardRegistrationSchema,         handler: clipboardRegistrationHandler as typeof clipboardHandler },
+  clipboard:            { availability: "always", schema: clipboardRegistrationSchema,         handler: clipboardRegistrationHandler as typeof clipboardHandler },
   // Action — window/scroll/terminal dispatchers (Phase 2)
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from window-dock.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  window_dock:          { schema: windowDockRegistrationSchema,         handler: windowDockRegistrationHandler as typeof windowDockHandler },
+  window_dock:          { availability: "always", schema: windowDockRegistrationSchema,         handler: windowDockRegistrationHandler as typeof windowDockHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from scroll.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  scroll:               { schema: scrollRegistrationSchema,             handler: scrollRegistrationHandler as typeof scrollDispatchHandler },
+  scroll:               { availability: "always", schema: scrollRegistrationSchema,             handler: scrollRegistrationHandler as typeof scrollDispatchHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from terminal.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  terminal:             { schema: terminalRegistrationSchema,           handler: terminalRegistrationHandler as typeof terminalDispatchHandler },
+  terminal:             { availability: "always", schema: terminalRegistrationSchema,           handler: terminalRegistrationHandler as typeof terminalDispatchHandler },
   // Action — browser (Phase 3)
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_open:         { schema: z.object(browserOpenRegistrationSchema), handler: browserOpenRegistrationHandler as typeof browserOpenHandler },
+  browser_open:         { availability: "always", schema: z.object(browserOpenRegistrationSchema), handler: browserOpenRegistrationHandler as typeof browserOpenHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper、discriminatedUnion):
   // use the module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_eval:         { schema: browserEvalRegistrationSchema,         handler: browserEvalRegistrationHandler as typeof browserEvalHandler },
+  browser_eval:         { availability: "always", schema: browserEvalRegistrationSchema,         handler: browserEvalRegistrationHandler as typeof browserEvalHandler },
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_search:       { schema: z.object(browserSearchRegistrationSchema), handler: browserSearchRegistrationHandler as typeof browserSearchHandler },
-  browser_overview:     { schema: z.object(browserOverviewRegistrationSchema), handler: browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler },
-  browser_locate:       { schema: z.object(browserLocateRegistrationSchema), handler: browserLocateRegistrationHandler as typeof browserFindElementHandler },
+  browser_search:       { availability: "always", schema: z.object(browserSearchRegistrationSchema), handler: browserSearchRegistrationHandler as typeof browserSearchHandler },
+  browser_overview:     { availability: "always", schema: z.object(browserOverviewRegistrationSchema), handler: browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler },
+  browser_locate:       { availability: "always", schema: z.object(browserLocateRegistrationSchema), handler: browserLocateRegistrationHandler as typeof browserFindElementHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_click:        { schema: z.object(browserClickRegistrationSchema), handler: browserClickRegistrationHandler as typeof browserClickElementHandler },
-  browser_navigate:     { schema: z.object(browserNavigateRegistrationSchema), handler: browserNavigateRegistrationHandler as typeof browserNavigateHandler },
+  browser_click:        { availability: "always", schema: z.object(browserClickRegistrationSchema), handler: browserClickRegistrationHandler as typeof browserClickElementHandler },
+  browser_navigate:     { availability: "always", schema: z.object(browserNavigateRegistrationSchema), handler: browserNavigateRegistrationHandler as typeof browserNavigateHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_fill:         { schema: z.object(browserFillRegistrationSchema), handler: browserFillRegistrationHandler as typeof browserFillInputHandler },
+  browser_fill:         { availability: "always", schema: z.object(browserFillRegistrationSchema), handler: browserFillRegistrationHandler as typeof browserFillInputHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  browser_form:         { schema: z.object(browserFormRegistrationSchema), handler: browserFormRegistrationHandler as typeof browserGetFormHandler },
+  browser_form:         { availability: "always", schema: z.object(browserFormRegistrationSchema), handler: browserFormRegistrationHandler as typeof browserGetFormHandler },
   // Workspace / wait / notification
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope wrapped handler from workspace.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  workspace_snapshot:   { schema: z.object(workspaceSnapshotRegistrationSchema), handler: workspaceSnapshotRegistrationHandler as typeof workspaceSnapshotHandler },
+  workspace_snapshot:   { availability: "always", schema: z.object(workspaceSnapshotRegistrationSchema), handler: workspaceSnapshotRegistrationHandler as typeof workspaceSnapshotHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from workspace.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  workspace_launch:     { schema: z.object(workspaceLaunchRegistrationSchema), handler: workspaceLaunchRegistrationHandler as typeof workspaceLaunchHandler },
+  workspace_launch:     { availability: "always", schema: z.object(workspaceLaunchRegistrationSchema), handler: workspaceLaunchRegistrationHandler as typeof workspaceLaunchHandler },
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope wrapped handler from wait-until.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  wait_until:           { schema: z.object(waitUntilRegistrationSchema), handler: waitUntilRegistrationHandler as typeof waitUntilHandler },
+  wait_until:           { availability: "always", schema: z.object(waitUntilRegistrationSchema), handler: waitUntilRegistrationHandler as typeof waitUntilHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from notification.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  notification_show:    { schema: z.object(notificationShowRegistrationSchema), handler: notificationShowRegistrationHandler as typeof notificationShowHandler },
+  notification_show:    { availability: "always", schema: z.object(notificationShowRegistrationSchema), handler: notificationShowRegistrationHandler as typeof notificationShowHandler },
   // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
   // Both DECLARE the corner they belong to; the dispatcher refuses before the
   // handler, so run_macro still cannot bypass the operator's opt-out, and the

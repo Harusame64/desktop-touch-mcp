@@ -168,10 +168,15 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
     // spelling of one gate, because a refusal has to reach the caller to matter.
     expect(code).not.toContain("v2DisabledError");
     expect(code).not.toContain("v1FallbackOnlyError");
-    // …and the declarations are really there, so the absence above is not an empty registry.
-    // Not an equality: a sixth configuration-bound step is a CORRECT addition, and a cell that
-    // reddens on the right change teaches people to edit the cell rather than read it.
-    expect((code.match(/availability:/g) ?? []).length).toBeGreaterThanOrEqual(5);
+
+    // AND EVERY ENTRY STATES ITS CORNER. Gate 1 walked through the denylist above by putting the
+    // refusal in a helper defined OUTSIDE the registry, where no lexical rule inside it can see
+    // — so `availability` is a required field now, `"always"` included. The compiler is the real
+    // guard; this counts, so that the claim "every entry declares" is a row someone can read
+    // rather than a property they have to infer from a type.
+    const entries = (code.match(/^ {2}[a-z_]+:\s*\{/gm) ?? []).length;
+    expect(entries).toBeGreaterThan(25);
+    expect((code.match(/availability:/g) ?? []).length).toBe(entries);
   });
 
   /**
