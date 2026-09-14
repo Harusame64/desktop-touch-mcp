@@ -163,8 +163,15 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // clauses around them — and both send a caller to trust a read the same paragraph says can
         // name a field in another window (gate 1, `5f426ae`). The paragraph describes a state now
         // and instructs nothing, which is what the code can support.
-        expect(sentence).not.toContain("read the field back");
-        expect(sentence).not.toContain("Use it to see");
+        // The invariant is "no instruction", so it is checked as one rather than as a list of the
+        // two phrases that happened to be removed last time. The previous form denied those two
+        // and then REQUIRED "treat this landing as a REPORT" — enforcing an imperative while
+        // claiming to forbid them (gate 1, `b5c362a`).
+        for (const imperative of [
+          "read the field back", "Use it to see", "treat this", "Treat it", "you can do is",
+        ]) {
+          expect(sentence, `the paragraph instructs: ${imperative}`).not.toContain(imperative);
+        }
         // `desktop_state` answers about the foreground, from a row matched BY TITLE — so another
         // window with the same title can supply the element. The sharpest fact in the sentence,
         // and nothing pinned it before this round.
@@ -197,8 +204,8 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // read may carry no value, may omit one the provider never served, and may name a field in
         // another window with the same title. The closing action inherited every caveat above it
         // and would have sent a caller to act on missing or unrelated state (gate 1, `518da7e`).
-        expect(sentence).toContain("treat this landing as a REPORT");
-        expect(sentence).toContain("not a state you can resolve here");
+        expect(sentence).toContain("This landing is a REPORT, not a state that can be resolved here");
+        
       }
     }
 
@@ -210,7 +217,7 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       // The README carries the two teeth as well — shorter, but a reader there is the one most
       // likely to take "write again" literally.
       expect(text, `${rel} does not warn that a retry appends`).toMatch(/retry appends|\u518d\u8a66\u884c\u306f\u8ffd\u8a18/);
-      expect(text, `${rel} still offers a recovery`).toMatch(/a report, not a state you can resolve|\u5831\u544a\u3067\u3042\u3063\u3066/);
+      expect(text, `${rel} still offers a recovery`).toMatch(/a report, not a state that can be resolved|\u5831\u544a\u3067\u3042\u308a/);
       // …and says the same thing about it as the tool description: not delivery. A README that
       // named it without the limit would be the round-0 mistake with a newer noun.
       expect(text, `${rel} names diff.value_changed without its limit`)
