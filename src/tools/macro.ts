@@ -472,10 +472,17 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
  * defaults to true, so the first refusal ends the macro with whatever the earlier steps did left
  * in place.
  *
- * ONE TABLE, READ BY BOTH. The names below and the refusals in `TOOL_REGISTRY` are the same fact,
- * and a second list is a second place to forget a tool — the shape ADR-036 keeps finding. The
- * replacement strings live here too, so the sentence a caller gets at run time and the catalogue
- * they read beforehand cannot disagree about which tool belongs to which configuration.
+ * ONE TABLE FOR THE V1 HALF, AND A CELL FOR THE OTHER. `V1_FALLBACK_ONLY` is read by both the
+ * catalogue and the three refusals — same fact, one place, and the replacement strings live here
+ * so the sentence a caller gets at run time and the catalogue they read beforehand cannot
+ * disagree. `V2_ONLY` cannot be that: the v2 refusal is a `v2KillSwitchActive()` gate in each
+ * handler body, so the table is a SECOND list, which is the second place to forget a tool that
+ * this ADR keeps finding. Gate 2 proved it by adding a v2-gated entry and not adding it here —
+ * `tsc` clean, suite green, and the catalogue advertising a step that refuses.
+ *
+ * So the membership is pinned from the SOURCE instead of trusted: the cell "every v2-gated
+ * registry entry is in exactly one of these tables" in `adr-036-macro-step-catalogue.test.ts`
+ * reads the handler bodies and fails on a new gate that no table names.
  */
 const V1_FALLBACK_ONLY: Record<string, string> = {
   get_windows: "desktop_discover.windows[]",
@@ -809,7 +816,7 @@ export function registerMacroTools(server: McpServer): void {
     "run_macro",
     buildDesc({
       purpose: "Execute multiple tools sequentially in one MCP call — eliminates round-trip latency for predictable multi-step workflows.",
-      details: "steps[] is an array of {tool, params} objects. Accepts all desktop-touch tools plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.",
+      details: "steps[] is an array of {tool, params} objects. The `tool` field's own description lists the step names THIS server can dispatch — it is not every tool in the catalogue, it changes with the server's configuration, and a name outside it is refused rather than run. Plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.",
       prefer: "Use for predictable fixed sequences (focus → sleep → type → screenshot). Do not use for conditional logic — return to the LLM between branches so it can inspect intermediate state.",
       caveats: "If any step may fail conditionally (e.g. a dialog that may or may not appear), split the macro at that point. Each screenshot step within a macro incurs the same token cost as a standalone call.",
       examples: [

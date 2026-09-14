@@ -11,7 +11,29 @@
  * refused step ends the run with everything before it already done.
  */
 import { describe, it, expect } from "vitest";
-import { dispatchableStepNames } from "../../src/tools/macro.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dispatchableStepNames, runMacroSchema } from "../../src/tools/macro.js";
+
+const MACRO_SOURCE = readFileSync(
+  fileURLToPath(new URL("../../src/tools/macro.ts", import.meta.url)),
+  "utf8",
+);
+
+/** The description the SDK publishes for `steps[].tool` — what an LLM caller actually reads. */
+function publishedStepToolDescription(): string {
+  const steps = runMacroSchema.steps as unknown as Record<string, unknown>;
+  const element = (steps.element ??
+    (steps._def as Record<string, unknown> | undefined)?.type ??
+    (steps._def as Record<string, unknown> | undefined)?.element) as
+    | { shape?: { tool?: { description?: string } } }
+    | undefined;
+  const description = element?.shape?.tool?.description;
+  if (typeof description !== "string") {
+    throw new Error("could not read the published description of steps[].tool");
+  }
+  return description;
+}
 
 const V2_ON = {} as Record<string, string | undefined>;
 const KILL_SWITCH = { DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2: "1" };
@@ -66,5 +88,71 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
   it("never offers `run_macro` itself, which is how recursion stays impossible", () => {
     expect(dispatchableStepNames(V2_ON)).not.toContain("run_macro");
     expect(dispatchableStepNames(KILL_SWITCH)).not.toContain("run_macro");
+  });
+
+  /**
+   * THE HELPER IS NOT THE ADVERTISEMENT. Every cell above calls `dispatchableStepNames`, and gate
+   * 2 showed what that leaves open: put `Object.keys(TOOL_REGISTRY)` back into the description
+   * string, leave the helper alone, and the whole suite stays green while the catalogue lies
+   * exactly as it did before. The defect lived in the published string, so a cell has to read the
+   * published string.
+   */
+  it("publishes that list in the description an LLM caller actually reads", () => {
+    const description = publishedStepToolDescription();
+    const advertised = description
+      .replace(/^.*One of:\s*/s, "")
+      .replace(/,?\s*or the special pseudo-command.*$/s, "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+
+    expect(advertised).toEqual(dispatchableStepNames());
+    // …and the pseudo-step, which is in no registry and must still be offered.
+    expect(description).toContain('"sleep"');
+    // The v1.0.0 surface is the string this cell exists to keep out: `run_macro` cannot dispatch
+    // itself, and a catalogue built from the raw registry would name it.
+    expect(advertised).not.toContain("run_macro");
+  });
+
+  /**
+   * EVERY V2-GATED ENTRY IS IN EXACTLY ONE TABLE, read off the source rather than trusted.
+   * `V1_FALLBACK_ONLY` is shared with the refusals, but `V2_ONLY` is a second list: the v2 refusal
+   * is a `v2KillSwitchActive()` gate inside each handler body, so nothing makes the table and the
+   * gates agree. Gate 2 added a v2-gated registry entry, did not add it to the table, and got a
+   * clean `tsc`, a green suite, and a catalogue advertising a step that refuses — the original
+   * defect, reintroduced invisibly.
+   *
+   * So this reads the handler bodies. A new gate that no table names fails here, whichever
+   * direction it gates in.
+   */
+  it("names every v2-gated registry entry in one of the two tables", () => {
+    const registry = MACRO_SOURCE.slice(
+      MACRO_SOURCE.indexOf("const TOOL_REGISTRY"),
+      MACRO_SOURCE.indexOf("// run_macro is intentionally excluded"),
+    );
+    expect(registry.length).toBeGreaterThan(0);
+
+    // Each entry is `name: {` at two-space indent; the body runs to the next such header.
+    const headers = [...registry.matchAll(/^ {2}([a-z_]+):\s*\{/gm)];
+    expect(headers.length).toBeGreaterThan(10);
+    const gated = new Set<string>();
+    headers.forEach((header, i) => {
+      const body = registry.slice(
+        header.index,
+        i + 1 < headers.length ? headers[i + 1].index : registry.length,
+      );
+      if (body.includes("v2KillSwitchActive()")) gated.add(header[1]);
+    });
+
+    // What the two tables claim, derived from the function the catalogue is built from: a name
+    // absent from one configuration and present in the other is table-listed, whichever table.
+    const withV2 = dispatchableStepNames(V2_ON);
+    const withKillSwitch = dispatchableStepNames(KILL_SWITCH);
+    const tabled = new Set([
+      ...withV2.filter((name) => !withKillSwitch.includes(name)),
+      ...withKillSwitch.filter((name) => !withV2.includes(name)),
+    ]);
+
+    expect([...gated].sort()).toEqual([...tabled].sort());
   });
 });
