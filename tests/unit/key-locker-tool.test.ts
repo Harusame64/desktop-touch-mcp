@@ -308,6 +308,11 @@ describe("the shipped promise says what it covers", () => {
     expect(
       state!.description,
       "the masking half must stay hedged — the UIA road enforces nothing",
-    ).toContain("nothing here checks for a masked control, so do not rely on it being absent");
+    ).toContain("nothing here checks for a masked control");
+    expect(
+      state!.description,
+      "and it must say what arrives instead: mask characters, one per character of the secret, " +
+      "which is the asymmetry the CDP road's named reason throws into relief",
+    ).toContain("one per character of the secret");
   });
 });

@@ -1232,6 +1232,16 @@ export function registerDesktopStateTools(server: McpServer): void {
       // `IsPassword` is also not the gate anyone would reach for: it comes back False
       // for a genuinely masked WinForms box, so a guard written against it skips nothing.
       //
+      // WHICH LEAVES AN ASYMMETRY THIS TOOL CANNOT CLOSE, and the caveat says so rather than
+      // implying it. On the CDP road a masked field is named — `hints.focusedElementValueAbsent`
+      // is `masked_on_this_road`, because the script that dropped the value reports that it did.
+      // On the UIA road the same field arrives as mask characters, one per character of the
+      // secret, and NOTHING HERE CAN TELL: `IsPassword` is False, and deciding it from the string
+      // (all one repeated glyph?) would be a guess dressed as a fact — the shape four review
+      // rounds punished this week. So the sentence warns the caller instead of the code
+      // pretending to know. A machine-readable form waits for a check that can actually establish
+      // masking on that road; filed, not faked.
+      //
       // AND THE OTHER HALF, WHICH THE FIRST VERSION OF THIS CAVEAT LEFT OUT. "Do not rely on it
       // being absent" says nothing about relying on it being PRESENT, and the value is not always
       // there: `focusedElement` is preferred from the perception view (`buildElementInfoFromView`),
@@ -1275,7 +1285,7 @@ export function registerDesktopStateTools(server: McpServer): void {
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
-        "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control, so do not rely on it being absent. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means the field itself had nothing.",
+        "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control — a masked field can arrive as mask characters, one per character of the secret, which nothing here distinguishes from its real value. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means the field itself had nothing.",
     }),
     desktopStateRegistrationSchema,
     desktopStateRegistrationHandlerWithIncludeRoute as typeof desktopStateHandler
