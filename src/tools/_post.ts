@@ -168,6 +168,42 @@ const DEFAULT_WINDOW_TITLE_KEY = "windowTitle";
 const DEFAULT_HWND_KEY = "hwnd";
 
 /**
+ * WHY the value is not in the post, when it is not — the four roads by which the predicate below
+ * says no, named rather than left as an absence.
+ *
+ * An absence cannot be read. `value` can be missing for reasons that have nothing to do with this
+ * rule: no element has focus, UIA did not answer, the field has no value at all. A caller that
+ * addressed the wrong window sees the same nothing as a caller whose field is empty, and it will
+ * read it as the commonest of those — which is exactly how `desktop_state`'s view road was
+ * misread on the measuring side before `hints.focusedElementSource` separated them (2026-09-14).
+ * So the withholding says its own name.
+ *
+ * WHERE IT IS PUBLISHED, and why not on the element: `hints`. The element is a projection of what
+ * is focused; this is a statement about the server's decision, and the two do not belong in one
+ * shape — the same separation PR #618 had to make between refusing and saying nothing about it.
+ * `hints` is also the root-hoisted key that survives every response shape, and it is already where
+ * "how this answer was produced" lives (`focusedElementSource`, `verifyDelivery.channel`), both of
+ * which are the columns that caught a misreading on the measuring side this week.
+ *
+ * IT IS NOT AN ORACLE ABOUT THE CONTENT. Published whenever the focused element has a value
+ * pattern at all — empty field included — so its presence never distinguishes an empty field from
+ * a full one in a window the call did not name. `hasValuePattern` already says a value exists;
+ * this must not add a bit saying whether it is worth having.
+ */
+export type PostValueWithheldReason =
+  /** The call named no window: `clipboard`, `notification_show`, a coordinate `mouse_click`, `@active`. */
+  | "call_named_no_window"
+  /** A window was named and focus ended in a different one — including the modal-popup road. */
+  | "not_the_window_you_named"
+  /** A selector the handler prefers decided the target: `paneId`, `selector`/`target`, an adopted `fixId`. */
+  | "target_came_from_elsewhere"
+  /** The foreground changed identity while the element read was in flight. */
+  | "foreground_moved_during_read";
+
+/** The predicate's answer: carry it, or do not and say which road said no. */
+type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheldReason };
+
+/**
  * Did THIS call name the window the focus ended up in?
  *
  * The predicate option (b) rests on, and it was measured before it was written (win2, `f2b7241`,
@@ -272,21 +308,33 @@ function valueBelongsToTheWindowActedOn(
   args: Record<string, unknown>,
   after: { title: string | null; hwnd: string | null },
   keys: PostWindowArgKeys,
-): boolean {
+): PostValueVerdict {
   // A SELECTOR THE HANDLER PREFERS MEANS THE WINDOW ARGUMENTS NAMED NOTHING. `terminal(action:
   // 'send', paneId, windowTitle)` never reads that title — and a background send does not move the
   // foreground, so a stale title that happens to match whatever is in front would have attached
   // that untouched window's field. Same for a `fixId` that retargets: the handler acts on the
   // stored fix's window and these arguments describe the call the caller wrote, not the one that
   // ran. Withholding is the recoverable direction; the rich path answers this identically.
-  if (keys.supersedingKeys?.some((k) => args[k] !== undefined && args[k] !== "")) return false;
-  if (args["fixId"] && (keys.fixRetargets ?? (() => true))(args)) return false;
+  if (keys.supersedingKeys?.some((k) => args[k] !== undefined && args[k] !== "")) {
+    return { carry: false, why: "target_came_from_elsewhere" };
+  }
+  if (args["fixId"] && (keys.fixRetargets ?? (() => true))(args)) {
+    return { carry: false, why: "target_came_from_elsewhere" };
+  }
   const hwnd = args[keys.hwndKey ?? DEFAULT_HWND_KEY];
-  if (typeof hwnd === "string" && hwnd !== "") return isTheSameHandle(hwnd, after.hwnd);
+  if (typeof hwnd === "string" && hwnd !== "") {
+    return isTheSameHandle(hwnd, after.hwnd)
+      ? { carry: true }
+      : { carry: false, why: "not_the_window_you_named" };
+  }
   const title = args[keys.windowTitleKey ?? DEFAULT_WINDOW_TITLE_KEY];
-  if (typeof title !== "string" || title === "" || title === "@active") return false;
-  if (after.title === null) return false;
-  return after.title.toLowerCase().includes(title.toLowerCase());
+  if (typeof title !== "string" || title === "" || title === "@active") {
+    return { carry: false, why: "call_named_no_window" };
+  }
+  if (after.title === null) return { carry: false, why: "not_the_window_you_named" };
+  return after.title.toLowerCase().includes(title.toLowerCase())
+    ? { carry: true }
+    : { carry: false, why: "not_the_window_you_named" };
 }
 
 /**
@@ -392,8 +440,11 @@ export function withPostState<T extends Record<string, unknown>>(
     const result = await handler(args);
     try {
       const after = snapshotFocus();
-      const carryValue = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
-      const focusedElement = await snapshotFocusedElement(carryValue);
+      const verdict = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
+      const focusedElement = await snapshotFocusedElement(verdict.carry);
+      /** Set when a value was withheld from an element that HAD one. Published in `hints`. */
+      let valueWithheld: PostValueWithheldReason | undefined =
+        verdict.carry ? undefined : verdict.why;
       // THE PERMISSION AND THE ELEMENT ARE READ AT DIFFERENT MOMENTS, and between them is an
       // asynchronous UIA call with its own 800 ms budget. `carryValue` was decided against the
       // foreground at `after`; the element comes from whatever holds focus when UIA answers. If
@@ -408,7 +459,7 @@ export function withPostState<T extends Record<string, unknown>>(
       // the window CAN disagree in that window of time — they could before this change too, for
       // every call, value or no value — and binding them properly needs the owning HWND, which
       // `NativeUiaFocusInfo` does not carry. Filed rather than faked.
-      if (carryValue && focusedElement && focusedElement.value !== undefined) {
+      if (verdict.carry && focusedElement && focusedElement.value !== undefined) {
         const settled = snapshotFocus();
         // IDENTITY, NOT THE NUMBER — and identity is the PAIR, not the name. A handle is
         // recyclable: the named window can exit during the lookup and Windows can hand its number
@@ -423,8 +474,22 @@ export function withPostState<T extends Record<string, unknown>>(
           settled.processStartTimeMs !== 0 &&
           settled.processPid === after.processPid &&
           settled.processStartTimeMs === after.processStartTimeMs;
-        if (!sameWindow) delete focusedElement.value;
+        if (!sameWindow) {
+          delete focusedElement.value;
+          valueWithheld = "foreground_moved_during_read";
+        }
       }
+      // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE. A field with no value pattern has no
+      // value for any caller, named or not, and a reason attached there would read as "a value was
+      // kept from you" (win2, measured on the CDP round: a paragraph carrying only a `tabindex`
+      // answers exactly like a masked field does). The element being absent altogether — every
+      // refusal road — is likewise not a withholding: `ok:false` is the answer to that question.
+      //
+      // Published for an EMPTY field as well as a full one. The reason answers the rule, not the
+      // contents; suppressing it for `value:""` would make its presence mean "the field you cannot
+      // see is not empty", which is a bit about a window the caller never named and one that
+      // `hasValuePattern` does not already give.
+      if (!focusedElement?.hasValuePattern) valueWithheld = undefined;
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
@@ -462,6 +527,20 @@ export function withPostState<T extends Record<string, unknown>>(
             }
           } else {
             obj.post = post;
+            // The withholding says its own name, in `hints` — MERGED, never assigned: `hints` is a
+            // root-hoisted key the handler may already have written, and this wrapper owns exactly
+            // one field of it.
+            //
+            // SUCCESS ONLY. A failure publishes no focused element at all, so "why is the value
+            // missing" is answered by `ok:false` and not by this rule; writing a reason there
+            // would name a withholding that did not happen.
+            if (valueWithheld) {
+              const existing = obj.hints;
+              obj.hints = {
+                ...(existing !== null && typeof existing === "object" ? existing as Record<string, unknown> : {}),
+                postValueWithheld: valueWithheld,
+              };
+            }
             // ADR-022 / issue #352: success-path advisory. Reuses the
             // focused-element snapshot already taken above (post.focusedElement) —
             // zero extra UIA cost. `_advisory.ts` owns the per-tool logic; this

@@ -377,6 +377,83 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
   });
 
+  it("names the road that withheld the value, once per road, and never when nothing was withheld", async () => {
+    // AN ABSENCE CANNOT BE READ. `value` goes missing for reasons that have nothing to do with the
+    // naming rule — no focused element, UIA silent, a field with no value at all — and a caller who
+    // addressed the wrong window sees the same nothing as a caller whose field is empty. So each
+    // road says its own name, in `hints`, where "how this answer was produced" already lives.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    const hintsOf = async (tool: string, args: Record<string, unknown>, keys?: PostWindowArgKeys, value: string | null = "PROBE-WHY") => {
+      vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+        focused: { name: "Notes", controlType: "Edit", value },
+      } as never);
+      const wrapped = keys
+        ? withPostState(tool, async () => ok({ ok: true }), keys)
+        : withPostState(tool, async () => ok({ ok: true }));
+      return parse(await wrapped(args)).hints as Record<string, unknown> | undefined;
+    };
+
+    // One road at a time, each with the call that takes it.
+    expect(await hintsOf("clipboard", { action: "read" }))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "@active" }))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Calculator" }))
+      .toMatchObject({ postValueWithheld: "not_the_window_you_named" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "9999" }))
+      .toMatchObject({ postValueWithheld: "not_the_window_you_named" });
+    expect(await hintsOf(
+      "terminal",
+      { action: "send", input: "x", windowTitle: "Notepad", paneId: "wt:31264:133" },
+      { windowTitleKey: "windowTitle", supersedingKeys: ["paneId"] },
+    )).toMatchObject({ postValueWithheld: "target_came_from_elsewhere" });
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad", fixId: "f1" }))
+      .toMatchObject({ postValueWithheld: "target_came_from_elsewhere" });
+
+    // NOT AN ORACLE ABOUT THE CONTENT. An empty field is withheld by the same rule and says so;
+    // if it did not, the reason's presence would mean "the field you cannot see is not empty" —
+    // a bit about a window the caller never named, which `hasValuePattern` does not give.
+    expect(await hintsOf("clipboard", { action: "read" }, undefined, ""))
+      .toMatchObject({ postValueWithheld: "call_named_no_window" });
+
+    // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE: no value pattern, no reason. Otherwise a
+    // paragraph that never had a value reads as a field something was kept from.
+    expect(await hintsOf("clipboard", { action: "read" }, undefined, null)).toBeUndefined();
+
+    // …and none of the carrying calls says anything: the 8 arms that DO get their value.
+    expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toBeUndefined();
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "4242" })).toBeUndefined();
+    expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "0x1092" })).toBeUndefined();
+    expect(await hintsOf("focus_window", { title: "Notepad" }, { windowTitleKey: "title" })).toBeUndefined();
+
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+  });
+
+  it("merges its hint into the handler's own, rather than replacing it", async () => {
+    // `hints` is a root-hoisted key the handler may have written. This wrapper owns one field of
+    // it — `verifyDelivery` and `focusedElementSource` are other writers', and both are columns
+    // that caught a misreading on the measuring side this week.
+    const noWindows = vi.mocked(enumWindowsInZOrder).getMockImplementation();
+    vi.mocked(enumWindowsInZOrder).mockImplementation(
+      () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
+    );
+    vi.mocked(getProcessIdentityByPid).mockReturnValue(NOTEPAD as never);
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({
+      focused: { name: "Notes", controlType: "Edit", value: "PROBE-WHY" },
+    } as never);
+    const handlerHints = { verifyDelivery: { channel: "postmessage" } };
+    const out = parse(await withPostState("scroll", async () => ok({ ok: true, hints: handlerHints }))({ action: "raw", amount: 3 }));
+    expect(out.hints).toEqual({ verifyDelivery: { channel: "postmessage" }, postValueWithheld: "call_named_no_window" });
+
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
+    if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
+  });
+
   it("drops the value when the foreground moved while the UIA read was in flight", async () => {
     // The permission is decided against the foreground BEFORE the asynchronous element read, and
     // the element comes from whatever holds focus when UIA answers. Alt-tab in between and the
