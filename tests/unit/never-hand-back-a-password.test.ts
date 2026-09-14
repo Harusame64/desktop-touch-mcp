@@ -509,6 +509,13 @@ describe("the tools win2 measured leak nothing the page masks", () => {
   it("desktop_state's CDP read gives no masked value, and no field's text as its name", async () => {
     const { CDP_FOCUSED_ELEMENT_SCRIPT, buildElementInfoFromCdp } = await import("../../src/tools/desktop-state.js");
     const focus = (el: FakeEl) => buildElementInfoFromCdp(run(CDP_FOCUSED_ELEMENT_SCRIPT, pageWith(fixture.body, el)) as object);
+    // AND IT SAYS WHICH IT DID. Dropping the value is not enough on its own: a masked field and a
+    // field with nothing in it leave the same hole, so the script reports the masking and
+    // `desktop_state` turns it into `hints.focusedElementValueAbsent`.
+    const raw = (el: FakeEl) => run(CDP_FOCUSED_ELEMENT_SCRIPT, pageWith(fixture.body, el)) as { masked?: boolean; value?: string };
+    expect(raw(fixture.p1)).toMatchObject({ masked: true, value: "" });   // type=password
+    expect(raw(fixture.m1)).toMatchObject({ masked: true, value: "" });   // masked by CSS alone
+    expect(raw(fixture.t1)).toMatchObject({ masked: false, value: "PROBE-TEXT-9" });
     expect(focus(fixture.p1)).toEqual({ name: "p1", type: "INPUT" });
     expect(focus(fixture.m1)).toEqual({ name: "m1", type: "INPUT" });
     expect(focus(fixture.m2)).toEqual({ name: "m2", type: "TEXTAREA" });

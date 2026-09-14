@@ -315,13 +315,20 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     naming no window, so this is a change in WHO HAS TO ASK for a field rather than a reduction
  *     in what can be read; `desktop_state`'s own caveat is where that is written down. But it
  *     answers only from the UIA road: `desktop_state` prefers the perception view's focus, and
- *     `buildElementInfoFromView` has no `value` field at all, so once this server's own writing has
- *     filled that window's view the read-back returns the element WITH NO VALUE — which a caller
- *     cannot tell from an empty field. Measured 24/24 with a value on the UIA road and 0/8 without
- *     on the view road, the element's name identical in all four conditions and
- *     `hints.focusedElementSource` the only column that moved (win2, 2026-09-14, `a4802dd`). So
- *     the recommendation above is at its weakest exactly where it is most wanted: immediately
- *     after a write.
+ *     `buildElementInfoFromView` has no `value` field at all, so when that road answers the
+ *     read-back returns the element WITH NO VALUE — which a caller cannot tell from an empty
+ *     field. Measured 24/24 with a value on the UIA road and 0/8 without on the view road, the
+ *     element's name identical in all of them and `hints.focusedElementSource` the only column
+ *     that moved (win2, 2026-09-14, `a4802dd`).
+ *
+ *     WHEN THAT HAPPENS was measured separately and corrects an earlier reading of mine
+ *     (`3859672`): the trigger is ACTING ON A WINDOW OTHER THAN THE ONE FOCUS ENDS IN, not
+ *     writing. Typing into the window you then read leaves the value in place; so does bouncing
+ *     focus away and back without acting; so does screenshotting another window. Writing to
+ *     another window loses it — and so does invoking a button on another window, which writes
+ *     nothing. So the recommendation above is not at its weakest where it first appeared to be:
+ *     reading a field back straight after typing into it works. It is weakest for a caller who
+ *     touched something else and came back.
  *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
  *     `hasValuePattern` still come back for a window this call never named. Three of those four
  *     are what the success-path advisory (ADR-022) decides from — `buildHint` reads `type`,

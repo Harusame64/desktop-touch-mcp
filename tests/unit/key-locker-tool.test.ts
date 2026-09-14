@@ -308,6 +308,19 @@ describe("the shipped promise says what it covers", () => {
     expect(
       state!.description,
       "the masking half must stay hedged — the UIA road enforces nothing",
-    ).toContain("nothing here checks for a masked control, so do not rely on it being absent");
+    ).toContain("nothing here checks for a masked control");
+    expect(
+      state!.description,
+      "and it must say what arrives instead: mask characters, one per character of the secret, " +
+      "which is the asymmetry the CDP road's named reason throws into relief",
+    ).toContain("one per character of the secret");
+    // A NEGATIVE PIN, because the claim that had to be withdrawn is the one a tightening pass
+    // would write again: it is shorter, and it reads as helpful. On the UIA road a masked
+    // WinForms box serves nothing and sets no hint, so "no hint" cannot mean "the field was
+    // empty" (gate on `93c5f41`, P1).
+    expect(
+      state!.description,
+      "the absence of a reason must not be sold as a verdict about the field",
+    ).not.toContain("means the field itself had nothing");
   });
 });
