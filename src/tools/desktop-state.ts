@@ -774,7 +774,10 @@ export const desktopStateHandler = async (args: {
       // then on (win2, `e1daeb4`). Typing into the field you then read keeps the value because
       // editing moves that window's TITLE, not because it moved focus — measured by renaming a
       // window from outside and back, with no input at all (`a23bda2`). A window whose title is
-      // fixed stays on this road and its value never comes back.
+      // fixed KEEPS matching its row, so it tends to stay on this road — but the title is only the
+      // third filter: an unnamed control, a Chromium `Pane`, or a view no event has reached leaves
+      // this road with the title unchanged, and the value comes back. See `_post.ts`, which states
+      // the same fact with that hedge; this line used to state it flat (gate 2).
       hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
@@ -1289,12 +1292,16 @@ export function registerDesktopStateTools(server: McpServer): void {
       // from "the field is empty". `hints.focusedElementSource` is the only thing that separates
       // the two, so the caveat says to read it.
       //
-      // WHEN THE VIEW WINS is a predicate, not an event — `shouldAcceptViewFocus` (:315): a
+      // WHEN THE VIEW WINS is a predicate, not an event — `shouldAcceptViewFocus` (:317): a
       // latest-focus row with a name, not a Chromium `Pane`, and a recorded window title EXACTLY
-      // equal to the foreground title enumerated in the same call. The row is global and NO FOCUS
+      // equal to the foreground title enumerated in the same call — with one equal case refused,
+      // because an empty `fgTitle` is rejected before the comparison and the UIA handler writes an
+      // empty `window_title` for `hwnd == 0`. The row is global and NO FOCUS
       // EVENT clears it (a dropped focus is skipped, not written); what does clear it — a view
       // that no event has reached yet, a failed handler registration, a poison-eviction respawn —
-      // all fails toward the UIA road, which is the one that carries a value. So the road moves
+      // all falls through to the UIA road, and on a Chromium foreground onward to CDP. Both carry
+      // a value; only THIS road never does, which is the distinction `05f31f6` drew 30 lines up
+      // and this sentence had quietly undone (gate 2). So the road moves
       // with no focus change at all, in BOTH directions: a window that renames itself out of the
       // equality leaves this road and the value appears (Notepad's `*`), and a foreground whose
       // title matches its recorded row again arrives here and the value disappears.

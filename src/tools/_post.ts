@@ -342,14 +342,17 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     that moved (win2, 2026-09-14, `a4802dd`).
  *
  *     WHICH ROAD ANSWERS IS A PREDICATE, NOT AN EVENT — `shouldAcceptViewFocus`
- *     (`desktop-state.ts:315`). The view answers when the perception pipeline holds a latest-focus
+ *     (`desktop-state.ts:317`). The view answers when the perception pipeline holds a latest-focus
  *     row with a non-empty name, not a Chromium `Pane`, AND a recorded window title EXACTLY equal
- *     to the foreground title enumerated in the same call. That row is global, and NO FOCUS EVENT
+ *     to the foreground title enumerated in the same call — one equal case excepted, since an
+ *     empty foreground title is refused before the comparison and the UIA handler records an empty
+ *     title for `hwnd == 0`. That row is global, and NO FOCUS EVENT
  *     clears it — a dropped focus is skipped rather than written (`focus_pump`). Other things do:
  *     the view is empty until the first event arrives, empty for good if handler registration
- *     failed, and a poison-eviction respawns a fresh one. All of those fail toward the UIA road,
- *     which is the direction that carries a value, so they cost a caller nothing and are not the
- *     interesting half.
+ *     failed, and a poison-eviction respawns a fresh one. All of those fall through to UIA — and
+ *     onward to CDP on a Chromium foreground — both of which carry a value, so they cost a caller
+ *     nothing and are not the interesting half. (Only THIS road never carries one; "only UIA does"
+ *     is the wider claim `desktop-state.ts` corrected at `05f31f6`.)
  *
  *     THE INTERESTING HALF IS THAT THE ROAD MOVES WITH NO FOCUS CHANGE AT ALL, in both directions.
  *     A window that renames itself while you work in it leaves the view road — Notepad's `*` for
