@@ -149,8 +149,12 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // text you wrote, which is what a failed write plus an autofill or a user's keystroke
         // leaves behind (gate 1 on `3217cf3`).
         expect(sentence).toContain("the element it names is the field you wrote");
-        expect(sentence).toContain("its value is the text you wrote");
-        expect(sentence).toContain("not one the field already held");
+        // — and the expected value is not the same for the two writes this advice covers. A `type`
+        // appends, so "the value is the text you wrote" is false there by construction, and a
+        // caller applying it literally would reject every successful type. The clause names both.
+        expect(sentence).toContain("what the field should hold if the write landed");
+        expect(sentence).toContain("the prior text plus the typed text for type");
+        expect(sentence).toContain("not what it already held");
         // AND THE CASE WHERE THE RULE CANNOT BE APPLIED AT ALL. `desktop_state.focusedElement`
         // carries no entity id, `EntityView` omits the UIA locator, and the write's own post block
         // describes whatever held focus afterwards — with the name withheld when that was not the
