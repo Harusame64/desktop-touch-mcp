@@ -120,108 +120,43 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * reject a matching row and fall through to UIA or CDP, where a value may be there. Both copies
    * must name the hint that distinguishes "no value on this road" from "the field is empty".
    */
-  it("sends no caller to a read-back without telling them what it cannot settle", () => {
-    // FOUR AUDIENCES, NOT TWO. The same advice ships in the tool description, in the server
-    // instructions, AND in both READMEs — and the READMEs carried the round-0 imperative ("read
-    // the field back before relying on it", with no caveat) through seven rounds of correcting it
-    // elsewhere, because this cell only read `src/` (gate 2 on `8937dfe`). A reader there got
-    // exactly the inference the branch exists to prevent, in two languages.
-    const shipped = [
-      "src/tools/desktop-register.ts",
-      "src/server-windows.ts",
-      "README.md",
-      "README.ja.md",
-    ].map((rel) => ({
-      rel,
-      text: readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8"),
-    }));
-
-    // No copy may still tell a caller a read-back settles it. The bare imperative is the exact
-    // wording every round was spent removing, so it is denied by name.
-    for (const { rel, text } of shipped) {
-      expect(text, `${rel} still carries the uncaveated round-0 sentence`)
-        .not.toContain("Read the field back before relying on it.");
-    }
-
-    // The two English prose copies say what the read-back cannot settle, each claim with its own
-    // SUBJECT — a fragment survives a rewrite that keeps every word and inverts the meaning, which
-    // is how "missing with no hint at all" and "inserts at the caret" were pinned before this
-    // round: "a value is never missing with no hint at all" and "a FOREGROUND type inserts at the
-    // caret … a background type appends" both passed, and the second is the claim the caret
-    // measurement refuted (gate 2).
-    const detailed = shipped.filter(({ rel }) => rel.startsWith("src/"));
-    for (const { rel, text } of detailed) {
-      const sentences = text.split("\n").filter((line) => line.includes("NOTHING on this response establishes"));
-      expect(sentences.length, `${rel} has no read-back advice at all`).toBeGreaterThan(0);
-      for (const sentence of sentences) {
-        expect(sentence).toContain("NOTHING on this response establishes that the characters arrived");
-        expect(sentence).toContain("a BACKGROUND type inserts at the caret and replaces the selection");
-        expect(sentence).toContain("a write of empty text sends nothing");
-        
-        // NO IMPERATIVE ANYWHERE. The opening "read the field back before relying on it" and the
-        // "use it to see what the field currently holds" outlived twelve rounds of narrowing the
-        // clauses around them — and both send a caller to trust a read the same paragraph says can
-        // name a field in another window (gate 1, `5f426ae`). The paragraph describes a state now
-        // and instructs nothing, which is what the code can support.
-        // The invariant is "no instruction", so it is checked as one rather than as a list of the
-        // two phrases that happened to be removed last time. The previous form denied those two
-        // and then REQUIRED "treat this landing as a REPORT" — enforcing an imperative while
-        // claiming to forbid them (gate 1, `b5c362a`).
-        for (const imperative of [
-          "read the field back", "Use it to see", "treat this", "Treat it", "you can do is",
-        ]) {
-          expect(sentence, `the paragraph instructs: ${imperative}`).not.toContain(imperative);
-        }
-        // `desktop_state` answers about the foreground, from a row matched BY TITLE — so another
-        // window with the same title can supply the element. The sharpest fact in the sentence,
-        // and nothing pinned it before this round.
-        expect(sentence).toContain("hints.focusedElementValueAbsent");
-        expect(sentence).toContain("another window with the same title");
-        // …and the one thing on this response that does have a baseline, with its asymmetry: a
-        // `value_changed` is evidence, its absence is not.
-        // …and the thing that looked like a baseline is not one: `computeDiff`'s PRE side is the
-        // stored `desktop_discover` snapshot, not a reading taken across the write, so a change
-        // anyone made in between is indistinguishable (gate 1 on `bec8552`). Naming it as evidence
-        // was the eighth version of the same error in this sentence — pointing at something whose
-        // limit had already been written down one round earlier.
-        expect(sentence).toContain("`diff.value_changed` on the same response is not delivery either");
-        expect(sentence).toContain("its baseline is your `desktop_discover` snapshot");
-        // The honest end: nothing here answers the question, and the way to GET an answer is to
-        // make the write confirmable rather than to inspect it afterwards.
-        expect(sentence).toContain("NOTHING on this response establishes that the characters arrived");
-        // AND THE RECOVERY HAS TWO TEETH OF ITS OWN, both found in one round (gate 1 on `e74dd76`).
-        // Replaying a type that DID land appends a second copy — and the sentence has just said
-        // the caller cannot know whether it landed, so "write again" was advice to corrupt a
-        // successful result. And focus does not make every write confirmable: the rung confirms
-        // only a field with a window of its own, so for the WPF case the README uses as its
-        // EXAMPLE, a retry answers `landing` again however it is aimed.
-        expect(sentence).toContain("nothing else here does either");
-        expect(sentence).toContain("a retry appends rather than replaces");
-        expect(sentence).toContain("a clear is itself a write of empty text");
-        expect(sentence).toContain("`landing.why` does not reliably tell you");
-        // AND NO ACTION AT ALL, which is where twelve rounds landed. The last version ended
-        // "read the field and act on what it holds" — but the same paragraph had already said the
-        // read may carry no value, may omit one the provider never served, and may name a field in
-        // another window with the same title. The closing action inherited every caveat above it
-        // and would have sent a caller to act on missing or unrelated state (gate 1, `518da7e`).
-        expect(sentence).toContain("This landing is a REPORT, not a state that can be resolved here");
-        
-      }
-    }
-
-    // Both READMEs name the baseline too, so a reader who never sees a tool description is not
-    // left with "read it back" and nothing else. The Japanese copy is checked by the same rule:
-    // a fix applied in one language and not the other is the shape this repo keeps meeting.
-    for (const { rel, text } of shipped.filter(({ rel: r }) => r.startsWith("README"))) {
-      expect(text, `${rel} does not say what diff.value_changed is`).toContain("diff.value_changed");
-      // The README carries the two teeth as well — shorter, but a reader there is the one most
-      // likely to take "write again" literally.
-      expect(text, `${rel} does not warn that a retry appends`).toMatch(/retry appends|\u518d\u8a66\u884c\u306f\u8ffd\u8a18/);
-      expect(text, `${rel} still offers a recovery`).toMatch(/a report, not a state that can be resolved|\u5831\u544a\u3067\u3042\u308a/);
-      // …and says the same thing about it as the tool description: not delivery. A README that
-      // named it without the limit would be the round-0 mistake with a newer noun.
-      expect(text, `${rel} names diff.value_changed without its limit`)
-        .toMatch(/diff\.value_changed`?\s*(is not delivery either|\u3082\u5c4a\u3044\u305f\u8a3c\u62e0\u306b\u306f\u306a\u3089\u306a\u3044)/);
+  /**
+   * THE WHOLE PARAGRAPH, PINNED, because "contains no instruction" cannot be checked by listing
+   * the instructions one has already thought of. The previous form enumerated five phrases, and
+   * gate 1 walked through it with `Retry the write now.` — every required substring present,
+   * every forbidden one absent, green. The READMEs were not in that loop at all.
+   *
+   * So the four copies are fixed text. Any edit fails here and has to be made deliberately, which
+   * is the point: this paragraph took fourteen rounds to stop claiming things the code cannot
+   * support, and every round removed something — that the read tells you, that the hint's silence
+   * means something, that a match settles it, that focusing first is enough, that the element can
+   * be compared, that the value is predictable, that an empty field settles it, that `diff` has a
+   * baseline, that a retry is free, that focus makes the next write confirmable, that a clear
+   * resets, that a retry appends, that there is anything to do about it here, and finally the two
+   * instructions that had framed it since before the first round.
+   */
+  it("keeps all four copies of the landing paragraph exactly as measurement left them", () => {
+    const EXPECTED: Record<string, string> = {
+      "src/tools/desktop-register.ts":
+        "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} was sent by the background keyboard write but not confirmed to have reached the field named. NOTHING on this response establishes that the characters arrived, and nothing else here does either: `desktop_state` answers about the FOREGROUND window from a focus row that is sticky and asynchronous, so it can name a field in another window with the same title, and it may carry no value at all (`hints.focusedElementValueAbsent` — 'view_road_has_no_value' means the road that answered carries none, and a value can also be missing with no hint at all); a BACKGROUND type inserts at the caret and replaces the selection, exactly as typing does, so what the field ends up holding is not predictable without knowing the caret, which nothing here reports; a write of empty text sends nothing, so an already-empty field reads back as a match; `diff.value_changed` on the same response is not delivery either, since its baseline is your `desktop_discover` snapshot rather than the moment of the write; a retry lands at the caret in its turn, so writing again can insert into or replace what is already there rather than repeat it; a clear is itself a write of empty text; and `landing.why` does not reliably tell you which case you are in — the same word covers a field that structurally has no window and a window that merely had no focused child at that moment. This landing is a REPORT, not a state that can be resolved here.",
+      "src/server-windows.ts":
+        "A type that answers ok:true with landing {confirmed:false, why} was sent by the background keyboard write but not confirmed to have reached the field named. NOTHING on this response establishes that the characters arrived, and nothing else here does either: `desktop_state` answers about the FOREGROUND window from a focus row that is sticky and asynchronous, so it can name a field in another window with the same title, and it may carry no value at all (`hints.focusedElementValueAbsent` — 'view_road_has_no_value' means the road that answered carries none, and a value can also be missing with no hint at all); a BACKGROUND type inserts at the caret and replaces the selection, exactly as typing does, so what the field ends up holding is not predictable without knowing the caret, which nothing here reports; a write of empty text sends nothing, so an already-empty field reads back as a match; `diff.value_changed` on the same response is not delivery either, since its baseline is your `desktop_discover` snapshot rather than the moment of the write; a retry lands at the caret in its turn, so writing again can insert into or replace what is already there rather than repeat it; a clear is itself a write of empty text; and `landing.why` does not reliably tell you which case you are in — the same word covers a field that structurally has no window and a window that merely had no focused child at that moment. This landing is a REPORT, not a state that can be resolved here;",
+      "README.md":
+        "A successful `type` can carry `landing: { confirmed: false, why }`. The characters were sent in the background, but the server could not confirm that they reached the field you named — for example, in a WPF window, whose fields have no window of their own. Reading the field back does not settle it: `desktop_state` answers about the foreground window, a background type lands at the caret and replaces the selection like any keystroke, and an empty write sends nothing at all. `diff.value_changed` is not delivery either — its baseline is your `desktop_discover`, not the write. Nothing in the response establishes that the characters arrived, and nothing else here does either: a retry lands at the caret in its turn, a clear is an empty write that sends nothing, and taking the focus only helps a field that has a window of its own. This is a report, not a state that can be resolved here — the read itself may come back with no value at all, or name a field in another window with the same title.",
+      "README.ja.md":
+        "成功した `type` に `landing: { confirmed: false, why }` が付くことがある。文字はバックグラウンドで送られたが、指定した欄に届いたことをサーバが確かめられなかった、という意味である（例: WPF のウィンドウは欄ごとのウィンドウを持たない）。欄を読み返しても決着しない。`desktop_state` は前面の窓について答え、背景の `type` は打鍵と同じくキャレット位置に入って選択を置換し、空文字の書き込みは何も送らない。`diff.value_changed` も届いた証拠にはならない——基準は `desktop_discover` の時点であって書き込みの瞬間ではない。**応答の中に、文字が届いたことを示すものは無い。****そして、他の何も示さない**——再試行もまたキャレット位置に入るので反復とは限らず、一度消すのも空文字の書き込み（何も送らない）であり、焦点を取るのが効くのは欄が自分の窓を持つときだけである。**これは報告であり、ここで解消できる状態ではない**——読み返しそのものが値を一切返さないことも、同じ題の別の窓の欄を名乗ることもある。",
+    };
+    for (const [rel, expected] of Object.entries(EXPECTED)) {
+      const text = readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8");
+      // EXTRACT AND COMPARE, not `toContain`: a substring check passes when text is APPENDED, and
+      // the first version of this cell did exactly that — gate 1's `Retry the write now.` walked
+      // in behind the pinned paragraph and the suite stayed green. The paragraph runs from its
+      // opening words to the end of the shipped string (a `",` in the sources) or the end of the
+      // line (in the READMEs), and that whole slice has to match.
+      const start = text.indexOf(expected.slice(0, 40));
+      expect(start, `${rel} no longer opens the landing paragraph the same way`).toBeGreaterThan(-1);
+      const end = rel.startsWith("src/") ? text.indexOf('",', start) : text.indexOf("\n", start);
+      expect(text.slice(start, end), `${rel}'s landing paragraph changed`).toBe(expected);
     }
   });
 
