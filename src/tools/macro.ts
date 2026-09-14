@@ -137,16 +137,6 @@ import {
 } from "./desktop-register.js";
 import { resolveV2Activation } from "./desktop-activation.js";
 
-/**
- * Phase 4 (Codex PR #41 round 3 P1): the v2 World-Graph dispatchers
- * registered above must honour the same DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1
- * kill switch that gates the top-level registerDesktopTools registration.
- * Without this gate, run_macro provides an alternate execution path that
- * silently re-enables v2 even when the operator has opted out.
- */
-function v2KillSwitchActive(): boolean {
-  return !resolveV2Activation(process.env).enabled;
-}
 
 function v2DisabledError(): ToolResult {
   return failCode(
@@ -185,6 +175,32 @@ function v1FallbackOnlyError(tool: string, replacement: string): ToolResult {
 // Tool registry
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ADR-036 — which server configuration a step exists in, when it is not both.
+ *
+ * THE GATE IS DATA BECAUSE TWO READERS NEED IT. The catalogue in `steps[].tool` has to know
+ * before the macro is written, and the dispatcher has to know when the step runs; when the
+ * dispatcher's half was a `v2KillSwitchActive()` call inside each handler body, the catalogue's
+ * half had to be a second list, and nothing made the two agree. Gate 2 demonstrated the cost by
+ * adding a v2-gated entry and not adding it to the list: clean `tsc`, green suite, and a
+ * catalogue advertising a step that refuses. Gate 1 then found the same hole one level further
+ * out — a handler that delegates its refusal to a helper has no literal `v2KillSwitchActive()`
+ * for a source-reading test to find either.
+ *
+ * A field on the entry ends the class rather than another check for it: there is one place to
+ * write, and a step whose availability is not declared here is available everywhere, which is
+ * both the truth for the 25 ordinary steps and the safe default for a new one.
+ */
+type StepAvailability =
+  /** Exists only while v2 is on; the kill switch refuses it (`v2DisabledError`). */
+  | { corner: "v2Only" }
+  /**
+   * Exists only while the kill switch is on; v2 mode refuses it and names what to use instead.
+   * The replacement string lives HERE so the sentence a caller gets at run time and the
+   * catalogue they read beforehand cannot disagree about which tool belongs to which corner.
+   */
+  | { corner: "v1FallbackOnly"; replacement: string };
+
 interface ToolEntry {
   // Phase 4: widened from z.ZodObject to z.ZodTypeAny so dispatchers backed by
   // z.discriminatedUnion (keyboard / clipboard / window_dock / scroll /
@@ -192,6 +208,20 @@ interface ToolEntry {
   schema: z.ZodTypeAny;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: ToolHandler<any>;
+  /** Absent — the common case — means the step exists at every corner. */
+  availability?: StepAvailability;
+}
+
+/** The refusal for a step this configuration does not have, or `null` when it has it. */
+function refusalForAvailability(
+  tool: string,
+  availability: StepAvailability | undefined,
+  env: Record<string, string | undefined> = process.env,
+): ToolResult | null {
+  if (!availability) return null;
+  const v2On = resolveV2Activation(env).enabled;
+  if (availability.corner === "v2Only") return v2On ? null : v2DisabledError();
+  return v2On ? v1FallbackOnlyError(tool, availability.replacement) : null;
 }
 
 /**
@@ -232,8 +262,15 @@ export interface InnerToolOutcome {
 export async function runInnerToolAsResult(
   entry: ToolEntry,
   validated: unknown,
+  tool: string,
 ): Promise<Result<InnerToolOutcome, InnerToolOutcome>> {
-  const result = await entry.handler(validated);
+  // ADR-036 — THE CONFIGURATION GATE, where the handler's own `if` used to be. It sits here, not
+  // at the call site, so a refused step is adapted by exactly the path a handler's refusal was:
+  // same envelope, same `ok:false` parse, same `stop_on_error` behaviour. The name is a required
+  // argument rather than an optional one because the V1 sentence names the tool, and a refusal
+  // that forgot its own name is the kind of thing that reads fine and ships.
+  const refusal = refusalForAvailability(tool, entry.availability);
+  const result = refusal ?? (await entry.handler(validated));
 
   const textLines: string[] = [];
   const images: Array<{ data: string; mimeType: string }> = [];
@@ -398,10 +435,8 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // emits ToolCall events for blocked calls.
   desktop_discover:     {
     schema: z.object(desktopDiscoverRegistrationSchema),
+    availability: { corner: "v2Only" },
     handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
-      if (v2KillSwitchActive()) {
-        return v2DisabledError();
-      }
       // The wrapped handler returns the looser `McpToolResult` shape
       // (`_envelope.ts`); the runtime content blocks are bit-equal with
       // the strict `ToolResult` discriminated union, so the cast is
@@ -412,10 +447,8 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   },
   desktop_act:          {
     schema: z.object(desktopActRegistrationSchema),
+    availability: { corner: "v2Only" },
     handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
-      if (v2KillSwitchActive()) {
-        return v2DisabledError();
-      }
       return (await desktopActRegistrationHandler(input)) as ToolResult;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any,
@@ -425,30 +458,23 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // with a v2 replacement hint. (Codex PR #41 round 6 P1×2.)
   get_windows: {
     schema: z.object(getWindowsSchema),
-    handler: async (): Promise<ToolResult> => {
-      if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("get_windows", V1_FALLBACK_ONLY.get_windows);
-      }
-      return getWindowsHandler();
-    },
+    availability: { corner: "v1FallbackOnly", replacement: "desktop_discover.windows[]" },
+    handler: async (): Promise<ToolResult> => getWindowsHandler(),
   },
   get_ui_elements: {
     schema: z.object(getUiElementsSchema),
-    handler: async (input: unknown): Promise<ToolResult> => {
-      if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("get_ui_elements", V1_FALLBACK_ONLY.get_ui_elements);
-      }
-      return getUiElementsHandler(input as Parameters<typeof getUiElementsHandler>[0]);
-    },
+    availability: { corner: "v1FallbackOnly", replacement: "desktop_discover.entities[]" },
+    handler: async (input: unknown): Promise<ToolResult> =>
+      getUiElementsHandler(input as Parameters<typeof getUiElementsHandler>[0]),
   },
   set_element_value: {
     schema: z.object(setElementValueSchema),
-    handler: async (input: unknown): Promise<ToolResult> => {
-      if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("set_element_value", V1_FALLBACK_ONLY.set_element_value);
-      }
-      return setElementValueHandler(input as Parameters<typeof setElementValueHandler>[0]);
+    availability: {
+      corner: "v1FallbackOnly",
+      replacement: "desktop_act({action:'setValue', lease, text})",
     },
+    handler: async (input: unknown): Promise<ToolResult> =>
+      setElementValueHandler(input as Parameters<typeof setElementValueHandler>[0]),
   },
   // run_macro is intentionally excluded → prevents recursion
 };
@@ -472,28 +498,10 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
  * defaults to true, so the first refusal ends the macro with whatever the earlier steps did left
  * in place.
  *
- * ONE TABLE FOR THE V1 HALF, AND A CELL FOR THE OTHER. `V1_FALLBACK_ONLY` is read by both the
- * catalogue and the three refusals — same fact, one place, and the replacement strings live here
- * so the sentence a caller gets at run time and the catalogue they read beforehand cannot
- * disagree. `V2_ONLY` cannot be that: the v2 refusal is a `v2KillSwitchActive()` gate in each
- * handler body, so the table is a SECOND list, which is the second place to forget a tool that
- * this ADR keeps finding. Gate 2 proved it by adding a v2-gated entry and not adding it here —
- * `tsc` clean, suite green, and the catalogue advertising a step that refuses.
+ * ONE DECLARATION, TWO READERS. The catalogue and the refusal both read `entry.availability`, so
+ * there is no second list to forget and no lexical pattern for a test to chase — see
+ * `StepAvailability` for what two rounds of review cost before the gate became data.
  *
- * So the membership is pinned from the SOURCE instead of trusted: the cell "every v2-gated
- * registry entry is in exactly one of these tables" in `adr-036-macro-step-catalogue.test.ts`
- * reads the handler bodies and fails on a new gate that no table names.
- */
-const V1_FALLBACK_ONLY: Record<string, string> = {
-  get_windows: "desktop_discover.windows[]",
-  get_ui_elements: "desktop_discover.entities[]",
-  set_element_value: "desktop_act({action:'setValue', lease, text})",
-};
-
-/** Registry entries that exist only while v2 is on; the kill switch refuses them (`v2DisabledError`). */
-const V2_ONLY = ["desktop_discover", "desktop_act"];
-
-/**
  * WHAT THIS LIST IS NOT: the server's tool surface. Five registered tools are absent from
  * `TOOL_REGISTRY` and therefore from the catalogue at every corner — `excel`, `key_locker`,
  * `server_status`, `screenshot_query`, `screenshot_gc` — because `run_macro` cannot dispatch them,
@@ -513,10 +521,9 @@ const V2_ONLY = ["desktop_discover", "desktop_act"];
  * different server.
  */
 export function dispatchableStepNames(env: Record<string, string | undefined> = process.env): string[] {
-  const v2On = resolveV2Activation(env).enabled;
-  return Object.keys(TOOL_REGISTRY).filter((name) =>
-    v2On ? !(name in V1_FALLBACK_ONLY) : !V2_ONLY.includes(name),
-  );
+  return Object.entries(TOOL_REGISTRY)
+    .filter(([name, entry]) => refusalForAvailability(name, entry.availability, env) === null)
+    .map(([name]) => name);
 }
 
 export const runMacroSchema = {
@@ -626,7 +633,7 @@ export const runMacroHandler = async ({
       // silent-success contract (matrix §3.1 line 157: an inner ok:false envelope
       // halts `stop_on_error: true` like a throw does) now lives at the typed
       // boundary. See `runInnerToolAsResult` for the relocated parse logic.
-      const outcome = await runInnerToolAsResult(entry, validated);
+      const outcome = await runInnerToolAsResult(entry, validated, tool);
       const { textLines, images, links } = outcome.ok ? outcome.value : outcome.error;
 
       if (outcome.ok) {
@@ -816,7 +823,7 @@ export function registerMacroTools(server: McpServer): void {
     "run_macro",
     buildDesc({
       purpose: "Execute multiple tools sequentially in one MCP call — eliminates round-trip latency for predictable multi-step workflows.",
-      details: "steps[] is an array of {tool, params} objects. The `tool` field's own description lists the step names THIS server can dispatch — it is not every tool in the catalogue, it changes with the server's configuration, and a name outside it is refused rather than run. Plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.",
+      details: "steps[] is an array of {tool, params} objects. The `tool` field's own description lists the step names THIS server can dispatch — it is not every tool in the catalogue (`excel`, `key_locker`, `server_status`, `screenshot_query` and `screenshot_gc` are never steps, and neither is `run_macro` itself), it changes with the server's configuration, and a name outside it is refused rather than run. Plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.",
       prefer: "Use for predictable fixed sequences (focus → sleep → type → screenshot). Do not use for conditional logic — return to the LLM between branches so it can inspect intermediate state.",
       caveats: "If any step may fail conditionally (e.g. a dialog that may or may not appear), split the macro at that point. Each screenshot step within a macro incurs the same token cost as a standalone call.",
       examples: [
