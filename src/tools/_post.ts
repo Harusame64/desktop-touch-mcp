@@ -321,14 +321,18 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     element's name identical in all of them and `hints.focusedElementSource` the only column
  *     that moved (win2, 2026-09-14, `a4802dd`).
  *
- *     WHEN THAT HAPPENS was measured separately and corrects an earlier reading of mine
- *     (`3859672`): the trigger is ACTING ON A WINDOW OTHER THAN THE ONE FOCUS ENDS IN, not
- *     writing. Typing into the window you then read leaves the value in place; so does bouncing
- *     focus away and back without acting; so does screenshotting another window. Writing to
- *     another window loses it — and so does invoking a button on another window, which writes
- *     nothing. So the recommendation above is not at its weakest where it first appeared to be:
- *     reading a field back straight after typing into it works. It is weakest for a caller who
- *     touched something else and came back.
+ *     WHEN THAT HAPPENS: the road changes when THE FOCUSED ELEMENT CHANGES. Measured inside one
+ *     window, with the click point as the only variable — clicking blank space in the form keeps
+ *     the UIA road, clicking a different text field moves to the view road from then on (win2,
+ *     2026-09-14, `e1daeb4`). Not writing, and not the window: typing into the field you then
+ *     read keeps the value because it does not move focus, and that is also why a `focus_window`
+ *     round trip keeps it — it acts on no element.
+ *
+ *     THIS SENTENCE HAS BEEN WRONG TWICE, both times in the same direction. "After this server
+ *     writes" came from a round that changed three things at once; "after acting on another
+ *     window" from a round where the click's landing point was never a variable. Each version
+ *     named the most visible change in a round that moved more than one thing, so the third form
+ *     is stated with the variable that was isolated to get it.
  *     The field's IDENTITY is not narrowed here either: `name`, `automationId`, `type` and
  *     `hasValuePattern` still come back for a window this call never named. Three of those four
  *     are what the success-path advisory (ADR-022) decides from — `buildHint` reads `type`,

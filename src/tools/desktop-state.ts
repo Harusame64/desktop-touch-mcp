@@ -765,10 +765,10 @@ export const desktopStateHandler = async (args: {
       // `view`, the element's NAME identical in all thirty-two (win2, 2026-09-14, `a4802dd`).
       //
       // Unconditional: the absence is a property of the road, not of this element. WHAT PUTS A
-      // CALLER ON THIS ROAD is acting on a window other than the one focus ends in — writing to
-      // another window, or invoking a button on one, which writes nothing. Typing into the window
-      // you then read does NOT, which is the opposite of what the first measurement seemed to say
-      // (win2, `3859672` correcting `a4802dd`).
+      // CALLER ON THIS ROAD is the FOCUSED ELEMENT CHANGING — measured inside one window with the
+      // click point as the only variable: blank space in the same form keeps the UIA road, a
+      // different text field moves to this one from then on (win2, `e1daeb4`). Typing into the
+      // field you then read keeps the value, because it moves no focus.
       hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
 
@@ -1283,13 +1283,17 @@ export function registerDesktopStateTools(server: McpServer): void {
       // from "the field is empty". `hints.focusedElementSource` is the only thing that separates
       // the two, so the caveat says to read it.
       //
-      // WHEN THE VIEW WINS was measured separately and corrects the first reading (`3859672`): the
-      // trigger is ACTING ON A WINDOW OTHER THAN THE ONE FOCUS ENDS IN, not writing. Typing into
-      // the window you then read leaves the value; bouncing focus away and back without acting
-      // leaves it; screenshotting another window leaves it. Writing to another window loses it,
-      // and so does invoking a button on another window — an action that writes nothing. The first
-      // round changed three things at once (a write happened, another window was acted on, focus
-      // bounced) and reported the one that was easiest to name.
+      // WHEN THE VIEW WINS: when the FOCUSED ELEMENT CHANGES. Measured inside one window with the
+      // click point as the only variable — blank space in the form keeps the UIA road, a different
+      // text field moves to the view road from then on (win2, `e1daeb4`). It explains the arms
+      // that did not move: typing into an already-focused field changes no element, and a
+      // `focus_window` round trip acts on none.
+      //
+      // TWO EARLIER FORMS OF THIS SENTENCE WERE WRONG, both wider than the evidence and both in
+      // the same direction. "After this server writes" came from a round that changed three
+      // things at once; "after acting on another window" from a round where the click's landing
+      // point was never a variable. The habit they share is naming the most visible change in a
+      // round that moved more than one thing.
       caveats:
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
