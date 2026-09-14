@@ -447,8 +447,12 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       .toMatchObject({ postValueWithheld: "call_named_no_window" });
 
     // NOTHING WAS WITHHELD IF THERE WAS NOTHING TO GIVE: no value pattern, no reason. Otherwise a
-    // paragraph that never had a value reads as a field something was kept from.
-    expect(await hintsOf("clipboard", { action: "read" }, undefined, null)).toBeUndefined();
+    // paragraph that never had a value reads as a field something was kept from. The ELEMENT flag
+    // is still there, and this is exactly the row that shows why it is a separate field: no value
+    // means no `postValueWithheld`, while `type` goes on saying "Edit" about an element the call
+    // never touched.
+    expect(await hintsOf("clipboard", { action: "read" }, undefined, null))
+      .toEqual({ focusedElementInNamedWindow: false });
 
     // COULD NOT LOOK IS NOT DID NOT MATCH. With the enumeration answering nothing, the comparison
     // has nothing to compare — while UIA can still produce an element through its own road. Saying
@@ -467,11 +471,17 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
       () => [{ hwnd: 4242n, title: "Notepad", isActive: true }] as never,
     );
 
-    // …and none of the carrying calls says anything: the 8 arms that DO get their value.
+    // …and none of the carrying calls says anything — neither hint, because the element IS in the
+    // window they named: the 8 arms that get their value.
     expect(await hintsOf("keyboard", { action: "type", text: "x", windowTitle: "Notepad" })).toBeUndefined();
     expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "4242" })).toBeUndefined();
     expect(await hintsOf("keyboard", { action: "type", text: "x", hwnd: "0x1092" })).toBeUndefined();
     expect(await hintsOf("focus_window", { title: "Notepad" }, { windowTitleKey: "title" })).toBeUndefined();
+
+    // THE ELEMENT FLAG RIDES WITH EVERY WITHHELD ROW, so the two hints are one statement in two
+    // halves: the value is not yours, and neither is the element it belongs to.
+    expect(await hintsOf("clipboard", { action: "read" }))
+      .toEqual({ postValueWithheld: "call_named_no_window", focusedElementInNamedWindow: false });
 
     vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);
@@ -491,7 +501,11 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     } as never);
     const handlerHints = { verifyDelivery: { channel: "postmessage" } };
     const out = parse(await withPostState("scroll", async () => ok({ ok: true, hints: handlerHints }))({ action: "raw", amount: 3 }));
-    expect(out.hints).toEqual({ verifyDelivery: { channel: "postmessage" }, postValueWithheld: "call_named_no_window" });
+    expect(out.hints).toEqual({
+      verifyDelivery: { channel: "postmessage" },
+      postValueWithheld: "call_named_no_window",
+      focusedElementInNamedWindow: false,
+    });
 
     vi.mocked(getFocusedAndPointInfo).mockResolvedValue(null as never);
     if (noWindows) vi.mocked(enumWindowsInZOrder).mockImplementation(noWindows);

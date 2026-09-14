@@ -570,6 +570,26 @@ export function withPostState<T extends Record<string, unknown>>(
       // see is not empty", which is a bit about a window the caller never named and one that
       // `hasValuePattern` does not already give.
       if (!focusedElement?.hasValuePattern) valueWithheld = undefined;
+      /**
+       * AND THE ELEMENT ITSELF IS FLAGGED, not only its value. Withholding the name removes the
+       * worst half of a misreading but not its kind: with the name gone, a coordinate click on a
+       * label still reports `type: "Edit"` — the previously focused element's type — and a caller
+       * reads that as the thing they clicked. Measured with the window as witness: exact when the
+       * clicked control takes focus, another element's when it does not (win2, `12f1ff7`).
+       *
+       * So the post says the one thing it knows exactly: this element is NOT in a window this call
+       * named. It is not a statement about what was acted on — that cannot be had here. The read
+       * that would answer it, the element under the point, is dead across the whole work area on
+       * the measuring machine: a vendor overlay covers 0,0–1920×1032 and every point inside it
+       * answers "desktop", while points below the overlay's rectangle name controls correctly
+       * (win2, `689aa02`). A design built on that read passes its unit cells, passes on a machine
+       * without the overlay, and says "desktop" for every click where it is needed.
+       *
+       * Published whenever an element is published and the predicate said no — INCLUDING for an
+       * element with no value at all, which is where `postValueWithheld` is silent by design and
+       * where the type is just as misleading.
+       */
+      const elementIsNotYours = focusedElement !== null && !verdict.carry;
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
@@ -614,11 +634,12 @@ export function withPostState<T extends Record<string, unknown>>(
             // SUCCESS ONLY. A failure publishes no focused element at all, so "why is the value
             // missing" is answered by `ok:false` and not by this rule; writing a reason there
             // would name a withholding that did not happen.
-            if (valueWithheld) {
+            if (valueWithheld || elementIsNotYours) {
               const existing = obj.hints;
               obj.hints = {
                 ...(existing !== null && typeof existing === "object" ? existing as Record<string, unknown> : {}),
-                postValueWithheld: valueWithheld,
+                ...(valueWithheld ? { postValueWithheld: valueWithheld } : {}),
+                ...(elementIsNotYours ? { focusedElementInNamedWindow: false } : {}),
               };
             }
             // ADR-022 / issue #352: success-path advisory. Reuses the
