@@ -427,7 +427,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
     schema: z.object(getWindowsSchema),
     handler: async (): Promise<ToolResult> => {
       if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("get_windows", "desktop_discover.windows[]");
+        return v1FallbackOnlyError("get_windows", V1_FALLBACK_ONLY.get_windows);
       }
       return getWindowsHandler();
     },
@@ -436,7 +436,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
     schema: z.object(getUiElementsSchema),
     handler: async (input: unknown): Promise<ToolResult> => {
       if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("get_ui_elements", "desktop_discover.entities[]");
+        return v1FallbackOnlyError("get_ui_elements", V1_FALLBACK_ONLY.get_ui_elements);
       }
       return getUiElementsHandler(input as Parameters<typeof getUiElementsHandler>[0]);
     },
@@ -445,7 +445,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
     schema: z.object(setElementValueSchema),
     handler: async (input: unknown): Promise<ToolResult> => {
       if (!v2KillSwitchActive()) {
-        return v1FallbackOnlyError("set_element_value", "desktop_act({action:'setValue', lease, text})");
+        return v1FallbackOnlyError("set_element_value", V1_FALLBACK_ONLY.set_element_value);
       }
       return setElementValueHandler(input as Parameters<typeof setElementValueHandler>[0]);
     },
@@ -457,12 +457,56 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
 // Schema & Handler
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ADR-036 B3 — the step catalogue must name what THIS configuration can dispatch.
+ *
+ * The list in `steps[].tool` was `Object.keys(TOOL_REGISTRY)`, which is the v1.0.0 surface and
+ * not a surface any running server has. It lied in BOTH directions, measured at the four corners
+ * (win2, 2026-09-13): with v2 on it offered `get_windows`, `get_ui_elements` and
+ * `set_element_value`, which the handlers below refuse; with the kill switch on it offered
+ * `desktop_discover` and `desktop_act`, which they also refuse.
+ *
+ * The refusals are correct and stay — this changes only what is ADVERTISED. That distinction is
+ * the whole defect: a caller who reads the catalogue writes a macro that cannot run, and finds out
+ * one step at a time, at run time, having already acted on the steps before it. `stop_on_error`
+ * defaults to true, so the first refusal ends the macro with whatever the earlier steps did left
+ * in place.
+ *
+ * ONE TABLE, READ BY BOTH. The names below and the refusals in `TOOL_REGISTRY` are the same fact,
+ * and a second list is a second place to forget a tool — the shape ADR-036 keeps finding. The
+ * replacement strings live here too, so the sentence a caller gets at run time and the catalogue
+ * they read beforehand cannot disagree about which tool belongs to which configuration.
+ */
+const V1_FALLBACK_ONLY: Record<string, string> = {
+  get_windows: "desktop_discover.windows[]",
+  get_ui_elements: "desktop_discover.entities[]",
+  set_element_value: "desktop_act({action:'setValue', lease, text})",
+};
+
+/** Registry entries that exist only while v2 is on; the kill switch refuses them (`v2DisabledError`). */
+const V2_ONLY = ["desktop_discover", "desktop_act"];
+
+/**
+ * The step names this server can actually dispatch, in registry order.
+ *
+ * Read at module scope, like every other description in this repo: a running server answers for
+ * the environment it was started with, and the kill switches are read the same way everywhere
+ * (`resolveV2Activation`, `keyLockerDisabled`). A server started with the flag flipped is a
+ * different server.
+ */
+export function dispatchableStepNames(env: Record<string, string | undefined> = process.env): string[] {
+  const v2On = resolveV2Activation(env).enabled;
+  return Object.keys(TOOL_REGISTRY).filter((name) =>
+    v2On ? !(name in V1_FALLBACK_ONLY) : !V2_ONLY.includes(name),
+  );
+}
+
 export const runMacroSchema = {
   steps: z
     .array(
       z.object({
         tool: z.string().describe(
-          `Tool name to call. One of: ${Object.keys(TOOL_REGISTRY).join(", ")}, or the special pseudo-command "sleep".`
+          `Tool name to call. One of: ${dispatchableStepNames().join(", ")}, or the special pseudo-command "sleep".`
         ),
         params: z
           .record(z.string(), z.unknown())
