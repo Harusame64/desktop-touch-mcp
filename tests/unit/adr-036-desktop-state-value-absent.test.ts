@@ -178,7 +178,15 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // The honest end: nothing here answers the question, and the way to GET an answer is to
         // make the write confirmable rather than to inspect it afterwards.
         expect(sentence).toContain("NOTHING on this response establishes that the characters arrived");
-        expect(sentence).toContain("make the write confirmable");
+        // AND THE RECOVERY HAS TWO TEETH OF ITS OWN, both found in one round (gate 1 on `e74dd76`).
+        // Replaying a type that DID land appends a second copy — and the sentence has just said
+        // the caller cannot know whether it landed, so "write again" was advice to corrupt a
+        // successful result. And focus does not make every write confirmable: the rung confirms
+        // only a field with a window of its own, so for the WPF case the README uses as its
+        // EXAMPLE, a retry answers `landing` again however it is aimed.
+        expect(sentence).toContain("RETRYING IS NOT FREE");
+        expect(sentence).toContain("appended to, not replaced");
+        expect(sentence).toContain("only when the field has a window of its own");
       }
     }
 
@@ -187,6 +195,9 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // a fix applied in one language and not the other is the shape this repo keeps meeting.
     for (const { rel, text } of shipped.filter(({ rel: r }) => r.startsWith("README"))) {
       expect(text, `${rel} does not say what diff.value_changed is`).toContain("diff.value_changed");
+      // The README carries the two teeth as well — shorter, but a reader there is the one most
+      // likely to take "write again" literally.
+      expect(text, `${rel} does not warn that a retry appends`).toMatch(/appended to|\u8ffd\u8a18\u3055\u308c\u308b/);
       // …and says the same thing about it as the tool description: not delivery. A README that
       // named it without the limit would be the round-0 mistake with a newer noun.
       expect(text, `${rel} names diff.value_changed without its limit`)
