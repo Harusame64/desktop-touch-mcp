@@ -437,8 +437,10 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   notification_show:    { schema: z.object(notificationShowRegistrationSchema), handler: notificationShowRegistrationHandler as typeof notificationShowHandler },
   // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
-  // Both handlers re-check the kill switch on every call so run_macro cannot
-  // bypass the operator's opt-out. (Codex PR #41 round 3 P1.)
+  // Both DECLARE the corner they belong to; the dispatcher refuses before the
+  // handler, so run_macro still cannot bypass the operator's opt-out, and the
+  // catalogue reads the same declaration. (Codex PR #41 round 3 P1; the gate
+  // became data in ADR-036 — see `StepAvailability`.)
   //
   // ADR-010 P1 S4 (sub-plan §2.5 + §3.3): use the module-scope wrapped
   // handlers + injected schemas from `desktop-register.ts` so this
@@ -469,8 +471,9 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
     }) as any,
   },
   // V1 fallback macros — only callable when v2 is killed (mirrors the
-  // server-windows.ts kill-switch fallback). In v2 mode these short-circuit
-  // with a v2 replacement hint. (Codex PR #41 round 6 P1×2.)
+  // server-windows.ts kill-switch fallback). In v2 mode the dispatcher answers
+  // a v2 replacement hint built from the `replacement` declared here, so the
+  // sentence and the catalogue cannot disagree. (Codex PR #41 round 6 P1×2.)
   get_windows: {
     schema: z.object(getWindowsSchema),
     availability: { corner: "v1FallbackOnly", replacement: "desktop_discover.windows[]" },

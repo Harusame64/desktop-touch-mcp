@@ -961,6 +961,11 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 as th
       const payload = summary.results[0]!.text!.join("\n");
       expect(payload).toContain("V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
       expect(payload).toContain("desktop_act({action:'setValue'");
+      // AND IT NAMES THE STEP IT REFUSED. The dispatcher passes the tool name to the refusal, and
+      // TypeScript enforces that an argument is there, not that it is the right one: passing a
+      // constant made every V1 refusal read "run_macro is a V1 fallback only available when …"
+      // with the whole suite green (gate 2). The invariant half of the sentence cannot see that.
+      expect(payload).toContain("set_element_value is a V1 fallback");
     });
   });
 
@@ -974,6 +979,7 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 as th
       // F1 fix: v1-fallback envelope is ok:false → step-level ok:false.
       expect(summary.results[0]!.ok).toBe(false);
       expect(summary.results[0]!.text!.join("\n")).toContain("desktop_discover.windows[]");
+      expect(summary.results[0]!.text!.join("\n")).toContain("get_windows is a V1 fallback");
     });
   });
 });

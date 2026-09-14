@@ -161,8 +161,17 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
     expect(code).not.toContain("resolveV2Activation");
     expect(code).not.toContain("KillSwitch");
     expect(code).not.toContain("DESKTOP_TOUCH_DISABLE");
+    // AND THE TWO REFUSALS THEMSELVES, which is what gate 2 showed the list above does not catch:
+    // a handler that asks a helper `gateSaysNo()` and returns `v2DisabledError()` carries none of
+    // the three spellings, declares no availability, and ships green — the ADR-036 defect,
+    // reintroduced. Denying the refusal a caller can be SHOWN is narrower than denying the
+    // spelling of one gate, because a refusal has to reach the caller to matter.
+    expect(code).not.toContain("v2DisabledError");
+    expect(code).not.toContain("v1FallbackOnlyError");
     // …and the declarations are really there, so the absence above is not an empty registry.
-    expect(code.match(/availability:/g) ?? []).toHaveLength(5);
+    // Not an equality: a sixth configuration-bound step is a CORRECT addition, and a cell that
+    // reddens on the right change teaches people to edit the cell rather than read it.
+    expect((code.match(/availability:/g) ?? []).length).toBeGreaterThanOrEqual(5);
   });
 
   /**
@@ -176,7 +185,10 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
    */
   it("does not change its mind when the environment moves after startup", async () => {
     vi.resetModules();
-    vi.unstubAllEnvs();
+    // EXPLICIT, NOT AMBIENT. `unstubAllEnvs` restores what the shell exported, and the four-corner
+    // sweeps run this suite with the kill switch set — which would make this cell fail for a
+    // reason that has nothing to do with the code (gate 2).
+    vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", undefined as unknown as string);
     const fresh = await import("../../src/tools/macro.js");
     const advertisedAtStartup = fresh.dispatchableStepNames();
     expect(advertisedAtStartup).toContain("desktop_act");
@@ -214,8 +226,9 @@ describe("ADR-036: the macro step catalogue names only what this configuration d
     try {
       for (const killSwitch of [undefined, "1"] as const) {
         vi.resetModules();
-        vi.unstubAllEnvs();
-        if (killSwitch) vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", killSwitch);
+        // Unconditional, for the reason the freeze cell above gives: an ambient kill switch would
+        // otherwise decide the first iteration.
+        vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", killSwitch as unknown as string);
         // `vi.resetModules()` above drops the cached instance, so this static specifier gives a
         // build that read the environment as it stands now.
         const fresh = await import("../../src/tools/macro.js");
