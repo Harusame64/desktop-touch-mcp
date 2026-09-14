@@ -656,7 +656,28 @@ export const mouseClickHandler = async ({
     const stage4Enabled =
       verifyDelivery && process.env.DESKTOP_TOUCH_STAGE4_SSIM !== "0";
     if (stage4Enabled) {
-      const containing = findContainingWindow(tx, ty);
+      // ADR-036 — THE FRESH READER, because an empty cache is not "no window here".
+      //
+      // This gate used the CACHE-ONLY reader, and a null answer skipped the whole stage in
+      // silence. Measured on a picture window, where pixels are the only evidence there is (win2,
+      // `a656b52`): cold, **0 of 9 clicks ran it**, and a click that repainted the entire window
+      // answered exactly like a click that changed nothing — both `focus_only`. Warm, from an
+      // unrelated `workspace_snapshot` beforehand, **10 of 10 ran and every one was right**. Only
+      // `workspace_snapshot` and `screenshot` warm it; `desktop_discover`, `desktop_state`,
+      // `window_dock`, `mouse_move` and a PRECEDING `mouse_click` do not. So the promise for a
+      // canvas was real, accurate, and armed by coincidence.
+      //
+      // `findContainingWindowFresh`'s own doc has argued this since it was written: "Expiring an
+      // entry has to mean re-verify, not unclickable." The stage was the one caller still on the
+      // other side of that sentence.
+      //
+      // AND SWITCHING COSTS NOTHING HERE, which was measured rather than assumed — the prediction
+      // that it would break the stage was wrong. The cache does not hold a BETTER window: it holds
+      // nothing when cold and the same vendor overlay when warm. Resolving the overlay is harmless
+      // because the compared region is a 192×192 pad around the click point cropped by the window
+      // rect (`local-repaint.ts`), and a work-area-sized rect does not crop it, so the pad lands on
+      // the window under the cursor. Four configurations, no false `delivered` in any of them.
+      const containing = findContainingWindowFresh(tx, ty);
       stage4Hwnd = containing?.hwnd ?? null;
       if (stage4Hwnd !== null) {
         stage4WindowRect = getWindowRectByHwnd(stage4Hwnd);
