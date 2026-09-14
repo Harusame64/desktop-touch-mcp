@@ -776,7 +776,9 @@ export const desktopStateHandler = async (args: {
       // window from outside and back, with no input at all (`a23bda2`). A window whose title is
       // fixed KEEPS matching its row, so it tends to stay on this road — but the title is only the
       // third filter: an unnamed control, a Chromium `Pane`, or a view no event has reached leaves
-      // this road with the title unchanged, and the value comes back. See `_post.ts`, which states
+      // this road with the title unchanged, and the value MAY come back. Not will: the UIA branch
+      // gates on a name too, so an unnamed control leaves this road and publishes nothing at all;
+      // a provider may serve no value; CDP omits an empty or masked one (gate 1). See `_post.ts`, which states
       // the same fact with that hedge; this line used to state it flat (gate 2).
       hints.focusedElementValueAbsent = "view_road_has_no_value";
     }
@@ -1299,9 +1301,10 @@ export function registerDesktopStateTools(server: McpServer): void {
       // empty `window_title` for `hwnd == 0`. The row is global and NO FOCUS
       // EVENT clears it (a dropped focus is skipped, not written); what does clear it — a view
       // that no event has reached yet, a failed handler registration, a poison-eviction respawn —
-      // all falls through to the UIA road, and on a Chromium foreground onward to CDP. Both carry
-      // a value; only THIS road never does, which is the distinction `05f31f6` drew 30 lines up
-      // and this sentence had quietly undone (gate 2). So the road moves
+      // all falls through to the UIA road, and on a Chromium foreground onward to CDP. Either CAN
+      // carry a value; only THIS road never does, which is the distinction `05f31f6` drew 30 lines
+      // up and this sentence had quietly undone (gate 2). "Can", because both of those roads have
+      // their own ways of answering without one. So the road moves
       // with no focus change at all, in BOTH directions: a window that renames itself out of the
       // equality leaves this road and the value appears (Notepad's `*`), and a foreground whose
       // title matches its recorded row again arrives here and the value disappears.

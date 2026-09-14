@@ -230,21 +230,21 @@
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 953,
+      "line": 955,
       "tool": "desktop_state",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 968,
+      "line": 970,
       "tool": "get_history",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 993,
+      "line": 995,
       "tool": "get_document_state",
       "errKind": "identifier",
       "contextShape": "none"

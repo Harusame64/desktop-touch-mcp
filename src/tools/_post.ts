@@ -350,8 +350,9 @@ type PostValueVerdict = { carry: true } | { carry: false; why: PostValueWithheld
  *     clears it — a dropped focus is skipped rather than written (`focus_pump`). Other things do:
  *     the view is empty until the first event arrives, empty for good if handler registration
  *     failed, and a poison-eviction respawns a fresh one. All of those fall through to UIA — and
- *     onward to CDP on a Chromium foreground — both of which carry a value, so they cost a caller
- *     nothing and are not the interesting half. (Only THIS road never carries one; "only UIA does"
+ *     onward to CDP on a Chromium foreground — either of which CAN carry a value, so they cost a
+ *     caller nothing and are not the interesting half. Can, not will: the UIA branch gates on a
+ *     name as well, a provider may serve none, and CDP omits an empty or masked one. (Only THIS road never carries one; "only UIA does"
  *     is the wider claim `desktop-state.ts` corrected at `05f31f6`.)
  *
  *     THE INTERESTING HALF IS THAT THE ROAD MOVES WITH NO FOCUS CHANGE AT ALL, in both directions.

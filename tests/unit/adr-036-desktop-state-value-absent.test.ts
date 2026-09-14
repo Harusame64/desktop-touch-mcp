@@ -133,6 +133,9 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       for (const sentence of sentences) {
         expect(sentence).toContain("focusedElementValueAbsent");
         expect(sentence).toContain("view_road_has_no_value");
+        // THE CLAIM WITH ITS SUBJECT, not a fragment of it — a rewrite can keep every word of a
+        // trailing phrase and invert what it is about (gate 1 on `e4dc072`).
+        expect(sentence).toContain("an empty answer is not evidence of failure");
         // AND THE HINT'S ABSENCE MUST NOT READ AS EVIDENCE. Naming the hint alone makes "no hint"
         // mean "the empty field is real", which is false on the UIA road: a provider that serves
         // no value omits it and sets no hint (the `desktop_state` caveat says so). An advice that
@@ -141,9 +144,16 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         // keeps every required substring and inverts the meaning — "absence never settles it
         // either way; without that hint absence proves failure" would pass (gate 1 on `e4dc072`).
         // A grep for a fragment pins the fragment, not the sentence.
-        expect(sentence).toContain("an absent value never settles it either way");
-        // …and the other half: a match is not proof either, because a write that never landed
-        // leaves a field that already held that text reading exactly the same.
+        // AND WHERE TO READ IT. `desktop_state` has no window selector — only `include*` flags — so
+        // it answers about the FOREGROUND, while a background write can land in a window that is
+        // not it. Sending a caller to a read-back without that turns the advice into "inspect an
+        // unrelated field, and read a coincidental match as confirmation" (gate 1 on `69b533b`).
+        expect(sentence).toContain("FOREGROUND window only");
+        // …and the two things the check cannot settle. A value can be missing with no hint at all
+        // (a UIA provider that serves none), so the hint's SILENCE is not evidence; and a match is
+        // not proof either, because a write that never landed leaves a field that already held
+        // that text reading exactly the same.
+        expect(sentence).toContain("missing with no hint at all");
         expect(sentence).toContain("did not already hold that text");
       }
     }
