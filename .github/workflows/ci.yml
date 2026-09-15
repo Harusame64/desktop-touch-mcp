@@ -178,15 +178,22 @@ jobs:
   # and a pin nobody executes is the mechanism that already failed (#657 sat red on `main` for
   # eight days with nothing running it).
   #
-  # THEY DO RUN ON THE WINDOWS JOB — measured, green, run 34962210359 step 14. They are not there
-  # anyway: vitest's documented failure mode on those 2-core runners is
+  # THEY DID RUN ON THE WINDOWS JOB, once: a step this PR then REMOVED (2026-09-15, run
+  # 34962210359 step 14, green — not reproducible from this file, because the step is gone).
+  # They are not there anyway: vitest's documented failure mode on those 2-core runners is
   # "##[error]The operation was canceled." 5-6s in, which kills the JOB — so a runner flake would
-  # take `check:rs-*`, the addon build, `npm run build` (the only `tsc` over `src/`) and the
+  # take `check:rs-*`, the addon build, `npm run build` (the `tsc` over `src/`) and the
   # envelope bench down with it. And the note's "the first two files complete" were whatever two
   # files ran first, not these two, which are among the heaviest to LOAD in the suite
   # (`keyboard.ts` and `terminal.ts` each pull tens of engine modules; the 788 ms measured locally
   # is a warm-cache 8-core mac, against a 5-6 s window on a cold 2-core VM). Gate 2 made that
   # argument and it is right: the cheap fix is to stop coupling the two (gate 2 round 3, 2026-09-15).
+  #
+  # AND THE CONSEQUENCE, SAID HERE RATHER THAN LEFT TO BE GENERALISED FROM THE JOB NAME: the unit
+  # cells now never run on Windows in CI, in a Windows product. FOR THESE TWO FILES THAT IS
+  # CORRECT — what they check is the shape of a JSON document, which has no platform. IT DOES NOT
+  # GENERALISE TO ANY OTHER CELL. Adding units to the Windows job takes the gates already there
+  # hostage: a cancelled runner kills the job, not the step.
   #
   # ubuntu-latest is legitimate here because both files are import-hermetic and
   # platform-independent: no native addon (the addon is a lazy `await import` inside a function),
@@ -204,7 +211,12 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        # `--ignore-scripts` because bare `npm ci` fires `prepare`, which is
+        # `install-hooks && tsc` — so this job's real first gate would be a full compile of
+        # `src/` on Linux, a combination nothing else here exercises, failing at a step called
+        # "Install dependencies" with no mention of wire pins. The Dockerfile avoids it the same
+        # way (gate 2 round 4). This job needs `node_modules`, not a build.
+        run: npm ci --ignore-scripts
 
       - name: Wire-schema pins (#657/#662 — what the SDK's converter emits for every flattened tool)
         run: npm run check:wire-pins

@@ -50,9 +50,11 @@ export default defineConfig({
     //
     // The cost is real and is measured on both machines: 18s -> 26s here (7 workers -> 4),
     // and 78s -> 98s on win2's 16-CPU machine (15 -> 4), where 6 workers took 70s. That
-    // price is paid by the local pre-merge run, which is the only place this suite runs at
+    // price is paid by the local pre-merge run, which is the only place this SUITE runs at
     // all — the windows-latest unit step was REMOVED (`4b1a5155`); what is left in
     // `.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step.
+    // (Since #662, two hermetic FILES run in CI as `check:wire-pins`, in their own
+    // ubuntu-latest job. Two out of 364, and this cap is not what paces them.)
     //
     // It is at the root because a project-level `maxWorkers` is read before the CLI flag,
     // and under VITEST 4 it was not in the list of options a CLI flag may override: writing

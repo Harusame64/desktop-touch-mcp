@@ -1,89 +1,44 @@
 /**
  * #657 — the spelling of a widened field, pinned ON THE DOCUMENT THAT IS SENT.
  *
- * Why this file exists, and why it is not three lines inside another one:
- *
  * `flattenUnionToObjectSchema` widens a field that collides across variants, and two comments in
- * `src/` describe how that widening is spelled. A comment is a claim, not a check — and the first
- * attempt at a check pinned `z.toJSONSchema(schema)` with ITS DEFAULTS
- * (`target: "draft-2020-12"`, `io: "output"`), which is **not the document a client receives**
- * (gate 2, 2026-09-15). The registration path is `registerTool` → `toJsonSchemaCompat` →
- * `z4mini.toJSONSchema(schema, { target: "draft-7", io: "input" })`, and the two differ: under
- * `io: "output"` a `.default()` field is promoted into `required`, so the default rendering of
- * terminal's `until` says `required: ["mode","quietMs"]` where the wire says `required: ["mode"]`.
- * The `oneOf` key agreed, so a pin on the wrong document was green — which is the failure this
- * project keeps meeting: a cell that is green about something other than the thing it names.
+ * `src/` describe how that widening is spelled. A comment is a claim, not a check. What counts as
+ * "the document that is sent" lives in `helpers/wire-schema.ts`, together with the three ways this
+ * PR got it wrong before it got it right.
  *
- * So this file imports the SDK's own converter, the one `registerTool` calls. It is an internal
- * path of `@modelcontextprotocol/sdk` (1.30.0) and that is the point: a change in how the SDK
- * converts is a change in what ships, and it should arrive here as a failure rather than as a
- * comment nobody re-measured. What is NOT pinned is the SDK's choice of options — this file calls
- * the compat function, so it follows that choice rather than asserting it.
- *
- * The two schemas below are the whole set that ships a widening today: measured across all eight
- * `flattenUnionToObjectSchema` products, `keyboard.method` is the only `z.union` widening, and
- * `terminal.until` the only nested union. Independently swept on the Windows machine over the live
- * wire the same day — 32 tools, zero type arrays, one `anyOf`, one `oneOf`, no top-level either.
+ * The two named pins below are the whole set that ships a widening today: `keyboard.method` is the
+ * only `z.union` widening and `terminal.until` the only nested union, measured across all eight
+ * `flattenUnionToObjectSchema` products. The SWEEP after them is what keeps that sentence true — a
+ * pin on two tools cannot say anything about the other six, and the claim in `_envelope.ts` is
+ * about all of them. Independently swept over the live wire on the Windows machine the same day
+ * (32 tools, zero type arrays, one `anyOf`, one `oneOf`, no top-level either), and the sweep's
+ * ability to SEE a new one was confirmed there by intervention rather than by reading: a
+ * bare-scalar collision added to `scroll.ts` turned the sweep red, named
+ * `scroll.mutationProbeCount`, left the other cells green, and really did ship
+ * `{"type":["number","string"]}` to a running server.
  */
 import { describe, it, expect } from "vitest";
-import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
-import { normalizeObjectSchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import { browserEvalRegistrationSchema } from "../../src/tools/browser.js";
 import { clipboardRegistrationSchema } from "../../src/tools/clipboard.js";
 import { excelRegistrationSchema } from "../../src/tools/excel.js";
 import { keyLockerRegistrationSchema } from "../../src/tools/key-locker-tool.js";
 import { keyboardRegistrationSchema } from "../../src/tools/keyboard.js";
 import { scrollRegistrationSchema } from "../../src/tools/scroll.js";
-import { windowDockRegistrationSchema } from "../../src/tools/window-dock.js";
 import { terminalRegistrationSchema } from "../../src/tools/terminal.js";
+import { windowDockRegistrationSchema } from "../../src/tools/window-dock.js";
+import { spellingOf, typeArrayPaths, wire } from "./helpers/wire-schema.js";
 
-/**
- * The document a client receives: the SDK's converter, called with THE OPTIONS `registerTool`
- * passes it (`mcp.js`: `{ strictUnions: true, pipeStrategy: 'input' }`), not with its defaults.
- *
- * The two agree today only because the zod-v4 branch ignores `strictUnions` and defaults `io` to
- * `'input'` — measured: the documents are byte-identical either way. Relying on that is the
- * failure this file was written to close, one level up (gate 2, 2026-09-15): a pin that follows
- * the callee's defaults stays green if the caller's options change, or if a schema ever lands on
- * the v3 branch where `strictUnions` genuinely changes how a union is emitted.
- *
- * `normalizeObjectSchema` FIRST, because that is the whole path: `mcp.js` does
- * `toJsonSchemaCompat(normalizeObjectSchema(tool.inputSchema), …)`, not the conversion alone.
- * For a flattened schema it is a no-op — measured, byte-identical either way — so leaving it out
- * looked harmless. It is not: `withEnvelopeIncludeSchema`'s products are not recognised as zod-4
- * schemas, so the converter alone takes them down the v3 branch and THROWS
- * (`Cannot read properties of undefined (reading 'typeName')`). Found by running the sweep below
- * over all eight flattened tools rather than the two with a widening — the sweep's first act was
- * to reject the helper that was supposed to measure it.
- */
-const wire = (schema: any): any =>
-  toJsonSchemaCompat(normalizeObjectSchema(schema), {
-    strictUnions: true,
-    pipeStrategy: "input",
-  });
-
-/**
- * The spelling of a widened property, read from the document rather than assumed — and it THROWS
- * on a shape it does not recognise, so a third spelling fails loudly instead of passing as an
- * absence. `expect(Array.isArray(x.type)).toBe(false)` cannot do that: it is already implied by
- * the key assertion, and it passes just as well when there is no `type` key at all.
- */
-function spellingOf(prop: Record<string, unknown>): "anyOf" | "oneOf" | "type-array" | "single-type" {
-  if (Array.isArray(prop.anyOf)) return "anyOf";
-  if (Array.isArray(prop.oneOf)) return "oneOf";
-  if (Array.isArray(prop.type)) return "type-array";
-  if (typeof prop.type === "string") return "single-type";
-  if (prop === undefined || prop === null) {
-    // THE MOST LIKELY REGRESSION IS THE PROPERTY LEAVING THE WIRE, and it used to arrive here as
-    // `TypeError: Cannot read properties of undefined` — a stack trace about `anyOf` instead of
-    // this file's own sentence (gate 2 round 3, 2026-09-15).
-    throw new Error("spellingOf: the property is not on the wire at all — it left the schema.");
-  }
-  throw new Error(
-    `spellingOf: unrecognised property shape ${JSON.stringify(prop)} — not anyOf, oneOf, a type ` +
-      "array or a single type. A fourth spelling must fail this cell rather than read as an absence.",
-  );
-}
+/** The eight `flattenUnionToObjectSchema` call sites outside `_envelope.ts` itself. */
+const FLATTENED = [
+  ["browser_eval", browserEvalRegistrationSchema],
+  ["clipboard", clipboardRegistrationSchema],
+  ["excel", excelRegistrationSchema],
+  ["key_locker", keyLockerRegistrationSchema],
+  ["keyboard", keyboardRegistrationSchema],
+  ["scroll", scrollRegistrationSchema],
+  ["terminal", terminalRegistrationSchema],
+  ["window_dock", windowDockRegistrationSchema],
+] as const;
 
 describe("#657 — the wire spelling of a widened field", () => {
   describe("keyboard.method — the ONE widening that ships", () => {
@@ -92,18 +47,17 @@ describe("#657 — the wire spelling of a widened field", () => {
     // merge does not apply to a literal, so it falls through to `z.union`.
     //
     // AND IT IS SPELLED `anyOf`, under zod 4.5.4 — which is why `_envelope.ts` may not say that
-    // 4.5.4 "emits a type array" as if that were a property of the version. It is a property of
-    // the BRANCH SHAPES: bare scalars collapse into one `type` array, branches that carry their
-    // own keywords (`enum`, `const`) cannot be collapsed and stay `anyOf`.
-    const method = wire(keyboardRegistrationSchema).properties.method as any;
+    // 4.5.4 "emits a type array" as if that were a property of the version. It is a property of the
+    // BRANCH SHAPES: bare scalars collapse into one `type` array, branches that carry their own
+    // keywords (`enum`, `const`) cannot be collapsed and stay `anyOf`.
+    const method = wire(keyboardRegistrationSchema).properties?.method;
     it("is spelled `anyOf` — not a type array, which is the spelling #657 cannot vouch for", () => {
       expect(spellingOf(method)).toBe("anyOf");
     });
     // `anyOf` AND NOTHING ELSE — including no `description` and no `default`, which is a DEFECT
     // this cell records rather than blesses: `mergeFlatField` strips the wrappers a `.describe()`
     // hangs on, so 15 of keyboard's 19 properties ship undocumented and `method` loses
-    // `default: "auto"` (measured on the wire, both machines; filed as #664). WHEN #664 IS FIXED
-    // THIS CELL GOES RED — that is intended, and it means the fix landed, not that it broke.
+    // `default: "auto"` (measured on the wire, both machines; filed as #664).
     it("and `anyOf` is the only key on it — see #664, which this pins rather than approves", () => {
       expect(
         Object.keys(method).sort(),
@@ -113,9 +67,9 @@ describe("#657 — the wire spelling of a widened field", () => {
     it("carries the two branches that disagree in kind — an enum and a const, in any order", () => {
       expect(method.anyOf).toHaveLength(2);
       // ORDER-INSENSITIVE on purpose: the branch order follows the variant order in
-      // `keyboardSchema`, so moving the `sequence` variant up — a refactor a client cannot
-      // observe — would otherwise turn this red with a message about enum values, pointing at
-      // zod rather than at the reorder (gate 2, 2026-09-15).
+      // `keyboardSchema`, so moving the `sequence` variant up — a refactor a client cannot observe
+      // — would otherwise turn this red with a message about enum values, pointing at zod rather
+      // than at the reorder (gate 2 round 2).
       const enums = method.anyOf
         .map((b: { enum?: string[] }) => b.enum)
         .filter(Boolean)
@@ -127,66 +81,55 @@ describe("#657 — the wire spelling of a widened field", () => {
   });
 
   describe("terminal.until — the nested union", () => {
-    const until = wire(terminalRegistrationSchema).properties.until as any;
+    const until = wire(terminalRegistrationSchema).properties?.until;
     it("is spelled `oneOf`, and that is the only key on it", () => {
       expect(spellingOf(until)).toBe("oneOf");
       expect(Object.keys(until).sort()).toEqual(["oneOf"]);
     });
     it("carries one branch per `until` mode", () => {
-      expect(until.oneOf.map((b: { properties?: { mode?: { const?: string } } }) => b.properties?.mode?.const).sort()).toEqual([
-        "exit",
-        "pattern",
-        "quiet",
-      ]);
+      expect(
+        until.oneOf
+          .map((b: { properties?: { mode?: { const?: string } } }) => b.properties?.mode?.const)
+          .sort(),
+      ).toEqual(["exit", "pattern", "quiet"]);
     });
   });
 
-  // ── Every tool the flattener touches, not just the two with a widening today ──────────────
-  //
-  // `_envelope.ts` claims "zero type arrays ship today". That was a SWEEP WITH A DATE ON IT, and
-  // the two pins above only look at `keyboard` and `terminal`. Someone adding `count: z.number()`
-  // to one variant and `count: z.string()` to another — in `scroll.ts`, say — would ship
-  // `{"type":["number","string"]}`, the one spelling #657 says nothing here can vouch for, and
-  // both pins above would stay green (gate 2 round 3, 2026-09-15). These are the eight call sites
-  // of `flattenUnionToObjectSchema` outside `_envelope.ts` itself.
-  const FLATTENED = [
-    ["browser_eval", browserEvalRegistrationSchema],
-    ["clipboard", clipboardRegistrationSchema],
-    ["excel", excelRegistrationSchema],
-    ["key_locker", keyLockerRegistrationSchema],
-    ["keyboard", keyboardRegistrationSchema],
-    ["scroll", scrollRegistrationSchema],
-    ["terminal", terminalRegistrationSchema],
-    ["window_dock", windowDockRegistrationSchema],
-  ] as const;
+  describe("every flattened tool, and not only the two with a widening", () => {
+    // FIRST, that there is a document at all. `?? {}` over an empty or missing property set would
+    // make the sweeps below iterate zero times and PASS — and empty `properties` is exactly the
+    // regression `flattenUnionToObjectSchema` exists to prevent: `_envelope.ts` records that the
+    // SDK's `normalizeObjectSchema` returns `undefined` for a top-level union, whereupon
+    // `tools/list` falls back to empty properties. A vacuous sweep would report that as health
+    // (gate 2 round 4).
+    it.each(FLATTENED.map(([name, schema]) => ({ name, schema })))(
+      "$name ships a non-empty property set including `action`",
+      ({ schema }) => {
+        const props = wire(schema).properties;
+        expect(props).toBeDefined();
+        expect(Object.keys(props).length).toBeGreaterThan(0);
+        expect(props.action).toBeDefined();
+      },
+    );
 
-  it("no flattened tool ships a property-level TYPE ARRAY — the spelling #657 cannot vouch for", () => {
-    const offenders: string[] = [];
-    for (const [name, schema] of FLATTENED) {
-      const props = wire(schema).properties ?? {};
-      for (const [field, prop] of Object.entries(props)) {
-        if (Array.isArray((prop as { type?: unknown }).type)) offenders.push(`${name}.${field}`);
+    it("no flattened tool ships a property-level TYPE ARRAY, at any depth", () => {
+      const offenders: string[] = [];
+      for (const [name, schema] of FLATTENED) {
+        // RECURSIVE: a top-level-only walk cannot see `until.oneOf[…].properties.quietMs`, and the
+        // claim this cell stands behind is about the whole document (gate 2 round 4).
+        offenders.push(...typeArrayPaths(wire(schema)).map((p) => `${name}: ${p}`));
       }
-    }
-    expect(offenders).toEqual([]);
-  });
+      expect(offenders).toEqual([]);
+    });
 
-  it("and no flattened tool ships a TOP-LEVEL oneOf/anyOf — the shape the API rejects", () => {
-    const offenders: string[] = [];
-    for (const [name, schema] of FLATTENED) {
-      const js = wire(schema);
-      if (js.oneOf !== undefined) offenders.push(`${name}: oneOf`);
-      if (js.anyOf !== undefined) offenders.push(`${name}: anyOf`);
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  // The one shape this repository knows the Anthropic API rejects. Both tools, on the wire.
-  it("neither tool carries a TOP-LEVEL oneOf/anyOf", () => {
-    for (const schema of [keyboardRegistrationSchema, terminalRegistrationSchema]) {
-      const js = wire(schema);
-      expect(js.oneOf).toBeUndefined();
-      expect(js.anyOf).toBeUndefined();
-    }
+    it("and no flattened tool ships a TOP-LEVEL oneOf/anyOf — the shape the API rejects", () => {
+      const offenders: string[] = [];
+      for (const [name, schema] of FLATTENED) {
+        const js = wire(schema);
+        if (js.oneOf !== undefined) offenders.push(`${name}: oneOf`);
+        if (js.anyOf !== undefined) offenders.push(`${name}: anyOf`);
+      }
+      expect(offenders).toEqual([]);
+    });
   });
 });

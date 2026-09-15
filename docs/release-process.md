@@ -26,10 +26,16 @@ For package `X.Y.Z`, it fetches GitHub Release tag `vX.Y.Z`, verifies
 
 ## Local Pre-Merge Testing
 
-`npm run test:capture` is the canonical pre-merge test runner, and as of 2026-09-15 it is the
-ONLY place the unit suite runs: the windows-latest unit step was removed in `4b1a5155` — what
-remains in `.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step — and
-no workflow invokes vitest. A green CI says nothing about the suite.
+`npm run test:capture` is the canonical pre-merge test runner, and it is the only place the unit
+SUITE runs: the windows-latest unit step was removed in `4b1a5155` — what remains in
+`.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step.
+
+**Corrected 2026-09-15 (#662):** two unit FILES do now run in CI —
+`tests/unit/the-wire-spelling-of-a-widened-field.test.ts` and
+`tests/unit/flatten-union-schema.test.ts`, as `npm run check:wire-pins` in the separate
+`wire-schema-pins` job on ubuntu-latest, because they are import-hermetic and platform-independent
+and because a pin nobody executes is not a pin. They are TWO FILES OUT OF 364. A green CI still
+says nothing about the suite, and nothing about any cell that needs the native addon or Windows.
 
 **Always rebuild the Rust native addon first** if any file under `src/*.rs` or
 `Cargo.toml` has changed since the last build:

@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
-import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import { wire } from "./helpers/wire-schema.js";
 import {
   flattenUnionToObjectSchema,
   parseActionArgsOrFail,
@@ -60,13 +60,15 @@ function failureOf(result: { content: Array<{ text?: string }> }): {
 describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
   const flat = flattenUnionToObjectSchema(synthUnionWithInclude);
   const js = z.toJSONSchema(flat) as any;
-  // THE DOCUMENT A CLIENT RECEIVES, beside the one above. `z.toJSONSchema`'s defaults are
+  // THE DOCUMENT A CLIENT RECEIVES, beside the one above — through the SAME helper the companion
+  // file uses, because two definitions of "the wire" is the defect this PR argues against and
+  // this file had the second one (gate 2 round 4). `z.toJSONSchema`'s defaults are
   // `draft-2020-12` / `io:"output"`; `registerTool` converts with `{strictUnions:true,
   // pipeStrategy:'input'}`. The cells below that assert the FLATTEN's behaviour may read either,
   // but the cell that pins a SPELLING must read the wire — pinning a spelling on a document
   // nobody is served is the defect this file's companion was written to close, and this cell had
   // it too (gate 2 round 3, 2026-09-15).
-  const jsWire = toJsonSchemaCompat(flat, { strictUnions: true, pipeStrategy: "input" }) as any;
+  const jsWire = wire(flat) as any;
   it("produces a flat top-level object — no oneOf/anyOf/allOf at the root", () => {
     expect(js.type).toBe("object");
     expect(js.oneOf).toBeUndefined();
