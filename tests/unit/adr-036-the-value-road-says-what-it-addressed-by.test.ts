@@ -110,8 +110,13 @@ describe("the UIA value road, on success", () => {
       route: "uia",
       why: "uia_set_value",
       addressedElementBy: "automation_id",
-      addressedBy: { automationId: true, name: true },
     });
+    // `toEqual`, not `toMatchObject`, on THIS object and deliberately (gate 2, 2026-09-16): a
+    // partial match permits extra keys, and the key this row keeps growing back is a `windowTitle`
+    // flag — added from `winTitle`, removed, added from `aim.title`, removed again when six real
+    // arms found it true on every one of them. A third occurrence should fail a cell rather than
+    // ship. The window is the axis field's business; this object is element locators only.
+    expect(valueRoadRows()[0].addressedBy).toEqual({ automationId: true, name: true });
   });
 
   it("records `name_substring` when that is all the locator had — the first name that CONTAINS it", async () => {
@@ -183,6 +188,19 @@ describe("the UIA value road, on success", () => {
     expect(valueRoadRows()[0]).toMatchObject({
       hasAim: true,
       addressedWindowBy: "handle",
+    });
+  });
+
+  it("counts an aim with NO title as naming no window — the branch the bare call takes", async () => {
+    // THE CELL THAT WAS MISSING (gate 2, 2026-09-16): every other cell hands the aim a title or a
+    // handle, so deleting `title !== undefined` from the predicate still type-checked
+    // (`undefined !== ""` is true) and the whole file stayed green — while a bare aim would have
+    // started reporting `"title"` for a call the backends are handed the literal `"@active"` for.
+    const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
+    expect(await typeInto(entity, { kind: "aim" })).toEqual("uia");
+    expect(valueRoadRows()[0]).toMatchObject({
+      hasAim: false,
+      addressedWindowBy: "nothing",
     });
   });
 

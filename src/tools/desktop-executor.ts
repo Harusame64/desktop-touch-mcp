@@ -796,8 +796,18 @@ async function resolvePressPoint(
  *      (win2, 2026-09-16): a window captioned `WNDTAG7B6168`, an act passing the nine-character
  *      prefix `WNDTAG7B6`, and `aim.title` at the executor is the prefix.
  *   2. `{hwnd}`, a bare call, `""`, or a `{windowTitle}` rescued through the dialog owner chain:
- *      **the RESOLVED title is substituted** (`:240`, `:270`, `:290`). Six real arms are this half —
- *      a bare act and an `"@active"` act both arrived with a resolved title (win2, 2026-09-16).
+ *      **the RESOLVED title is substituted** (`:240`, `:270`, `:290`). Measured (win2, 2026-09-16):
+ *      a bare act, an `"@active"` act and a `{windowTitle:""}` act are ONE BEHAVIOUR IN THREE
+ *      SPELLINGS — all three fall to `:287`, which hands back `{hwnd, windowTitle}` together, so all
+ *      three arrive with a handle and the window axis answers `"handle"`, not `"title"`. `""` is
+ *      falsy, and a falsy skip lands on the line the bare call already takes.
+ *
+ *      **`""` IS IN THIS CASE AND IN CASE 3, AND WHAT SPLITS THEM IS WHETHER A FOREGROUND EXISTED**
+ *      (gate 2, 2026-09-16, which found the two halves of this comment contradicting each other).
+ *      With a foreground, `:288` resolves and `:410` overwrites — case 2, measured. Without one,
+ *      `:288` throws or answers null, `:289`/`:298` return `{target: undefined}`, and the raw
+ *      `{windowTitle:""}` stored at `desktop.ts:371` stays — case 3. The string does not decide;
+ *      the state of the desktop does.
  *   3. Window resolution FAILS: the caller's own string stays, and it can be one that names no
  *      window. `{windowTitle:"@active"}` with no foreground to resolve throws inside `:267`
  *      (`_resolve-window.ts:449`), the catch at `:274` re-throws only `WindowExcludedError`, and
