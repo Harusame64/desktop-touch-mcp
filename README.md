@@ -42,7 +42,7 @@ npx -y @harusame64/desktop-touch-mcp
 | | |
 |---|---|
 | OS | Windows 10 / 11 (64-bit) |
-| Node.js | v20+ recommended (tested on v22+) |
+| Node.js | v20+ recommended (tested on v22+) — **to develop or run the test suite, `^22.12 || ^24 || >=26`** — the test runner's own range since #658, which excludes odd majors such as 23 and 25 |
 | PowerShell | 5.1+ (bundled with Windows) — used only as fallback when the Rust native engine is unavailable |
 | Claude CLI | `claude` command must be available |
 

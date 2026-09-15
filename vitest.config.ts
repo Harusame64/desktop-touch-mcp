@@ -54,10 +54,15 @@ export default defineConfig({
     // all — the windows-latest unit step was REMOVED (`4b1a5155`); what is left in
     // `.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step.
     //
-    // It is at the root because a project-level `maxWorkers` is read before the CLI flag
-    // and is not in the list of options a CLI flag may override: writing it inside the
-    // unit project silently disabled `--maxWorkers` (measured, 2026-09-15 — with the
-    // project-level value the control arm `--maxWorkers=2` still ran 4 workers).
+    // It is at the root because a project-level `maxWorkers` is read before the CLI flag,
+    // and under VITEST 4 it was not in the list of options a CLI flag may override: writing
+    // it inside the unit project silently disabled `--maxWorkers` (measured, 2026-09-15 —
+    // with the project-level value the control arm `--maxWorkers=2` still ran 4 workers).
+    // THAT REASON EXPIRED WITH THE RUNNER: vitest 5 adds `maxWorkers` to its per-project
+    // CLI override list, so a project-level value would no longer shadow the flag (checked
+    // in v5's `PROJECT_CLI_OVERRIDES`, 2026-09-15). The placement stays — one place, one
+    // value, and the flag reaches it either way — but the reason recorded here is a vitest 4
+    // measurement and is written as one rather than left to read as timeless.
     // e2e and integration are unaffected: `fileParallelism: false` forces their worker
     // count to 1 by its own documented behaviour, which is stronger than this.
     maxWorkers: Math.min(4, Math.max(Math.floor(availableParallelism() / 2), 1)),
@@ -72,6 +77,48 @@ export default defineConfig({
     // pool for 10 s, as it already did. The way back is a separate vitest invocation for
     // that project, not a config key.
     teardownTimeout: 10_000,
+    // KEEPING VITEST 4's MOCK SEMANTICS ACROSS THE RUNNER UPGRADE, deliberately and for one
+    // round only. Vitest 5 flips `clearMocks` from false to true (its own `defaults` says
+    // `clearMocks: true, restoreMocks: false, mockReset: false`), which clears every mock's
+    // recorded calls BEFORE EACH TEST — including calls made at module scope, before any test
+    // ran. `adr-036-post-value-declarations.test.ts` is built exactly that way: importing the
+    // production modules IS the assertion, because `withPostState` records the keys as each
+    // registration is built. Under the new default its two cells went red on both machines;
+    // with this line they are green again, and the suite reproduces the vitest 4 baseline —
+    // SAME FAILING FILES, SAME 19 FAILING TEST NAMES, same assertion messages (2026-09-15).
+    //
+    // THE COMPARISON WAS OVER THE FAILING SET, not over every name in the suite, and the
+    // difference matters: vitest 5 also changed how `.each` interpolates `$var` into a title.
+    // A string used to be printed quoted and truncated by one rule, and is now printed bare
+    // and truncated by another — measured here, `'UIA + InvokePattern (Case Invoke happ…'`
+    // became `UIA + InvokePattern (Case Invoke happy …`. None of the 19 failing names is an
+    // `.each` cell, so the comparison above could not see it. Anything keyed on a test name
+    // (a `-t` filter, a snapshot written inside an `.each`) shifts with this upgrade
+    // (gate 2, 2026-09-15).
+    //
+    // WHAT THIS LINE IS NOT: a verdict that the old default is better. The new default also
+    // makes assertions of the form "was never called" EASIER to pass, so adopting it is a
+    // round that has to re-read every mock-based cell rather than a flag flip — and a cell
+    // that goes quietly weaker is not visible in a failing-file count. That round is not this
+    // one, which changes the runner and nothing else — it is #659, which carries the steps
+    // and the reason the set of affected cells grows while this line stands.
+    //
+    // ONE FILE NEEDS THIS TODAY — and the way to find that set is to RUN IT, not to grep.
+    // The property is "a mock is invoked while the module is evaluated", which no pattern
+    // catches: `const { x } = await import(...)` is the common spelling here and a bare
+    // `^await import(` misses every one of them, as does a static import of a module whose
+    // top-level code calls a mock (gate 2, 2026-09-15). The sound rule is the measurement:
+    // run the suite with this line and without it; the difference in the failing set IS the
+    // set that depends on the old default. Today that difference is exactly
+    // `adr-036-post-value-declarations.test.ts`. The pin is global because the alternative is
+    // rewriting that cell inside the round that moves the runner, which mixes two variables in
+    // the only comparison this suite has.
+    clearMocks: false,
+    // CHECKED AND NOT PINNED: vitest 5 also changed the DEFAULT `reporters` value, to pick a
+    // minimal reporter when it believes it is running under an agent. On this machine that
+    // does not reproduce — v4 and v5 print the same per-file listing, with `CLAUDECODE=1` set
+    // and without (2026-09-15) — so nothing is pinned for it. If a run here ever loses its
+    // per-file lines after this upgrade, that is the first place to look.
     projects: [
       {
         plugins: [stripShebang],
@@ -95,13 +142,16 @@ export default defineConfig({
           // and not the instrument. So `maxForks: 4` had been decorative since the
           // upgrade, and the comment above it was describing a limit that did not exist.
           //
-          // The cap itself lives in the ROOT `test` block, not here: a project-level
-          // `maxWorkers` is returned before the CLI flag is ever read, so writing it here
-          // silently disabled `--maxWorkers`, including the `--maxWorkers=1` that
-          // `.github/workflows/ci.yml` reaches for on the 2-core runner — and the control
-          // arm that proves the cap is real (measured: `--maxWorkers=2` still ran 4).
-          // `minForks` has NO top-level equivalent in Vitest 4 and is dropped rather than
-          // renamed to something that does not mean the same thing.
+          // The cap itself lives in the ROOT `test` block, not here. Under vitest 4 a
+          // project-level `maxWorkers` was returned before the CLI flag was ever read, so
+          // writing it here silently disabled `--maxWorkers`, including the escape hatch
+          // `.github/workflows/ci.yml` reaches for — and the control arm that proves the cap
+          // is real (measured: `--maxWorkers=2` still ran 4). Vitest 5 lets the flag through
+          // at project level too, so that hazard is a vitest 4 fact; the placement is kept
+          // because one value in one place is the simpler thing, not because it is forced.
+          // `minForks` had NO top-level equivalent in VITEST 4 (measured there, 2026-09-15;
+          // not re-checked against 5) and is dropped rather than renamed to something that
+          // does not mean the same thing.
           pool: "forks",
           isolate: true,
         },
@@ -126,7 +176,9 @@ export default defineConfig({
           // e2e files (zombie accumulation — context-consistency / screenshot-electron).
           // It was already inert (see the unit project). The serial part is
           // `fileParallelism`, which is kept. The "all files in ONE process" part is
-          // reachable in Vitest 4 only as `isolate: false` with one worker — the run then
+          // reachable in VITEST 4 (measured there, 2026-09-15, and NOT re-checked on 5 — this
+          // is the note most likely to be acted on from memory) only as `isolate: false` with
+          // one worker — the run then
           // merges every spec of a project into a single worker task — which `singleFork`
           // did NOT require, so it is not a rename but a trade: one process, no per-file
           // module isolation. Written down because it is the way back if the zombie or
