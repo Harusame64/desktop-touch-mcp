@@ -229,7 +229,20 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // paragraph is reworded, and the assertion it feeds then fails saying the opposite of what
     // happened (gate 2, 2026-09-15). A clause from the middle survives assembly; the whole string
     // does not appear in any source file by construction.
-    const NEEDLE = instructions.slice(instructions.indexOf("THIS LANDING"), instructions.indexOf("not a state"));
+    // BOTH ANCHORS ARE CHECKED, not just the opening one. With the closing anchor unguarded,
+    // `indexOf` returning -1 made the slice the whole rest of the paragraph, which spans the `+`
+    // boundaries in the source and matches no file — so rewording `not a state that can be resolved
+    // here`, a legitimate edit, reddened the carrier walk with "the landing paragraph is written in
+    // more than one place under src/" while the real count was ZERO (gate 2, 2026-09-15, reproduced
+    // here by making that edit and updating the fixtures as the cell instructs). An inverted message
+    // is worse than no message: it is "fixed" by editing the expected array.
+    const NEEDLE_OPENS = instructions.indexOf("THIS LANDING");
+    const NEEDLE_CLOSES = instructions.indexOf("not a state");
+    expect(NEEDLE_OPENS, "the needle's opening anchor is gone from the paragraph").toBeGreaterThan(-1);
+    expect(NEEDLE_CLOSES, "the needle's closing anchor is gone from the paragraph").toBeGreaterThan(
+      NEEDLE_OPENS
+    );
+    const NEEDLE = instructions.slice(NEEDLE_OPENS, NEEDLE_CLOSES);
     expect(NEEDLE.length, "the needle for the carrier walk came out empty").toBeGreaterThan(20);
 
     // The two voices differ in exactly four places and nowhere else — a fifth divergence is how
@@ -273,6 +286,15 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // GENERATED one: a new `landingAdvice(...)` call site contains none of the paragraph's text, so
     // the carrier walk cannot see it either. Gate 2 added exactly that to a V1 tool description and
     // all eight cells passed (2026-09-15).
+    //
+    // THE THING PINNED IS WHICH FILES NAME THE MODULE, NOT HOW A CALL IS SPELLED. Keying on the
+    // identifier `landingAdvice` was still a spelling, and gate 2 walked three third copies past it
+    // on 2026-09-15, each with all eight cells green: `import { landingAdvice as advice }`,
+    // `import * as la` + `la.landingAdvice(...)`, and `const f = landingAdvice; f(voice)`. Listing
+    // the ways a binding can be renamed does not end. What a third caller cannot avoid is NAMING
+    // THIS MODULE — through a barrel too, since the barrel then names it and appears here itself.
+    // The residual, said rather than hidden: a specifier assembled at run time
+    // (`await import(base + name)`) is not a literal and is not seen; nothing here loads that way.
     const srcRoot = fileURLToPath(new URL("../../src", import.meta.url));
     const parsed = new Map<string, ts.SourceFile>();
     const sourceOf = (file: string): ts.SourceFile => {
@@ -282,18 +304,90 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       parsed.set(file, made);
       return made;
     };
-    const callsIn = (file: string): string[] => {
-      const found: string[] = [];
+    const rel = (file: string): string => file.slice(srcRoot.length + 1).replace(/\\/g, "/");
+
+    // Adjacent literals joined by `+` are folded first — here for a specifier, below for the
+    // paragraph. Both can be written in pieces, and one of them already was.
+    const fold = (node: ts.Node): string | undefined => {
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+        const left = fold(node.left);
+        const right = fold(node.right);
+        if (left !== undefined && right !== undefined) return left + right;
+      }
+      return undefined;
+    };
+    const literalsIn = (file: string): string[] => {
+      const texts: string[] = [];
       const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "landingAdvice") {
-          found.push(node.arguments.map((a) => a.getText(sourceOf(file))).join(", "));
+        const folded = fold(node);
+        if (folded !== undefined) texts.push(folded);
+        else ts.forEachChild(node, visit);
+      };
+      visit(sourceOf(file));
+      return texts;
+    };
+
+    const MODULE = "landing-advice.js";
+    const naming = [...walkSource(srcRoot)]
+      .filter((file) => rel(file) !== "engine/landing-advice.ts")
+      .filter((file) => literalsIn(file).some((text) => text.endsWith(MODULE)))
+      .map(rel)
+      .sort();
+    expect(naming, "the set of files that name the landing-advice module changed").toEqual([
+      "server-windows.ts",
+      "tools/desktop-register.ts",
+    ]);
+
+    // AND EACH OF THEM ASKS FOR ONE VOICE. The call is matched through the binding its own import
+    // introduced, so an alias or a namespace import reaches this too rather than reading as absent.
+    const bindingsIn = (
+      source: ts.SourceFile
+    ): { named: Array<{ from: string; local: string }>; namespaces: string[] } => {
+      const named: Array<{ from: string; local: string }> = [];
+      const namespaces: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isImportDeclaration(node) &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text.endsWith(MODULE)
+        ) {
+          const bindings = node.importClause?.namedBindings;
+          if (bindings !== undefined && ts.isNamedImports(bindings)) {
+            for (const spec of bindings.elements) {
+              named.push({ from: (spec.propertyName ?? spec.name).text, local: spec.name.text });
+            }
+          }
+          if (bindings !== undefined && ts.isNamespaceImport(bindings)) namespaces.push(bindings.name.text);
         }
         ts.forEachChild(node, visit);
       };
-      visit(sourceOf(file));
+      visit(source);
+      return { named, namespaces };
+    };
+    const callsIn = (file: string): string[] => {
+      const source = sourceOf(file);
+      const { named, namespaces } = bindingsIn(source);
+      const locals = new Set(named.filter((i) => i.from === "landingAdvice").map((i) => i.local));
+      const found: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          const throughBinding = ts.isIdentifier(callee) && locals.has(callee.text);
+          const throughNamespace =
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            namespaces.includes(callee.expression.text) &&
+            callee.name.text === "landingAdvice";
+          if (throughBinding || throughNamespace) {
+            found.push(node.arguments.map((a) => a.getText(source)).join(", "));
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
       return found;
     };
-    const rel = (file: string): string => file.slice(srcRoot.length + 1).replace(/\\/g, "/");
     const callSites = new Map<string, string[]>();
     for (const file of walkSource(srcRoot)) {
       const calls = callsIn(file);
@@ -354,24 +448,8 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       //    GENERATED text rather than typed here: rewording the paragraph — a legitimate edit —
       //    would otherwise make the carrier assertion fail with the opposite message, which a
       //    maintainer can "fix" by editing the expected array (gate 2, 2026-09-15).
-      const texts: string[] = [];
-      const fold = (node: ts.Node): string | undefined => {
-        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-          const left = fold(node.left);
-          const right = fold(node.right);
-          if (left !== undefined && right !== undefined) return left + right;
-        }
-        return undefined;
-      };
-      const visitStrings = (node: ts.Node): void => {
-        const folded = fold(node);
-        if (folded !== undefined) texts.push(folded);
-        else ts.forEachChild(node, visitStrings);
-      };
-      visitStrings(source);
       expect(
-        texts.filter((t) => t.includes(NEEDLE)),
+        literalsIn(path).filter((t) => t.includes(NEEDLE)),
         `${file} carries the paragraph in a string literal again`
       ).toEqual([]);
     }
