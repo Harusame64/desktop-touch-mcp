@@ -25,11 +25,20 @@ const stripShebang: Plugin = {
 
 export default defineConfig({
   test: {
-    // THE WORKER CAP, and it is a CAP: `maxWorkers: 4` is returned verbatim, so on a
-    // 2-core runner — the one `.github/workflows/ci.yml` says dies "before the 3rd worker
-    // finishes spawning" — a bare 4 would SPAWN MORE than the default did, in a change
-    // whose whole purpose is to hold the number down. Clamped against the machine, it can
-    // only lower.
+    // THE WORKER CAP, and it is a CAP IN BOTH MODES. A bare `4` is returned verbatim, so
+    // on a small machine it SPAWNS MORE than the default did, in a change whose whole
+    // purpose is holding the number down. Clamping against `cpus - 1` fixes that for a
+    // plain run and NOT for watch, whose default is `floor(cpus / 2)` and is also reached
+    // only after this value is consulted: on a 6-CPU box `npm run test:watch` would go
+    // 3 -> 4 (gate 2, 2026-09-15). Clamping against the SMALLER of the two defaults is
+    // what makes "can only lower" true wherever it is read.
+    //
+    // The cost is real and is measured, not waved at: on this 8-CPU machine the unit
+    // project takes 18s uncapped and 26s at 4 workers. That price is paid by the local
+    // pre-merge run, which is the only place the suite runs at all — the CI unit step
+    // (`.github/workflows/ci.yml`) is commented out. What is bought is a baseline that
+    // does not depend on the CPU count: uncapped, this machine failed 30 tests across 11
+    // files; capped, it fails the same 10 files a serial run does.
     //
     // It is at the root because a project-level `maxWorkers` is read before the CLI flag
     // and is not in the list of options a CLI flag may override: writing it inside the
@@ -37,11 +46,17 @@ export default defineConfig({
     // project-level value the control arm `--maxWorkers=2` still ran 4 workers).
     // e2e and integration are unaffected: `fileParallelism: false` forces their worker
     // count to 1 by its own documented behaviour, which is stronger than this.
-    maxWorkers: Math.min(4, Math.max(availableParallelism() - 1, 1)),
+    maxWorkers: Math.min(4, Math.max(Math.floor(availableParallelism() / 2), 1)),
     // ONE teardownTimeout FOR THE RUN. It is a root-only option — the pool reads it from
     // the root Vitest instance — so the per-project 5_000 / 10_000 that stood here were as
     // decorative as `poolOptions`, and every project was getting the 10 000 ms default.
     // Keeping 10 000 keeps the behaviour that was actually in force (gate 2, 2026-09-15).
+    //
+    // WHAT IS DROPPED WITH IT, said rather than left to be rediscovered: the unit project
+    // asked for a 5 000 ms grace as part of the same zombie-prevention trio, and Vitest 4
+    // has NO per-project spelling of it — a unit fork that hangs in teardown holds the
+    // pool for 10 s, as it already did. The way back is a separate vitest invocation for
+    // that project, not a config key.
     teardownTimeout: 10_000,
     projects: [
       {
