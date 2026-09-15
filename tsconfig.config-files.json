@@ -1,0 +1,28 @@
+{
+  // WHY A SECOND tsconfig: the root `tsconfig.json` has `"include": ["src/**/*"]` with
+  // `"rootDir": "src"`, so `vitest.config.ts` is outside the program entirely — and
+  // `eslint.config.mjs` uses the non-type-aware recommended set, so ESLint does not read it
+  // either. A config key that STOPS EXISTING therefore stops doing anything without
+  // stopping compiling. That is not hypothetical: `poolOptions` (removed in Vitest 4) and a
+  // per-project `teardownTimeout` (root-only) both sat in `vitest.config.ts` doing nothing,
+  // under comments describing what they were supposed to do, and were found by measurement
+  // months later (#655). Under the Vitest 4 types both were already compile errors.
+  //
+  // It cannot be folded into the root tsconfig: `rootDir: "src"` forbids inputs outside
+  // `src/`, and widening it would move every emitted path in `dist/`.
+  //
+  // Run by `npm run check:config-types`, next to the other `check:*` gates.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  // Every root-level `*.config.ts`, so a config file added later is covered without
+  // touching this file. Today that is `vitest.config.ts` alone.
+  "include": ["*.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}
