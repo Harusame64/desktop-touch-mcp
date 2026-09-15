@@ -98,6 +98,7 @@
     "check:native-types": "node scripts/check-native-types.mjs",
     "check:no-koffi": "node scripts/check-no-koffi.mjs",
     "check:config-types": "tsc -p tsconfig.config-files.json",
+    "check:wire-pins": "vitest run --project=unit --no-file-parallelism tests/unit/the-wire-spelling-of-a-widened-field.test.ts tests/unit/flatten-union-schema.test.ts",
     "test:native-clipboard": "cargo test -p desktop-touch-engine --locked clipboard -- --ignored --test-threads=1",
     "check:rs-workspace": "cargo check --workspace --locked",
     "check:rs-test-compile": "cargo test --workspace --locked --no-run",

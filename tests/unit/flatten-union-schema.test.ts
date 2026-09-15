@@ -16,6 +16,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import {
   flattenUnionToObjectSchema,
   parseActionArgsOrFail,
@@ -59,6 +60,13 @@ function failureOf(result: { content: Array<{ text?: string }> }): {
 describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
   const flat = flattenUnionToObjectSchema(synthUnionWithInclude);
   const js = z.toJSONSchema(flat) as any;
+  // THE DOCUMENT A CLIENT RECEIVES, beside the one above. `z.toJSONSchema`'s defaults are
+  // `draft-2020-12` / `io:"output"`; `registerTool` converts with `{strictUnions:true,
+  // pipeStrategy:'input'}`. The cells below that assert the FLATTEN's behaviour may read either,
+  // but the cell that pins a SPELLING must read the wire — pinning a spelling on a document
+  // nobody is served is the defect this file's companion was written to close, and this cell had
+  // it too (gate 2 round 3, 2026-09-15).
+  const jsWire = toJsonSchemaCompat(flat, { strictUnions: true, pipeStrategy: "input" }) as any;
   it("produces a flat top-level object — no oneOf/anyOf/allOf at the root", () => {
     expect(js.type).toBe("object");
     expect(js.oneOf).toBeUndefined();
@@ -117,7 +125,16 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
     // this one would catch the next zod move on a schema nobody is served (gate 2, 2026-09-15).
     // `toEqual`, not `toMatchObject` — "this and nothing else", so a key appearing beside it
     // is a change this cell reports rather than tolerates.
-    expect(js.properties.count).toEqual({ type: ["number", "string"] });
+    expect(jsWire.properties.count).toEqual({ type: ["number", "string"] });
+  });
+  // The two renderings differ only in `$schema` and `additionalProperties` today — MEASURED — so
+  // every cell above reads the same properties either way. This cell is what tells us the day
+  // that stops being true, instead of leaving half the file quietly on the wrong document.
+  it("the default rendering and the wire agree on properties and required (they differ elsewhere)", () => {
+    expect(jsWire.properties).toEqual(js.properties);
+    expect(jsWire.required).toEqual(js.required);
+    expect(js.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(jsWire.$schema).toBe("http://json-schema.org/draft-07/schema#");
   });
   it("single-variant fields pass through as optional", () => {
     expect(js.properties.onlyA.type).toBe("boolean");

@@ -71,23 +71,6 @@ jobs:
         # months (#655). This step compiles it against the installed runner types.
         run: npm run check:config-types
 
-      - name: Wire-schema pins (#657/#662 — two hermetic unit files, not the suite)
-        # A PIN NOBODY RUNS IS THE MECHANISM THAT ALREADY FAILED. The two files below assert what
-        # the SDK's converter emits for the only two widened properties that ship, and the whole
-        # argument for them is that a change in that document arrives as a failure rather than as a
-        # comment nobody re-measured — which needs something to run them. Until now nothing here
-        # did, and that is exactly how #657 sat red on `main` for eight days (gate 2 on #662).
-        #
-        # WHY TWO FILES AND NOT THE SUITE: the NOTE further down records that every attempt at the
-        # full unit suite on these 2-core Windows runners is cancelled 5-6s in — but it also says
-        # the cancellation lands *after the first two files complete*, which is the reason to
-        # believe a two-file run finishes. Both are hermetic: no native addon, no Windows-only
-        # behaviour, no Rust build, ~1s locally. `--no-file-parallelism` keeps it to one worker.
-        #
-        # IF THIS STEP EVER GOES RED FOR THE RUNNER RATHER THAN FOR THE SCHEMAS, take it out and
-        # say so here — do not raise the file count to make it look like coverage.
-        run: npx vitest run --project=unit --no-file-parallelism tests/unit/the-wire-spelling-of-a-widened-field.test.ts tests/unit/flatten-union-schema.test.ts
-
       - name: Check Rust workspace compiles (covers non-napi member crates)
         # `npm run build:rs:debug` only builds the root crate via napi-rs, so
         # workspace members like `engine-perception` (ADR-008 D1+) are not
@@ -189,6 +172,42 @@ jobs:
       # last build. A stale .node binary causes preprocess / vision_backend tests
       # to fail with confusing errors. See docs/release-process.md
       # "Local Pre-Merge Testing".
+
+  # THE WIRE-SCHEMA PINS GET THEIR OWN JOB, and the reason is the placement, not the runner.
+  # These two files assert what the SDK's converter emits for the widened properties that ship,
+  # and a pin nobody executes is the mechanism that already failed (#657 sat red on `main` for
+  # eight days with nothing running it).
+  #
+  # THEY DO RUN ON THE WINDOWS JOB — measured, green, run 34962210359 step 14. They are not there
+  # anyway: vitest's documented failure mode on those 2-core runners is
+  # "##[error]The operation was canceled." 5-6s in, which kills the JOB — so a runner flake would
+  # take `check:rs-*`, the addon build, `npm run build` (the only `tsc` over `src/`) and the
+  # envelope bench down with it. And the note's "the first two files complete" were whatever two
+  # files ran first, not these two, which are among the heaviest to LOAD in the suite
+  # (`keyboard.ts` and `terminal.ts` each pull tens of engine modules; the 788 ms measured locally
+  # is a warm-cache 8-core mac, against a 5-6 s window on a cold 2-core VM). Gate 2 made that
+  # argument and it is right: the cheap fix is to stop coupling the two (gate 2 round 3, 2026-09-15).
+  #
+  # ubuntu-latest is legitimate here because both files are import-hermetic and
+  # platform-independent: no native addon (the addon is a lazy `await import` inside a function),
+  # no Windows-only behaviour, no Rust. What they check is the SHAPE of a JSON document.
+  wire-schema-pins:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wire-schema pins (#657/#662 — what the SDK's converter emits for every flattened tool)
+        run: npm run check:wire-pins
 
   docker-build:
     runs-on: ubuntu-latest

@@ -27,7 +27,14 @@
  */
 import { describe, it, expect } from "vitest";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import { normalizeObjectSchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import { browserEvalRegistrationSchema } from "../../src/tools/browser.js";
+import { clipboardRegistrationSchema } from "../../src/tools/clipboard.js";
+import { excelRegistrationSchema } from "../../src/tools/excel.js";
+import { keyLockerRegistrationSchema } from "../../src/tools/key-locker-tool.js";
 import { keyboardRegistrationSchema } from "../../src/tools/keyboard.js";
+import { scrollRegistrationSchema } from "../../src/tools/scroll.js";
+import { windowDockRegistrationSchema } from "../../src/tools/window-dock.js";
 import { terminalRegistrationSchema } from "../../src/tools/terminal.js";
 
 /**
@@ -39,9 +46,21 @@ import { terminalRegistrationSchema } from "../../src/tools/terminal.js";
  * failure this file was written to close, one level up (gate 2, 2026-09-15): a pin that follows
  * the callee's defaults stays green if the caller's options change, or if a schema ever lands on
  * the v3 branch where `strictUnions` genuinely changes how a union is emitted.
+ *
+ * `normalizeObjectSchema` FIRST, because that is the whole path: `mcp.js` does
+ * `toJsonSchemaCompat(normalizeObjectSchema(tool.inputSchema), …)`, not the conversion alone.
+ * For a flattened schema it is a no-op — measured, byte-identical either way — so leaving it out
+ * looked harmless. It is not: `withEnvelopeIncludeSchema`'s products are not recognised as zod-4
+ * schemas, so the converter alone takes them down the v3 branch and THROWS
+ * (`Cannot read properties of undefined (reading 'typeName')`). Found by running the sweep below
+ * over all eight flattened tools rather than the two with a widening — the sweep's first act was
+ * to reject the helper that was supposed to measure it.
  */
 const wire = (schema: any): any =>
-  toJsonSchemaCompat(schema, { strictUnions: true, pipeStrategy: "input" });
+  toJsonSchemaCompat(normalizeObjectSchema(schema), {
+    strictUnions: true,
+    pipeStrategy: "input",
+  });
 
 /**
  * The spelling of a widened property, read from the document rather than assumed — and it THROWS
@@ -54,6 +73,12 @@ function spellingOf(prop: Record<string, unknown>): "anyOf" | "oneOf" | "type-ar
   if (Array.isArray(prop.oneOf)) return "oneOf";
   if (Array.isArray(prop.type)) return "type-array";
   if (typeof prop.type === "string") return "single-type";
+  if (prop === undefined || prop === null) {
+    // THE MOST LIKELY REGRESSION IS THE PROPERTY LEAVING THE WIRE, and it used to arrive here as
+    // `TypeError: Cannot read properties of undefined` — a stack trace about `anyOf` instead of
+    // this file's own sentence (gate 2 round 3, 2026-09-15).
+    throw new Error("spellingOf: the property is not on the wire at all — it left the schema.");
+  }
   throw new Error(
     `spellingOf: unrecognised property shape ${JSON.stringify(prop)} — not anyOf, oneOf, a type ` +
       "array or a single type. A fourth spelling must fail this cell rather than read as an absence.",
@@ -80,7 +105,10 @@ describe("#657 — the wire spelling of a widened field", () => {
     // `default: "auto"` (measured on the wire, both machines; filed as #664). WHEN #664 IS FIXED
     // THIS CELL GOES RED — that is intended, and it means the fix landed, not that it broke.
     it("and `anyOf` is the only key on it — see #664, which this pins rather than approves", () => {
-      expect(Object.keys(method).sort()).toEqual(["anyOf"]);
+      expect(
+        Object.keys(method).sort(),
+        "#664: if this went red because `description` or `default` came back, THE FIX LANDED — update this pin rather than reverting the fix.",
+      ).toEqual(["anyOf"]);
     });
     it("carries the two branches that disagree in kind — an enum and a const, in any order", () => {
       expect(method.anyOf).toHaveLength(2);
@@ -111,6 +139,46 @@ describe("#657 — the wire spelling of a widened field", () => {
         "quiet",
       ]);
     });
+  });
+
+  // ── Every tool the flattener touches, not just the two with a widening today ──────────────
+  //
+  // `_envelope.ts` claims "zero type arrays ship today". That was a SWEEP WITH A DATE ON IT, and
+  // the two pins above only look at `keyboard` and `terminal`. Someone adding `count: z.number()`
+  // to one variant and `count: z.string()` to another — in `scroll.ts`, say — would ship
+  // `{"type":["number","string"]}`, the one spelling #657 says nothing here can vouch for, and
+  // both pins above would stay green (gate 2 round 3, 2026-09-15). These are the eight call sites
+  // of `flattenUnionToObjectSchema` outside `_envelope.ts` itself.
+  const FLATTENED = [
+    ["browser_eval", browserEvalRegistrationSchema],
+    ["clipboard", clipboardRegistrationSchema],
+    ["excel", excelRegistrationSchema],
+    ["key_locker", keyLockerRegistrationSchema],
+    ["keyboard", keyboardRegistrationSchema],
+    ["scroll", scrollRegistrationSchema],
+    ["terminal", terminalRegistrationSchema],
+    ["window_dock", windowDockRegistrationSchema],
+  ] as const;
+
+  it("no flattened tool ships a property-level TYPE ARRAY — the spelling #657 cannot vouch for", () => {
+    const offenders: string[] = [];
+    for (const [name, schema] of FLATTENED) {
+      const props = wire(schema).properties ?? {};
+      for (const [field, prop] of Object.entries(props)) {
+        if (Array.isArray((prop as { type?: unknown }).type)) offenders.push(`${name}.${field}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("and no flattened tool ships a TOP-LEVEL oneOf/anyOf — the shape the API rejects", () => {
+    const offenders: string[] = [];
+    for (const [name, schema] of FLATTENED) {
+      const js = wire(schema);
+      if (js.oneOf !== undefined) offenders.push(`${name}: oneOf`);
+      if (js.anyOf !== undefined) offenders.push(`${name}: anyOf`);
+    }
+    expect(offenders).toEqual([]);
   });
 
   // The one shape this repository knows the Anthropic API rejects. Both tools, on the wire.
