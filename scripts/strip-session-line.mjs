@@ -31,6 +31,27 @@ import { pathToFileURL } from "node:url";
  * Anchored at line start so prose that MENTIONS the trailer mid-sentence
  * survives — this repo's own commit messages discuss it.
  *
+ * AND THE URL BRANCH ENDS AT THE END OF THE LINE, so a line that BEGINS with a
+ * session link and carries prose after it is not removed either. Anchoring alone
+ * did not deliver what it was written for: the rule is "removal must not eat the
+ * sentence around the link", and
+ *
+ *     The trailer is spelled Claude-Session: and a link like
+ *     https://claude.ai/code/session_x is what the hook removes when it starts a line.
+ *
+ * came back as its first line alone (found by running the hook, 2026-09-15,
+ * reproduced on Windows). One editor wrapping a sentence reaches that shape, and
+ * so does `- https://…/session_x — the run this came from`.
+ *
+ * What happens to such a line instead is the division of labour this file already
+ * describes: `.githooks/pre-push` scans mid-line for an id of at least 16
+ * characters and REFUSES the push. A reword costs less than a lost sentence, and
+ * it is the author's reword rather than the hook's edit.
+ *
+ * The TRAILER branch is deliberately not narrowed the same way. `Claude-Session:`
+ * at the start of a line is a git trailer whose value is the id — there is no
+ * prose case to protect, and the harness writes exactly that line.
+ *
  * The whitespace class is `[ \t\v\f\r]`, matching what POSIX `[[:space:]]`
  * means to `grep` and to `awk` on a single line under `LC_ALL=C` — `awk` is what
  * actually scans in `.githooks/pre-push`, and the tests exercise both. It is spelled out rather
@@ -39,11 +60,29 @@ import { pathToFileURL } from "node:url";
  * the ERE spelling of this same rule, since it must run without node.
  */
 export const SESSION_LINE_RE =
-  /^[ \t\v\f\r]*(?:[-*+][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
+  /^[ \t\v\f\r]*(?:[-*+][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]*[ \t\v\f\r]*$)/;
 
-/** The POSIX ERE that `.githooks/pre-push` must be using for the same job. */
+/**
+ * The POSIX ERE in `.githooks/pre-push`, and it is no longer the same rule as the
+ * pattern above. The two sides answer different questions now:
+ *
+ *   REMOVAL (above) deletes a line that is NOTHING BUT a trailer or a link. It
+ *   edits the author's text, so it may only take a line that has no text of the
+ *   author's on it.
+ *
+ *   THE PUSH SIDE refuses, which costs a reword, so it looks harder: this ERE for
+ *   the trailer, and `embeds()` in the hook for a session id of at least 16
+ *   characters ANYWHERE in the line. The URL used to be in this ERE as well, with
+ *   no length floor, which refused any line that merely began with one — harmless
+ *   while removal deleted those lines, a false refusal the moment it stopped.
+ *
+ * So the invariant is not a subset relation. It is two properties, each held by
+ * its own case in `tests/unit/strip-session-line.test.ts`: nothing carrying a real
+ * id survives the push, and nothing is refused that carries neither a trailer nor
+ * a real id.
+ */
 export const SESSION_LINE_ERE =
-  "^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)";
+  "^[[:space:]]*([-*+][[:space:]]+)?Claude-Session:";
 
 /** A line with nothing on it. Deliberately the same class as the pattern. */
 const BLANK_LINE_RE = /^[ \t\v\f\r]*$/;

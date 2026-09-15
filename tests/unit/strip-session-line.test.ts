@@ -143,6 +143,43 @@ describe("stripSessionLines — what comes out", () => {
     expect(text).toBe("");
   });
 
+  it("keeps a line that BEGINS with a session link and carries prose after it", () => {
+    // THE DEFECT THIS CASE EXISTS FOR (found by running the hook, 2026-09-15,
+    // reproduced on Windows): anchoring at line start was written so removal would
+    // not "eat the sentence around the link", and it did exactly that whenever the
+    // link happened to open the line — one editor wrapping a sentence reaches that
+    // shape. The whole line went, and the author's sentence came back truncated
+    // with only "removed 1 Claude-Session line" to say why.
+    //
+    // Such a line is `.githooks/pre-push`'s business now: it scans mid-line for an
+    // id of at least 16 characters and refuses the push. A reword costs less than a
+    // lost sentence, and it is the author's reword rather than the hook's edit.
+    const input =
+      "docs: explain\n\nThe trailer is spelled Claude-Session: and a link like\n" +
+      "https://claude.ai/code/session_x is what the hook removes when it starts a line.\n";
+    const { text, removed } = stripSessionLines(input);
+    expect(removed).toBe(0);
+    expect(text).toBe(input);
+  });
+
+  it("keeps a list item whose link is followed by prose, and still removes the bare one", () => {
+    // The two shapes differ by what comes after the id, and nothing else.
+    expect(
+      stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x — the run this came from\n`)
+        .removed,
+    ).toBe(0);
+    expect(stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x\n`).removed).toBe(1);
+    // Trailing whitespace after the id is still a bare link — an editor's stray
+    // space must not be what decides whether the id is removed.
+    expect(stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x   \n`).removed).toBe(1);
+  });
+
+  it("does not narrow the TRAILER branch the same way — a trailer's value is the id", () => {
+    // `Claude-Session: <id>` is a git trailer, not prose with a link in it, and the
+    // harness writes exactly this line. There is no sentence here to protect.
+    expect(stripSessionLines(`fix: a\n\n${TRAILER} and then some words\n`).removed).toBe(1);
+  });
+
   it("keeps a mid-sentence mention of the trailer", () => {
     // This repo's own commit messages discuss the trailer in prose. The pattern
     // is anchored for this reason; an unanchored one would eat the sentence.
@@ -245,7 +282,10 @@ describe("the hook and the pre-push net stay in step", () => {
   });
 });
 
-describe("the two patterns accept the same lines, not merely the same string", () => {
+/** 24 characters, the length every real id in this repository's history has. */
+const REAL_ID = "01ABCDEFGHIJKLMNOPQRSTUV";
+
+describe("the two sides, and the two properties between them", () => {
   /**
    * Translate the POSIX ERE into a JS RegExp so it can actually be run against
    * the same corpus as the module's own pattern.
@@ -291,6 +331,20 @@ describe("the two patterns accept the same lines, not merely the same string", (
     "fix: a subject line",
     "prose mentioning Claude-Session: mid-sentence",
     "See https://claude.ai/code/session_x for context",
+    // THE LINES THE TWO PATTERNS ARE MEANT TO DISAGREE ON. Before they were added,
+    // narrowing the removal pattern left all 63 cases green — the corpus this block
+    // exists to be thorough about had no case that could tell the two apart, which
+    // is the same defect as a pin whose mutation nobody fires.
+    "https://claude.ai/code/session_x is what the hook removes when it starts a line.",
+    "- https://claude.ai/code/session_x — the run this came from",
+    "  + https://claude.ai/code/session_x, for the record",
+    "https://claude.ai/code/session_x   ",
+    // REAL-LENGTH ids, both shapes. The corpus was entirely `session_x` before, so
+    // nothing in it could tell the id floor from a pattern that ignores length.
+    `https://claude.ai/code/session_${REAL_ID}`,
+    `- https://claude.ai/code/session_${REAL_ID}`,
+    `https://claude.ai/code/session_${REAL_ID} is the run this came from.`,
+    `see [the session](https://claude.ai/code/session_${REAL_ID}) for context`,
     "https://claude.ai/code/artifacts/abc",
     "https://claudeXai/code/session_x",
     "",
@@ -299,19 +353,87 @@ describe("the two patterns accept the same lines, not merely the same string", (
     "+not-a-list-marker Claude-Session: x",
   ];
 
-  it("classifies every corpus line identically", () => {
-    const ere = ereToRegExp(SESSION_LINE_ERE);
-    for (const line of corpus) {
-      expect(ere.test(line), `ERE vs JS disagree on: ${JSON.stringify(line)}`).toBe(
-        SESSION_LINE_RE.test(line)
-      );
-    }
+  /**
+   * THE PREDICATE THE HOOK ACTUALLY RUNS, lifted out of `.githooks/pre-push` rather
+   * than re-implemented here. A copy would drift, and the copy is what would be
+   * tested. Feeds one synthetic commit record per line and returns which lines the
+   * program flagged.
+   */
+  function flaggedByTheHook(lines: readonly string[]): boolean[] {
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    const opener = `awk -v pat="$session_pattern" -v minid="$session_min_id" '`;
+    const from = hook.indexOf(opener);
+    expect(from, "pre-push no longer calls awk the way this probe reads it").toBeGreaterThan(-1);
+    const to = hook.indexOf("\n        '", from);
+    expect(to, "the awk program in pre-push is not terminated the way this probe reads it").toBeGreaterThan(from);
+    const program = hook.slice(from + opener.length, to);
+
+    const records = lines
+      .map((line, i) => `\u0001${i.toString(16).padStart(40, "0")}\n${line}`)
+      .join("\n");
+    const probe = spawnSync("awk", ["-v", `pat=${SESSION_LINE_ERE}`, "-v", "minid=16", program], {
+      input: `${records}\n`,
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+    });
+    expect(probe.status, `awk unusable: ${probe.error?.message ?? ""} ${probe.stderr}`).toBe(0);
+
+    // The program prints the scanned count as well; without checking it, an awk that
+    // read nothing would look like a clean corpus.
+    const out = probe.stdout.trim().split("\n");
+    const scanned = out.find((l) => l.startsWith("@@SCANNED@@"));
+    expect(scanned, "the program did not report how many records it walked").toBeDefined();
+    expect(Number(scanned?.slice("@@SCANNED@@".length))).toBe(lines.length);
+
+    const hit = new Set(out.filter((l) => /^[0-9a-f]{40}$/.test(l)));
+    return lines.map((_, i) => hit.has(i.toString(16).padStart(40, "0")));
+  }
+
+  /** A session id of at least the floor's length, anywhere in the line. */
+  function carriesARealId(line: string): boolean {
+    return /claude\.ai\/code\/session_[A-Za-z0-9]{16,}/.test(line);
+  }
+
+  it("refuses every line that carries a real session id, wherever it sits", () => {
+    // THE SAFETY PROPERTY. Anchored or mid-sentence, list item or prose — if a real
+    // id is on the line, the push stops.
+    const flagged = flaggedByTheHook(corpus);
+    const missed = corpus.filter((line, i) => carriesARealId(line) && !flagged[i]);
+    expect(missed, "a line carrying a real session id was not refused").toEqual([]);
+    expect(corpus.filter(carriesARealId).length, "the corpus has no real id in it to miss").toBeGreaterThan(2);
   });
 
-  it("the corpus is not vacuous — it contains lines of both kinds", () => {
-    const matched = corpus.filter((l) => SESSION_LINE_RE.test(l));
-    expect(matched.length).toBeGreaterThan(5);
-    expect(corpus.length - matched.length).toBeGreaterThan(5);
+  it("refuses nothing that carries neither a trailer nor a real id", () => {
+    // THE USABILITY PROPERTY, and the defect this change closes on the push side.
+    // The URL used to sit in the anchored pattern with no length floor, so a line
+    // merely BEGINNING with `https://…/session_x` was refused however short the id
+    // and whatever followed it — invisible while removal deleted those lines, and an
+    // unpushable commit the moment removal stopped.
+    const ere = ereToRegExp(SESSION_LINE_ERE);
+    const flagged = flaggedByTheHook(corpus);
+    const wrong = corpus.filter((line, i) => flagged[i] && !ere.test(line) && !carriesARealId(line));
+    expect(wrong, "a line with no trailer and no real id was refused").toEqual([]);
+  });
+
+  it("only ever deletes a line that has none of the author's own text on it", () => {
+    // THE REMOVAL PROPERTY. Removal edits the message, so its licence is narrow: a
+    // git trailer, or a link with nothing after it. Everything else is the push
+    // side's business — a reword costs less than a lost sentence.
+    const BARE = /^[ \t\v\f\r]*(?:[-*+][ \t\v\f\r]+)?(?:Claude-Session:.*|https:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]*[ \t\v\f\r]*)$/;
+    const overreach = corpus.filter((line) => SESSION_LINE_RE.test(line) && !BARE.test(line));
+    expect(overreach, "removal would take a line carrying the author's text").toEqual([]);
+    expect(corpus.filter((l) => SESSION_LINE_RE.test(l)).length).toBeGreaterThan(5);
+  });
+
+  it("the corpus contains lines the two sides treat differently — otherwise the pair above is vacuous", () => {
+    const flagged = flaggedByTheHook(corpus);
+    const removedNotRefused = corpus.filter((l, i) => SESSION_LINE_RE.test(l) && !flagged[i]);
+    const refusedNotRemoved = corpus.filter((l, i) => flagged[i] && !SESSION_LINE_RE.test(l));
+    // A bare short-id link is removed and not refused; a real id in prose is refused
+    // and not removed. Both directions have to be present or the properties above are
+    // being checked against a corpus that cannot separate them.
+    expect(removedNotRefused.length, "no line is removed-but-not-refused").toBeGreaterThan(0);
+    expect(refusedNotRemoved.length, "no line is refused-but-not-removed").toBeGreaterThan(0);
   });
 
   it("the translator refuses what it cannot translate, rather than matching nothing", () => {
@@ -334,12 +456,23 @@ describe("the two patterns accept the same lines, not merely the same string", (
       `awk unusable: error=${probe.error?.message ?? "none"} stderr=${probe.stderr}`
     ).toBe(0);
 
+    // COMPARED AGAINST THE ERE AS WE READ IT, not against the removal pattern. This
+    // case used to check awk's answers against `SESSION_LINE_RE`, which was the same
+    // rule then and is not now — removal is narrower on purpose. What awk has to
+    // agree with is the ERE it is actually given; the direction that matters for
+    // safety is asserted separately below.
+    const ere = ereToRegExp(SESSION_LINE_ERE);
     const fromAwk = probe.stdout.trim().split("\n");
-    const fromJs = corpus.map((line) => (SESSION_LINE_RE.test(line) ? "1" : "0"));
+    const fromEre = corpus.map((line) => (ere.test(line) ? "1" : "0"));
     expect(fromAwk.length).toBe(corpus.length);
     for (let i = 0; i < corpus.length; i++) {
-      expect(fromAwk[i], `awk vs JS on ${JSON.stringify(corpus[i])}`).toBe(fromJs[i]);
+      expect(fromAwk[i], `awk vs the ERE on ${JSON.stringify(corpus[i])}`).toBe(fromEre[i]);
     }
+
+    // What the two sides owe each other is NOT that awk stops everything removal
+    // deletes — a bare link with a short id is removed and deliberately not refused.
+    // The properties that do hold are the three cases above, and they run the hook's
+    // own awk program rather than this pattern.
   });
 });
 

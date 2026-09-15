@@ -120,14 +120,23 @@ remote_location="$2"
 remote_display=$(redact_url "$2")
 protected_branch="refs/heads/main"
 zero="0000000000000000000000000000000000000000"
-session_pattern='^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)'
+# The TRAILER, anchored: `Claude-Session:` opening a line is a git trailer whose
+# value is the id, and there is no prose shape to protect.
+#
+# URLs are NOT here any more. They were, with no length floor, which made a line
+# STARTING with a session URL a refusal whatever followed it and whatever the id
+# was — invisible while `.githooks/commit-msg` deleted such lines, and a false
+# refusal the moment removal stopped doing that (2026-09-15). Every URL case now
+# goes through `embeds()` below, which looks anywhere in the line and applies the
+# floor, so one rule decides every URL wherever it sits.
+session_pattern='^[[:space:]]*([-*+][[:space:]]+)?Claude-Session:'
 
-# How many id characters after `session_` make it worth refusing mid-line. Every
-# real id in this repo's history is 24; the only shorter one is the literal
-# `session_x` this repo writes when it DISCUSSES the rule — in prose, in tests,
-# and in a commit message already in main. Refusing on any embedded URL would
-# make that commit unpushable forever, so the floor is what separates a leaked
-# id from the repo talking about ids.
+# How many id characters after `session_` make it worth refusing. Every real id in
+# this repo's history is 24; the only shorter one is the literal `session_x` this
+# repo writes when it DISCUSSES the rule — in prose, in tests, and in a commit
+# message already in main. Refusing on any URL at all would make that commit
+# unpushable forever, so the floor is what separates a leaked id from the repo
+# talking about ids.
 session_min_id=16
 
 # Commits in $1 (a rev range) whose message carries a session id, one sha per
