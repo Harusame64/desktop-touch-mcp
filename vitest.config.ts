@@ -129,7 +129,7 @@ export default defineConfig({
           include: ["tests/unit/**/*.test.ts"],
           // Never append to the developer's real diagnostic log from a unit run.
           setupFiles: ["./tests/unit/setup-diagnostic-log.ts"],
-          // fileParallelism defaults to true — 363 files run in parallel
+          // fileParallelism defaults to true — 364 files run in parallel
           testTimeout: 10_000,
           hookTimeout: 10_000,
           // Zombie prevention (Phase 4b-6): the forks pool, for native-binding safety.

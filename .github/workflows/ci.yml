@@ -164,8 +164,10 @@ jobs:
       # P0-1 (audit §8.1) is therefore PARTIALLY addressed:
       #   - Rust build:rs runs here → catches Rust regressions (was the
       #     bigger concern: tooling drift, FFI shape, build.rs node.lib).
-      #   - TypeScript test execution is left to local pre-merge run via
+      #   - TypeScript test execution is left to the local pre-merge run via
       #     `npm run test:capture`. Audit doc and known-issues track this.
+      #     NARROWED 2026-09-15 (#662): two hermetic FILES — not the suite — run in the
+      #     separate `wire-schema-pins` job. Two out of 364, and none of them here.
       #
       # IMPORTANT for local runs: rebuild the Rust addon (`npm run build:rs:debug`)
       # before `npm run test:capture` if any src/*.rs or Cargo.toml changed since
@@ -195,9 +197,19 @@ jobs:
   # GENERALISE TO ANY OTHER CELL. Adding units to the Windows job takes the gates already there
   # hostage: a cancelled runner kills the job, not the step.
   #
-  # ubuntu-latest is legitimate here because both files are import-hermetic and
-  # platform-independent: no native addon (the addon is a lazy `await import` inside a function),
-  # no Windows-only behaviour, no Rust. What they check is the SHAPE of a JSON document.
+  # ubuntu-latest is legitimate because WHAT THESE FILES CHECK has no platform: the shape of a
+  # JSON document, built from zod at module scope, with no platform or env conditional anywhere
+  # in the eight flattened tools (verified, gate 2 round 5). No Windows behaviour, no Rust, and
+  # the windows-rs addon is a lazy `await import` inside a function, so it is never loaded.
+  #
+  # THEY ARE NOT IMPORT-HERMETIC, THOUGH — an earlier version of this comment said they were, and
+  # that was wrong (gate 2 round 5). Every one of the eight tools reaches `src/engine/nutjs.ts`
+  # through a STATIC import, which imports `@nut-tree-fork/nut-js` at module scope and dlopens a
+  # `.node` needing `libX11.so.6` and `libXtst.so.6`. This repo already recorded that:
+  # `tests/unit/scroll-capture-ref.test.ts` calls nut-js "the hard native aborter on a Linux unit
+  # runner" and fakes it for that reason. The job was green without the apt step only because the
+  # ubuntu-latest image carries those libs transitively (they are in no documented apt list), so
+  # the dependency is DECLARED below rather than left to an image that happens to satisfy it.
   wire-schema-pins:
     runs-on: ubuntu-latest
 
@@ -209,6 +221,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+
+      - name: X11 runtime libs (nut-js dlopens libX11/libXtst at import)
+        # Not a build dependency and not optional: the tools' module graph loads
+        # `@nut-tree-fork/nut-js` statically. Without these the job dies at import, in a step
+        # named after wire pins, with `libXtst.so.6: cannot open shared object file`.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libx11-6 libxtst6
 
       - name: Install dependencies
         # `--ignore-scripts` because bare `npm ci` fires `prepare`, which is

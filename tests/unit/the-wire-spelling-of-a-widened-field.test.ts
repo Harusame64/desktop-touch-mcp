@@ -18,6 +18,7 @@
  * `{"type":["number","string"]}` to a running server.
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
 import { browserEvalRegistrationSchema } from "../../src/tools/browser.js";
 import { clipboardRegistrationSchema } from "../../src/tools/clipboard.js";
 import { excelRegistrationSchema } from "../../src/tools/excel.js";
@@ -41,6 +42,22 @@ const FLATTENED = [
 ] as const;
 
 describe("#657 — the wire spelling of a widened field", () => {
+  // FLATTENED IS HAND-MAINTAINED, and the cells below are titled "every flattened tool". Nothing
+  // detected a ninth: a new tool flattening a union could ship a type array with every cell here
+  // green, while `_envelope.ts`'s "across all eight products" quietly became a claim about
+  // eight-of-nine (gate 2 round 5). So the list is compared against the source.
+  it("the list above is every `flattenUnionToObjectSchema` call site in src/tools", () => {
+    const dir = new URL("../../src/tools/", import.meta.url);
+    const sites: string[] = [];
+    for (const file of readdirSync(dir).sort()) {
+      if (!file.endsWith(".ts") || file === "_envelope.ts") continue;
+      const src = readFileSync(new URL(file, dir), "utf8");
+      const n = src.split("flattenUnionToObjectSchema(").length - 1;
+      for (let i = 0; i < n; i++) sites.push(file);
+    }
+    expect(sites.length).toBe(FLATTENED.length);
+  });
+
   describe("keyboard.method — the ONE widening that ships", () => {
     // It is a widening because the variants disagree in KIND: `z.enum([...]).default("auto")` in
     // one and `z.literal("foreground").optional()` in another, and `mergeFlatField`'s all-enum
@@ -50,7 +67,13 @@ describe("#657 — the wire spelling of a widened field", () => {
     // 4.5.4 "emits a type array" as if that were a property of the version. It is a property of the
     // BRANCH SHAPES: bare scalars collapse into one `type` array, branches that carry their own
     // keywords (`enum`, `const`) cannot be collapsed and stay `anyOf`.
+    // `spellingOf` FIRST, in the describe body, so ALL the cells below get its sentence when the
+    // property has left the wire. Two of the three used to reach `Object.keys(undefined)` and
+    // `undefined.anyOf` first and reported a TypeError — the very failure the helper's ordering
+    // was fixed to eliminate, one cell over (gate 2 round 5, measured by removing `method` from
+    // all three keyboard variants).
     const method = wire(keyboardRegistrationSchema).properties?.method;
+    spellingOf(method);
     it("is spelled `anyOf` — not a type array, which is the spelling #657 cannot vouch for", () => {
       expect(spellingOf(method)).toBe("anyOf");
     });
@@ -82,6 +105,7 @@ describe("#657 — the wire spelling of a widened field", () => {
 
   describe("terminal.until — the nested union", () => {
     const until = wire(terminalRegistrationSchema).properties?.until;
+    spellingOf(until);
     it("is spelled `oneOf`, and that is the only key on it", () => {
       expect(spellingOf(until)).toBe("oneOf");
       expect(Object.keys(until).sort()).toEqual(["oneOf"]);

@@ -29,8 +29,11 @@ import {
 //    value union (one `z.enum`)
 //  - `count`: `number` in one variant, `string` in another → `z.union`
 //    fallback → one property accepting BOTH types. How that is spelled is
-//    zod's business and it changed under our feet (4.4.3 `anyOf`, 4.5.4 a
-//    type array) — the two claims are pinned in separate cells (#657)
+//    decided by the BRANCH SHAPES, not by the zod version: these branches are
+//    bare scalars, which 4.5.4 collapses into a type array where 4.4.3 emitted
+//    `anyOf`; branches carrying an `enum` or a `const` stay `anyOf` under both,
+//    which is why the one widening that SHIPS (`keyboard.method`) is an `anyOf`.
+//    The two claims are pinned in separate cells (#657)
 //  - `onlyA` / `onlyB`: single-variant fields → optional passthrough
 const synthBare = z.discriminatedUnion("action", [
   z.object({

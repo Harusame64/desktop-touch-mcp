@@ -79,8 +79,14 @@ export function typeArrayPaths(node: unknown, path = "$"): string[] {
     ? node.map((v, i) => [String(i), v] as const)
     : Object.entries(node as Record<string, unknown>);
   for (const [key, value] of entries) {
-    // `type` itself is never a subschema; everything else may be.
-    if (key === "type") continue;
+    // NO KEY IS SKIPPED, and `type` least of all. An earlier version skipped it on the reasoning
+    // that "`type` is never a subschema" — which is true of the keyword and false of a PROPERTY
+    // NAMED `type`, so `properties.type` was never walked and a type array there was invisible.
+    // Measured: `{properties:{type:{type:["number","string"]}}}` returned `[]`, the same document
+    // with the property named `ok` returned `["$.properties.ok"]`, and end to end a union named
+    // `type` in terminal's `until` left every cell green (gate 2 round 5). The skip bought
+    // nothing: a `type` keyword is a string or an array of strings, and recursing into either
+    // returns nothing.
     found.push(...typeArrayPaths(value, `${path}.${key}`));
   }
   return found;
