@@ -54,10 +54,15 @@ export default defineConfig({
     // all — the windows-latest unit step was REMOVED (`4b1a5155`); what is left in
     // `.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step.
     //
-    // It is at the root because a project-level `maxWorkers` is read before the CLI flag
-    // and is not in the list of options a CLI flag may override: writing it inside the
-    // unit project silently disabled `--maxWorkers` (measured, 2026-09-15 — with the
-    // project-level value the control arm `--maxWorkers=2` still ran 4 workers).
+    // It is at the root because a project-level `maxWorkers` is read before the CLI flag,
+    // and under VITEST 4 it was not in the list of options a CLI flag may override: writing
+    // it inside the unit project silently disabled `--maxWorkers` (measured, 2026-09-15 —
+    // with the project-level value the control arm `--maxWorkers=2` still ran 4 workers).
+    // THAT REASON EXPIRED WITH THE RUNNER: vitest 5 adds `maxWorkers` to its per-project
+    // CLI override list, so a project-level value would no longer shadow the flag (checked
+    // in v5's `PROJECT_CLI_OVERRIDES`, 2026-09-15). The placement stays — one place, one
+    // value, and the flag reaches it either way — but the reason recorded here is a vitest 4
+    // measurement and is written as one rather than left to read as timeless.
     // e2e and integration are unaffected: `fileParallelism: false` forces their worker
     // count to 1 by its own documented behaviour, which is stronger than this.
     maxWorkers: Math.min(4, Math.max(Math.floor(availableParallelism() / 2), 1)),
@@ -86,7 +91,13 @@ export default defineConfig({
     // makes assertions of the form "was never called" EASIER to pass, so adopting it is a
     // round that has to re-read every mock-based cell rather than a flag flip — and a cell
     // that goes quietly weaker is not visible in a failing-file count. That round is not this
-    // one, which changes the runner and nothing else.
+    // one, which changes the runner and nothing else — it is #659, which carries the steps
+    // and the reason the set of affected cells grows while this line stands.
+    //
+    // ONE FILE NEEDS THIS TODAY (`grep -rln "^await import(" tests/unit`):
+    // `adr-036-post-value-declarations.test.ts`. The pin is global because the alternative is
+    // rewriting that cell inside the round that moves the runner, which mixes two variables in
+    // the only comparison this suite has.
     clearMocks: false,
     projects: [
       {
@@ -111,11 +122,13 @@ export default defineConfig({
           // and not the instrument. So `maxForks: 4` had been decorative since the
           // upgrade, and the comment above it was describing a limit that did not exist.
           //
-          // The cap itself lives in the ROOT `test` block, not here: a project-level
-          // `maxWorkers` is returned before the CLI flag is ever read, so writing it here
-          // silently disabled `--maxWorkers`, including the `--maxWorkers=1` that
-          // `.github/workflows/ci.yml` reaches for on the 2-core runner — and the control
-          // arm that proves the cap is real (measured: `--maxWorkers=2` still ran 4).
+          // The cap itself lives in the ROOT `test` block, not here. Under vitest 4 a
+          // project-level `maxWorkers` was returned before the CLI flag was ever read, so
+          // writing it here silently disabled `--maxWorkers`, including the escape hatch
+          // `.github/workflows/ci.yml` reaches for — and the control arm that proves the cap
+          // is real (measured: `--maxWorkers=2` still ran 4). Vitest 5 lets the flag through
+          // at project level too, so that hazard is a vitest 4 fact; the placement is kept
+          // because one value in one place is the simpler thing, not because it is forced.
           // `minForks` has NO top-level equivalent in Vitest 4 and is dropped rather than
           // renamed to something that does not mean the same thing.
           pool: "forks",

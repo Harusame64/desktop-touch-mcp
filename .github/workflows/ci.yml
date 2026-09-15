@@ -139,7 +139,9 @@ jobs:
       # maxForks:4" ran at whatever the CPU default was, not at 4. The
       # `--maxWorkers=1` arm WAS honoured — the config of that day set no
       # project-level `maxWorkers`, so the flag reached the root
-      # (`git show 4b1a5155:vitest.config.ts`).
+      # (`git show 4b1a5155:vitest.config.ts`). Project-level shadowing of
+      # `--maxWorkers` is a VITEST 4 behaviour; vitest 5 lets the flag through at
+      # project level too, so do not carry that rule forward past #658.
       #
       # WHAT THAT DEFAULT WAS IS NOT RECORDED ANYWHERE WE CAN CHECK, and this
       # note's own two halves disagree: the deleted step said "windows-latest is
