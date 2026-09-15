@@ -22,6 +22,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import {
   terminalRegistrationSchema,
   terminalSchema,
@@ -285,5 +286,35 @@ describe("issue #196 symptom 1: terminal action='run' until field accepts object
         expect(result.data.until).toEqual({ mode: "quiet", quietMs: 1500 });
       }
     });
+  });
+
+});
+
+// ── The WIRE SPELLING of `until`, pinned (#657) ───────────────────────────────────────
+//
+// `terminal.ts` carried a comment saying this renders as a property-level `anyOf`. Under
+// zod 4.5.4 it renders `oneOf`, measured. The comment was corrected — and a correction is
+// not the fix: **a comment that was always wrong and a comment that went stale are
+// indistinguishable after the fact unless something pinned it.** Nothing pinned this, so
+// nobody can say when it moved. This cell is that pin.
+//
+// What is pinned is the CLAIM the comment makes, not the whole document: the property is
+// spelled `oneOf` and nothing else, it has one branch per `mode`, and the TOP level carries
+// no `oneOf`/`anyOf` — the one shape the Anthropic API is known here to reject.
+describe("the wire spelling of the nested `until` union (#657)", () => {
+  const js = z.toJSONSchema(terminalRegistrationSchema) as Record<string, any>;
+  it("is a property-level `oneOf`, and that is the only key on it", () => {
+    expect(Object.keys(js.properties.until).sort()).toEqual(["oneOf"]);
+  });
+  it("carries one branch per `until` mode", () => {
+    expect(js.properties.until.oneOf.map((b: any) => b.properties?.mode?.const).sort()).toEqual([
+      "exit",
+      "pattern",
+      "quiet",
+    ]);
+  });
+  it("and the TOP level carries no oneOf/anyOf — the shape the API rejects", () => {
+    expect(js.oneOf).toBeUndefined();
+    expect(js.anyOf).toBeUndefined();
   });
 });
