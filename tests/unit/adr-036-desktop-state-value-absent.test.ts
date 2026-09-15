@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const { view, uiaFocus, cdpResult, fgTitle } = vi.hoisted(() => ({
@@ -128,7 +128,8 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * gate 1 walked through it with `Retry the write now.` — every required substring present,
    * every forbidden one absent, green. The READMEs were not in that loop at all.
    *
-   * So the four copies are fixed text. Any edit fails here and has to be made deliberately, which
+   * So the two hand-written renderings are fixed text — the two SHIPPED copies come from one
+   * source now and are pinned in the cell below, not here. Any edit fails here and has to be made deliberately, which
    * is the point: this paragraph took fourteen rounds to stop claiming things the code cannot
    * support, and every round removed something — that the read tells you, that the hint's silence
    * means something, that a match settles it, that focusing first is enough, that the element can
@@ -137,7 +138,7 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * resets, that a retry appends, that there is anything to do about it here, and finally the two
    * instructions that had framed it since before the first round.
    */
-  it("keeps all four copies of the landing paragraph exactly as measurement left them", () => {
+  it("keeps the two hand-written renderings exactly as measurement left them", () => {
     const EXPECTED: Record<string, string> = {
       "README.md":
         "A successful `type` can carry `landing: { confirmed: false, why }`. The write took the background route, but the server could not confirm that it reached the field you named — for example, in a WPF window, whose fields have no window of their own. **This is a report, not a state that can be resolved here**: nothing in the response establishes whether the characters arrived, reading the field back does not settle it (`desktop_state` answers about the foreground, and may come back with no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and no hint is not evidence a value was there — or name a field in another window with the same title), `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write, and retrying a nonempty write is not a repeat — a background write lands at the caret and replaces the selection, exactly as typing does.",
@@ -154,40 +155,19 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         .replace(/\r\n/g, "\n");
       const start = text.indexOf(expected.slice(0, 40));
       expect(start, `${rel} no longer opens the landing paragraph the same way`).toBeGreaterThan(-1);
-      if (rel.startsWith("src/")) {
-        // UNREACHABLE SINCE THE TWO SHIPPED COPIES CAME FROM ONE SOURCE. Kept as a guard:
-        // if a literal copy reappears in a src file, this branch runs again and holds it to
-        // the same text. The live pin for those two is the cell below, against
-        // `landingAdvice()`.
-        expect(false, `${rel} carries a hand-written copy again — it should come from landingAdvice()`).toBe(true);
-        // Quote to quote over the whole literal, not from the paragraph's own opening words:
-        // anchoring there left everything BEFORE it unpinned inside the same literal, and gate 2
-        // walked `Retry the write now.` in at the head of the `keyboard_target_unsafe` bullet with
-        // the cell green (2026-09-14).
-        //
-        // THE LITERAL IS NOT THE SHIPPED UNIT, and saying it was is what let the next hole stand:
-        // both descriptions are `[...].join(...)`, so a SIBLING element added next to this one
-        // ships to the same caller with every assertion in this cell green. Both gates reproduced
-        // it independently on 2026-09-15, in both source files. This cell pins the paragraph, and
-        // the cell below pins the unit that ships around it — neither is enough alone.
-        const open = text.lastIndexOf('"', start);
-        const end = text.indexOf('",', start);
-        expect(open, `${rel}: the landing paragraph's string literal has no opening quote`).toBeGreaterThan(-1);
-        expect(end, `${rel}: the landing paragraph's string literal is not terminated`).toBeGreaterThan(start);
-        expect(text.slice(open + 1, end), `${rel}'s shipped string changed`).toBe(expected);
-      } else {
-        const end = text.indexOf("\n", start);
-        expect(end, `${rel}: the landing paragraph does not end a line`).toBeGreaterThan(start);
-        expect(text.slice(start, end), `${rel}'s landing paragraph changed`).toBe(expected);
+
+      const end = text.indexOf("\n", start);
+      expect(end, `${rel}: the landing paragraph does not end a line`).toBeGreaterThan(start);
+      expect(text.slice(start, end), `${rel}'s landing paragraph changed`).toBe(expected);
         // AND IT IS ITS OWN BLOCK, blank line above and below. `end` stops at the newline, so an
         // instruction added on the next line is invisible to the comparison above — gate 2 put the
         // deleted Japanese read-back sentence back that way and the cell stayed green.
-        expect(text.slice(start - 2, start), `${rel}: something was added directly above the paragraph`).toBe("\n\n");
-        expect(text.slice(end, end + 2), `${rel}: something was added directly below the paragraph`).toBe("\n\n");
+      expect(text.slice(start - 2, start), `${rel}: something was added directly above the paragraph`).toBe("\n\n");
+      expect(text.slice(end, end + 2), `${rel}: something was added directly below the paragraph`).toBe("\n\n");
         // AND ADJACENCY IS NOT ABSENCE: an instruction one blank line further out is a separate
         // paragraph, ships to the same reader, and passes both lines above (win2 and gate 1, both
-        // 2026-09-15). The section pin below is what answers that.
-      }
+      // 2026-09-15). The section pin below is what answers that.
+
       // AND THERE IS ONLY ONE OF IT PER FILE. A first-match lookup cannot tell one copy from two,
       // and a second copy would be the one nobody edits (gate 1 P3, 2026-09-15).
       expect(
@@ -237,11 +217,15 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // changing this voice's terminator left every cell green. `desktop_act`'s copy is covered by
     // the `tools/list` comparison below; this one cannot be, because that entry point does not
     // import on a non-Windows machine.
+    // NORMALISED like every other fixture read in this file. It is safe today only because this
+    // fixture is one line with no newline in it at all; the moment the paragraph gains an internal
+    // newline, a CRLF checkout fails here and nowhere else — on the one machine that runs the suite
+    // before a merge (gate 2, 2026-09-15, and win2 lived exactly that on 2026-09-14).
     expect(instructions, "the instructions voice changed").toBe(
       readFileSync(
         fileURLToPath(new URL("../fixtures/landing-paragraph/landing-advice.instructions.txt", import.meta.url)),
         "utf8"
-      )
+      ).replace(/\r\n/g, "\n")
     );
 
     // AND EACH CALLER IS PINNED TO THE VOICE IT ASKS FOR. This cell evaluates its OWN import,
@@ -251,6 +235,22 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // changes what ships while every assertion above stays green (gate 1, 2026-09-15, reproduced
     // in memory). It is the same shape as the mutation that put the fixture here in the first
     // place — the refactor moved a thing out of the region its check covered.
+    // THE PARAGRAPH EXISTS ONCE UNDER `src/`, and this is the assertion the PR's whole claim rests
+    // on. Nothing else can hold it: a hand-written copy inlined BYTE-IDENTICALLY into
+    // `desktop-register.ts` serves the same `tools/list` string, so every runtime comparison here
+    // stays green. Gate 2 measured exactly that on 2026-09-15 by extracting the old literal from
+    // the `71d5a52` blob rather than retyping it — and the mutation this branch had claimed
+    // reddened the cell did not, because the version it inlined was a SHORTENED paraphrase that
+    // changed the served bytes. A mutation has to be the worst case, not the convenient one.
+    const srcRoot = fileURLToPath(new URL("../../src", import.meta.url));
+    const carriers = [...walkSource(srcRoot)]
+      .filter((file) => readFileSync(file, "utf8").includes("THIS LANDING IS A REPORT"))
+      .map((file) => file.slice(srcRoot.length + 1).replace(/\\/g, "/"))
+      .sort();
+    expect(carriers, "the landing paragraph is written in more than one place under src/").toEqual([
+      "engine/landing-advice.ts",
+    ]);
+
     const callers: ReadonlyArray<readonly [path: string, voice: string]> = [
       ["src/tools/desktop-register.ts", "LANDING_ADVICE_TOOL_DESCRIPTION"],
       ["src/server-windows.ts", "LANDING_ADVICE_SERVER_INSTRUCTIONS"],
@@ -448,3 +448,19 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     expect(out.hints).not.toHaveProperty("focusedElementValueAbsent");
   });
 });
+
+/**
+ * Every `.ts` file under a directory. Used to assert the landing paragraph exists ONCE in the
+ * source: a list of the files one expects to carry it could not notice a new one, which is the
+ * failure this assertion exists to prevent.
+ */
+function* walkSource(root: string): Generator<string> {
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) stack.push(join(dir, entry.name));
+      else if (entry.name.endsWith(".ts")) yield join(dir, entry.name);
+    }
+  }
+}

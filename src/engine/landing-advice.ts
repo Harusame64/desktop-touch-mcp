@@ -20,8 +20,12 @@
  * this text and `README.ja.md` shares 18%. The first is a shorter paraphrase written for a
  * reader rather than for a model; the second is a translation. Neither is a rendering of
  * this string, so neither is produced from it — they stay hand-written, and the cell in
- * `tests/unit/adr-036-desktop-state-value-absent.test.ts` keeps pinning all four, which is
- * what notices when a hand-written one drifts from this one.
+ * `tests/unit/adr-036-desktop-state-value-absent.test.ts` pins THOSE TWO as fixed text, which
+ * is what notices when a hand-written one drifts from this one. The two shipped copies are
+ * pinned in the cell below it instead, against this generator and against a fixture — and the
+ * assertion that actually protects "one source" is that the paragraph occurs in exactly one
+ * file under `src/`, because a byte-identical copy inlined at a call site serves the same
+ * `tools/list` string and no runtime comparison can tell (gate 2, 2026-09-15).
  */
 
 /** How the sentence opens, which is the only part the two callers disagree about. */
