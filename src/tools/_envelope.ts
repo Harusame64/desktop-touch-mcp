@@ -587,8 +587,10 @@ export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShap
   const literals = new Set<string>();
   const fieldVariants = new Map<string, z.ZodTypeAny[]>();
   for (const variant of variants) {
-    // zod 4.3.6: a `.refine()`-wrapped variant is still a `ZodObject` —
-    // `.shape` is directly accessible, no unwrap needed (verified).
+    // A `.refine()`-wrapped variant is still a `ZodObject` —
+    // `.shape` is directly accessible, no unwrap needed. Verified under 4.3.6 and RE-MEASURED
+    // under the installed 4.5.4 (the flatten still produces `terminal.until`, 2026-09-15): a
+    // version this comment names must be one someone ran it against (gate 2).
     const shape = variant.shape as Record<string, z.ZodTypeAny>;
     for (const [key, fieldSchema] of Object.entries(shape)) {
       if (key === discriminator) {

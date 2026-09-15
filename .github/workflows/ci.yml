@@ -71,6 +71,23 @@ jobs:
         # months (#655). This step compiles it against the installed runner types.
         run: npm run check:config-types
 
+      - name: Wire-schema pins (#657/#662 — two hermetic unit files, not the suite)
+        # A PIN NOBODY RUNS IS THE MECHANISM THAT ALREADY FAILED. The two files below assert what
+        # the SDK's converter emits for the only two widened properties that ship, and the whole
+        # argument for them is that a change in that document arrives as a failure rather than as a
+        # comment nobody re-measured — which needs something to run them. Until now nothing here
+        # did, and that is exactly how #657 sat red on `main` for eight days (gate 2 on #662).
+        #
+        # WHY TWO FILES AND NOT THE SUITE: the NOTE further down records that every attempt at the
+        # full unit suite on these 2-core Windows runners is cancelled 5-6s in — but it also says
+        # the cancellation lands *after the first two files complete*, which is the reason to
+        # believe a two-file run finishes. Both are hermetic: no native addon, no Windows-only
+        # behaviour, no Rust build, ~1s locally. `--no-file-parallelism` keeps it to one worker.
+        #
+        # IF THIS STEP EVER GOES RED FOR THE RUNNER RATHER THAN FOR THE SCHEMAS, take it out and
+        # say so here — do not raise the file count to make it look like coverage.
+        run: npx vitest run --project=unit --no-file-parallelism tests/unit/the-wire-spelling-of-a-widened-field.test.ts tests/unit/flatten-union-schema.test.ts
+
       - name: Check Rust workspace compiles (covers non-napi member crates)
         # `npm run build:rs:debug` only builds the root crate via napi-rs, so
         # workspace members like `engine-perception` (ADR-008 D1+) are not
