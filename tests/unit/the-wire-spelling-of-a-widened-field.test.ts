@@ -74,11 +74,14 @@ describe("internal#106 — the wire spelling of a widened field", () => {
     // 4.5.4 "emits a type array" as if that were a property of the version. It is a property of the
     // BRANCH SHAPES: bare scalars collapse into one `type` array, branches that carry their own
     // keywords (`enum`, `const`) cannot be collapsed and stay `anyOf`.
-    // `spellingOf` FIRST, in the describe body, so ALL the cells below get its sentence when the
-    // property has left the wire. Two of the three used to reach `Object.keys(undefined)` and
-    // `undefined.anyOf` first and reported a TypeError — the very failure the helper's ordering
-    // was fixed to eliminate, one cell over (gate 2 round 5, measured by removing `method` from
-    // all three keyboard variants).
+    // EVERY CELL THAT DEREFERENCES THIS CALLS `spellingOf` FIRST, so a property that left the
+    // wire reports as an absence rather than as `TypeError: Cannot convert undefined or null to
+    // object`. Two earlier attempts at this got it wrong in opposite directions: placing the
+    // check after the dereference (round 4), then placing it in the describe BODY, where it threw
+    // during collection and took the file's other 15 cells — the three sweeps included — down with
+    // it (round 5, measured: 30 passing cells became 14). One guard cell, plus one call per
+    // dereferencing cell, is what leaves the sweeps running while still naming the absence
+    // (round 7).
     const method = wire(keyboardRegistrationSchema).properties?.method;
     it("is on the wire at all", () => {
       // ITS OWN CELL, not a call in the describe body. As a body call it threw during COLLECTION,
@@ -96,12 +99,14 @@ describe("internal#106 — the wire spelling of a widened field", () => {
     // hangs on, so 15 of keyboard's 19 properties ship undocumented and `method` loses
     // `default: "auto"` (measured on the wire, both machines; filed as internal#110).
     it("and `anyOf` is the only key on it — see internal#110, which this pins rather than approves", () => {
+      spellingOf(method);
       expect(
         Object.keys(method).sort(),
         "internal#110: if this went red because `description` or `default` came back, THE FIX LANDED — update this pin rather than reverting the fix.",
       ).toEqual(["anyOf"]);
     });
     it("carries the two branches that disagree in kind — an enum and a const, in any order", () => {
+      spellingOf(method);
       expect(method.anyOf).toHaveLength(2);
       // ORDER-INSENSITIVE on purpose: the branch order follows the variant order in
       // `keyboardSchema`, so moving the `sequence` variant up — a refactor a client cannot observe
@@ -127,6 +132,7 @@ describe("internal#106 — the wire spelling of a widened field", () => {
       expect(Object.keys(until).sort()).toEqual(["oneOf"]);
     });
     it("carries one branch per `until` mode", () => {
+      spellingOf(until);
       expect(
         until.oneOf
           .map((b: { properties?: { mode?: { const?: string } } }) => b.properties?.mode?.const)

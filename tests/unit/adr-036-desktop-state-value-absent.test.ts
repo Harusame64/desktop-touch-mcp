@@ -151,7 +151,9 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       // on a Windows checkout with core.autocrlf=true the READMEs come back CRLF and a slice that
       // ends at "\n" keeps a trailing "\r" — the cell passed on CI and on macOS and failed on the
       // one machine that runs it before a merge (win2, 2026-09-14). CI proves nothing here either:
-      // the unit job in `.github/workflows/ci.yml` is commented out.
+      // the unit step was REMOVED from `.github/workflows/ci.yml` (`4b1a5155`) — not commented
+      // out — and since internal#106/#662 two files, not this one, run in the separate
+      // `wire-schema-pins` job.
       const text = readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8")
         .replace(/\r\n/g, "\n");
       const start = text.indexOf(expected.slice(0, 40));

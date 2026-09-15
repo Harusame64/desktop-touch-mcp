@@ -199,8 +199,13 @@ jobs:
   #
   # ubuntu-latest is legitimate because WHAT THESE FILES CHECK has no platform: the shape of a
   # JSON document, built from zod at module scope, with no platform or env conditional anywhere
-  # in the eight flattened tools (verified, gate 2 round 5). No Windows behaviour, no Rust, and
-  # the windows-rs addon is a lazy `await import` inside a function, so it is never loaded.
+  # in the eight flattened tools (verified, gate 2 round 5). No Windows behaviour, no Rust.
+  #
+  # THE ADDON IS NOT LAZY, and an earlier version of this comment said it was (gate 2 round 7).
+  # `src/engine/native-engine.ts` does a TOP-LEVEL `await import("../../index.js")` at module
+  # scope, wrapped in `try {} catch {}`. So the load is ATTEMPTED on every import and the failure
+  # is swallowed — the job survives on Linux for that reason, not because nothing tries. Anyone
+  # tightening that catch, or producing a Linux `.node`, changes this job's premise.
   #
   # THEY ARE NOT IMPORT-HERMETIC, THOUGH — an earlier version of this comment said they were, and
   # that was wrong (gate 2 round 5). Every one of the eight tools reaches `src/engine/nutjs.ts`
