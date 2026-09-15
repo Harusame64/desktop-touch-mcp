@@ -15,6 +15,10 @@
  */
 
 import { z } from "zod";
+import {
+  landingAdvice,
+  LANDING_ADVICE_TOOL_DESCRIPTION,
+} from "../engine/landing-advice.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { coercedBoolean } from "./_coerce.js";
 import { failCode, getSuggestsForCode } from "./_errors.js";
@@ -1621,7 +1625,7 @@ export function registerDesktopTools(server: McpServer): void {
       // a running server, the long form cost ~667 tokens per session with v2 on and ~336 under the
       // kill switch (win2, `2406b98`). The reasons stay here, where they cost nothing and stop the
       // next round from re-adding a claim.
-      "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
+      landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION),
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",

@@ -139,10 +139,6 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    */
   it("keeps all four copies of the landing paragraph exactly as measurement left them", () => {
     const EXPECTED: Record<string, string> = {
-      "src/tools/desktop-register.ts":
-        "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
-      "src/server-windows.ts":
-        "  keyboard_target_unsafe → the background write would not have reached the field this act named — the focus is on a different control or in a different window, or the receiving control does not take typed text — so nothing was typed. Put the focus on the field you named, then type again — if_unexpected.detail names the ground and the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle as well, so that road does not open there). For other_window, bring the field's window forward first (focus_window) — it comes forward with the focus it last had, and the window holding the focus is usually over the field, which makes a click answer aim_occluded; do NOT type through the foreground instead, whatever holds the focus would take the characters. A type that answers ok:true with landing {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does;",
       "README.md":
         "A successful `type` can carry `landing: { confirmed: false, why }`. The write took the background route, but the server could not confirm that it reached the field you named — for example, in a WPF window, whose fields have no window of their own. **This is a report, not a state that can be resolved here**: nothing in the response establishes whether the characters arrived, reading the field back does not settle it (`desktop_state` answers about the foreground, and may come back with no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and no hint is not evidence a value was there — or name a field in another window with the same title), `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write, and retrying a nonempty write is not a repeat — a background write lands at the caret and replaces the selection, exactly as typing does.",
       "README.ja.md":
@@ -159,6 +155,11 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       const start = text.indexOf(expected.slice(0, 40));
       expect(start, `${rel} no longer opens the landing paragraph the same way`).toBeGreaterThan(-1);
       if (rel.startsWith("src/")) {
+        // UNREACHABLE SINCE THE TWO SHIPPED COPIES CAME FROM ONE SOURCE. Kept as a guard:
+        // if a literal copy reappears in a src file, this branch runs again and holds it to
+        // the same text. The live pin for those two is the cell below, against
+        // `landingAdvice()`.
+        expect(false, `${rel} carries a hand-written copy again — it should come from landingAdvice()`).toBe(true);
         // Quote to quote over the whole literal, not from the paragraph's own opening words:
         // anchoring there left everything BEFORE it unpinned inside the same literal, and gate 2
         // walked `Retry the write now.` in at the head of the `keyboard_target_unsafe` bullet with
@@ -194,6 +195,61 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         `${rel} carries more than one copy of the landing paragraph`,
       ).toBe(text.lastIndexOf(expected.slice(0, 40)));
     }
+  });
+
+  it("ships both copies from one source, and they differ only where they are meant to", async () => {
+    // ONE SOURCE. Measured at `71d5a52`, just before this existed: the two shipped copies were
+    // 1,019 and 1,008 characters with a 967-character identical run and FIVE differences, all in
+    // the opening clause and the final mark — `A type/setValue` / `A type`, `ok=true` / `ok:true`,
+    // `'landing'` / `landing`, a full stop / a semicolon. So one template with two voices
+    // reproduces both exactly, and the proof this refactor owes is that NO SHIPPED BYTE MOVED:
+    // `desktop_act.description.txt` is the fixture `tools/list` is compared against, and it did
+    // not change.
+    //
+    // Why it is worth doing at all: a claim that reaches the caller twice can disagree with
+    // itself, and did. The hint clause was hedged in both READMEs and unhedged in both of these
+    // for a round; a round earlier, only one of them said what a retry does.
+    const { landingAdvice, LANDING_ADVICE_TOOL_DESCRIPTION, LANDING_ADVICE_SERVER_INSTRUCTIONS } =
+      await import("../../src/engine/landing-advice.js");
+    const description = landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION);
+    const instructions = landingAdvice(LANDING_ADVICE_SERVER_INSTRUCTIONS);
+
+    // The two voices differ in exactly four places and nowhere else — a fifth divergence is how
+    // the copies drifted apart by hand in the first place, so it has to be deliberate. Stated as
+    // the slice rather than as a similarity score: a helper counting a shared head and tail
+    // measured SIX here and said nothing, because the divergence is at both ends and the
+    // agreement is in the middle.
+    expect(description).not.toBe(instructions);
+    const DESCRIPTION_HEAD = "A type/setValue that answers ok=true with 'landing' ";
+    const INSTRUCTIONS_HEAD = "A type that answers ok:true with landing ";
+    expect(description.startsWith(DESCRIPTION_HEAD), "the description's opening clause changed").toBe(true);
+    expect(instructions.startsWith(INSTRUCTIONS_HEAD), "the instructions' opening clause changed").toBe(true);
+    expect(
+      description.slice(DESCRIPTION_HEAD.length),
+      "the two voices diverge after the opening clause"
+    ).toBe(`${instructions.slice(INSTRUCTIONS_HEAD.length, -1)}.`);
+    expect(description.endsWith("."), "the description no longer ends in a full stop").toBe(true);
+    expect(instructions.endsWith(";"), "the instructions entry no longer ends in a semicolon").toBe(true);
+
+    // AND THE INSTRUCTIONS VOICE IS PINNED AGAINST A FIXTURE, because moving the text out of
+    // `server-windows.ts` took it out of the source slice that used to hold it: that slice pins
+    // the array AROUND the paragraph, and the paragraph is generated now. Found by mutation —
+    // changing this voice's terminator left every cell green. `desktop_act`'s copy is covered by
+    // the `tools/list` comparison below; this one cannot be, because that entry point does not
+    // import on a non-Windows machine.
+    expect(instructions, "the instructions voice changed").toBe(
+      readFileSync(
+        fileURLToPath(new URL("../fixtures/landing-paragraph/landing-advice.instructions.txt", import.meta.url)),
+        "utf8"
+      )
+    );
+
+
+    // NO IMPERATIVE CHECK HERE, deliberately. "Contains no instruction" cannot be checked by
+    // listing the instructions one has already thought of — the cell above says exactly that,
+    // and a first attempt at it here flagged `retrying a nonempty write is not a repeat`
+    // because `Retry` is a substring of `retrying`. What holds that property is the exact-text
+    // comparison against the fixtures, plus the mutation battery on this branch.
   });
 
   /**
