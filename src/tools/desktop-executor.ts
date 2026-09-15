@@ -783,27 +783,34 @@ async function resolvePressPoint(
  *
  * The rule is `_post.ts:439`'s, which answers `call_named_no_window` for exactly these two.
  *
- * WHICH ROAD BRINGS ONE HERE — twice corrected, and the second correction is the one that matters.
+ * WHOSE STRING IS IN THE AIM — THREE ANSWERS, AND THIS COMMENT HAS NOW HELD TWO WRONG ONES. It is
+ * not one rule; it is whichever branch of `normalizeTarget` (`compose-providers.ts:215-300`) ran,
+ * and `desktop.ts:410` then stores whatever came back (`if (rawResult.target)`).
  *
- * Usually none: `session.lastTarget` is replaced by the RESOLVED target as soon as a provider
- * answers (`desktop.ts:410`, added 2026-09-09 precisely because the executor used to be handed
- * `"@active"` and spent nine seconds on it at UIA). Six real arms confirm it — a bare act and an
- * act passing `"@active"` both arrived with a resolved title (win2, 2026-09-16).
+ *   1. A plain `{windowTitle}` that matches a plain top-level window: **THE CALLER'S STRING
+ *      SURVIVES.** `resolveWindowTarget` returns `null` on purpose in that case
+ *      (`_resolve-window.ts:502`; its own header says Case 3 "deliberately discards" the handle),
+ *      so the composer falls to `:280` and returns the caller's spec UNCHANGED. A partial title
+ *      stays partial — the resolved one is the thing thrown away. This is the commonest road there
+ *      is, and "the caller's query is destroyed before the aim exists" is false on it.
+ *   2. `{hwnd}`, a bare call, `""`, or a `{windowTitle}` rescued through the dialog owner chain:
+ *      **the RESOLVED title is substituted** (`:240`, `:270`, `:290`). Six real arms are this half —
+ *      a bare act and an `"@active"` act both arrived with a resolved title (win2, 2026-09-16).
+ *   3. Window resolution FAILS: the caller's own string stays, and it can be one that names no
+ *      window. `{windowTitle:"@active"}` with no foreground to resolve throws inside `:267`
+ *      (`_resolve-window.ts:449`), the catch at `:274` re-throws only `WindowExcludedError`, and
+ *      `:280` returns the caller's spec — so `aim.title === "@active"`. A bare call in the same
+ *      state returns `{target: undefined}` (`:289`, `:298`) and the aim has no title at all.
  *
- * BUT THAT LINE IS CONDITIONAL, and calling this branch unreachable on the ingress was wrong
- * (gate 2, 2026-09-16). `if (rawResult.target)` — so when no target comes back, the caller's own
- * spec stays. That happens on the shipped road, not only on the `candidateProvider` one: the
- * foreground fallback THROWS when there is no foreground window to resolve
- * (`_resolve-window.ts:449`) or when it is an excluded window, and the composer catches it and
- * returns `{target: undefined}` (`compose-providers.ts:289,298`). A discover that passes
- * `{windowTitle:"@active"}` with no handle is returned unchanged by the composer's first line
- * (`:283`). Either way the aim carries the caller's string and this predicate answers false.
+ * SO `"nothing"` IS A LOUD ROW, NOT A DEAD ONE: it is case 3, and it says production window
+ * resolution did not happen — the write went wherever a literal `"@active"` or `""` substring search
+ * landed. Calling it unreachable on the ingress (two earlier versions of this comment) priced the
+ * accident this ADR exists to detect as a test-road curiosity.
  *
- * WHICH MAKES `"nothing"` A LOUD ROW, NOT A DEAD ONE: it says production window resolution did not
- * happen, and the write went to whatever a literal `"@active"` or `""` substring search hit first.
- * `desktop.ts:445` already publishes the same distinction from the other side —
- * `lastTargetFrom: rawResult.target ? "resolved" : "caller"` — so a reader has two rows that must
- * agree, and the six arms above are the "resolved" side of it.
+ * AND DO NOT READ `desktop.ts:445`'s `lastTargetFrom` AS THE WITNESS OF CASE 1 vs 2. It is
+ * `rawResult.target ? "resolved" : "caller"`, and case 1 returns a target that was never resolved —
+ * so it says `"resolved"` on the road where the caller's string is exactly what survived. Suggested
+ * as a corroborating row by gate 2 and repeated here for one round before it was checked.
  */
 function namesAWindowByTitle(title: string | undefined): boolean {
   return title !== undefined && title !== "" && title !== "@active";
@@ -1557,8 +1564,13 @@ export function createDesktopExecutor(
             // `"nothing"` here does NOT have the standing of `"nothing"` on the element axis, and
             // two versions of this comment said it did. The element axis's last branch needs a
             // producer that does not exist. This one needs window resolution to FAIL, which the
-            // shipped road can do (`namesAWindowByTitle` above has the paths). It is the rarer row
-            // and the louder one.
+            // shipped road can do (`namesAWindowByTitle` above has the three branches). It is the
+            // rarer row and the louder one.
+            //
+            // AND `"title"` DOES NOT MEAN THE TITLE WAS RESOLVED. On the commonest road it is the
+            // caller's own string, passed through unchanged because a plain top-level match makes
+            // `resolveWindowTarget` return `null` on purpose. A partial title reaches the backends
+            // as a partial title, and the substring rule below is what decides which window answers.
             addressedWindowBy:
               aimHwnd !== undefined ? "handle" : namesAWindowByTitle(aim.title) ? "title" : "nothing",
           });
