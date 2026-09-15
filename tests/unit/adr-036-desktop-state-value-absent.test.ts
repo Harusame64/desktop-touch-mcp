@@ -456,6 +456,19 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
 
     // AND NO OTHER FILE UNDER `src/` CARRIES IT EITHER. The two call sites are parsed above; this
     // walks the rest, so a third carrier appearing anywhere is caught rather than assumed absent.
+    //
+    // WHAT THIS WALK DOES NOT SEE, named because it was measured rather than imagined (gate 2,
+    // 2026-09-15): a HAND-WRITTEN copy in a new file, WRITTEN IN PIECES. `"THIS LANDING " + "IS A
+    // REPORT, not a state…"` in, say, a new V1 tool description names no module, so the set above
+    // does not change; calls nothing, so the call listing does not change; and is not one contiguous
+    // run of text, so this `includes` does not match. All eight cells stay green — the very shape
+    // this cell exists to stop. Folding `+` here would close that spelling and not the next one
+    // (a template with a substitution, a character escape, a helper that joins two halves), which is
+    // the third round in a day of the same lesson: A PARTIAL MATCH CANNOT ASSERT AN ABSENCE, and
+    // this walk is a partial match. It is kept because it catches the cheap case, NOT because it
+    // proves the paragraph is written once. Detecting a duplicated shipped sentence for real is a
+    // different design and is filed as its own issue; what holds the line meanwhile is that the
+    // shipped surfaces are pinned whole, byte for byte, in the cell below.
     const carriers = [...walkSource(srcRoot)]
       .filter((file) => readFileSync(file, "utf8").includes(NEEDLE))
       .map(rel)
@@ -489,7 +502,14 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    *     native modules), so this side is source text. THAT THE SOURCE SLICE IS WHAT SHIPS WAS AN
    *     ASSUMPTION UNTIL 2026-09-15: win2 extracted the array from this slice, joined it the way
    *     production does, and compared it to what a real Windows server puts on the wire — byte
-   *     identical at all four corners (`2658e49`). The unit stays the source slice, which is WIDER
+   *     identical at all four corners (`2658e49`). **THAT PROCEDURE NO LONGER REACHES THE LANDING
+   *     PARAGRAPH.** Since the one-source refactor the `keyboard_target_unsafe` element is
+   *     `"…" + landingAdvice(LANDING_ADVICE_SERVER_INSTRUCTIONS)`, so extracting and joining the
+   *     slice reproduces the wire string for every element EXCEPT that one, whose bytes now come
+   *     from `landing-advice.instructions.txt` — and that fixture is the only pin on the
+   *     instructions voice, since this entry point cannot be imported on a non-Windows machine and
+   *     `tools/list` covers the description voice only. Do not drop it as redundant: this slice
+   *     pins the array around the paragraph and the call site, not the paragraph's bytes. The unit stays the source slice, which is WIDER
    *     than the wire string (it catches a spread, or a second options key, that the wire would only
    *     show as a replacement); what was missing was the correspondence, and that is now measured.
    *     The two tool descriptions were checked the same way in the same run: 8/8 byte identical.
