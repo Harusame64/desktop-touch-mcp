@@ -13,6 +13,14 @@
  * before it could mean anything: `winTitle` is `aim.title ?? "@active"`, so a flag written from it
  * is true on every row.
  *
+ * TWO AXES. The first version ranked automationId > name > title in one `addressedNarrowest`, and a
+ * handle-pinned call with no name read as `title_only` beside an `addressedBy.hwnd` that said the
+ * opposite (PR 側 codex, P2 on `8a7d86fb`). The element and the window are separate questions —
+ * which element inside the window could have answered, and which window could have answered — so
+ * the row carries `addressedElementBy` and `addressedWindowBy`, and neither ranks against the
+ * other. The cell that used to assert `title_only` is the one below asserting BOTH axes on a
+ * handle-pinned nameless entity.
+ *
  * What it still cannot say — which element ANSWERED — is engine work on the write side, the mirror
  * of what item 15 closed for `getUiElements` on the read side. It has its own PR and is designed in
  * the map, not here — and there is no cell for it, because the DEP SIGNATURE is the check:
@@ -90,7 +98,7 @@ async function typeInto(entity: UiEntity, aim: Aim) {
 const aimed: Aim = { kind: "aim", title: "VR-CELL", hwnd: HWND };
 
 describe("the UIA value road, on success", () => {
-  it("records that it was addressed by an automationId — the narrowest there is", async () => {
+  it("records that it was addressed by an automationId — the narrowest the element axis has", async () => {
     const entity: UiEntity = {
       ...base,
       label: "DELTA",
@@ -101,28 +109,47 @@ describe("the UIA value road, on success", () => {
     expect(valueRoadRows()[0]).toMatchObject({
       route: "uia",
       why: "uia_set_value",
-      addressedNarrowest: "automation_id",
+      addressedElementBy: "automation_id",
       addressedBy: { automationId: true, name: true, windowTitle: true, hwnd: true },
     });
   });
 
-  it("records `name` when that is all the locator had — not unique within a window", async () => {
+  it("records `name_substring` when that is all the locator had — the first name that CONTAINS it", async () => {
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     expect(await typeInto(entity, aimed)).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
-      addressedNarrowest: "name",
+      addressedElementBy: "name_substring",
       addressedBy: { automationId: false, name: true },
     });
   });
 
-  it("records `title_only` when neither a locator name nor a label was there to go on", async () => {
-    // `name` is `locator.uia.name ?? entity.label`, so BOTH have to be absent — which is why the
-    // entity here carries no label. An entity with a label is addressed by that label's text.
+  it("says the handle addressed the window even when a title rode along — the road never reads it", async () => {
+    // THE CELL THE P2 WAS ABOUT. This entity has no name at all, and the aim carries BOTH a handle
+    // and a title. The old row called that `title_only` — while `addressedBy.hwnd` said a handle
+    // was there, and while both roads resolve the window through the HANDLE and never search a
+    // title (`resolve_root`, `src/uia/tree.rs:178`; `makeSetValueScriptByHwnd`,
+    // `uia-bridge.ts:1461`). Two axes, and the window axis is the handle's.
+    //
+    // CONSTRUCTED, AND SAID SO: today's discover cannot produce a nameless UIA entity — the lane
+    // filters on `el.name` (`uia-provider.ts:116`), the merge keeps `locator.uia.name`
+    // (`resolver.ts:91`), and the executor falls back to `entity.label`. The cell pins the last
+    // branch of a total function, so that a producer which one day CAN emit one does not arrive
+    // silently mislabelled.
     const entity: UiEntity = { ...base, sources: ["uia"], locator: { uia: {} } };
     expect(await typeInto(entity, aimed)).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
-      addressedNarrowest: "title_only",
-      addressedBy: { automationId: false, name: false },
+      addressedElementBy: "nothing",
+      addressedWindowBy: "handle",
+      addressedBy: { automationId: false, name: false, windowTitle: true, hwnd: true },
+    });
+  });
+
+  it("says the window was addressed by its title when there is no handle", async () => {
+    const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
+    expect(await typeInto(entity, { kind: "aim", title: "VR-CELL" })).toEqual("uia");
+    expect(valueRoadRows()[0]).toMatchObject({
+      addressedWindowBy: "title",
+      addressedBy: { windowTitle: true, hwnd: false },
     });
   });
 
@@ -134,6 +161,41 @@ describe("the UIA value road, on success", () => {
     expect(await typeInto(entity, { kind: "aim", hwnd: HWND })).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
       addressedBy: { windowTitle: false, hwnd: true },
+      addressedWindowBy: "handle",
+    });
+  });
+
+  it("counts `@active` and an empty title as naming NO window, because this road expands neither", async () => {
+    // Not `!== undefined`. `aim.title` is the caller's string, copied verbatim by `toAim`
+    // (`aim.ts:497`), and this road has no foreground shorthand: `"@active"` goes to the same
+    // substring search as any other title (`find_window`, `src/uia/tree.rs:226`), and `""` matches
+    // whichever top-level window is enumerated first. `_post.ts:439` answers
+    // `call_named_no_window` for exactly these two; this row agrees with it.
+    const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
+    for (const title of ["@active", ""]) {
+      rmSync(logPath, { force: true });
+      expect(await typeInto(entity, { kind: "aim", title })).toEqual("uia");
+      expect(valueRoadRows()[0]).toMatchObject({
+        addressedBy: { windowTitle: false, hwnd: false },
+        addressedWindowBy: "nothing",
+      });
+    }
+  });
+
+  it("reads an EMPTY locator as no filter, because that is what both roads do with it", async () => {
+    // The roads agree and the row has to: PowerShell writes `$true` for an empty name or id
+    // (`uia-bridge.ts:762-763`), and the native walk matches `contains("")` on every element
+    // (`src/uia/scroll.rs:858`). A row that called `""` an address would claim a narrowness the
+    // call does not have — the same defect as the P2 above, one layer down.
+    //
+    // CONSTRUCTED: `uia-provider.ts:127` already normalises an empty automationId to `undefined`
+    // and drops nameless elements, so no shipped call arrives here. The cell pins the predicate
+    // against the road's, which is what can drift silently.
+    const entity: UiEntity = { ...base, locator: { uia: { name: "", automationId: "" } } };
+    expect(await typeInto(entity, aimed)).toEqual("uia");
+    expect(valueRoadRows()[0]).toMatchObject({
+      addressedElementBy: "nothing",
+      addressedBy: { automationId: false, name: false },
     });
   });
 
