@@ -102,10 +102,22 @@ redact_url() {
 # offending commit's subject so a person can find it — and when the session line
 # IS the subject, `%s` handed the complete secret to stderr and to CI logs. That
 # is the same defect this file already fixed once for push URLs, one printf over.
+#
+# THE REDACTOR HAS TO REACH EVERY SPELLING THE REFUSAL DOES. It used to match
+# `https://claude.ai/code/session_` and an id of `[A-Za-z0-9_-]`; the refusal now
+# catches `/code/session_` under any host, any case, with percent triples and any
+# characters up to where a URL ends in prose. Left behind, this function would print
+# an id it failed to redact — into stderr and into CI logs — for exactly the lines
+# this round taught the refusal to catch. Widening a detector and leaving its printer
+# where it was is how one defect becomes two.
+#
+# Spelled case-insensitively one bracket per character because BRE has no `I` flag
+# that is portable across GNU and BSD sed, and `#` is the delimiter so the stop class
+# may contain `|`.
 redact_session() {
     printf '%s\n' "$1" |
-        sed -e 's|\(https://claude[.]ai/code/session_\)[A-Za-z0-9_-]*|\1<redacted>|g' \
-            -e 's|\(Claude-Session:\)[^ ]*|\1 <redacted>|g'
+        sed -e 's#\(/[Cc][Oo][Dd][Ee]/[Ss][Ee][Ss][Ss][Ii][Oo][Nn]_\)[^][ (){}<>",;|]*#\1<redacted>#g' \
+            -e 's#\(Claude-Session:\)[^ ]*#\1 <redacted>#g'
 }
 
 remote_name=$(redact_url "$1")
@@ -139,18 +151,34 @@ session_pattern='^[[:space:]]*([-*+][[:space:]]+)?Claude-Session:'
 # talking about ids.
 session_min_id=16
 
-# The characters that COUNT as part of an id. One class, because three places used
-# to name it and one of them named it narrower: `embeds()` counted `[A-Za-z0-9]`
-# while the removal pattern and `redact_session` both allow `_` and `-`. With the
-# URL taken out of the anchored pattern, that narrower class became the ONLY gate
-# for a URL — so `…/session_01ABCDEF-GHIJKLMNOPQRSTUV` stopped counting at the `-`,
-# came in under the floor, and was published (gate 2, 2026-09-15; reproduced by
-# running this program before it was changed). It leaked mid-line before that too;
-# what this commit did was hand it the line-start case as well.
+# NO ID ALPHABET LIVES HERE ANY MORE, and that is the point of this round.
 #
-# `tests/unit/strip-session-line.test.ts` pins this line against the module's
-# exported constant, so the two engines cannot drift apart again in silence.
-session_id_class='[A-Za-z0-9_-]'
+# There used to be one, and it was narrower than the two in `scripts/strip-session-line.mjs`
+# and in `redact_session`: `embeds()` counted `[A-Za-z0-9]` while both of those allow
+# `_` and `-`. With the URL taken out of the anchored pattern, that narrower class
+# became the ONLY gate a URL passed, and an id containing punctuation stopped counting
+# early, came in under the floor, and was published (gate 2, 2026-09-15). Naming one
+# class and sharing it fixed that case — and then the next round asked which
+# characters an id may actually contain, and nothing in this repository answers it.
+#
+# So the refusal stopped asking. It counts up to where a URL ENDS, not through
+# characters an id is made of; see `session_id_stop` below. The module keeps its
+# class, because REMOVAL must stay narrow — it edits the author's text, and over-
+# matching there costs a sentence.
+# WHERE AN ID ENDS, for the refusal side — and it is deliberately not the class above.
+#
+# Counting the characters an id is MADE OF means knowing that set, and nobody here
+# does: win2 asked the right question at the end of the round that fixed `_` and `-`
+# — "can an id contain a `.` or a `+`? that was not asked" — and the answer is not in
+# this repository. A count that depends on an unknown set stops early on the
+# character nobody listed, which is the third time the same shape has leaked.
+#
+# So the refusal counts up to where a URL ENDS IN PROSE instead: whitespace, or the
+# punctuation that wraps or closes a link in a sentence. That set is small, it is a
+# property of prose rather than of the id, and it does not need the id's alphabet to
+# be known. It can only count HIGH, so it refuses a line too many rather than
+# publishing one — and a refusal costs a reword.
+session_id_stop='[][ 	(){}<>"'"'"'`,;|\]'
 
 # Commits in $1 (a rev range) whose message carries a session id, one sha per
 # line, followed by a "@@SCANNED@@<n>" line saying how many commits were walked.
@@ -169,7 +197,7 @@ session_id_class='[A-Za-z0-9_-]'
 leaking_commits() {
     git log $1 --format="%x01%H%n%B" 2>/dev/null |
         tr '\r' '\n' |
-        awk -v pat="$session_pattern" -v minid="$session_min_id" -v idclass="$session_id_class" '
+        awk -v pat="$session_pattern" -v minid="$session_min_id" -v idstop="$session_id_stop" '
             # A session URL inside prose — `see [the session](https://…)` — is a leak
             # the anchored pattern was never going to see. Removal stays anchored (a
             # mid-line rewrite would eat the sentence around it); the REFUSAL can be
@@ -177,16 +205,50 @@ leaking_commits() {
             # No interval expressions here: mawk does not have them — which is why the
             # floor is counted by hand, and why the class it counts with is passed in
             # rather than written here for a third time.
-            function embeds(line,   i, rest, n, c) {
-                while ((i = index(line, "claude.ai/code/session_")) > 0) {
-                    rest = substr(line, i + 23)
+            # CASE-FOLDED, HOST-BLIND, AND COUNTING TO WHERE THE URL ENDS. Three
+            # bypasses that the anchored URL pattern used to cover by accident, and
+            # taking the URL out of it handed all three through (gates 1 and 2,
+            # 2026-09-15, reproduced against this program):
+            #
+            #   https://CLAUDE.AI/code/session_<24 chars>        — host never matched
+            #   https://claude.ai/code/session_%3<hex><23 more>  — counting stopped at %
+            #   https://claude.ai/code/session_<id with a `-`>   — `-` was not counted
+            #
+            # A first fix counted a `%XX` triple as one character. That branch is gone:
+            # once the count runs to the terminator instead of through a known alphabet,
+            # `%` is simply a character it counts, and the triple rule could only make
+            # the count SMALLER. It was also untestable — removing it left every case
+            # green, which is its own reason not to keep it. The cost is stated: an id
+            # written entirely in percent triples is counted long and refused early,
+            # which is a reword on a line nobody writes.
+            #
+            # AND THE HOST IS NOT LOOKED AT ANY MORE. Matching `claude.ai/code/session_`
+            # made every equivalent spelling of the same URL a bypass — a port
+            # (`claude.ai:443/…`), a subdomain, an encoded dot. Those are not a list of
+            # tricks someone thought of; they are what RFC 3986 says may differ while
+            # the URL stays the same, so the rule is written to the grammar instead of
+            # to the spellings: `/code/session_` plus a long enough id, wherever it
+            # sits. This refuses more, which is the affordable direction here.
+            #
+            # A `%XX` is counted rather than decoded, so the count can only come out
+            # HIGHER than the real length of the id. That direction is the safe one: this
+            # side refuses, and refusing one line too many costs a reword while
+            # missing one publishes an id. `length` and `substr` are byte-wise under
+            # `LC_ALL=C`, which is what the caller sets.
+            function embeds(line,   probe, i, rest, n, k, c) {
+                probe = tolower(line)
+                while ((i = index(probe, "/code/session_")) > 0) {
+                    rest = substr(probe, i + 14)
                     n = 0
-                    while (n < length(rest)) {
-                        c = substr(rest, n + 1, 1)
-                        if (c ~ idclass) n++; else break
+                    k = 0
+                    while (k < length(rest)) {
+                        c = substr(rest, k + 1, 1)
+                        if (c ~ idstop) break
+                        n++
+                        k++
                     }
                     if (n >= minid) return 1
-                    line = rest
+                    probe = rest
                 }
                 return 0
             }
@@ -325,12 +387,18 @@ do
         echo "" >&2
         echo "ERROR: this push would publish commit(s) whose message carries a Claude session id." >&2
         echo "  Repo policy: no session IDs in the public repo." >&2
-        echo "  Most likely the line carries prose after the link: .githooks/commit-msg" >&2
-        echo "  leaves such a line alone on purpose, because deleting it would take the" >&2
-        echo "  sentence with it — reword that line and the push goes through." >&2
-        echo "  Otherwise: commit-msg removes a trailer or a bare link at commit time, so" >&2
-        echo "  either it was skipped," >&2
-        echo "  or these commits predate it and a rebase is carrying them forward." >&2
+        # THREE CAUSES, NONE OF THEM ASSERTED. awk prints a sha and nothing about WHY
+        # the line matched, so this hook cannot tell them apart — and a diagnosis it
+        # cannot support is worse than none: it sends the reader to the wrong repair.
+        # An earlier draft of this block named the first one as "most likely", which
+        # was a guess printed as a finding (gate 2, 2026-09-15).
+        echo "  One of three things, and this hook cannot tell which:" >&2
+        echo "   - the line carries prose after the link. commit-msg leaves such a line" >&2
+        echo "     alone on purpose, because deleting it would take the sentence with it." >&2
+        echo "     Reword that line." >&2
+        echo "   - commit-msg did not run: skipped with --no-verify, or this clone never" >&2
+        echo "     installed the hooks (npm install sets core.hooksPath)." >&2
+        echo "   - the commits predate the hook and a rebase is carrying them forward." >&2
         for hit in $unpublished; do
             hit_subject=$(git log -1 --format='%h %s' "$hit" 2>/dev/null)
             if [ -n "$hit_subject" ]; then

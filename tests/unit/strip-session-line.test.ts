@@ -175,9 +175,21 @@ describe("stripSessionLines — what comes out", () => {
     expect(stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x   \n`).removed).toBe(1);
   });
 
-  it("does not narrow the TRAILER branch the same way — a trailer's value is the id", () => {
-    // `Claude-Session: <id>` is a git trailer, not prose with a link in it, and the
-    // harness writes exactly this line. There is no sentence here to protect.
+  it("still takes a whole line that OPENS with the trailer — pinned as behaviour, not endorsed", () => {
+    // TWO CASES IN THIS FILE USED TO GIVE OPPOSITE READINGS OF THIS (gate 2, 2026-09-15).
+    // This one said the trailer branch is right to take the whole line because "a
+    // trailer's value is the id, there is no sentence to protect"; the scope case below
+    // said the same behaviour is "the same failure mode this change fixes for URLs,
+    // filed rather than fixed here". Both cannot be the reason.
+    //
+    // The filed one is correct: `Claude-Session: lines are removed at commit time, so the
+    // gate never sees them.` is a SENTENCE, and it is deleted whole with only "removed 1
+    // Claude-Session line" said about it. It is not fixed here because narrowing this
+    // branch moves both nets again, which is a subject of its own.
+    //
+    // So this case pins the behaviour WITHOUT calling it right, and says so, because the
+    // next person to touch it will see this go red and must read that as the filed change
+    // arriving rather than as a regression.
     expect(stripSessionLines(`fix: a\n\n${TRAILER} and then some words\n`).removed).toBe(1);
   });
 
@@ -273,31 +285,40 @@ describe("the hook and the pre-push net stay in step", () => {
     }
   });
 
-  it("pre-push counts an id with the same characters this module allows in one", () => {
-    // ONE ALPHABET, PINNED. `embeds()` counted `[A-Za-z0-9]` while this module and
-    // `redact_session` allowed `_` and `-`; once the URL left the anchored pattern,
-    // that narrower class was the only gate a URL passed, and an id with a `-` in it
-    // came in under the floor and was published (gate 2, 2026-09-15). A string pin is
-    // not enough on its own — the corpus carries such ids now, and the property cases
-    // are what would notice the behaviour — but it is what makes the drift visible in
-    // a diff.
+  it("pre-push counts to where a URL ends, and declares no id alphabet of its own", () => {
+    // THE DEPENDENCE IS GONE, and that is what this pins. The refusal used to count the
+    // characters an id is MADE OF, which meant knowing that set: `embeds()` counted
+    // `[A-Za-z0-9]` while this module and `redact_session` allowed `_` and `-`, and once
+    // the URL left the anchored pattern that narrower class was the only gate a URL
+    // passed (gate 2, 2026-09-15). Sharing one class fixed that case and left the
+    // question — win2 asked it the same day: can an id contain a `.` or a `+`? Nothing
+    // here answers that.
+    //
+    // So the refusal stopped asking. It counts up to where a URL ENDS IN PROSE, which
+    // is a property of prose and needs no knowledge of the id. The module keeps its
+    // class because REMOVAL must stay narrow; the hook must have none.
     const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
-    expect(hook).toContain(`session_id_class='${SESSION_ID_CLASS}'`);
-    expect(hook).toContain("if (c ~ idclass) n++; else break");
-    // AND EVERY PLACE IN THE HOOK THAT NAMES THE ALPHABET NAMES THE SAME ONE. There is
-    // a third site — `redact_session`'s `sed`, which cannot read the shell variable as
-    // cheaply — so the invariant is not "spelled once" but "never spelled narrower".
-    // That is the property that failed: two sites said `_` and `-` count and one did
-    // not. Comment lines are excluded; the prose above the declaration quotes the old
-    // narrow class on purpose, to say what it was.
-    const spellings = hook
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#"))
-      .flatMap((line) => line.match(/\[A-Za-z0-9[^\]]*\]/g) ?? []);
-    expect(spellings.length, "no id alphabet found in the hook at all").toBeGreaterThan(1);
-    expect([...new Set(spellings)], "the hook names more than one id alphabet").toEqual([
-      SESSION_ID_CLASS,
-    ]);
+    expect(hook).toContain("session_id_stop='");
+    expect(hook).toContain("if (c ~ idstop) break");
+    expect(hook).toContain("probe = tolower(line)");
+
+    // AND NO ID ALPHABET INSIDE THE SCANNER. This is asserted at the USE SITE rather
+    // than by scanning the file for a spelling: the previous version looked for
+    // `/\[A-Za-z0-9[^\]]*\]/`, which can only find a class that already begins that way,
+    // so a narrower third site written `[[:alnum:]]`, `[A-Za-z]` or `[0-9A-Za-z_-]` would
+    // have vanished from the result instead of showing up as a second spelling (gate 2,
+    // 2026-09-15) — the same "enumerate the spellings you thought of" defect the hook
+    // itself had. What matters is not how a class is written but whether `embeds()`
+    // decides id membership with one.
+    const body = hook.slice(hook.indexOf("function embeds("), hook.indexOf("/^\\001[0-9a-f]"));
+    expect(body.length, "embeds() is not where this probe reads it").toBeGreaterThan(200);
+    const classes = [...body.matchAll(/\[[^\]]*\]/g)].map((m) => m[0]);
+    // NOT ONE LITERAL CLASS IN THERE. The first fix for percent-encoding counted a `%XX`
+    // triple as one character and needed a hex class to read it; the triple rule is gone,
+    // because counting to the terminator already counts `%` and the rule could only make
+    // the count smaller — and because removing it left every case green, which is its own
+    // reason not to keep code.
+    expect(classes, "embeds() classifies characters with a literal class again").toEqual([]);
   });
 
   it("pre-push carries the POSIX spelling of the same pattern", () => {
@@ -402,23 +423,31 @@ describe("the two sides, and the two properties between them", () => {
    */
   function flaggedByTheHook(lines: readonly string[]): boolean[] {
     const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
-    // The opener is matched as the hook writes it, so adding a `-v` the probe does not
-    // pass shows up as a missing slice rather than as a silently different program.
-    const opener =
-      `awk -v pat="$session_pattern" -v minid="$session_min_id" -v idclass="$session_id_class" '`;
-    const from = hook.indexOf(opener);
-    expect(from, "pre-push no longer calls awk the way this probe reads it").toBeGreaterThan(-1);
+    // EVERY `-v` IS READ OFF THE CALL AND RESOLVED FROM THE HOOK'S OWN ASSIGNMENTS,
+    // rather than being a list this file keeps. win2 proved why on 2026-09-15: with a
+    // hardcoded list, a variable the hook had started passing would be left UNSET
+    // here, and `c ~ idstop` against an empty pattern matches every character — the
+    // floor moves and nothing says so. A missing assignment now fails the case.
+    const call = hook.match(/awk((?: -v \w+="\$\w+")+) '/);
+    expect(call, "pre-push no longer calls awk the way this probe reads it").toBeTruthy();
+    const from = hook.indexOf(call![0]);
     const to = hook.indexOf("\n        '", from);
     expect(to, "the awk program in pre-push is not terminated the way this probe reads it").toBeGreaterThan(from);
-    const program = hook.slice(from + opener.length, to);
+    const program = hook.slice(from + call![0].length, to);
+
+    const vars = [...call![1].matchAll(/-v (\w+)="\$(\w+)"/g)].map(([, name, shellVar]) => {
+      const assigned = hook.match(new RegExp(`^${shellVar}=(?:'(.*)'|(\\S+))$`, "m"));
+      expect(assigned, `pre-push passes ${name} but never assigns ${shellVar}`).toBeTruthy();
+      const raw = assigned![1] ?? assigned![2];
+      // `'...'"'"'...'` is how sh writes a single quote inside a single-quoted string.
+      return ["-v", `${name}=${raw.split(`'"'"'`).join("'")}`];
+    });
+    expect(vars.length, "the awk call passes no variables at all").toBeGreaterThan(2);
 
     const records = lines
       .map((line, i) => `\u0001${i.toString(16).padStart(40, "0")}\n${line}`)
       .join("\n");
-    const probe = spawnSync(
-      "awk",
-      ["-v", `pat=${SESSION_LINE_ERE}`, "-v", `minid=${hookFloor()}`, "-v", `idclass=${SESSION_ID_CLASS}`, program],
-      {
+    const probe = spawnSync("awk", [...vars.flat(), program], {
       input: `${records}\n`,
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
@@ -457,9 +486,88 @@ describe("the two sides, and the two properties between them", () => {
     return Number(m?.[1]);
   }
 
-  it("refuses every line that carries a real session id, wherever it sits", () => {
-    // THE SAFETY PROPERTY. Anchored or mid-sentence, list item or prose — if a real
-    // id is on the line, the push stops.
+  /**
+   * CLASSIFIED BY HAND, and that is the point. Every other case in this block derives
+   * its expectation from one of the two rules it is checking, so a rule and its
+   * expectation can be wrong together — which they were: the expected-id helper
+   * re-stated `embeds()`'s own alphabet, so no case could see the leak that was live,
+   * and the corpus held only alphanumeric ids (gate 2, 2026-09-15).
+   *
+   * The rows below say what a PERSON decided about each line, before either engine was
+   * asked. The equivalent spellings are not a list of tricks someone thought of: scheme,
+   * host case, subdomain, port and percent-encoding are what RFC 3986 says may differ
+   * while the URL stays the same.
+   */
+  const CLASSIFIED: ReadonlyArray<readonly [line: string, mustRefuse: boolean, why: string]> = [
+    [`https://claude.ai/code/session_${REAL_ID}`, true, "a bare link with a real id"],
+    [`https://claude.ai/code/session_${REAL_ID} is the run this came from.`, true, "prose after it"],
+    [`see [the session](https://claude.ai/code/session_${REAL_ID}) for context`, true, "mid-sentence"],
+    [`https://claude.ai/code/session_${REAL_ID_HYPHEN} is the run.`, true, "a `-` inside the id"],
+    [`https://claude.ai/code/session_${REAL_ID_UNDER} is the run.`, true, "a `_` inside the id"],
+    ["https://claude.ai/code/session_01AB.CDEF+GHIJKLMNOPQRS is the run.", true, "a `.` and a `+` inside the id — no alphabet is assumed"],
+    ["https://claude.ai/code/session_%301ABCDEFGHIJKLMNOPQRSTUV", true, "percent-encoded, one triple"],
+    [`see [it](https://CLAUDE.AI/code/session_${REAL_ID}) for context`, true, "an upper-case host"],
+    [`https://claude.ai:443/code/session_${REAL_ID} is the run.`, true, "a port"],
+    [`https://www.claude.ai/code/session_${REAL_ID}`, true, "a subdomain"],
+    [`http://claude.ai/code/session_${REAL_ID} plain http`, true, "the other scheme"],
+    [`\`https://claude.ai/code/session_${REAL_ID}\``, true, "wrapped in backticks"],
+    [TRAILER, true, "the trailer the harness writes"],
+    ["https://claude.ai/code/session_x is what the hook removes when it starts a line.", false, "a short example id, prose after it"],
+    ["See https://claude.ai/code/session_x for context", false, "a short example id, mid-sentence"],
+    ["- https://claude.ai/code/session_x", false, "a short example id, bare"],
+    ["prose mentioning Claude-Session: mid-sentence", false, "the trailer named in a sentence"],
+    [COAUTHOR, false, "attribution, which stays"],
+    ["fix: a subject line", false, "an ordinary subject"],
+  ];
+
+  it("gives the answer a person gave, on every line a person classified", () => {
+    const flagged = flaggedByTheHook(CLASSIFIED.map(([line]) => line));
+    const wrong = CLASSIFIED.map(([line, mustRefuse, why], i) => ({ line, mustRefuse, why, got: flagged[i] }))
+      .filter((row) => row.got !== row.mustRefuse)
+      .map((row) => `${row.mustRefuse ? "must refuse" : "must pass"} (${row.why}): ${row.line}`);
+    expect(wrong, "the hook disagrees with the hand-classified table").toEqual([]);
+    // Not vacuous: both answers are present, and more than one of each.
+    expect(CLASSIFIED.filter(([, m]) => m).length).toBeGreaterThan(5);
+    expect(CLASSIFIED.filter(([, m]) => !m).length).toBeGreaterThan(3);
+  });
+
+  it("redacts every id it is willing to refuse, so a refusal cannot print one", () => {
+    // WIDENING A DETECTOR AND LEAVING ITS PRINTER BEHIND is how one defect becomes two.
+    // The refusal prints each offending commit's SUBJECT, through `redact_session`, and
+    // that function used to match `https://claude.ai/code/session_` with an
+    // `[A-Za-z0-9_-]` id — every spelling the refusal newly catches would have gone to
+    // stderr and into CI logs with the id intact.
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    const fn = hook.slice(hook.indexOf("redact_session() {"), hook.indexOf("\n}", hook.indexOf("redact_session() {")) + 2);
+    expect(fn.length, "redact_session is not where this probe reads it").toBeGreaterThan(100);
+    for (const [line, mustRefuse] of CLASSIFIED) {
+      if (!mustRefuse) continue;
+      const probe = spawnSync("sh", ["-c", `${fn}\nredact_session "$1"`, "sh", line], {
+        encoding: "utf8",
+        env: { ...process.env, LC_ALL: "C" },
+      });
+      expect(probe.status, `sh unusable: ${probe.error?.message ?? ""} ${probe.stderr}`).toBe(0);
+      expect(probe.stdout, `redact_session left an id in: ${line}`).toContain("<redacted>");
+      // And the id itself is gone, not merely joined by the marker.
+      const id = line.match(/session_([^\s)`]+)/)?.[1] ?? "";
+      if (id.length >= 16) {
+        expect(probe.stdout, `redact_session printed the id from: ${line}`).not.toContain(id);
+      }
+    }
+  });
+
+  it("refuses every line in the corpus that carries a real session id", () => {
+    // THE SAFETY PROPERTY, bounded to what the corpus reaches. It was named "wherever it
+    // sits", and the PR body said "anchored or mid-sentence" — broader than what was
+    // held: the marker search was case-sensitive then, so an upper-case host walked past
+    // both engines and no corpus line could show it, because this helper was
+    // case-sensitive in the same way (gate 2, 2026-09-15). The search is case-folded now
+    // and the host is not looked at at all, but the honest statement is still about the
+    // lines that were tried, and the hand-classified table above is where the equivalent
+    // spellings are actually enumerated.
+    //
+    // What remains outside: a spelling of `/code/session_` ITSELF that nobody listed — a
+    // percent-encoded slash, say. The marker is the one literal the scan still depends on.
     const flagged = flaggedByTheHook(corpus);
     const missed = corpus.filter((line, i) => carriesARealId(line) && !flagged[i]);
     expect(missed, "a line carrying a real session id was not refused").toEqual([]);
@@ -490,7 +598,13 @@ describe("the two sides, and the two properties between them", () => {
     // THE REMOVAL PROPERTY. Removal edits the message, so its licence is narrow: a
     // git trailer, or a link with nothing after it. Everything else is the push
     // side's business — a reword costs less than a lost sentence.
-    const BARE = /^[ \t\v\f\r]*(?:[-*+][ \t\v\f\r]+)?(?:Claude-Session:.*|https:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]*[ \t\v\f\r]*)$/;
+    // BUILT FROM THE SHARED CLASS, not a fourth hand-written copy of it — widening
+    // `SESSION_ID_CLASS` used to widen the removal pattern while this stayed put, so
+    // this case would report overreach that was not overreach (gate 2, 2026-09-15), in
+    // the very PR whose second commit is called "Name the id alphabet once".
+    const BARE = new RegExp(
+      `^[ \\t\\v\\f\\r]*(?:[-*+][ \\t\\v\\f\\r]+)?(?:Claude-Session:.*|https://claude\\.ai/code/session_${SESSION_ID_CLASS}*[ \\t\\v\\f\\r]*)$`
+    );
     const overreach = corpus.filter((line) => SESSION_LINE_RE.test(line) && !BARE.test(line));
     expect(overreach, "removal would take a line carrying the author's text").toEqual([]);
     expect(corpus.filter((l) => SESSION_LINE_RE.test(l)).length).toBeGreaterThan(5);
