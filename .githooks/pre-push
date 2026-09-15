@@ -139,6 +139,19 @@ session_pattern='^[[:space:]]*([-*+][[:space:]]+)?Claude-Session:'
 # talking about ids.
 session_min_id=16
 
+# The characters that COUNT as part of an id. One class, because three places used
+# to name it and one of them named it narrower: `embeds()` counted `[A-Za-z0-9]`
+# while the removal pattern and `redact_session` both allow `_` and `-`. With the
+# URL taken out of the anchored pattern, that narrower class became the ONLY gate
+# for a URL — so `…/session_01ABCDEF-GHIJKLMNOPQRSTUV` stopped counting at the `-`,
+# came in under the floor, and was published (gate 2, 2026-09-15; reproduced by
+# running this program before it was changed). It leaked mid-line before that too;
+# what this commit did was hand it the line-start case as well.
+#
+# `tests/unit/strip-session-line.test.ts` pins this line against the module's
+# exported constant, so the two engines cannot drift apart again in silence.
+session_id_class='[A-Za-z0-9_-]'
+
 # Commits in $1 (a rev range) whose message carries a session id, one sha per
 # line, followed by a "@@SCANNED@@<n>" line saying how many commits were walked.
 # The caller checks that count: without it, a scan that produced nothing because
@@ -156,19 +169,21 @@ session_min_id=16
 leaking_commits() {
     git log $1 --format="%x01%H%n%B" 2>/dev/null |
         tr '\r' '\n' |
-        awk -v pat="$session_pattern" -v minid="$session_min_id" '
+        awk -v pat="$session_pattern" -v minid="$session_min_id" -v idclass="$session_id_class" '
             # A session URL inside prose — `see [the session](https://…)` — is a leak
             # the anchored pattern was never going to see. Removal stays anchored (a
             # mid-line rewrite would eat the sentence around it); the REFUSAL can be
             # broader, because refusing only asks a human to reword.
-            # No interval expressions here: mawk does not have them.
+            # No interval expressions here: mawk does not have them — which is why the
+            # floor is counted by hand, and why the class it counts with is passed in
+            # rather than written here for a third time.
             function embeds(line,   i, rest, n, c) {
                 while ((i = index(line, "claude.ai/code/session_")) > 0) {
                     rest = substr(line, i + 23)
                     n = 0
                     while (n < length(rest)) {
                         c = substr(rest, n + 1, 1)
-                        if (c ~ /[A-Za-z0-9]/) n++; else break
+                        if (c ~ idclass) n++; else break
                     }
                     if (n >= minid) return 1
                     line = rest
@@ -310,7 +325,11 @@ do
         echo "" >&2
         echo "ERROR: this push would publish commit(s) whose message carries a Claude session id." >&2
         echo "  Repo policy: no session IDs in the public repo." >&2
-        echo "  .githooks/commit-msg removes these at commit time — it was skipped," >&2
+        echo "  Most likely the line carries prose after the link: .githooks/commit-msg" >&2
+        echo "  leaves such a line alone on purpose, because deleting it would take the" >&2
+        echo "  sentence with it — reword that line and the push goes through." >&2
+        echo "  Otherwise: commit-msg removes a trailer or a bare link at commit time, so" >&2
+        echo "  either it was skipped," >&2
         echo "  or these commits predate it and a rebase is carrying them forward." >&2
         for hit in $unpublished; do
             hit_subject=$(git log -1 --format='%h %s' "$hit" 2>/dev/null)

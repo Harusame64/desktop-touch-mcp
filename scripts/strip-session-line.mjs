@@ -54,13 +54,33 @@ import { pathToFileURL } from "node:url";
  *
  * The whitespace class is `[ \t\v\f\r]`, matching what POSIX `[[:space:]]`
  * means to `grep` and to `awk` on a single line under `LC_ALL=C` — `awk` is what
- * actually scans in `.githooks/pre-push`, and the tests exercise both. It is spelled out rather
- * than written `\s` because `\s` would also take Unicode spaces, which `grep`
- * would not, and the two engines have to agree — `.githooks/pre-push` carries
- * the ERE spelling of this same rule, since it must run without node.
+ * actually scans in `.githooks/pre-push`, and the tests exercise both. It is spelled
+ * out rather than written `\s` because `\s` would also take Unicode spaces, which
+ * `grep` would not, and the two engines have to agree on any rule they SHARE.
+ *
+ * They no longer share this one. `.githooks/pre-push` carried the ERE spelling of
+ * the same rule while removal and refusal covered the same lines; see
+ * `SESSION_LINE_ERE` below for what each side answers now. The sentence that used to
+ * stand here said they carried the same rule, ten lines above the block saying they
+ * do not — two answers to one question in one file (gate 2, 2026-09-15).
  */
-export const SESSION_LINE_RE =
-  /^[ \t\v\f\r]*(?:[-*+][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]*[ \t\v\f\r]*$)/;
+/**
+ * The characters that count as part of a session id. ONE class, named once and
+ * shared, because three places used to name it and one named it narrower:
+ * `embeds()` in `.githooks/pre-push` counted `[A-Za-z0-9]` while this file and
+ * `redact_session` allowed `_` and `-`. When the URL left the hook's anchored
+ * pattern, that narrower class became the only gate a URL passed through, and
+ * `…/session_01ABCDEF-GHIJKLMNOPQRSTUV` stopped counting at the `-`, came in under
+ * the floor, and was published (gate 2, 2026-09-15).
+ *
+ * `tests/unit/strip-session-line.test.ts` pins the hook's `session_id_class=` line
+ * against this constant, so the two engines cannot drift apart in silence again.
+ */
+export const SESSION_ID_CLASS = "[A-Za-z0-9_-]";
+
+export const SESSION_LINE_RE = new RegExp(
+  `^[ \\t\\v\\f\\r]*(?:[-*+][ \\t\\v\\f\\r]+)?(?:Claude-Session:|https://claude\\.ai/code/session_${SESSION_ID_CLASS}*[ \\t\\v\\f\\r]*$)`
+);
 
 /**
  * The POSIX ERE in `.githooks/pre-push`, and it is no longer the same rule as the

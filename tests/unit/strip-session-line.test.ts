@@ -32,6 +32,7 @@ import {
   stripSessionLinesInFile,
   SESSION_LINE_RE,
   SESSION_LINE_ERE,
+  SESSION_ID_CLASS,
 } from "../../scripts/strip-session-line.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -272,6 +273,33 @@ describe("the hook and the pre-push net stay in step", () => {
     }
   });
 
+  it("pre-push counts an id with the same characters this module allows in one", () => {
+    // ONE ALPHABET, PINNED. `embeds()` counted `[A-Za-z0-9]` while this module and
+    // `redact_session` allowed `_` and `-`; once the URL left the anchored pattern,
+    // that narrower class was the only gate a URL passed, and an id with a `-` in it
+    // came in under the floor and was published (gate 2, 2026-09-15). A string pin is
+    // not enough on its own — the corpus carries such ids now, and the property cases
+    // are what would notice the behaviour — but it is what makes the drift visible in
+    // a diff.
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    expect(hook).toContain(`session_id_class='${SESSION_ID_CLASS}'`);
+    expect(hook).toContain("if (c ~ idclass) n++; else break");
+    // AND EVERY PLACE IN THE HOOK THAT NAMES THE ALPHABET NAMES THE SAME ONE. There is
+    // a third site — `redact_session`'s `sed`, which cannot read the shell variable as
+    // cheaply — so the invariant is not "spelled once" but "never spelled narrower".
+    // That is the property that failed: two sites said `_` and `-` count and one did
+    // not. Comment lines are excluded; the prose above the declaration quotes the old
+    // narrow class on purpose, to say what it was.
+    const spellings = hook
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .flatMap((line) => line.match(/\[A-Za-z0-9[^\]]*\]/g) ?? []);
+    expect(spellings.length, "no id alphabet found in the hook at all").toBeGreaterThan(1);
+    expect([...new Set(spellings)], "the hook names more than one id alphabet").toEqual([
+      SESSION_ID_CLASS,
+    ]);
+  });
+
   it("pre-push carries the POSIX spelling of the same pattern", () => {
     // `pre-push` cannot import the module — it must run without node — so the
     // ERE is duplicated there on purpose. This pins the copy to the original
@@ -284,6 +312,15 @@ describe("the hook and the pre-push net stay in step", () => {
 
 /** 24 characters, the length every real id in this repository's history has. */
 const REAL_ID = "01ABCDEFGHIJKLMNOPQRSTUV";
+
+/**
+ * The same length, with the two characters the id class allows besides letters and
+ * digits. `embeds()` used to count `[A-Za-z0-9]` only, so an id like this stopped
+ * counting at the punctuation, came in under the floor, and was published — and the
+ * corpus could not see it, because every id in it was alphanumeric.
+ */
+const REAL_ID_HYPHEN = "01ABCDEF-GHIJKLMNOPQRSTU";
+const REAL_ID_UNDER = "01ABCDEF_GHIJKLMNOPQRSTU";
 
 describe("the two sides, and the two properties between them", () => {
   /**
@@ -345,6 +382,10 @@ describe("the two sides, and the two properties between them", () => {
     `- https://claude.ai/code/session_${REAL_ID}`,
     `https://claude.ai/code/session_${REAL_ID} is the run this came from.`,
     `see [the session](https://claude.ai/code/session_${REAL_ID}) for context`,
+    `https://claude.ai/code/session_${REAL_ID_HYPHEN} is the run this came from.`,
+    `https://claude.ai/code/session_${REAL_ID_UNDER} is the run this came from.`,
+    `https://claude.ai/code/session_${REAL_ID_HYPHEN}`,
+    `see [the session](https://claude.ai/code/session_${REAL_ID_HYPHEN}) for context`,
     "https://claude.ai/code/artifacts/abc",
     "https://claudeXai/code/session_x",
     "",
@@ -361,7 +402,10 @@ describe("the two sides, and the two properties between them", () => {
    */
   function flaggedByTheHook(lines: readonly string[]): boolean[] {
     const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
-    const opener = `awk -v pat="$session_pattern" -v minid="$session_min_id" '`;
+    // The opener is matched as the hook writes it, so adding a `-v` the probe does not
+    // pass shows up as a missing slice rather than as a silently different program.
+    const opener =
+      `awk -v pat="$session_pattern" -v minid="$session_min_id" -v idclass="$session_id_class" '`;
     const from = hook.indexOf(opener);
     expect(from, "pre-push no longer calls awk the way this probe reads it").toBeGreaterThan(-1);
     const to = hook.indexOf("\n        '", from);
@@ -371,7 +415,10 @@ describe("the two sides, and the two properties between them", () => {
     const records = lines
       .map((line, i) => `\u0001${i.toString(16).padStart(40, "0")}\n${line}`)
       .join("\n");
-    const probe = spawnSync("awk", ["-v", `pat=${SESSION_LINE_ERE}`, "-v", "minid=16", program], {
+    const probe = spawnSync(
+      "awk",
+      ["-v", `pat=${SESSION_LINE_ERE}`, "-v", `minid=${hookFloor()}`, "-v", `idclass=${SESSION_ID_CLASS}`, program],
+      {
       input: `${records}\n`,
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
@@ -389,9 +436,25 @@ describe("the two sides, and the two properties between them", () => {
     return lines.map((_, i) => hit.has(i.toString(16).padStart(40, "0")));
   }
 
-  /** A session id of at least the floor's length, anywhere in the line. */
+  /**
+   * A session id of at least the floor's length, anywhere in the line — built from
+   * the SHARED id class and from the floor READ OUT OF THE HOOK, not from a second
+   * copy of `embeds()`'s rule. The previous version of this helper re-stated that
+   * rule with awk's old narrow alphabet, so both properties below were tautologies
+   * for exactly the leak that was live: no corpus line could separate the two
+   * alphabets, because this function agreed with the scanner it was checking
+   * (gate 2, 2026-09-15).
+   */
   function carriesARealId(line: string): boolean {
-    return /claude\.ai\/code\/session_[A-Za-z0-9]{16,}/.test(line);
+    return new RegExp(`claude\\.ai/code/session_${SESSION_ID_CLASS}{${hookFloor()},}`).test(line);
+  }
+
+  /** The floor the hook itself declares, so the probe cannot test a different one. */
+  function hookFloor(): number {
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    const m = hook.match(/^session_min_id=(\d+)$/m);
+    expect(m, "pre-push no longer declares session_min_id the way this probe reads it").toBeTruthy();
+    return Number(m?.[1]);
   }
 
   it("refuses every line that carries a real session id, wherever it sits", () => {
@@ -415,7 +478,15 @@ describe("the two sides, and the two properties between them", () => {
     expect(wrong, "a line with no trailer and no real id was refused").toEqual([]);
   });
 
-  it("only ever deletes a line that has none of the author's own text on it", () => {
+  it("only ever deletes a line whose text is a trailer or is nothing but a link", () => {
+    // THE NAME IS NARROWER THAN THE ONE THIS CASE USED TO CARRY, because the old name
+    // ("none of the author's own text") claimed more than the pattern holds: the
+    // TRAILER branch is still unanchored at line end, so a line opening with
+    // `Claude-Session:` and continuing in prose is deleted whole — the same failure
+    // mode this change fixes for URLs, and this very commit message contains that
+    // token mid-sentence (gate 2, 2026-09-15). Closing it needs both nets moved again,
+    // which is a separate subject; it is filed rather than fixed here, and the name
+    // says what is actually asserted in the meantime.
     // THE REMOVAL PROPERTY. Removal edits the message, so its licence is narrow: a
     // git trailer, or a link with nothing after it. Everything else is the push
     // side's business — a reword costs less than a lost sentence.
