@@ -46,10 +46,23 @@ if (missing.length > 0) {
 const report = join(tmpdir(), `wire-pins-${process.pid}.json`);
 // NO SHELL, and vitest by its JS entry point rather than through `npx`. With `shell: true` on
 // Windows, `cmd.exe` splits an unquoted `--outputFile=<path>` at the first space — and a Windows
-// temp directory routinely contains one (`C:\Users\Jane Doe\AppData\Local\Temp`). vitest would
-// then write its report somewhere else and this gate would fail READING THE JSON while both pin
-// files passed, on the platform this project ships (gate 1, 2026-09-15). None of the local gates
-// could see that: they all run on macOS.
+// temp directory routinely contains one (`C:\Users\Jane Doe\AppData\Local\Temp`). Found by
+// gate 1; none of the local gates could see it, because they all run on macOS.
+//
+// AND IT IS WORSE THAN A MISPLACED REPORT. Measured on Windows with the pre-fix form and a spaced
+// temp (win2, 2026-09-15): the fragments after the split do not vanish. `cmd.exe` hands "with"
+// and "space\wire-pins-NNN.json" to vitest as POSITIONAL FILTERS, and "with" matches paths — the
+// run collected 5 FILES AND 83 TESTS instead of 2 and 32, the three extra ones every file whose
+// path contains "failwith". So the gate whose entire purpose is "exactly these files ran" was
+// itself running a superset, and the only reason that surfaced is that the JSON read failed
+// loudly afterwards. Had the report landed somewhere readable, the comparison would have been
+// against a set the gate never intended to collect.
+//
+// THIS REPO ALREADY HELD THE ANSWER, IN TWO PLACES, and this script had neither:
+// `scripts/test-capture.mjs` spawns vitest through a shell but `JSON.stringify`s every argument,
+// so nothing can be split; `scripts/build-rs.mjs` invokes the napi CLI's JS entry with `node` and
+// an absolute path, saying in its comment that going through `npx` "requires `shell: true` … and
+// the shell lookup is brittle". Either pattern would have been enough.
 const res = spawnSync(
   process.execPath,
   [
