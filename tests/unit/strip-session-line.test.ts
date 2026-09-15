@@ -193,6 +193,25 @@ describe("stripSessionLines — what comes out", () => {
     expect(stripSessionLines(`fix: a\n\n${TRAILER} and then some words\n`).removed).toBe(1);
   });
 
+  it("removes a trailer a BOM was written in front of", () => {
+    // The pattern is ANCHORED and a BOM is not whitespace, so `\uFEFFClaude-Session: <id>`
+    // stayed in the message while the push side missed it too — there is no URL there for
+    // the mid-line scan to find (gate 1, 2026-09-15). An editor writes a BOM; nobody
+    // chooses one, which is why this is in scope where an obfuscated URL is not.
+    const { text, removed } = stripSessionLines(`fix: a\n\n\uFEFF${TRAILER}\n`);
+    expect(removed).toBe(1);
+    expect(text).toBe("fix: a\n");
+  });
+
+  it("leaves a BOM alone when the line under it is not a trailer", () => {
+    // Only the TEST sees the stripped copy. What comes back is the original bytes, which
+    // is what this function promises — a BOM on an ordinary line survives.
+    const input = "\uFEFFfix: a\n\nbody\n";
+    const { text, removed } = stripSessionLines(input);
+    expect(removed).toBe(0);
+    expect(text).toBe(input);
+  });
+
   it("keeps a mid-sentence mention of the trailer", () => {
     // This repo's own commit messages discuss the trailer in prose. The pattern
     // is anchored for this reason; an unanchored one would eat the sentence.
@@ -513,6 +532,10 @@ describe("the two sides, and the two properties between them", () => {
     [`see [the session](https://claude.ai/code/session_${REAL_ID}) for context`, true, "mid-sentence"],
     [`https://claude.ai/code/session_${REAL_ID_HYPHEN} is the run.`, true, "a `-` inside the id"],
     [`https://claude.ai/code/session_${REAL_ID_UNDER} is the run.`, true, "a `_` inside the id"],
+    [`\uFEFFClaude-Session: ${REAL_ID}`, true, "a BOM in front of the trailer — an editor writes it, nobody chooses it"],
+    [`fix: see http://claude.ai/code/session_${REAL_ID} for context`, true, "the other scheme — the scan never needed one"],
+    [`fix: see claude.ai/code/session_${REAL_ID}`, true, "no scheme at all, which is how people write links in prose"],
+    [`fix: see https://Claude.ai/code/session_${REAL_ID}`, true, "a capital where a sentence starts — a typo, not evasion"],
     ["https://claude.ai/code/session_x is what the hook removes when it starts a line.", false, "a short example id, prose after it"],
     ["See https://claude.ai/code/session_x for context", false, "a short example id, mid-sentence"],
     ["- https://claude.ai/code/session_x", false, "a short example id, bare"],
@@ -521,6 +544,7 @@ describe("the two sides, and the two properties between them", () => {
     ["prose mentioning Claude-Session: mid-sentence", false, "the trailer named in a sentence"],
     [COAUTHOR, false, "attribution, which stays"],
     ["fix: a subject line", false, "an ordinary subject"],
+    ["\uFEFFfix: a subject line", false, "a BOM in front of an ordinary subject — stripping it must not start refusing things"],
   ];
 
   it("gives the answer a person gave, on every line a person classified", () => {
@@ -904,6 +928,19 @@ describe("pre-push refuses what it should", () => {
     const r = world.push(`refs/heads/x ${tip} refs/heads/x ${world.clean}${NL}`, dest);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("does not refuse a clean push because of the user's log output encoding", () => {
+    // `i18n.logOutputEncoding` is a USER setting, and git encodes the record markers along
+    // with the message: set to UTF-16LE, the scan walked a one-commit range, reported
+    // `@@SCANNED@@0`, and the count check — which exists so a scan that could not run is
+    // not read as a clean one — refused the push (gate 1, 2026-09-15). The scan reads bytes
+    // under `LC_ALL=C`, so the encoding it reads has to be pinned rather than inherited.
+    const dest = world.bare("origin.git");
+    world.git(["config", "i18n.logOutputEncoding", "UTF-16LE"]);
+    const r = world.push(`refs/heads/x ${world.clean} refs/heads/x ${"0".repeat(40)}\n`, dest);
+    expect(r.stderr, "a clean push was refused because of a log encoding").not.toContain("could not verify");
+    expect(r.status, `refused a clean push: ${r.stderr}`).toBe(0);
   });
 
   it.skipIf(!hasSh)("lets the repo write about session_x without refusing itself", () => {

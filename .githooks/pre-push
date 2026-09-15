@@ -1,13 +1,21 @@
 #!/bin/sh
-# BYTE-WISE, DELIBERATELY. `awk` below matches ONE CHARACTER at a time against a
-# regex, and in a UTF-8 locale a single byte of a multi-byte character is not a
-# character: awk dies with `towc: multibyte conversion failure`, the scan exits
-# non-zero, and this hook then refuses the push it could not read. A commit message
-# saying `…/code/session_—` reaches that, and this repository writes prose like it.
+# BYTE-WISE, DELIBERATELY — and the reason is that we must not reason about the
+# caller's awk. The scan below matches ONE CHARACTER at a time against a regex, and
+# what that means in a UTF-8 locale is implementation-dependent:
 #
-# Measured 2026-09-15: identical input, `LC_ALL=C` exit 0, `ja_JP.UTF-8` and
-# `en_US.UTF-8` exit 2. Nothing here used to set a locale while a comment claimed the
-# caller did, which is the kind of claim a comment cannot keep (gate 2).
+#   macOS awk (this repo's mac, 2026-09-15): `LC_ALL=C` exit 0, `ja_JP.UTF-8` and
+#   `en_US.UTF-8` EXIT 2 — `awk: towc: multibyte conversion failure`. The scan then
+#   exits non-zero and this hook refuses the push it could not read.
+#
+#   gawk 5.4.0 (the Windows machine, same day, locale confirmed to reach awk by
+#   measuring `length` of a 3-byte character: 3 under C, 1 under ja_JP.UTF-8): exit 0
+#   in both. `substr` there returns characters in a multi-byte locale and bytes under
+#   C, so neither path asks for a wide conversion of a fragment.
+#
+# Two machines, two answers, on a line this repository writes in prose
+# (`…/code/session_—`). That IS the argument for pinning the locale here rather than
+# predicting the awk: a gate whose behaviour depends on the developer's implementation
+# is not a gate. Nothing used to set one while a comment claimed the caller did (gate 2).
 LC_ALL=C
 export LC_ALL
 # Two refusals before anything reaches the server:
@@ -131,20 +139,20 @@ session_id_class='[A-Za-z0-9_-]'
 # IS the subject, `%s` handed the complete secret to stderr and to CI logs. That
 # is the same defect this file already fixed once for push URLs, one printf over.
 #
-# THE REDACTOR HAS TO REACH EVERY SPELLING THE REFUSAL DOES. It used to match
-# `https://claude.ai/code/session_` and an id of `[A-Za-z0-9_-]`; the refusal now
-# catches `/code/session_` under any host, any case, with percent triples and any
-# characters up to where a URL ends in prose. Left behind, this function would print
-# an id it failed to redact — into stderr and into CI logs — for exactly the lines
-# this round taught the refusal to catch. Widening a detector and leaving its printer
-# where it was is how one defect becomes two.
+# THE REDACTOR HAS TO REACH EVERY SPELLING THE REFUSAL DOES, or a refusal prints the id
+# it is refusing — into stderr and into CI logs, from the one function written to stop
+# that. It has been behind twice: its trailer branch matched `[^ ]*`, which matches ZERO
+# characters because a space follows the colon, and it required `https://` while the scan
+# only needs `claude.ai/code/session_`, so `http://…` and a scheme-less link were refused
+# and printed whole (gate 2, 2026-09-15, by running both functions).
 #
-# Spelled case-insensitively one bracket per character because BRE has no `I` flag
-# that is portable across GNU and BSD sed, and `#` is the delimiter so the stop class
-# may contain `|`.
+# So the host and the scheme are not in it at all: it redacts `/code/session_<id>`
+# wherever that appears. Over-redacting is the affordable direction for a DIAGNOSTIC —
+# the cost is that a subject also mentioning `scripts/code/session_store.ts` comes back
+# with that blanked, and the cost of under-redacting is a published id.
 redact_session() {
     printf '%s\n' "$1" |
-        sed -e "s|\(https://claude[.]ai/code/session_\)${session_id_class}*|\1<redacted>|g" \
+        sed -e "s|\(/code/session_\)${session_id_class}*|\1<redacted>|g" \
             -e 's|\(Claude-Session:\).*|\1 <redacted>|g'
 }
 
@@ -194,35 +202,47 @@ session_min_id=16
 # trailer — such a commit went through both hooks. Rewriting CR to LF is safe
 # here because nothing is written back; this half only looks.
 leaking_commits() {
-    git log $1 --format="%x01%H%n%B" 2>/dev/null |
+    # `--encoding=UTF-8` because `i18n.logOutputEncoding` is a user setting and git
+    # encodes the record markers with the message: set to UTF-16LE, this scan walked a
+    # one-commit range and reported `@@SCANNED@@0`, and the count check then refused a
+    # clean push (gate 1, 2026-09-15). The scan reads bytes under `LC_ALL=C`, so the
+    # encoding it reads has to be pinned rather than inherited.
+    git log $1 --encoding=UTF-8 --format="%x01%H%n%B" 2>/dev/null |
         tr '\r' '\n' |
         awk -v pat="$session_pattern" -v minid="$session_min_id" -v idclass="$session_id_class" '
-            # A session URL inside prose — `see [the session](https://…)` — is a leak
-            # the anchored pattern was never going to see. Removal stays anchored (a
-            # mid-line rewrite would eat the sentence around it); the REFUSAL can be
-            # broader, because refusing only asks a human to reword.
-            # No interval expressions here: mawk does not have them — which is why the
-            # floor is counted by hand, and why the class it counts with is passed in
-            # rather than written here for a third time.
-            # A session URL inside prose — `see [the session](https://…)` — is a leak
-            # the anchored pattern was never going to see. Removal stays anchored (a
-            # mid-line rewrite would eat the sentence around it); the REFUSAL can be
-            # broader, because refusing only asks a human to reword.
-            # No interval expressions here: mawk does not have them, which is why the
-            # floor is counted by hand and the class it counts with is passed in.
-            function embeds(line,   i, rest, n, c) {
-                while ((i = index(line, "claude.ai/code/session_")) > 0) {
-                    rest = substr(line, i + 23)
+            # A session URL inside prose — `see [the session](https://…)` — is a leak the
+            # anchored pattern was never going to see. Removal stays anchored (a mid-line
+            # rewrite would eat the sentence around it); the REFUSAL can be broader,
+            # because refusing only asks a human to reword.
+            #
+            # No interval expressions here: mawk does not have them, which is why the floor
+            # is counted by hand and the class it counts with is passed in.
+            # CASE-FOLDED FOR THE SEARCH. `https://Claude.ai/code/session_<id>` — a capital
+            # where a sentence starts — was matched by neither net (gate 2, 2026-09-15).
+            # That is a typo, not evasion, so it is in scope. One normalisation covers every
+            # case variant; enumerating them would not end.
+            function embeds(line,   probe, i, rest, n, c) {
+                probe = tolower(line)
+                while ((i = index(probe, "claude.ai/code/session_")) > 0) {
+                    rest = substr(probe, i + 23)
                     n = 0
                     while (n < length(rest)) {
                         c = substr(rest, n + 1, 1)
                         if (c ~ idclass) n++; else break
                     }
                     if (n >= minid) return 1
-                    line = rest
+                    probe = rest
                 }
                 return 0
             }
+            # A LEADING BOM IS NOT WHITESPACE, and the anchored pattern says
+            # `^[[:space:]]*`. An editor that writes one — and Windows editors do — put
+            # three bytes in front of `Claude-Session:` and the trailer walked past both
+            # hooks with no URL for `embeds()` to find (gate 1, 2026-09-15). That is
+            # message encoding rather than URL evasion, so it is in scope: nobody chose it.
+            # Stripped rather than added to the pattern, because normalising the input is
+            # one line and enumerating what may precede an anchor is not.
+            { sub(/^\357\273\277/, "") }
             /^\001[0-9a-f][0-9a-f]*$/ && length($0) == 41 {
                 sha = substr($0, 2); walked++; next
             }

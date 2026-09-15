@@ -18,6 +18,20 @@ import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 /**
+ * The characters that count as part of a session id. ONE class, named once and
+ * shared, because three places used to name it and one named it narrower:
+ * `embeds()` in `.githooks/pre-push` counted `[A-Za-z0-9]` while this file and
+ * `redact_session` allowed `_` and `-`. When the URL left the hook's anchored
+ * pattern, that narrower class became the only gate a URL passed through, and
+ * `…/session_01ABCDEF-GHIJKLMNOPQRSTUV` stopped counting at the `-`, came in under
+ * the floor, and was published (gate 2, 2026-09-15).
+ *
+ * `tests/unit/strip-session-line.test.ts` pins the hook's `session_id_class=` line
+ * against this constant, so the two engines cannot drift apart in silence again.
+ */
+export const SESSION_ID_CLASS = "[A-Za-z0-9_-]";
+
+/**
  * Lines that carry a session id: the trailer the harness writes, and a bare
  * session URL on its own line (the shape used in PR descriptions), optionally
  * behind a list marker — `- https://claude.ai/code/session_x` is not prose and
@@ -64,20 +78,6 @@ import { pathToFileURL } from "node:url";
  * stand here said they carried the same rule, ten lines above the block saying they
  * do not — two answers to one question in one file (gate 2, 2026-09-15).
  */
-/**
- * The characters that count as part of a session id. ONE class, named once and
- * shared, because three places used to name it and one named it narrower:
- * `embeds()` in `.githooks/pre-push` counted `[A-Za-z0-9]` while this file and
- * `redact_session` allowed `_` and `-`. When the URL left the hook's anchored
- * pattern, that narrower class became the only gate a URL passed through, and
- * `…/session_01ABCDEF-GHIJKLMNOPQRSTUV` stopped counting at the `-`, came in under
- * the floor, and was published (gate 2, 2026-09-15).
- *
- * `tests/unit/strip-session-line.test.ts` pins the hook's `session_id_class=` line
- * against this constant, so the two engines cannot drift apart in silence again.
- */
-export const SESSION_ID_CLASS = "[A-Za-z0-9_-]";
-
 export const SESSION_LINE_RE = new RegExp(
   `^[ \\t\\v\\f\\r]*(?:[-*+][ \\t\\v\\f\\r]+)?(?:Claude-Session:|https://claude\\.ai/code/session_${SESSION_ID_CLASS}*[ \\t\\v\\f\\r]*$)`
 );
@@ -151,7 +151,11 @@ export function stripSessionLines(message) {
     const line = i / 2;
     const text = parts[i];
     const sep = parts[i + 1] ?? "";
-    if (SESSION_LINE_RE.test(text)) {
+    // TESTED WITHOUT A LEADING BOM. The pattern is anchored, and a BOM is not
+    // whitespace, so `\uFEFFClaude-Session: <id>` was left in place while the push side
+    // missed it too (gate 1, 2026-09-15). Only the TEST sees the stripped copy: what is
+    // kept is still the original bytes, because this function promises them back.
+    if (SESSION_LINE_RE.test(text.replace(/^(?:\uFEFF|\xEF\xBB\xBF)/, ""))) {
       removed++;
       lastRemovedLine = line;
       continue;
