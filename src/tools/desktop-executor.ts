@@ -773,6 +773,88 @@ async function resolvePressPoint(
 }
 
 /**
+ * ADR-036 — does this string NAME a window, for the probe's reading of it?
+ *
+ * Reading only. Nothing routes on this, and the road's behaviour with either string is unchanged:
+ * `""` and `"@active"` are handed to the same substring search every other title gets
+ * (`find_window`, `src/uia/tree.rs:226`; `makeSetValueScript`, `uia-bridge.ts:766`). What they do
+ * NOT do is name a window — `""` matches whichever top-level window is enumerated first, and
+ * `"@active"` is a shorthand this road never expands.
+ *
+ * The rule is `_post.ts:439`'s, which answers `call_named_no_window` for exactly these two.
+ *
+ * WHOSE STRING IS IN THE AIM — THREE ANSWERS, AND THIS COMMENT HAS NOW HELD TWO WRONG ONES. It is
+ * not one rule; it is whichever branch of `normalizeTarget` (`compose-providers.ts:215-300`) ran,
+ * and `desktop.ts:410` then stores whatever came back (`if (rawResult.target)`).
+ *
+ *   1. A plain `{windowTitle}` that matches a plain top-level window: **THE CALLER'S STRING
+ *      SURVIVES.** `resolveWindowTarget` returns `null` on purpose in that case
+ *      (`_resolve-window.ts:502`; its own header says Case 3 "deliberately discards" the handle),
+ *      so the composer falls to `:280` and returns the caller's spec UNCHANGED. A partial title
+ *      stays partial — the resolved one is the thing thrown away. This is the commonest road there
+ *      is, and "the caller's query is destroyed before the aim exists" is false on it. MEASURED
+ *      (win2, 2026-09-16): a window captioned `WNDTAG7B6168`, an act passing the nine-character
+ *      prefix `WNDTAG7B6`, and `aim.title` at the executor is the prefix.
+ *   2. `{hwnd}`, a bare call, `""`, or a `{windowTitle}` rescued through the dialog owner chain:
+ *      **the RESOLVED title is substituted** (`:240`, `:270`, `:290`). Measured (win2, 2026-09-16):
+ *      a bare act, an `"@active"` act and a `{windowTitle:""}` act are ONE BEHAVIOUR IN THREE
+ *      SPELLINGS — all three fall to `:287`, which hands back `{hwnd, windowTitle}` together, so all
+ *      three arrive with a handle and the window axis answers `"handle"`, not `"title"`. `""` is
+ *      falsy, and a falsy skip lands on the line the bare call already takes.
+ *
+ *      **`""` IS IN THIS CASE AND IN CASE 3, AND WHAT SPLITS THEM IS WHETHER A FOREGROUND EXISTED**
+ *      (gate 2, 2026-09-16, which found the two halves of this comment contradicting each other).
+ *      With a foreground, `:288` resolves and `:410` overwrites — case 2, measured. Without one,
+ *      `:288` throws or answers null, `:289`/`:298` return `{target: undefined}`, and the raw
+ *      `{windowTitle:""}` stored at `desktop.ts:371` stays — case 3. The string does not decide;
+ *      the state of the desktop does.
+ *   3. Window resolution FAILS: the caller's own string stays, and it can be one that names no
+ *      window. `{windowTitle:"@active"}` with no foreground to resolve throws inside `:267`
+ *      (`_resolve-window.ts:449`), the catch at `:274` re-throws only `WindowExcludedError`, and
+ *      `:280` returns the caller's spec — so `aim.title === "@active"`. A bare call in the same
+ *      state returns `{target: undefined}` (`:289`, `:298`) and the aim has no title at all.
+ *
+ * THE LINE THAT MAKES ALL THREE POSSIBLE is `desktop.ts:371` — `session.lastTarget = input.target`,
+ * the RAW caller target stored before anything resolves. `:410` only overwrites it when a resolved
+ * one comes back. An auditor who starts at `:410` alone sees a replacement and concludes the
+ * caller's string never survives; the pair is the mechanism (gate 2, 2026-09-16).
+ *
+
+ * AND WHETHER `"nothing"` CAN EVER BE WRITTEN IS A SECOND QUESTION, which three versions of this
+ * comment answered without asking it. Case 3 puts an unresolved string in the AIM. It cannot put an
+ * ACT behind it: the same failure that leaves the caller's string also returns ZERO CANDIDATES —
+ * `composeCandidates` stops at `if (!normalized.target) return { candidates: [], … }`
+ * (`compose-providers.ts:319`), deliberately, so that "we could not work out which window" does not
+ * arrive as "the window is nothing". A discover that produced no entities also minted a new view and
+ * invalidated every lease held before it, so no `desktop_act` can follow it to this line. The
+ * measurer said this before the code did (win2, 2026-09-16): "the read that cannot name a window is
+ * the read that returns no entities."
+ *
+ * So the branch is a total function's last case on the ingress — reachable where the entities come
+ * from somewhere else, which is the direct `candidateProvider` road. Two earlier versions called it
+ * dead for the WRONG REASON (they said the title is always resolved, which the partial-title arm
+ * disproved), and the version between them called it live without asking what would act on it. The
+ * reason is what changed; the row has not moved.
+ *
+ * IF IT IS EVER SEEN, it means `aim.title` was `""` — the only one of the three that a backend can
+ * still match, since `"@active"` and a missing title both become a literal `"@active"` substring
+ * search that no real caption satisfies, and that throws into a refusal row instead. `""` matches
+ * whatever top-level window the enumerator returns first. That last step is READ FROM SOURCE AND NOT
+ * MEASURED — the arm would write text into an arbitrary window on a real desktop, which is why it
+ * has not been asked for.
+ *
+ * AND DO NOT READ `desktop.ts:445`'s `lastTargetFrom` AS THE WITNESS OF CASE 1 vs 2. It is
+ * `rawResult.target ? "resolved" : "caller"`, and case 1 returns a target that was never resolved —
+ * so it says `"resolved"` on the road where the caller's string is exactly what survived. Suggested
+ * as a corroborating row by gate 2 and repeated here for one round before it was checked; the same
+ * arm caught it on the machine, `lastTarget {"windowTitle":"WNDTAG7B6"}` printed beside
+ * `lastTargetFrom "resolved"` (win2, 2026-09-16). Filed as `internal#113`.
+ */
+function namesAWindowByTitle(title: string | undefined): boolean {
+  return title !== undefined && title !== "" && title !== "@active";
+}
+
+/**
  * ADR-036 probe — a road that succeeded says so.
  *
  * The first version of this probe only wrote at the two mouse presses and the containment check,
@@ -1389,7 +1471,155 @@ export function createDesktopExecutor(
       if ((action === "type" || action === "setValue") && text !== undefined) {
         try {
           await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
-          probeRoute("uia", aimHwnd, entity, { why: "uia_set_value" });
+          // ADR-036 family 2, observation only — WHAT THIS CALL ADDRESSED BY.
+          //
+          // Measured on 2026-09-15 (win2, internal#106 round): a title-only act down this road
+          // answers `ok:true` with `route:"uia"` / `why:"uia_set_value"`, a 52-character response,
+          // no `landing` and no `hints` — and the engine never reports WHICH ELEMENT it wrote to.
+          // So the row could not say whether the write was addressed at the element or at the
+          // window, which is the first thing the family-2 contract needs to know.
+          //
+          // TWO AXES, NOT ONE ORDERING. The first version of this row ranked automationId > name >
+          // title in a single `addressedNarrowest`, and a handle-pinned call whose entity had no
+          // name came out as `title_only` beside an `addressedBy.hwnd` that said the opposite
+          // (PR 側 codex, P2 on `8a7d86fb`). The element and the window are not comparable: a
+          // handle-pinned window reached by a substring name is neither narrower nor wider than a
+          // titled window reached by an automationId — they are different wrong answers. One field
+          // per axis, and neither ranks against the other.
+          //
+          // HAD, AND USED. `addressedBy` is what the CALL carried; the two axis fields are what the
+          // ROAD resolved by. They come apart on the commonest pinned act there is — a call with
+          // both a handle and a title RESOLVES THE WINDOW by the handle: `resolve_root` goes to
+          // `ElementFromHandle` (`src/uia/tree.rs:178`) and the PowerShell twin picks
+          // `makeSetValueScriptByHwnd` (`uia-bridge.ts:1464`, defined at `:643`), which is not
+          // handed the title at all.
+          //
+          // "NEVER LOOKS AT THE TITLE" WOULD BE TOO STRONG (gate 2, 2026-09-16): the title is read
+          // once before either road is chosen, by `refuseUiaTitleIfExcluded(windowTitle)`
+          // (`uia-bridge.ts:1443`), which can refuse on the title alone. It cannot change this
+          // field — a refusal throws and no row is written — but the window axis says "the handle
+          // is what SELECTED the window", not "the string was never touched".
+          //
+          // PRESENCE, NOT VALUES. `entityLabel` is already on this row, so an identifier is not a
+          // new class of content — but the typed text never is, and a locator the caller supplied
+          // is not worth adding beside it when the question is only which handle the call had.
+          //
+          // WHAT THIS STILL CANNOT SAY: which element ANSWERED. `uiaSetValue` is handed what to
+          // look for and returns nothing about what it found, so a success here is a success about
+          // the CALL, not about a target. That is the read-side shape item 15 closed for
+          // `getUiElements` (the engine reports the handle it resolved), and it takes the same fix
+          // on the write side — engine work, its own PR, designed in the map.
+          //
+          // WHAT TODAY'S DISCOVER CANNOT PRODUCE is written here so a reader does not price these
+          // rows wrong: an entity on this road with NO name. The UIA lane drops nameless elements
+          // (`uia-provider.ts:117`, `.filter((el) => el.isEnabled && el.name)`), the merge keeps
+          // `locator.uia.name` whenever a UIA candidate is in the group (`resolver.ts:91`), and the
+          // executor falls back to `entity.label` above. So `"nothing"` on the element axis is a
+          // total function's last branch, not a case a shipped call reaches today — and the reason
+          // it is written at all is that the producer is one filter away from being able to.
+          //
+          // WHAT SHUTS THAT DOOR IS A CONVENTION, NOT A TYPE (win2's read of the chain, 2026-09-16,
+          // pinned in their own tree): `"uia"` is in `entity.sources` exactly when a candidate with
+          // `source: "uia"` is in the group (`resolver.ts:125`), and only `uia-provider.ts:119`
+          // produces one — but `vision-gpu/types.ts:59` TYPES a candidate's source as a union that
+          // includes `"uia"`. A vision-gpu candidate that ever declared itself UIA would arrive here
+          // with no `locator.uia` at all. Nothing assigns it today; nothing stops it either.
+          //
+          // WHAT WOULD FALSIFY THAT, said plainly because a convention has no compiler behind it:
+          // a second file constructing a `UiEntityCandidate` whose source is UIA. Today there is
+          // one — `uia-provider.ts:119`. The other places that spell the same pair are a perception
+          // `Observation` (`sensors-uia.ts:41`), an `ActionableElement` on the old listing shape
+          // (`uia-bridge.ts:1339`), and the vision-gpu type union (`vision-gpu/types.ts:59`), which
+          // is the union named above rather than an assignment.
+          //
+          // THE CHECK HAS TO SKIP THIS PARAGRAPH, and saying so is not pedantry — the first version
+          // of it quoted a hit COUNT, and the comment's own two mentions of the literal made the
+          // count wrong the moment it was committed (gate 2, 2026-09-16). A check written inside
+          // the thing it measures has to exclude itself, or it measures itself. By FILE, not by line
+          // text — a `| grep -v desktop-executor.ts` would also drop a future producer whose line
+          // happens to mention this file (gate 2, 2026-09-16, the same class again):
+          // `grep -rn --exclude=desktop-executor.ts 'source: "uia"' src/`.
+          probeRoute("uia", aimHwnd, entity, {
+            why: "uia_set_value",
+            // What the call CARRIED at the element. The predicates are truthiness, not
+            // `!== undefined`, because an empty string is not an address.
+            //
+            // THE ROADS DO NOT AGREE ABOUT AN EMPTY LOCATOR, and an earlier version of this comment
+            // said they did (gate 2, 2026-09-16). On the NAME they do: PowerShell writes `$true`
+            // (`uia-bridge.ts:762`) and the native walk matches `contains("")`
+            // (`src/uia/scroll.rs:858`) — every element passes either way. On the AUTOMATION ID they
+            // do not: PowerShell drops the filter (`uia-bridge.ts:763`), while the native road is
+            // handed `Some("")` and compares EXACTLY (`id == target`, `src/uia/scroll.rs:867`), so
+            // an empty id silently EXCLUDES every element that has one — a filter nobody asked for,
+            // on the road that runs first. The two also disagree about what "no filter at all"
+            // selects: native tests the window element before walking (`src/uia/scroll.rs:809`),
+            // PowerShell takes the first descendant.
+            //
+            // THE FLAG STAYS FALSE FOR `""` ANYWAY, and the reason is not that the roads agree: an
+            // empty id is not something the call was ADDRESSED BY, and a row that answered
+            // `automation_id` for it would launder a road defect into a claim about the caller. The
+            // defect itself is a row of its own, not this PR's to fix.
+            //
+            // THERE IS NO `windowTitle` FLAG HERE, AND THE MACHINE IS WHY. The first version wrote
+            // one from `winTitle` and it was true on every row, because `winTitle` is
+            // `aim.title ?? "@active"`. The second wrote it from `aim.title` — and six real arms
+            // came back with it true on every row again, including a bare act and one that passed
+            // `"@active"` (win2, 2026-09-16, `dev/native-handle/RESULTS-the-value-road-two-axes.md`).
+            // The reason is a layer up: `session.lastTarget` is replaced by the RESOLVED target the
+            // moment a provider answers (`desktop.ts:410`), so the question "did the caller name a
+            // window" has no witness left by the time the aim exists. A flag that separates nothing
+            // is not an observation, and the SAME defect arriving twice by two different routes is
+            // the reason this one is recorded in prose instead of shipped a third time. What the
+            // window axis below can still say — handle or title — it says from the road's own
+            // choice, not from the caller's words.
+            //
+            // AND `name` IS NOT ALWAYS THE CALLER'S WORD — said here, at the field, and not fifty
+            // lines below where it used to live (gate 2, 2026-09-16). It is
+            // `locator.uia.name ?? entity.label`, so on an entity whose UIA locator has no name it
+            // is the label the DISCOVER gave the entity. Counting `name: true` rows as "the call
+            // carried a name locator" over-counts, which is the class of defect this row has
+            // already removed twice.
+            //
+            // NO `hwnd` FLAG: `probeRoute` writes `hasAim` on every row and `addressedWindowBy`
+            // answers `"handle"` for exactly the same condition, so a third copy of one bit could
+            // only ever disagree with the other two (gate 2, 2026-09-16). This object is the
+            // ELEMENT locators the call carried; the window is the axis below.
+            addressedBy: {
+              automationId: Boolean(automationId),
+              name: Boolean(name),
+            },
+            // The ELEMENT axis — the NARROWEST thing the call carried for choosing an element
+            // inside the window that answered. `automation_id` is matched exactly; `name` is
+            // matched as a case-insensitive SUBSTRING on both roads, so it selects the first
+            // element whose name CONTAINS it, which is a weaker thing than the field name suggests.
+            //
+            // IT IS A PRIORITY LABEL, NOT A RESOLUTION FACT, and that is the asymmetry with the
+            // window axis below (gate 2, 2026-09-16). A handle REPLACES the title — the title is
+            // never read. Here both filters are ANDed on both roads, so a call carrying an id and a
+            // name records `automation_id` while the name was also required. `addressedBy` is where
+            // "it carried both" is readable; this field is only "the narrowest it had".
+
+            addressedElementBy:
+              automationId ? "automation_id" : name ? "name_substring" : "nothing",
+            // The WINDOW axis — what decides whether a wrong WINDOW could have answered at all.
+            // A handle cannot be ambiguous; a title is a substring match over top-level windows and
+            // a same-titled sibling is the accident this ADR keeps measuring. MEASURED to split on
+            // the machine: `{windowTitle}` arms answer `"title"`, and `{hwnd}` / `{windowTitle,hwnd}`
+            // / a bare act / `"@active"` all answer `"handle"` (win2, 2026-09-16, six arms).
+            //
+            // `"nothing"` here does NOT have the standing of `"nothing"` on the element axis, and
+            // two versions of this comment said it did. The element axis's last branch needs a
+            // producer that does not exist. This one needs window resolution to FAIL, which the
+            // shipped road can do (`namesAWindowByTitle` above has the three branches). It is the
+            // rarer row and the louder one.
+            //
+            // AND `"title"` DOES NOT MEAN THE TITLE WAS RESOLVED. On the commonest road it is the
+            // caller's own string, passed through unchanged because a plain top-level match makes
+            // `resolveWindowTarget` return `null` on purpose. A partial title reaches the backends
+            // as a partial title, and the substring rule below is what decides which window answers.
+            addressedWindowBy:
+              aimHwnd !== undefined ? "handle" : namesAWindowByTitle(aim.title) ? "title" : "nothing",
+          });
           return "uia";
         } catch (uiaErr) {
           // R3 tool-exclusion — as in the click path below: refusals are not rungs.
