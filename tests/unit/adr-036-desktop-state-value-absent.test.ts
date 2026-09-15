@@ -13,8 +13,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const { view, uiaFocus, cdpResult, fgTitle } = vi.hoisted(() => ({
   view: { value: null as unknown },
@@ -128,7 +129,8 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * gate 1 walked through it with `Retry the write now.` — every required substring present,
    * every forbidden one absent, green. The READMEs were not in that loop at all.
    *
-   * So the four copies are fixed text. Any edit fails here and has to be made deliberately, which
+   * So the two hand-written renderings are fixed text — the two SHIPPED copies come from one
+   * source now and are pinned in the cell below, not here. Any edit fails here and has to be made deliberately, which
    * is the point: this paragraph took fourteen rounds to stop claiming things the code cannot
    * support, and every round removed something — that the read tells you, that the hint's silence
    * means something, that a match settles it, that focusing first is enough, that the element can
@@ -137,12 +139,8 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    * resets, that a retry appends, that there is anything to do about it here, and finally the two
    * instructions that had framed it since before the first round.
    */
-  it("keeps all four copies of the landing paragraph exactly as measurement left them", () => {
+  it("keeps the two hand-written renderings exactly as measurement left them", () => {
     const EXPECTED: Record<string, string> = {
-      "src/tools/desktop-register.ts":
-        "A type/setValue that answers ok=true with 'landing' {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does.",
-      "src/server-windows.ts":
-        "  keyboard_target_unsafe → the background write would not have reached the field this act named — the focus is on a different control or in a different window, or the receiving control does not take typed text — so nothing was typed. Put the focus on the field you named, then type again — if_unexpected.detail names the ground and the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle as well, so that road does not open there). For other_window, bring the field's window forward first (focus_window) — it comes forward with the focus it last had, and the window holding the focus is usually over the field, which makes a click answer aim_occluded; do NOT type through the foreground instead, whatever holds the focus would take the characters. A type that answers ok:true with landing {confirmed:false, why} took the background write route but was not confirmed to have reached the field named. THIS LANDING IS A REPORT, not a state that can be resolved here: nothing on this response establishes whether the characters arrived; reading the field back does not settle it (`desktop_state` answers about the FOREGROUND, from a sticky focus row that can name a field in another window with the same title, and it may carry no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and NO hint is not evidence that a value was there: on the UIA road a provider that serves none leaves an absent value with no hint); `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write; and retrying a nonempty write is not a repeat, because a background write lands at the caret and replaces the selection exactly as typing does;",
       "README.md":
         "A successful `type` can carry `landing: { confirmed: false, why }`. The write took the background route, but the server could not confirm that it reached the field you named — for example, in a WPF window, whose fields have no window of their own. **This is a report, not a state that can be resolved here**: nothing in the response establishes whether the characters arrived, reading the field back does not settle it (`desktop_state` answers about the foreground, and may come back with no value at all — `hints.focusedElementValueAbsent` names the road that dropped it, `view_road_has_no_value` or `masked_on_this_road`, and no hint is not evidence a value was there — or name a field in another window with the same title), `diff.value_changed` is not delivery either, its baseline being your `desktop_discover` snapshot rather than the write, and retrying a nonempty write is not a repeat — a background write lands at the caret and replaces the selection, exactly as typing does.",
       "README.ja.md":
@@ -158,35 +156,19 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         .replace(/\r\n/g, "\n");
       const start = text.indexOf(expected.slice(0, 40));
       expect(start, `${rel} no longer opens the landing paragraph the same way`).toBeGreaterThan(-1);
-      if (rel.startsWith("src/")) {
-        // Quote to quote over the whole literal, not from the paragraph's own opening words:
-        // anchoring there left everything BEFORE it unpinned inside the same literal, and gate 2
-        // walked `Retry the write now.` in at the head of the `keyboard_target_unsafe` bullet with
-        // the cell green (2026-09-14).
-        //
-        // THE LITERAL IS NOT THE SHIPPED UNIT, and saying it was is what let the next hole stand:
-        // both descriptions are `[...].join(...)`, so a SIBLING element added next to this one
-        // ships to the same caller with every assertion in this cell green. Both gates reproduced
-        // it independently on 2026-09-15, in both source files. This cell pins the paragraph, and
-        // the cell below pins the unit that ships around it — neither is enough alone.
-        const open = text.lastIndexOf('"', start);
-        const end = text.indexOf('",', start);
-        expect(open, `${rel}: the landing paragraph's string literal has no opening quote`).toBeGreaterThan(-1);
-        expect(end, `${rel}: the landing paragraph's string literal is not terminated`).toBeGreaterThan(start);
-        expect(text.slice(open + 1, end), `${rel}'s shipped string changed`).toBe(expected);
-      } else {
-        const end = text.indexOf("\n", start);
-        expect(end, `${rel}: the landing paragraph does not end a line`).toBeGreaterThan(start);
-        expect(text.slice(start, end), `${rel}'s landing paragraph changed`).toBe(expected);
+
+      const end = text.indexOf("\n", start);
+      expect(end, `${rel}: the landing paragraph does not end a line`).toBeGreaterThan(start);
+      expect(text.slice(start, end), `${rel}'s landing paragraph changed`).toBe(expected);
         // AND IT IS ITS OWN BLOCK, blank line above and below. `end` stops at the newline, so an
         // instruction added on the next line is invisible to the comparison above — gate 2 put the
         // deleted Japanese read-back sentence back that way and the cell stayed green.
-        expect(text.slice(start - 2, start), `${rel}: something was added directly above the paragraph`).toBe("\n\n");
-        expect(text.slice(end, end + 2), `${rel}: something was added directly below the paragraph`).toBe("\n\n");
+      expect(text.slice(start - 2, start), `${rel}: something was added directly above the paragraph`).toBe("\n\n");
+      expect(text.slice(end, end + 2), `${rel}: something was added directly below the paragraph`).toBe("\n\n");
         // AND ADJACENCY IS NOT ABSENCE: an instruction one blank line further out is a separate
         // paragraph, ships to the same reader, and passes both lines above (win2 and gate 1, both
-        // 2026-09-15). The section pin below is what answers that.
-      }
+      // 2026-09-15). The section pin below is what answers that.
+
       // AND THERE IS ONLY ONE OF IT PER FILE. A first-match lookup cannot tell one copy from two,
       // and a second copy would be the one nobody edits (gate 1 P3, 2026-09-15).
       expect(
@@ -194,6 +176,306 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         `${rel} carries more than one copy of the landing paragraph`,
       ).toBe(text.lastIndexOf(expected.slice(0, 40)));
     }
+  });
+
+  it("ships both copies from one source, and they differ only where they are meant to", async () => {
+    // ONE SOURCE. Measured at `71d5a52`, just before this existed: the two shipped copies were
+    // 1,019 and 1,008 characters with a 967-character identical run and FIVE differences, all in
+    // the opening clause and the final mark — `A type/setValue` / `A type`, `ok=true` / `ok:true`,
+    // `'landing'` / `landing`, a full stop / a semicolon. So one template with two voices
+    // reproduces both exactly, and the proof this refactor owes is that NO SHIPPED BYTE MOVED:
+    // `desktop_act.description.txt` is the fixture `tools/list` is compared against, and it did
+    // not change.
+    //
+    // Why it is worth doing at all: a claim that reaches the caller twice can disagree with
+    // itself, and did. The hint clause was hedged in both READMEs and unhedged in both of these
+    // for a round; a round earlier, only one of them said what a retry does.
+    const { landingAdvice, LANDING_ADVICE_TOOL_DESCRIPTION, LANDING_ADVICE_SERVER_INSTRUCTIONS } =
+      await import("../../src/engine/landing-advice.js");
+    const description = landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION);
+    const instructions = landingAdvice(LANDING_ADVICE_SERVER_INSTRUCTIONS);
+    // FIRST, AND ON PURPOSE. Whichever assertion in this cell fires first is what a maintainer
+    // reads, and the obligation below only lands if it is this one: with the fixture comparison
+    // later in the cell, a changed paragraph tripped the divergence check instead and the message
+    // was never printed (verified by forcing the failure, 2026-09-15). A message nobody sees is a
+    // claim, not a check.
+    // AND THE INSTRUCTIONS VOICE IS PINNED AGAINST A FIXTURE, because moving the text out of
+    // `server-windows.ts` took it out of the source slice that used to hold it: that slice pins
+    // the array AROUND the paragraph, and the paragraph is generated now. Found by mutation —
+    // changing this voice's terminator left every cell green. `desktop_act`'s copy is covered by
+    // the `tools/list` comparison below; this one cannot be, because that entry point does not
+    // import on a non-Windows machine.
+    // NORMALISED like every other fixture read in this file, which is what makes an internal
+    // newline safe on a CRLF checkout — the previous version of this comment described the hazard
+    // that existed BEFORE the normalisation on the line below it, and told a future reader the pin
+    // was fragile in a way it is not (gate 2, 2026-09-15).
+    //
+    // THE RESIDUAL IT MISSED is the real one: this fixture has no trailing newline, so an editor
+    // set to insert a final newline reddens the cell with "the instructions voice changed". If that
+    // happens, the fixture is what to fix, not the source.
+    expect(
+      instructions,
+      "the instructions voice changed — if you meant to change the shipped text, RE-READ README.md " +
+        "and README.ja.md and confirm they still say the same thing. Nothing here checks that: " +
+        "pinning a README notices an edit to the README, not this text drifting away from it."
+    ).toBe(
+      readFileSync(
+        fileURLToPath(new URL("../fixtures/landing-paragraph/landing-advice.instructions.txt", import.meta.url)),
+        "utf8"
+      ).replace(/\r\n/g, "\n")
+    );
+
+    // TAKEN FROM THE GENERATED TEXT, not typed here: a hand-copied needle stops matching when the
+    // paragraph is reworded, and the assertion it feeds then fails saying the opposite of what
+    // happened (gate 2, 2026-09-15). A clause from the middle survives assembly; the whole string
+    // does not appear in any source file by construction.
+    // BOTH ANCHORS ARE CHECKED, not just the opening one. With the closing anchor unguarded,
+    // `indexOf` returning -1 made the slice the whole rest of the paragraph, which spans the `+`
+    // boundaries in the source and matches no file — so rewording `not a state that can be resolved
+    // here`, a legitimate edit, reddened the carrier walk with "the landing paragraph is written in
+    // more than one place under src/" while the real count was ZERO (gate 2, 2026-09-15, reproduced
+    // here by making that edit and updating the fixtures as the cell instructs). An inverted message
+    // is worse than no message: it is "fixed" by editing the expected array.
+    const NEEDLE_OPENS = instructions.indexOf("THIS LANDING");
+    const NEEDLE_CLOSES = instructions.indexOf("not a state");
+    expect(NEEDLE_OPENS, "the needle's opening anchor is gone from the paragraph").toBeGreaterThan(-1);
+    expect(NEEDLE_CLOSES, "the needle's closing anchor is gone from the paragraph").toBeGreaterThan(
+      NEEDLE_OPENS
+    );
+    const NEEDLE = instructions.slice(NEEDLE_OPENS, NEEDLE_CLOSES);
+    expect(NEEDLE.length, "the needle for the carrier walk came out empty").toBeGreaterThan(20);
+
+    // The two voices differ in exactly four places and nowhere else — a fifth divergence is how
+    // the copies drifted apart by hand in the first place, so it has to be deliberate. Stated as
+    // the slice rather than as a similarity score: a helper counting a shared head and tail
+    // measured SIX here and said nothing, because the divergence is at both ends and the
+    // agreement is in the middle.
+    expect(description).not.toBe(instructions);
+    const DESCRIPTION_HEAD = "A type/setValue that answers ok=true with 'landing' ";
+    const INSTRUCTIONS_HEAD = "A type that answers ok:true with landing ";
+    expect(description.startsWith(DESCRIPTION_HEAD), "the description's opening clause changed").toBe(true);
+    expect(instructions.startsWith(INSTRUCTIONS_HEAD), "the instructions' opening clause changed").toBe(true);
+    expect(
+      description.slice(DESCRIPTION_HEAD.length),
+      "the two voices diverge after the opening clause"
+    ).toBe(`${instructions.slice(INSTRUCTIONS_HEAD.length, -1)}.`);
+    expect(description.endsWith("."), "the description no longer ends in a full stop").toBe(true);
+    expect(instructions.endsWith(";"), "the instructions entry no longer ends in a semicolon").toBe(true);
+
+    // AND EACH CALLER IS PINNED TO THE VOICE IT ASKS FOR. This cell evaluates its OWN import,
+    // and the source fixture starts at `new McpServer(`, so the import lines sit between the two
+    // and were checked by neither: aliasing
+    // `LANDING_ADVICE_TOOL_DESCRIPTION as LANDING_ADVICE_SERVER_INSTRUCTIONS` in the server
+    // changes what ships while every assertion above stays green (gate 1, 2026-09-15, reproduced
+    // in memory). It is the same shape as the mutation that put the fixture here in the first
+    // place — the refactor moved a thing out of the region its check covered.
+    // READ AS CODE, NOT AS TEXT — because both text checks this cell had were beaten by text.
+    //
+    // The walk for "the paragraph exists once under src/" missed
+    // `"THIS LANDING " + "IS A REPORT"`, and the alias guard missed
+    // `LANDING_ADVICE_TOOL_DESCRIPTION /* voice */ as LANDING_ADVICE_SERVER_INSTRUCTIONS`,
+    // whose comment its regex could not cross while the positive check accepted the alias's
+    // local name (gate 1, 2026-09-15, both verified in memory, both leaving the served bytes
+    // byte-identical in the first case and silently changed in the second).
+    //
+    // Enumerating the ways text can be written differently does not end; parsing it does. The
+    // parser is the same one that compiles this repository, so the two cannot disagree about
+    // what the source says.
+    // WHICH FILES CALL IT IS FOUND BY WALKING, not by a list — the same reason the carrier walk
+    // below is a walk. A hard-coded pair could not see a THIRD shipped copy arriving as a
+    // GENERATED one: a new `landingAdvice(...)` call site contains none of the paragraph's text, so
+    // the carrier walk cannot see it either. Gate 2 added exactly that to a V1 tool description and
+    // all eight cells passed (2026-09-15).
+    //
+    // THE THING PINNED IS WHICH FILES NAME THE MODULE, NOT HOW A CALL IS SPELLED. Keying on the
+    // identifier `landingAdvice` was still a spelling, and gate 2 walked three third copies past it
+    // on 2026-09-15, each with all eight cells green: `import { landingAdvice as advice }`,
+    // `import * as la` + `la.landingAdvice(...)`, and `const f = landingAdvice; f(voice)`. Listing
+    // the ways a binding can be renamed does not end. What a third caller cannot avoid is NAMING
+    // THIS MODULE — through a barrel too, since the barrel then names it and appears here itself.
+    // The residual, said rather than hidden: a specifier assembled at run time
+    // (`await import(base + name)`) is not a literal and is not seen; nothing here loads that way.
+    const srcRoot = fileURLToPath(new URL("../../src", import.meta.url));
+    const parsed = new Map<string, ts.SourceFile>();
+    const sourceOf = (file: string): ts.SourceFile => {
+      const cached = parsed.get(file);
+      if (cached !== undefined) return cached;
+      const made = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+      parsed.set(file, made);
+      return made;
+    };
+    const rel = (file: string): string => file.slice(srcRoot.length + 1).replace(/\\/g, "/");
+
+    // Adjacent literals joined by `+` are folded first — here for a specifier, below for the
+    // paragraph. Both can be written in pieces, and one of them already was.
+    const fold = (node: ts.Node): string | undefined => {
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+        const left = fold(node.left);
+        const right = fold(node.right);
+        if (left !== undefined && right !== undefined) return left + right;
+      }
+      return undefined;
+    };
+    const literalsIn = (file: string): string[] => {
+      const texts: string[] = [];
+      const visit = (node: ts.Node): void => {
+        const folded = fold(node);
+        if (folded !== undefined) texts.push(folded);
+        else ts.forEachChild(node, visit);
+      };
+      visit(sourceOf(file));
+      return texts;
+    };
+
+    const MODULE = "landing-advice.js";
+    const naming = [...walkSource(srcRoot)]
+      .filter((file) => rel(file) !== "engine/landing-advice.ts")
+      .filter((file) => literalsIn(file).some((text) => text.endsWith(MODULE)))
+      .map(rel)
+      .sort();
+    expect(naming, "the set of files that name the landing-advice module changed").toEqual([
+      "server-windows.ts",
+      "tools/desktop-register.ts",
+    ]);
+
+    // AND EACH OF THEM ASKS FOR ONE VOICE. The call is matched through the binding its own import
+    // introduced, so an alias or a namespace import reaches this too rather than reading as absent.
+    const bindingsIn = (
+      source: ts.SourceFile
+    ): { named: Array<{ from: string; local: string }>; namespaces: string[] } => {
+      const named: Array<{ from: string; local: string }> = [];
+      const namespaces: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isImportDeclaration(node) &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text.endsWith(MODULE)
+        ) {
+          const bindings = node.importClause?.namedBindings;
+          if (bindings !== undefined && ts.isNamedImports(bindings)) {
+            for (const spec of bindings.elements) {
+              named.push({ from: (spec.propertyName ?? spec.name).text, local: spec.name.text });
+            }
+          }
+          if (bindings !== undefined && ts.isNamespaceImport(bindings)) namespaces.push(bindings.name.text);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      return { named, namespaces };
+    };
+    const callsIn = (file: string): string[] => {
+      const source = sourceOf(file);
+      const { named, namespaces } = bindingsIn(source);
+      const locals = new Set(named.filter((i) => i.from === "landingAdvice").map((i) => i.local));
+      const found: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          const throughBinding = ts.isIdentifier(callee) && locals.has(callee.text);
+          const throughNamespace =
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            namespaces.includes(callee.expression.text) &&
+            callee.name.text === "landingAdvice";
+          if (throughBinding || throughNamespace) {
+            found.push(node.arguments.map((a) => a.getText(source)).join(", "));
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      return found;
+    };
+    const callSites = new Map<string, string[]>();
+    for (const file of walkSource(srcRoot)) {
+      const calls = callsIn(file);
+      if (calls.length > 0) callSites.set(rel(file), calls);
+    }
+    expect(
+      Object.fromEntries([...callSites].sort()),
+      "the set of files calling landingAdvice changed"
+    ).toEqual({
+      "server-windows.ts": ["LANDING_ADVICE_SERVER_INSTRUCTIONS"],
+      "tools/desktop-register.ts": ["LANDING_ADVICE_TOOL_DESCRIPTION"],
+    });
+
+    // READ AS CODE, NOT AS TEXT — because both text checks this cell had were beaten by text.
+    // The carrier walk missed `"THIS LANDING " + "IS A REPORT"`, and an alias guard missed
+    // `LANDING_ADVICE_TOOL_DESCRIPTION /* voice */ as LANDING_ADVICE_SERVER_INSTRUCTIONS`, whose
+    // comment its regex could not cross (gate 1, 2026-09-15, both reproduced). Enumerating the ways
+    // text can be written differently does not end; parsing it does, with the same compiler this
+    // repository uses, so the cell and the implementation cannot disagree about what the source says.
+    for (const [file, voice] of [
+      ["src/tools/desktop-register.ts", "LANDING_ADVICE_TOOL_DESCRIPTION"],
+      ["src/server-windows.ts", "LANDING_ADVICE_SERVER_INSTRUCTIONS"],
+    ] as const) {
+      const path = fileURLToPath(new URL(`../../${file}`, import.meta.url));
+      const source = sourceOf(path);
+
+      // 1. IMPORTED UNDER ITS OWN NAME. `propertyName` is what an `as` leaves behind, and the pair
+      //    is what a comment cannot hide — the regex this replaced also reddened on prose that
+      //    merely mentioned an alias, reporting "renames a landing voice on import" falsely.
+      const imported: Array<{ from: string; local: string }> = [];
+      const visitImports = (node: ts.Node): void => {
+        if (
+          ts.isImportDeclaration(node) &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text.endsWith("landing-advice.js")
+        ) {
+          const bindings = node.importClause?.namedBindings;
+          if (bindings !== undefined && ts.isNamedImports(bindings)) {
+            for (const spec of bindings.elements) {
+              imported.push({ from: (spec.propertyName ?? spec.name).text, local: spec.name.text });
+            }
+          }
+        }
+        ts.forEachChild(node, visitImports);
+      };
+      visitImports(source);
+      expect(imported.length, `${file} imports nothing from landing-advice`).toBeGreaterThan(0);
+      for (const { from, local } of imported) {
+        expect(local, `${file} imports ${from} under the name ${local}`).toBe(from);
+      }
+      expect(
+        imported.map((i) => i.local).sort(),
+        `${file} does not import exactly landingAdvice and ${voice}`
+      ).toEqual(["landingAdvice", voice].sort());
+
+      // 2. AND THE PARAGRAPH IS IN NO STRING LITERAL THERE. Adjacent literals joined by `+` are
+      //    folded first, which is what the text walk could not do. The needle is taken from the
+      //    GENERATED text rather than typed here: rewording the paragraph — a legitimate edit —
+      //    would otherwise make the carrier assertion fail with the opposite message, which a
+      //    maintainer can "fix" by editing the expected array (gate 2, 2026-09-15).
+      expect(
+        literalsIn(path).filter((t) => t.includes(NEEDLE)),
+        `${file} carries the paragraph in a string literal again`
+      ).toEqual([]);
+    }
+
+    // AND NO OTHER FILE UNDER `src/` CARRIES IT EITHER. The two call sites are parsed above; this
+    // walks the rest, so a third carrier appearing anywhere is caught rather than assumed absent.
+    //
+    // WHAT THIS WALK DOES NOT SEE, named because it was measured rather than imagined (gate 2,
+    // 2026-09-15): a HAND-WRITTEN copy in a new file, WRITTEN IN PIECES. `"THIS LANDING " + "IS A
+    // REPORT, not a state…"` in, say, a new V1 tool description names no module, so the set above
+    // does not change; calls nothing, so the call listing does not change; and is not one contiguous
+    // run of text, so this `includes` does not match. All eight cells stay green — the very shape
+    // this cell exists to stop. Folding `+` here would close that spelling and not the next one
+    // (a template with a substitution, a character escape, a helper that joins two halves), which is
+    // the third round in a day of the same lesson: A PARTIAL MATCH CANNOT ASSERT AN ABSENCE, and
+    // this walk is a partial match. It is kept because it catches the cheap case, NOT because it
+    // proves the paragraph is written once. Detecting a duplicated shipped sentence for real is a
+    // different design and is filed as its own issue; what holds the line meanwhile is that the
+    // shipped surfaces are pinned whole, byte for byte, in the cell below.
+    const carriers = [...walkSource(srcRoot)]
+      .filter((file) => readFileSync(file, "utf8").includes(NEEDLE))
+      .map(rel)
+      .sort();
+    expect(carriers, "the landing paragraph is written in more than one place under src/").toEqual([
+      "engine/landing-advice.ts",
+    ]);
   });
 
   /**
@@ -220,7 +502,14 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
    *     native modules), so this side is source text. THAT THE SOURCE SLICE IS WHAT SHIPS WAS AN
    *     ASSUMPTION UNTIL 2026-09-15: win2 extracted the array from this slice, joined it the way
    *     production does, and compared it to what a real Windows server puts on the wire — byte
-   *     identical at all four corners (`2658e49`). The unit stays the source slice, which is WIDER
+   *     identical at all four corners (`2658e49`). **THAT PROCEDURE NO LONGER REACHES THE LANDING
+   *     PARAGRAPH.** Since the one-source refactor the `keyboard_target_unsafe` element is
+   *     `"…" + landingAdvice(LANDING_ADVICE_SERVER_INSTRUCTIONS)`, so extracting and joining the
+   *     slice reproduces the wire string for every element EXCEPT that one, whose bytes now come
+   *     from `landing-advice.instructions.txt` — and that fixture is the only pin on the
+   *     instructions voice, since this entry point cannot be imported on a non-Windows machine and
+   *     `tools/list` covers the description voice only. Do not drop it as redundant: this slice
+   *     pins the array around the paragraph and the call site, not the paragraph's bytes. The unit stays the source slice, which is WIDER
    *     than the wire string (it catches a spread, or a second options key, that the wire would only
    *     show as a replacement); what was missing was the correspondence, and that is now measured.
    *     The two tool descriptions were checked the same way in the same run: 8/8 byte identical.
@@ -366,3 +655,19 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     expect(out.hints).not.toHaveProperty("focusedElementValueAbsent");
   });
 });
+
+/**
+ * Every `.ts` file under a directory. Used to assert the landing paragraph exists ONCE in the
+ * source: a list of the files one expects to carry it could not notice a new one, which is the
+ * failure this assertion exists to prevent.
+ */
+function* walkSource(root: string): Generator<string> {
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) stack.push(join(dir, entry.name));
+      else if (entry.name.endsWith(".ts")) yield join(dir, entry.name);
+    }
+  }
+}
