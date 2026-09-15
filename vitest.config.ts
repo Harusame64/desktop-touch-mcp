@@ -33,12 +33,20 @@ export default defineConfig({
     // 3 -> 4 (gate 2, 2026-09-15). Clamping against the SMALLER of the two defaults is
     // what makes "can only lower" true wherever it is read.
     //
+    // SO THE NUMBER IS `min(4, floor(cpus / 2))` AND IT VARIES BELOW 8 CPUs — 4 here, 3 on
+    // six, 2 on four. It is not a machine-independent worker count and cannot be: any
+    // constant that does not raise the number on a small machine has to look at the
+    // machine. What was measured is narrower than "the same everywhere", and the comment
+    // used to overstate it: ON EACH MACHINE, the capped parallel run now fails the same
+    // FILE SET as that machine's serial run. Uncapped it did not — 30 tests across 11
+    // files here against 19 across 10, and on win2's 16-CPU machine 3 files against 1.
+    // The two machines still do not match each other, and the extra file differed too
+    // (`resolve-log-topology` here, `benchmark-gates` + `dirty-signal` there).
+    //
     // The cost is real and is measured, not waved at: on this 8-CPU machine the unit
     // project takes 18s uncapped and 26s at 4 workers. That price is paid by the local
     // pre-merge run, which is the only place the suite runs at all — the CI unit step
-    // (`.github/workflows/ci.yml`) is commented out. What is bought is a baseline that
-    // does not depend on the CPU count: uncapped, this machine failed 30 tests across 11
-    // files; capped, it fails the same 10 files a serial run does.
+    // (`.github/workflows/ci.yml`) is commented out.
     //
     // It is at the root because a project-level `maxWorkers` is read before the CLI flag
     // and is not in the list of options a CLI flag may override: writing it inside the
@@ -116,7 +124,12 @@ export default defineConfig({
           // merges every spec of a project into a single worker task — which `singleFork`
           // did NOT require, so it is not a rename but a trade: one process, no per-file
           // module isolation. Written down because it is the way back if the zombie or
-          // flake problem returns.
+          // flake problem returns — AND IT NEEDS ONE MORE THING to not break the whole
+          // run: with `isolate: false` this project stops taking the sequential path and
+          // lands in the same group as `unit`, whose worker count differs, which vitest
+          // refuses ("different 'maxWorkers' but same 'sequence.groupOrder'") before any
+          // test runs. Give it its own `sequence.groupOrder` at the same time (gate 2,
+          // 2026-09-15).
           pool: "forks",
           isolate: true,
         },

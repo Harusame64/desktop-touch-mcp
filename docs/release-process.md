@@ -26,8 +26,10 @@ For package `X.Y.Z`, it fetches GitHub Release tag `vX.Y.Z`, verifies
 
 ## Local Pre-Merge Testing
 
-`npm run test:capture` is the canonical pre-merge test runner (CI on windows-latest
-runs it via `scripts/test-capture.mjs`).
+`npm run test:capture` is the canonical pre-merge test runner, and as of 2026-09-15 it is the
+ONLY place the unit suite runs: the windows-latest unit step in `.github/workflows/ci.yml` is
+commented out (see the NOTE there), and no workflow invokes vitest. A green CI says nothing
+about the suite.
 
 **Always rebuild the Rust native addon first** if any file under `src/*.rs` or
 `Cargo.toml` has changed since the last build:
