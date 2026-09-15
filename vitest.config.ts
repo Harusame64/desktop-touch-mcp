@@ -34,19 +34,25 @@ export default defineConfig({
     // what makes "can only lower" true wherever it is read.
     //
     // SO THE NUMBER IS `min(4, floor(cpus / 2))` AND IT VARIES BELOW 8 CPUs — 4 here, 3 on
-    // six, 2 on four. It is not a machine-independent worker count and cannot be: any
-    // constant that does not raise the number on a small machine has to look at the
-    // machine. What was measured is narrower than "the same everywhere", and the comment
-    // used to overstate it: ON EACH MACHINE, the capped parallel run now fails the same
-    // FILE SET as that machine's serial run. Uncapped it did not — 30 tests across 11
-    // files here against 19 across 10, and on win2's 16-CPU machine 3 files against 1.
-    // The two machines still do not match each other, and the extra file differed too
-    // (`resolve-log-topology` here, `benchmark-gates` + `dirty-signal` there).
+    // six, 2 on four, 1 on two. It is not a machine-independent worker count: no constant
+    // ABOVE 1 can both avoid raising the number on a small machine and stay the same on
+    // every machine.
     //
-    // The cost is real and is measured, not waved at: on this 8-CPU machine the unit
-    // project takes 18s uncapped and 26s at 4 workers. That price is paid by the local
-    // pre-merge run, which is the only place the suite runs at all — the CI unit step
-    // (`.github/workflows/ci.yml`) is commented out.
+    // WHAT WAS MEASURED, and only this: on TWO machines — 8 CPUs here, 16 on win2, both
+    // of which resolve this formula to 4 — the capped parallel run fails the same FILE
+    // SET as that machine's own serial run, where uncapped it did not (30 tests across 11
+    // files against 19 across 10 here; 3 files against 1 there). The machines do not match
+    // each other, and even the extra file differed (`resolve-log-topology` here,
+    // `benchmark-gates` + `dirty-signal` there). THE 3-, 2- AND 1-WORKER REGIMES THIS
+    // FORMULA INTRODUCES BELOW 8 CPUs HAVE NO MEASUREMENT BEHIND THEM (gate 2,
+    // 2026-09-15) — if a contributor on a four-core machine sees a set that differs from
+    // their serial run, that is unmeasured ground, not a contradiction of this comment.
+    //
+    // The cost is real and is measured on both machines: 18s -> 26s here (7 workers -> 4),
+    // and 78s -> 98s on win2's 16-CPU machine (15 -> 4), where 6 workers took 70s. That
+    // price is paid by the local pre-merge run, which is the only place this suite runs at
+    // all — the windows-latest unit step was REMOVED (`4b1a5155`); what is left in
+    // `.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step.
     //
     // It is at the root because a project-level `maxWorkers` is read before the CLI flag
     // and is not in the list of options a CLI flag may override: writing it inside the

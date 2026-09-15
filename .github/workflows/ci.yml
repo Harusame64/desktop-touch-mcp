@@ -133,17 +133,23 @@ jobs:
       # spawning). Likely a runner-infra interaction with how vitest spawns
       # forks on a small Windows VM. Investigated in PR #45; deferred.
       #
-      # CORRECTION 2026-09-15: one of those arms did not test what it says, and
-      # the two are not distinct. `poolOptions` was removed in Vitest 4 and is
-      # read only to print a deprecation, so "default maxForks:4" ran at the CPU
-      # default — and on a 2-core runner that default IS 1. The `--maxWorkers=1`
-      # arm was honoured (the config of the day set no project-level
-      # `maxWorkers`, so the flag reached the root). So the record lists two
-      # settings where one worker was tried twice. The cap is real again as of
-      # this commit, but it is clamped to the machine and resolves to 1 on a
-      # 2-core runner as well: re-running there reproduces the arm that already
-      # failed, and the cancel is evidence about the runner rather than about
-      # this setting.
+      # CORRECTION 2026-09-15, and it is narrower than the first attempt at it:
+      # ONE ARM OF THIS RECORD DID NOT TEST WHAT IT SAYS. `poolOptions` was
+      # removed in Vitest 4 and is read only to print a deprecation, so "default
+      # maxForks:4" ran at whatever the CPU default was, not at 4. The
+      # `--maxWorkers=1` arm WAS honoured — the config of that day set no
+      # project-level `maxWorkers`, so the flag reached the root
+      # (`git show 4b1a5155:vitest.config.ts`).
+      #
+      # WHAT THAT DEFAULT WAS IS NOT RECORDED ANYWHERE WE CAN CHECK, and this
+      # note's own two halves disagree: the deleted step said "windows-latest is
+      # a 2-core runner" AND "4 forks load the native addon concurrently", which
+      # cannot both be true once maxForks is known to be inert (a 2-core default
+      # is one worker). GitHub has also changed standard runner sizes since.
+      # So: do not reason from a CPU count here. Print
+      # `node -p "require('os').availableParallelism()"` in the job before
+      # concluding anything about this, including how the cap added in the same
+      # commit as this note resolves there.
       #
       # P0-1 (audit §8.1) is therefore PARTIALLY addressed:
       #   - Rust build:rs runs here → catches Rust regressions (was the
