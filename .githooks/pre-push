@@ -1,4 +1,15 @@
 #!/bin/sh
+# BYTE-WISE, DELIBERATELY. `awk` below matches ONE CHARACTER at a time against a
+# regex, and in a UTF-8 locale a single byte of a multi-byte character is not a
+# character: awk dies with `towc: multibyte conversion failure`, the scan exits
+# non-zero, and this hook then refuses the push it could not read. A commit message
+# saying `…/code/session_—` reaches that, and this repository writes prose like it.
+#
+# Measured 2026-09-15: identical input, `LC_ALL=C` exit 0, `ja_JP.UTF-8` and
+# `en_US.UTF-8` exit 2. Nothing here used to set a locale while a comment claimed the
+# caller did, which is the kind of claim a comment cannot keep (gate 2).
+LC_ALL=C
+export LC_ALL
 # Two refusals before anything reaches the server:
 #   1. Direct push to main. Set DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 to bypass
 #      (release flow only — see docs/release-process.md and CLAUDE.md 強制命令 8).
@@ -98,6 +109,23 @@ redact_url() {
 # Redacted at the assignment rather than at those two sites, because nothing
 # here passes this to git: it is only ever printed. Keeping no raw form is what
 # stops a third message from reaching for one.
+# The characters an id is made of. ONE class, shared with
+# `scripts/strip-session-line.mjs`'s `SESSION_ID_CLASS`, because three places used to
+# name it and `embeds()` named it narrower — `[A-Za-z0-9]` while the other two allowed
+# `_` and `-`, so an id containing punctuation stopped counting early, came in under
+# the floor, and was published (gate 2, 2026-09-15). That was a live leak on the
+# mid-line road before this round touched anything.
+#
+# A round of this branch tried to remove the dependence entirely — count to where a URL
+# ENDS instead of through a known alphabet, and drop the host from the marker so every
+# equivalent spelling was caught. It closed spellings nobody writes and broke two things
+# people do: `refactor scripts/code/session_store_persistence.ts` became a refusal, and
+# the byte-wise character test reached prose it never used to. WHAT THIS GATE IS FOR is
+# an accident — the harness writes the trailer, or someone pastes a link. There is no
+# actor who obfuscates their own session id into a public repo, so the rule is written
+# for the accident and says so.
+session_id_class='[A-Za-z0-9_-]'
+
 # Session ids out of anything this hook PRINTS. The refusal below shows each
 # offending commit's subject so a person can find it — and when the session line
 # IS the subject, `%s` handed the complete secret to stderr and to CI logs. That
@@ -116,8 +144,8 @@ redact_url() {
 # may contain `|`.
 redact_session() {
     printf '%s\n' "$1" |
-        sed -e 's#\(/[Cc][Oo][Dd][Ee]/[Ss][Ee][Ss][Ss][Ii][Oo][Nn]_\)[^][ (){}<>",;|]*#\1<redacted>#g' \
-            -e 's#\(Claude-Session:\)[^ ]*#\1 <redacted>#g'
+        sed -e "s|\(https://claude[.]ai/code/session_\)${session_id_class}*|\1<redacted>|g" \
+            -e 's|\(Claude-Session:\).*|\1 <redacted>|g'
 }
 
 remote_name=$(redact_url "$1")
@@ -151,35 +179,6 @@ session_pattern='^[[:space:]]*([-*+][[:space:]]+)?Claude-Session:'
 # talking about ids.
 session_min_id=16
 
-# NO ID ALPHABET LIVES HERE ANY MORE, and that is the point of this round.
-#
-# There used to be one, and it was narrower than the two in `scripts/strip-session-line.mjs`
-# and in `redact_session`: `embeds()` counted `[A-Za-z0-9]` while both of those allow
-# `_` and `-`. With the URL taken out of the anchored pattern, that narrower class
-# became the ONLY gate a URL passed, and an id containing punctuation stopped counting
-# early, came in under the floor, and was published (gate 2, 2026-09-15). Naming one
-# class and sharing it fixed that case — and then the next round asked which
-# characters an id may actually contain, and nothing in this repository answers it.
-#
-# So the refusal stopped asking. It counts up to where a URL ENDS, not through
-# characters an id is made of; see `session_id_stop` below. The module keeps its
-# class, because REMOVAL must stay narrow — it edits the author's text, and over-
-# matching there costs a sentence.
-# WHERE AN ID ENDS, for the refusal side — and it is deliberately not the class above.
-#
-# Counting the characters an id is MADE OF means knowing that set, and nobody here
-# does: win2 asked the right question at the end of the round that fixed `_` and `-`
-# — "can an id contain a `.` or a `+`? that was not asked" — and the answer is not in
-# this repository. A count that depends on an unknown set stops early on the
-# character nobody listed, which is the third time the same shape has leaked.
-#
-# So the refusal counts up to where a URL ENDS IN PROSE instead: whitespace, or the
-# punctuation that wraps or closes a link in a sentence. That set is small, it is a
-# property of prose rather than of the id, and it does not need the id's alphabet to
-# be known. It can only count HIGH, so it refuses a line too many rather than
-# publishing one — and a refusal costs a reword.
-session_id_stop='[][ 	(){}<>"'"'"'`,;|\]'
-
 # Commits in $1 (a rev range) whose message carries a session id, one sha per
 # line, followed by a "@@SCANNED@@<n>" line saying how many commits were walked.
 # The caller checks that count: without it, a scan that produced nothing because
@@ -197,7 +196,7 @@ session_id_stop='[][ 	(){}<>"'"'"'`,;|\]'
 leaking_commits() {
     git log $1 --format="%x01%H%n%B" 2>/dev/null |
         tr '\r' '\n' |
-        awk -v pat="$session_pattern" -v minid="$session_min_id" -v idstop="$session_id_stop" '
+        awk -v pat="$session_pattern" -v minid="$session_min_id" -v idclass="$session_id_class" '
             # A session URL inside prose — `see [the session](https://…)` — is a leak
             # the anchored pattern was never going to see. Removal stays anchored (a
             # mid-line rewrite would eat the sentence around it); the REFUSAL can be
@@ -205,50 +204,22 @@ leaking_commits() {
             # No interval expressions here: mawk does not have them — which is why the
             # floor is counted by hand, and why the class it counts with is passed in
             # rather than written here for a third time.
-            # CASE-FOLDED, HOST-BLIND, AND COUNTING TO WHERE THE URL ENDS. Three
-            # bypasses that the anchored URL pattern used to cover by accident, and
-            # taking the URL out of it handed all three through (gates 1 and 2,
-            # 2026-09-15, reproduced against this program):
-            #
-            #   https://CLAUDE.AI/code/session_<24 chars>        — host never matched
-            #   https://claude.ai/code/session_%3<hex><23 more>  — counting stopped at %
-            #   https://claude.ai/code/session_<id with a `-`>   — `-` was not counted
-            #
-            # A first fix counted a `%XX` triple as one character. That branch is gone:
-            # once the count runs to the terminator instead of through a known alphabet,
-            # `%` is simply a character it counts, and the triple rule could only make
-            # the count SMALLER. It was also untestable — removing it left every case
-            # green, which is its own reason not to keep it. The cost is stated: an id
-            # written entirely in percent triples is counted long and refused early,
-            # which is a reword on a line nobody writes.
-            #
-            # AND THE HOST IS NOT LOOKED AT ANY MORE. Matching `claude.ai/code/session_`
-            # made every equivalent spelling of the same URL a bypass — a port
-            # (`claude.ai:443/…`), a subdomain, an encoded dot. Those are not a list of
-            # tricks someone thought of; they are what RFC 3986 says may differ while
-            # the URL stays the same, so the rule is written to the grammar instead of
-            # to the spellings: `/code/session_` plus a long enough id, wherever it
-            # sits. This refuses more, which is the affordable direction here.
-            #
-            # A `%XX` is counted rather than decoded, so the count can only come out
-            # HIGHER than the real length of the id. That direction is the safe one: this
-            # side refuses, and refusing one line too many costs a reword while
-            # missing one publishes an id. `length` and `substr` are byte-wise under
-            # `LC_ALL=C`, which is what the caller sets.
-            function embeds(line,   probe, i, rest, n, k, c) {
-                probe = tolower(line)
-                while ((i = index(probe, "/code/session_")) > 0) {
-                    rest = substr(probe, i + 14)
+            # A session URL inside prose — `see [the session](https://…)` — is a leak
+            # the anchored pattern was never going to see. Removal stays anchored (a
+            # mid-line rewrite would eat the sentence around it); the REFUSAL can be
+            # broader, because refusing only asks a human to reword.
+            # No interval expressions here: mawk does not have them, which is why the
+            # floor is counted by hand and the class it counts with is passed in.
+            function embeds(line,   i, rest, n, c) {
+                while ((i = index(line, "claude.ai/code/session_")) > 0) {
+                    rest = substr(line, i + 23)
                     n = 0
-                    k = 0
-                    while (k < length(rest)) {
-                        c = substr(rest, k + 1, 1)
-                        if (c ~ idstop) break
-                        n++
-                        k++
+                    while (n < length(rest)) {
+                        c = substr(rest, n + 1, 1)
+                        if (c ~ idclass) n++; else break
                     }
                     if (n >= minid) return 1
-                    probe = rest
+                    line = rest
                 }
                 return 0
             }

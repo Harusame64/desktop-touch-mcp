@@ -83,23 +83,30 @@ export const SESSION_LINE_RE = new RegExp(
 );
 
 /**
- * The POSIX ERE in `.githooks/pre-push`, and it is no longer the same rule as the
- * pattern above. The two sides answer different questions now:
+ * The POSIX ERE in `.githooks/pre-push`, and not the same rule as the pattern above.
+ * The two sides answer different questions:
  *
- *   REMOVAL (above) deletes a line that is NOTHING BUT a trailer or a link. It
- *   edits the author's text, so it may only take a line that has no text of the
- *   author's on it.
+ *   REMOVAL (above) deletes a line that is NOTHING BUT a trailer or a link. It edits the
+ *   author's text, so it may only take a line with none of the author's text on it.
  *
- *   THE PUSH SIDE refuses, which costs a reword, so it looks harder: this ERE for
- *   the trailer, and `embeds()` in the hook for a session id of at least 16
- *   characters ANYWHERE in the line. The URL used to be in this ERE as well, with
- *   no length floor, which refused any line that merely began with one — harmless
- *   while removal deleted those lines, a false refusal the moment it stopped.
+ *   THE PUSH SIDE refuses, which costs a reword, so it looks harder: this ERE for the
+ *   trailer, and `embeds()` in the hook for a session id of at least 16 characters
+ *   ANYWHERE in the line. The URL used to be in this ERE as well, with no length floor,
+ *   which refused any line that merely began with one — harmless while removal deleted
+ *   those lines, a false refusal the moment it stopped.
  *
- * So the invariant is not a subset relation. It is two properties, each held by
- * its own case in `tests/unit/strip-session-line.test.ts`: nothing carrying a real
- * id survives the push, and nothing is refused that carries neither a trailer nor
- * a real id.
+ * What the two sides DO share is `SESSION_ID_CLASS`, and
+ * `tests/unit/strip-session-line.test.ts` pins the hook's `session_id_class=` line and
+ * `redact_session`'s use of it against this module's constant. That cell was claimed here
+ * for a round in which it did not exist (gate 2, 2026-09-15): a documented cross-check
+ * that is not there is worse than none, because the next editor widens the constant
+ * trusting it.
+ *
+ * WHAT THIS PAIR IS FOR is an accident — the harness writes the trailer, or someone pastes
+ * a link. A round of this branch chased spellings that only a deliberately obfuscated URL
+ * would use and broke an ordinary path (`scripts/code/session_store_persistence.ts`) and
+ * the scan itself in a UTF-8 locale. The scope is written down in the tests' classified
+ * table rather than left to be re-derived.
  */
 export const SESSION_LINE_ERE =
   "^[[:space:]]*([-*+][[:space:]]+)?Claude-Session:";
