@@ -110,7 +110,7 @@ describe("the UIA value road, on success", () => {
       route: "uia",
       why: "uia_set_value",
       addressedElementBy: "automation_id",
-      addressedBy: { automationId: true, name: true, windowTitle: true, hwnd: true },
+      addressedBy: { automationId: true, name: true, hwnd: true },
     });
   });
 
@@ -128,10 +128,10 @@ describe("the UIA value road, on success", () => {
     // and a title. The old row called that `title_only` — while `addressedBy.hwnd` said a handle
     // was there, and while both roads resolve the window through the HANDLE and never search a
     // title (`resolve_root`, `src/uia/tree.rs:178`; `makeSetValueScriptByHwnd`,
-    // `uia-bridge.ts:1461`). Two axes, and the window axis is the handle's.
+    // `uia-bridge.ts:1464`). Two axes, and the window axis is the handle's.
     //
     // CONSTRUCTED, AND SAID SO: today's discover cannot produce a nameless UIA entity — the lane
-    // filters on `el.name` (`uia-provider.ts:116`), the merge keeps `locator.uia.name`
+    // filters on `el.name` (`uia-provider.ts:117`), the merge keeps `locator.uia.name`
     // (`resolver.ts:91`), and the executor falls back to `entity.label`. The cell pins the last
     // branch of a total function, so that a producer which one day CAN emit one does not arrive
     // silently mislabelled.
@@ -140,57 +140,77 @@ describe("the UIA value road, on success", () => {
     expect(valueRoadRows()[0]).toMatchObject({
       addressedElementBy: "nothing",
       addressedWindowBy: "handle",
-      addressedBy: { automationId: false, name: false, windowTitle: true, hwnd: true },
+      addressedBy: { automationId: false, name: false, hwnd: true },
     });
   });
 
   it("says the window was addressed by its title when there is no handle", async () => {
+    // MEASURED on the machine, both sides of this split: a `{windowTitle}` act answers `"title"`,
+    // and `{hwnd}` / `{windowTitle,hwnd}` / a bare act / `"@active"` all answer `"handle"` (win2,
+    // 2026-09-16, six arms on `a5cae285`).
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     expect(await typeInto(entity, { kind: "aim", title: "VR-CELL" })).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
       addressedWindowBy: "title",
-      addressedBy: { windowTitle: true, hwnd: false },
+      addressedBy: { hwnd: false },
     });
   });
 
-  it("says the window was NOT named when the aim fell back to the foreground", async () => {
-    // THE FLAG THAT HAD TO BE REWRITTEN. `winTitle` is `aim.title ?? "@active"`, so a flag written
-    // from it is true on every row and separates nothing. Written from `aim.title`, it separates a
-    // named window from a call that took whatever was in front — two different acts.
+  it("answers `handle` for an aim that has one and no title at all", async () => {
+    // THIS CELL USED TO PIN A FLAG THAT IS GONE. Two versions of an `addressedBy.windowTitle` were
+    // written and both were true on every row: the first from `winTitle` (`aim.title ?? "@active"`,
+    // so always set), the second from `aim.title` — which six real arms found set on a bare act and
+    // on an `"@active"` act too, because `session.lastTarget` is replaced by the RESOLVED target as
+    // soon as a provider answers (`desktop.ts:410`; win2, 2026-09-16). The question "did the caller
+    // name a window" has no witness at this layer, so the row stopped claiming it. What is left is
+    // the window axis, which reports the road's own choice.
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     expect(await typeInto(entity, { kind: "aim", hwnd: HWND })).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
-      addressedBy: { windowTitle: false, hwnd: true },
+      addressedBy: { hwnd: true },
       addressedWindowBy: "handle",
     });
   });
 
   it("counts `@active` and an empty title as naming NO window, because this road expands neither", async () => {
-    // Not `!== undefined`. `aim.title` is the caller's string, copied verbatim by `toAim`
-    // (`aim.ts:497`), and this road has no foreground shorthand: `"@active"` goes to the same
-    // substring search as any other title (`find_window`, `src/uia/tree.rs:226`), and `""` matches
+    // Not `!== undefined`: this road has no foreground shorthand, so `"@active"` goes to the same
+    // substring search as any other title (`find_window`, `src/uia/tree.rs:226`) and `""` matches
     // whichever top-level window is enumerated first. `_post.ts:439` answers
     // `call_named_no_window` for exactly these two; this row agrees with it.
+    //
+    // WHICH ROAD CAN BRING ONE HERE, since the machine corrected the first answer: not the shipped
+    // `desktop_act` ingress, which replaces the caller's target with the resolved one at
+    // `desktop.ts:410` — six arms came back with a resolved title even for a bare act and for
+    // `"@active"` (win2, 2026-09-16). Only the direct `candidateProvider` road keeps the caller's
+    // raw spec (`_aimFor` → `toAim`, `desktop.ts:870`). So this is the last branch of a total
+    // function on one road and a live case on the other, which is why the predicate is tested here
+    // rather than assumed unreachable.
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     for (const title of ["@active", ""]) {
       rmSync(logPath, { force: true });
       expect(await typeInto(entity, { kind: "aim", title })).toEqual("uia");
       expect(valueRoadRows()[0]).toMatchObject({
-        addressedBy: { windowTitle: false, hwnd: false },
+        addressedBy: { hwnd: false },
         addressedWindowBy: "nothing",
       });
     }
   });
 
   it("reads an EMPTY locator as no filter, because that is what both roads do with it", async () => {
-    // The roads agree and the row has to: PowerShell writes `$true` for an empty name or id
-    // (`uia-bridge.ts:762-763`), and the native walk matches `contains("")` on every element
-    // (`src/uia/scroll.rs:858`). A row that called `""` an address would claim a narrowness the
-    // call does not have — the same defect as the P2 above, one layer down.
+    // THE ROADS DO NOT AGREE, and the first version of this comment said they did (gate 2,
+    // 2026-09-16). On the NAME they do — PowerShell writes `$true` (`uia-bridge.ts:762`) and the
+    // native walk matches `contains("")` (`src/uia/scroll.rs:858`). On the AUTOMATION ID they do
+    // not: PowerShell drops the filter (`uia-bridge.ts:763`) while the native road compares
+    // exactly (`id == target`, `src/uia/scroll.rs:867`), so an empty id EXCLUDES every element that
+    // has one.
     //
-    // CONSTRUCTED: `uia-provider.ts:127` already normalises an empty automationId to `undefined`
-    // and drops nameless elements, so no shipped call arrives here. The cell pins the predicate
-    // against the road's, which is what can drift silently.
+    // THE CELL STILL ASSERTS `"nothing"`, and on purpose: an empty id is not something the call was
+    // addressed BY, and answering `automation_id` would launder a road defect into a claim about
+    // the caller. What this pins is the ROW's predicate, not a model of the roads — the road's own
+    // disagreement is filed separately.
+    //
+    // CONSTRUCTED: `uia-provider.ts:126` already normalises an empty automationId to `undefined`
+    // and `:117` drops nameless elements, so no shipped call arrives here.
     const entity: UiEntity = { ...base, locator: { uia: { name: "", automationId: "" } } };
     expect(await typeInto(entity, aimed)).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
