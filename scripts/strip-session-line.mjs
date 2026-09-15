@@ -18,6 +18,20 @@ import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 /**
+ * The characters that count as part of a session id. ONE class, named once and
+ * shared, because three places used to name it and one named it narrower:
+ * `embeds()` in `.githooks/pre-push` counted `[A-Za-z0-9]` while this file and
+ * `redact_session` allowed `_` and `-`. When the URL left the hook's anchored
+ * pattern, that narrower class became the only gate a URL passed through, and
+ * `…/session_01ABCDEF-GHIJKLMNOPQRSTUV` stopped counting at the `-`, came in under
+ * the floor, and was published (gate 2, 2026-09-15).
+ *
+ * `tests/unit/strip-session-line.test.ts` pins the hook's `session_id_class=` line
+ * against this constant, so the two engines cannot drift apart in silence again.
+ */
+export const SESSION_ID_CLASS = "[A-Za-z0-9_-]";
+
+/**
  * Lines that carry a session id: the trailer the harness writes, and a bare
  * session URL on its own line (the shape used in PR descriptions), optionally
  * behind a list marker — `- https://claude.ai/code/session_x` is not prose and
@@ -31,19 +45,71 @@ import { pathToFileURL } from "node:url";
  * Anchored at line start so prose that MENTIONS the trailer mid-sentence
  * survives — this repo's own commit messages discuss it.
  *
+ * AND THE URL BRANCH ENDS AT THE END OF THE LINE, so a line that BEGINS with a
+ * session link and carries prose after it is not removed either. Anchoring alone
+ * did not deliver what it was written for: the rule is "removal must not eat the
+ * sentence around the link", and
+ *
+ *     The trailer is spelled Claude-Session: and a link like
+ *     https://claude.ai/code/session_x is what the hook removes when it starts a line.
+ *
+ * came back as its first line alone (found by running the hook, 2026-09-15,
+ * reproduced on Windows). One editor wrapping a sentence reaches that shape, and
+ * so does `- https://…/session_x — the run this came from`.
+ *
+ * What happens to such a line instead is the division of labour this file already
+ * describes: `.githooks/pre-push` scans mid-line for an id of at least 16
+ * characters and REFUSES the push. A reword costs less than a lost sentence, and
+ * it is the author's reword rather than the hook's edit.
+ *
+ * The TRAILER branch is deliberately not narrowed the same way. `Claude-Session:`
+ * at the start of a line is a git trailer whose value is the id — there is no
+ * prose case to protect, and the harness writes exactly that line.
+ *
  * The whitespace class is `[ \t\v\f\r]`, matching what POSIX `[[:space:]]`
  * means to `grep` and to `awk` on a single line under `LC_ALL=C` — `awk` is what
- * actually scans in `.githooks/pre-push`, and the tests exercise both. It is spelled out rather
- * than written `\s` because `\s` would also take Unicode spaces, which `grep`
- * would not, and the two engines have to agree — `.githooks/pre-push` carries
- * the ERE spelling of this same rule, since it must run without node.
+ * actually scans in `.githooks/pre-push`, and the tests exercise both. It is spelled
+ * out rather than written `\s` because `\s` would also take Unicode spaces, which
+ * `grep` would not, and the two engines have to agree on any rule they SHARE.
+ *
+ * They no longer share this one. `.githooks/pre-push` carried the ERE spelling of
+ * the same rule while removal and refusal covered the same lines; see
+ * `SESSION_LINE_ERE` below for what each side answers now. The sentence that used to
+ * stand here said they carried the same rule, ten lines above the block saying they
+ * do not — two answers to one question in one file (gate 2, 2026-09-15).
  */
-export const SESSION_LINE_RE =
-  /^[ \t\v\f\r]*(?:[-*+][ \t\v\f\r]+)?(?:Claude-Session:|https:\/\/claude\.ai\/code\/session_)/;
+export const SESSION_LINE_RE = new RegExp(
+  `^[ \\t\\v\\f\\r]*(?:[-*+][ \\t\\v\\f\\r]+)?(?:Claude-Session:|https://claude\\.ai/code/session_${SESSION_ID_CLASS}*[ \\t\\v\\f\\r]*$)`
+);
 
-/** The POSIX ERE that `.githooks/pre-push` must be using for the same job. */
+/**
+ * The POSIX ERE in `.githooks/pre-push`, and not the same rule as the pattern above.
+ * The two sides answer different questions:
+ *
+ *   REMOVAL (above) deletes a line that is NOTHING BUT a trailer or a link. It edits the
+ *   author's text, so it may only take a line with none of the author's text on it.
+ *
+ *   THE PUSH SIDE refuses, which costs a reword, so it looks harder: this ERE for the
+ *   trailer, and `embeds()` in the hook for a session id of at least 16 characters
+ *   ANYWHERE in the line. The URL used to be in this ERE as well, with no length floor,
+ *   which refused any line that merely began with one — harmless while removal deleted
+ *   those lines, a false refusal the moment it stopped.
+ *
+ * What the two sides DO share is `SESSION_ID_CLASS`, and
+ * `tests/unit/strip-session-line.test.ts` pins the hook's `session_id_class=` line and
+ * `redact_session`'s use of it against this module's constant. That cell was claimed here
+ * for a round in which it did not exist (gate 2, 2026-09-15): a documented cross-check
+ * that is not there is worse than none, because the next editor widens the constant
+ * trusting it.
+ *
+ * WHAT THIS PAIR IS FOR is an accident — the harness writes the trailer, or someone pastes
+ * a link. A round of this branch chased spellings that only a deliberately obfuscated URL
+ * would use and broke an ordinary path (`scripts/code/session_store_persistence.ts`) and
+ * the scan itself in a UTF-8 locale. The scope is written down in the tests' classified
+ * table rather than left to be re-derived.
+ */
 export const SESSION_LINE_ERE =
-  "^[[:space:]]*([-*+][[:space:]]+)?(Claude-Session:|https://claude[.]ai/code/session_)";
+  "^[[:space:]]*([-*+][[:space:]]+)?Claude-Session:";
 
 /** A line with nothing on it. Deliberately the same class as the pattern. */
 const BLANK_LINE_RE = /^[ \t\v\f\r]*$/;
@@ -85,7 +151,11 @@ export function stripSessionLines(message) {
     const line = i / 2;
     const text = parts[i];
     const sep = parts[i + 1] ?? "";
-    if (SESSION_LINE_RE.test(text)) {
+    // TESTED WITHOUT A LEADING BOM. The pattern is anchored, and a BOM is not
+    // whitespace, so `\uFEFFClaude-Session: <id>` was left in place while the push side
+    // missed it too (gate 1, 2026-09-15). Only the TEST sees the stripped copy: what is
+    // kept is still the original bytes, because this function promises them back.
+    if (SESSION_LINE_RE.test(text.replace(/^(?:\uFEFF|\xEF\xBB\xBF)/, ""))) {
       removed++;
       lastRemovedLine = line;
       continue;

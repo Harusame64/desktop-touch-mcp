@@ -32,6 +32,7 @@ import {
   stripSessionLinesInFile,
   SESSION_LINE_RE,
   SESSION_LINE_ERE,
+  SESSION_ID_CLASS,
 } from "../../scripts/strip-session-line.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -143,6 +144,74 @@ describe("stripSessionLines — what comes out", () => {
     expect(text).toBe("");
   });
 
+  it("keeps a line that BEGINS with a session link and carries prose after it", () => {
+    // THE DEFECT THIS CASE EXISTS FOR (found by running the hook, 2026-09-15,
+    // reproduced on Windows): anchoring at line start was written so removal would
+    // not "eat the sentence around the link", and it did exactly that whenever the
+    // link happened to open the line — one editor wrapping a sentence reaches that
+    // shape. The whole line went, and the author's sentence came back truncated
+    // with only "removed 1 Claude-Session line" to say why.
+    //
+    // Such a line is `.githooks/pre-push`'s business now: it scans mid-line for an
+    // id of at least 16 characters and refuses the push. A reword costs less than a
+    // lost sentence, and it is the author's reword rather than the hook's edit.
+    const input =
+      "docs: explain\n\nThe trailer is spelled Claude-Session: and a link like\n" +
+      "https://claude.ai/code/session_x is what the hook removes when it starts a line.\n";
+    const { text, removed } = stripSessionLines(input);
+    expect(removed).toBe(0);
+    expect(text).toBe(input);
+  });
+
+  it("keeps a list item whose link is followed by prose, and still removes the bare one", () => {
+    // The two shapes differ by what comes after the id, and nothing else.
+    expect(
+      stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x — the run this came from\n`)
+        .removed,
+    ).toBe(0);
+    expect(stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x\n`).removed).toBe(1);
+    // Trailing whitespace after the id is still a bare link — an editor's stray
+    // space must not be what decides whether the id is removed.
+    expect(stripSessionLines(`fix: a\n\n- https://claude.ai/code/session_x   \n`).removed).toBe(1);
+  });
+
+  it("still takes a whole line that OPENS with the trailer — pinned as behaviour, not endorsed", () => {
+    // TWO CASES IN THIS FILE USED TO GIVE OPPOSITE READINGS OF THIS (gate 2, 2026-09-15).
+    // This one said the trailer branch is right to take the whole line because "a
+    // trailer's value is the id, there is no sentence to protect"; the scope case below
+    // said the same behaviour is "the same failure mode this change fixes for URLs,
+    // filed rather than fixed here". Both cannot be the reason.
+    //
+    // The filed one is correct: `Claude-Session: lines are removed at commit time, so the
+    // gate never sees them.` is a SENTENCE, and it is deleted whole with only "removed 1
+    // Claude-Session line" said about it. It is not fixed here because narrowing this
+    // branch moves both nets again, which is a subject of its own.
+    //
+    // So this case pins the behaviour WITHOUT calling it right, and says so, because the
+    // next person to touch it will see this go red and must read that as the filed change
+    // arriving rather than as a regression.
+    expect(stripSessionLines(`fix: a\n\n${TRAILER} and then some words\n`).removed).toBe(1);
+  });
+
+  it("removes a trailer a BOM was written in front of", () => {
+    // The pattern is ANCHORED and a BOM is not whitespace, so `\uFEFFClaude-Session: <id>`
+    // stayed in the message while the push side missed it too — there is no URL there for
+    // the mid-line scan to find (gate 1, 2026-09-15). An editor writes a BOM; nobody
+    // chooses one, which is why this is in scope where an obfuscated URL is not.
+    const { text, removed } = stripSessionLines(`fix: a\n\n\uFEFF${TRAILER}\n`);
+    expect(removed).toBe(1);
+    expect(text).toBe("fix: a\n");
+  });
+
+  it("leaves a BOM alone when the line under it is not a trailer", () => {
+    // Only the TEST sees the stripped copy. What comes back is the original bytes, which
+    // is what this function promises — a BOM on an ordinary line survives.
+    const input = "\uFEFFfix: a\n\nbody\n";
+    const { text, removed } = stripSessionLines(input);
+    expect(removed).toBe(0);
+    expect(text).toBe(input);
+  });
+
   it("keeps a mid-sentence mention of the trailer", () => {
     // This repo's own commit messages discuss the trailer in prose. The pattern
     // is anchored for this reason; an unanchored one would eat the sentence.
@@ -235,6 +304,30 @@ describe("the hook and the pre-push net stay in step", () => {
     }
   });
 
+  it("pre-push counts an id with the same characters this module allows in one", () => {
+    // ONE ALPHABET, AND THE PIN THE MODULE CLAIMS. `embeds()` counted `[A-Za-z0-9]` while
+    // this module and `redact_session` allowed `_` and `-`, so an id containing
+    // punctuation stopped counting early, came in under the floor, and was published on
+    // the mid-line road (gate 2, 2026-09-15). The module's comment then claimed this cell
+    // existed for a round in which it did not (gate 2 again, the same day) — a documented
+    // cross-check that was not there is worse than none, so here it is.
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    expect(hook).toContain(`session_id_class='${SESSION_ID_CLASS}'`);
+    expect(hook).toContain("if (c ~ idclass) n++; else break");
+    // The redactor takes the same class, so a refusal cannot print an id the scan counted.
+    expect(hook).toContain('${session_id_class}*|\\1<redacted>|g"');
+    // AND THE CHARACTER TEST NEVER USES A LITERAL CLASS. Asserted at the USE SITE rather
+    // than by scanning the file for a spelling: a scan for `[A-Za-z0-9…` can only find a
+    // class already written that way, so a narrower third site spelled `[[:alnum:]]`,
+    // `[A-Za-z]` or `[0-9A-Za-z_-]` would vanish from the result instead of showing up as
+    // a second spelling (gate 2, 2026-09-15) — the same "enumerate what you thought of"
+    // defect the hook itself had. What matters is not how a class is written but whether
+    // the id test is decided by one that is not the shared variable.
+    expect(hook, "a character is classified against a literal class instead of idclass").not.toMatch(
+      /\bc ~ \//
+    );
+  });
+
   it("pre-push carries the POSIX spelling of the same pattern", () => {
     // `pre-push` cannot import the module — it must run without node — so the
     // ERE is duplicated there on purpose. This pins the copy to the original
@@ -245,7 +338,19 @@ describe("the hook and the pre-push net stay in step", () => {
   });
 });
 
-describe("the two patterns accept the same lines, not merely the same string", () => {
+/** 24 characters, the length every real id in this repository's history has. */
+const REAL_ID = "01ABCDEFGHIJKLMNOPQRSTUV";
+
+/**
+ * The same length, with the two characters the id class allows besides letters and
+ * digits. `embeds()` used to count `[A-Za-z0-9]` only, so an id like this stopped
+ * counting at the punctuation, came in under the floor, and was published — and the
+ * corpus could not see it, because every id in it was alphanumeric.
+ */
+const REAL_ID_HYPHEN = "01ABCDEF-GHIJKLMNOPQRSTU";
+const REAL_ID_UNDER = "01ABCDEF_GHIJKLMNOPQRSTU";
+
+describe("the two sides, and the two properties between them", () => {
   /**
    * Translate the POSIX ERE into a JS RegExp so it can actually be run against
    * the same corpus as the module's own pattern.
@@ -291,6 +396,24 @@ describe("the two patterns accept the same lines, not merely the same string", (
     "fix: a subject line",
     "prose mentioning Claude-Session: mid-sentence",
     "See https://claude.ai/code/session_x for context",
+    // THE LINES THE TWO PATTERNS ARE MEANT TO DISAGREE ON. Before they were added,
+    // narrowing the removal pattern left all 63 cases green — the corpus this block
+    // exists to be thorough about had no case that could tell the two apart, which
+    // is the same defect as a pin whose mutation nobody fires.
+    "https://claude.ai/code/session_x is what the hook removes when it starts a line.",
+    "- https://claude.ai/code/session_x — the run this came from",
+    "  + https://claude.ai/code/session_x, for the record",
+    "https://claude.ai/code/session_x   ",
+    // REAL-LENGTH ids, both shapes. The corpus was entirely `session_x` before, so
+    // nothing in it could tell the id floor from a pattern that ignores length.
+    `https://claude.ai/code/session_${REAL_ID}`,
+    `- https://claude.ai/code/session_${REAL_ID}`,
+    `https://claude.ai/code/session_${REAL_ID} is the run this came from.`,
+    `see [the session](https://claude.ai/code/session_${REAL_ID}) for context`,
+    `https://claude.ai/code/session_${REAL_ID_HYPHEN} is the run this came from.`,
+    `https://claude.ai/code/session_${REAL_ID_UNDER} is the run this came from.`,
+    `https://claude.ai/code/session_${REAL_ID_HYPHEN}`,
+    `see [the session](https://claude.ai/code/session_${REAL_ID_HYPHEN}) for context`,
     "https://claude.ai/code/artifacts/abc",
     "https://claudeXai/code/session_x",
     "",
@@ -299,19 +422,255 @@ describe("the two patterns accept the same lines, not merely the same string", (
     "+not-a-list-marker Claude-Session: x",
   ];
 
-  it("classifies every corpus line identically", () => {
-    const ere = ereToRegExp(SESSION_LINE_ERE);
-    for (const line of corpus) {
-      expect(ere.test(line), `ERE vs JS disagree on: ${JSON.stringify(line)}`).toBe(
-        SESSION_LINE_RE.test(line)
+  /**
+   * THE PREDICATE THE HOOK ACTUALLY RUNS, lifted out of `.githooks/pre-push` rather
+   * than re-implemented here. A copy would drift, and the copy is what would be
+   * tested. Feeds one synthetic commit record per line and returns which lines the
+   * program flagged.
+   */
+  function flaggedByTheHook(lines: readonly string[]): boolean[] {
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    // EVERY `-v` IS READ OFF THE CALL AND RESOLVED FROM THE HOOK'S OWN ASSIGNMENTS,
+    // rather than being a list this file keeps. win2 proved why on 2026-09-15: with a
+    // hardcoded list, a variable the hook had started passing would be left UNSET
+    // here, and `c ~ idstop` against an empty pattern matches every character — the
+    // floor moves and nothing says so. A missing assignment now fails the case.
+    const call = hook.match(/awk((?: -v \w+="\$\w+")+) '/);
+    expect(call, "pre-push no longer calls awk the way this probe reads it").toBeTruthy();
+    const from = hook.indexOf(call![0]);
+    const to = hook.indexOf("\n        '", from);
+    expect(to, "the awk program in pre-push is not terminated the way this probe reads it").toBeGreaterThan(from);
+    const program = hook.slice(from + call![0].length, to);
+
+    const vars = [...call![1].matchAll(/-v (\w+)="\$(\w+)"/g)].map(([, name, shellVar]) => {
+      const assigned = hook.match(new RegExp(`^${shellVar}=(?:'(.*)'|(\\S+))$`, "m"));
+      expect(assigned, `pre-push passes ${name} but never assigns ${shellVar}`).toBeTruthy();
+      const raw = assigned![1] ?? assigned![2];
+      // `'...'"'"'...'` is how sh writes a single quote inside a single-quoted string.
+      return ["-v", `${name}=${raw.split(`'"'"'`).join("'")}`];
+    });
+    expect(vars.length, "the awk call passes no variables at all").toBeGreaterThan(2);
+
+    // THE LOCALE COMES FROM THE HOOK, NOT FROM HERE. This probe used to pass
+    // `LC_ALL: "C"` — the one configuration difference that decides whether the scan
+    // survives a multi-byte character — so it supplied the precondition the hook was
+    // missing and could not see the crash (gate 2, 2026-09-15). If the hook stops
+    // setting it, this fails instead of passing.
+    const locale = hook.match(/^LC_ALL=(\S+)$/m);
+    expect(locale, "pre-push sets no LC_ALL — a byte-wise character test needs one").toBeTruthy();
+
+    // AND THROUGH THE SAME PIPELINE. `leaking_commits` pipes `git log` through
+    // `tr '\r' '\n'` before awk sees it, so a message written with lone CR endings is
+    // several lines to the hook and one record to a probe that skips the stage.
+    const records = lines
+      .map((line, i) => `\u0001${i.toString(16).padStart(40, "0")}\n${line.replace(/\r/g, "\n")}`)
+      .join("\n");
+    const probe = spawnSync("awk", [...vars.flat(), program], {
+      input: `${records}\n`,
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: locale![1] },
+    });
+    expect(probe.status, `awk unusable: ${probe.error?.message ?? ""} ${probe.stderr}`).toBe(0);
+
+    // The program prints the scanned count as well; without checking it, an awk that
+    // read nothing would look like a clean corpus.
+    const out = probe.stdout.trim().split("\n");
+    const scanned = out.find((l) => l.startsWith("@@SCANNED@@"));
+    expect(scanned, "the program did not report how many records it walked").toBeDefined();
+    expect(Number(scanned?.slice("@@SCANNED@@".length))).toBe(lines.length);
+
+    const hit = new Set(out.filter((l) => /^[0-9a-f]{40}$/.test(l)));
+    return lines.map((_, i) => hit.has(i.toString(16).padStart(40, "0")));
+  }
+
+  /**
+   * A session id of at least the floor's length, anywhere in the line — built from
+   * the SHARED id class and from the floor READ OUT OF THE HOOK, not from a second
+   * copy of `embeds()`'s rule. The previous version of this helper re-stated that
+   * rule with awk's old narrow alphabet, so both properties below were tautologies
+   * for exactly the leak that was live: no corpus line could separate the two
+   * alphabets, because this function agreed with the scanner it was checking
+   * (gate 2, 2026-09-15).
+   */
+  function carriesARealId(line: string): boolean {
+    return new RegExp(`claude\\.ai/code/session_${SESSION_ID_CLASS}{${hookFloor()},}`).test(line);
+  }
+
+  /** The floor the hook itself declares, so the probe cannot test a different one. */
+  function hookFloor(): number {
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    const m = hook.match(/^session_min_id=(\d+)$/m);
+    expect(m, "pre-push no longer declares session_min_id the way this probe reads it").toBeTruthy();
+    return Number(m?.[1]);
+  }
+
+  /**
+   * CLASSIFIED BY HAND, and scoped on purpose.
+   *
+   * WHAT THIS GATE IS FOR: the harness writes `Claude-Session:` on its own, and a person
+   * sometimes pastes a session link. Those are accidents, they always carry the real host
+   * spelled the obvious way, and they are the whole of what actually happens.
+   *
+   * WHAT IT IS NOT FOR: evasion. A round of this branch chased spellings a deliberately
+   * obfuscated URL could use — an upper-case host, a port, a subdomain, percent-encoding,
+   * the marker itself percent-encoded — and closed several while breaking two things people
+   * really do: an ordinary path containing `/code/session_` became a refusal, and the
+   * byte-wise character test reached prose it never used to and killed the scan. There is
+   * no actor who smuggles their own session id into a public repository. The rows below
+   * are the accident, and the two rows that must PASS at the end are what the widening
+   * broke.
+   *
+   * Classified before either engine was asked, because every other case in this block
+   * derives its expectation from one of the rules it checks — which is how the last leak
+   * survived: the expected-id helper re-stated `embeds()`'s own alphabet.
+   */
+  const CLASSIFIED: ReadonlyArray<readonly [line: string, mustRefuse: boolean, why: string]> = [
+    [TRAILER, true, "the trailer the harness writes — the one case that actually happens"],
+    [`Claude-Session: ${REAL_ID}`, true, "the same trailer with a bare id and no URL"],
+    [`https://claude.ai/code/session_${REAL_ID}`, true, "a pasted link, alone on the line"],
+    [`https://claude.ai/code/session_${REAL_ID} is the run this came from.`, true, "prose after it"],
+    [`see [the session](https://claude.ai/code/session_${REAL_ID}) for context`, true, "mid-sentence"],
+    [`https://claude.ai/code/session_${REAL_ID_HYPHEN} is the run.`, true, "a `-` inside the id"],
+    [`https://claude.ai/code/session_${REAL_ID_UNDER} is the run.`, true, "a `_` inside the id"],
+    [`\uFEFFClaude-Session: ${REAL_ID}`, true, "a BOM in front of the trailer — an editor writes it, nobody chooses it"],
+    [`fix: see http://claude.ai/code/session_${REAL_ID} for context`, true, "the other scheme — the scan never needed one"],
+    [`fix: see claude.ai/code/session_${REAL_ID}`, true, "no scheme at all, which is how people write links in prose"],
+    [`fix: see https://Claude.ai/code/session_${REAL_ID}`, true, "a capital where a sentence starts — a typo, not evasion"],
+    ["https://claude.ai/code/session_x is what the hook removes when it starts a line.", false, "a short example id, prose after it"],
+    ["See https://claude.ai/code/session_x for context", false, "a short example id, mid-sentence"],
+    ["- https://claude.ai/code/session_x", false, "a short example id, bare"],
+    ["the marker is claude.ai/code/session_—that is what it counts from", false, "a multi-byte character right after the marker — the scan must not DIE on it"],
+    ["refactor scripts/code/session_store_persistence.ts today", false, "an ordinary path that happens to contain the words"],
+    ["prose mentioning Claude-Session: mid-sentence", false, "the trailer named in a sentence"],
+    [COAUTHOR, false, "attribution, which stays"],
+    ["fix: a subject line", false, "an ordinary subject"],
+    ["\uFEFFfix: a subject line", false, "a BOM in front of an ordinary subject — stripping it must not start refusing things"],
+  ];
+
+  it("gives the answer a person gave, on every line a person classified", () => {
+    const flagged = flaggedByTheHook(CLASSIFIED.map(([line]) => line));
+    const wrong = CLASSIFIED.map(([line, mustRefuse, why], i) => ({ line, mustRefuse, why, got: flagged[i] }))
+      .filter((row) => row.got !== row.mustRefuse)
+      .map((row) => `${row.mustRefuse ? "must refuse" : "must pass"} (${row.why}): ${row.line}`);
+    expect(wrong, "the hook disagrees with the hand-classified table").toEqual([]);
+    // Not vacuous: both answers are present, and more than one of each.
+    expect(CLASSIFIED.filter(([, m]) => m).length).toBeGreaterThan(5);
+    expect(CLASSIFIED.filter(([, m]) => !m).length).toBeGreaterThan(3);
+  });
+
+  it("redacts every id it is willing to refuse, so a refusal cannot print one", () => {
+    // WIDENING A DETECTOR AND LEAVING ITS PRINTER BEHIND is how one defect becomes two.
+    // The refusal prints each offending commit's SUBJECT, through `redact_session`, and
+    // that function used to match `https://claude.ai/code/session_` with an
+    // `[A-Za-z0-9_-]` id — every spelling the refusal newly catches would have gone to
+    // stderr and into CI logs with the id intact.
+    const hook = readFileSync(join(repoRoot, ".githooks", "pre-push"), "utf8");
+    const fn = hook.slice(hook.indexOf("redact_session() {"), hook.indexOf("\n}", hook.indexOf("redact_session() {")) + 2);
+    expect(fn.length, "redact_session is not where this probe reads it").toBeGreaterThan(100);
+    // THE FUNCTION NEEDS WHAT THE HOOK GIVES IT. It interpolates `$session_id_class`, and
+    // a snippet run without that assignment is a DIFFERENT function: the variable expands
+    // to nothing and the URL pattern changes shape. That is why this case stayed green
+    // through a mutation of the trailer branch — the probe was not running the hook's
+    // redactor at all. Every assignment the snippet references is carried in with it.
+    const needed = [...new Set([...fn.matchAll(/\$\{?(\w+)\}?/g)].map(([, name]) => name))].filter(
+      (name) => name !== "1"
+    );
+    const prelude = needed
+      .map((name) => {
+        const assigned = hook.match(new RegExp(`^${name}=(?:'.*'|\\S+)$`, "m"));
+        expect(assigned, `redact_session uses $${name} and pre-push never assigns it`).toBeTruthy();
+        return assigned![0];
+      })
+      .join("\n");
+    expect(prelude.length, "redact_session references no hook variable — has it stopped sharing one?").toBeGreaterThan(0);
+    for (const [line, mustRefuse] of CLASSIFIED) {
+      if (!mustRefuse) continue;
+      const probe = spawnSync("sh", ["-c", `${prelude}\n${fn}\nredact_session "$1"`, "sh", line], {
+        encoding: "utf8",
+        env: { ...process.env, LC_ALL: "C" },
+      });
+      expect(probe.status, `sh unusable: ${probe.error?.message ?? ""} ${probe.stderr}`).toBe(0);
+      expect(probe.stdout, `redact_session left an id in: ${line}`).toContain("<redacted>");
+      // AND EVERY ID-SHAPED TOKEN IS GONE, not merely joined by the marker. Pulling the id
+      // out by `session_(…)` only worked for the URL form, so the bare-id trailer
+      // `Claude-Session: <id>` was checked for the WORD `<redacted>` and nothing else —
+      // and the trailer branch's `[^ ]*` matches zero characters, because a space follows
+      // the colon, so the marker was inserted and the id printed beside it (gate 2,
+      // 2026-09-15). Any run of id characters at least as long as the floor counts as an id
+      // here, whatever shape the line has.
+      const tokens = (line.match(new RegExp(`${SESSION_ID_CLASS}{${hookFloor()},}`, "g")) ?? []).filter(
+        (t) => !/^[A-Za-z-]+$/.test(t)
       );
+      expect(tokens.length, `no id-shaped token to check in: ${line}`).toBeGreaterThan(0);
+      for (const token of tokens) {
+        expect(probe.stdout, `redact_session printed ${token} from: ${line}`).not.toContain(token);
+      }
     }
   });
 
-  it("the corpus is not vacuous — it contains lines of both kinds", () => {
-    const matched = corpus.filter((l) => SESSION_LINE_RE.test(l));
-    expect(matched.length).toBeGreaterThan(5);
-    expect(corpus.length - matched.length).toBeGreaterThan(5);
+  it("refuses every line in the corpus that carries a real session id", () => {
+    // THE SAFETY PROPERTY, bounded to what the corpus reaches. It was named "wherever it
+    // sits", and the PR body said "anchored or mid-sentence" — broader than what was
+    // held: the marker search was case-sensitive then, so an upper-case host walked past
+    // both engines and no corpus line could show it, because this helper was
+    // case-sensitive in the same way (gate 2, 2026-09-15). The search is case-folded now
+    // and the host is not looked at at all, but the honest statement is still about the
+    // lines that were tried, and the hand-classified table above is where the equivalent
+    // spellings are actually enumerated.
+    //
+    // What remains outside: a spelling of `/code/session_` ITSELF that nobody listed — a
+    // percent-encoded slash, say. The marker is the one literal the scan still depends on.
+    const flagged = flaggedByTheHook(corpus);
+    const missed = corpus.filter((line, i) => carriesARealId(line) && !flagged[i]);
+    expect(missed, "a line carrying a real session id was not refused").toEqual([]);
+    expect(corpus.filter(carriesARealId).length, "the corpus has no real id in it to miss").toBeGreaterThan(2);
+  });
+
+  it("refuses nothing that carries neither a trailer nor a real id", () => {
+    // THE USABILITY PROPERTY, and the defect this change closes on the push side.
+    // The URL used to sit in the anchored pattern with no length floor, so a line
+    // merely BEGINNING with `https://…/session_x` was refused however short the id
+    // and whatever followed it — invisible while removal deleted those lines, and an
+    // unpushable commit the moment removal stopped.
+    const ere = ereToRegExp(SESSION_LINE_ERE);
+    const flagged = flaggedByTheHook(corpus);
+    const wrong = corpus.filter((line, i) => flagged[i] && !ere.test(line) && !carriesARealId(line));
+    expect(wrong, "a line with no trailer and no real id was refused").toEqual([]);
+  });
+
+  it("only ever deletes a line whose text is a trailer or is nothing but a link", () => {
+    // THE NAME IS NARROWER THAN THE ONE THIS CASE USED TO CARRY, because the old name
+    // ("none of the author's own text") claimed more than the pattern holds: the
+    // TRAILER branch is still unanchored at line end, so a line opening with
+    // `Claude-Session:` and continuing in prose is deleted whole — the same failure
+    // mode this change fixes for URLs, and this very commit message contains that
+    // token mid-sentence (gate 2, 2026-09-15). Closing it needs both nets moved again,
+    // which is a separate subject; it is filed rather than fixed here, and the name
+    // says what is actually asserted in the meantime.
+    // THE REMOVAL PROPERTY. Removal edits the message, so its licence is narrow: a
+    // git trailer, or a link with nothing after it. Everything else is the push
+    // side's business — a reword costs less than a lost sentence.
+    // BUILT FROM THE SHARED CLASS, not a fourth hand-written copy of it — widening
+    // `SESSION_ID_CLASS` used to widen the removal pattern while this stayed put, so
+    // this case would report overreach that was not overreach (gate 2, 2026-09-15), in
+    // the very PR whose second commit is called "Name the id alphabet once".
+    const BARE = new RegExp(
+      `^[ \\t\\v\\f\\r]*(?:[-*+][ \\t\\v\\f\\r]+)?(?:Claude-Session:.*|https://claude\\.ai/code/session_${SESSION_ID_CLASS}*[ \\t\\v\\f\\r]*)$`
+    );
+    const overreach = corpus.filter((line) => SESSION_LINE_RE.test(line) && !BARE.test(line));
+    expect(overreach, "removal would take a line carrying the author's text").toEqual([]);
+    expect(corpus.filter((l) => SESSION_LINE_RE.test(l)).length).toBeGreaterThan(5);
+  });
+
+  it("the corpus contains lines the two sides treat differently — otherwise the pair above is vacuous", () => {
+    const flagged = flaggedByTheHook(corpus);
+    const removedNotRefused = corpus.filter((l, i) => SESSION_LINE_RE.test(l) && !flagged[i]);
+    const refusedNotRemoved = corpus.filter((l, i) => flagged[i] && !SESSION_LINE_RE.test(l));
+    // A bare short-id link is removed and not refused; a real id in prose is refused
+    // and not removed. Both directions have to be present or the properties above are
+    // being checked against a corpus that cannot separate them.
+    expect(removedNotRefused.length, "no line is removed-but-not-refused").toBeGreaterThan(0);
+    expect(refusedNotRemoved.length, "no line is refused-but-not-removed").toBeGreaterThan(0);
   });
 
   it("the translator refuses what it cannot translate, rather than matching nothing", () => {
@@ -334,12 +693,23 @@ describe("the two patterns accept the same lines, not merely the same string", (
       `awk unusable: error=${probe.error?.message ?? "none"} stderr=${probe.stderr}`
     ).toBe(0);
 
+    // COMPARED AGAINST THE ERE AS WE READ IT, not against the removal pattern. This
+    // case used to check awk's answers against `SESSION_LINE_RE`, which was the same
+    // rule then and is not now — removal is narrower on purpose. What awk has to
+    // agree with is the ERE it is actually given; the direction that matters for
+    // safety is asserted separately below.
+    const ere = ereToRegExp(SESSION_LINE_ERE);
     const fromAwk = probe.stdout.trim().split("\n");
-    const fromJs = corpus.map((line) => (SESSION_LINE_RE.test(line) ? "1" : "0"));
+    const fromEre = corpus.map((line) => (ere.test(line) ? "1" : "0"));
     expect(fromAwk.length).toBe(corpus.length);
     for (let i = 0; i < corpus.length; i++) {
-      expect(fromAwk[i], `awk vs JS on ${JSON.stringify(corpus[i])}`).toBe(fromJs[i]);
+      expect(fromAwk[i], `awk vs the ERE on ${JSON.stringify(corpus[i])}`).toBe(fromEre[i]);
     }
+
+    // What the two sides owe each other is NOT that awk stops everything removal
+    // deletes — a bare link with a short id is removed and deliberately not refused.
+    // The properties that do hold are the three cases above, and they run the hook's
+    // own awk program rather than this pattern.
   });
 });
 
@@ -558,6 +928,19 @@ describe("pre-push refuses what it should", () => {
     const r = world.push(`refs/heads/x ${tip} refs/heads/x ${world.clean}${NL}`, dest);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("would publish commit(s)");
+  });
+
+  it.skipIf(!hasSh)("does not refuse a clean push because of the user's log output encoding", () => {
+    // `i18n.logOutputEncoding` is a USER setting, and git encodes the record markers along
+    // with the message: set to UTF-16LE, the scan walked a one-commit range, reported
+    // `@@SCANNED@@0`, and the count check — which exists so a scan that could not run is
+    // not read as a clean one — refused the push (gate 1, 2026-09-15). The scan reads bytes
+    // under `LC_ALL=C`, so the encoding it reads has to be pinned rather than inherited.
+    const dest = world.bare("origin.git");
+    world.git(["config", "i18n.logOutputEncoding", "UTF-16LE"]);
+    const r = world.push(`refs/heads/x ${world.clean} refs/heads/x ${"0".repeat(40)}\n`, dest);
+    expect(r.stderr, "a clean push was refused because of a log encoding").not.toContain("could not verify");
+    expect(r.status, `refused a clean push: ${r.stderr}`).toBe(0);
   });
 
   it.skipIf(!hasSh)("lets the repo write about session_x without refusing itself", () => {
