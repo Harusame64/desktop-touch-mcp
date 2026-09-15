@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const { view, uiaFocus, cdpResult, fgTitle } = vi.hoisted(() => ({
   view: { value: null as unknown },
@@ -235,13 +236,98 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // changes what ships while every assertion above stays green (gate 1, 2026-09-15, reproduced
     // in memory). It is the same shape as the mutation that put the fixture here in the first
     // place — the refactor moved a thing out of the region its check covered.
-    // THE PARAGRAPH EXISTS ONCE UNDER `src/`, and this is the assertion the PR's whole claim rests
-    // on. Nothing else can hold it: a hand-written copy inlined BYTE-IDENTICALLY into
-    // `desktop-register.ts` serves the same `tools/list` string, so every runtime comparison here
-    // stays green. Gate 2 measured exactly that on 2026-09-15 by extracting the old literal from
-    // the `71d5a52` blob rather than retyping it — and the mutation this branch had claimed
-    // reddened the cell did not, because the version it inlined was a SHORTENED paraphrase that
-    // changed the served bytes. A mutation has to be the worst case, not the convenient one.
+    // READ AS CODE, NOT AS TEXT — because both text checks this cell had were beaten by text.
+    //
+    // The walk for "the paragraph exists once under src/" missed
+    // `"THIS LANDING " + "IS A REPORT"`, and the alias guard missed
+    // `LANDING_ADVICE_TOOL_DESCRIPTION /* voice */ as LANDING_ADVICE_SERVER_INSTRUCTIONS`,
+    // whose comment its regex could not cross while the positive check accepted the alias's
+    // local name (gate 1, 2026-09-15, both verified in memory, both leaving the served bytes
+    // byte-identical in the first case and silently changed in the second).
+    //
+    // Enumerating the ways text can be written differently does not end; parsing it does. The
+    // parser is the same one that compiles this repository, so the two cannot disagree about
+    // what the source says.
+    for (const [rel, voice] of [
+      ["src/tools/desktop-register.ts", "LANDING_ADVICE_TOOL_DESCRIPTION"],
+      ["src/server-windows.ts", "LANDING_ADVICE_SERVER_INSTRUCTIONS"],
+    ] as const) {
+      const file = fileURLToPath(new URL(`../../${rel}`, import.meta.url));
+      const source = ts.createSourceFile(rel, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+
+      // 1. It is IMPORTED UNDER ITS OWN NAME from the shared module. `propertyName` is what an
+      //    `as` gives us: when it is set, the local name is an alias, and the pair is what a
+      //    comment cannot hide.
+      const imported: Array<{ from: string; local: string }> = [];
+      const visitImports = (node: ts.Node): void => {
+        if (
+          ts.isImportDeclaration(node) &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text.endsWith("landing-advice.js")
+        ) {
+          const bindings = node.importClause?.namedBindings;
+          if (bindings !== undefined && ts.isNamedImports(bindings)) {
+            for (const spec of bindings.elements) {
+              imported.push({ from: (spec.propertyName ?? spec.name).text, local: spec.name.text });
+            }
+          }
+        }
+        ts.forEachChild(node, visitImports);
+      };
+      visitImports(source);
+      expect(imported.length, `${rel} imports nothing from landing-advice`).toBeGreaterThan(0);
+      for (const { from, local } of imported) {
+        expect(local, `${rel} imports ${from} under the name ${local}`).toBe(from);
+      }
+      expect(
+        imported.map((i) => i.local).sort(),
+        `${rel} does not import exactly landingAdvice and ${voice}`
+      ).toEqual(["landingAdvice", voice].sort());
+
+      // 2. The call is a CALL, with that voice as its only argument — the expression, not a
+      //    string that looks like it. A literal restored beside a commented-out call passes
+      //    every text check and fails this one.
+      const calls: string[] = [];
+      const visitCalls = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === "landingAdvice"
+        ) {
+          calls.push(node.arguments.map((a) => a.getText(source)).join(", "));
+        }
+        ts.forEachChild(node, visitCalls);
+      };
+      visitCalls(source);
+      expect(calls, `${rel} no longer calls landingAdvice(${voice}) exactly once`).toEqual([voice]);
+
+      // 3. AND THE PARAGRAPH IS NOWHERE IN ITS STRING LITERALS. Adjacent literals joined by `+`
+      //    are folded first, which is what the text walk could not do.
+      const texts: string[] = [];
+      const fold = (node: ts.Node): string | undefined => {
+        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+          const left = fold(node.left);
+          const right = fold(node.right);
+          if (left !== undefined && right !== undefined) return left + right;
+        }
+        return undefined;
+      };
+      const visitStrings = (node: ts.Node): void => {
+        const folded = fold(node);
+        if (folded !== undefined) texts.push(folded);
+        else ts.forEachChild(node, visitStrings);
+      };
+      visitStrings(source);
+      expect(
+        texts.filter((t) => t.includes("THIS LANDING IS A REPORT")),
+        `${rel} carries the paragraph in a string literal again`
+      ).toEqual([]);
+    }
+
+    // AND NO OTHER FILE UNDER `src/` CARRIES IT EITHER. The two call sites are parsed above; this
+    // walks the rest, so a third carrier appearing anywhere is caught rather than assumed absent.
+    // A list of the files one expects to carry it could not notice a new one.
     const srcRoot = fileURLToPath(new URL("../../src", import.meta.url));
     const carriers = [...walkSource(srcRoot)]
       .filter((file) => readFileSync(file, "utf8").includes("THIS LANDING IS A REPORT"))
@@ -250,32 +336,6 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     expect(carriers, "the landing paragraph is written in more than one place under src/").toEqual([
       "engine/landing-advice.ts",
     ]);
-
-    const callers: ReadonlyArray<readonly [path: string, voice: string]> = [
-      ["src/tools/desktop-register.ts", "LANDING_ADVICE_TOOL_DESCRIPTION"],
-      ["src/server-windows.ts", "LANDING_ADVICE_SERVER_INSTRUCTIONS"],
-    ];
-    for (const [rel, voice] of callers) {
-      const text = readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8");
-      expect(text, `${rel} no longer calls landingAdvice with ${voice}`).toContain(
-        `landingAdvice(${voice})`
-      );
-      // Imported under its own name: an alias makes the call site read right and ship the other
-      // voice. Checked as an absence of `as` on either constant, in either direction.
-      expect(text, `${rel} renames a landing voice on import`).not.toMatch(
-        /LANDING_ADVICE_\w+\s+as\s+\w+/
-      );
-      expect(text, `${rel} does not import ${voice} by that name`).toMatch(
-        new RegExp(`import \\{[^}]*\\b${voice}\\b[^}]*\\}\\s*from\\s*"[^"]*landing-advice\\.js"`, "s")
-      );
-    }
-
-
-    // NO IMPERATIVE CHECK HERE, deliberately. "Contains no instruction" cannot be checked by
-    // listing the instructions one has already thought of — the cell above says exactly that,
-    // and a first attempt at it here flagged `retrying a nonempty write is not a repeat`
-    // because `Retry` is a substring of `retrying`. What holds that property is the exact-text
-    // comparison against the fixtures, plus the mutation battery on this branch.
   });
 
   /**
