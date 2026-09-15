@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import type { Plugin } from "vite";
+import { availableParallelism } from "node:os";
 
 // Strip shebang lines from .js/.cjs/.mjs files so vitest can import them.
 // Node.js handles shebangs natively; Vite's transform pipeline does not.
@@ -24,6 +25,24 @@ const stripShebang: Plugin = {
 
 export default defineConfig({
   test: {
+    // THE WORKER CAP, and it is a CAP: `maxWorkers: 4` is returned verbatim, so on a
+    // 2-core runner — the one `.github/workflows/ci.yml` says dies "before the 3rd worker
+    // finishes spawning" — a bare 4 would SPAWN MORE than the default did, in a change
+    // whose whole purpose is to hold the number down. Clamped against the machine, it can
+    // only lower.
+    //
+    // It is at the root because a project-level `maxWorkers` is read before the CLI flag
+    // and is not in the list of options a CLI flag may override: writing it inside the
+    // unit project silently disabled `--maxWorkers` (measured, 2026-09-15 — with the
+    // project-level value the control arm `--maxWorkers=2` still ran 4 workers).
+    // e2e and integration are unaffected: `fileParallelism: false` forces their worker
+    // count to 1 by its own documented behaviour, which is stronger than this.
+    maxWorkers: Math.min(4, Math.max(availableParallelism() - 1, 1)),
+    // ONE teardownTimeout FOR THE RUN. It is a root-only option — the pool reads it from
+    // the root Vitest instance — so the per-project 5_000 / 10_000 that stood here were as
+    // decorative as `poolOptions`, and every project was getting the 10 000 ms default.
+    // Keeping 10 000 keeps the behaviour that was actually in force (gate 2, 2026-09-15).
+    teardownTimeout: 10_000,
     projects: [
       {
         plugins: [stripShebang],
@@ -35,9 +54,9 @@ export default defineConfig({
           // fileParallelism defaults to true — 363 files run in parallel
           testTimeout: 10_000,
           hookTimeout: 10_000,
-          // Zombie prevention (Phase 4b-6): use the forks pool for native-binding
-          // safety, cap the workers so a failed teardown cannot leave many behind,
-          // teardownTimeout forces pool exit after a grace period.
+          // Zombie prevention (Phase 4b-6): the forks pool, for native-binding safety.
+          // The two other halves of that sentence now live at the root, where they are
+          // actually read — the worker cap and `teardownTimeout`.
           //
           // THE CAP HAD STOPPED BEING APPLIED. `poolOptions` was removed in Vitest 4:
           // the shipped code reads it in exactly one place, to print a deprecation, and
@@ -46,12 +65,16 @@ export default defineConfig({
           // `--maxWorkers=2` brought it to 2, which is what says the count is the cap
           // and not the instrument. So `maxForks: 4` had been decorative since the
           // upgrade, and the comment above it was describing a limit that did not exist.
-          pool: "forks",
-          maxWorkers: 4,
+          //
+          // The cap itself lives in the ROOT `test` block, not here: a project-level
+          // `maxWorkers` is returned before the CLI flag is ever read, so writing it here
+          // silently disabled `--maxWorkers`, including the `--maxWorkers=1` that
+          // `.github/workflows/ci.yml` reaches for on the 2-core runner — and the control
+          // arm that proves the cap is real (measured: `--maxWorkers=2` still ran 4).
           // `minForks` has NO top-level equivalent in Vitest 4 and is dropped rather than
           // renamed to something that does not mean the same thing.
+          pool: "forks",
           isolate: true,
-          teardownTimeout: 5_000,
         },
       },
       {
@@ -72,12 +95,15 @@ export default defineConfig({
           hookTimeout: 30_000,
           // `singleFork` was here for strict serial execution and clean teardown between
           // e2e files (zombie accumulation — context-consistency / screenshot-electron).
-          // It was already inert (see the unit project), and Vitest 4 has no top-level
-          // spelling of "all files in ONE process": the serial part is `fileParallelism`,
-          // which is kept; the one-process part is gone and is not faked here.
+          // It was already inert (see the unit project). The serial part is
+          // `fileParallelism`, which is kept. The "all files in ONE process" part is
+          // reachable in Vitest 4 only as `isolate: false` with one worker — the run then
+          // merges every spec of a project into a single worker task — which `singleFork`
+          // did NOT require, so it is not a rename but a trade: one process, no per-file
+          // module isolation. Written down because it is the way back if the zombie or
+          // flake problem returns.
           pool: "forks",
           isolate: true,
-          teardownTimeout: 10_000,
         },
       },
       {
@@ -93,7 +119,6 @@ export default defineConfig({
           hookTimeout: 60_000,
           pool: "forks",
           isolate: true,
-          teardownTimeout: 10_000,
         },
       },
     ],
