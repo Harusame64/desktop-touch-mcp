@@ -63,6 +63,14 @@ jobs:
       - name: Check no koffi (ADR-007 §6 P4 acceptance — zero koffi.X call sites)
         run: npm run check:no-koffi
 
+      - name: Type check the root config files (#656 — a removed option must stop compiling)
+        # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the
+        # program and ESLint is not type-aware: a config key that stops existing keeps
+        # parsing and stops doing anything. That is how `poolOptions` (removed in Vitest 4)
+        # and a per-project `teardownTimeout` (root-only) sat decorative in that file for
+        # months (#655). This step compiles it against the installed runner types.
+        run: npm run check:config-types
+
       - name: Check Rust workspace compiles (covers non-napi member crates)
         # `npm run build:rs:debug` only builds the root crate via napi-rs, so
         # workspace members like `engine-perception` (ADR-008 D1+) are not
