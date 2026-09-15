@@ -792,7 +792,9 @@ async function resolvePressPoint(
  *      (`_resolve-window.ts:502`; its own header says Case 3 "deliberately discards" the handle),
  *      so the composer falls to `:280` and returns the caller's spec UNCHANGED. A partial title
  *      stays partial — the resolved one is the thing thrown away. This is the commonest road there
- *      is, and "the caller's query is destroyed before the aim exists" is false on it.
+ *      is, and "the caller's query is destroyed before the aim exists" is false on it. MEASURED
+ *      (win2, 2026-09-16): a window captioned `WNDTAG7B6168`, an act passing the nine-character
+ *      prefix `WNDTAG7B6`, and `aim.title` at the executor is the prefix.
  *   2. `{hwnd}`, a bare call, `""`, or a `{windowTitle}` rescued through the dialog owner chain:
  *      **the RESOLVED title is substituted** (`:240`, `:270`, `:290`). Six real arms are this half —
  *      a bare act and an `"@active"` act both arrived with a resolved title (win2, 2026-09-16).
@@ -802,6 +804,18 @@ async function resolvePressPoint(
  *      `:280` returns the caller's spec — so `aim.title === "@active"`. A bare call in the same
  *      state returns `{target: undefined}` (`:289`, `:298`) and the aim has no title at all.
  *
+ * THE LINE THAT MAKES ALL THREE POSSIBLE is `desktop.ts:371` — `session.lastTarget = input.target`,
+ * the RAW caller target stored before anything resolves. `:410` only overwrites it when a resolved
+ * one comes back. An auditor who starts at `:410` alone sees a replacement and concludes the
+ * caller's string never survives; the pair is the mechanism (gate 2, 2026-09-16).
+ *
+ * AND ONLY ONE OF THE THREE CAN REACH THIS ROW WITH `ok:true`. The row is written after
+ * `uiaSetValue` RETURNS, and with no handle the backends do a literal substring search: `"@active"`
+ * matches no real caption, so that call throws and writes a refusal row instead. `""` matches
+ * WHATEVER TOP-LEVEL WINDOW IS ENUMERATED FIRST, succeeds, and lands there. So a
+ * `addressedWindowBy: "nothing"` row with a success beside it means precisely that: the write went
+ * to the first window in the enumeration (gate 2, 2026-09-16).
+ *
  * SO `"nothing"` IS A LOUD ROW, NOT A DEAD ONE: it is case 3, and it says production window
  * resolution did not happen — the write went wherever a literal `"@active"` or `""` substring search
  * landed. Calling it unreachable on the ingress (two earlier versions of this comment) priced the
@@ -810,7 +824,9 @@ async function resolvePressPoint(
  * AND DO NOT READ `desktop.ts:445`'s `lastTargetFrom` AS THE WITNESS OF CASE 1 vs 2. It is
  * `rawResult.target ? "resolved" : "caller"`, and case 1 returns a target that was never resolved —
  * so it says `"resolved"` on the road where the caller's string is exactly what survived. Suggested
- * as a corroborating row by gate 2 and repeated here for one round before it was checked.
+ * as a corroborating row by gate 2 and repeated here for one round before it was checked; the same
+ * arm caught it on the machine, `lastTarget {"windowTitle":"WNDTAG7B6"}` printed beside
+ * `lastTargetFrom "resolved"` (win2, 2026-09-16). Filed as `internal#113`.
  */
 function namesAWindowByTitle(title: string | undefined): boolean {
   return title !== undefined && title !== "" && title !== "@active";
@@ -1534,10 +1550,21 @@ export function createDesktopExecutor(
             // the reason this one is recorded in prose instead of shipped a third time. What the
             // window axis below can still say — handle or title — it says from the road's own
             // choice, not from the caller's words.
+            //
+            // AND `name` IS NOT ALWAYS THE CALLER'S WORD — said here, at the field, and not fifty
+            // lines below where it used to live (gate 2, 2026-09-16). It is
+            // `locator.uia.name ?? entity.label`, so on an entity whose UIA locator has no name it
+            // is the label the DISCOVER gave the entity. Counting `name: true` rows as "the call
+            // carried a name locator" over-counts, which is the class of defect this row has
+            // already removed twice.
+            //
+            // NO `hwnd` FLAG: `probeRoute` writes `hasAim` on every row and `addressedWindowBy`
+            // answers `"handle"` for exactly the same condition, so a third copy of one bit could
+            // only ever disagree with the other two (gate 2, 2026-09-16). This object is the
+            // ELEMENT locators the call carried; the window is the axis below.
             addressedBy: {
               automationId: Boolean(automationId),
               name: Boolean(name),
-              hwnd: aimHwnd !== undefined,
             },
             // The ELEMENT axis — the NARROWEST thing the call carried for choosing an element
             // inside the window that answered. `automation_id` is matched exactly; `name` is
@@ -1549,10 +1576,7 @@ export function createDesktopExecutor(
             // never read. Here both filters are ANDed on both roads, so a call carrying an id and a
             // name records `automation_id` while the name was also required. `addressedBy` is where
             // "it carried both" is readable; this field is only "the narrowest it had".
-            //
-            // AND `name` IS NOT ALWAYS THE CALLER'S WORD: it is `locator.uia.name ?? entity.label`
-            // (above), so on an entity whose UIA locator has no name it is the label the discover
-            // gave the entity — a string that came from the read, not from the call.
+
             addressedElementBy:
               automationId ? "automation_id" : name ? "name_substring" : "nothing",
             // The WINDOW axis — what decides whether a wrong WINDOW could have answered at all.

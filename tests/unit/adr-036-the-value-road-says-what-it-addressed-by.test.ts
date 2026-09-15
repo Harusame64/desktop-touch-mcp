@@ -110,12 +110,26 @@ describe("the UIA value road, on success", () => {
       route: "uia",
       why: "uia_set_value",
       addressedElementBy: "automation_id",
-      addressedBy: { automationId: true, name: true, hwnd: true },
+      addressedBy: { automationId: true, name: true },
     });
   });
 
   it("records `name_substring` when that is all the locator had — the first name that CONTAINS it", async () => {
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
+    expect(await typeInto(entity, aimed)).toEqual("uia");
+    expect(valueRoadRows()[0]).toMatchObject({
+      addressedElementBy: "name_substring",
+      addressedBy: { automationId: false, name: true },
+    });
+  });
+
+  it("counts the LABEL as a name too, because that is the string the road is handed", async () => {
+    // THE TWO WAYS `name_substring` ARISES, and until this cell only one of them was pinned (gate 2,
+    // 2026-09-16): both name cells above set `label` and `locator.uia.name` to the same string, so
+    // deleting `?? entity.label` at the executor left the whole file green. The label-only shape is
+    // the one the row's comment calls production-reachable — a merged entity whose UIA locator lost
+    // its name keeps the label the discover gave it — so it is the half that most needs a cell.
+    const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: {} } };
     expect(await typeInto(entity, aimed)).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
       addressedElementBy: "name_substring",
@@ -140,7 +154,7 @@ describe("the UIA value road, on success", () => {
     expect(valueRoadRows()[0]).toMatchObject({
       addressedElementBy: "nothing",
       addressedWindowBy: "handle",
-      addressedBy: { automationId: false, name: false, hwnd: true },
+      addressedBy: { automationId: false, name: false },
     });
   });
 
@@ -152,7 +166,7 @@ describe("the UIA value road, on success", () => {
     expect(await typeInto(entity, { kind: "aim", title: "VR-CELL" })).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
       addressedWindowBy: "title",
-      addressedBy: { hwnd: false },
+      hasAim: false,
     });
   });
 
@@ -167,7 +181,7 @@ describe("the UIA value road, on success", () => {
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     expect(await typeInto(entity, { kind: "aim", hwnd: HWND })).toEqual("uia");
     expect(valueRoadRows()[0]).toMatchObject({
-      addressedBy: { hwnd: true },
+      hasAim: true,
       addressedWindowBy: "handle",
     });
   });
@@ -178,20 +192,26 @@ describe("the UIA value road, on success", () => {
     // whichever top-level window is enumerated first. `_post.ts:439` answers
     // `call_named_no_window` for exactly these two; this row agrees with it.
     //
-    // WHICH ROAD BRINGS ONE HERE, twice corrected. The ingress USUALLY resolves the title first —
-    // six real arms came back resolved, including a bare act and an `"@active"` act (win2,
-    // 2026-09-16). But `desktop.ts:410` is conditional, and when no provider target comes back the
-    // caller's spec stays: the foreground fallback throws with no foreground window
-    // (`_resolve-window.ts:449`) and the composer catches it (`compose-providers.ts:289,298`), and
-    // a `{windowTitle:"@active"}` with no handle is passed straight through (`:283`). So this row
-    // is not a test-road curiosity — on the shipped road it means window resolution DID NOT
-    // HAPPEN, and the write went wherever a literal substring search landed.
+    // WHICH ROAD BRINGS ONE HERE — corrected three times, and the citation matters because the
+    // wrong one makes this row look dead. `desktop.ts:371` stores the RAW caller target first;
+    // `:410` replaces it only when a resolved one comes back. A `{windowTitle:"@active"}` with no
+    // handle takes `compose-providers.ts:265`, and when there is no foreground to resolve the
+    // throw from `_resolve-window.ts:449` is caught at `:274` and `:280` returns the caller's spec
+    // unchanged. (It is NOT `:283` — that branch needs a handle, and reading it as the path is how
+    // an auditor concludes this row is unreachable.) A bare call in the same state gets
+    // `{target: undefined}` (`:289`, `:298`).
+    //
+    // AND ONLY THE EMPTY STRING REACHES THIS ROW WITH A SUCCESS: the row is written after the write
+    // returns, `"@active"` matches no real caption so that call throws into a refusal row, while
+    // `""` matches whatever top-level window is enumerated FIRST and succeeds there. The cell keeps
+    // both strings because the predicate is what it pins; the row's own comment carries the
+    // difference.
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     for (const title of ["@active", ""]) {
       rmSync(logPath, { force: true });
       expect(await typeInto(entity, { kind: "aim", title })).toEqual("uia");
       expect(valueRoadRows()[0]).toMatchObject({
-        addressedBy: { hwnd: false },
+        hasAim: false,
         addressedWindowBy: "nothing",
       });
     }
