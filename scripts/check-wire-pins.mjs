@@ -44,10 +44,16 @@ if (missing.length > 0) {
 }
 
 const report = join(tmpdir(), `wire-pins-${process.pid}.json`);
+// NO SHELL, and vitest by its JS entry point rather than through `npx`. With `shell: true` on
+// Windows, `cmd.exe` splits an unquoted `--outputFile=<path>` at the first space — and a Windows
+// temp directory routinely contains one (`C:\Users\Jane Doe\AppData\Local\Temp`). vitest would
+// then write its report somewhere else and this gate would fail READING THE JSON while both pin
+// files passed, on the platform this project ships (gate 1, 2026-09-15). None of the local gates
+// could see that: they all run on macOS.
 const res = spawnSync(
-  process.platform === "win32" ? "npx.cmd" : "npx",
+  process.execPath,
   [
-    "vitest",
+    join(ROOT, "node_modules", "vitest", "vitest.mjs"),
     "run",
     "--project=unit",
     "--no-file-parallelism",
@@ -56,12 +62,16 @@ const res = spawnSync(
     `--outputFile=${report}`,
     ...PINS,
   ],
-  { stdio: "inherit", cwd: ROOT, shell: process.platform === "win32" },
+  { stdio: "inherit", cwd: ROOT },
 );
 
 if (res.error) {
   // Without this the job exits 1 with no output at all, under a step named after wire pins.
-  console.error(`check:wire-pins: could not run vitest: ${res.error.message}`);
+  console.error(
+    `check:wire-pins: could not run vitest: ${res.error.message}\n` +
+      "(vitest is spawned by its JS entry point, so this means node could not start it —\n" +
+      "check that `npm ci` ran.)",
+  );
   process.exit(1);
 }
 
