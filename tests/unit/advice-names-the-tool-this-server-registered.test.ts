@@ -40,12 +40,19 @@ import {
  * A path under `src/`, SPELLED THE SAME ON EVERY MACHINE.
  *
  * `join()` uses the platform separator, so a walk on Windows produces
- * `tools\desktop-register.ts` and every comparison against a POSIX spelling here fails —
- * not sometimes, always. The cell below could therefore never pass on Windows, and its own
- * message said "a second lease-validated tool exists" while exactly one existed (win2,
- * 2026-09-15, on the machine that runs the suite with the native addon). A cell that cannot
- * pass on a platform is not a weaker check there; it is an unevaluated claim wearing a
- * failure, and the two are indistinguishable in the output.
+ * `tools\desktop-register.ts` and any comparison against a POSIX spelling fails — not
+ * sometimes, always. **The cell that suffered it is `keeps the envelope's lease row on the
+ * only surface that can produce it`**, far below, whose expectation is written
+ * `["tools/desktop-register.ts"]`: it could never pass on Windows, and its own message said
+ * "a second lease-validated tool exists" while exactly one did (win2, 2026-09-15, on the
+ * machine that runs the suite with the native addon). A cell that cannot pass on a platform
+ * is not a weaker check there; it is an unevaluated claim wearing a failure, and the two are
+ * indistinguishable in the output.
+ *
+ * **The FIRST use below is message-only** — it spells the paths inside `residual` and
+ * `unknown`, which are compared to nothing, so that cell passed on both platforms and merely
+ * recorded a different spelling on each. Keep it anyway: a record that changes shape with the
+ * machine is how two runs stop being comparable.
  */
 const relFromSrc = (file: string, src: string): string => file.slice(src.length + 1).split(sep).join("/");
 
