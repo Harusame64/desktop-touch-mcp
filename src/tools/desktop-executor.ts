@@ -1451,6 +1451,12 @@ export function createDesktopExecutor(
           // produces one — but `vision-gpu/types.ts:59` TYPES a candidate's source as a union that
           // includes `"uia"`. A vision-gpu candidate that ever declared itself UIA would arrive here
           // with no `locator.uia` at all. Nothing assigns it today; nothing stops it either.
+          //
+          // WHAT WOULD FALSIFY THAT, said plainly because a convention has no compiler behind it:
+          // a second producer of a `UiEntityCandidate` with `source: "uia"`. Today the literal has
+          // four hits in `src/` and only `uia-provider.ts:119` is a candidate — the others are an
+          // `Observation` (`sensors-uia.ts:41`) and an `ActionableElement` (`uia-bridge.ts:1339`).
+          // The grep is the check; when it stops returning one candidate, this paragraph is stale.
           probeRoute("uia", aimHwnd, entity, {
             why: "uia_set_value",
             // What the call CARRIED. The predicates are the road's own, not `!== undefined`: both
