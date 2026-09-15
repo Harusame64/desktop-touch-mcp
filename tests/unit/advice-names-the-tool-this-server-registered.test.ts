@@ -23,10 +23,11 @@ import { describe, it, expect, vi } from "vitest";
 import { readFileSync, mkdtempSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import ts from "typescript";
 import { getSuggestsForCode, toToolFailure } from "../../src/tools/_errors.js";
 import { paneIdMissSuggest } from "../../src/tools/terminal.js";
+
 import * as advice from "../../src/tools/_advice-capability.js";
 import {
   renderAdviceWith,
@@ -34,6 +35,19 @@ import {
   ADVICE_WITHHELD_FLOOR,
   type AdviceConfiguration,
 } from "../../src/tools/_advice-capability.js";
+
+/**
+ * A path under `src/`, SPELLED THE SAME ON EVERY MACHINE.
+ *
+ * `join()` uses the platform separator, so a walk on Windows produces
+ * `tools\desktop-register.ts` and every comparison against a POSIX spelling here fails —
+ * not sometimes, always. The cell below could therefore never pass on Windows, and its own
+ * message said "a second lease-validated tool exists" while exactly one existed (win2,
+ * 2026-09-15, on the machine that runs the suite with the native addon). A cell that cannot
+ * pass on a platform is not a weaker check there; it is an unevaluated claim wearing a
+ * failure, and the two are indistinguishable in the output.
+ */
+const relFromSrc = (file: string, src: string): string => file.slice(src.length + 1).split(sep).join("/");
 
 const CORNERS: Record<string, Record<string, string | undefined>> = {
   v2_default: {},
@@ -357,7 +371,7 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
           ts.isTemplateTail(n)
         ) {
           for (const m of n.text.matchAll(/\{tool:([a-z_]+)\}/g)) {
-            sites.push({ file: file.slice(SRC.length + 1), name: m[1]! });
+            sites.push({ file: relFromSrc(file, SRC), name: m[1]! });
           }
         }
         ts.forEachChild(n, visit);
@@ -432,14 +446,16 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     walkDir(SRC);
     const withValidator = files
       .filter((f) => /^\s*leaseValidator:/m.test(readFileSync(f, "utf8")))
-      .map((f) => f.slice(SRC.length + 1))
+      .map((f) => relFromSrc(f, SRC))
       .sort();
     // CONTROL: the walk read the tree and the pattern matches something, or "exactly
     // one" is also what a broken search answers.
     expect(files.length, "the walk must have read the tree").toBeGreaterThan(50);
     expect(
       withValidator,
-      "a second lease-validated tool exists — check whether it is registered outside the `_desktopV2` branch, because `_envelope.ts`'s `args: {}` row is only honest while none is",
+      `the set of lease-validated tools is not the one this row's honesty rests on — found ${
+        withValidator.length === 0 ? "none" : withValidator.join(", ")
+      }. If a SECOND one is listed, check whether it is registered outside the \`_desktopV2\` branch, because \`_envelope.ts\`'s \`args: {}\` row is only honest while none is`,
     ).toEqual(["tools/desktop-register.ts"]);
   });
 
