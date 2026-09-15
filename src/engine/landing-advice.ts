@@ -20,12 +20,26 @@
  * this text and `README.ja.md` shares 18%. The first is a shorter paraphrase written for a
  * reader rather than for a model; the second is a translation. Neither is a rendering of
  * this string, so neither is produced from it — they stay hand-written, and the cell in
- * `tests/unit/adr-036-desktop-state-value-absent.test.ts` pins THOSE TWO as fixed text, which
- * is what notices when a hand-written one drifts from this one. The two shipped copies are
- * pinned in the cell below it instead, against this generator and against a fixture — and the
- * assertion that actually protects "one source" is that the paragraph occurs in exactly one
- * file under `src/`, because a byte-identical copy inlined at a call site serves the same
- * `tools/list` string and no runtime comparison can tell (gate 2, 2026-09-15).
+ * `tests/unit/adr-036-desktop-state-value-absent.test.ts` pins THOSE TWO as fixed text. The two
+ * shipped copies are pinned in the cell below it, against this generator and against a fixture,
+ * and what protects "one source" is that the paragraph exists in exactly one file under `src/`
+ * and that only two call sites ask for it — both found by walking, because a byte-identical copy
+ * inlined at a call site serves the same `tools/list` string and no runtime comparison can tell
+ * (gate 2, 2026-09-15).
+ *
+ * WHAT NONE OF THAT NOTICES, said plainly because an earlier version of this paragraph claimed
+ * otherwise: pinning a README detects an edit TO THE README. It is blind to THIS TEXT drifting
+ * away from it. Gate 2 changed a clause here so the shipped paragraph asserted the opposite of
+ * both READMEs, updated the two fixtures as the cell instructs, and all eight cells passed
+ * (2026-09-15) — which is the very defect this file exists for, since the hint clause was hedged
+ * in both READMEs and unhedged in both shipped copies for a round.
+ *
+ * Nothing mechanical closes that: agreement between a sentence for a model and a sentence for a
+ * reader needs a reader. What this file does instead is make the obligation land where the edit
+ * happens — CHANGING THE TEXT BELOW MEANS RE-READING `README.md` AND `README.ja.md` AND CONFIRMING
+ * THEY STILL SAY THE SAME THING, in the same commit that updates the fixtures. The refactor also
+ * removed an accidental protection worth naming: the shipped text used to sit in the same object
+ * literal as the README text, so editing one put the other in the editor's view.
  */
 
 /** How the sentence opens, which is the only part the two callers disagree about. */

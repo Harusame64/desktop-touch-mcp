@@ -194,6 +194,43 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       await import("../../src/engine/landing-advice.js");
     const description = landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION);
     const instructions = landingAdvice(LANDING_ADVICE_SERVER_INSTRUCTIONS);
+    // FIRST, AND ON PURPOSE. Whichever assertion in this cell fires first is what a maintainer
+    // reads, and the obligation below only lands if it is this one: with the fixture comparison
+    // later in the cell, a changed paragraph tripped the divergence check instead and the message
+    // was never printed (verified by forcing the failure, 2026-09-15). A message nobody sees is a
+    // claim, not a check.
+    // AND THE INSTRUCTIONS VOICE IS PINNED AGAINST A FIXTURE, because moving the text out of
+    // `server-windows.ts` took it out of the source slice that used to hold it: that slice pins
+    // the array AROUND the paragraph, and the paragraph is generated now. Found by mutation —
+    // changing this voice's terminator left every cell green. `desktop_act`'s copy is covered by
+    // the `tools/list` comparison below; this one cannot be, because that entry point does not
+    // import on a non-Windows machine.
+    // NORMALISED like every other fixture read in this file, which is what makes an internal
+    // newline safe on a CRLF checkout — the previous version of this comment described the hazard
+    // that existed BEFORE the normalisation on the line below it, and told a future reader the pin
+    // was fragile in a way it is not (gate 2, 2026-09-15).
+    //
+    // THE RESIDUAL IT MISSED is the real one: this fixture has no trailing newline, so an editor
+    // set to insert a final newline reddens the cell with "the instructions voice changed". If that
+    // happens, the fixture is what to fix, not the source.
+    expect(
+      instructions,
+      "the instructions voice changed — if you meant to change the shipped text, RE-READ README.md " +
+        "and README.ja.md and confirm they still say the same thing. Nothing here checks that: " +
+        "pinning a README notices an edit to the README, not this text drifting away from it."
+    ).toBe(
+      readFileSync(
+        fileURLToPath(new URL("../fixtures/landing-paragraph/landing-advice.instructions.txt", import.meta.url)),
+        "utf8"
+      ).replace(/\r\n/g, "\n")
+    );
+
+    // TAKEN FROM THE GENERATED TEXT, not typed here: a hand-copied needle stops matching when the
+    // paragraph is reworded, and the assertion it feeds then fails saying the opposite of what
+    // happened (gate 2, 2026-09-15). A clause from the middle survives assembly; the whole string
+    // does not appear in any source file by construction.
+    const NEEDLE = instructions.slice(instructions.indexOf("THIS LANDING"), instructions.indexOf("not a state"));
+    expect(NEEDLE.length, "the needle for the carrier walk came out empty").toBeGreaterThan(20);
 
     // The two voices differ in exactly four places and nowhere else — a fifth divergence is how
     // the copies drifted apart by hand in the first place, so it has to be deliberate. Stated as
@@ -211,23 +248,6 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     ).toBe(`${instructions.slice(INSTRUCTIONS_HEAD.length, -1)}.`);
     expect(description.endsWith("."), "the description no longer ends in a full stop").toBe(true);
     expect(instructions.endsWith(";"), "the instructions entry no longer ends in a semicolon").toBe(true);
-
-    // AND THE INSTRUCTIONS VOICE IS PINNED AGAINST A FIXTURE, because moving the text out of
-    // `server-windows.ts` took it out of the source slice that used to hold it: that slice pins
-    // the array AROUND the paragraph, and the paragraph is generated now. Found by mutation —
-    // changing this voice's terminator left every cell green. `desktop_act`'s copy is covered by
-    // the `tools/list` comparison below; this one cannot be, because that entry point does not
-    // import on a non-Windows machine.
-    // NORMALISED like every other fixture read in this file. It is safe today only because this
-    // fixture is one line with no newline in it at all; the moment the paragraph gains an internal
-    // newline, a CRLF checkout fails here and nowhere else — on the one machine that runs the suite
-    // before a merge (gate 2, 2026-09-15, and win2 lived exactly that on 2026-09-14).
-    expect(instructions, "the instructions voice changed").toBe(
-      readFileSync(
-        fileURLToPath(new URL("../fixtures/landing-paragraph/landing-advice.instructions.txt", import.meta.url)),
-        "utf8"
-      ).replace(/\r\n/g, "\n")
-    );
 
     // AND EACH CALLER IS PINNED TO THE VOICE IT ASKS FOR. This cell evaluates its OWN import,
     // and the source fixture starts at `new McpServer(`, so the import lines sit between the two
@@ -248,16 +268,61 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     // Enumerating the ways text can be written differently does not end; parsing it does. The
     // parser is the same one that compiles this repository, so the two cannot disagree about
     // what the source says.
-    for (const [rel, voice] of [
+    // WHICH FILES CALL IT IS FOUND BY WALKING, not by a list — the same reason the carrier walk
+    // below is a walk. A hard-coded pair could not see a THIRD shipped copy arriving as a
+    // GENERATED one: a new `landingAdvice(...)` call site contains none of the paragraph's text, so
+    // the carrier walk cannot see it either. Gate 2 added exactly that to a V1 tool description and
+    // all eight cells passed (2026-09-15).
+    const srcRoot = fileURLToPath(new URL("../../src", import.meta.url));
+    const parsed = new Map<string, ts.SourceFile>();
+    const sourceOf = (file: string): ts.SourceFile => {
+      const cached = parsed.get(file);
+      if (cached !== undefined) return cached;
+      const made = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+      parsed.set(file, made);
+      return made;
+    };
+    const callsIn = (file: string): string[] => {
+      const found: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "landingAdvice") {
+          found.push(node.arguments.map((a) => a.getText(sourceOf(file))).join(", "));
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceOf(file));
+      return found;
+    };
+    const rel = (file: string): string => file.slice(srcRoot.length + 1).replace(/\\/g, "/");
+    const callSites = new Map<string, string[]>();
+    for (const file of walkSource(srcRoot)) {
+      const calls = callsIn(file);
+      if (calls.length > 0) callSites.set(rel(file), calls);
+    }
+    expect(
+      Object.fromEntries([...callSites].sort()),
+      "the set of files calling landingAdvice changed"
+    ).toEqual({
+      "server-windows.ts": ["LANDING_ADVICE_SERVER_INSTRUCTIONS"],
+      "tools/desktop-register.ts": ["LANDING_ADVICE_TOOL_DESCRIPTION"],
+    });
+
+    // READ AS CODE, NOT AS TEXT — because both text checks this cell had were beaten by text.
+    // The carrier walk missed `"THIS LANDING " + "IS A REPORT"`, and an alias guard missed
+    // `LANDING_ADVICE_TOOL_DESCRIPTION /* voice */ as LANDING_ADVICE_SERVER_INSTRUCTIONS`, whose
+    // comment its regex could not cross (gate 1, 2026-09-15, both reproduced). Enumerating the ways
+    // text can be written differently does not end; parsing it does, with the same compiler this
+    // repository uses, so the cell and the implementation cannot disagree about what the source says.
+    for (const [file, voice] of [
       ["src/tools/desktop-register.ts", "LANDING_ADVICE_TOOL_DESCRIPTION"],
       ["src/server-windows.ts", "LANDING_ADVICE_SERVER_INSTRUCTIONS"],
     ] as const) {
-      const file = fileURLToPath(new URL(`../../${rel}`, import.meta.url));
-      const source = ts.createSourceFile(rel, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+      const path = fileURLToPath(new URL(`../../${file}`, import.meta.url));
+      const source = sourceOf(path);
 
-      // 1. It is IMPORTED UNDER ITS OWN NAME from the shared module. `propertyName` is what an
-      //    `as` gives us: when it is set, the local name is an alias, and the pair is what a
-      //    comment cannot hide.
+      // 1. IMPORTED UNDER ITS OWN NAME. `propertyName` is what an `as` leaves behind, and the pair
+      //    is what a comment cannot hide — the regex this replaced also reddened on prose that
+      //    merely mentioned an alias, reporting "renames a landing voice on import" falsely.
       const imported: Array<{ from: string; local: string }> = [];
       const visitImports = (node: ts.Node): void => {
         if (
@@ -275,34 +340,20 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
         ts.forEachChild(node, visitImports);
       };
       visitImports(source);
-      expect(imported.length, `${rel} imports nothing from landing-advice`).toBeGreaterThan(0);
+      expect(imported.length, `${file} imports nothing from landing-advice`).toBeGreaterThan(0);
       for (const { from, local } of imported) {
-        expect(local, `${rel} imports ${from} under the name ${local}`).toBe(from);
+        expect(local, `${file} imports ${from} under the name ${local}`).toBe(from);
       }
       expect(
         imported.map((i) => i.local).sort(),
-        `${rel} does not import exactly landingAdvice and ${voice}`
+        `${file} does not import exactly landingAdvice and ${voice}`
       ).toEqual(["landingAdvice", voice].sort());
 
-      // 2. The call is a CALL, with that voice as its only argument — the expression, not a
-      //    string that looks like it. A literal restored beside a commented-out call passes
-      //    every text check and fails this one.
-      const calls: string[] = [];
-      const visitCalls = (node: ts.Node): void => {
-        if (
-          ts.isCallExpression(node) &&
-          ts.isIdentifier(node.expression) &&
-          node.expression.text === "landingAdvice"
-        ) {
-          calls.push(node.arguments.map((a) => a.getText(source)).join(", "));
-        }
-        ts.forEachChild(node, visitCalls);
-      };
-      visitCalls(source);
-      expect(calls, `${rel} no longer calls landingAdvice(${voice}) exactly once`).toEqual([voice]);
-
-      // 3. AND THE PARAGRAPH IS NOWHERE IN ITS STRING LITERALS. Adjacent literals joined by `+`
-      //    are folded first, which is what the text walk could not do.
+      // 2. AND THE PARAGRAPH IS IN NO STRING LITERAL THERE. Adjacent literals joined by `+` are
+      //    folded first, which is what the text walk could not do. The needle is taken from the
+      //    GENERATED text rather than typed here: rewording the paragraph — a legitimate edit —
+      //    would otherwise make the carrier assertion fail with the opposite message, which a
+      //    maintainer can "fix" by editing the expected array (gate 2, 2026-09-15).
       const texts: string[] = [];
       const fold = (node: ts.Node): string | undefined => {
         if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
@@ -320,18 +371,16 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       };
       visitStrings(source);
       expect(
-        texts.filter((t) => t.includes("THIS LANDING IS A REPORT")),
-        `${rel} carries the paragraph in a string literal again`
+        texts.filter((t) => t.includes(NEEDLE)),
+        `${file} carries the paragraph in a string literal again`
       ).toEqual([]);
     }
 
     // AND NO OTHER FILE UNDER `src/` CARRIES IT EITHER. The two call sites are parsed above; this
     // walks the rest, so a third carrier appearing anywhere is caught rather than assumed absent.
-    // A list of the files one expects to carry it could not notice a new one.
-    const srcRoot = fileURLToPath(new URL("../../src", import.meta.url));
     const carriers = [...walkSource(srcRoot)]
-      .filter((file) => readFileSync(file, "utf8").includes("THIS LANDING IS A REPORT"))
-      .map((file) => file.slice(srcRoot.length + 1).replace(/\\/g, "/"))
+      .filter((file) => readFileSync(file, "utf8").includes(NEEDLE))
+      .map(rel)
       .sort();
     expect(carriers, "the landing paragraph is written in more than one place under src/").toEqual([
       "engine/landing-advice.ts",
