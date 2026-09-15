@@ -809,17 +809,29 @@ async function resolvePressPoint(
  * one comes back. An auditor who starts at `:410` alone sees a replacement and concludes the
  * caller's string never survives; the pair is the mechanism (gate 2, 2026-09-16).
  *
- * AND ONLY ONE OF THE THREE CAN REACH THIS ROW WITH `ok:true`. The row is written after
- * `uiaSetValue` RETURNS, and with no handle the backends do a literal substring search: `"@active"`
- * matches no real caption, so that call throws and writes a refusal row instead. `""` matches
- * WHATEVER TOP-LEVEL WINDOW IS ENUMERATED FIRST, succeeds, and lands there. So a
- * `addressedWindowBy: "nothing"` row with a success beside it means precisely that: the write went
- * to the first window in the enumeration (gate 2, 2026-09-16).
+
+ * AND WHETHER `"nothing"` CAN EVER BE WRITTEN IS A SECOND QUESTION, which three versions of this
+ * comment answered without asking it. Case 3 puts an unresolved string in the AIM. It cannot put an
+ * ACT behind it: the same failure that leaves the caller's string also returns ZERO CANDIDATES —
+ * `composeCandidates` stops at `if (!normalized.target) return { candidates: [], … }`
+ * (`compose-providers.ts:319`), deliberately, so that "we could not work out which window" does not
+ * arrive as "the window is nothing". A discover that produced no entities also minted a new view and
+ * invalidated every lease held before it, so no `desktop_act` can follow it to this line. The
+ * measurer said this before the code did (win2, 2026-09-16): "the read that cannot name a window is
+ * the read that returns no entities."
  *
- * SO `"nothing"` IS A LOUD ROW, NOT A DEAD ONE: it is case 3, and it says production window
- * resolution did not happen — the write went wherever a literal `"@active"` or `""` substring search
- * landed. Calling it unreachable on the ingress (two earlier versions of this comment) priced the
- * accident this ADR exists to detect as a test-road curiosity.
+ * So the branch is a total function's last case on the ingress — reachable where the entities come
+ * from somewhere else, which is the direct `candidateProvider` road. Two earlier versions called it
+ * dead for the WRONG REASON (they said the title is always resolved, which the partial-title arm
+ * disproved), and the version between them called it live without asking what would act on it. The
+ * reason is what changed; the row has not moved.
+ *
+ * IF IT IS EVER SEEN, it means `aim.title` was `""` — the only one of the three that a backend can
+ * still match, since `"@active"` and a missing title both become a literal `"@active"` substring
+ * search that no real caption satisfies, and that throws into a refusal row instead. `""` matches
+ * whatever top-level window the enumerator returns first. That last step is READ FROM SOURCE AND NOT
+ * MEASURED — the arm would write text into an arbitrary window on a real desktop, which is why it
+ * has not been asked for.
  *
  * AND DO NOT READ `desktop.ts:445`'s `lastTargetFrom` AS THE WITNESS OF CASE 1 vs 2. It is
  * `rawResult.target ? "resolved" : "caller"`, and case 1 returns a target that was never resolved —

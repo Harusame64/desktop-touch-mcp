@@ -201,11 +201,12 @@ describe("the UIA value road, on success", () => {
     // an auditor concludes this row is unreachable.) A bare call in the same state gets
     // `{target: undefined}` (`:289`, `:298`).
     //
-    // AND ONLY THE EMPTY STRING REACHES THIS ROW WITH A SUCCESS: the row is written after the write
-    // returns, `"@active"` matches no real caption so that call throws into a refusal row, while
-    // `""` matches whatever top-level window is enumerated FIRST and succeeds there. The cell keeps
-    // both strings because the predicate is what it pins; the row's own comment carries the
-    // difference.
+    // AND THE SECOND QUESTION, which the row's own comment now carries: an unresolved string in the
+    // aim does not give you an ACT behind it. The discover that leaves the caller's string is the
+    // one that returned no candidates (`compose-providers.ts:319`) and minted a new view, so on the
+    // ingress nothing can follow it here. This cell is therefore about the PREDICATE, not about a
+    // row anyone will see in a production log — and it keeps both strings because the predicate is
+    // what it pins.
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     for (const title of ["@active", ""]) {
       rmSync(logPath, { force: true });
