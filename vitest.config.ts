@@ -84,8 +84,17 @@ export default defineConfig({
     // ran. `adr-036-post-value-declarations.test.ts` is built exactly that way: importing the
     // production modules IS the assertion, because `withPostState` records the keys as each
     // registration is built. Under the new default its two cells went red on both machines;
-    // with this line they are green again, and the whole suite reproduces the vitest 4
-    // baseline test name for test name (2026-09-15).
+    // with this line they are green again, and the suite reproduces the vitest 4 baseline —
+    // SAME FAILING FILES, SAME 19 FAILING TEST NAMES, same assertion messages (2026-09-15).
+    //
+    // THE COMPARISON WAS OVER THE FAILING SET, not over every name in the suite, and the
+    // difference matters: vitest 5 also changed how `.each` interpolates `$var` into a title.
+    // A string used to be printed quoted and truncated by one rule, and is now printed bare
+    // and truncated by another — measured here, `'UIA + InvokePattern (Case Invoke happ…'`
+    // became `UIA + InvokePattern (Case Invoke happy …`. None of the 19 failing names is an
+    // `.each` cell, so the comparison above could not see it. Anything keyed on a test name
+    // (a `-t` filter, a snapshot written inside an `.each`) shifts with this upgrade
+    // (gate 2, 2026-09-15).
     //
     // WHAT THIS LINE IS NOT: a verdict that the old default is better. The new default also
     // makes assertions of the form "was never called" EASIER to pass, so adopting it is a
@@ -94,11 +103,22 @@ export default defineConfig({
     // one, which changes the runner and nothing else — it is #659, which carries the steps
     // and the reason the set of affected cells grows while this line stands.
     //
-    // ONE FILE NEEDS THIS TODAY (`grep -rln "^await import(" tests/unit`):
+    // ONE FILE NEEDS THIS TODAY — and the way to find that set is to RUN IT, not to grep.
+    // The property is "a mock is invoked while the module is evaluated", which no pattern
+    // catches: `const { x } = await import(...)` is the common spelling here and a bare
+    // `^await import(` misses every one of them, as does a static import of a module whose
+    // top-level code calls a mock (gate 2, 2026-09-15). The sound rule is the measurement:
+    // run the suite with this line and without it; the difference in the failing set IS the
+    // set that depends on the old default. Today that difference is exactly
     // `adr-036-post-value-declarations.test.ts`. The pin is global because the alternative is
     // rewriting that cell inside the round that moves the runner, which mixes two variables in
     // the only comparison this suite has.
     clearMocks: false,
+    // CHECKED AND NOT PINNED: vitest 5 also changed the DEFAULT `reporters` value, to pick a
+    // minimal reporter when it believes it is running under an agent. On this machine that
+    // does not reproduce — v4 and v5 print the same per-file listing, with `CLAUDECODE=1` set
+    // and without (2026-09-15) — so nothing is pinned for it. If a run here ever loses its
+    // per-file lines after this upgrade, that is the first place to look.
     projects: [
       {
         plugins: [stripShebang],
@@ -129,8 +149,9 @@ export default defineConfig({
           // is real (measured: `--maxWorkers=2` still ran 4). Vitest 5 lets the flag through
           // at project level too, so that hazard is a vitest 4 fact; the placement is kept
           // because one value in one place is the simpler thing, not because it is forced.
-          // `minForks` has NO top-level equivalent in Vitest 4 and is dropped rather than
-          // renamed to something that does not mean the same thing.
+          // `minForks` had NO top-level equivalent in VITEST 4 (measured there, 2026-09-15;
+          // not re-checked against 5) and is dropped rather than renamed to something that
+          // does not mean the same thing.
           pool: "forks",
           isolate: true,
         },
@@ -155,7 +176,9 @@ export default defineConfig({
           // e2e files (zombie accumulation — context-consistency / screenshot-electron).
           // It was already inert (see the unit project). The serial part is
           // `fileParallelism`, which is kept. The "all files in ONE process" part is
-          // reachable in Vitest 4 only as `isolate: false` with one worker — the run then
+          // reachable in VITEST 4 (measured there, 2026-09-15, and NOT re-checked on 5 — this
+          // is the note most likely to be acted on from memory) only as `isolate: false` with
+          // one worker — the run then
           // merges every spec of a project into a single worker task — which `singleFork`
           // did NOT require, so it is not a rename but a trade: one process, no per-file
           // module isolation. Written down because it is the way back if the zombie or
