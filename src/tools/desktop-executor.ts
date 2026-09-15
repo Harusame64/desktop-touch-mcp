@@ -1389,7 +1389,41 @@ export function createDesktopExecutor(
       if ((action === "type" || action === "setValue") && text !== undefined) {
         try {
           await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
-          probeRoute("uia", aimHwnd, entity, { why: "uia_set_value" });
+          // ADR-036 family 2, observation only — WHAT THIS CALL ADDRESSED BY.
+          //
+          // Measured on 2026-09-15 (win2, internal#106 round): a title-only act down this road
+          // answers `ok:true` with `route:"uia"` / `why:"uia_set_value"`, a 52-character response,
+          // no `landing` and no `hints` — and the engine never reports WHICH ELEMENT it wrote to.
+          // So the row could not say whether the write was addressed at the element or at the
+          // window, which is the first thing the family-2 contract needs to know.
+          //
+          // PRESENCE, NOT VALUES. `entityLabel` is already on this row, so an identifier is not a
+          // new class of content — but the typed text never is, and a locator the caller supplied
+          // is not worth adding beside it when the question is only which handle the call had.
+          //
+          // WHAT THIS STILL CANNOT SAY: which element ANSWERED. `uiaSetValue` is handed what to
+          // look for and returns nothing about what it found, so a success here is a success about
+          // the CALL, not about a target. That is the read-side shape item 15 closed for
+          // `getUiElements` (the engine reports the handle it resolved), and it takes the same fix
+          // on the write side — engine work, its own PR, designed in the map.
+          probeRoute("uia", aimHwnd, entity, {
+            why: "uia_set_value",
+            addressedBy: {
+              automationId: automationId !== undefined,
+              name: name !== undefined,
+              // `aim.title`, NOT `winTitle`: `winTitle` is `aim.title ?? "@active"`, so a flag
+              // written from it is true on every row and distinguishes nothing. What a reader
+              // needs is whether the window was NAMED or whether the call fell back to the
+              // foreground — two different acts with the same argument.
+              windowTitle: aim.title !== undefined,
+              hwnd: aimHwnd !== undefined,
+            },
+            // The narrowest thing the call had to go on, which is what decides whether a wrong
+            // element could have answered at all. `automation_id` is unique within a window;
+            // `name` is not; `title_only` means only the window was named and UIA chose inside it.
+            addressedNarrowest:
+              automationId !== undefined ? "automation_id" : name !== undefined ? "name" : "title_only",
+          });
           return "uia";
         } catch (uiaErr) {
           // R3 tool-exclusion — as in the click path below: refusals are not rungs.
