@@ -126,12 +126,30 @@ jobs:
         run: npm run bench:envelope-size
 
       # NOTE: full unit suite execution on windows-latest 2-core runners is
-      # currently unreliable (every attempt — default maxForks:4, single
+      # currently unreliable (every attempt — "default maxForks:4", single
       # fork via --maxWorkers=1, threads pool, vmThreads pool — terminates
       # with "##[error]The operation was canceled." 5-6s into the run, after
       # the first 2 files complete but before the 3rd worker finishes
       # spawning). Likely a runner-infra interaction with how vitest spawns
       # forks on a small Windows VM. Investigated in PR #45; deferred.
+      #
+      # CORRECTION 2026-09-15, and it is narrower than the first attempt at it:
+      # ONE ARM OF THIS RECORD DID NOT TEST WHAT IT SAYS. `poolOptions` was
+      # removed in Vitest 4 and is read only to print a deprecation, so "default
+      # maxForks:4" ran at whatever the CPU default was, not at 4. The
+      # `--maxWorkers=1` arm WAS honoured — the config of that day set no
+      # project-level `maxWorkers`, so the flag reached the root
+      # (`git show 4b1a5155:vitest.config.ts`).
+      #
+      # WHAT THAT DEFAULT WAS IS NOT RECORDED ANYWHERE WE CAN CHECK, and this
+      # note's own two halves disagree: the deleted step said "windows-latest is
+      # a 2-core runner" AND "4 forks load the native addon concurrently", which
+      # cannot both be true once maxForks is known to be inert (a 2-core default
+      # is one worker). GitHub has also changed standard runner sizes since.
+      # So: do not reason from a CPU count here. Print
+      # `node -p "require('os').availableParallelism()"` in the job before
+      # concluding anything about this, including how the cap added in the same
+      # commit as this note resolves there.
       #
       # P0-1 (audit §8.1) is therefore PARTIALLY addressed:
       #   - Rust build:rs runs here → catches Rust regressions (was the
