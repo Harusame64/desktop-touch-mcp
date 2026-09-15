@@ -244,6 +244,32 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
       )
     );
 
+    // AND EACH CALLER IS PINNED TO THE VOICE IT ASKS FOR. This cell evaluates its OWN import,
+    // and the source fixture starts at `new McpServer(`, so the import lines sit between the two
+    // and were checked by neither: aliasing
+    // `LANDING_ADVICE_TOOL_DESCRIPTION as LANDING_ADVICE_SERVER_INSTRUCTIONS` in the server
+    // changes what ships while every assertion above stays green (gate 1, 2026-09-15, reproduced
+    // in memory). It is the same shape as the mutation that put the fixture here in the first
+    // place — the refactor moved a thing out of the region its check covered.
+    const callers: ReadonlyArray<readonly [path: string, voice: string]> = [
+      ["src/tools/desktop-register.ts", "LANDING_ADVICE_TOOL_DESCRIPTION"],
+      ["src/server-windows.ts", "LANDING_ADVICE_SERVER_INSTRUCTIONS"],
+    ];
+    for (const [rel, voice] of callers) {
+      const text = readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8");
+      expect(text, `${rel} no longer calls landingAdvice with ${voice}`).toContain(
+        `landingAdvice(${voice})`
+      );
+      // Imported under its own name: an alias makes the call site read right and ship the other
+      // voice. Checked as an absence of `as` on either constant, in either direction.
+      expect(text, `${rel} renames a landing voice on import`).not.toMatch(
+        /LANDING_ADVICE_\w+\s+as\s+\w+/
+      );
+      expect(text, `${rel} does not import ${voice} by that name`).toMatch(
+        new RegExp(`import \\{[^}]*\\b${voice}\\b[^}]*\\}\\s*from\\s*"[^"]*landing-advice\\.js"`, "s")
+      );
+    }
+
 
     // NO IMPERATIVE CHECK HERE, deliberately. "Contains no instruction" cannot be checked by
     // listing the instructions one has already thought of — the cell above says exactly that,
