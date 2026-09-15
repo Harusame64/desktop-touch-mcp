@@ -178,13 +178,14 @@ describe("the UIA value road, on success", () => {
     // whichever top-level window is enumerated first. `_post.ts:439` answers
     // `call_named_no_window` for exactly these two; this row agrees with it.
     //
-    // WHICH ROAD CAN BRING ONE HERE, since the machine corrected the first answer: not the shipped
-    // `desktop_act` ingress, which replaces the caller's target with the resolved one at
-    // `desktop.ts:410` — six arms came back with a resolved title even for a bare act and for
-    // `"@active"` (win2, 2026-09-16). Only the direct `candidateProvider` road keeps the caller's
-    // raw spec (`_aimFor` → `toAim`, `desktop.ts:870`). So this is the last branch of a total
-    // function on one road and a live case on the other, which is why the predicate is tested here
-    // rather than assumed unreachable.
+    // WHICH ROAD BRINGS ONE HERE, twice corrected. The ingress USUALLY resolves the title first —
+    // six real arms came back resolved, including a bare act and an `"@active"` act (win2,
+    // 2026-09-16). But `desktop.ts:410` is conditional, and when no provider target comes back the
+    // caller's spec stays: the foreground fallback throws with no foreground window
+    // (`_resolve-window.ts:449`) and the composer catches it (`compose-providers.ts:289,298`), and
+    // a `{windowTitle:"@active"}` with no handle is passed straight through (`:283`). So this row
+    // is not a test-road curiosity — on the shipped road it means window resolution DID NOT
+    // HAPPEN, and the write went wherever a literal substring search landed.
     const entity: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
     for (const title of ["@active", ""]) {
       rmSync(logPath, { force: true });
@@ -196,7 +197,7 @@ describe("the UIA value road, on success", () => {
     }
   });
 
-  it("reads an EMPTY locator as no filter, because that is what both roads do with it", async () => {
+  it("answers `nothing` for an empty locator, which is not the same as the roads agreeing about one", async () => {
     // THE ROADS DO NOT AGREE, and the first version of this comment said they did (gate 2,
     // 2026-09-16). On the NAME they do — PowerShell writes `$true` (`uia-bridge.ts:762`) and the
     // native walk matches `contains("")` (`src/uia/scroll.rs:858`). On the AUTOMATION ID they do

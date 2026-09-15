@@ -783,15 +783,27 @@ async function resolvePressPoint(
  *
  * The rule is `_post.ts:439`'s, which answers `call_named_no_window` for exactly these two.
  *
- * WHICH ROAD CAN STILL BRING ONE HERE, corrected after the machine disagreed with an earlier
- * version of this comment (win2, 2026-09-16, six arms on `a5cae285`): NOT the shipped `desktop_act`
- * ingress. `session.lastTarget` is overwritten with the RESOLVED target as soon as a provider
- * answers (`desktop.ts:410`, added in 2026-09-09 precisely because the executor used to be handed
- * `"@active"` and spent nine seconds on it at UIA), so by the time an aim is built the title is the
- * resolved one — true on a bare act and on an act that passed `"@active"` alike. The caller's own
- * string survives only where no provider target comes back: the direct `candidateProvider` road,
- * through `_aimFor` -> `toAim` (`desktop.ts:870`, `aim.ts:497`). So this predicate guards a road
- * that exists and is not the one production takes.
+ * WHICH ROAD BRINGS ONE HERE — twice corrected, and the second correction is the one that matters.
+ *
+ * Usually none: `session.lastTarget` is replaced by the RESOLVED target as soon as a provider
+ * answers (`desktop.ts:410`, added 2026-09-09 precisely because the executor used to be handed
+ * `"@active"` and spent nine seconds on it at UIA). Six real arms confirm it — a bare act and an
+ * act passing `"@active"` both arrived with a resolved title (win2, 2026-09-16).
+ *
+ * BUT THAT LINE IS CONDITIONAL, and calling this branch unreachable on the ingress was wrong
+ * (gate 2, 2026-09-16). `if (rawResult.target)` — so when no target comes back, the caller's own
+ * spec stays. That happens on the shipped road, not only on the `candidateProvider` one: the
+ * foreground fallback THROWS when there is no foreground window to resolve
+ * (`_resolve-window.ts:449`) or when it is an excluded window, and the composer catches it and
+ * returns `{target: undefined}` (`compose-providers.ts:289,298`). A discover that passes
+ * `{windowTitle:"@active"}` with no handle is returned unchanged by the composer's first line
+ * (`:283`). Either way the aim carries the caller's string and this predicate answers false.
+ *
+ * WHICH MAKES `"nothing"` A LOUD ROW, NOT A DEAD ONE: it says production window resolution did not
+ * happen, and the write went to whatever a literal `"@active"` or `""` substring search hit first.
+ * `desktop.ts:445` already publishes the same distinction from the other side —
+ * `lastTargetFrom: rawResult.target ? "resolved" : "caller"` — so a reader has two rows that must
+ * agree, and the six arms above are the "resolved" side of it.
  */
 function namesAWindowByTitle(title: string | undefined): boolean {
   return title !== undefined && title !== "" && title !== "@active";
@@ -1432,10 +1444,16 @@ export function createDesktopExecutor(
           //
           // HAD, AND USED. `addressedBy` is what the CALL carried; the two axis fields are what the
           // ROAD resolved by. They come apart on the commonest pinned act there is — a call with
-          // both a handle and a title resolves by the handle and never looks at the title, on both
-          // roads (`resolve_root` → `ElementFromHandle`, `src/uia/tree.rs:178`; the PowerShell twin
-          // picks `makeSetValueScriptByHwnd` at `uia-bridge.ts:1464`, defined at `:643`, which is
-          // not handed the title at all).
+          // both a handle and a title RESOLVES THE WINDOW by the handle: `resolve_root` goes to
+          // `ElementFromHandle` (`src/uia/tree.rs:178`) and the PowerShell twin picks
+          // `makeSetValueScriptByHwnd` (`uia-bridge.ts:1464`, defined at `:643`), which is not
+          // handed the title at all.
+          //
+          // "NEVER LOOKS AT THE TITLE" WOULD BE TOO STRONG (gate 2, 2026-09-16): the title is read
+          // once before either road is chosen, by `refuseUiaTitleIfExcluded(windowTitle)`
+          // (`uia-bridge.ts:1443`), which can refuse on the title alone. It cannot change this
+          // field — a refusal throws and no row is written — but the window axis says "the handle
+          // is what SELECTED the window", not "the string was never touched".
           //
           // PRESENCE, NOT VALUES. `entityLabel` is already on this row, so an identifier is not a
           // new class of content — but the typed text never is, and a locator the caller supplied
@@ -1472,8 +1490,10 @@ export function createDesktopExecutor(
           // THE CHECK HAS TO SKIP THIS PARAGRAPH, and saying so is not pedantry — the first version
           // of it quoted a hit COUNT, and the comment's own two mentions of the literal made the
           // count wrong the moment it was committed (gate 2, 2026-09-16). A check written inside
-          // the thing it measures has to exclude itself, or it measures itself:
-          // `grep -rn 'source: "uia"' src/ | grep -v desktop-executor.ts`.
+          // the thing it measures has to exclude itself, or it measures itself. By FILE, not by line
+          // text — a `| grep -v desktop-executor.ts` would also drop a future producer whose line
+          // happens to mention this file (gate 2, 2026-09-16, the same class again):
+          // `grep -rn --exclude=desktop-executor.ts 'source: "uia"' src/`.
           probeRoute("uia", aimHwnd, entity, {
             why: "uia_set_value",
             // What the call CARRIED at the element. The predicates are truthiness, not
@@ -1534,10 +1554,11 @@ export function createDesktopExecutor(
             // the machine: `{windowTitle}` arms answer `"title"`, and `{hwnd}` / `{windowTitle,hwnd}`
             // / a bare act / `"@active"` all answer `"handle"` (win2, 2026-09-16, six arms).
             //
-            // `"nothing"` here has the SAME standing as `"nothing"` on the element axis, which an
-            // earlier version of this comment got backwards: after `desktop.ts:410` the aim always
-            // carries a resolved title, so the ingress cannot produce it. It is reachable only on
-            // the `candidateProvider` road, where the caller's raw spec survives into the aim.
+            // `"nothing"` here does NOT have the standing of `"nothing"` on the element axis, and
+            // two versions of this comment said it did. The element axis's last branch needs a
+            // producer that does not exist. This one needs window resolution to FAIL, which the
+            // shipped road can do (`namesAWindowByTitle` above has the paths). It is the rarer row
+            // and the louder one.
             addressedWindowBy:
               aimHwnd !== undefined ? "handle" : namesAWindowByTitle(aim.title) ? "title" : "nothing",
           });
