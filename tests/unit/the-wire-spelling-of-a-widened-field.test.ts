@@ -1,5 +1,5 @@
 /**
- * #657 — the spelling of a widened field, pinned ON THE DOCUMENT THAT IS SENT.
+ * desktop-touch-mcp-internal#106 — the spelling of a widened field, pinned ON THE DOCUMENT THAT IS SENT.
  *
  * `flattenUnionToObjectSchema` widens a field that collides across variants, and two comments in
  * `src/` describe how that widening is spelled. A comment is a claim, not a check. What counts as
@@ -41,7 +41,7 @@ const FLATTENED = [
   ["window_dock", windowDockRegistrationSchema],
 ] as const;
 
-describe("#657 — the wire spelling of a widened field", () => {
+describe("internal#106 — the wire spelling of a widened field", () => {
   // FLATTENED IS HAND-MAINTAINED, and the cells below are titled "every flattened tool". Nothing
   // detected a ninth: a new tool flattening a union could ship a type array with every cell here
   // green, while `_envelope.ts`'s "across all eight products" quietly became a claim about
@@ -74,17 +74,17 @@ describe("#657 — the wire spelling of a widened field", () => {
     // all three keyboard variants).
     const method = wire(keyboardRegistrationSchema).properties?.method;
     spellingOf(method);
-    it("is spelled `anyOf` — not a type array, which is the spelling #657 cannot vouch for", () => {
+    it("is spelled `anyOf` — not a type array, which is the spelling internal#106 cannot vouch for", () => {
       expect(spellingOf(method)).toBe("anyOf");
     });
     // `anyOf` AND NOTHING ELSE — including no `description` and no `default`, which is a DEFECT
     // this cell records rather than blesses: `mergeFlatField` strips the wrappers a `.describe()`
     // hangs on, so 15 of keyboard's 19 properties ship undocumented and `method` loses
-    // `default: "auto"` (measured on the wire, both machines; filed as #664).
-    it("and `anyOf` is the only key on it — see #664, which this pins rather than approves", () => {
+    // `default: "auto"` (measured on the wire, both machines; filed as internal#110).
+    it("and `anyOf` is the only key on it — see internal#110, which this pins rather than approves", () => {
       expect(
         Object.keys(method).sort(),
-        "#664: if this went red because `description` or `default` came back, THE FIX LANDED — update this pin rather than reverting the fix.",
+        "internal#110: if this went red because `description` or `default` came back, THE FIX LANDED — update this pin rather than reverting the fix.",
       ).toEqual(["anyOf"]);
     });
     it("carries the two branches that disagree in kind — an enum and a const, in any order", () => {

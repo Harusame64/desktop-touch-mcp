@@ -33,7 +33,7 @@ import {
 //    bare scalars, which 4.5.4 collapses into a type array where 4.4.3 emitted
 //    `anyOf`; branches carrying an `enum` or a `const` stay `anyOf` under both,
 //    which is why the one widening that SHIPS (`keyboard.method`) is an `anyOf`.
-//    The two claims are pinned in separate cells (#657)
+//    The two claims are pinned in separate cells (desktop-touch-mcp-internal#106)
 //  - `onlyA` / `onlyB`: single-variant fields → optional passthrough
 const synthBare = z.discriminatedUnion("action", [
   z.object({
@@ -97,11 +97,11 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
   });
   // THE WIDENING AND THE SPELLING OF THE WIDENING ARE TWO CLAIMS, and one cell used to make
   // both. `anyOf` is what zod 4.4.3 emitted; 4.5.4 emits a type array for the same union, so
-  // the cell went red without the merge changing at all (#657). The old name carried a THIRD
+  // the cell went red without the merge changing at all (internal#106). The old name carried a THIRD
   // claim it cannot test from here — that the Anthropic API accepts that spelling. Settling
   // that needs credentials no machine on this project has, so it stays an open question in
-  // #657 rather than a red cell here: a red baseline hides the next regression, which is how
-  // #657 itself went eight days unnoticed.
+  // internal#106 rather than a red cell here: a red baseline hides the next regression, which is how
+  // internal#106 itself went eight days unnoticed.
   //
   // `acceptedTypes` reads either spelling and THROWS on anything else. A shape it does not
   // recognise must not arrive as an empty set — `toEqual([])` would then read as "no types
@@ -121,7 +121,7 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
   it("mixed-type collision (count) widens to accept BOTH number and string", () => {
     expect(acceptedTypes(js.properties.count)).toEqual(["number", "string"]);
   });
-  it("and the spelling of that widening is pinned, so a zod change is visible (#657)", () => {
+  it("and the spelling of that widening is pinned, so a zod change is visible (internal#106)", () => {
     // zod 4.4.3: {"anyOf":[{"type":"number"},{"type":"string"}]}. zod 4.5.4: a type array.
     // THIS IS THE SYNTHETIC UNION'S spelling, and its branches are bare scalars — which is the
     // case that collapses. The widening that actually SHIPS (`keyboard.method`) has branches

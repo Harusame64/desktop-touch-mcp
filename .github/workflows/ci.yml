@@ -63,7 +63,7 @@ jobs:
       - name: Check no koffi (ADR-007 §6 P4 acceptance — zero koffi.X call sites)
         run: npm run check:no-koffi
 
-      - name: Type check the root config files (#656 — a removed option must stop compiling)
+      - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)
         # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the
         # program and ESLint is not type-aware: a config key that stops existing keeps
         # parsing and stops doing anything. That is how `poolOptions` (removed in Vitest 4)
@@ -177,7 +177,7 @@ jobs:
 
   # THE WIRE-SCHEMA PINS GET THEIR OWN JOB, and the reason is the placement, not the runner.
   # These two files assert what the SDK's converter emits for the widened properties that ship,
-  # and a pin nobody executes is the mechanism that already failed (#657 sat red on `main` for
+  # and a pin nobody executes is the mechanism that already failed (internal#106 sat red on `main` for
   # eight days with nothing running it).
   #
   # THEY DID RUN ON THE WINDOWS JOB, once: a step this PR then REMOVED (2026-09-15, run
@@ -236,7 +236,7 @@ jobs:
         # way (gate 2 round 4). This job needs `node_modules`, not a build.
         run: npm ci --ignore-scripts
 
-      - name: Wire-schema pins (#657/#662 — what the SDK's converter emits for every flattened tool)
+      - name: Wire-schema pins (internal#106/#662 — what the SDK's converter emits for every flattened tool)
         run: npm run check:wire-pins
 
   docker-build:

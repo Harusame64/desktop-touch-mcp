@@ -102,7 +102,7 @@ export default defineConfig({
     // makes assertions of the form "was never called" EASIER to pass, so adopting it is a
     // round that has to re-read every mock-based cell rather than a flag flip — and a cell
     // that goes quietly weaker is not visible in a failing-file count. That round is not this
-    // one, which changes the runner and nothing else — it is #659, which carries the steps
+    // one, which changes the runner and nothing else — it is desktop-touch-mcp-internal#107, which carries the steps
     // and the reason the set of affected cells grows while this line stands.
     //
     // ONE FILE NEEDS THIS TODAY — and the way to find that set is to RUN IT, not to grep.

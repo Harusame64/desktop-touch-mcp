@@ -3079,7 +3079,7 @@ export { TERMINAL_PROCESS_RE };
 // renders as a property-level `oneOf`. MEASURED here under zod 4.5.4, where this
 // comment had said `anyOf`; WHEN the spelling moved is not established, so that is
 // not claimed. Either way it is property-level, and only *top-level* `oneOf`/`anyOf`
-// is rejected. Whether the API accepts each spelling is #657's open question and is
+// is rejected. Whether the API accepts each spelling is desktop-touch-mcp-internal#106's open question and is
 // not something a comment here can assert.
 //
 // PINNED, on the document `registerTool` converts rather than on this file's word:

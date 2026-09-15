@@ -562,7 +562,7 @@ export function withEnvelopeIncludeForUnion(union: any): any {
  *
  * Only *top-level* `oneOf`/`anyOf` is rejected by the Anthropic API. Whether it
  * accepts a property-level TYPE ARRAY is NOT established anywhere in this
- * repository (#657, still open) — and the question is live for whatever spelling
+ * repository (desktop-touch-mcp-internal#106, still open) — and the question is live for whatever spelling
  * ships, which today is the `anyOf`, not the type array. The wire spellings are
  * pinned in `tests/unit/the-wire-spelling-of-a-widened-field.test.ts`, on the
  * document `registerTool` actually converts; this paragraph is a claim, that is

@@ -1,5 +1,5 @@
 /**
- * #657/#662 — ONE definition of "the document a client receives", because two disagreed.
+ * desktop-touch-mcp-internal#106/#662 — ONE definition of "the document a client receives", because two disagreed.
  *
  * `registerTool` converts a tool's input schema with
  * `toJsonSchemaCompat(normalizeObjectSchema(tool.inputSchema), { strictUnions: true,
@@ -65,7 +65,7 @@ export function spellingOf(
  * RECURSIVE, because a sweep of top-level `properties` cannot support the claim it is the check
  * for. `terminal.until` is a `oneOf` of three objects whose own properties were never looked at,
  * and `keyboard.method`'s `anyOf` branches likewise — so `quietMs: z.number()` in one branch and
- * `z.string()` in another would ship `{"type":["number","string"]}` nested, the one spelling #657
+ * `z.string()` in another would ship `{"type":["number","string"]}` nested, the one spelling internal#106
  * says nothing here can vouch for, with a top-level-only sweep still green (gate 2 round 4).
  */
 export function typeArrayPaths(node: unknown, path = "$"): string[] {
