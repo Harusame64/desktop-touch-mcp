@@ -21,8 +21,17 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  // Every root-level `*.config.ts`, so a config file added later is covered without
-  // touching this file. Today that is `vitest.config.ts` alone.
-  "include": ["*.config.ts"],
+  // Every root-level TypeScript config file, so one added later is covered without touching
+  // this file. Today that is `vitest.config.ts` alone.
+  //
+  // ALL THREE EXTENSIONS, and that is the point: a glob of `*.config.ts` alone leaves a
+  // `*.config.mts` or `*.config.cts` silently uncovered — this PR's own defect, one file
+  // extension over (gate 2, win2, 2026-09-15). The set of TypeScript config extensions is
+  // closed and is these three; a JS config (`eslint.config.mjs`) is out of reach without
+  // `allowJs`/`checkJs`, which is a bigger decision than this file.
+  //
+  // If every matching file ever disappeared, `tsc` fails with "No inputs were found" — loud,
+  // not silent (measured in the same round).
+  "include": ["*.config.ts", "*.config.mts", "*.config.cts"],
   "exclude": ["node_modules", "dist"]
 }
