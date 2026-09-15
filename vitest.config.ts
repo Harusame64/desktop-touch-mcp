@@ -32,20 +32,25 @@ export default defineConfig({
           include: ["tests/unit/**/*.test.ts"],
           // Never append to the developer's real diagnostic log from a unit run.
           setupFiles: ["./tests/unit/setup-diagnostic-log.ts"],
-          // fileParallelism defaults to true — 57 files run in parallel
+          // fileParallelism defaults to true — 363 files run in parallel
           testTimeout: 10_000,
           hookTimeout: 10_000,
-          // Zombie prevention (Phase 4b-6): use forks pool for native-binding
-          // safety, cap maxForks to limit zombie count if teardown fails,
-          // teardownTimeout forces pool exit after grace period.
+          // Zombie prevention (Phase 4b-6): use the forks pool for native-binding
+          // safety, cap the workers so a failed teardown cannot leave many behind,
+          // teardownTimeout forces pool exit after a grace period.
+          //
+          // THE CAP HAD STOPPED BEING APPLIED. `poolOptions` was removed in Vitest 4:
+          // the shipped code reads it in exactly one place, to print a deprecation, and
+          // nowhere else. Measured on 2026-09-15 with 4.1.11 before this change — the
+          // parent had 6-7 live children on an 8-CPU machine (the default, CPU-1), and
+          // `--maxWorkers=2` brought it to 2, which is what says the count is the cap
+          // and not the instrument. So `maxForks: 4` had been decorative since the
+          // upgrade, and the comment above it was describing a limit that did not exist.
           pool: "forks",
-          poolOptions: {
-            forks: {
-              maxForks: 4,
-              minForks: 1,
-              isolate: true,
-            },
-          },
+          maxWorkers: 4,
+          // `minForks` has NO top-level equivalent in Vitest 4 and is dropped rather than
+          // renamed to something that does not mean the same thing.
+          isolate: true,
           teardownTimeout: 5_000,
         },
       },
@@ -59,18 +64,19 @@ export default defineConfig({
           globalSetup: ["./tests/e2e/global-setup.ts"],
           setupFiles: ["./tests/e2e/abort-check.ts"],
           // E2E tests share OS-level resources (windows, focus, clipboard)
-          // and must run serially.
+          // and must run serially. `fileParallelism: false` is what holds that, and it
+          // is top-level: it overrides `maxWorkers` to 1 by its own documented behaviour.
           fileParallelism: false,
           sequence: { concurrent: false },
           testTimeout: 30_000,
           hookTimeout: 30_000,
-          // Single fork forces strict serial execution and clean teardown
-          // between e2e files (prevents zombie accumulation that may have
-          // caused past flaky e2e failures — context-consistency / screenshot-electron).
+          // `singleFork` was here for strict serial execution and clean teardown between
+          // e2e files (zombie accumulation — context-consistency / screenshot-electron).
+          // It was already inert (see the unit project), and Vitest 4 has no top-level
+          // spelling of "all files in ONE process": the serial part is `fileParallelism`,
+          // which is kept; the one-process part is gone and is not faked here.
           pool: "forks",
-          poolOptions: {
-            forks: { singleFork: true, isolate: true },
-          },
+          isolate: true,
           teardownTimeout: 10_000,
         },
       },
@@ -81,13 +87,12 @@ export default defineConfig({
           include: ["tests/integration/**/*.test.ts"],
           // Integration tests require native Win32 APIs and win-ocr.exe.
           // Gated by RUN_OCR_GOLDEN=1 env var inside each test file.
+          // Serial, for the same reason as e2e; `singleFork` dropped for the same reason.
           fileParallelism: false,
           testTimeout: 120_000,
           hookTimeout: 60_000,
           pool: "forks",
-          poolOptions: {
-            forks: { singleFork: true, isolate: true },
-          },
+          isolate: true,
           teardownTimeout: 10_000,
         },
       },
