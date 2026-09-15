@@ -72,6 +72,22 @@ export default defineConfig({
     // pool for 10 s, as it already did. The way back is a separate vitest invocation for
     // that project, not a config key.
     teardownTimeout: 10_000,
+    // KEEPING VITEST 4's MOCK SEMANTICS ACROSS THE RUNNER UPGRADE, deliberately and for one
+    // round only. Vitest 5 flips `clearMocks` from false to true (its own `defaults` says
+    // `clearMocks: true, restoreMocks: false, mockReset: false`), which clears every mock's
+    // recorded calls BEFORE EACH TEST — including calls made at module scope, before any test
+    // ran. `adr-036-post-value-declarations.test.ts` is built exactly that way: importing the
+    // production modules IS the assertion, because `withPostState` records the keys as each
+    // registration is built. Under the new default its two cells went red on both machines;
+    // with this line they are green again, and the whole suite reproduces the vitest 4
+    // baseline test name for test name (2026-09-15).
+    //
+    // WHAT THIS LINE IS NOT: a verdict that the old default is better. The new default also
+    // makes assertions of the form "was never called" EASIER to pass, so adopting it is a
+    // round that has to re-read every mock-based cell rather than a flag flip — and a cell
+    // that goes quietly weaker is not visible in a failing-file count. That round is not this
+    // one, which changes the runner and nothing else.
+    clearMocks: false,
     projects: [
       {
         plugins: [stripShebang],
