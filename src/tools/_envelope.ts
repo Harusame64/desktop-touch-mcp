@@ -542,9 +542,21 @@ export function withEnvelopeIncludeForUnion(union: any): any {
  * inside each `*DispatchHandler`, re-parses against the real union and is the
  * strict per-action gate. A field appearing in multiple variants with
  * structurally-different schemas is widened: all-`z.enum` collisions merge to
- * one `z.enum` of the value union; otherwise to a `z.union` (renders as a
- * property-level `anyOf` — accepted by the Anthropic API; only *top-level*
- * `oneOf`/`anyOf` is rejected).
+ * one `z.enum` of the value union; otherwise to a `z.union` — ONE PROPERTY
+ * THAT ACCEPTS BOTH TYPES.
+ *
+ * HOW zod spells that widening is zod's business, and it moved under us: 4.4.3
+ * emitted a property-level `anyOf`, 4.5.4 emits a type array
+ * (`{"type":["number","string"]}`) — measured on two machines, #657. Only
+ * *top-level* `oneOf`/`anyOf` is rejected by the Anthropic API; whether it
+ * accepts a property-level TYPE ARRAY is NOT established anywhere in this
+ * repository, and no shipped registration schema emits one today (#657,
+ * measured). This sentence therefore says what was measured and stops short of
+ * the acceptance claim it used to make.
+ *
+ * The two claims — that the field widens, and how the widening is spelled — are
+ * pinned in SEPARATE cells in `tests/unit/flatten-union-schema.test.ts`, because
+ * one cell asserting both went red on a zod bump while the merge was unchanged.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShape> {

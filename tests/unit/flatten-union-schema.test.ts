@@ -27,7 +27,9 @@ import {
 //  - `direction`: different `z.enum`s per variant → all-enum merge to the
 //    value union (one `z.enum`)
 //  - `count`: `number` in one variant, `string` in another → `z.union`
-//    fallback → property-level `anyOf`
+//    fallback → one property accepting BOTH types. How that is spelled is
+//    zod's business and it changed under our feet (4.4.3 `anyOf`, 4.5.4 a
+//    type array) — the two claims are pinned in separate cells (#657)
 //  - `onlyA` / `onlyB`: single-variant fields → optional passthrough
 const synthBare = z.discriminatedUnion("action", [
   z.object({
@@ -80,10 +82,37 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
     expect([...js.properties.direction.enum].sort()).toEqual(["down", "left", "up"]);
     expect(js.properties.direction.anyOf).toBeUndefined();
   });
-  it("mixed-type collision (count) widens to a property-level anyOf", () => {
-    expect(js.properties.count.anyOf).toBeDefined();
-    const types = js.properties.count.anyOf.map((b: any) => b.type).sort();
-    expect(types).toEqual(["number", "string"]);
+  // THE WIDENING AND THE SPELLING OF THE WIDENING ARE TWO CLAIMS, and one cell used to make
+  // both. `anyOf` is what zod 4.4.3 emitted; 4.5.4 emits a type array for the same union, so
+  // the cell went red without the merge changing at all (#657). The old name carried a THIRD
+  // claim it cannot test from here — that the Anthropic API accepts that spelling. Settling
+  // that needs credentials no machine on this project has, so it stays an open question in
+  // #657 rather than a red cell here: a red baseline hides the next regression, which is how
+  // #657 itself went eight days unnoticed.
+  //
+  // `acceptedTypes` reads either spelling and THROWS on anything else. A shape it does not
+  // recognise must not arrive as an empty set — `toEqual([])` would then read as "no types
+  // accepted" and the cell would be agreeing with a schema nobody can serve.
+  function acceptedTypes(prop: Record<string, unknown>): string[] {
+    if (Array.isArray(prop.anyOf)) {
+      return (prop.anyOf as Array<{ type?: string }>).map((b) => b.type ?? "(no type)").sort();
+    }
+    if (Array.isArray(prop.type)) return [...(prop.type as string[])].sort();
+    if (typeof prop.type === "string") return [prop.type];
+    throw new Error(
+      `acceptedTypes: unrecognised widened-property shape ${JSON.stringify(prop)} — neither an ` +
+        "anyOf branch list nor a type array. A third spelling must fail this cell loudly " +
+        "rather than read as zero accepted types.",
+    );
+  }
+  it("mixed-type collision (count) widens to accept BOTH number and string", () => {
+    expect(acceptedTypes(js.properties.count)).toEqual(["number", "string"]);
+  });
+  it("and the spelling of that widening is pinned, so a zod change is visible (#657)", () => {
+    // zod 4.4.3: {"anyOf":[{"type":"number"},{"type":"string"}]}. zod 4.5.4: a type array.
+    // `toEqual`, not `toMatchObject` — "this and nothing else", so a key appearing beside it
+    // is a change this cell reports rather than tolerates.
+    expect(js.properties.count).toEqual({ type: ["number", "string"] });
   });
   it("single-variant fields pass through as optional", () => {
     expect(js.properties.onlyA.type).toBe("boolean");
