@@ -564,7 +564,8 @@ export function withEnvelopeIncludeForUnion(union: any): any {
  * accepts a property-level TYPE ARRAY is NOT established anywhere in this
  * repository (desktop-touch-mcp-internal#106, still open) — and the question is live for whatever spelling
  * ships, which today is the `anyOf`, not the type array. The wire spellings are
- * pinned in `tests/unit/the-wire-spelling-of-a-widened-field.test.ts`, on the
+ * pinned — for the eight flattened tools, which is NARROWER THAN THE 32 THIS PARAGRAPH SPEAKS
+ * OF (internal#111) — in `tests/unit/the-wire-spelling-of-a-widened-field.test.ts`, on the
  * document `registerTool` actually converts; this paragraph is a claim, that is
  * the check.
  *

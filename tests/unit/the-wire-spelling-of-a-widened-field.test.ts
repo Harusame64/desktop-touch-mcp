@@ -42,6 +42,13 @@ const FLATTENED = [
 ] as const;
 
 describe("internal#106 — the wire spelling of a widened field", () => {
+  // WHAT THESE CELLS DO NOT COVER IS FILED, NOT FORGOTTEN — internal#111, three measured gaps:
+  // this call-site cell is blind to `src/tools/desktop-providers/` and compares a count rather
+  // than a set; `typeArrayPaths` reports `default`/`const`/`examples` positions that are values
+  // rather than schemas; and the sentence in `_envelope.ts` is about 32 tools while the sweep
+  // guards 8. They are one round with the denominator decided up front, not three edits — which
+  // set each sentence is about is the question that settles all three.
+  //
   // FLATTENED IS HAND-MAINTAINED, and the cells below are titled "every flattened tool". Nothing
   // detected a ninth: a new tool flattening a union could ship a type array with every cell here
   // green, while `_envelope.ts`'s "across all eight products" quietly became a claim about
@@ -73,7 +80,14 @@ describe("internal#106 — the wire spelling of a widened field", () => {
     // was fixed to eliminate, one cell over (gate 2 round 5, measured by removing `method` from
     // all three keyboard variants).
     const method = wire(keyboardRegistrationSchema).properties?.method;
-    spellingOf(method);
+    it("is on the wire at all", () => {
+      // ITS OWN CELL, not a call in the describe body. As a body call it threw during COLLECTION,
+      // which drops the whole file from 30 passing cells to 14 — including the three sweeps, and
+      // the sweeps are what the property-left-the-schema regression most needs (measured, gate 2
+      // round 6). The run is red either way; the difference is whether the rest of the file still
+      // reports.
+      expect(() => spellingOf(method)).not.toThrow();
+    });
     it("is spelled `anyOf` — not a type array, which is the spelling internal#106 cannot vouch for", () => {
       expect(spellingOf(method)).toBe("anyOf");
     });
@@ -105,7 +119,9 @@ describe("internal#106 — the wire spelling of a widened field", () => {
 
   describe("terminal.until — the nested union", () => {
     const until = wire(terminalRegistrationSchema).properties?.until;
-    spellingOf(until);
+    it("is on the wire at all", () => {
+      expect(() => spellingOf(until)).not.toThrow();
+    });
     it("is spelled `oneOf`, and that is the only key on it", () => {
       expect(spellingOf(until)).toBe("oneOf");
       expect(Object.keys(until).sort()).toEqual(["oneOf"]);

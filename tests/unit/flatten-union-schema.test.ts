@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
-import { wire } from "./helpers/wire-schema.js";
+import { spellingOf, wire } from "./helpers/wire-schema.js";
 import {
   flattenUnionToObjectSchema,
   parseActionArgsOrFail,
@@ -106,17 +106,26 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
   // `acceptedTypes` reads either spelling and THROWS on anything else. A shape it does not
   // recognise must not arrive as an empty set — `toEqual([])` would then read as "no types
   // accepted" and the cell would be agreeing with a schema nobody can serve.
-  function acceptedTypes(prop: Record<string, unknown>): string[] {
-    if (Array.isArray(prop.anyOf)) {
-      return (prop.anyOf as Array<{ type?: string }>).map((b) => b.type ?? "(no type)").sort();
+  // `acceptedTypes` READS THE SPELLING THROUGH `spellingOf`, rather than re-deciding it. The
+  // earlier local version started at `Array.isArray(prop.anyOf)` with no absence check and failed
+  // with `TypeError: Cannot read properties of undefined` — verbatim the failure the helper's
+  // ordering was fixed to eliminate, in the sibling file, under a header whose whole thesis is
+  // that two definitions of one thing is the defect (gate 2 round 6, measured).
+  function acceptedTypes(prop: Record<string, unknown> | undefined): string[] {
+    switch (spellingOf(prop)) {
+      case "anyOf":
+        return (prop!.anyOf as Array<{ type?: string }>)
+          .map((b) => b.type ?? "(no type)")
+          .sort();
+      case "type-array":
+        return [...(prop!.type as string[])].sort();
+      case "single-type":
+        return [prop!.type as string];
+      case "oneOf":
+        throw new Error(
+          `acceptedTypes: this property is a oneOf, not a widened scalar: ${JSON.stringify(prop)}`,
+        );
     }
-    if (Array.isArray(prop.type)) return [...(prop.type as string[])].sort();
-    if (typeof prop.type === "string") return [prop.type];
-    throw new Error(
-      `acceptedTypes: unrecognised widened-property shape ${JSON.stringify(prop)} — neither an ` +
-        "anyOf branch list nor a type array. A third spelling must fail this cell loudly " +
-        "rather than read as zero accepted types.",
-    );
   }
   it("mixed-type collision (count) widens to accept BOTH number and string", () => {
     expect(acceptedTypes(js.properties.count)).toEqual(["number", "string"]);

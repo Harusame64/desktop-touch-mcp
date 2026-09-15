@@ -870,7 +870,7 @@ describe("diagnostic-log rotation", () => {
     // to roll on; an immutable file cannot be renamed either; a mode bit is
     // the very thing root ignores). The pin runs where the suite is run before
     // a merge — the maintainer's Windows machine; CI does not run the unit
-    // suite, only the two hermetic files of the `wire-schema-pins` job, which this
+    // suite, only the two files of the `wire-schema-pins` job, which this
     // is not (see .github/workflows/ci.yml, #662) — and skips, saying so, elsewhere.
     const probe = join(tmp, "ro-probe");
     writeFileSync(probe, "x", "utf8");

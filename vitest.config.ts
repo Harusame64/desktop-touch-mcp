@@ -53,7 +53,7 @@ export default defineConfig({
     // price is paid by the local pre-merge run, which is the only place this SUITE runs at
     // all — the windows-latest unit step was REMOVED (`4b1a5155`); what is left in
     // `.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step.
-    // (Since #662, two hermetic FILES run in CI as `check:wire-pins`, in their own
+    // (Since #662, two FILES run in CI as `check:wire-pins`, in their own
     // ubuntu-latest job. Two out of 364, and this cap is not what paces them.)
     //
     // It is at the root because a project-level `maxWorkers` is read before the CLI flag,

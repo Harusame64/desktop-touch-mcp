@@ -33,8 +33,11 @@ SUITE runs: the windows-latest unit step was removed in `4b1a5155` — what rema
 **Corrected 2026-09-15 (#662):** two unit FILES do now run in CI —
 `tests/unit/the-wire-spelling-of-a-widened-field.test.ts` and
 `tests/unit/flatten-union-schema.test.ts`, as `npm run check:wire-pins` in the separate
-`wire-schema-pins` job on ubuntu-latest, because they are import-hermetic and platform-independent
-and because a pin nobody executes is not a pin. They are TWO FILES OUT OF 364. A green CI still
+`wire-schema-pins` job on ubuntu-latest, because a pin nobody executes is not a pin and because
+what they check — the shape of a JSON document built from zod at module scope — has no platform.
+They are NOT import-hermetic: the tools they import load nut-js, which dlopens libX11/libXtst, so
+that job installs those libs explicitly. Anything added to `check:wire-pins` inherits that, not a
+hermeticity it does not have. They are TWO FILES OUT OF 364. A green CI still
 says nothing about the suite, and nothing about any cell that needs the native addon or Windows.
 
 **Always rebuild the Rust native addon first** if any file under `src/*.rs` or

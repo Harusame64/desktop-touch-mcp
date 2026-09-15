@@ -14,7 +14,8 @@
  * reads → a single stitched frame goes through REAL sharp. win32 / _resolve-window
  * stay importOriginal: their windows-rs napi addon loads in the unit lane (run
  * Windows-local; CI does not run the TS unit SUITE on Linux — since #662 it runs two
- * hermetic files, of which this is not one, in the `wire-schema-pins` job).
+ * files, of which this is not one, in the `wire-schema-pins` job — and that job installs
+ * libX11/libXtst for exactly the reason this header gives).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
