@@ -542,9 +542,36 @@ export function withEnvelopeIncludeForUnion(union: any): any {
  * inside each `*DispatchHandler`, re-parses against the real union and is the
  * strict per-action gate. A field appearing in multiple variants with
  * structurally-different schemas is widened: all-`z.enum` collisions merge to
- * one `z.enum` of the value union; otherwise to a `z.union` (renders as a
- * property-level `anyOf` — accepted by the Anthropic API; only *top-level*
- * `oneOf`/`anyOf` is rejected).
+ * one `z.enum` of the value union; otherwise to a `z.union` — ONE PROPERTY
+ * THAT ACCEPTS BOTH TYPES.
+ *
+ * HOW that widening is spelled is decided by the BRANCH SHAPES, not by the zod
+ * version (gate 2, 2026-09-15 — an earlier draft of this paragraph said 4.5.4
+ * "emits a type array", and a shipped schema contradicts it):
+ *
+ *   - bare scalar branches (`z.number()` | `z.string()`) collapse into ONE `type`
+ *     array under 4.5.4 (`{"type":["number","string"]}`), where 4.4.3 emitted a
+ *     property-level `anyOf`;
+ *   - branches carrying their own keywords — an `enum`, a `const` — cannot be
+ *     collapsed and stay `anyOf` under both.
+ *
+ * MEASURED, across all eight `flattenUnionToObjectSchema` products: the only
+ * widening that ships is `keyboard.method` (an enum branch against a literal
+ * branch), and on the wire it is an `anyOf`. Zero type arrays ship today —
+ * independently swept over the live wire on the Windows machine, 32 tools.
+ *
+ * Only *top-level* `oneOf`/`anyOf` is rejected by the Anthropic API. Whether it
+ * accepts a property-level TYPE ARRAY is NOT established anywhere in this
+ * repository (desktop-touch-mcp-internal#106, still open) — and the question is live for whatever spelling
+ * ships, which today is the `anyOf`, not the type array. The wire spellings are
+ * pinned — for the eight flattened tools, which is NARROWER THAN THE 32 THIS PARAGRAPH SPEAKS
+ * OF (internal#111) — in `tests/unit/the-wire-spelling-of-a-widened-field.test.ts`, on the
+ * document `registerTool` actually converts; this paragraph is a claim, that is
+ * the check.
+ *
+ * The two claims — that the field widens, and how the widening is spelled — are
+ * pinned in SEPARATE cells in `tests/unit/flatten-union-schema.test.ts`, because
+ * one cell asserting both went red on a zod bump while the merge was unchanged.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShape> {
@@ -561,8 +588,10 @@ export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShap
   const literals = new Set<string>();
   const fieldVariants = new Map<string, z.ZodTypeAny[]>();
   for (const variant of variants) {
-    // zod 4.3.6: a `.refine()`-wrapped variant is still a `ZodObject` —
-    // `.shape` is directly accessible, no unwrap needed (verified).
+    // A `.refine()`-wrapped variant is still a `ZodObject` —
+    // `.shape` is directly accessible, no unwrap needed. Verified under 4.3.6 and RE-MEASURED
+    // under the installed 4.5.4 (the flatten still produces `terminal.until`, 2026-09-15): a
+    // version this comment names must be one someone ran it against (gate 2).
     const shape = variant.shape as Record<string, z.ZodTypeAny>;
     for (const [key, fieldSchema] of Object.entries(shape)) {
       if (key === discriminator) {

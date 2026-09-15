@@ -838,8 +838,9 @@ describe("pre-push refuses what it should", () => {
     // through `error` with `status: null`, not an exception, so the reason is
     // included here rather than left as `false !== true`.
     //
-    // CI does not execute this suite at all — `.github/workflows/ci.yml` leaves
-    // TypeScript tests to the local pre-merge run — so this is the only place
+    // CI does not execute this suite — `.github/workflows/ci.yml` leaves TypeScript
+    // tests to the local pre-merge run, except for the two files in the
+    // `wire-schema-pins` job (#662), which this is not — so this is the only place
     // these cases happen.
     expect(hasSh, `sh unusable: error=${sh.error?.message ?? "none"} status=${sh.status}`).toBe(
       true

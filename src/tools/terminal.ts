@@ -3074,9 +3074,16 @@ export { TERMINAL_PROCESS_RE };
 // ADR-018 Phase 2a — `terminalUnionWithInclude` (include-injected union) feeds
 // BOTH the flat wire schema AND the in-handler `parseActionArgsOrFail` gate.
 // The flatten reads each variant's `.shape` directly — terminal's `run` variant
-// is `.refine()`-wrapped but in zod 4.3.6 that is still a `ZodObject`, so no
+// is `.refine()`-wrapped but that is still a `ZodObject`, so no
 // unwrap is needed; the nested `until` discriminatedUnion is left intact and
-// renders as a property-level `anyOf` (accepted by the Anthropic API).
+// renders as a property-level `oneOf`. MEASURED here under zod 4.5.4, where this
+// comment had said `anyOf`; WHEN the spelling moved is not established, so that is
+// not claimed. Either way it is property-level, and only *top-level* `oneOf`/`anyOf`
+// is rejected. Whether the API accepts each spelling is desktop-touch-mcp-internal#106's open question and is
+// not something a comment here can assert.
+//
+// PINNED, on the document `registerTool` converts rather than on this file's word:
+// `tests/unit/the-wire-spelling-of-a-widened-field.test.ts`.
 const terminalUnionWithInclude = withEnvelopeIncludeForUnion(terminalSchema);
 export const terminalRegistrationSchema = flattenUnionToObjectSchema(terminalUnionWithInclude);
 

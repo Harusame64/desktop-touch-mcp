@@ -63,7 +63,7 @@ jobs:
       - name: Check no koffi (ADR-007 §6 P4 acceptance — zero koffi.X call sites)
         run: npm run check:no-koffi
 
-      - name: Type check the root config files (#656 — a removed option must stop compiling)
+      - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)
         # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the
         # program and ESLint is not type-aware: a config key that stops existing keeps
         # parsing and stops doing anything. That is how `poolOptions` (removed in Vitest 4)
@@ -164,14 +164,85 @@ jobs:
       # P0-1 (audit §8.1) is therefore PARTIALLY addressed:
       #   - Rust build:rs runs here → catches Rust regressions (was the
       #     bigger concern: tooling drift, FFI shape, build.rs node.lib).
-      #   - TypeScript test execution is left to local pre-merge run via
+      #   - TypeScript test execution is left to the local pre-merge run via
       #     `npm run test:capture`. Audit doc and known-issues track this.
+      #     NARROWED 2026-09-15 (#662): two hermetic FILES — not the suite — run in the
+      #     separate `wire-schema-pins` job. Two out of 364, and none of them here.
       #
       # IMPORTANT for local runs: rebuild the Rust addon (`npm run build:rs:debug`)
       # before `npm run test:capture` if any src/*.rs or Cargo.toml changed since
       # last build. A stale .node binary causes preprocess / vision_backend tests
       # to fail with confusing errors. See docs/release-process.md
       # "Local Pre-Merge Testing".
+
+  # THE WIRE-SCHEMA PINS GET THEIR OWN JOB, and the reason is the placement, not the runner.
+  # These two files assert what the SDK's converter emits for the widened properties that ship,
+  # and a pin nobody executes is the mechanism that already failed (internal#106 sat red on `main` for
+  # eight days with nothing running it).
+  #
+  # THEY DID RUN ON THE WINDOWS JOB, once: a step this PR then REMOVED (2026-09-15, run
+  # 34962210359 step 14, green — not reproducible from this file, because the step is gone).
+  # They are not there anyway: vitest's documented failure mode on those 2-core runners is
+  # "##[error]The operation was canceled." 5-6s in, which kills the JOB — so a runner flake would
+  # take `check:rs-*`, the addon build, `npm run build` (the `tsc` over `src/`) and the
+  # envelope bench down with it. And the note's "the first two files complete" were whatever two
+  # files ran first, not these two, which are among the heaviest to LOAD in the suite
+  # (`keyboard.ts` and `terminal.ts` each pull tens of engine modules; the 788 ms measured locally
+  # is a warm-cache 8-core mac, against a 5-6 s window on a cold 2-core VM). Gate 2 made that
+  # argument and it is right: the cheap fix is to stop coupling the two (gate 2 round 3, 2026-09-15).
+  #
+  # AND THE CONSEQUENCE, SAID HERE RATHER THAN LEFT TO BE GENERALISED FROM THE JOB NAME: the unit
+  # cells now never run on Windows in CI, in a Windows product. FOR THESE TWO FILES THAT IS
+  # CORRECT — what they check is the shape of a JSON document, which has no platform. IT DOES NOT
+  # GENERALISE TO ANY OTHER CELL. Adding units to the Windows job takes the gates already there
+  # hostage: a cancelled runner kills the job, not the step.
+  #
+  # ubuntu-latest is legitimate because WHAT THESE FILES CHECK has no platform: the shape of a
+  # JSON document, built from zod at module scope, with no platform or env conditional anywhere
+  # in the eight flattened tools (verified, gate 2 round 5). No Windows behaviour, no Rust.
+  #
+  # THE ADDON IS NOT LAZY, and an earlier version of this comment said it was (gate 2 round 7).
+  # `src/engine/native-engine.ts` does a TOP-LEVEL `await import("../../index.js")` at module
+  # scope, wrapped in `try {} catch {}`. So the load is ATTEMPTED on every import and the failure
+  # is swallowed — the job survives on Linux for that reason, not because nothing tries. Anyone
+  # tightening that catch, or producing a Linux `.node`, changes this job's premise.
+  #
+  # THEY ARE NOT IMPORT-HERMETIC, THOUGH — an earlier version of this comment said they were, and
+  # that was wrong (gate 2 round 5). Every one of the eight tools reaches `src/engine/nutjs.ts`
+  # through a STATIC import, which imports `@nut-tree-fork/nut-js` at module scope and dlopens a
+  # `.node` needing `libX11.so.6` and `libXtst.so.6`. This repo already recorded that:
+  # `tests/unit/scroll-capture-ref.test.ts` calls nut-js "the hard native aborter on a Linux unit
+  # runner" and fakes it for that reason. The job was green without the apt step only because the
+  # ubuntu-latest image carries those libs transitively (they are in no documented apt list), so
+  # the dependency is DECLARED below rather than left to an image that happens to satisfy it.
+  wire-schema-pins:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: X11 runtime libs (nut-js dlopens libX11/libXtst at import)
+        # Not a build dependency and not optional: the tools' module graph loads
+        # `@nut-tree-fork/nut-js` statically. Without these the job dies at import, in a step
+        # named after wire pins, with `libXtst.so.6: cannot open shared object file`.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libx11-6 libxtst6
+
+      - name: Install dependencies
+        # `--ignore-scripts` because bare `npm ci` fires `prepare`, which is
+        # `install-hooks && tsc` — so this job's real first gate would be a full compile of
+        # `src/` on Linux, a combination nothing else here exercises, failing at a step called
+        # "Install dependencies" with no mention of wire pins. The Dockerfile avoids it the same
+        # way (gate 2 round 4). This job needs `node_modules`, not a build.
+        run: npm ci --ignore-scripts
+
+      - name: Wire-schema pins (internal#106/#662 — what the SDK's converter emits for every flattened tool)
+        run: npm run check:wire-pins
 
   docker-build:
     runs-on: ubuntu-latest

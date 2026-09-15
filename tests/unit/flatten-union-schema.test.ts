@@ -16,6 +16,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
+import { spellingOf, wire } from "./helpers/wire-schema.js";
 import {
   flattenUnionToObjectSchema,
   parseActionArgsOrFail,
@@ -27,7 +28,12 @@ import {
 //  - `direction`: different `z.enum`s per variant → all-enum merge to the
 //    value union (one `z.enum`)
 //  - `count`: `number` in one variant, `string` in another → `z.union`
-//    fallback → property-level `anyOf`
+//    fallback → one property accepting BOTH types. How that is spelled is
+//    decided by the BRANCH SHAPES, not by the zod version: these branches are
+//    bare scalars, which 4.5.4 collapses into a type array where 4.4.3 emitted
+//    `anyOf`; branches carrying an `enum` or a `const` stay `anyOf` under both,
+//    which is why the one widening that SHIPS (`keyboard.method`) is an `anyOf`.
+//    The two claims are pinned in separate cells (desktop-touch-mcp-internal#106)
 //  - `onlyA` / `onlyB`: single-variant fields → optional passthrough
 const synthBare = z.discriminatedUnion("action", [
   z.object({
@@ -57,6 +63,15 @@ function failureOf(result: { content: Array<{ text?: string }> }): {
 describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
   const flat = flattenUnionToObjectSchema(synthUnionWithInclude);
   const js = z.toJSONSchema(flat) as any;
+  // THE DOCUMENT A CLIENT RECEIVES, beside the one above — through the SAME helper the companion
+  // file uses, because two definitions of "the wire" is the defect this PR argues against and
+  // this file had the second one (gate 2 round 4). `z.toJSONSchema`'s defaults are
+  // `draft-2020-12` / `io:"output"`; `registerTool` converts with `{strictUnions:true,
+  // pipeStrategy:'input'}`. The cells below that assert the FLATTEN's behaviour may read either,
+  // but the cell that pins a SPELLING must read the wire — pinning a spelling on a document
+  // nobody is served is the defect this file's companion was written to close, and this cell had
+  // it too (gate 2 round 3, 2026-09-15).
+  const jsWire = wire(flat) as any;
   it("produces a flat top-level object — no oneOf/anyOf/allOf at the root", () => {
     expect(js.type).toBe("object");
     expect(js.oneOf).toBeUndefined();
@@ -80,10 +95,60 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
     expect([...js.properties.direction.enum].sort()).toEqual(["down", "left", "up"]);
     expect(js.properties.direction.anyOf).toBeUndefined();
   });
-  it("mixed-type collision (count) widens to a property-level anyOf", () => {
-    expect(js.properties.count.anyOf).toBeDefined();
-    const types = js.properties.count.anyOf.map((b: any) => b.type).sort();
-    expect(types).toEqual(["number", "string"]);
+  // THE WIDENING AND THE SPELLING OF THE WIDENING ARE TWO CLAIMS, and one cell used to make
+  // both. `anyOf` is what zod 4.4.3 emitted; 4.5.4 emits a type array for the same union, so
+  // the cell went red without the merge changing at all (internal#106). The old name carried a THIRD
+  // claim it cannot test from here — that the Anthropic API accepts that spelling. Settling
+  // that needs credentials no machine on this project has, so it stays an open question in
+  // internal#106 rather than a red cell here: a red baseline hides the next regression, which is how
+  // internal#106 itself went eight days unnoticed.
+  //
+  // `acceptedTypes` reads either spelling and THROWS on anything else. A shape it does not
+  // recognise must not arrive as an empty set — `toEqual([])` would then read as "no types
+  // accepted" and the cell would be agreeing with a schema nobody can serve.
+  // `acceptedTypes` READS THE SPELLING THROUGH `spellingOf`, rather than re-deciding it. The
+  // earlier local version started at `Array.isArray(prop.anyOf)` with no absence check and failed
+  // with `TypeError: Cannot read properties of undefined` — verbatim the failure the helper's
+  // ordering was fixed to eliminate, in the sibling file, under a header whose whole thesis is
+  // that two definitions of one thing is the defect (gate 2 round 6, measured).
+  function acceptedTypes(prop: Record<string, unknown> | undefined): string[] {
+    switch (spellingOf(prop)) {
+      case "anyOf":
+        return (prop!.anyOf as Array<{ type?: string }>)
+          .map((b) => b.type ?? "(no type)")
+          .sort();
+      case "type-array":
+        return [...(prop!.type as string[])].sort();
+      case "single-type":
+        return [prop!.type as string];
+      case "oneOf":
+        throw new Error(
+          `acceptedTypes: this property is a oneOf, not a widened scalar: ${JSON.stringify(prop)}`,
+        );
+    }
+  }
+  it("mixed-type collision (count) widens to accept BOTH number and string", () => {
+    expect(acceptedTypes(js.properties.count)).toEqual(["number", "string"]);
+  });
+  it("and the spelling of that widening is pinned, so a zod change is visible (internal#106)", () => {
+    // zod 4.4.3: {"anyOf":[{"type":"number"},{"type":"string"}]}. zod 4.5.4: a type array.
+    // THIS IS THE SYNTHETIC UNION'S spelling, and its branches are bare scalars — which is the
+    // case that collapses. The widening that actually SHIPS (`keyboard.method`) has branches
+    // carrying an `enum` and a `const`, does not collapse, and is pinned separately, on the
+    // document the SDK converts, in `the-wire-spelling-of-a-widened-field.test.ts`. Pinning only
+    // this one would catch the next zod move on a schema nobody is served (gate 2, 2026-09-15).
+    // `toEqual`, not `toMatchObject` — "this and nothing else", so a key appearing beside it
+    // is a change this cell reports rather than tolerates.
+    expect(jsWire.properties.count).toEqual({ type: ["number", "string"] });
+  });
+  // The two renderings differ only in `$schema` and `additionalProperties` today — MEASURED — so
+  // every cell above reads the same properties either way. This cell is what tells us the day
+  // that stops being true, instead of leaving half the file quietly on the wrong document.
+  it("the default rendering and the wire agree on properties and required (they differ elsewhere)", () => {
+    expect(jsWire.properties).toEqual(js.properties);
+    expect(jsWire.required).toEqual(js.required);
+    expect(js.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(jsWire.$schema).toBe("http://json-schema.org/draft-07/schema#");
   });
   it("single-variant fields pass through as optional", () => {
     expect(js.properties.onlyA.type).toBe("boolean");

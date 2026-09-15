@@ -50,9 +50,11 @@ export default defineConfig({
     //
     // The cost is real and is measured on both machines: 18s -> 26s here (7 workers -> 4),
     // and 78s -> 98s on win2's 16-CPU machine (15 -> 4), where 6 workers took 70s. That
-    // price is paid by the local pre-merge run, which is the only place this suite runs at
+    // price is paid by the local pre-merge run, which is the only place this SUITE runs at
     // all — the windows-latest unit step was REMOVED (`4b1a5155`); what is left in
     // `.github/workflows/ci.yml` is the NOTE explaining why, not a commented-out step.
+    // (Since #662, two FILES run in CI as `check:wire-pins`, in their own
+    // ubuntu-latest job. Two out of 364, and this cap is not what paces them.)
     //
     // It is at the root because a project-level `maxWorkers` is read before the CLI flag,
     // and under VITEST 4 it was not in the list of options a CLI flag may override: writing
@@ -100,7 +102,7 @@ export default defineConfig({
     // makes assertions of the form "was never called" EASIER to pass, so adopting it is a
     // round that has to re-read every mock-based cell rather than a flag flip — and a cell
     // that goes quietly weaker is not visible in a failing-file count. That round is not this
-    // one, which changes the runner and nothing else — it is #659, which carries the steps
+    // one, which changes the runner and nothing else — it is desktop-touch-mcp-internal#107, which carries the steps
     // and the reason the set of affected cells grows while this line stands.
     //
     // ONE FILE NEEDS THIS TODAY — and the way to find that set is to RUN IT, not to grep.
@@ -127,7 +129,7 @@ export default defineConfig({
           include: ["tests/unit/**/*.test.ts"],
           // Never append to the developer's real diagnostic log from a unit run.
           setupFiles: ["./tests/unit/setup-diagnostic-log.ts"],
-          // fileParallelism defaults to true — 363 files run in parallel
+          // fileParallelism defaults to true — 364 files run in parallel
           testTimeout: 10_000,
           hookTimeout: 10_000,
           // Zombie prevention (Phase 4b-6): the forks pool, for native-binding safety.

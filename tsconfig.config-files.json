@@ -21,8 +21,13 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  // Every root-level TypeScript config file, so one added later is covered without touching
-  // this file. Today that is `vitest.config.ts` alone.
+  // Every root-level file spelled `*.config.{ts,mts,cts}`. Today that is `vitest.config.ts`
+  // alone, and a NEW one spelled that way is covered without touching this file.
+  //
+  // THE PROMISE IS ABOUT EXTENSIONS, NOT BASENAMES (gate 2, 2026-09-15). A root TypeScript
+  // config that does not spell `.config.` — `vitest.workspace.ts`, a `knip.ts` — is NOT matched
+  // and has to be added here by hand. Widening to `*.ts` would instead pull in whatever else
+  // ever lands at the root, so the pattern stays narrow and the gap is stated.
   //
   // ALL THREE EXTENSIONS, and that is the point: a glob of `*.config.ts` alone leaves a
   // `*.config.mts` or `*.config.cts` silently uncovered — this PR's own defect, one file
