@@ -110,6 +110,11 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
   });
   it("and the spelling of that widening is pinned, so a zod change is visible (#657)", () => {
     // zod 4.4.3: {"anyOf":[{"type":"number"},{"type":"string"}]}. zod 4.5.4: a type array.
+    // THIS IS THE SYNTHETIC UNION'S spelling, and its branches are bare scalars — which is the
+    // case that collapses. The widening that actually SHIPS (`keyboard.method`) has branches
+    // carrying an `enum` and a `const`, does not collapse, and is pinned separately, on the
+    // document the SDK converts, in `the-wire-spelling-of-a-widened-field.test.ts`. Pinning only
+    // this one would catch the next zod move on a schema nobody is served (gate 2, 2026-09-15).
     // `toEqual`, not `toMatchObject` — "this and nothing else", so a key appearing beside it
     // is a change this cell reports rather than tolerates.
     expect(js.properties.count).toEqual({ type: ["number", "string"] });

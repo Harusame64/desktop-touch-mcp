@@ -545,14 +545,28 @@ export function withEnvelopeIncludeForUnion(union: any): any {
  * one `z.enum` of the value union; otherwise to a `z.union` — ONE PROPERTY
  * THAT ACCEPTS BOTH TYPES.
  *
- * HOW zod spells that widening is zod's business, and it moved under us: 4.4.3
- * emitted a property-level `anyOf`, 4.5.4 emits a type array
- * (`{"type":["number","string"]}`) — measured on two machines, #657. Only
- * *top-level* `oneOf`/`anyOf` is rejected by the Anthropic API; whether it
+ * HOW that widening is spelled is decided by the BRANCH SHAPES, not by the zod
+ * version (gate 2, 2026-09-15 — an earlier draft of this paragraph said 4.5.4
+ * "emits a type array", and a shipped schema contradicts it):
+ *
+ *   - bare scalar branches (`z.number()` | `z.string()`) collapse into ONE `type`
+ *     array under 4.5.4 (`{"type":["number","string"]}`), where 4.4.3 emitted a
+ *     property-level `anyOf`;
+ *   - branches carrying their own keywords — an `enum`, a `const` — cannot be
+ *     collapsed and stay `anyOf` under both.
+ *
+ * MEASURED, across all eight `flattenUnionToObjectSchema` products: the only
+ * widening that ships is `keyboard.method` (an enum branch against a literal
+ * branch), and on the wire it is an `anyOf`. Zero type arrays ship today —
+ * independently swept over the live wire on the Windows machine, 32 tools.
+ *
+ * Only *top-level* `oneOf`/`anyOf` is rejected by the Anthropic API. Whether it
  * accepts a property-level TYPE ARRAY is NOT established anywhere in this
- * repository, and no shipped registration schema emits one today (#657,
- * measured). This sentence therefore says what was measured and stops short of
- * the acceptance claim it used to make.
+ * repository (#657, still open) — and the question is live for whatever spelling
+ * ships, which today is the `anyOf`, not the type array. The wire spellings are
+ * pinned in `tests/unit/the-wire-spelling-of-a-widened-field.test.ts`, on the
+ * document `registerTool` actually converts; this paragraph is a claim, that is
+ * the check.
  *
  * The two claims — that the field widens, and how the widening is spelled — are
  * pinned in SEPARATE cells in `tests/unit/flatten-union-schema.test.ts`, because

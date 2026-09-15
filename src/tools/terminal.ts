@@ -3081,6 +3081,9 @@ export { TERMINAL_PROCESS_RE };
 // not claimed. Either way it is property-level, and only *top-level* `oneOf`/`anyOf`
 // is rejected. Whether the API accepts each spelling is #657's open question and is
 // not something a comment here can assert.
+//
+// PINNED, on the document `registerTool` converts rather than on this file's word:
+// `tests/unit/the-wire-spelling-of-a-widened-field.test.ts`.
 const terminalUnionWithInclude = withEnvelopeIncludeForUnion(terminalSchema);
 export const terminalRegistrationSchema = flattenUnionToObjectSchema(terminalUnionWithInclude);
 
