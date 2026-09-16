@@ -170,6 +170,27 @@ describe("the keyboard tool's dispatch row", () => {
     });
   });
 
+  it("keeps recording the rule's answer under the whole-form switch, and flags that the roads differ", async () => {
+    // THE OTHER MODE OF THE SAME SWITCH (win2, 2026-09-16, measured after the first fix). `disabled`
+    // is a PARAMETER of the rule; `unchecked` is a decision of the CALLER — the acting road reads it
+    // and skips the rule entirely (`desktop-executor.ts:1098`). There is nothing to pass it to, so
+    // this row keeps answering "what does the rule say about these facts" and raises the flag that
+    // says the other road is not answering that question at all.
+    classOf = { [String(CHILD)]: "Edit" };
+    styleOf = { [String(CHILD)]: 0x0800 };
+    process.env.DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED = "all";
+    try {
+      await probe({ tool: "keyboard:type", rung: "wm_char", windowHwnd: WIN, byHandle: true, receiver: CHILD });
+    } finally {
+      delete process.env.DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED;
+    }
+    expect(rows()[0]).toMatchObject({
+      switchUnchecked: true,
+      switchDisabled: [],
+      wouldJudge: { kind: "refuse", ground: "read_only" },
+    });
+  });
+
   it("prints a handle with bit 31 set in the shared 32-bit form, like every other seam", async () => {
     // THE CELL THE OTHER FIXTURES COULD NOT BE: every handle in this file is small, so the raw
     // bigint and the 32-bit form are the same string and a mutation that drops the normalisation

@@ -146,11 +146,22 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
       receiverReadOnly: editReadOnlyOf(facts.receiverClass, facts.receiverStyle),
       ownerChain: readOwnerChain(facts.receiverRootHwnd),
     };
-    // THE SAME SWITCH THE ACTING ROAD HONOURS. `desktop_act`'s rung passes the disabled grounds to
-    // the rule, and a round that turns one off (`DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED=read_only`)
-    // would otherwise get one verdict on `act.route` and a different one here for identical facts —
-    // on a row whose whole point is that the two roads can be compared (gate 2, 2026-09-16). The
-    // state is written beside the verdict, so a reader knows which rule produced it.
+    // THE SWITCH HAS TWO FORMS, AND ONLY ONE OF THEM IS THE RULE'S BUSINESS.
+    //
+    // `disabled` is a PARAMETER of `judgeKeyboardTarget`: a disabled ground's step still decides and
+    // answers `ground_disabled:*` instead of the refusal. So it is passed, and without it a round
+    // run with `DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED=read_only` would read `refuse` here and a
+    // marked success on `act.route` for identical facts (gate 2, 2026-09-16).
+    //
+    // `unchecked` — the whole-form spelling (`1` / `all` / `true`) — is a DECISION OF THE CALLER,
+    // and there is nothing to pass it to. The acting road reads it and takes a different branch
+    // entirely (`desktop-executor.ts:1098`), where the rule is never called. So under that form this
+    // row still records what the RULE says about these facts, while `act.route` records
+    // `verdict:"unchecked"` and no judgement at all. Measured, both ways round (win2, 2026-09-16).
+    //
+    // WHICH MEANS `wouldJudge` PROMISES THE RULE'S ANSWER, NOT THE OTHER ROAD'S ACTION. A comparison
+    // between the two seams reads `switchUnchecked` FIRST: when it is true the roads are not
+    // answering the same question, and the row says so rather than looking like a disagreement.
     const rungSwitch = readKeyboardRungSwitch();
     const verdict: KeyboardVerdict = judgeKeyboardTarget(ruleFacts, rungSwitch.disabled);
 
