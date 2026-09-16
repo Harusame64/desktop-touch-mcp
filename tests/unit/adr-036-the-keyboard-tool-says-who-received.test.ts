@@ -93,7 +93,7 @@ describe("the keyboard tool's dispatch row", () => {
     expect(r.receiver).toMatchObject({
       hwnd: String(CHILD),
       rootHwnd: String(WIN),
-      isWindowItself: false,
+      receiverIsItsOwnRoot: false,
       inNamedWindow: true,
     });
   });
@@ -127,7 +127,7 @@ describe("the keyboard tool's dispatch row", () => {
     classOf = { [String(WIN)]: "Edit" };
     await probe({ tool: "keyboard:type", rung: "wm_char", windowHwnd: WIN, byHandle: false, receiver: WIN });
     expect(rows()[0]).toMatchObject({
-      receiver: { isWindowItself: true, className: "Edit", inNamedWindow: true },
+      receiver: { receiverIsItsOwnRoot: true, className: "Edit", inNamedWindow: true },
     });
   });
 
@@ -206,11 +206,22 @@ describe("the keyboard tool's dispatch row", () => {
       await probe({ tool: "keyboard:type", rung: "wm_char", windowHwnd: HIGH, byHandle: true, receiver: HIGH });
       expect(rows()[0]).toMatchObject({
         windowHwnd: "4294901776",
-        receiver: { hwnd: "4294901776", isWindowItself: true },
+        receiver: { hwnd: "4294901776", receiverIsItsOwnRoot: true },
       });
     } finally {
       delete rootOf[String(HIGH)];
     }
+  });
+
+  it("says `null`, not `false`, when a root could not be read", async () => {
+    // TODAY'S OWN SHAPE, IN THIS FILE (gate 2, 2026-09-16): `inNamedWindow` collapsed "could not ask"
+    // into "no". Its twin on `act.route` (`inWindow`) has always used `null` for that, and
+    // `internal#118` is the same defect one layer down — in the field a refusal is decided from.
+    const ORPHAN = 0x00030010n; // no root in the fixture: `getWindowRoot` answers null
+    await probe({ tool: "keyboard:type", rung: "wm_char", windowHwnd: WIN, byHandle: true, receiver: ORPHAN });
+    expect(rows()[0]).toMatchObject({
+      receiver: { inNamedWindow: null, ownerIsNamedWindow: null, receiverIsItsOwnRoot: false },
+    });
   });
 
   it("separates the two absences: a rung with no receiver, and a primitive that drops it", async () => {

@@ -960,18 +960,11 @@ function keyboardLanding(
   return facts;
 }
 
-
 /**
- * A window handle as this record writes it and compares it: the unsigned low 32 bits.
- *
- * USER handles are 32-bit values sign-extended for interop, so the low 32 bits are the whole handle.
- * The two sides compared below do not arrive in one width:
- *   - the named control's handle is written from UIA as unsigned 32-bit (`tree.rs`, and the PowerShell
- *     script);
- *   - the receiver comes from `GetFocus` as the native pointer widened to 64 bits.
- * A handle with bit 31 set would then read as two different numbers for the same control, and the
- * refusal that is built on this comparison would refuse the right control (2ゲート目). So both sides
- * are written and compared in one form.
+ * The `act.route` row's view of the receiver. Handles are written and compared through `hwnd32` /
+ * `sameHwnd`, which moved to `engine/receiver-facts.ts` when the `keyboard` tool's road began reading
+ * the same facts — their reason is documented there, and the doc block that used to sit here went
+ * with them (gate 2, 2026-09-16: it had been left behind, describing a function that does none of it).
  */
 function receiverFacts(
   receipt: KeyboardReceipt | void,
@@ -1053,7 +1046,6 @@ function insideEntity(
   if (ancestors.some((a) => hwnd32(a) === entityHwnd)) return true;
   return ancestorsComplete ? false : null;
 }
-
 
 
 /** The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read. */

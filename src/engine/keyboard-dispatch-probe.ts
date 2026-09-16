@@ -75,7 +75,16 @@ export type NoReceiverWhy =
   /** The rung posts and reports, but the post could not say which handle it reached. */
   | "post_did_not_say";
 
-export interface KeyboardDispatchRow {
+/**
+ * A row, as a union: **a dispatch with no receiver must say WHY**. It was optional with a default of
+ * `post_did_not_say` — the most specific of the three absences — so a rung added later without a
+ * reason would have been recorded as "the primitive reported and could not say" rather than "this
+ * rung has no receiver", which is the exact conflation this seam exists to prevent (gate 2,
+ * 2026-09-16). The type forces it now instead of a default guessing.
+ */
+export type KeyboardDispatchRow = KeyboardDispatchNamed | KeyboardDispatchAbsent;
+
+interface KeyboardDispatchBase {
   /** `keyboard:type` | `keyboard:press` | `keyboard:sequence`, as the sink log spells it. */
   tool: string;
   rung: KeyboardRung;
@@ -87,11 +96,19 @@ export interface KeyboardDispatchRow {
   windowHwnd: bigint | null;
   /** True when the caller named that window by handle rather than by title. */
   byHandle: boolean;
-  /** The handle the characters actually went to, when the rung can say. */
-  receiver: bigint | null;
-  /** Why not, when it cannot. */
-  noReceiverWhy?: NoReceiverWhy;
   payloadChars?: number;
+}
+
+interface KeyboardDispatchNamed extends KeyboardDispatchBase {
+  /** The handle the characters actually went to. */
+  receiver: bigint;
+  noReceiverWhy?: never;
+}
+
+interface KeyboardDispatchAbsent extends KeyboardDispatchBase {
+  receiver: null;
+  /** Required: which of the three absences this is. */
+  noReceiverWhy: NoReceiverWhy;
 }
 
 /**
@@ -122,7 +139,7 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
       probeAim("keyboard.dispatch", {
         ...base,
         receiverKnown: false,
-        why: row.noReceiverWhy ?? "post_did_not_say",
+        why: row.noReceiverWhy,
       });
       return;
     }
@@ -177,18 +194,35 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
         // window took the text" COULD NOT BE BUILT — a posted WM_CHAR never reaches a top-level EDIT
         // on this machine, while a sent one does (win2, 2026-09-16, with the control run from outside
         // the server). So the row is built not to merge them.
-        isWindowItself: facts.receiverRootHwnd !== null && sameHwnd(row.receiver, facts.receiverRootHwnd),
+        // `receiverIsItsOwnRoot`, NOT `isWindowItself` — that name is taken, and it means something
+        // else. `act.route` writes `isWindowItself` inside an identically-named `receiver` object for
+        // `receiver === the window the rung ADDRESSED` (`desktop-executor.ts:994`). The two disagree
+        // in exactly the arm this PR was built for: a post that lands on another top-level window is
+        // its own root (true here) and is not the addressed window (false there). **A name that means
+        // two things is worse than two names** (gate 2, 2026-09-16). The values measured under the old
+        // spelling are unchanged — only the key was renamed.
+        receiverIsItsOwnRoot: facts.receiverRootHwnd !== null && sameHwnd(row.receiver, facts.receiverRootHwnd),
         className: facts.receiverClass,
         readOnly: ruleFacts.receiverReadOnly,
-        inNamedWindow: lookupRoot !== null && facts.receiverRootHwnd !== null
-          && sameHwnd(facts.receiverRootHwnd, lookupRoot),
+        // `null` when either root could not be read, like its twin `inWindow` on `act.route` — NOT
+        // `false`. Collapsing "could not ask" into "no" is the defect this module's own header names,
+        // and `internal#118` is the same shape one layer down, in the field a refusal is decided from.
+        // `lookupRoot` is printed beside it so a reader can tell which side was missing.
+        inNamedWindow: lookupRoot === null || facts.receiverRootHwnd === null
+          ? null
+          : sameHwnd(facts.receiverRootHwnd, lookupRoot),
+        namedWindowRoot: dec(lookupRoot),
         ancestorCount: facts.receiverAncestors?.length ?? null,
         ancestorsComplete: facts.ancestorsComplete,
         // The relation the receiver's own handle cannot carry: measured 2026-09-16, the receiver of
         // an owned window is that window's CHILD EDIT, one level deeper than the ownership.
         ownerChainLength: ruleFacts.ownerChain.length,
-        ownerIsNamedWindow: lookupRoot !== null
-          && ruleFacts.ownerChain.some((o) => sameHwnd(o, lookupRoot)),
+        // Same rule as `inNamedWindow`, and it needs BOTH sides: with no receiver root the chain was
+        // never walked, so an empty chain means "not asked" rather than "no owner" — the first fix
+        // here checked only `lookupRoot` and the cell caught it one field over.
+        ownerIsNamedWindow: lookupRoot === null || facts.receiverRootHwnd === null
+          ? null
+          : ruleFacts.ownerChain.some((o) => sameHwnd(o, lookupRoot)),
       },
       // Recorded, not acted on.
       switchDisabled: [...rungSwitch.disabled],
