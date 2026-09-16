@@ -270,10 +270,17 @@ fn extract_element(
         // the window's handle in `get_elements` (`as usize as u32`, zero dropped), so the two roads
         // and the keyboard rung's receiver compare as the same string. The property is in the cache
         // request already, so this costs no RPC.
-        let native_window_handle = elem
-            .CachedNativeWindowHandle()
-            .ok()
-            .map(|h| h.0 as usize as u32)
+        // ADR-036 `internal#118` — the three cases are kept apart HERE, where they happen. `.ok()`
+        // folded a failed read and `filter(!= 0)` folded a zero into one `None`, and the rule that
+        // refuses `other_control` is decided from that `None` alone.
+        let raw_native_window_handle = elem.CachedNativeWindowHandle().ok().map(|h| h.0 as usize as u32);
+        let native_window_handle_read = match raw_native_window_handle {
+            None => "failed",
+            Some(0) => "zero",
+            Some(_) => "value",
+        }
+        .to_string();
+        let native_window_handle = raw_native_window_handle
             .filter(|h| *h != 0)
             .map(|h| h.to_string());
 
@@ -315,6 +322,7 @@ fn extract_element(
             depth,
             value,
             native_window_handle,
+            native_window_handle_read,
         })
     }
 }

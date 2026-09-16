@@ -54,8 +54,16 @@ export interface ReceiverFacts {
 
 /**
  * Read the facts. Bounded, so a parent chain that loops cannot hang the caller.
+ *
+ * `withRect` exists because the two roads do not want the same facts: `act.route` writes the rect,
+ * `keyboard.dispatch` never did — so every named dispatch row was paying for a cross-process Win32
+ * call whose answer nothing read (gate 2, 2026-09-16). Default `true`, so the older caller is
+ * unchanged.
  */
-export async function readReceiverFacts(receiver: bigint): Promise<ReceiverFacts> {
+export async function readReceiverFacts(
+  receiver: bigint,
+  { withRect = true }: { withRect?: boolean } = {},
+): Promise<ReceiverFacts> {
   const root = getWindowRoot(receiver);
   const chain: bigint[] = [];
   let complete = false;
@@ -75,7 +83,7 @@ export async function readReceiverFacts(receiver: bigint): Promise<ReceiverFacts
   }
   return {
     receiverClass: getWindowClassName(receiver),
-    receiverRect: getWindowRectByHwnd(receiver),
+    receiverRect: withRect ? getWindowRectByHwnd(receiver) : null,
     receiverRootHwnd: root,
     receiverStyle: getWindowStyle(receiver),
     receiverAncestors: root !== null ? chain : null,

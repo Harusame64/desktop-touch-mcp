@@ -21,6 +21,14 @@ export interface NativeUiElement {
   value?: string
   /** ADR-036 family 2 — the element's own window handle (decimal string), when it is a window of its own. */
   nativeWindowHandle?: string | null
+  /**
+   * ADR-036 `internal#118` — why the field above is absent: `"value"` | `"zero"` | `"failed"`.
+   *
+   * **Optional on purpose**: the addon is built separately, so an older `.node` returns elements
+   * without it. Typed as required, the `!= null` guards on the TS side narrow to always-true and
+   * read as dead code — and removing them would put `undefined` on the wire (gate 2, 2026-09-16).
+   */
+  nativeWindowHandleRead?: string
 }
 
 export interface NativeUiElementsResult {

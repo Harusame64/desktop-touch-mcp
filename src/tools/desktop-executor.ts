@@ -780,7 +780,7 @@ async function resolvePressPoint(
  *
  * Reading only. Nothing routes on this, and the road's behaviour with either string is unchanged:
  * `""` and `"@active"` are handed to the same substring search every other title gets
- * (`find_window`, `src/uia/tree.rs:226`; `makeSetValueScript`, `uia-bridge.ts:766`). What they do
+ * (`find_window`, `src/uia/tree.rs:226`; `makeSetValueScript`, `uia-bridge.ts::makeSetValueScript`). What they do
  * NOT do is name a window — `""` matches whichever top-level window is enumerated first, and
  * `"@active"` is a shorthand this road never expands.
  *
@@ -953,6 +953,12 @@ function keyboardLanding(
     // The named element's own window handle, when the read recorded one — the other half of
     // `receiverIsEntity` below.
     facts.entityHwnd = entity.locator?.uia?.nativeWindowHandle ?? null;
+    // ADR-036 `internal#118` — and why it is null, when the read said. A null `entityHwnd` is what
+    // makes the rule fall through rungs 2 and 3, so a row that cannot say whether the element is
+    // windowless or the read failed cannot tell a correct fall-through from a defect. Measured on
+    // 2026-09-16: `c4-refuse-other-control` does not fire for a WinForms edit whose control
+    // demonstrably has a window, and until this field nothing in the record said which case it was.
+    facts.entityHwndRead = entity.locator?.uia?.nativeWindowHandleRead ?? null;
     Object.assign(facts, receiverFacts(receipt, entity.rect ?? null, entity.locator?.uia?.nativeWindowHandle ?? null));
   } catch {
     facts.landingError = true;
@@ -1461,12 +1467,12 @@ export function createDesktopExecutor(
           // ROAD resolved by. They come apart on the commonest pinned act there is — a call with
           // both a handle and a title RESOLVES THE WINDOW by the handle: `resolve_root` goes to
           // `ElementFromHandle` (`src/uia/tree.rs:178`) and the PowerShell twin picks
-          // `makeSetValueScriptByHwnd` (`uia-bridge.ts:1464`, defined at `:643`), which is not
+          // `makeSetValueScriptByHwnd` (`uia-bridge.ts::makeSetValueScriptByHwnd`, defined at `:643`), which is not
           // handed the title at all.
           //
           // "NEVER LOOKS AT THE TITLE" WOULD BE TOO STRONG (gate 2, 2026-09-16): the title is read
           // once before either road is chosen, by `refuseUiaTitleIfExcluded(windowTitle)`
-          // (`uia-bridge.ts:1443`), which can refuse on the title alone. It cannot change this
+          // (`uia-bridge.ts::setElementValue`'s `refuseUiaTitleIfExcluded`), which can refuse on the title alone. It cannot change this
           // field — a refusal throws and no row is written — but the window axis says "the handle
           // is what SELECTED the window", not "the string was never touched".
           //
@@ -1499,7 +1505,7 @@ export function createDesktopExecutor(
           // a second file constructing a `UiEntityCandidate` whose source is UIA. Today there is
           // one — `uia-provider.ts:119`. The other places that spell the same pair are a perception
           // `Observation` (`sensors-uia.ts:41`), an `ActionableElement` on the old listing shape
-          // (`uia-bridge.ts:1339`), and the vision-gpu type union (`vision-gpu/types.ts:59`), which
+          // (`uia-bridge.ts`'s `ActionableElement` builder), and the vision-gpu type union (`vision-gpu/types.ts:59`), which
           // is the union named above rather than an assignment.
           //
           // THE CHECK HAS TO SKIP THIS PARAGRAPH, and saying so is not pedantry — the first version
@@ -1516,9 +1522,9 @@ export function createDesktopExecutor(
             //
             // THE ROADS DO NOT AGREE ABOUT AN EMPTY LOCATOR, and an earlier version of this comment
             // said they did (gate 2, 2026-09-16). On the NAME they do: PowerShell writes `$true`
-            // (`uia-bridge.ts:762`) and the native walk matches `contains("")`
+            // (`uia-bridge.ts::makeSetValueScript`'s `nameFilter`) and the native walk matches `contains("")`
             // (`src/uia/scroll.rs:858`) — every element passes either way. On the AUTOMATION ID they
-            // do not: PowerShell drops the filter (`uia-bridge.ts:763`), while the native road is
+            // do not: PowerShell drops the filter (the same script's `idFilter`), while the native road is
             // handed `Some("")` and compares EXACTLY (`id == target`, `src/uia/scroll.rs:867`), so
             // an empty id silently EXCLUDES every element that has one — a filter nobody asked for,
             // on the road that runs first. The two also disagree about what "no filter at all"

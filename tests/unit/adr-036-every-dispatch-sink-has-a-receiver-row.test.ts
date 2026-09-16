@@ -55,6 +55,16 @@ describe("the keyboard tool's dispatch sites", () => {
     expect(sites().filter((s) => s.rung === null)).toEqual([]);
   });
 
+  it("never hardcodes `byHandle` — it is a property of the CALL, not of the rung", () => {
+    // WHAT GATE 1 FOUND (2026-09-16), after gate 2 had found the same thing on the four other
+    // focus-routed rungs in #666: the two clipboard sites still wrote `byHandle: false` because the
+    // shared helper never received the caller's provenance. A caller that pinned a handle and then
+    // fell through to the paste was recorded as unpinned — and the paste being focus-routed is what
+    // `windowHwnd: null` says, which is a different fact.
+    const src = readFileSync(SRC, "utf8");
+    expect(src.match(/byHandle:\s*(?:true|false)\b/g) ?? []).toEqual([]);
+  });
+
   it("names the rung exactly as the sink names the channel", () => {
     // THE DEFECT THAT SHIPPED. `clipboard_paste` was probed as `clipboard_flash` — a name that is
     // live in this same file for the foreground-flash road, so the rows read as the opposite rung

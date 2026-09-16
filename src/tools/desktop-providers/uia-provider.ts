@@ -125,6 +125,11 @@ export async function fetchUiaCandidates(
           uia: {
             automationId: el.automationId || undefined,
             name: el.name,
+            // ADR-036 `internal#118` — WHY `nativeWindowHandle` is absent, carried with the entity
+            // because the rule that refuses `other_control` is decided from that absence alone, and
+            // "the element is not a window" (correct) and "the read failed" (a defect) were arriving
+            // as one thing. Observation only; nothing branches on it.
+            ...(el.nativeWindowHandleRead !== undefined && { nativeWindowHandleRead: el.nativeWindowHandleRead }),
             ...(result.via !== undefined && { via: result.via }),
             ...(el.nativeWindowHandle !== undefined && { nativeWindowHandle: el.nativeWindowHandle }),
           },

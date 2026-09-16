@@ -34,6 +34,15 @@ export interface EntityLocator {
      * it was when the read ran, and can go stale.
      */
     nativeWindowHandle?: string;
+    /**
+     * ADR-036 `internal#118` — WHY the field above is absent, as the READ answered it:
+     * `"value"` a non-zero handle; `"zero"` UIA says this element is not a window of its own;
+     * `"failed"` the read did not answer. The rule that refuses `other_control` is decided from the
+     * handle's absence alone, so "the element has no window" (correct) and "the read failed" (a
+     * defect) were arriving as one thing — to the rule, not only to a reader. Observation only.
+     * Absent on an entity read before this field existed.
+     */
+    nativeWindowHandleRead?: "value" | "zero" | "failed";
   };
   /** CDP: element identified by CSS selector, optionally scoped to a tab. */
   cdp?: { selector?: string; tabId?: string };

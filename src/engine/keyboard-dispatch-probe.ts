@@ -41,6 +41,17 @@
  * wants both has to read two shapes. Filed rather than unified here (`internal#116`): this PR is the
  * tool road, and changing `act.route`'s shape would move a row three measurement records point at.
  *
+ * ## WHEN these facts were read, which is not when the other road reads them
+ *
+ * **After the post.** The receiver's handle is what `postCharsToHwnd` returned, so everything about
+ * it is read once the characters are already out. `desktop_act`'s rung reads the same facts BEFORE it
+ * posts (`ExecutorDeps.keyboardResolve` fills the receipt first). So a WM_CHAR that dismisses or
+ * recreates the control it lands on — an autocomplete list closing on input, a WinForms
+ * `RecreateHandle`, a dialog that closes itself — leaves this row with nulls that are
+ * indistinguishable from "the win32 binding is missing", while `act.route` on the same act recorded a
+ * real class and root (gate 2, 2026-09-16). The row says so in `factsReadAt` rather than leaving a
+ * cross-seam comparison to read a timing artefact as a disagreement.
+ *
  * ## What a row does not tell you
  *
  * **Whether the characters ARRIVED.** `postCharsToHwnd` POSTS, so delivery depends on the target
@@ -144,7 +155,7 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
       return;
     }
 
-    const facts = await readReceiverFacts(row.receiver);
+    const facts = await readReceiverFacts(row.receiver, { withRect: false });
     const lookupRoot = row.windowHwnd === null ? null : getWindowRoot(row.windowHwnd);
     // E is null and stays null: this road names a window, never a control. `aimRoot` is filled only
     // when the CALLER gave a handle, which is the same handle/title split the value road records —
@@ -172,7 +183,7 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
     //
     // `unchecked` — the whole-form spelling (`1` / `all` / `true`) — is a DECISION OF THE CALLER,
     // and there is nothing to pass it to. The acting road reads it and takes a different branch
-    // entirely (`desktop-executor.ts:1098`), where the rule is never called. So under that form this
+    // entirely (`desktop-executor.ts::keyboardRungWithReceipt`, the `sw.unchecked` branch), where the rule is never called. So under that form this
     // row still records what the RULE says about these facts, while `act.route` records
     // `verdict:"unchecked"` and no judgement at all. Measured, both ways round (win2, 2026-09-16).
     //
@@ -185,6 +196,9 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
     probeAim("keyboard.dispatch", {
       ...base,
       receiverKnown: true,
+      // WHEN, not just what: these are read after the post, and the road this row is compared against
+      // reads its own before. A constant, printed because the comparison happens in the record.
+      factsReadAt: "after_dispatch",
       receiver: {
         hwnd: hwnd32(row.receiver),
         rootHwnd: dec(facts.receiverRootHwnd),
@@ -196,12 +210,19 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
         // the server). So the row is built not to merge them.
         // `receiverIsItsOwnRoot`, NOT `isWindowItself` — that name is taken, and it means something
         // else. `act.route` writes `isWindowItself` inside an identically-named `receiver` object for
-        // `receiver === the window the rung ADDRESSED` (`desktop-executor.ts:994`). The two disagree
+        // `receiver === the window the rung ADDRESSED` (`desktop-executor.ts::receiverFacts`). The two disagree
         // in exactly the arm this PR was built for: a post that lands on another top-level window is
         // its own root (true here) and is not the addressed window (false there). **A name that means
         // two things is worse than two names** (gate 2, 2026-09-16). The values measured under the old
         // spelling are unchanged — only the key was renamed.
-        receiverIsItsOwnRoot: facts.receiverRootHwnd !== null && sameHwnd(row.receiver, facts.receiverRootHwnd),
+        // `null`, not `false`, when the root could not be read — **the third field in this object to
+        // need that, and it shipped past the first fix** (gate 2, 2026-09-16). `false` would say "the
+        // post landed on a child control", which is a real answer; a dead or recreated handle, a
+        // non-window handle, or a build without the win32 binding all give the same `null` root and
+        // no answer at all.
+        receiverIsItsOwnRoot: facts.receiverRootHwnd === null
+          ? null
+          : sameHwnd(row.receiver, facts.receiverRootHwnd),
         className: facts.receiverClass,
         readOnly: ruleFacts.receiverReadOnly,
         // `null` when either root could not be read, like its twin `inWindow` on `act.route` — NOT
@@ -216,7 +237,9 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
         ancestorsComplete: facts.ancestorsComplete,
         // The relation the receiver's own handle cannot carry: measured 2026-09-16, the receiver of
         // an owned window is that window's CHILD EDIT, one level deeper than the ownership.
-        ownerChainLength: ruleFacts.ownerChain.length,
+        // Same again: with no receiver root the chain was never walked, so `0` would read as "walked
+        // it, found no owner" — while the field below, on the same facts, answers "not asked".
+        ownerChainLength: facts.receiverRootHwnd === null ? null : ruleFacts.ownerChain.length,
         // Same rule as `inNamedWindow`, and it needs BOTH sides: with no receiver root the chain was
         // never walked, so an empty chain means "not asked" rather than "no owner" — the first fix
         // here checked only `lookupRoot` and the cell caught it one field over.

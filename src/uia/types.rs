@@ -33,6 +33,14 @@ pub struct UiElement {
     /// handle a keyboard rung's WM_CHAR reaches when the control holds the focus. A windowless element
     /// (WPF, most of a browser) has none, and is left out rather than reported as 0.
     pub native_window_handle: Option<String>,
+    /// ADR-036 `internal#118` — WHY the field above is absent, because absence meant three things.
+    ///
+    /// `"value"` the property answered a non-zero handle; `"zero"` it answered 0 — UIA says this
+    /// element is not a window of its own; `"failed"` the read itself did not answer. The rule that
+    /// refuses `other_control` is decided from `native_window_handle` alone, so "the element has no
+    /// window" (correct) and "the read failed" (a defect) were indistinguishable **to the rule**, not
+    /// only to a reader. Observation only: nothing branches on this.
+    pub native_window_handle_read: String,
 }
 
 #[napi(object)]
