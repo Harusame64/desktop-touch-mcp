@@ -59,7 +59,13 @@ export type AimSeam =
   /** Act time: the identity of the window that handle names NOW (read-only). */
   | "act.identity"
   /** Act time: which backend ran, whether it was aimed, and which rung refused when one did. */
-  | "act.route";
+  | "act.route"
+  /**
+   * ADR-036 family 2, arm A: one row per `keyboard` dispatch — which rung sent, who received, and
+   * what the rule would have said about it. The tool road has no entity, so the rule can only ever
+   * answer "cannot say" or `read_only` there; the row exists to count that before anything refuses.
+   */
+  | "keyboard.dispatch";
 
 let seq = 0;
 let resolvedPath: string | null = null;
