@@ -953,6 +953,12 @@ function keyboardLanding(
     // The named element's own window handle, when the read recorded one — the other half of
     // `receiverIsEntity` below.
     facts.entityHwnd = entity.locator?.uia?.nativeWindowHandle ?? null;
+    // ADR-036 `internal#118` — and why it is null, when the read said. A null `entityHwnd` is what
+    // makes the rule fall through rungs 2 and 3, so a row that cannot say whether the element is
+    // windowless or the read failed cannot tell a correct fall-through from a defect. Measured on
+    // 2026-09-16: `c4-refuse-other-control` does not fire for a WinForms edit whose control
+    // demonstrably has a window, and until this field nothing in the record said which case it was.
+    facts.entityHwndRead = entity.locator?.uia?.nativeWindowHandleRead ?? null;
     Object.assign(facts, receiverFacts(receipt, entity.rect ?? null, entity.locator?.uia?.nativeWindowHandle ?? null));
   } catch {
     facts.landingError = true;

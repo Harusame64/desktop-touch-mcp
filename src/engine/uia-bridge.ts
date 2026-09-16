@@ -448,9 +448,15 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     # above (unsigned through [uint32]::MaxValue, zero dropped), so this road and the native one
     # give the same string for the same control, and the keyboard rung's receiver compares with it.
     $elHwnd = $null
+    # ADR-036 internal#118 — and WHY it is absent, kept apart at the read: a throw is not a zero,
+    # and a zero is not a windowless element by accident. The rule that refuses other_control is
+    # decided from the handle alone, so the three cases must not arrive as one.
+    # (No backticks in this comment on purpose: the script is a TS template literal.)
+    $elHwndRead = 'failed'
     try {
         $eh = $el.Current.NativeWindowHandle
-        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue) }
+        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue); $elHwndRead = 'value' }
+        else { $elHwndRead = 'zero' }
     } catch {}
 
     ${fetchValuesBlock}
@@ -466,6 +472,7 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     }
     if ($null -ne $elVal) { $elObj['value'] = $elVal }
     if ($null -ne $elHwnd) { $elObj['nativeWindowHandle'] = $elHwnd }
+    $elObj['nativeWindowHandleRead'] = $elHwndRead
     $results.Add($elObj)
     $count++
     if ($count -ge ${maxElements}) { break bfs }
@@ -819,6 +826,15 @@ export interface UiElement {
    * unsigned 32-bit, zero dropped.
    */
   nativeWindowHandle?: string;
+  /**
+   * ADR-036 `internal#118` — WHY `nativeWindowHandle` is absent, because absence meant three things
+   * and the rule that refuses `other_control` is decided from it alone:
+   *   - `"value"`  — the property answered a non-zero handle;
+   *   - `"zero"`   — it answered 0: UIA says this element is not a window of its own;
+   *   - `"failed"` — the read did not answer at all.
+   * Observation only; nothing branches on it. Absent on a read taken before this field existed.
+   */
+  nativeWindowHandleRead?: "value" | "zero" | "failed";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1152,12 +1168,15 @@ export async function getUiElements(
         windowHwnd: result.windowHwnd ?? undefined,
         windowRect: result.windowRect ?? null,
         elementCount: result.elementCount,
-        elements: result.elements.map(({ nativeWindowHandle, ...el }: NativeUiElement) => ({
+        elements: result.elements.map(({ nativeWindowHandle, nativeWindowHandleRead, ...el }: NativeUiElement) => ({
           ...el,
           boundingRect: el.boundingRect ?? null,
           // Rust's `None` arrives as null. This type says "absent", as the PowerShell road does, so the
           // key is left out rather than set to undefined.
           ...(nativeWindowHandle != null && { nativeWindowHandle }),
+          // `internal#118` — and WHY it is absent, kept beside it. A build older than the field sends
+          // nothing, which stays absent rather than becoming a guess.
+          ...(nativeWindowHandleRead != null && { nativeWindowHandleRead: nativeWindowHandleRead as "value" | "zero" | "failed" }),
         })),
         via: "native",
       };
@@ -1719,9 +1738,12 @@ function Collect($el, $depth) {
     # (unsigned through [uint32]::MaxValue, zero dropped), so the native road, which shares
     # extract_element with the element read, and this one give scope_element the same shape.
     $elHwnd = $null
+    # internal#118 — the same three cases as the get-elements script, kept apart the same way.
+    $elHwndRead = 'failed'
     try {
         $eh = $c.NativeWindowHandle
-        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue) }
+        if ($eh -ne 0) { $elHwnd = [string][uint32]([int64]$eh -band [uint32]::MaxValue); $elHwndRead = 'value' }
+        else { $elHwndRead = 'zero' }
     } catch {}
     $item = @{
         name=$c.Name; controlType=($c.ControlType.ProgrammaticName -replace 'ControlType\\.','')
@@ -1729,6 +1751,7 @@ function Collect($el, $depth) {
         boundingRect=$rect; patterns=$pats; depth=$depth
     }
     if ($null -ne $elHwnd) { $item['nativeWindowHandle'] = $elHwnd }
+    $item['nativeWindowHandleRead'] = $elHwndRead
     $script:results.Add($item)
     $script:count++
     $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
@@ -1766,12 +1789,13 @@ export async function getElementChildren(
         timeoutMs,
       });
       // Normalise boundingRect: Rust Option → null
-      return result.map(({ nativeWindowHandle, ...el }: NativeUiElement) => ({
+      return result.map(({ nativeWindowHandle, nativeWindowHandleRead, ...el }: NativeUiElement) => ({
         ...el,
         boundingRect: el.boundingRect ?? null,
         // Rust's `None` arrives as null. This type says "absent", as `getUiElements` does, so the key is
         // left out rather than set to undefined.
         ...(nativeWindowHandle != null && { nativeWindowHandle }),
+        ...(nativeWindowHandleRead != null && { nativeWindowHandleRead: nativeWindowHandleRead as "value" | "zero" | "failed" }),
       }));
     } catch (e) {
       console.warn("[uia-bridge] Native uiaGetElementChildren failed, falling back to PowerShell:", e);
