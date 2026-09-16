@@ -213,6 +213,15 @@ describe("the keyboard tool's dispatch row", () => {
     }
   });
 
+  it("says when its facts were read, because the road it is compared against reads its own earlier", async () => {
+    // A timing artefact would otherwise read as a rule disagreement: this row's facts are read AFTER
+    // the post, `act.route`'s BEFORE it, so a control that the keystroke itself dismisses leaves
+    // nulls here and a full answer there (gate 2, 2026-09-16).
+    const entity = { tool: "keyboard:type", rung: "wm_char", windowHwnd: WIN, byHandle: true, receiver: CHILD };
+    await probe(entity);
+    expect(rows()[0]).toMatchObject({ factsReadAt: "after_dispatch" });
+  });
+
   it("says `null`, not `false`, when a root could not be read", async () => {
     // TODAY'S OWN SHAPE, IN THIS FILE (gate 2, 2026-09-16): `inNamedWindow` collapsed "could not ask"
     // into "no". Its twin on `act.route` (`inWindow`) has always used `null` for that, and

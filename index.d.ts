@@ -26,6 +26,8 @@ export interface NativeUiElement {
   value?: string
   /** ADR-036 family 2 — the element's own window handle (decimal string), when it is a window of its own. */
   nativeWindowHandle?: string | null
+  /** ADR-036 `internal#118` — why the field above is absent: `"value"` | `"zero"` | `"failed"`. */
+  nativeWindowHandleRead?: string
 }
 
 export interface NativeUiElementsResult {

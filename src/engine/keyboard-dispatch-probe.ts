@@ -41,6 +41,17 @@
  * wants both has to read two shapes. Filed rather than unified here (`internal#116`): this PR is the
  * tool road, and changing `act.route`'s shape would move a row three measurement records point at.
  *
+ * ## WHEN these facts were read, which is not when the other road reads them
+ *
+ * **After the post.** The receiver's handle is what `postCharsToHwnd` returned, so everything about
+ * it is read once the characters are already out. `desktop_act`'s rung reads the same facts BEFORE it
+ * posts (`ExecutorDeps.keyboardResolve` fills the receipt first). So a WM_CHAR that dismisses or
+ * recreates the control it lands on — an autocomplete list closing on input, a WinForms
+ * `RecreateHandle`, a dialog that closes itself — leaves this row with nulls that are
+ * indistinguishable from "the win32 binding is missing", while `act.route` on the same act recorded a
+ * real class and root (gate 2, 2026-09-16). The row says so in `factsReadAt` rather than leaving a
+ * cross-seam comparison to read a timing artefact as a disagreement.
+ *
  * ## What a row does not tell you
  *
  * **Whether the characters ARRIVED.** `postCharsToHwnd` POSTS, so delivery depends on the target
@@ -144,7 +155,7 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
       return;
     }
 
-    const facts = await readReceiverFacts(row.receiver);
+    const facts = await readReceiverFacts(row.receiver, { withRect: false });
     const lookupRoot = row.windowHwnd === null ? null : getWindowRoot(row.windowHwnd);
     // E is null and stays null: this road names a window, never a control. `aimRoot` is filled only
     // when the CALLER gave a handle, which is the same handle/title split the value road records —
@@ -185,6 +196,9 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
     probeAim("keyboard.dispatch", {
       ...base,
       receiverKnown: true,
+      // WHEN, not just what: these are read after the post, and the road this row is compared against
+      // reads its own before. A constant, printed because the comparison happens in the record.
+      factsReadAt: "after_dispatch",
       receiver: {
         hwnd: hwnd32(row.receiver),
         rootHwnd: dec(facts.receiverRootHwnd),
