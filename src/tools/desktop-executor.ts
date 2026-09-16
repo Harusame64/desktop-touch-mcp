@@ -53,6 +53,9 @@ import {
   KeyboardTargetUnsafeError,
   type KeyboardFacts,
 } from "../engine/keyboard-target.js";
+// ADR-036 family 2 — the Edit-family read-only rule lives beside the receiver reader, because the
+// `keyboard` tool's road judges the same bit on the same classes (arm A, 2026-09-16).
+import { editReadOnlyOf, hwnd32, sameHwnd } from "../engine/receiver-facts.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -957,40 +960,12 @@ function keyboardLanding(
   return facts;
 }
 
-/** ES_READONLY: on an edit control, the field will not take typed characters. */
-const ES_READONLY = 0x0800;
-
 /**
- * The window classes whose style bit 0x0800 is ES_READONLY: Win32 `Edit`, the RichEdit family, and the
- * WinForms classes built on them (`WindowsForms10.EDIT.…`, `WindowsForms10.RichEdit20W.…`).
- *
- * In any other class the low style bits mean something else; on a Button, 0x0800 is BS_BOTTOM. And a
- * class whose name merely contains "edit" keeps its read-only state somewhere else, so for it
- * `editReadOnly` is `null` (2ゲート目, second read). Two examples are a WPF
- * `HwndWrapper[SomeEditor.exe;;…]` and a custom editor pane.
+ * The `act.route` row's view of the receiver. Handles are written and compared through `hwnd32` /
+ * `sameHwnd`, which moved to `engine/receiver-facts.ts` when the `keyboard` tool's road began reading
+ * the same facts — their reason is documented there, and the doc block that used to sit here went
+ * with them (gate 2, 2026-09-16: it had been left behind, describing a function that does none of it).
  */
-const EDIT_CONTROL_CLASS = /^(?:WindowsForms10\.)?(?:Edit|RichEdit\w*)(?:\.|$)/i;
-
-/**
- * A window handle as this record writes it and compares it: the unsigned low 32 bits.
- *
- * USER handles are 32-bit values sign-extended for interop, so the low 32 bits are the whole handle.
- * The two sides compared below do not arrive in one width:
- *   - the named control's handle is written from UIA as unsigned 32-bit (`tree.rs`, and the PowerShell
- *     script);
- *   - the receiver comes from `GetFocus` as the native pointer widened to 64 bits.
- * A handle with bit 31 set would then read as two different numbers for the same control, and the
- * refusal that is built on this comparison would refuse the right control (2ゲート目). So both sides
- * are written and compared in one form.
- */
-function hwnd32(h: bigint): string {
-  return BigInt.asUintN(32, h).toString();
-}
-
-function sameHwnd(a: bigint, b: bigint): boolean {
-  return BigInt.asUintN(32, a) === BigInt.asUintN(32, b);
-}
-
 function receiverFacts(
   receipt: KeyboardReceipt | void,
   entityRect: { x: number; y: number; width: number; height: number } | null,
@@ -1072,10 +1047,6 @@ function insideEntity(
   return ancestorsComplete ? false : null;
 }
 
-/** `editReadOnly` as the row writes it and the rule reads it: only an Edit-family class's bit answers. */
-function editReadOnlyOf(className: string | null, style: number | null): boolean | null {
-  return style !== null && className !== null && EDIT_CONTROL_CLASS.test(className) ? (style & ES_READONLY) !== 0 : null;
-}
 
 /** The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read. */
 function keyboardFactsOf(entity: UiEntity, receipt: KeyboardReceipt): KeyboardFacts {
@@ -2028,41 +1999,15 @@ export function createDesktopExecutor(
 // ── Real deps (Windows native) ────────────────────────────────────────────────
 
 /**
- * ADR-036 family 2 — what the keyboard rung reads about the handle it would post to:
- *   - its class, rect and style;
- *   - its top-level window (GA_ROOT);
- *   - its parents up to that window, nearest first.
+ * ADR-036 family 2 — what the keyboard rung reads about the handle it would post to.
  *
- * The walk is bounded, so a chain that loops cannot hang the act. When it stops short, the list keeps
- * what was walked and `ancestorsComplete` says so.
+ * **The reader moved to `engine/receiver-facts.ts`** when the `keyboard` tool started reading the
+ * same facts (arm A, 2026-09-16). Two roads with two readers are two chances to disagree, and this
+ * ADR has already paid for that shape once (`readWindowIdentityFields`).
  */
 async function readReceiverFacts(receiver: bigint): Promise<Partial<KeyboardReceipt>> {
-  const { getWindowClassName, getWindowRectByHwnd, getWindowRoot, getWindowStyle, getWindowParent } = await import("../engine/win32.js");
-  const root = getWindowRoot(receiver);
-  const chain: bigint[] = [];
-  let complete = false;
-  if (root !== null) {
-    let cur: bigint = receiver;
-    complete = sameHwnd(cur, root);
-    for (let i = 0; i < 16 && !complete; i++) {
-      const parent = getWindowParent(cur);
-      if (parent === null) break;
-      if (sameHwnd(parent, root)) {
-        complete = true;
-        break;
-      }
-      chain.push(parent);
-      cur = parent;
-    }
-  }
-  return {
-    receiverClass: getWindowClassName(receiver),
-    receiverRect: getWindowRectByHwnd(receiver),
-    receiverRootHwnd: root,
-    receiverStyle: getWindowStyle(receiver),
-    receiverAncestors: root !== null ? chain : null,
-    ancestorsComplete: root !== null ? complete : false,
-  };
+  const { readReceiverFacts: read } = await import("../engine/receiver-facts.js");
+  return read(receiver);
 }
 
 /**
@@ -2276,7 +2221,7 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async keyboardResolve(windowTitle, hwnd, refs) {
-      const { enumWindowsInZOrder, getWindowRoot, getWindowOwner } = await import("../engine/win32.js");
+      const { enumWindowsInZOrder, getWindowRoot } = await import("../engine/win32.js");
       const { resolveKeyTarget, canInjectViaPostMessage } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       // As `keyboardTypeBg` looks the window up, except that a handle is compared in its low 32 bits
@@ -2321,17 +2266,10 @@ function getSharedRealDeps(): ExecutorDeps {
       receipt.originRootHwnd = rootOf(refs.originHwnd);
       receipt.aimRootHwnd = rootOf(hwnd);
       receipt.lookupRootHwnd = getWindowRoot(win.hwnd);
-      // The owners of the receiver's top-level window, nearest first. Bounded, and a null ends the walk:
-      // `getWindowOwner` answers null both for "no owner" and for "the call failed".
-      const owners: bigint[] = [];
-      let cur = receipt.receiverRootHwnd ?? null;
-      for (let i = 0; i < 8 && cur !== null; i++) {
-        const owner = getWindowOwner(cur);
-        if (owner === null) break;
-        owners.push(owner);
-        cur = owner;
-      }
-      receipt.ownerChain = owners;
+      // The owners of the receiver's top-level window, nearest first — shared with the `keyboard`
+      // tool's road since arm A, for the reason `readReceiverFacts` moved: one reader, not two.
+      const { readOwnerChain } = await import("../engine/receiver-facts.js");
+      receipt.ownerChain = readOwnerChain(receipt.receiverRootHwnd ?? null);
       return receipt;
     },
 

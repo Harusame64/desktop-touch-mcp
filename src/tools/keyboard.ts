@@ -42,6 +42,9 @@ import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix, assertKeyboardDestination, noteDestinationMissing, keyboardDestinationMiss, failBlockedByGuard } from "./_action-guard.js";
 import { logResolve, logDispatchSink, appendTopologyWarnings } from "./_resolve-log.js";
+// ADR-036 family 2, arm A — this road posts and never wrote down who received. Observation only;
+// every row is gated on the aim probe and the helper never throws.
+import { probeKeyboardDispatch } from "../engine/keyboard-dispatch-probe.js";
 import type { ResolvedDestination } from "./_action-guard.js";
 
 /**
@@ -312,6 +315,21 @@ async function nativeTypeViaClipboard(
   // otherwise.
   if (r.pasted) {
     logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
+    // ADR-036 arm A — the clipboard rung pastes into whatever holds the foreground: it
+    // addresses no handle and names no receiver, like the SendInput rungs and unlike the
+    // WM_CHAR ones, which have had the answer in hand all along.
+    // KEYBOARD ONLY, AND THE FILTER IS THE POINT. This helper is shared: `terminal.ts:1758` reaches
+    // it as `terminal:send`, and the terminal road's other three rungs (`wm_char`,
+    // `foreground_flash`, `sendinput`) write no row at all. Letting one of four through would put a
+    // silent under-count of that road inside a seam whose subject is the keyboard road — a number
+    // that reads as complete and is not (gate 2, 2026-09-16). The terminal road gets its own rows in
+    // its own round; `internal#117` holds the shape.
+    if (tool.startsWith("keyboard:")) {
+      await probeKeyboardDispatch({
+        tool, rung: "clipboard_paste", windowHwnd: null, byHandle: false,
+        receiver: null, noReceiverWhy: "rung_has_no_receiver",
+      });
+    }
   }
 
   if (!r.ok) {
@@ -491,6 +509,21 @@ async function powershellTypeViaClipboard(
   // leaves without a keystroke, so logging at the call site would record a
   // paste that never happened (Opus Round 2 P1).
   logDispatchSink({ sink: "clipboard_paste", tool, targetHwnd: null });
+  // ADR-036 arm A — the clipboard rung pastes into whatever holds the foreground: it
+  // addresses no handle and names no receiver, like the SendInput rungs and unlike the
+  // WM_CHAR ones, which have had the answer in hand all along.
+  // KEYBOARD ONLY, AND THE FILTER IS THE POINT. This helper is shared: `terminal.ts:1758` reaches
+  // it as `terminal:send`, and the terminal road's other three rungs (`wm_char`,
+  // `foreground_flash`, `sendinput`) write no row at all. Letting one of four through would put a
+  // silent under-count of that road inside a seam whose subject is the keyboard road — a number
+  // that reads as complete and is not (gate 2, 2026-09-16). The terminal road gets its own rows in
+  // its own round; `internal#117` holds the shape.
+  if (tool.startsWith("keyboard:")) {
+    await probeKeyboardDispatch({
+      tool, rung: "clipboard_paste", windowHwnd: null, byHandle: false,
+      receiver: null, noReceiverWhy: "rung_has_no_receiver",
+    });
+  }
   const combo = parseKeys(pasteCombo);
   await keyboard.pressKey(...combo);
   await keyboard.releaseKey(...combo);
@@ -1662,6 +1695,16 @@ export const keyboardTypeHandler = async ({
           if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
         }
         const r = postCharsToHwnd(target.hwnd, effectiveText);
+        // ADR-036 arm A — `r.target` is the handle the characters went to, and it was discarded here
+        // until now. The sink row above says where this AIMED; only this one says where it LANDED.
+        await probeKeyboardDispatch(
+          typeof r.target === "bigint"
+            ? { tool: "keyboard:type", rung: "wm_char", windowHwnd: target.hwnd,
+                byHandle: explicitHwnd !== undefined, receiver: r.target,
+                payloadChars: effectiveText.length }
+            : { tool: "keyboard:type", rung: "wm_char", windowHwnd: target.hwnd,
+                byHandle: explicitHwnd !== undefined, receiver: null,
+                noReceiverWhy: "post_did_not_say", payloadChars: effectiveText.length });
         if (!r.full) {
           return failWith(
             new Error("BackgroundInputIncomplete"),
@@ -1714,6 +1757,14 @@ export const keyboardTypeHandler = async ({
       // operator's own window (Codex Round 1 P2). `fgHwnd` here is the window
       // that held focus BEFORE the steal.
       logDispatchSink({ sink: "foreground_flash", tool: "keyboard:type", targetHwnd: channel.hwnd });
+      // ADR-036 arm A — this rung goes through the FOREGROUND: it posts to no handle, so there is no
+      // subject to name. Recorded rather than left absent, because "nobody asked" and "nobody
+      // answered" look identical in a record that only omits.
+      await probeKeyboardDispatch({
+        tool: "keyboard:type", rung: "foreground_flash", windowHwnd: channel.hwnd,
+        byHandle: explicitHwnd !== undefined,
+        receiver: null, noReceiverWhy: "rung_has_no_receiver",
+      });
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,
@@ -1937,6 +1988,17 @@ export const keyboardTypeHandler = async ({
 
           logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
           const result = postCharsToHwnd(target.hwnd, effectiveText);
+          // ADR-036 arm A — see the flash rung above: the sink row says where this aimed, this one
+          // says where it landed. Measured 2026-09-16: the two come apart when the aimed window's
+          // thread holds its focus in another top-level window, and nothing in the record said so.
+          await probeKeyboardDispatch(
+            typeof result.target === "bigint"
+              ? { tool: "keyboard:type", rung: "wm_char", windowHwnd: target.hwnd,
+                  byHandle: explicitHwnd !== undefined, receiver: result.target,
+                  payloadChars: effectiveText.length }
+              : { tool: "keyboard:type", rung: "wm_char", windowHwnd: target.hwnd,
+                  byHandle: explicitHwnd !== undefined, receiver: null,
+                  noReceiverWhy: "post_did_not_say", payloadChars: effectiveText.length });
           if (!result.full) {
             // Partial fail: do NOT fall through to foreground (would cause double input).
             // Return error regardless of effectiveMethod.
@@ -2450,6 +2512,18 @@ export const keyboardTypeHandler = async ({
             // through: an abort at i=0 sends nothing at all.
             if (i === 0) {
               logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null });
+              // ADR-036 arm A — SendInput is routed by the FOCUS and addressed to no handle, so this rung
+              // can name neither a window nor a receiver. Both absences are written down: the record of a
+              // subject is missing exactly on the rungs that go through the foreground, and that asymmetry
+              // is the finding this row exists to carry.
+              await probeKeyboardDispatch({
+                tool: "keyboard:type", rung: "sendinput", windowHwnd: null,
+  // `byHandle` is a property of the CALL, not of the rung: a caller that pinned a handle and then
+  // fell through to a focus-routed rung is still a handle-pinned call, and recording it as false
+  // under-counts exactly on the rungs this round measures for their blindness (gate 2, 2026-09-16).
+  byHandle: explicitHwnd !== undefined,
+                receiver: null, noReceiverWhy: "rung_has_no_receiver",
+              });
             }
             await keyboard.type(chunk);
             typed += chunk.length; // UTF-16 code units delivered
@@ -2462,6 +2536,15 @@ export const keyboardTypeHandler = async ({
         }
       } else {
         logDispatchSink({ sink: "sendinput", tool: "keyboard:type", targetHwnd: null, payloadChars: effectiveText.length });
+        // ADR-036 arm A — as in the chunked branch above: this rung addresses no handle.
+        await probeKeyboardDispatch({
+          tool: "keyboard:type", rung: "sendinput", windowHwnd: null,
+  // `byHandle` is a property of the CALL, not of the rung: a caller that pinned a handle and then
+  // fell through to a focus-routed rung is still a handle-pinned call, and recording it as false
+  // under-counts exactly on the rungs this round measures for their blindness (gate 2, 2026-09-16).
+  byHandle: explicitHwnd !== undefined,
+          receiver: null, noReceiverWhy: "rung_has_no_receiver", payloadChars: effectiveText.length,
+        });
         await keyboard.type(effectiveText);
       }
     }
@@ -2677,6 +2760,14 @@ export const keyboardPressHandler = async ({
           baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
 
         logDispatchSink({ sink: "wm_char", tool: "keyboard:press", targetHwnd: target.hwnd });
+        // ADR-036 arm A — this rung POSTS, and `postKeyComboToHwnd` / `postEnterToHwnd` resolve the
+        // same receiver the char road reports and then return a bare boolean. So the subject exists
+        // and is thrown away one layer down; the row says which of the two absences this is.
+        await probeKeyboardDispatch({
+          tool: "keyboard:press", rung: "wm_char", windowHwnd: target.hwnd,
+          byHandle: explicitHwnd !== undefined,
+          receiver: null, noReceiverWhy: "primitive_does_not_report",
+        });
         const ok2 = isEnter
           ? postEnterToHwnd(target.hwnd)
           : postKeyComboToHwnd(target.hwnd, keys);
@@ -2904,6 +2995,11 @@ export const keyboardPressHandler = async ({
 
     const keyList = parseKeys(keys);
     logDispatchSink({ sink: "sendinput", tool: "keyboard:press", targetHwnd: null });
+    // ADR-036 arm A — routed by the focus, addressed to no handle.
+    await probeKeyboardDispatch({
+      tool: "keyboard:press", rung: "sendinput", windowHwnd: null, byHandle: explicitHwnd !== undefined,
+      receiver: null, noReceiverWhy: "rung_has_no_receiver",
+    });
     await keyboard.pressKey(...keyList);
     await keyboard.releaseKey(...keyList);
 
@@ -3169,6 +3265,12 @@ export const keyboardSequenceHandler = async ({
             // resolve event sharing this call's `callId`.
             if (i === 0) {
               logDispatchSink({ sink: "rawkeyboard", tool: "keyboard:sequence", targetHwnd: null });
+              // ADR-036 arm A — the comment above already says why `targetHwnd` is null here; this row says
+              // the same thing about the RECEIVER, in the same words the other rungs use.
+              await probeKeyboardDispatch({
+                tool: "keyboard:sequence", rung: "rawkeyboard", windowHwnd: null, byHandle: explicitHwnd !== undefined,
+                receiver: null, noReceiverWhy: "rung_has_no_receiver",
+              });
             }
             await rawKeyboard.pressKeyDown(...downKeys);
             const hold = step.holdMs ?? 0;
