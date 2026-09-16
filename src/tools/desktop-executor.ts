@@ -819,7 +819,6 @@ async function resolvePressPoint(
  * one comes back. An auditor who starts at `:410` alone sees a replacement and concludes the
  * caller's string never survives; the pair is the mechanism (gate 2, 2026-09-16).
  *
-
  * AND WHETHER `"nothing"` CAN EVER BE WRITTEN IS A SECOND QUESTION, which three versions of this
  * comment answered without asking it. Case 3 puts an unresolved string in the AIM. It cannot put an
  * ACT behind it: the same failure that leaves the caller's string also returns ZERO CANDIDATES —
@@ -1607,11 +1606,14 @@ export function createDesktopExecutor(
             // the machine: `{windowTitle}` arms answer `"title"`, and `{hwnd}` / `{windowTitle,hwnd}`
             // / a bare act / `"@active"` all answer `"handle"` (win2, 2026-09-16, six arms).
             //
-            // `"nothing"` here does NOT have the standing of `"nothing"` on the element axis, and
-            // two versions of this comment said it did. The element axis's last branch needs a
-            // producer that does not exist. This one needs window resolution to FAIL, which the
-            // shipped road can do (`namesAWindowByTitle` above has the three branches). It is the
-            // rarer row and the louder one.
+            // `"nothing"` here is ALSO a total function's last case on the ingress, for a different
+            // reason than the element axis's — and this sentence said the opposite for two rounds
+            // after the retraction was written 780 lines up (gate 2, 2026-09-16: the correction had
+            // been applied in one place and not the other, and a reader triaging a log hits THIS one
+            // first). The element axis's last branch needs a producer that does not exist. This one
+            // needs window resolution to FAIL — which the shipped road CAN do, leaving the caller's
+            // string in the aim — but the same failure returns zero candidates, so no act follows it
+            // here. The full argument, with the lines, is on `namesAWindowByTitle` above.
             //
             // AND `"title"` DOES NOT MEAN THE TITLE WAS RESOLVED. On the commonest road it is the
             // caller's own string, passed through unchanged because a plain top-level match makes
