@@ -276,6 +276,8 @@ async function nativeTypeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v",
   tool: string,
+  /** ADR-036 arm A — whether the CALL named its window by handle. See {@link typeViaClipboard}. */
+  byHandle: boolean,
 ): Promise<TypeViaClipboardOutcome> {
   // UTF-16LE bytes rather than a JS string: napi's String bridge transcodes
   // through UTF-8, which cannot represent an unpaired surrogate, so it would
@@ -326,7 +328,7 @@ async function nativeTypeViaClipboard(
     // its own round; `internal#117` holds the shape.
     if (tool.startsWith("keyboard:")) {
       await probeKeyboardDispatch({
-        tool, rung: "clipboard_paste", windowHwnd: null, byHandle: false,
+        tool, rung: "clipboard_paste", windowHwnd: null, byHandle,
         receiver: null, noReceiverWhy: "rung_has_no_receiver",
       });
     }
@@ -448,6 +450,8 @@ async function powershellTypeViaClipboard(
   text: string,
   pasteCombo: "ctrl+v" | "ctrl+shift+v",
   tool: string,
+  /** ADR-036 arm A — whether the CALL named its window by handle. See {@link typeViaClipboard}. */
+  byHandle: boolean,
 ): Promise<TypeViaClipboardOutcome> {
   // (3) The payload has to fit in a command line. Fail before doing anything
   // rather than after emptying the user's clipboard.
@@ -520,7 +524,7 @@ async function powershellTypeViaClipboard(
   // its own round; `internal#117` holds the shape.
   if (tool.startsWith("keyboard:")) {
     await probeKeyboardDispatch({
-      tool, rung: "clipboard_paste", windowHwnd: null, byHandle: false,
+      tool, rung: "clipboard_paste", windowHwnd: null, byHandle,
       receiver: null, noReceiverWhy: "rung_has_no_receiver",
     });
   }
@@ -706,6 +710,14 @@ export async function typeViaClipboard(
    * which one it was.
    */
   tool = "keyboard:type",
+  /**
+   * ADR-036 arm A — whether the CALL named its window by handle rather than by title. A property of
+   * the call, not of the rung: the paste itself is focus-routed and addresses no handle
+   * (`windowHwnd: null` on the row), but a caller that pinned one and then fell through to the
+   * clipboard is still a handle-pinned call. Hardcoding `false` here misclassified exactly those
+   * (gate 1, 2026-09-16, after the same finding was taken on the four other focus rungs in #666).
+   */
+  byHandle = false,
 ): Promise<TypeViaClipboardOutcome> {
   // ── Why the native call takes the keyboard input lock ──────────────────────
   //
@@ -756,8 +768,8 @@ export async function typeViaClipboard(
   // in `nutjs.ts` describes. So: native = the whole transaction, fallback = the
   // chord only.
   return hasNativeTypeViaClipboard()
-    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo, tool))
-    : powershellTypeViaClipboard(text, pasteCombo, tool);
+    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo, tool, byHandle))
+    : powershellTypeViaClipboard(text, pasteCombo, tool, byHandle);
 }
 
 /**
@@ -2442,7 +2454,8 @@ export const keyboardTypeHandler = async ({
     // inside `typeViaClipboard`, the keystroke one on a focus-leash abort at
     // the very first chunk (Opus Round 2 P1).
     if (effectiveClipboard) {
-      clipboardOutcome = await typeViaClipboard(effectiveText);
+      clipboardOutcome = await typeViaClipboard(
+        effectiveText, "ctrl+v", "keyboard:type", explicitHwnd !== undefined);
     } else {
       // Focus Leash Phase B: when the caller named a target window and didn't
       // opt out, split the keystroke send into chunks and verify foreground
