@@ -173,7 +173,7 @@ describe("the keyboard tool's dispatch row", () => {
   it("keeps recording the rule's answer under the whole-form switch, and flags that the roads differ", async () => {
     // THE OTHER MODE OF THE SAME SWITCH (win2, 2026-09-16, measured after the first fix). `disabled`
     // is a PARAMETER of the rule; `unchecked` is a decision of the CALLER — the acting road reads it
-    // and skips the rule entirely (`desktop-executor.ts:1098`). There is nothing to pass it to, so
+    // and skips the rule entirely (`desktop-executor.ts`'s `sw.unchecked` branch). There is nothing to pass it to, so
     // this row keeps answering "what does the rule say about these facts" and raises the flag that
     // says the other road is not answering that question at all.
     classOf = { [String(CHILD)]: "Edit" };
@@ -219,8 +219,15 @@ describe("the keyboard tool's dispatch row", () => {
     // `internal#118` is the same defect one layer down — in the field a refusal is decided from.
     const ORPHAN = 0x00030010n; // no root in the fixture: `getWindowRoot` answers null
     await probe({ tool: "keyboard:type", rung: "wm_char", windowHwnd: WIN, byHandle: true, receiver: ORPHAN });
+    // `receiverIsItsOwnRoot` was pinned as `false` here and that was the defect, not the fixture:
+    // with no root read, "the post landed on a child control" is not something anyone established
+    // (gate 2, 2026-09-16 — the third field in this object to need the same correction, and the
+    // first two had already been fixed in the commit above it).
     expect(rows()[0]).toMatchObject({
-      receiver: { inNamedWindow: null, ownerIsNamedWindow: null, receiverIsItsOwnRoot: false },
+      receiver: {
+        inNamedWindow: null, ownerIsNamedWindow: null,
+        receiverIsItsOwnRoot: null, ownerChainLength: null,
+      },
     });
   });
 

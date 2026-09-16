@@ -147,7 +147,7 @@ describe("the UIA value road, on success", () => {
     // and a title. The old row called that `title_only` — while `addressedBy.hwnd` said a handle
     // was there, and while both roads resolve the window through the HANDLE and never search a
     // title (`resolve_root`, `src/uia/tree.rs:178`; `makeSetValueScriptByHwnd`,
-    // `uia-bridge.ts:1464`). Two axes, and the window axis is the handle's.
+    // `uia-bridge.ts::makeSetValueScriptByHwnd`). Two axes, and the window axis is the handle's.
     //
     // CONSTRUCTED, AND SAID SO: today's discover cannot produce a nameless UIA entity — the lane
     // filters on `el.name` (`uia-provider.ts:117`), the merge keeps `locator.uia.name`
@@ -238,9 +238,9 @@ describe("the UIA value road, on success", () => {
 
   it("answers `nothing` for an empty locator, which is not the same as the roads agreeing about one", async () => {
     // THE ROADS DO NOT AGREE, and the first version of this comment said they did (gate 2,
-    // 2026-09-16). On the NAME they do — PowerShell writes `$true` (`uia-bridge.ts:762`) and the
+    // 2026-09-16). On the NAME they do — PowerShell writes `$true` (`uia-bridge.ts::makeSetValueScript`'s `nameFilter`) and the
     // native walk matches `contains("")` (`src/uia/scroll.rs:858`). On the AUTOMATION ID they do
-    // not: PowerShell drops the filter (`uia-bridge.ts:763`) while the native road compares
+    // not: PowerShell drops the filter (the same script's `idFilter`) while the native road compares
     // exactly (`id == target`, `src/uia/scroll.rs:867`), so an empty id EXCLUDES every element that
     // has one.
     //

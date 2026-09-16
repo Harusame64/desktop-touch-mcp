@@ -172,7 +172,7 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
     //
     // `unchecked` — the whole-form spelling (`1` / `all` / `true`) — is a DECISION OF THE CALLER,
     // and there is nothing to pass it to. The acting road reads it and takes a different branch
-    // entirely (`desktop-executor.ts:1098`), where the rule is never called. So under that form this
+    // entirely (`desktop-executor.ts::keyboardRungWithReceipt`, the `sw.unchecked` branch), where the rule is never called. So under that form this
     // row still records what the RULE says about these facts, while `act.route` records
     // `verdict:"unchecked"` and no judgement at all. Measured, both ways round (win2, 2026-09-16).
     //
@@ -196,12 +196,19 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
         // the server). So the row is built not to merge them.
         // `receiverIsItsOwnRoot`, NOT `isWindowItself` — that name is taken, and it means something
         // else. `act.route` writes `isWindowItself` inside an identically-named `receiver` object for
-        // `receiver === the window the rung ADDRESSED` (`desktop-executor.ts:994`). The two disagree
+        // `receiver === the window the rung ADDRESSED` (`desktop-executor.ts::receiverFacts`). The two disagree
         // in exactly the arm this PR was built for: a post that lands on another top-level window is
         // its own root (true here) and is not the addressed window (false there). **A name that means
         // two things is worse than two names** (gate 2, 2026-09-16). The values measured under the old
         // spelling are unchanged — only the key was renamed.
-        receiverIsItsOwnRoot: facts.receiverRootHwnd !== null && sameHwnd(row.receiver, facts.receiverRootHwnd),
+        // `null`, not `false`, when the root could not be read — **the third field in this object to
+        // need that, and it shipped past the first fix** (gate 2, 2026-09-16). `false` would say "the
+        // post landed on a child control", which is a real answer; a dead or recreated handle, a
+        // non-window handle, or a build without the win32 binding all give the same `null` root and
+        // no answer at all.
+        receiverIsItsOwnRoot: facts.receiverRootHwnd === null
+          ? null
+          : sameHwnd(row.receiver, facts.receiverRootHwnd),
         className: facts.receiverClass,
         readOnly: ruleFacts.receiverReadOnly,
         // `null` when either root could not be read, like its twin `inWindow` on `act.route` — NOT
@@ -216,7 +223,9 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
         ancestorsComplete: facts.ancestorsComplete,
         // The relation the receiver's own handle cannot carry: measured 2026-09-16, the receiver of
         // an owned window is that window's CHILD EDIT, one level deeper than the ownership.
-        ownerChainLength: ruleFacts.ownerChain.length,
+        // Same again: with no receiver root the chain was never walked, so `0` would read as "walked
+        // it, found no owner" — while the field below, on the same facts, answers "not asked".
+        ownerChainLength: facts.receiverRootHwnd === null ? null : ruleFacts.ownerChain.length,
         // Same rule as `inNamedWindow`, and it needs BOTH sides: with no receiver root the chain was
         // never walked, so an empty chain means "not asked" rather than "no owner" — the first fix
         // here checked only `lookupRoot` and the cell caught it one field over.
