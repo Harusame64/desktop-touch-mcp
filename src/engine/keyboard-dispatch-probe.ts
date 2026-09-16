@@ -26,6 +26,21 @@
  * on**, so that "how often does the rule say it cannot say on this road" is a count taken before
  * anyone proposes refusing on it.
  *
+ * ## Where this seam is NOT written, and what that means
+ *
+ * **No row at all means no dispatch happened** — not that a dispatch said nothing. A call refused
+ * before it sends (`DestinationRequired` when no window was named, `AutoGuardBlocked` when the title
+ * matched two) never reaches a rung, and the two refusals are the product's own record. Said here
+ * because this seam's whole subject is recording absence instead of leaving it to be inferred, and a
+ * reader counting rows would otherwise read a missing row as a silent rung.
+ *
+ * **And `desktop_act`'s keyboard rung does not write this seam.** It records the same fact — the
+ * receiver — on its `act.route` row, in a richer shape: that road has an entity, so it carries the
+ * whole of `KeyboardFacts` and the rule ACTS on the verdict there. The two roads share the reader and
+ * the rule (`receiver-facts.ts`, `keyboard-target.ts`) and not the row, which means an analysis that
+ * wants both has to read two shapes. Filed rather than unified here (`internal#116`): this PR is the
+ * tool road, and changing `act.route`'s shape would move a row three measurement records point at.
+ *
  * ## What a row does not tell you
  *
  * **Whether the characters ARRIVED.** `postCharsToHwnd` POSTS, so delivery depends on the target
@@ -79,7 +94,8 @@ export interface KeyboardDispatchRow {
   payloadChars?: number;
 }
 
-const hex = (h: bigint | null | undefined): string | null =>
+/** A handle as this record writes it: DECIMAL, the same spelling every other seam uses. */
+const dec = (h: bigint | null | undefined): string | null =>
   h === null || h === undefined ? null : h.toString();
 
 /**
@@ -91,7 +107,7 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
     const base = {
       tool: row.tool,
       rung: row.rung,
-      windowHwnd: hex(row.windowHwnd),
+      windowHwnd: dec(row.windowHwnd),
       byHandle: row.byHandle,
       ...(row.payloadChars !== undefined && { payloadChars: row.payloadChars }),
     };
@@ -133,7 +149,7 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
       receiverKnown: true,
       receiver: {
         hwnd: row.receiver.toString(),
-        rootHwnd: hex(facts.receiverRootHwnd),
+        rootHwnd: dec(facts.receiverRootHwnd),
         // The two are kept APART although one implies the other today: `isWindowItself` covers both
         // "the thread had no focus" and "the question could not be asked" (the rule's step 4 says so),
         // and the arm that would have merged "fell back and nothing happened" with "fell back and the
