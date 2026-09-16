@@ -51,14 +51,14 @@
  */
 
 import { probeAim, aimProbeEnabled } from "./aim-probe.js";
-import { readReceiverFacts, readOwnerChain, editReadOnlyOf } from "./receiver-facts.js";
-import { judgeKeyboardTarget, type KeyboardFacts, type KeyboardVerdict } from "./keyboard-target.js";
+import { readReceiverFacts, readOwnerChain, editReadOnlyOf, hwnd32, sameHwnd } from "./receiver-facts.js";
+import { judgeKeyboardTarget, readKeyboardRungSwitch, type KeyboardFacts, type KeyboardVerdict } from "./keyboard-target.js";
 import { getWindowRoot } from "./win32.js";
 
 /** Which rung of the tool sent, named the way `logDispatchSink` names them. */
 export type KeyboardRung =
   | "wm_char"
-  | "clipboard_flash"
+  | "clipboard_paste"
   | "foreground_flash"
   | "sendinput"
   | "rawkeyboard";
@@ -94,9 +94,13 @@ export interface KeyboardDispatchRow {
   payloadChars?: number;
 }
 
-/** A handle as this record writes it: DECIMAL, the same spelling every other seam uses. */
+/**
+ * A handle as this record writes it: the shared 32-bit form (`receiver-facts.ts`), so that the
+ * printed handles and the flags computed beside them use ONE rule, and so that a row here and a row
+ * on `act.route` name the same window with the same string (gate 2, 2026-09-16).
+ */
 const dec = (h: bigint | null | undefined): string | null =>
-  h === null || h === undefined ? null : h.toString();
+  h === null || h === undefined ? null : hwnd32(h);
 
 /**
  * Write one row. Never throws: a probe that can break the write it is watching is not an instrument.
@@ -142,13 +146,19 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
       receiverReadOnly: editReadOnlyOf(facts.receiverClass, facts.receiverStyle),
       ownerChain: readOwnerChain(facts.receiverRootHwnd),
     };
-    const verdict: KeyboardVerdict = judgeKeyboardTarget(ruleFacts);
+    // THE SAME SWITCH THE ACTING ROAD HONOURS. `desktop_act`'s rung passes the disabled grounds to
+    // the rule, and a round that turns one off (`DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED=read_only`)
+    // would otherwise get one verdict on `act.route` and a different one here for identical facts —
+    // on a row whose whole point is that the two roads can be compared (gate 2, 2026-09-16). The
+    // state is written beside the verdict, so a reader knows which rule produced it.
+    const rungSwitch = readKeyboardRungSwitch();
+    const verdict: KeyboardVerdict = judgeKeyboardTarget(ruleFacts, rungSwitch.disabled);
 
     probeAim("keyboard.dispatch", {
       ...base,
       receiverKnown: true,
       receiver: {
-        hwnd: row.receiver.toString(),
+        hwnd: hwnd32(row.receiver),
         rootHwnd: dec(facts.receiverRootHwnd),
         // The two are kept APART although one implies the other today: `isWindowItself` covers both
         // "the thread had no focus" and "the question could not be asked" (the rule's step 4 says so),
@@ -170,6 +180,8 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
           && ruleFacts.ownerChain.some((o) => sameHwnd(o, lookupRoot)),
       },
       // Recorded, not acted on.
+      switchDisabled: [...rungSwitch.disabled],
+      switchUnchecked: rungSwitch.unchecked,
       wouldJudge: verdict.kind === "refuse"
         ? { kind: "refuse", ground: verdict.ground, subject: verdict.subject, referenceFrom: verdict.referenceFrom }
         : { kind: "post", confirmed: verdict.confirmed, referenceFrom: verdict.referenceFrom,
@@ -180,6 +192,3 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
   }
 }
 
-function sameHwnd(a: bigint, b: bigint): boolean {
-  return BigInt.asUintN(32, a) === BigInt.asUintN(32, b);
-}

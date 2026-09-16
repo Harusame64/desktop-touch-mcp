@@ -150,6 +150,48 @@ describe("the keyboard tool's dispatch row", () => {
     });
   });
 
+  it("judges with the same switch the acting road honours, and says which grounds were off", async () => {
+    // WITHOUT THIS THE TWO ROADS DISAGREE FOR IDENTICAL FACTS. `desktop_act`'s rung passes the
+    // disabled grounds to the rule; a measurement round that turns one off would otherwise read
+    // `refuse / read_only` here and a marked success there, on a row whose whole purpose is that the
+    // two roads can be compared (gate 2, 2026-09-16). The switch state rides beside the verdict so a
+    // reader knows which rule produced it.
+    classOf = { [String(CHILD)]: "Edit" };
+    styleOf = { [String(CHILD)]: 0x0800 };
+    process.env.DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED = "read_only";
+    try {
+      await probe({ tool: "keyboard:type", rung: "wm_char", windowHwnd: WIN, byHandle: true, receiver: CHILD });
+    } finally {
+      delete process.env.DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED;
+    }
+    expect(rows()[0]).toMatchObject({
+      switchDisabled: ["read_only"],
+      wouldJudge: { kind: "post", confirmed: false },
+    });
+  });
+
+  it("prints a handle with bit 31 set in the shared 32-bit form, like every other seam", async () => {
+    // THE CELL THE OTHER FIXTURES COULD NOT BE: every handle in this file is small, so the raw
+    // bigint and the 32-bit form are the same string and a mutation that drops the normalisation
+    // stays green. A USER handle is 32 bits sign-extended for interop, so one with the high bit set
+    // is where `act.route` and this row would start naming one window two ways (gate 2, 2026-09-16).
+    // AND THE FIRST VERSION OF THIS CELL COULD NOT TELL EITHER: `0xFFFF0010n` is positive and fits
+    // in 32 bits, so the raw string and the normalised one are equal and the mutant stayed green.
+    // The case that splits them is a handle already WIDENED to 64 bits with the sign extended —
+    // which is how `GetFocus` hands one back.
+    const HIGH = 0xFFFFFFFFFFFF0010n;
+    rootOf[String(HIGH)] = HIGH;
+    try {
+      await probe({ tool: "keyboard:type", rung: "wm_char", windowHwnd: HIGH, byHandle: true, receiver: HIGH });
+      expect(rows()[0]).toMatchObject({
+        windowHwnd: "4294901776",
+        receiver: { hwnd: "4294901776", isWindowItself: true },
+      });
+    } finally {
+      delete rootOf[String(HIGH)];
+    }
+  });
+
   it("separates the two absences: a rung with no receiver, and a primitive that drops it", async () => {
     // ABSENCE RECORDED, NOT INFERRED. A record that only omits makes "nobody asked" and "nobody
     // answered" look identical — which is the same defect this row exists to close one layer up.

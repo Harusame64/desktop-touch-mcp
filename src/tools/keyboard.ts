@@ -318,10 +318,18 @@ async function nativeTypeViaClipboard(
     // ADR-036 arm A — the clipboard rung pastes into whatever holds the foreground: it
     // addresses no handle and names no receiver, like the SendInput rungs and unlike the
     // WM_CHAR ones, which have had the answer in hand all along.
-    await probeKeyboardDispatch({
-      tool, rung: "clipboard_flash", windowHwnd: null, byHandle: false,
-      receiver: null, noReceiverWhy: "rung_has_no_receiver",
-    });
+    // KEYBOARD ONLY, AND THE FILTER IS THE POINT. This helper is shared: `terminal.ts:1758` reaches
+    // it as `terminal:send`, and the terminal road's other three rungs (`wm_char`,
+    // `foreground_flash`, `sendinput`) write no row at all. Letting one of four through would put a
+    // silent under-count of that road inside a seam whose subject is the keyboard road — a number
+    // that reads as complete and is not (gate 2, 2026-09-16). The terminal road gets its own rows in
+    // its own round; `internal#117` holds the shape.
+    if (tool.startsWith("keyboard:")) {
+      await probeKeyboardDispatch({
+        tool, rung: "clipboard_paste", windowHwnd: null, byHandle: false,
+        receiver: null, noReceiverWhy: "rung_has_no_receiver",
+      });
+    }
   }
 
   if (!r.ok) {
@@ -504,10 +512,18 @@ async function powershellTypeViaClipboard(
   // ADR-036 arm A — the clipboard rung pastes into whatever holds the foreground: it
   // addresses no handle and names no receiver, like the SendInput rungs and unlike the
   // WM_CHAR ones, which have had the answer in hand all along.
-  await probeKeyboardDispatch({
-    tool, rung: "clipboard_flash", windowHwnd: null, byHandle: false,
-    receiver: null, noReceiverWhy: "rung_has_no_receiver",
-  });
+  // KEYBOARD ONLY, AND THE FILTER IS THE POINT. This helper is shared: `terminal.ts:1758` reaches
+  // it as `terminal:send`, and the terminal road's other three rungs (`wm_char`,
+  // `foreground_flash`, `sendinput`) write no row at all. Letting one of four through would put a
+  // silent under-count of that road inside a seam whose subject is the keyboard road — a number
+  // that reads as complete and is not (gate 2, 2026-09-16). The terminal road gets its own rows in
+  // its own round; `internal#117` holds the shape.
+  if (tool.startsWith("keyboard:")) {
+    await probeKeyboardDispatch({
+      tool, rung: "clipboard_paste", windowHwnd: null, byHandle: false,
+      receiver: null, noReceiverWhy: "rung_has_no_receiver",
+    });
+  }
   const combo = parseKeys(pasteCombo);
   await keyboard.pressKey(...combo);
   await keyboard.releaseKey(...combo);

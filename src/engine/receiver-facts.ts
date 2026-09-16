@@ -16,8 +16,22 @@ import {
   getWindowStyle,
 } from "./win32.js";
 
-/** Handles are compared as 32-bit values: the same window can arrive sign-extended on one road. */
-function sameHwnd(a: bigint, b: bigint): boolean {
+/**
+ * A handle as every ADR-036 seam writes it and compares it: the unsigned low 32 bits.
+ *
+ * USER handles are 32-bit values sign-extended for interop, so the low 32 bits are the whole handle,
+ * and the two sides do not arrive in one width: a control's handle comes from UIA as unsigned 32-bit
+ * while a receiver comes from `GetFocus` as the native pointer widened to 64. A handle with bit 31
+ * set would then read as two numbers for one control. **Exported and shared** — `desktop-executor.ts`
+ * had this and the probe grew its own for an hour, which is how a row's printed handles and the flags
+ * beside them come to use two different rules (gate 2, 2026-09-16).
+ */
+export function hwnd32(h: bigint): string {
+  return BigInt.asUintN(32, h).toString();
+}
+
+/** The same rule, as a comparison. */
+export function sameHwnd(a: bigint, b: bigint): boolean {
   return BigInt.asUintN(32, a) === BigInt.asUintN(32, b);
 }
 

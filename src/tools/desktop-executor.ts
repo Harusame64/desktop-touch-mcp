@@ -55,7 +55,7 @@ import {
 } from "../engine/keyboard-target.js";
 // ADR-036 family 2 — the Edit-family read-only rule lives beside the receiver reader, because the
 // `keyboard` tool's road judges the same bit on the same classes (arm A, 2026-09-16).
-import { editReadOnlyOf } from "../engine/receiver-facts.js";
+import { editReadOnlyOf, hwnd32, sameHwnd } from "../engine/receiver-facts.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -973,14 +973,6 @@ function keyboardLanding(
  * refusal that is built on this comparison would refuse the right control (2ゲート目). So both sides
  * are written and compared in one form.
  */
-function hwnd32(h: bigint): string {
-  return BigInt.asUintN(32, h).toString();
-}
-
-function sameHwnd(a: bigint, b: bigint): boolean {
-  return BigInt.asUintN(32, a) === BigInt.asUintN(32, b);
-}
-
 function receiverFacts(
   receipt: KeyboardReceipt | void,
   entityRect: { x: number; y: number; width: number; height: number } | null,
