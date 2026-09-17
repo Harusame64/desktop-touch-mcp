@@ -57,6 +57,76 @@ import { quoteForRegExp, stripComments } from "./route-vocabulary.mjs";
 
 
 /**
+ * If a literal starts at `i`, the index just past it; otherwise `-1`.
+ *
+ * **One scanner, because there were eight.** Round 2 taught `stripComments` that a regex literal is
+ * not a comment; round 3 found that every scanner BELOW it still read a regex's `'` or `"` as a
+ * string delimiter — so `error: s.replace(/'/g, "''")` left the parse with an unbalanced quote and
+ * the producer beside it vanished, silently, from a function with no `problems` channel at all.
+ * Five files in `src` already parse with an unbalanced brace model under the old rule.
+ *
+ * The lesson the three rounds share is not about regexes. **A grammar rule learned in one scanner
+ * has to be learned by all of them**, and the way to make that true is to have one.
+ */
+export function literalEnd(text, i, previous) {
+  const ch = text[i];
+  if (ch === '"' || ch === "'" || ch === "`") {
+    let j = i + 1;
+    while (j < text.length) {
+      const c = text[j];
+      if (c === "\\") {
+        j += 2;
+        continue;
+      }
+      j++;
+      if (c === ch) break;
+      // A single- or double-quoted run cannot cross a newline; a stray quote must not swallow the
+      // rest of the file.
+      if (c === "\n" && ch !== "`") break;
+    }
+    return j;
+  }
+  if (ch !== "/") return -1;
+  // A regex only starts where a value may begin — `previous` is the last significant character
+  // before `i`. A `/` after an identifier, a number or a closing bracket is division.
+  if (!/[=(,[!&|?:;{}+\-*%^~<>]/.test(previous ?? "(") && !/^(?:return|typeof|case|in|of|do|else|void|delete|instanceof|new|yield|await)$/.test(previous ?? "")) {
+    return -1;
+  }
+  if (text[i + 1] === "/" || text[i + 1] === "*") return -1; // a comment, not a regex
+  let j = i + 1;
+  let inClass = false;
+  while (j < text.length) {
+    const c = text[j];
+    if (c === "\\") {
+      j += 2;
+      continue;
+    }
+    j++;
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) break;
+    else if (c === "\n") break;
+  }
+  return j;
+}
+
+/**
+ * The last significant character (or word) before `i`, for deciding whether a `/` opens a regex.
+ */
+function significantBefore(text, i) {
+  let j = i - 1;
+  while (j >= 0 && /\s/.test(text[j])) j--;
+  if (j < 0) return "(";
+  if (!/\w/.test(text[j])) return text[j];
+  // **Bounded.** Slicing from the start of the file to read the word behind the cursor made this
+  // O(n²) over a 2 MB tree — the scan took minutes instead of milliseconds. The longest keyword that
+  // can precede a regex is `instanceof`; sixteen characters is more than the grammar needs.
+  let k = j;
+  while (k >= 0 && j - k < 16 && /\w/.test(text[k])) k--;
+  return text.slice(k + 1, j + 1);
+}
+
+/**
  * The body of a function whose `function` keyword is at `at`, skipping its RETURN TYPE.
  *
  * `function classify(message: string): { code: string; suggest: string[] } {` — the first `{` after
@@ -80,16 +150,14 @@ function blockAt(text, from) {
   const open = text.indexOf("{", from);
   if (open === -1) return null;
   let depth = 0;
-  let quote = null;
   for (let i = open; i < text.length; i++) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === "\\") i++;
-      else if (ch === quote) quote = null;
+    const skip = literalEnd(text, i, significantBefore(text, i));
+    if (skip !== -1) {
+      i = skip - 1;
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
-    else if (ch === "{") depth++;
+    const ch = text[i];
+    if (ch === "{") depth++;
     else if (ch === "}") {
       depth--;
       if (depth === 0) return { body: text.slice(open, i + 1), start: open, end: i };
@@ -113,9 +181,23 @@ function eachDepthOneProperty(objectSource, visit) {
   let depth = 0;
   let i = 0;
   while (i < objectSource.length) {
-    const ch = objectSource[i];
     const prev = objectSource[i - 1] ?? "";
     if (depth === 1 && /[{,\s]/.test(prev)) {
+      // **A spread carries this object's properties too.** `{ ok:false, ...(c ? {code:"A"} : {code:"B"}), … }`
+      // is the tree's own idiom, and counting brackets uniformly buried the key two levels down
+      // where the depth-1 walk could not see it (gate 2 on #674, round 3, finding 6).
+      if (objectSource.startsWith("...", i)) {
+        const span = valueSpan(objectSource, i + 3);
+        for (const inner of objectLiteralsIn(span.text)) {
+          // **The index belongs to the inner source.** Handing the visitor an inner offset while it
+          // read from the outer text produced `code` values spliced out of the wrong string
+          // (`macro.ts` came back with the expression `step: i`).
+          const stop = eachDepthOneProperty(inner, visit);
+          if (stop !== undefined) return stop;
+        }
+        i = span.end;
+        continue;
+      }
       const key = /^(?:"([A-Za-z_$][\w$]*)"\s*:|'([A-Za-z_$][\w$]*)'\s*:|([A-Za-z_$][\w$]*)\s*([:,}]))/.exec(objectSource.slice(i));
       // **A quoted STRING is not a shorthand key.** `{ "ok": false, "note": "code", … }` put the
       // VALUE `"code"` in key position and the walker read it as a property named `code` — the
@@ -125,29 +207,18 @@ function eachDepthOneProperty(objectSource, visit) {
         const name = key[1] ?? key[2] ?? key[3];
         const shorthand = key[3] !== undefined && key[4] !== ":";
         const valueStart = shorthand ? null : i + key[0].length;
-        const stop = visit(name, valueStart);
+        const stop = visit(name, valueStart, objectSource);
         if (stop !== undefined) return stop;
-        if (shorthand) {
-          i += key[0].length - 1;
-        } else {
-          // **Skip the value.** Scanning through it let a bare identifier in value position be read
-          // as the next key.
-          i = valueSpan(objectSource, valueStart).end;
-        }
+        i = shorthand ? i + key[0].length - 1 : valueSpan(objectSource, valueStart).end;
         continue;
       }
     }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      const quote = ch;
-      i++;
-      while (i < objectSource.length) {
-        const c = objectSource[i];
-        i++;
-        if (c === "\\") i++;
-        else if (c === quote) break;
-      }
+    const skip = literalEnd(objectSource, i, significantBefore(objectSource, i));
+    if (skip !== -1) {
+      i = skip;
       continue;
     }
+    const ch = objectSource[i];
     if (ch === "{" || ch === "(" || ch === "[") depth++;
     else if (ch === "}" || ch === ")" || ch === "]") depth--;
     i++;
@@ -155,20 +226,36 @@ function eachDepthOneProperty(objectSource, visit) {
   return undefined;
 }
 
+/** Every top-level object literal inside an expression, as source text. */
+function objectLiteralsIn(expression) {
+  const out = [];
+  for (let i = 0; i < expression.length; i++) {
+    const skip = literalEnd(expression, i, significantBefore(expression, i));
+    if (skip !== -1) {
+      i = skip - 1;
+      continue;
+    }
+    if (expression[i] !== "{") continue;
+    const block = blockAt(expression, i);
+    if (block === null) continue;
+    out.push(block.body);
+    i = block.end;
+  }
+  return out;
+}
+
 /** The value that starts at `from`: its trimmed text and the index just past it. */
 function valueSpan(objectSource, from) {
   let d = 0;
-  let q = null;
   let j = from;
   for (; j < objectSource.length; j++) {
-    const c = objectSource[j];
-    if (q) {
-      if (c === "\\") j++;
-      else if (c === q) q = null;
+    const skip = literalEnd(objectSource, j, significantBefore(objectSource, j));
+    if (skip !== -1) {
+      j = skip - 1;
       continue;
     }
-    if (c === '"' || c === "'" || c === "`") q = c;
-    else if (c === "{" || c === "(" || c === "[") d++;
+    const c = objectSource[j];
+    if (c === "{" || c === "(" || c === "[") d++;
     else if (c === "]" || c === ")") d--;
     else if (c === "}") {
       if (d === 0) break;
@@ -191,9 +278,9 @@ function valueAt(objectSource, from) {
  */
 export function fieldAtDepthOne(objectSource, field) {
   return (
-    eachDepthOneProperty(objectSource, (name, valueStart) => {
+    eachDepthOneProperty(objectSource, (name, valueStart, source) => {
       if (name !== field) return undefined;
-      return valueStart === null ? field : valueAt(objectSource, valueStart);
+      return valueStart === null ? field : valueAt(source, valueStart);
     }) ?? null
   );
 }
@@ -219,18 +306,13 @@ export function keysAtDepthOne(objectSource) {
  */
 export function isTypeLiteral(objectSource) {
   let depth = 0;
-  let quote = null;
   for (let i = 0; i < objectSource.length; i++) {
+    const skip = literalEnd(objectSource, i, significantBefore(objectSource, i));
+    if (skip !== -1) {
+      i = skip - 1;
+      continue;
+    }
     const ch = objectSource[i];
-    if (quote) {
-      if (ch === "\\") i++;
-      else if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      continue;
-    }
     if (ch === "{" || ch === "(" || ch === "[") depth++;
     else if (ch === "}" || ch === ")" || ch === "]") depth--;
     else if (ch === ";" && depth === 1) return true;
@@ -263,20 +345,15 @@ const ternaryLiterals = (expr) => {
   if (lit !== null) return [lit];
   // Find the top-level `?` (not `?.`, not `??`) and its matching `:`.
   let depth = 0;
-  let quote = null;
   let question = -1;
   let ternaries = 0;
   for (let i = 0; i < text.length; i++) {
+    const skip = literalEnd(text, i, significantBefore(text, i));
+    if (skip !== -1) {
+      i = skip - 1;
+      continue;
+    }
     const ch = text[i];
-    if (quote) {
-      if (ch === "\\") i++;
-      else if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      continue;
-    }
     if (ch === "(" || ch === "[" || ch === "{") depth++;
     else if (ch === ")" || ch === "]" || ch === "}") depth--;
     else if (depth === 0 && ch === "?") {
@@ -488,7 +565,11 @@ export function readClassifyArms(errorsSource, problems = []) {
  * let `keyLockerFailure`'s `String(err.code)` sit outside the count while the headline claimed a
  * bound (gate 2 on #674, round 2, finding 1).
  */
-export function readFailCodeSites(sources, problems = []) {
+// **No `problems` channel, because it was never written to.** It was declared, threaded through
+// from the gate, and four cells asserted it was empty — cells that were empty by construction and
+// could not go red (gate 2 on #674, round 3, finding 7). Everything this reader cannot resolve goes
+// to `unreadable`, which is pinned and compared in both directions.
+export function readFailCodeSites(sources) {
   const codes = new Set();
   const sites = [];
   // **A call site whose code this parser cannot read is not a problem with the parser — it is a
@@ -608,22 +689,14 @@ export function readArgList(text, open) {
   const args = [];
   let cur = "";
   let depth = 0;
-  let quote = null;
   for (let i = open; i < text.length; i++) {
+    const skip = literalEnd(text, i, significantBefore(text, i));
+    if (skip !== -1) {
+      cur += text.slice(i, skip);
+      i = skip - 1;
+      continue;
+    }
     const ch = text[i];
-    if (quote) {
-      cur += ch;
-      if (ch === "\\") {
-        cur += text[i + 1] ?? "";
-        i++;
-      } else if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      cur += ch;
-      continue;
-    }
     if (ch === "(" || ch === "[" || ch === "{") {
       depth++;
       if (depth === 1) continue;
@@ -657,39 +730,47 @@ export function readHandBuiltFlatFailures(sources) {
   const found = [];
   for (const { file, text: raw } of sources) {
     const text = stripComments(raw);
-    // `"ok": false` is the same literal as `ok: false`; anchoring on the bare spelling missed a
-    // JSON-shaped hand-built failure entirely (gate 2 on #674, finding 7).
     const inString = stringRanges(text);
-    for (const m of text.matchAll(/["']?\bok["']?:\s*false\b/g)) {
-      // A sentence that DESCRIBES the shape is not a site that builds it.
-      if (inString.some(([a, b]) => m.index > a && m.index < b)) continue;
-      // Walk back to the enclosing `{`.
-      let depth = 0;
-      let i = m.index;
-      for (; i >= 0; i--) {
-        const c = text[i];
-        if (c === "}") depth++;
-        else if (c === "{") {
-          if (depth === 0) break;
-          depth--;
+    // **Forward, with a stack — not backwards from the anchor.** The backward walk counted braces
+    // with no literal awareness, so `{ error: "}", ok: false, code: … }` balanced its own object
+    // against a brace inside a string and the site vanished (gate 2 on #674, round 3, finding 2).
+    // A single forward pass that knows what a literal is gives the enclosing object directly.
+    const open = [];
+    for (let i = 0; i < text.length; i++) {
+      // **The anchor is tested before the literal skip.** `"ok": false` BEGINS with a quote, so
+      // skipping literals first stepped straight over the JSON-styled form the round-1 fix had just
+      // taught the walker to read.
+      const anchored =
+        open.length > 0 &&
+        /[{,\s]/.test(text[i - 1] ?? "") &&
+        /^["']?\bok["']?:\s*false\b/.test(text.slice(i, i + 16)) &&
+        // A sentence that DESCRIBES the shape is not a site that builds it.
+        !inString.some(([a, b]) => i > a && i < b);
+      const skip = anchored ? -1 : literalEnd(text, i, significantBefore(text, i));
+      if (skip !== -1) {
+        i = skip - 1;
+        continue;
+      }
+      const ch = text[i];
+      if (!anchored) {
+        if (ch === "{") {
+          open.push(i);
+          continue;
+        }
+        if (ch === "}") {
+          open.pop();
+          continue;
         }
       }
-      if (i < 0) continue;
-      const obj = blockAt(text, i);
-      if (obj === null) continue;
-      if (isTypeLiteral(obj.body)) continue;
+      if (!anchored) continue;
+      const start = open[open.length - 1];
+      const obj = blockAt(text, start);
+      if (obj === null || isTypeLiteral(obj.body)) continue;
       const keys = keysAtDepthOne(obj.body);
       if (!keys.includes("code") || !keys.includes("error")) continue;
       const expr = fieldAtDepthOne(obj.body, "code");
-      const line = text.slice(0, m.index).split("\n").length;
-      // **The enclosing declaration, not the last `function` keyword above it.** Taking the latter
-      // attributed an arrow-const producer to an unrelated neighbour, and the reachability question
-      // was then answered about that neighbour — a false "no caller outside its file" that also
-      // dropped the code from the count, which whoever re-pinned would have baked in permanently
-      // (gate 2 on #674, round 2, finding 4). An `export`ed declaration is reachable by definition,
-      // and when the enclosing form cannot be identified the answer is UNKNOWN, which keeps the code
-      // in the count rather than excluding it on a guess.
-      const before = text.slice(0, i);
+      const line = text.slice(0, i).split("\n").length;
+      const before = text.slice(0, start);
       const decl = [
         ...before.matchAll(
           // A FUNCTION-LIKE declaration only: `const failure: ToolFailure = { … }` is a local, and
@@ -698,8 +779,15 @@ export function readHandBuiltFlatFailures(sources) {
           /\b(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>))/g,
         ),
       ].at(-1);
-      const fn = decl === undefined ? null : (decl[2] ?? decl[3] ?? null);
-      const exported = decl !== undefined && decl[1] !== undefined;
+      let fn = decl === undefined ? null : (decl[2] ?? decl[3] ?? null);
+      let exported = decl !== undefined && decl[1] !== undefined;
+      // **And it has to actually enclose the site.** The nearest preceding function-like binding is
+      // often a helper that has already closed, and answering reachability about a neighbour is how
+      // a code gets excluded from the count on a guess.
+      if (decl !== undefined && !declarationEncloses(text, decl.index, start)) {
+        fn = null;
+        exported = false;
+      }
       found.push({ file, line, code: literal(expr ?? ""), expression: expr, fn, exported });
     }
   }
@@ -718,26 +806,33 @@ export function readHandBuiltFlatFailures(sources) {
  */
 function stringRanges(text) {
   const ranges = [];
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === '"' || ch === "'" || ch === "`") {
-      const start = i;
-      const quote = ch;
-      i++;
-      while (i < text.length) {
-        const c = text[i];
-        i++;
-        if (c === "\\") i++;
-        else if (c === quote) break;
-        else if (c === "\n" && quote !== "`") break;
-      }
-      ranges.push([start, i]);
-      continue;
-    }
-    i++;
+  for (let i = 0; i < text.length; i++) {
+    const end = literalEnd(text, i, significantBefore(text, i));
+    if (end === -1) continue;
+    ranges.push([i, end]);
+    i = end - 1;
   }
   return ranges;
+}
+
+/**
+ * Does the declaration starting at `declStart` have a block that contains `index`?
+ *
+ * The first `{` after a declaration is often not its body — a parameter's object type, or
+ * `Promise<{ … }>` in the return type. So the candidates are walked in order until one spans the
+ * site; eight is more than any declaration in this tree needs, and stopping is what keeps the answer
+ * "unknown" instead of "somebody else's".
+ */
+function declarationEncloses(text, declStart, index) {
+  let from = declStart;
+  for (let guard = 0; guard < 8; guard++) {
+    const block = blockAt(text, from);
+    if (block === null) return false;
+    if (block.start <= index && index <= block.end) return true;
+    if (block.end > index) return false;
+    from = block.end + 1;
+  }
+  return false;
 }
 
 /** Is `name` called anywhere outside the file that defines it? */

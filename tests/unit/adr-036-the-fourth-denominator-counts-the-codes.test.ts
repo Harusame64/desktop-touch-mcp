@@ -156,7 +156,7 @@ function classify(message: string): { code: string; suggest: string[] } {
 });
 
 describe("the codes the call sites supply", () => {
-  const read = (text: string, problems: string[] = []) => readFailCodeSites([{ file: "f.ts", text }], problems);
+  const read = (text: string) => readFailCodeSites([{ file: "f.ts", text }]);
 
   it("resolves a literal, a ternary of literals, and a local const", () => {
     // A ternary is a producer of TWO values — `BrowserAmbiguousTarget` and
@@ -190,16 +190,17 @@ return fail("KeyLockerNoSuchBinding", "KeyLockerNoSuchBinding: none");
   });
 
   it("does not read the declaration as a call site", () => {
-    const problems: string[] = [];
-    const { codes } = read(`export function failCode(\n  code: string,\n  error: string,\n) {}`, problems);
+    // **Asserts the `unreadable` list, not an empty-by-construction channel.** The old shape checked
+    // a `problems` array this reader never writes to — a cell that could not go red (gate 2, round 3).
+    const { codes, unreadable } = read(`export function failCode(\n  code: string,\n  error: string,\n) {}`);
     expect(codes).toEqual([]);
-    expect(problems).toEqual([]);
+    expect(unreadable).toEqual([]);
   });
 
   it("does not stop at a newline when the call is wrapped", () => {
-    const problems: string[] = [];
-    expect(read(`failCode(\n  "AimWindowGone",\n  message,\n);`, problems).codes).toEqual(["AimWindowGone"]);
-    expect(problems).toEqual([]);
+    const wrapped = read(`failCode(\n  "AimWindowGone",\n  message,\n);`);
+    expect(wrapped.codes).toEqual(["AimWindowGone"]);
+    expect(wrapped.unreadable).toEqual([]);
   });
 });
 
@@ -552,6 +553,79 @@ return fail("KeyLockerDisabled", "KeyLockerDisabled: not active");
     expect(out).toMatch(/the parts below share \d+ members, so they do not add up to it/);
     expect(out).toMatch(/LOWER BOUND, not a total/);
     expect(out).not.toMatch(/at most \d+ codes/);
+  });
+});
+
+describe("what gate 2's third pass found, kept as cells", () => {
+  // Round 1 taught the stripper about strings, round 2 about regex literals, and round 3 found that
+  // **none of the eight scanners below it had learned either**. The lesson is not about regexes: a
+  // grammar rule learned in one scanner has to be learned by all of them, and the way to make that
+  // true is to have one. `literalEnd` is that one.
+
+  it("1. reads a producer whose neighbour holds a regex literal", () => {
+    // `error: s.replace(/'/g, "''")` left every scanner below the stripper with an unbalanced quote,
+    // and the producer beside it vanished from a function that has no `problems` channel at all.
+    const found = readHandBuiltFlatFailures([
+      { file: "a.ts", text: `export function g(s) { return { ok: false, code: "RegexValueCode", error: s.replace(/'/g, "''") }; }` },
+    ]);
+    expect(found.map((f: { code: string }) => f.code)).toEqual(["RegexValueCode"]);
+  });
+
+  it("2. is not fooled by a closing brace inside an earlier string value", () => {
+    // The backward walk to the enclosing `{` tracked braces with no literal awareness at all, so
+    // `error: "}"` balanced the object against its own brace and the site was skipped silently. It
+    // is a forward pass with a stack now.
+    const found = readHandBuiltFlatFailures([
+      { file: "a.ts", text: `export function f() { return { error: "}", ok: false, code: "StringBraceCode" }; }` },
+    ]);
+    expect(found.map((f: { code: string }) => f.code)).toEqual(["StringBraceCode"]);
+  });
+
+  it("6. sees a code that arrives by conditional spread", () => {
+    // `{ ok:false, ...(c ? {code:"A"} : {code:"B"}), … }` is the tree's own idiom; counting brackets
+    // uniformly buried the key two levels below the depth-1 walk.
+    const found = readHandBuiltFlatFailures([
+      { file: "a.ts", text: `export const h = (c) => ({ ok: false, ...(c ? { code: "SpreadCode" } : { code: "Other" }), error: "e" });` },
+    ]);
+    expect(found.map((f: { code: string }) => f.code).sort()).toEqual(["SpreadCode"]);
+  });
+
+  it("scans the whole tree in well under a second", () => {
+    // The first forward-stack version read the word behind the cursor by slicing from the start of
+    // the file — O(n²) over 2 MB, and the check went from milliseconds to minutes. A gate nobody can
+    // afford to run is a gate that gets removed, so the bound is a cell.
+    const started = Date.now();
+    readHandBuiltFlatFailures(srcSources());
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("5. counts distinct call sites, not site-times-code rows", () => {
+    // `sites` holds one row per resolved code, so a four-branch ternary contributes four. Printing
+    // its length said 49 where there are 45 locations — a number that names one thing and counts
+    // another, the same class as the parts that summed to 117.
+    const { sites } = readFailCodeSites([
+      { file: "f.ts", text: `const code = a ? "A" : b ? "B" : "C";\nfailCode(code, m);` },
+    ]);
+    expect(sites.length).toBe(3);
+    expect(new Set(sites.map((s: { file: string; line: number }) => `${s.file}:${s.line}`)).size).toBe(1);
+  });
+
+  it("4. does not assert a definitive negative off a set it calls a lower bound", () => {
+    const out = execFileSync(process.execPath, [join(REPO, "scripts", "check-code-vocabulary.mjs")], {
+      encoding: "utf8",
+    });
+    if (/LOWER BOUND, not a total/.test(out)) {
+      expect(out).not.toMatch(/fall outside it, so for those the flat surface cannot say/);
+      expect(out).toMatch(/which is not the same as there being none/);
+    }
+  });
+
+  it("3. the CI step does not repeat the claim the script retracted", () => {
+    // The third audience of the same sentence. Round 2 corrected the script and the library header;
+    // this copy kept the retracted "CLOSED ABOVE", so a reader auditing CI got the old claim.
+    const ci = readFileSync(join(REPO, ".github/workflows/ci.yml"), "utf8");
+    expect(ci).toMatch(/check:code-vocabulary/);
+    expect(ci).not.toMatch(/CLOSED ABOVE/);
   });
 });
 

@@ -91,11 +91,12 @@ jobs:
 
       - name: Check the ADR-036 code vocabulary (the grid's fourth denominator)
         # `code` shares a producer and a spelling with the envelope surface's `most_likely_cause`,
-        # so matching the two by name collapses two axes into one. This one is the only denominator
-        # of the four that is CLOSED ABOVE, and the ceiling is structural: both classifier arms that
-        # read a code out of a producer's MESSAGE check the dictionary first. Delete either guard
-        # and any message can name any code — the types are `string`, the dictionary is untouched,
-        # and nothing else in this repo would say a word.
+        # so matching the two by name collapses two axes into one. The MESSAGE road is bounded —
+        # both classifier arms that read a code out of a producer's message require
+        # `Object.hasOwn(SUGGESTS, …)`, un-negated — and negating or deleting either guard lets any
+        # message name any code, with the types still `string` and the dictionary untouched. The
+        # CALL-SITE road is NOT bounded: one site forwards a computed value today, the check names
+        # it, and the number it prints is a lower bound while that is true.
         run: npm run check:code-vocabulary
 
       - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)

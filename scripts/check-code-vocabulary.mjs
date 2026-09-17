@@ -89,7 +89,7 @@ const errors = read("src/tools/_errors.ts");
 const suggestsKeys = readSuggestsKeys(errors, problems);
 const arms = readClassifyArms(errors, problems);
 const failArgsCode = readFailArgsCode(errors, problems);
-const failCode = readFailCodeSites(sources, problems);
+const failCode = readFailCodeSites(sources);
 
 // ── The producers outside the three entry points ─────────────────────────────
 //
@@ -110,7 +110,14 @@ const failCode = readFailCodeSites(sources, problems);
 // prevent, one field further down. The site is still pinned, with its expression, so a new computed
 // builder is a change the grid records — it is the VALUE that stays out of the count.
 const handBuilt = readHandBuiltFlatFailures(sources).map((site) => ({
-  where: `${site.file}:${site.fn ?? "(top level)"}`,
+  // **The identity is the file, the enclosing scope and the code — not the line.** The line is the
+  // precise location and it was pinned for exactly one mutation round: adding a COMMENT above a site
+  // moved it, and the negative control that adds a comment went red. A gate that reddens for an
+  // unrelated edit above a producer is a gate somebody turns off (#670). The scope name can be a
+  // neighbour's when a declaration merely spans the site (gate 2, round 3), so it is carried as a
+  // hint beside the file, and the line is printed in the summary rather than pinned.
+  where: `${site.file}${site.fn === null ? "" : ` (${site.fn})`}`,
+  line: site.line,
   code: site.code,
   expression: site.expression,
   // **An exported declaration is reachable by definition**, and an unidentifiable enclosing form is
@@ -293,7 +300,12 @@ console.log(
     `drawn from overlapping producers (the parts below share ${arms.literals.length + dictionaryOnly.length + failCode.codes.length + 1 + reachableHandBuilt.filter((h) => h.code !== null).length - ceiling.length} members, so they do not add up to it): ` +
     `${arms.literals.length} written as literals in the classifier (residual "${arms.residual}"), ` +
     `${dictionaryOnly.length} dictionary keys no arm writes and no call site names — reachable only when a ` +
-    `producer spells the code into its own message, ${failCode.codes.length} named at ${failCode.sites.length} ` +
+    `producer spells the code into its own message, ${failCode.codes.length} named at ` +
+    // **Distinct locations.** `sites` holds one row per (site x resolved code), so a two-branch
+    // ternary contributes two and a four-branch one contributes four: printing its length said 49
+    // where there are 45 call sites (gate 2 on #674, round 3, finding 5). Same class as the parts
+    // that summed to 117 — a number that names one thing and counts another.
+    `${new Set(failCode.sites.map((x) => `${x.file}:${x.line}`)).size} ` +
     `failCode call sites, one fixed by failArgs ("${failArgsCode}"), and ` +
     `${reachableHandBuilt.filter((h) => h.code !== null).length} hand-built rather than rendered by the presenter ` +
     `(${handBuilt.filter((h) => h.code === null).length} more build the shape with a COMPUTED code, pinned but ` +
@@ -308,8 +320,14 @@ console.log(
         `(${failCode.unreadable.join("; ")}), so the number above is a LOWER BOUND, not a total: those codes ` +
         `reach a caller without passing any producer this file can read.`) +
     `\n\n  ${envelopeWithinFlatCeiling.length} of the ${envelopeNames.length} names on the envelope surface fall inside ` +
-    `this set; ${envelopeOutsideFlatCeiling.length} fall outside it, so for those the flat surface cannot say the word ` +
-    `the envelope says. Which of the ${dictionaryOnly.length} are actually spelled by a producer's message is not ` +
+    `this set; ${envelopeOutsideFlatCeiling.length} fall outside it` +
+    // **A definitive negative cannot be read off a set that was just called a lower bound.** The
+    // names of the two sets were corrected for exactly this overclaim in round 2; the sentence that
+    // printed them kept it (gate 2 on #674, round 3, finding 4).
+    (bounded
+      ? ", so for those the flat surface cannot say the word the envelope says."
+      : " — meaning this file found no flat road for them, which is not the same as there being none, because the set above is a lower bound.") +
+    ` Which of the ${dictionaryOnly.length} are actually spelled by a producer's message is not ` +
     `answered here. ${embedded.length} further codes are spelled inside embedded PowerShell and are RECORDED, not ` +
     `counted — one of them is snake_case in a field named \`code\`.`,
 );
