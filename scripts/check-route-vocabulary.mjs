@@ -61,6 +61,12 @@ const road = readRoadVocabulary(executor, (name) =>
 const keyboardGround = readUnion(keyboardTarget, "KeyboardGround") ?? [];
 const derived = {
   landingWhyOnTheRow: road.landingWhyOnTheRow,
+  // **Pinned, not asserted.** The one dynamic spelling (`why: verdict.why`) is what lets the row
+  // carry ANY LandingWhy member, so it is the difference between "the landing axis is one literal"
+  // and "the landing axis is eleven". An executor that writes none is a legitimate tree, not a
+  // failure, so this belongs in the grid rather than in an invariant — the day the spelling goes,
+  // the comparison below says so in the same voice as every other drift.
+  landingWhyFromTheUnion: road.landingWhyDrawsFromTheUnion ? ["verdict.why"] : [],
   route: road.route,
   rung: road.rung,
   refused: road.refused,
@@ -80,18 +86,18 @@ const problems = [...road.problems, ...unionProblems];
 for (const name of ["touchFailReason", "landingWhy", "executorKind", "advertisedExecutorKind"]) {
   if (derived[name].length === 0) problems.push(`could not read the ${name} union — has it moved or been renamed?`);
 }
-// The row writes the landing why straight through, so the two must be the same set. They are two
-// axes, not one: merging them on the shared field name `why` is the mistake the vocabulary exists
-// to avoid.
-// Only when the row writes one. An executor that writes none is a different fact, and it is caught
-// by the pin below (the axis is part of `derived`), not by an equality against a union it never
-// touches — the fixture-sized tree tripped exactly that.
-if (road.landingWhyOnTheRow.length > 0 && road.landingWhyOnTheRow.join(",") !== derived.landingWhy.join(",")) {
-  problems.push(
-    `the landing why written on the row (${road.landingWhyOnTheRow.join(", ")}) is not LandingWhy ` +
-      `(${derived.landingWhy.join(", ")})`,
-  );
+// **Containment, and read from two different places.** The row's landing whys come from the
+// executor (the literals it spells inside `landing: { … }`); `LandingWhy` comes from
+// `keyboard-target.ts`. The first version filled BOTH from the same `readUnion` call, so it
+// compared a function to itself: gate 2 on #669 evaluated the two expressions over five mutations
+// of `keyboard-target.ts` and got EQUAL every time, including the mutation that deletes a member.
+// An invariant no mutant can kill lies to the reader about what is checked.
+for (const value of road.landingWhyOnTheRow) {
+  if (!derived.landingWhy.includes(value)) {
+    problems.push(`the row writes landing.why:"${value}", which is not a LandingWhy (${derived.landingWhy.join(", ")})`);
+  }
 }
+
 
 for (const value of derived.refused) {
   // `refused` is documented as "spelled the way guarded-touch spells the reason". A convention,

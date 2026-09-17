@@ -1,16 +1,9 @@
 {
   "landingWhyOnTheRow": [
-    "entity_handle_stale",
-    "entity_windowless",
-    "ground_disabled:other_control",
-    "ground_disabled:other_window",
-    "ground_disabled:read_only",
-    "parents_unread",
-    "receiver_in_other_window",
-    "receiver_in_owned_window",
-    "receiver_is_window",
-    "receiver_unknown",
-    "reference_unknown"
+    "receiver_unknown"
+  ],
+  "landingWhyFromTheUnion": [
+    "verdict.why"
   ],
   "route": [
     "aim_check",
@@ -61,19 +54,26 @@
     "cdp_fill",
     "enumeration_failed",
     "excluded_window",
+    "keyboard_only_entity",
+    "measured_in_another_window",
+    "measurement_moment_unknown",
+    "moved_during_read",
     "no_aim_rect_dep",
     "no_origin_rect",
     "no_rectangle_and_not_gone",
     "no_window_at_point",
+    "not_moved",
     "owned_popup_at_remembered_point",
-    "receiver_unknown",
+    "point_was_outside_origin",
     "terminal_send",
     "uia_downgrade",
     "uia_invoke",
     "uia_set_value",
     "uia_set_value_failed",
     "unattributable_window",
-    "visual_or_read_entity"
+    "visual_or_read_entity",
+    "window_off_desktop",
+    "window_resized"
   ],
   "touchFailReason": [
     "aim_blocked_by_excluded_window",

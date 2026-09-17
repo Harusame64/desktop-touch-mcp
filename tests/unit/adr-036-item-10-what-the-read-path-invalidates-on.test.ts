@@ -126,14 +126,28 @@ describe("what the read path invalidates on", () => {
     // **The first version of this cell could not fail for its own reason** — the mock gave every
     // window the same empty class, so a tracker that DID compare classes would have seen no
     // difference and the cell would have stayed green (gate 2 on #669, which mutated the tracker
-    // into comparing classes and watched all 17 cells pass). The pair below differs in class and in
-    // nothing else: same pid, same start time, the old window still alive, only the class moved.
+    // into comparing classes and watched all 17 cells pass).
+    //
+    // **Two pairs, because the tracker has two branches and one pair reaches one of them.** The
+    // second gate-2 pass mutated the tracker to compare classes AFTER the different-handle branch
+    // and watched all six cells pass: a window whose class changed in place was still read as
+    // continuous, and no cell said so. The title says "on any branch"; one pair only checked one.
+
+    // Different handle, same process: the replacement shape (`RecreateHandle`).
     place(0x8888n, 800, 1_000, "OldClass");
     observeTarget("calc", 0x8888n, "Calculator");
-
     place(0x9999n, 800, 1_000, "TotallyDifferentClass");
-    const after = observeTarget("calc", 0x9999n, "Calculator");
-    expect(after.invalidatedBy).toBeNull();
-    expect(win32.classOf.get("34952")).not.toBe(win32.classOf.get("39321"));
+    expect(observeTarget("calc", 0x9999n, "Calculator").invalidatedBy).toBeNull();
+    expect(win32.classOf.get(String(0x8888n))).not.toBe(win32.classOf.get(String(0x9999n)));
+
+    // **The same handle, re-registered under a different class.** Nothing else moves — not the
+    // handle, not the pid, not the start time — so this pair reaches the branch the pair above
+    // cannot.
+    clearIdentities();
+    takeLastInvalidation();
+    place(0xaaaan, 800, 1_000, "OldClass");
+    observeTarget("calc", 0xaaaan, "Calculator");
+    win32.classOf.set(String(0xaaaan), "TotallyDifferentClass");
+    expect(observeTarget("calc", 0xaaaan, "Calculator").invalidatedBy).toBeNull();
   });
 });

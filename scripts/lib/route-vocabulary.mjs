@@ -80,7 +80,12 @@ export function readUnion(source, name, resolve = () => [], problems = []) {
     // an empty set silently is the same shape as returning a short one.
     problems.push(`${name}: no quoted members — \`${body.trim().slice(0, 60)}\` is not a union this parser reads`);
   }
-  for (const member of body.split("|").slice(1)) {
+  // **Not `.slice(1)`.** That was written for the leading-pipe style, where element 0 is the
+  // whitespace before the first `|` — and it threw away a REAL member of every single-line union
+  // (`export type K = OtherUnion | "uia"` read as complete with one of two). The empty/whitespace
+  // element the slice was there to skip is skipped by the `t === ""` guard, which is the property
+  // that was actually wanted (gate 2 on #669, second pass).
+  for (const member of body.split("|")) {
     const t = member.trim().replace(/;$/, "");
     if (t === "" || t.startsWith('"') || t.startsWith("`")) continue;
     problems.push(`${name}: member \`${t}\` is not a quoted literal this parser reads`);
@@ -108,7 +113,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // one: the first blank line (comment-stripping leaves blanks inside a type) and the first `;`
   // (a member object separates its own fields with `;`). Both read part of a union as the whole.
   let depth = 0;
-  let end = text.length;
+  let end = -1;
   for (let i = start; i < text.length; i++) {
     const ch = text[i];
     if (ch === "{" || ch === "(" || ch === "[") depth++;
@@ -117,15 +122,32 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
       end = i;
       break;
     }
+    // **TypeScript's terminating `;` is optional**, and the fall-through used to be `text.length`
+    // — one dropped semicolon and every `why:` in every type BELOW this one joined the axis, in
+    // silence, until the pin failed against values nothing can produce (gate 2 on #669, second
+    // pass). A declaration that starts at depth 0 ends the one above it just as well.
+    else if (depth === 0 && ch === "\n" && /^(export\s+)?(type|interface|const|function|class)\b/.test(text.slice(i + 1, i + 40))) {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) {
+    problems.push(`${typeName} has no terminating \`;\` and nothing follows it — the ${field} union was read to the end of the file`);
+    end = text.length;
   }
   const body = text.slice(start, end);
   // A type can carry the field more than once — `PointOwner` has a `why` on two of its members,
   // and reading only the first gives one value where the vocabulary has four.
   const values = [];
   let seen = false;
-  for (const m of body.matchAll(new RegExp(`${field}:\\s*([^;\\n]*)`, "g"))) {
+  // **Not `[^;\n]*`.** A union grows past the line limit by breaking onto continuation lines —
+  // which is how a union usually grows — and stopping at the newline read one member of however
+  // many (gate 2 on #669, second pass). Run to the field's own terminator instead: a `;`, a brace,
+  // or the next `name:` field on the same object.
+  for (const m of body.matchAll(new RegExp(`\\b${field}:\\s*([^;{}]*)`, "g"))) {
     seen = true;
-    for (const v of m[1].matchAll(/"([^"]+)"/g)) values.push(v[1]);
+    const value = m[1].split(/,\s*\w+\s*:/)[0];
+    for (const v of value.matchAll(/"([^"]+)"/g)) values.push(v[1]);
   }
   if (!seen) {
     problems.push(`${typeName} has no ${field} field where one was expected`);
@@ -148,6 +170,8 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
   const problems = [];
   // Unions a `why` draws from at runtime, by name — expanded by the caller, which has the files.
   const dynamicWhy = new Set();
+  // Whys spelled only in a producer's parameter annotation, because the call site uses a shorthand.
+  const annotatedWhy = new Set();
   const add = (set, re, group = 1) => {
     for (const m of text.matchAll(re)) set.add(m[group]);
   };
@@ -167,23 +191,92 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
   const literalFirstArg = /^\s*"[a-z0-9_]+"\s*[,)]/;
   // The helpers' own declarations name their parameters; they are not call sites.
   const isDeclaration = (index) => /\bfunction\s+\w+\s*\($/.test(text.slice(Math.max(0, index - 40), index + 1));
-  const reportNonLiteral = (re, what) => {
+  const reportNonLiteral = (re, what, recognised = () => false) => {
     for (const m of text.matchAll(re)) {
       if (isDeclaration(m.index + m[0].indexOf("("))) continue;
-      if (!literalFirstArg.test(m[1])) problems.push(`${what} is given a non-literal: ${m[1].trim().slice(0, 60)}`);
+      if (recognised(m[1])) continue;
+      if (literalFirstArg.test(m[1])) continue;
+      const shown = m[1].trim().replace(/\s+/g, " ").slice(0, 60);
+      problems.push(`${what} is given a non-literal: ${shown === "" ? "(no first argument on this line)" : shown}`);
     }
   };
-  reportNonLiteral(/\bprobeRoute\(([^)\n]*)/g, "probeRoute");
-  // `probedStep(rung, …)` forwards its own parameters to `probeRefusal`; the values it can pass
-  // are read from `adr029Refusal`'s body below. Recognised, not reported — and the recognition is
-  // narrow, so any OTHER variable at this call site still surfaces.
-  reportNonLiteral(/\bprobeRefusal\(((?!\s*rung,\s*refused\b)[^)\n]*)/g, "probeRefusal");
+  // **`[^)]`, not `[^)\n]`.** Wrapping a long call so its first argument sits on the next line is
+  // ordinary formatting, and the newline-stopping capture reported it as a non-literal while
+  // printing an EMPTY offender — a gate that goes red for a reformat, saying nothing about what it
+  // objected to, is a gate somebody loosens next month (gate 2 on #669, second pass).
+  reportNonLiteral(/\bprobeRoute\(([^)]{0,200})/g, "probeRoute");
+  reportNonLiteral(/\bprobedStep\(([^)]{0,200})/g, "probedStep");
+  reportNonLiteral(/\brefusal\(([^)]{0,200})/g, "refusal");
+
+  // **An exemption keyed on a SPELLING is a hole named after the field it guards.**
+  //
+  // `probedStep` forwards its own `rung` and the `refused` it just computed, so that one call site
+  // cannot be a literal and the grounds are read out of `adr029Refusal`'s body instead. The first
+  // version of this file exempted `probeRoute`'s first argument when it was *named* `route`; gate 2
+  // closed that — and this line was then written in the same shape for `probeRefusal`, in the same
+  // commit that closed it. win2 shot it on 2026-09-17 (internal `790e43a`): keeping the two names
+  // and changing what `refused` HOLDS —
+  //
+  //     const refused = adr029Refusal(err) ?? "smuggled_ground";
+  //
+  // — walked a refusal ground that reaches the row past the gate, which printed `OK` and exited 0.
+  // **That is the exact failure this whole file exists to end.**
+  //
+  // So the exemption is keyed on the BINDING it forwards, not on the identifiers: the file must
+  // bind `refused` to `adr029Refusal(…)` and nothing else. Append a `??`, a `||`, a ternary or a
+  // second assignment and the binding stops matching, the exemption lifts, and the call site is
+  // reported as what it then is — a road field this parser cannot read.
+  const forwardsTheReadBinding = /\bconst\s+refused\s*=\s*adr029Refusal\([A-Za-z_$][\w$]*\)\s*;/.test(text);
+  if (/\bprobedStep\(/.test(text) && !forwardsTheReadBinding) {
+    problems.push(
+      "probedStep no longer forwards `const refused = adr029Refusal(err);` — the grounds read out of " +
+        "that function are not the grounds written",
+    );
+  }
+  reportNonLiteral(
+    /\bprobeRefusal\(([^)]{0,200})/g,
+    "probeRefusal",
+    (args) => forwardsTheReadBinding && /^\s*rung,\s*refused\s*[,)]/.test(args),
+  );
+  // **The landing why is a different axis wearing the same field name**, and the separation has to
+  // be made on the SPELLING OF THE ROW, not on the shape of the value. The dynamic spelling
+  // (`why: verdict.why`) was routed away below from the first version; the LITERAL one —
+  // `landing: { confirmed: false, why: "receiver_unknown", … }` at the keyboard rung's "cannot say"
+  // return — fell straight through into the road axis, so `receiver_unknown` was pinned on three
+  // axes at once and the comment below claimed a separation that held for one spelling out of two
+  // (gate 2 on #669, second pass). Both are collected here, and both are subtracted from `why`.
+  const landingLiteralWhy = new Set();
+  let landingDrawsFromTheUnion = false;
+  for (const m of text.matchAll(/\blanding:\s*\{([^{}]*)\}/g)) {
+    for (const v of m[1].matchAll(/\bwhy:\s*"([a-z0-9_]+)"/g)) landingLiteralWhy.add(v[1]);
+    if (/\bwhy:\s*[\w.]*\bverdict\.why\b/.test(m[1])) landingDrawsFromTheUnion = true;
+  }
+
   for (const m of text.matchAll(/\bwhy:\s*([^,\n}]+)/g)) {
-    const value = m[1].trim();
+    // The capture stops at `,` `\n` `}` — so a `why:` that is the LAST parameter of a signature
+    // brings the signature's own `)` with it. Give back the brackets that were never ours, or the
+    // annotation below reads as an unrecognised shape and the values in it are lost again.
+    const value = m[1].trim().replace(/[\s){;]+$/, "");
     if (/^"[a-z0-9_]+"$/.test(value)) continue;
-    // A TYPE annotation, not a value: `why: "a" | "b"` in a signature. Its literals are already
-    // collected by the rule above, at their producing call sites.
-    if (value.includes("|")) continue;
+    // **A TYPE annotation is where a shorthand's values are written.** The keyboard rung passes
+    // `{ why, verdict: … }` — an ES6 shorthand, which carries no `why:` for the literal rule to
+    // find — so the only place those two values are spelled is the parameter's annotation. The
+    // first version skipped the annotation outright with a comment saying the literals "are already
+    // collected at their producing call sites"; they were not, and `keyboard_only_entity` was a why
+    // the row demonstrably writes, missing from the axis and from the pin, with `problems` empty
+    // (gate 2 on #669, second pass). **A union of literals here IS the producer's vocabulary.**
+    if (value.includes("|")) {
+      // **Every member, or none of them.** `"a" | SomeUnion` starts with a literal and would look
+      // readable to a prefix test while losing whatever `SomeUnion` holds — the same "a shorter set
+      // is indistinguishable from a complete one" shape this whole file is against.
+      const parts = value.split("|").map((x) => x.trim());
+      if (parts.every((x) => /^"[a-z0-9_]+"$/.test(x))) {
+        for (const v of value.matchAll(/"([a-z0-9_]+)"/g)) annotatedWhy.add(v[1]);
+      } else {
+        problems.push(`a why union is not all quoted literals: ${value.slice(0, 60)}`);
+      }
+      continue;
+    }
     // **One dynamic `why` is legitimate and resolved by name**: the homing rung writes
     // `homing.applied ? null : homing.why`, so every `Homing.why` member is a `why` this axis can
     // carry. Resolved here rather than reported, because the union it draws from is named in the
@@ -219,6 +312,13 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
   const refused = new Set();
   add(refused, /\brefusal\(\s*"[a-z0-9_]+"\s*,\s*"([a-z0-9_]+)"/g);
   add(refused, /\bprobeRefusal\(\s*"[a-z0-9_]+"\s*,\s*"([a-z0-9_]+)"/g);
+  // **A row can write `refused:` directly**, and two do — the `aim_check` row and the `probeAim`
+  // spelling. This line was DELETED in the commit that took gate 2's first pass, which made the
+  // guard strictly weaker than the head it replaced: a brand-new refusal ground on an
+  // already-pinned rung was collected by neither this rule nor `reportNonLiteral` (which reads
+  // first arguments only), so the script printed `OK` and exited 0 on a ground that reaches the
+  // row and is in no set anywhere (gate 2 on #669, second pass). **Do not delete it again.**
+  add(refused, /\brefused:\s*"([a-z0-9_]+)"/g);
   add(refused, /\brefused:\s*[^,\n]*\?\s*"([a-z0-9_]+)"/g);
   // `probedStep` hands `probeRefusal` a VARIABLE, so three grounds live in the function that
   // produces it and in no call site. Read them, or the set is 8 of 11 with nothing saying so.
@@ -237,19 +337,29 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
 
   const why = new Set();
   add(why, /\bwhy:\s*"([a-z0-9_]+)"/g);
+  for (const v of annotatedWhy) why.add(v);
 
-  const landingWhyOnTheRow = [];
   for (const name of dynamicWhy) {
+    if (name === "landing.why") continue;
     const members = resolveUnion(name);
     if (members.length === 0) problems.push(`a why draws from ${name}, which could not be resolved`);
-    // `homing.why` really is a road `why`; `landing.why` is the landing axis, returned separately
-    // so the caller can assert the two agree without merging them.
-    if (name === "landing.why") landingWhyOnTheRow.push(...members);
-    else for (const m of members) why.add(m);
+    for (const m of members) why.add(m);
   }
+  // The landing object's whys are not road whys. Subtracting them here rather than never adding
+  // them keeps the literal rule above simple — and the subtraction is what makes the three axes
+  // disjoint, which is the property the fixture is supposed to pin.
+  for (const v of landingLiteralWhy) why.delete(v);
 
   return {
-    landingWhyOnTheRow: [...new Set(landingWhyOnTheRow)].sort(),
+    // **What the ROW writes**, which is not the same fact as what `LandingWhy` declares. The first
+    // version filled this from `resolveUnion("landing.why")` — the very same call the caller uses
+    // for the `landingWhy` axis — so the checker's "the two must be the same set" invariant
+    // compared a function to itself and could not fail, and the fixture carried eleven values twice
+    // (gate 2 on #669, second pass, which evaluated both sides over five mutations: EQUAL in all
+    // five). Now it is the literals the row actually spells, plus a flag for the one dynamic
+    // spelling — and the caller asserts CONTAINMENT in `LandingWhy`, which can fail.
+    landingWhyOnTheRow: [...landingLiteralWhy].sort(),
+    landingWhyDrawsFromTheUnion: landingDrawsFromTheUnion,
     route: [...route].sort(),
     rung: [...rung].sort(),
     refused: [...refused].sort(),

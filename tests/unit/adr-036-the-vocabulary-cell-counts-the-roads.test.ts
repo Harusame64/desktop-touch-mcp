@@ -71,6 +71,65 @@ probeRoute("real_road", undefined, entity, { why: "real_why" });
     ).toMatch(/why is not a literal/);
   });
 
+  it("does not report a call that was merely wrapped across lines", () => {
+    // The capture stopped at the newline, so ordinary formatting was reported as a non-literal —
+    // and the offender printed was the EMPTY STRING, saying nothing about what it objected to. A
+    // gate that goes red for a reformat, without naming a cause, is a gate somebody loosens next
+    // month (gate 2 on #669, second pass).
+    const v = readRoadVocabulary(`probeRoute(
+  "uia",
+  aimHwnd,
+  entity,
+  { why: "uia_invoke" },
+);`);
+    expect(v.problems).toEqual([]);
+    expect(v.route).toEqual(["uia"]);
+  });
+
+  it("reports a non-literal at every producer, not only at probeRoute", () => {
+    // `probedStep` and `refusal` name a rung as their first argument, and a rung read from a
+    // variable shrinks the rung axis exactly as a road does. Both were unguarded.
+    expect(readRoadVocabulary(`probedStep(step, aimHwnd, entity, () => {});`).problems.join("")).toMatch(
+      /probedStep is given a non-literal: step/,
+    );
+    expect(readRoadVocabulary(`throw refusal(kind, "aim_occluded", err);`).problems.join("")).toMatch(
+      /refusal is given a non-literal: kind/,
+    );
+  });
+
+  it("exempts probedStep's forwarding by the BINDING it forwards, not by the two names", () => {
+    // **The same hole, written twice in one branch.** Gate 2 closed `probeRoute`'s exemption-by-name
+    // (`!== "route"`) and this file was then given one for `probeRefusal` in the same commit. win2
+    // shot it on 2026-09-17 (internal `790e43a`): keep `rung, refused` and change what `refused`
+    // HOLDS, and a refusal ground that reaches the row walks past — `OK`, exit 0.
+    // `adr029Refusal`'s body is read to a `}` in the first column, the way the executor writes it.
+    const readable = `function adr029Refusal(k) {
+  return "cursor_placement_blocked";
+}
+async function probedStep(rung, aimHwnd, entity, step) {
+  const refused = adr029Refusal(err);
+  if (refused !== undefined) probeRefusal(rung, refused, aimHwnd, entity);
+}`;
+    expect(readRoadVocabulary(readable).problems).toEqual([]);
+    expect(readRoadVocabulary(readable).refused).toEqual(["cursor_placement_blocked"]);
+
+    const smuggled = readable.replace("adr029Refusal(err);", 'adr029Refusal(err) ?? "smuggled_ground";');
+    const v = readRoadVocabulary(smuggled);
+    expect(v.refused).not.toContain("smuggled_ground");
+    expect(v.problems.join("")).toMatch(/probedStep no longer forwards/);
+    expect(v.problems.join("")).toMatch(/probeRefusal is given a non-literal/);
+  });
+
+  it("collects a refusal ground written straight onto the row", () => {
+    // **This rule was DELETED** in the commit that took gate 2's first pass, which made the guard
+    // weaker than the head it replaced: a new ground on an already-pinned rung entered no set and
+    // raised no problem, so the script printed `OK` and exited 0 (gate 2 on #669, second pass).
+    expect(
+      readRoadVocabulary(`probeRoute("refusal", aimHwnd, entity, { rung: "window_gone", refused: "aim_window_gone" });`)
+        .refused,
+    ).toEqual(["aim_window_gone"]);
+  });
+
   it("reads a road whose name carries a digit", () => {
     // `[a-z_]+` where the other fields used `[a-z0-9_]+`: dropped, not reported.
     expect(readRoadVocabulary(`probeRoute("cdp2", undefined, entity, {});`).route).toContain("cdp2");
@@ -91,11 +150,45 @@ probeRoute("real_road", undefined, entity, { why: "real_why" });
     expect(v.why).toContain("from_homing");
     expect(v.why).toContain("from_owner");
     expect(v.why).not.toContain("from_landing");
-    expect(v.landingWhyOnTheRow).toEqual(["from_landing"]);
+    // **The row's landing whys are what the row SPELLS**, not what `LandingWhy` declares. The first
+    // version filled this from the resolver — the same call the checker uses for the `landingWhy`
+    // axis — so the invariant that compared them could not fail and the fixture carried the same
+    // eleven values twice (gate 2 on #669, second pass).
+    expect(v.landingWhyOnTheRow).toEqual([]);
+    expect(v.landingWhyDrawsFromTheUnion).toBe(true);
   });
 
-  it("skips a type annotation, which is not a value", () => {
-    expect(readRoadVocabulary(`function f(why: "a" | "b") {}`).problems).toEqual([]);
+  it("keeps the landing why off the road axis in BOTH its spellings", () => {
+    // The dynamic spelling was routed away from the first version; the literal one fell straight
+    // through, so `receiver_unknown` was pinned on three axes at once while the comment beside the
+    // rule claimed a separation (gate 2 on #669, second pass). A comment is a claim, not a check.
+    const v = readRoadVocabulary(
+      `probeRoute("keyboard", undefined, entity, { why: "uia_invoke", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });`,
+    );
+    expect(v.why).toEqual(["uia_invoke"]);
+    expect(v.landingWhyOnTheRow).toEqual(["receiver_unknown"]);
+    expect(v.landingWhyDrawsFromTheUnion).toBe(false);
+    expect(v.problems).toEqual([]);
+  });
+
+  it("reads a producer's values out of its annotation when the call site is a shorthand", () => {
+    // `probeRoute("keyboard", …, { why, … })` is an ES6 shorthand: it carries no `why:` at all, so
+    // the ONLY place those values are spelled is the parameter's annotation. The first version
+    // skipped annotations with a comment saying their literals "are already collected at their
+    // producing call sites" — they were not, and `keyboard_only_entity` was a why the row writes,
+    // missing from the axis and from the pin, with `problems` empty (gate 2 on #669, second pass).
+    const v = readRoadVocabulary(
+      `function rung(why: "uia_set_value_failed" | "keyboard_only_entity") {
+         probeRoute("keyboard", undefined, entity, { why, verdict: "unchecked" });
+       }`,
+    );
+    expect(v.why).toEqual(["keyboard_only_entity", "uia_set_value_failed"]);
+    expect(v.problems).toEqual([]);
+    // A union that is NOT all quoted literals is reported, not skipped — the skip is what hid the
+    // hole above, so the narrow case is the only one that stays silent.
+    expect(readRoadVocabulary(`function f(why: KeyboardRungWhy | "a") {}`).problems).toEqual([
+      "a why union is not all quoted literals: KeyboardRungWhy | \"a\"",
+    ]);
   });
 
   it("says so when the function that produces three refusal grounds has moved", () => {
@@ -115,7 +208,24 @@ probeRoute("real_road", undefined, entity, { why: "real_why" });
     readUnion('export type X = "a" | `focus_lost:${Unknown}`;', "X", () => [], problems);
     readUnion('export type Y = "a" | `plain_backtick`;', "Y", () => [], problems);
     readUnion("export type Z = (typeof ARR)[number];", "Z", () => [], problems);
-    expect(problems.length).toBeGreaterThanOrEqual(3);
+    // **A total is not a content.** `>= 3` stays green if one rule starts reporting twice while
+    // another goes silent; the shapes are what the cell is about (gate 2 on #669, second pass).
+    expect(problems).toEqual([
+      "X: cannot resolve the template member `focus_lost:${Unknown}`",
+      "Y: member `plain_backtick` is not a quoted literal this parser reads",
+      "Z: no quoted members — `(typeof ARR)[number]` is not a union this parser reads",
+      "Z: member `(typeof ARR)[number]` is not a quoted literal this parser reads",
+    ]);
+  });
+
+  it("does not throw away the first member of a single-line union", () => {
+    // `.slice(1)` was written for the leading-pipe style, where element 0 is the whitespace before
+    // the first `|`. On one line it discards a REAL member, and `values.length === 0` does not fire
+    // because the other member was read — one of two, coming back complete-looking, which is the
+    // failure this parser exists to end (gate 2 on #669, second pass).
+    const problems: string[] = [];
+    expect(readUnion('export type K = OtherUnion | "uia";', "K", () => [], problems)).toEqual(["uia"]);
+    expect(problems).toEqual(["K: member `OtherUnion` is not a quoted literal this parser reads"]);
   });
 
   it("reads a union written inline as a field, anchored on the type's whole name", () => {
@@ -131,6 +241,34 @@ export type Owner =
       "excluded_window",
       "no_window_at_point",
     ]);
+  });
+
+  it("reads a field union that was broken over lines, which is how a union grows", () => {
+    // Stopping at the newline read one member of however many, silently. The real `Homing.why` is
+    // written this way: the shipped extractor answered ONE of its nine with `problems` empty, and
+    // the why axis was short by eight (gate 2 on #669, second pass — the count went 17 → 24).
+    const problems: string[] = [];
+    const src = `export type Owner =
+  | { kind: "unknown";
+      why:
+        | "enumeration_failed"
+        | "no_window_at_point"; };`;
+    expect(readInlineFieldUnion(src, "Owner", "why", problems)).toEqual([
+      "enumeration_failed",
+      "no_window_at_point",
+    ]);
+    expect(problems).toEqual([]);
+  });
+
+  it("stops at the next declaration when TypeScript's optional `;` is absent", () => {
+    // The fall-through used to be end-of-file, so one dropped semicolon pulled every `why:` from
+    // every type BELOW into the axis — values nothing on the road can produce, which then inflate
+    // the completion denominator once they are re-pinned (gate 2 on #669, second pass).
+    const problems: string[] = [];
+    const src = `export type Owner = { why: "a" }
+export type Unrelated = { why: "leaked_from_below" };`;
+    expect(readInlineFieldUnion(src, "Owner", "why", problems)).toEqual(["a"]);
+    expect(problems).toEqual([]);
   });
 
   it("reads the real executor's vocabulary", () => {
@@ -178,7 +316,8 @@ probeRoute("uia", undefined, entity, { why: "uia_invoke" });
 probeRoute("cdp", undefined, entity, { why: "cdp_click" });
 probeRoute("terminal", undefined, entity, { why: "terminal_send" });
 probeRoute("mouse", undefined, entity, { why: "visual_or_read_entity" });
-probeRoute("keyboard", undefined, entity, { why: "keyboard_only_entity" });
+probeRoute("keyboard", undefined, entity, { why: "keyboard_only_entity", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } });
+probeRoute("keyboard", undefined, entity, { why: "uia_set_value_failed", landing: { confirmed: true, why: verdict.why, referenceFrom: "x" } });
 probeRefusal("mouse_press", "aim_occluded", entity, {});
 function adr029Refusal(kind) {
   if (kind === "bounds") return "coordinate_outside_reachable_bounds";
