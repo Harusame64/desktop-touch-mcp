@@ -179,6 +179,7 @@ for (const [file, scan] of [["index.d.ts", dtsScan], ["index.js", jsScan]]) {
 }
 
 const dtsDeclared = dtsScan.names;
+const dtsFunctionCount = [...dts.matchAll(/^export declare function /gm)].length;
 const jsExported = jsScan.names;
 const staleSet = new Set(stale);
 
@@ -412,7 +413,12 @@ console.log(
   // `l1TestForcePanic`, so "all 97 are declared" was false by exactly the exemption (gate 2,
   // fourth pass).
   `[check-native-types] OK — ${rustExports.size} Rust exports, ${rustExports.size - [...rustExports].filter((n) => exempt(n)).length} of them declared in index.d.ts ` +
-    `(${[...rustExports].filter((n) => exempt(n)).length} exempt by name), and all ${dtsDeclared.size} index.d.ts declarations are exported from index.js. ` +
+    `(${[...rustExports].filter((n) => exempt(n)).length} exempt by name), and all ${dtsDeclared.size} index.d.ts declarations ` +
+    // **Two different sets printed the same number and read as one.** 97 Rust exports and 97
+    // index.d.ts declarations are not the same 97: the second is 96 functions plus a class, and the
+    // first counts the exempt name the second does not. They agree today by coincidence, and the
+    // sentence would not change when they stop (win2, 2026-09-17).
+    `(${dtsFunctionCount} functions + ${dtsDeclared.size - dtsFunctionCount} class) are exported from index.js. ` +
     `${rustStructs.size} napi object structs, paired ` +
     [...pairedPerFile].map(([f, n]) => `${n} against ${f}`).join(" and ") +
     `, agree on field NAMES and OPTIONALITY (not types) across ${comparedFields} comparisons` +
