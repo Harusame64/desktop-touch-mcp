@@ -15,7 +15,12 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isFeatureGated, parseNapiObjectStructs, parseTsInterfaces } from "./lib/napi-shapes.mjs";
+import {
+  parseNapiFunctions,
+  parseNapiObjectStructs,
+  parseTsFunctionParams,
+  parseTsInterfaces,
+} from "./lib/napi-shapes.mjs";
 
 // `fileURLToPath` decodes percent-encoded URL segments (paths with spaces or
 // non-ASCII characters) and normalises Windows drive prefixes — both of
@@ -51,63 +56,19 @@ function rsFiles(dir) {
   return out;
 }
 
-/** snake_case → camelCase (matches napi-rs default rename). */
-function snakeToCamel(s) {
-  return s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
-}
-
 const rustExports = new Set();
 const debugOnlyExports = new Set();
+const rustFunctions = new Map();
+const scanProblems = [];
 
 for (const file of rsFiles(SRC_DIR)) {
-  const src = readFileSync(file, "utf8");
-  const lines = src.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (!/^\s*#\[napi\]\s*$/.test(lines[i])) continue;
-
-    // Walk backward for a cargo FEATURE gate (e.g. `#[cfg(feature = "vision-gpu")]`).
-    // Feature-gated exports are intentionally absent from the always-on index.d.ts
-    // surface; they are checked at runtime via NativeVision / NativeWin32 interface
-    // probes in src/engine/native-engine.ts.
-    //
-    // **A PLATFORM gate is not a feature gate**, and this loop used to treat any
-    // `#[cfg(` as one — so 16 `#[cfg(windows)]` functions were out of the check, the
-    // struct section fifty lines below argued the opposite in the same file, and a
-    // Windows-only `#[napi] pub fn` could go undeclared with the run still green.
-    // One name turned up when that was fixed, and it is deliberate: see EXPORT_EXEMPT.
-    if (isFeatureGated(lines, i)) continue;
-
-    // Skip the rest of the attribute/comment block to reach the fn line.
-    // Blank lines must be skipped too — without that, a blank between
-    // `#[napi]` and `pub fn` would zero out `sig` and the export would
-    // be missed from `rustExports`, weakening the drift check (Codex
-    // review on PR #74).
-    let j = i + 1;
-    while (j < lines.length && /^(\s*$|\s*(#\[|\/\/))/.test(lines[j])) j++;
-    const sig = lines[j] ?? "";
-
-    // Free functions only — struct methods (`pub fn xxx(&self, ...)` or
-    // `&mut self`) are exposed as napi class methods, not free exports.
-    if (/\bpub\s+fn\s+\w+\s*\(\s*&(?:mut\s+)?self\b/.test(sig)) continue;
-
-    const m = sig.match(/\bpub\s+fn\s+(\w+)/);
-    if (m) {
-      const name = snakeToCamel(m[1]);
-      rustExports.add(name);
-      // Walk the same attribute block for `#[cfg(debug_assertions)]`. EXPORT_EXEMPT below is
-      // allowed to hide a name only while that gate is what makes it unpublishable — otherwise the
-      // exemption's stated reason ("a debug-only panic trigger") is about a property nothing reads.
-      for (let k = i - 1; k >= 0; k--) {
-        const t = lines[k].trim();
-        if (t === "" || t.startsWith("//")) continue;
-        if (/^#\[cfg\(debug_assertions\)\]/.test(t)) {
-          debugOnlyExports.add(name);
-          break;
-        }
-        if (t.startsWith("#[")) continue;
-        break;
-      }
-    }
+  const rel = file.slice(ROOT.length).split(sep).join("/");
+  const { functions, problems } = parseNapiFunctions(readFileSync(file, "utf8"), rel);
+  scanProblems.push(...problems);
+  for (const [name, def] of functions) {
+    rustExports.add(name);
+    if (def.debugOnly) debugOnlyExports.add(name);
+    rustFunctions.set(name, def);
   }
 }
 
@@ -285,7 +246,10 @@ const STRUCT_EXEMPT = new Set([
 const shapeProblems = [];
 const rustStructs = new Map();
 for (const file of rsFiles(SRC_DIR)) {
-  const rel = file.slice(ROOT.length);
+  // **`/` on both machines.** win2 reads these lines on Windows, where `sep` is `\\`, and a
+  // finding line that cannot be compared byte for byte between the two records is a record that
+  // cannot be diffed (win2, 2026-09-17).
+  const rel = file.slice(ROOT.length).split(sep).join("/");
   const { structs, problems } = parseNapiObjectStructs(readFileSync(file, "utf8"), rel);
   shapeProblems.push(...problems);
   for (const [name, def] of structs) {
@@ -311,6 +275,7 @@ try {
   shapeProblems.push(`src/engine/native-types.ts could not be read: ${e.message}`);
 }
 
+const tsFunctionParams = parseTsFunctionParams(dts);
 let comparedFields = 0;
 const pairedPerFile = new Map();
 for (const [label, source] of TS_SHAPE_FILES) {
@@ -328,6 +293,42 @@ for (const [label, source] of TS_SHAPE_FILES) {
       // struct a caller can receive and cannot name is the #667 defect, so an unpaired struct
       // fails there. `native-types.ts` is a curated internal mirror — `NativeUiaEvidence` lives in
       // `native-engine.ts` instead — so it is checked for AGREEMENT where it declares a shape.
+      // **An argument shape has no named interface, by design: it is written INLINE on the
+      // function that takes it** (`uiaClickElement(opts: { windowTitle: string; … })`). Compare it
+      // through that function rather than exempting it — 13 structs arrived here the moment the
+      // recogniser learned `#[napi_derive::napi(object)]`, and every one of them is a shape a
+      // caller must get right that nothing checked (gate 2, third pass).
+      const takenBy = [...rustFunctions].find(([, def]) => def.paramType === name);
+      if (takenBy && label === "index.d.ts") {
+        const inline = tsFunctionParams.get(takenBy[0]);
+        if (!inline) {
+          shapeProblems.push(`${label}: \`${takenBy[0]}\` does not declare its parameter inline, and \`${name}\` has no interface (${at})`);
+          continue;
+        }
+        for (const [field, isOption] of fields) {
+          comparedFields++;
+          if (!inline.has(field)) {
+            shapeProblems.push(`${label}: \`${takenBy[0]}(opts)\` is missing \`${field}\`, which \`${name}\` declares (${at})`);
+            continue;
+          }
+          if (isOption && inline.get(field) === false) {
+            shapeProblems.push(
+              `${label}: \`${takenBy[0]}(opts).${field}\` is declared required, but Rust has it as \`Option<..>\` ` +
+                `and napi omits the key for \`None\` — declare it \`${field}?:\``,
+            );
+          }
+        }
+        for (const field of inline.keys()) {
+          if (!fields.has(field)) {
+            shapeProblems.push(`${label}: \`${takenBy[0]}(opts).${field}\` is declared, but \`${name}\` has no such field (${at})`);
+          }
+        }
+        paired++;
+        continue;
+      }
+      // An argument shape is not expected in `native-types.ts`: nothing in TS holds one, it is
+      // written at the call. That is read from the tree (a napi function takes it), not from a list.
+      if (takenBy) continue;
       // `index.d.ts` is the addon's published surface: a struct a caller can receive and cannot
       // name is the #667 defect. `native-types.ts` is a curated internal mirror — but "curated"
       // was indistinguishable from "misspelled": renaming an interface there removed a struct from

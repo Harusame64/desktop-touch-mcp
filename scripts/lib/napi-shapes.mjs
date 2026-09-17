@@ -64,6 +64,68 @@ function stripLeadingNoise(line) {
   }
 }
 
+/**
+ * Every `#[… napi …]` attribute in a Rust source, found by BRACKET DEPTH and matched on its PATH.
+ *
+ * **The path is what three rounds of review kept getting through.** Rounds 1-3 rewrote the INSIDE of
+ * this parser — spans lines, tolerates `)` in arguments, reads bodies by brace matching — while the
+ * ENTRY stayed a literal `#[napi(`. This tree writes the attribute three ways (`#[napi]`,
+ * `#[napi(…)]`, `#[napi_derive::napi(…)]`), and **the third is house style in `src/uia/`: 13 structs
+ * sat outside the check with the run printing OK.** Respelling one struct turned a loud failure into
+ * `OK`, and the only trace was two numbers moving in a line nobody diffs.
+ *
+ * So: any attribute whose path's LAST SEGMENT is `napi` counts, however it is qualified. A napi
+ * attribute inside `cfg_attr` is NOT followed — and is reported, because a spelling this parser
+ * cannot read may not leave through the same door as one it has read.
+ *
+ * Prose is excluded by the anchor: an attribute is a line that STARTS with `#[` after indentation.
+ * `src/uia/types.rs` opens with "All structs use `#[napi(object)]`", and `l1_capture/ring.rs`
+ * documents a struct as deliberately napi-FREE by naming it.
+ */
+export function scanNapiAttributes(source, file) {
+  const text = source.replace(/\r\n/g, "\n");
+  const attrs = [];
+  const problems = [];
+  const lineAt = (index) => text.slice(0, index).split("\n").length;
+
+  for (const m of [...text.matchAll(/^[ \t]*#\[/gm)]) {
+    const open = text.indexOf("[", m.index);
+    const close = endOfBracketed(text, open, "[", "]");
+    const startLine = lineAt(m.index);
+    const at = `${file}:${startLine}`;
+    if (close === -1) {
+      problems.push(`${at}: an attribute never closes`);
+      continue;
+    }
+    const inner = text.slice(open + 1, close - 1).trim();
+    // An absolute path (`::napi_derive::napi`) is legal here too.
+    const path = inner.match(/^(::\s*)?([A-Za-z_][A-Za-z0-9_]*(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*)/)?.[0] ?? "";
+    const last = path.split("::").pop().trim();
+    if (last === "cfg_attr") {
+      if (/\bnapi\b/.test(inner)) {
+        problems.push(`${at}: a napi attribute inside \`cfg_attr\` — this parser does not follow it`);
+      }
+      continue;
+    }
+    if (last !== "napi") continue;
+    const rest = inner.slice(inner.indexOf(path) + path.length).trim();
+    let args = "";
+    if (rest.startsWith("(")) {
+      const argsEnd = endOfBracketed(rest, 0, "(", ")");
+      if (argsEnd === -1) {
+        problems.push(`${at}: \`${path}(\` never closes`);
+        continue;
+      }
+      args = rest.slice(1, argsEnd - 1);
+    } else if (rest !== "") {
+      problems.push(`${at}: \`${path}\` is followed by \`${rest}\`, which this parser does not read`);
+      continue;
+    }
+    attrs.push({ at, args, path, endIndex: close, startLine });
+  }
+  return { attrs, problems };
+}
+
 /** Does this attribute's argument list carry `object` as an argument (in any position)? */
 function hasObjectArg(args) {
   return args
@@ -88,33 +150,16 @@ export function parseNapiObjectStructs(source, file) {
   // Offsets of every line start, so a character index can be named as `file:line`.
   const lineAt = (index) => text.slice(0, index).split("\n").length;
 
-  // `#[napi(` at the start of a line (after indentation) — prose that mentions the attribute begins
-  // with `///`, `//!` or text, and must not be read as a declaration. Both `src/uia/types.rs` (a
-  // module doc saying "All structs use `#[napi(object)]`") and `l1_capture/ring.rs` (a struct
-  // documented as deliberately napi-FREE) were read as declarations before this was anchored.
-  const attrStart = /^[ \t]*#\[napi\(/gm;
-  for (const m of [...text.matchAll(attrStart)]) {
-    const openParen = text.indexOf("(", m.index);
-    const closeParen = endOfBracketed(text, openParen, "(", ")");
-    const at = `${file}:${lineAt(m.index)}`;
-    if (closeParen === -1) {
-      problems.push(`${at}: \`#[napi(\` never closes`);
-      continue;
-    }
-    const args = text.slice(openParen + 1, closeParen - 1);
-    if (!hasObjectArg(args)) continue;
-
-    const closeBracket = text.indexOf("]", closeParen - 1);
-    if (closeBracket === -1) {
-      problems.push(`${at}: \`#[napi(object …)\` is never followed by \`]\``);
-      continue;
-    }
+  const { attrs, problems: attrProblems } = scanNapiAttributes(source, file);
+  problems.push(...attrProblems);
+  for (const attr of attrs) {
+    const at = attr.at;
+    if (!hasObjectArg(attr.args)) continue;
     // **Counted here**: everything below can fail, and the difference between this count and the
     // structs understood is itself reported.
     declared++;
 
-    const startLine = lineAt(m.index);
-    if (isFeatureGated(lines, startLine - 1)) {
+    if (isFeatureGated(lines, attr.startLine - 1)) {
       // A FEATURE gate means a second struct of the same name exists for the other build
       // (`CapabilityProfile` has a `vision-gpu` shape and a stub), so comparing whichever one this
       // scan meets against a declaration written for the other reports drift that is not there.
@@ -124,8 +169,8 @@ export function parseNapiObjectStructs(source, file) {
     }
 
     // Walk forward over further attributes, comments and blank lines to the `pub struct` line.
-    let rest = text.slice(closeBracket + 1);
-    let consumed = closeBracket + 1;
+    let rest = text.slice(attr.endIndex);
+    let consumed = attr.endIndex;
     for (;;) {
       const before = rest;
       rest = rest.replace(/^[ \t]*\n/, "");
@@ -145,7 +190,7 @@ export function parseNapiObjectStructs(source, file) {
       }
       if (rest === before) break;
     }
-    consumed += text.slice(closeBracket + 1).length - rest.length;
+    consumed += text.slice(attr.endIndex).length - rest.length;
 
     const decl = rest.match(/^[ \t]*pub struct (\w+)[^\n{]*\{/);
     if (!decl) {
@@ -192,7 +237,7 @@ export function parseNapiObjectStructs(source, file) {
     }
     if (broken) continue;
 
-    const jsName = args.match(/js_name\s*=\s*"([^"]+)"/)?.[1] ?? decl[1];
+    const jsName = attr.args.match(/js_name\s*=\s*"([^"]+)"/)?.[1] ?? decl[1];
     if (structs.has(jsName)) {
       // Two structs, one JS name. Whichever file is walked last used to win, silently — and the
       // `#[cfg(windows)]` / `#[cfg(not(windows))]` stub pair this repo already uses for functions
@@ -209,6 +254,107 @@ export function parseNapiObjectStructs(source, file) {
     );
   }
   return { structs, problems };
+}
+
+/**
+ * Every free `#[napi]` function, by the name JS sees, with the type of its single parameter when it
+ * takes one.
+ *
+ * **The function scan used to have its own entry**, a line regex requiring the bare attribute alone
+ * on its line — so `#[napi_derive::napi]`, `#[napi(js_name = "…")]` and a trailing comment each hid
+ * an undeclared export with the run green (gate 2, third pass). It shares the path-aware scan now.
+ *
+ * The parameter type matters because **the argument shapes are declared INLINE in `index.d.ts`**
+ * (`uiaClickElement(opts: { windowTitle: string; … })`), not as named interfaces — so a struct that
+ * never pairs by name can still be compared, through the function that takes it.
+ */
+export function parseNapiFunctions(source, file) {
+  const text = source.replace(/\r\n/g, "\n");
+  const lines = text.split("\n");
+  const { attrs, problems } = scanNapiAttributes(source, file);
+  const functions = new Map();
+
+  for (const attr of attrs) {
+    if (hasObjectArg(attr.args)) continue;
+    // A constructor, getter or setter is a napi CLASS member, not a free export: `new` is not a
+    // name `index.d.ts` declares as a function. The old line-regex entry excluded them by accident,
+    // because it demanded the bare attribute alone on its line.
+    if (/\b(constructor|getter|setter)\b/.test(attr.args)) continue;
+    if (isFeatureGated(lines, attr.startLine - 1)) continue;
+    // Walk to the item this attribute decorates, over further attributes and comments.
+    let rest = text.slice(attr.endIndex);
+    for (;;) {
+      const before = rest;
+      rest = rest.replace(/^[ \t]*\n/, "");
+      rest = rest.replace(/^[ \t]*\/\/[^\n]*\n/, "");
+      if (/^[ \t]*#\[/.test(rest)) {
+        const open = rest.indexOf("[");
+        const end = endOfBracketed(rest, open, "[", "]");
+        if (end === -1) break;
+        rest = rest.slice(end);
+      }
+      if (rest === before) break;
+    }
+    // **The signature is read to its closing paren, not to the end of the line.** A wrapper whose
+    // parameter sits on its own line (`pub fn uia_click_element(\n    opts: …,\n)`) is the common
+    // shape in `lib.rs` — reading one line found the parameter of 1 function in 22.
+    const head = rest.match(/^\s*pub\s+fn\s+(\w+)\s*\(/);
+    if (!head) continue;
+    const parenStart = rest.indexOf("(", head.index);
+    const parenEnd = endOfBracketed(rest, parenStart, "(", ")");
+    if (parenEnd === -1) continue;
+    const params = rest.slice(parenStart + 1, parenEnd - 1).trim();
+    // Methods are napi class methods, not free exports.
+    if (/^&(?:mut\s+)?self\b/.test(params)) continue;
+    const m = [null, head[1], params];
+    const jsName = attr.args.match(/js_name\s*=\s*"([^"]+)"/)?.[1] ?? snakeToCamel(m[1]);
+    // The wrapper names the type through its module (`opts: uia::tree::GetElementsOptions`), and
+    // the struct is keyed by its last segment — so take the last segment here too.
+    const paramType =
+      m[2]
+        .replace(/,\s*$/, "")
+        .match(/^\s*\w+\s*:\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*$/)?.[1]
+        ?.split("::")
+        .pop()
+        .trim() ?? null;
+    const debugOnly = (() => {
+      for (let k = attr.startLine - 2; k >= 0; k--) {
+        const t = lines[k].trim();
+        if (t === "" || t.startsWith("//")) continue;
+        if (/^#\[cfg\(debug_assertions\)\]/.test(t)) return true;
+        if (t.startsWith("#[")) continue;
+        return false;
+      }
+      return false;
+    })();
+    functions.set(jsName, { rustName: m[1], paramType, at: attr.at, debugOnly });
+  }
+  return { functions, problems };
+}
+
+/**
+ * The inline object type of each `export declare function name(param: { … })` in a `.d.ts`.
+ *
+ * This is where the napi ARGUMENT shapes live: 13 of this repo's `#[napi(object)]` structs are
+ * parameter types with no named interface anywhere, so until they were compared through here they
+ * were the #667 class — a shape a caller must get right, that nothing checked — in the one
+ * direction nobody had looked at.
+ */
+export function parseTsFunctionParams(source) {
+  const text = source.replace(/\r\n/g, "\n");
+  const out = new Map();
+  for (const m of text.matchAll(/^export declare function (\w+)\s*\(\s*\w+\s*:\s*\{/gm)) {
+    const brace = text.indexOf("{", m.index + m[0].length - 1);
+    const end = endOfBracketed(text, brace, "{", "}");
+    if (end === -1) continue;
+    const fields = new Map();
+    for (const part of text.slice(brace + 1, end - 1).split(";")) {
+      const fm = part.trim().match(/^(\w+)(\??):/);
+      if (fm) fields.set(fm[1], fm[2] === "?");
+    }
+    out.set(m[1], fields);
+  }
+  return out;
 }
 
 /**

@@ -9,7 +9,17 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { isFeatureGated, parseNapiObjectStructs, parseTsInterfaces } from "../../scripts/lib/napi-shapes.mjs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+import {
+  isFeatureGated,
+  parseNapiFunctions,
+  parseNapiObjectStructs,
+  parseTsFunctionParams,
+  parseTsInterfaces,
+  scanNapiAttributes,
+} from "../../scripts/lib/napi-shapes.mjs";
 
 const parse = (src: string) => parseNapiObjectStructs(src, "fixture.rs");
 
@@ -357,5 +367,119 @@ pub fn other() {}
 #[napi]
 pub fn thing() {}
 `)).toBe(false);
+  });
+});
+
+describe("the attribute entry", () => {
+  const scan = (src: string) => scanNapiAttributes(src, "fixture.rs");
+
+  it("matches on the path, not on one spelling", () => {
+    // **This is where three rounds of fixes kept leaking.** The inside was rewritten twice while
+    // the entry stayed the literal `#[napi(`; `src/uia/` writes it fully qualified, and 13 structs
+    // were outside the check with the run printing OK.
+    for (const spelling of ["#[napi(object)]", "#[napi_derive::napi(object)]", "#[ ::napi_derive :: napi (object) ]"]) {
+      const { structs, problems } = parseNapiObjectStructs(
+        `${spelling}\npub struct Thing {\n    pub a: u32,\n}\n`,
+        "fixture.rs",
+      );
+      expect(problems, spelling).toEqual([]);
+      expect(structs.has("Thing"), spelling).toBe(true);
+    }
+  });
+
+  it("reports a napi attribute it cannot follow instead of walking past it", () => {
+    // `cfg_attr` is not followed. **Saying so is the point** — the same door must not pass a
+    // spelling that was read and one that was not.
+    expect(scan("#[cfg_attr(windows, napi(object))]\npub struct Thing {}\n").problems.join("")).toMatch(
+      /does not follow it/,
+    );
+  });
+
+  it("ignores attributes that are not napi, and prose that names one", () => {
+    const { attrs, problems } = scan(`
+//! All structs use \`#[napi(object)]\`.
+#[derive(Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Thing {}
+`);
+    expect(problems).toEqual([]);
+    expect(attrs).toEqual([]);
+  });
+
+  it("covers every napi attribute spelling the tree actually uses", () => {
+    // **The fixtures come from the tree, not from the spellings a review happened to name.**
+    // Every round so far fixed the spellings someone thought of and left the next one silent.
+    const root = join(__dirname, "..", "..", "src");
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (p.endsWith(".rs")) files.push(p);
+      }
+    };
+    walk(root);
+    const heads = new Set<string>();
+    for (const f of files) {
+      for (const m of readFileSync(f, "utf8").matchAll(/^[ \t]*#\[([A-Za-z_][A-Za-z0-9_:\s]*?)[\s(\]]/gm)) {
+        const path = m[1].replace(/\s+/g, "");
+        if (path.split("::").pop() === "napi") heads.add(path);
+      }
+    }
+    expect(heads.size).toBeGreaterThan(1); // the tree really does spell it more than one way
+    for (const path of heads) {
+      const { attrs, problems } = scan(`#[${path}(object)]\npub struct Thing {\n    pub a: u32,\n}\n`);
+      expect(problems, path).toEqual([]);
+      expect(attrs.length, path).toBe(1);
+    }
+  });
+});
+
+describe("the function and parameter recognizers", () => {
+  it("reads a fully-qualified attribute, a js_name, and a signature that wraps", () => {
+    const { functions, problems } = parseNapiFunctions(
+      `
+#[napi_derive::napi]
+pub fn plain_one(x: u32) -> u32 { x }
+
+#[napi(js_name = "renamed")]
+pub fn other_one() -> u32 { 1 }
+
+#[napi]
+pub fn takes_options(
+    opts: uia::tree::GetElementsOptions,
+) -> u32 { 1 }
+`,
+      "fixture.rs",
+    );
+    expect(problems).toEqual([]);
+    expect([...functions.keys()].sort()).toEqual(["plainOne", "renamed", "takesOptions"]);
+    // **The parameter type is the last segment**, because that is how the struct is keyed.
+    expect(functions.get("takesOptions")!.paramType).toBe("GetElementsOptions");
+  });
+
+  it("leaves class members alone", () => {
+    const { functions } = parseNapiFunctions(
+      `
+#[napi(constructor)]
+pub fn new(a: u32) -> Self { Self {} }
+
+#[napi]
+pub fn method(&self) -> u32 { 1 }
+`,
+      "fixture.rs",
+    );
+    expect([...functions.keys()]).toEqual([]);
+  });
+
+  it("reads the inline parameter object a .d.ts declares", () => {
+    // The argument shapes have no named interface: they are written at the function.
+    const params = parseTsFunctionParams(
+      'export declare function uiaClickElement(opts: { windowTitle: string; name?: string }): Promise<void>\n',
+    );
+    expect([...params.get("uiaClickElement")!]).toEqual([
+      ["windowTitle", false],
+      ["name", true],
+    ]);
   });
 });
