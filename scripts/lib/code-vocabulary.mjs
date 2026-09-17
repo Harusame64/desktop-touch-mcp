@@ -18,13 +18,18 @@
 // **`code` shares a producer AND a spelling with `most_likely_cause`, so matching the two by name
 // collapses two axes into one.** This file counts the `code` surface at its own producers.
 //
-// **What makes this axis different from the other three: it is CLOSED ABOVE.** The other three end
-// with "this is a lower bound" — a road can be spelled at a new call site, a switch name can come
-// out of the registry, a `ToolFailureError` takes its name from 183 `failWith` sites. This one has
-// a ceiling, and the ceiling is structural: the two arms of `classify` that turn a caller-supplied
-// MESSAGE into a code both check `Object.hasOwn(SUGGESTS, …)` first, so a message cannot invent a
-// code. Remove either guard and the axis stops being bounded — which is why `readClassifyArms`
-// fails rather than counts when a `code:` it cannot read is not standing behind that check.
+// **One of this axis's two roads is bounded, and that is worth saying precisely.** The MESSAGE road
+// is: the two arms of `classify` that turn a caller-supplied message into a code both REQUIRE
+// `Object.hasOwn(SUGGESTS, …)` — un-negated, not behind an `||` — so a message cannot invent a code.
+// The guard is therefore read for its polarity, not for its presence: `!Object.hasOwn(…)` contains
+// the same call and means the opposite (gate 2 on #674, round 2).
+//
+// **The CALL-SITE road is not bounded, and the first version of this file said it was.**
+// `keyLockerFailure` forwards `String(err.code)` — an arbitrary runtime string off a thrown object —
+// into `failCode`, so codes like `LockerNotBound` reach a caller without appearing in any set
+// derived here. Such a site is named in `unreadable` and the summary says "lower bound" while it is
+// there. The other three axes end the same way (a switch name from the registry, a
+// `ToolFailureError` name from 183 `failWith` sites), and saying so is the whole discipline.
 //
 // The flat surface has exactly three entry points in `src/tools/_errors.ts`, and all three were
 // read at the producer rather than at a table beside it (the lesson #672 cost five rounds):
@@ -110,13 +115,24 @@ function eachDepthOneProperty(objectSource, visit) {
     const ch = objectSource[i];
     const prev = objectSource[i - 1] ?? "";
     if (depth === 1 && /[{,\s]/.test(prev)) {
-      const key = /^(?:"([A-Za-z_$][\w$]*)"|'([A-Za-z_$][\w$]*)'|([A-Za-z_$][\w$]*))\s*([:,}])/.exec(objectSource.slice(i));
+      const key = /^(?:"([A-Za-z_$][\w$]*)"\s*:|'([A-Za-z_$][\w$]*)'\s*:|([A-Za-z_$][\w$]*)\s*([:,}]))/.exec(objectSource.slice(i));
+      // **A quoted STRING is not a shorthand key.** `{ "ok": false, "note": "code", … }` put the
+      // VALUE `"code"` in key position and the walker read it as a property named `code` — the
+      // mutation round caught it as a negative control that went red (2026-09-18). Shorthand is a
+      // bare identifier by grammar, so only the unquoted alternative may omit its colon.
       if (key !== null) {
         const name = key[1] ?? key[2] ?? key[3];
-        const shorthand = key[4] !== ":";
-        const stop = visit(name, shorthand ? null : i + key[0].length);
+        const shorthand = key[3] !== undefined && key[4] !== ":";
+        const valueStart = shorthand ? null : i + key[0].length;
+        const stop = visit(name, valueStart);
         if (stop !== undefined) return stop;
-        i += shorthand ? key[0].length - 1 : key[0].length;
+        if (shorthand) {
+          i += key[0].length - 1;
+        } else {
+          // **Skip the value.** Scanning through it let a bare identifier in value position be read
+          // as the next key.
+          i = valueSpan(objectSource, valueStart).end;
+        }
         continue;
       }
     }
@@ -138,8 +154,8 @@ function eachDepthOneProperty(objectSource, visit) {
   return undefined;
 }
 
-/** The value text that starts at `from`, ending at this depth's `,`, `;` or `}`. */
-function valueAt(objectSource, from) {
+/** The value that starts at `from`: its trimmed text and the index just past it. */
+function valueSpan(objectSource, from) {
   let d = 0;
   let q = null;
   let j = from;
@@ -158,7 +174,12 @@ function valueAt(objectSource, from) {
       d--;
     } else if ((c === "," || c === ";") && d === 0) break;
   }
-  return objectSource.slice(from, j).trim();
+  return { text: objectSource.slice(from, j).trim(), end: j };
+}
+
+/** The value text that starts at `from`, ending at this depth's `,`, `;` or `}`. */
+function valueAt(objectSource, from) {
+  return valueSpan(objectSource, from).text;
 }
 
 /**
@@ -338,6 +359,37 @@ function enclosingCondition(body, at) {
 }
 
 /**
+ * Does this condition REQUIRE `Object.hasOwn(SUGGESTS, expr)` to hold?
+ *
+ * **A substring test cannot tell a check from its negation.** The first version asked whether the
+ * condition text contained the call, so `if (declared && !Object.hasOwn(SUGGESTS, declared))` — which
+ * makes a producer's message able to name ANY code, the exact unbounding this axis exists to catch —
+ * left the gate at exit 0, still printing "both check the dictionary first" (gate 2 on #674, round 2,
+ * finding 2). `|| override` fails the same way, for the same reason: the call is present and does not
+ * decide the branch.
+ *
+ * So: the call must appear un-negated, and the condition must have no top-level `||` — a disjunction
+ * means some other operand can carry the branch on its own.
+ */
+function dictionaryMembershipRequired(condition, expr) {
+  const call = new RegExp(`(!\\s*)?Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${expr.replace(/[$]/g, "\\$")}\\s*\\)`, "g");
+  let positive = false;
+  for (const m of condition.matchAll(call)) {
+    if (m[1] === undefined) positive = true;
+    else return false; // negated anywhere: the branch can be taken without membership
+  }
+  if (!positive) return false;
+  let depth = 0;
+  for (let i = 0; i < condition.length - 1; i++) {
+    const ch = condition[i];
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    else if (depth === 0 && ch === "|" && condition[i + 1] === "|") return false;
+  }
+  return true;
+}
+
+/**
  * The arms of `classify(message)`, which is the only place the flat road turns a message into a
  * code.
  *
@@ -397,9 +449,7 @@ export function readClassifyArms(errorsSource, problems = []) {
     }
     // A code read out of the message. The arm is only bounded if it checked the dictionary first.
     const cond = enclosingCondition(body, obj.start);
-    const guarded =
-      cond !== null &&
-      new RegExp(`Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${expr.replace(/[$]/g, "\\$")}\\s*\\)`).test(cond);
+    const guarded = cond !== null && dictionaryMembershipRequired(cond, expr);
     dictionaryArms.push({ identifier: expr, guarded });
     if (!guarded) {
       unreadable.push(expr);
@@ -431,13 +481,21 @@ export function readClassifyArms(errorsSource, problems = []) {
  *   4. a ONE-LEVEL local wrapper — `function fail(code, message) { return failCode(code, …) }` in
  *      `key-locker-tool.ts` — resolved through its own call sites in the same file.
  *
- * Anything else is reported. A `failCode` whose code this parser cannot read is a value reaching
- * the caller that the grid does not count, and the whole point of the four denominators is that
- * such a value cannot exist quietly.
+ * Anything else is RECORDED in `unreadable` — a call site that forwards a computed value is a
+ * producer whose values cannot be enumerated, not a parser failure, and it is pinned beside the
+ * codes so the summary can stop calling the count a ceiling. Dropping such a site silently is what
+ * let `keyLockerFailure`'s `String(err.code)` sit outside the count while the headline claimed a
+ * bound (gate 2 on #674, round 2, finding 1).
  */
 export function readFailCodeSites(sources, problems = []) {
   const codes = new Set();
   const sites = [];
+  // **A call site whose code this parser cannot read is not a problem with the parser — it is a
+  // producer whose values cannot be enumerated**, which is a fact about the tree and belongs in the
+  // pin beside the others (the result axis carries `ToolFailureError:code` the same way). Pushing it
+  // to `problems` would make the gate red on the day it lands, and a gate that is red on arrival is
+  // a gate somebody turns off (#670).
+  const unreadable = [];
   for (const { file, text: raw } of sources) {
     const text = stripComments(raw);
     // The definition and its doc-comment siblings are not call sites.
@@ -461,9 +519,8 @@ export function readFailCodeSites(sources, problems = []) {
         const bound = readLocalBinding(text, first.trim(), m.index);
         if (bound?.codes !== undefined) resolved = bound.codes;
         else if (bound?.unreadable !== undefined) {
-          problems.push(
-            `${file}:${line}: failCode is given \`${first.trim()}\`, bound to an expression this parser ` +
-              `cannot read: ${bound.unreadable.replace(/\s+/g, " ").slice(0, 80)}`,
+          unreadable.push(
+            `${file}:${line}: \`${first.trim()}\` = ${bound.unreadable.replace(/\s+/g, " ").slice(0, 80)}`,
           );
           continue;
         } else if ([...wrappers.values()].includes(first.trim())) {
@@ -472,7 +529,7 @@ export function readFailCodeSites(sources, problems = []) {
         }
       }
       if (resolved === null) {
-        problems.push(`${file}:${line}: failCode is given a code this parser cannot read: ${first.trim().slice(0, 60)}`);
+        unreadable.push(`${file}:${line}: ${first.trim().replace(/\s+/g, " ").slice(0, 80)}`);
         continue;
       }
       for (const c of resolved) {
@@ -486,13 +543,25 @@ export function readFailCodeSites(sources, problems = []) {
         const args = readArgList(text, m.index + m[0].length - 1);
         if (args === null) continue;
         const lit = literal((args[0] ?? "").trim());
-        if (lit === null) continue; // its own declaration, and any call this parser cannot read
+        if (lit === null) {
+          // **The wrapper's OWN declaration is not a call site**; anything else that reaches the
+          // wrapper with a non-literal forwards an unenumerable value onto the caller's `code`, and
+          // dropping it silently is what let `keyLockerFailure` — `String(err.code)`, an arbitrary
+          // runtime string — sit outside the count while the headline said "CEILING" (gate 2 on
+          // #674, round 2, finding 1).
+          const arg = (args[0] ?? "").trim();
+          const line = text.slice(0, m.index).split("\n").length;
+          if (!/^\s*code\s*:\s*string/.test(arg) && arg !== "") {
+            unreadable.push(`${file}:${line}: ${name}(${arg.replace(/\s+/g, " ").slice(0, 60)})`);
+          }
+          continue;
+        }
         codes.add(lit);
         sites.push({ file, line: text.slice(0, m.index).split("\n").length, code: lit, via: name });
       }
     }
   }
-  return { codes: [...codes].sort(), sites };
+  return { codes: [...codes].sort(), sites, unreadable: [...new Set(unreadable)].sort() };
 }
 
 /**
@@ -612,9 +681,25 @@ export function readHandBuiltFlatFailures(sources) {
       if (!keys.includes("code") || !keys.includes("error")) continue;
       const expr = fieldAtDepthOne(obj.body, "code");
       const line = text.slice(0, m.index).split("\n").length;
+      // **The enclosing declaration, not the last `function` keyword above it.** Taking the latter
+      // attributed an arrow-const producer to an unrelated neighbour, and the reachability question
+      // was then answered about that neighbour — a false "no caller outside its file" that also
+      // dropped the code from the count, which whoever re-pinned would have baked in permanently
+      // (gate 2 on #674, round 2, finding 4). An `export`ed declaration is reachable by definition,
+      // and when the enclosing form cannot be identified the answer is UNKNOWN, which keeps the code
+      // in the count rather than excluding it on a guess.
       const before = text.slice(0, i);
-      const fn = [...before.matchAll(/\b(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g)].at(-1)?.[1] ?? null;
-      found.push({ file, line, code: literal(expr ?? ""), expression: expr, fn });
+      const decl = [
+        ...before.matchAll(
+          // A FUNCTION-LIKE declaration only: `const failure: ToolFailure = { … }` is a local, and
+          // taking it as the enclosing declaration answers the reachability question about a
+          // variable. The const form must be followed by a function or an arrow's parameter list.
+          /\b(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>))/g,
+        ),
+      ].at(-1);
+      const fn = decl === undefined ? null : (decl[2] ?? decl[3] ?? null);
+      const exported = decl !== undefined && decl[1] !== undefined;
+      found.push({ file, line, code: literal(expr ?? ""), expression: expr, fn, exported });
     }
   }
   return found;
@@ -681,13 +766,20 @@ export function readEmbeddedScriptCodes(sources) {
   // separately instead of being merged into a PascalCase axis.
   const constants = new Map();
   for (const { text } of stripped) {
-    for (const m of text.matchAll(/\bexport\s+const\s+([A-Z][A-Z0-9_]*)\s*(?::[^=;]+)?=\s*"([^"]*)"/g)) {
+    // **Not only the exported ones.** A module-private constant interpolated into a script would be
+    // printed as `${NAME}` as if that were the code (gate 2 on #674, round 2, finding 5).
+    for (const m of text.matchAll(/\bconst\s+([A-Z][A-Z0-9_]*)\s*(?::[^=;]+)?=\s*"([^"]*)"/g)) {
       constants.set(m[1], m[2]);
     }
   }
   const out = [];
   for (const { file, text } of stripped) {
+    // **Inside a string, or it is not "spelled inside a script".** A TypeScript object literal
+    // written JSON-style wears the same characters, and the hand-built sweep already reads those —
+    // the two sets would record the same site twice, each calling it something different.
+    const inString = stringRanges(text);
     for (const m of text.matchAll(/"code"\s*:\s*"([^"]+)"/g)) {
+      if (!inString.some(([a, b]) => m.index > a && m.index < b)) continue;
       const interpolated = /^\$\{([A-Za-z_$][\w$]*)\}$/.exec(m[1]);
       const resolved = interpolated === null ? m[1] : constants.get(interpolated[1]) ?? null;
       out.push({

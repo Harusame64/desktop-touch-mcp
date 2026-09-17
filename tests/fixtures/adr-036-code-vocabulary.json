@@ -66,6 +66,9 @@
     "WaitTimeout",
     "WindowNotFound"
   ],
+  "unreadableCallSites": [
+    "src/tools/key-locker-tool.ts:172: fail(code)"
+  ],
   "residual": "ToolError",
   "dictionaryArms": [
     "declared",
@@ -128,7 +131,7 @@
     "src/engine/uia-bridge.ts:insertTextViaTextPattern2 → TextPattern2ParseError",
     "src/server-linux-stub.ts:(top level) → UnsupportedPlatform",
     "src/tools/_errors.ts:failArgs → InvalidArgs",
-    "src/tools/_errors.ts:toToolFailure → (computed: code) (no caller outside its file)"
+    "src/tools/_errors.ts:toToolFailure → (computed: code)"
   ],
   "embeddedScriptCodes": [
     "ElementNotFound",

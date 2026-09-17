@@ -23,12 +23,18 @@
 // case. So this file counts `code` at ITS producers, and states the overlap with the third axis as
 // a derived number rather than letting a name do the matching.
 //
-// **This axis is the only one of the four that is CLOSED ABOVE, and the ceiling is structural.**
-// Two arms of `classify` turn a producer's MESSAGE into a code, and both ask
-// `Object.hasOwn(SUGGESTS, …)` first — so a message cannot invent a code, and the reachable set is
-// bounded by the dictionary plus what the call sites name. Remove either guard and the axis has no
-// upper bound at all; the extraction fails rather than counts when that happens, because a
-// denominator that cannot be bounded is not a denominator.
+// **The MESSAGE road is bounded, and the bound is structural — but the axis as a whole is not.**
+// Two arms of `classify` turn a producer's message into a code, and both require
+// `Object.hasOwn(SUGGESTS, …)` — un-negated, not behind an `||` — so no message can invent a code.
+// Remove or negate either guard and that road has no upper bound at all, which is why the guard is
+// read for its POLARITY and not merely for its presence.
+//
+// **The call-site road is where the ceiling leaks, and one site leaks today.** `keyLockerFailure`
+// takes `String(err.code)` off any thrown object and forwards it to `failCode`, so `LockerNotBound`
+// and `SshFingerprintSetRequired` reach a caller's `code` without appearing in any set this file
+// derives. The first version of this header called the whole count a ceiling and the gate printed it
+// while exiting 0 (gate 2 on #674, round 2). Such a site is now NAMED — pinned, and the summary says
+// "lower bound" for as long as the list is non-empty.
 //
 // **What it does NOT claim.** 24 of the dictionary's keys are written by no arm and named at no
 // call site: they are reachable only when some producer spells the code into its own message —
@@ -107,7 +113,10 @@ const handBuilt = readHandBuiltFlatFailures(sources).map((site) => ({
   where: `${site.file}:${site.fn ?? "(top level)"}`,
   code: site.code,
   expression: site.expression,
-  reached: site.fn === null ? null : isCalledOutside(sources, site.fn, site.file),
+  // **An exported declaration is reachable by definition**, and an unidentifiable enclosing form is
+  // UNKNOWN rather than unreachable — excluding a code from the count on a guess is the one error
+  // whoever re-pins would make permanent (gate 2 on #674, round 2, finding 4).
+  reached: site.exported ? true : site.fn === null ? null : isCalledOutside(sources, site.fn, site.file),
 }));
 
 // **Codes spelled inside an embedded PowerShell script.** Recorded, never merged: whether one
@@ -151,6 +160,13 @@ const envelopeOutsideFlatCeiling = envelopeNames.filter((n) => !ceiling.includes
 
 const derived = {
   classifyLiterals: arms.literals,
+  // **Call sites that forward a value this extraction cannot enumerate.** One does today:
+  // `keyLockerFailure` takes `String(err.code)` off any thrown object and hands it to `failCode`, so
+  // `LockerNotBound` and `SshFingerprintSetRequired` reach a caller's `code` without appearing in
+  // any set below. Pinned rather than failed on, like the result axis's `ToolFailureError:code` —
+  // and the summary stops calling the count a ceiling while this list is non-empty, because it is
+  // not one (gate 2 on #674, round 2).
+  unreadableCallSites: failCode.unreadable,
   residual: arms.residual,
   dictionaryArms: arms.dictionaryArms.map((a) => a.identifier).sort(),
   dictionaryOnly,
@@ -266,19 +282,34 @@ if (problems.length > 0) {
 }
 
 const reachableHandBuilt = handBuilt.filter((h) => h.reached !== false);
+const bounded = failCode.unreadable.length === 0;
+// **The parts overlap, so they are not addends.** Nine `failCode` codes are also classifier
+// literals, `InvalidArgs` is both `failArgs`' fixed code and one of the hand-built sites, and
+// `TextPattern2ParseError` is both dictionary-only and hand-built — a reader who added the five
+// numbers got 117 where the same sentence said 106 (gate 2 on #674, round 2, finding 3). The union
+// is the number; each part is printed as a set it draws from, with the overlap stated.
 console.log(
-  `[check-code-vocabulary] OK — a caller can receive at most ${ceiling.length} codes on the flat ` +
-    `surface: ${arms.literals.length} written as literals in the classifier (residual "${arms.residual}"), ` +
-    `${dictionaryOnly.length} more reachable only when a producer spells the code into its own message, ` +
-    `${failCode.codes.length} supplied at failCode call sites (${failCode.sites.length} sites), ` +
-    `one fixed by failArgs ("${failArgsCode}"), and ${reachableHandBuilt.filter((h) => h.code !== null).length} ` +
-    `hand-built rather than rendered by the presenter (${handBuilt.filter((h) => h.code === null).length} more ` +
-    `build the shape with a COMPUTED code, pinned but contributing no value). ${adviceLess.length} of them are in no SUGGESTS entry and reach the caller with whatever ` +
-    `the call site passed. **This is a CEILING, not a lower bound** — the ${arms.dictionaryArms.length} arms that ` +
-    `read a code out of a message both check the dictionary first, so a message cannot invent one. ` +
-    `${envelopeWithinFlatCeiling.length} of the ${envelopeNames.length} names on the envelope surface fall inside this ` +
-    `ceiling; ${envelopeOutsideFlatCeiling.length} fall outside it, so for those the flat surface CANNOT say the word the ` +
-    `envelope says. Which of the ones inside are actually spelled by a producer's message is not answered here. ` +
-    `${embedded.length} further codes are spelled inside embedded PowerShell and are RECORDED, not counted — ` +
-    `one of them is snake_case in a field named \`code\`.`,
+  `[check-code-vocabulary] OK — ${ceiling.length} distinct codes can reach a caller's flat \`code\`, ` +
+    `drawn from overlapping producers (the parts below share ${arms.literals.length + dictionaryOnly.length + failCode.codes.length + 1 + reachableHandBuilt.filter((h) => h.code !== null).length - ceiling.length} members, so they do not add up to it): ` +
+    `${arms.literals.length} written as literals in the classifier (residual "${arms.residual}"), ` +
+    `${dictionaryOnly.length} dictionary keys no arm writes and no call site names — reachable only when a ` +
+    `producer spells the code into its own message, ${failCode.codes.length} named at ${failCode.sites.length} ` +
+    `failCode call sites, one fixed by failArgs ("${failArgsCode}"), and ` +
+    `${reachableHandBuilt.filter((h) => h.code !== null).length} hand-built rather than rendered by the presenter ` +
+    `(${handBuilt.filter((h) => h.code === null).length} more build the shape with a COMPUTED code, pinned but ` +
+    `contributing no value). ${adviceLess.length} are in no SUGGESTS entry and reach the caller with whatever the ` +
+    `call site passed.\n\n` +
+    `  The MESSAGE road is bounded: the ${arms.dictionaryArms.length} classifier arms that read a code out of a ` +
+    `message require \`Object.hasOwn(SUGGESTS, …)\`, un-negated and not behind an \`||\`, so no message can ` +
+    `invent a code. ` +
+    (bounded
+      ? "No call site forwards a value this extraction cannot enumerate, so the number above is a CEILING."
+      : `${failCode.unreadable.length} call site${failCode.unreadable.length === 1 ? "" : "s"} forward${failCode.unreadable.length === 1 ? "s" : ""} a computed value ` +
+        `(${failCode.unreadable.join("; ")}), so the number above is a LOWER BOUND, not a total: those codes ` +
+        `reach a caller without passing any producer this file can read.`) +
+    `\n\n  ${envelopeWithinFlatCeiling.length} of the ${envelopeNames.length} names on the envelope surface fall inside ` +
+    `this set; ${envelopeOutsideFlatCeiling.length} fall outside it, so for those the flat surface cannot say the word ` +
+    `the envelope says. Which of the ${dictionaryOnly.length} are actually spelled by a producer's message is not ` +
+    `answered here. ${embedded.length} further codes are spelled inside embedded PowerShell and are RECORDED, not ` +
+    `counted — one of them is snake_case in a field named \`code\`.`,
 );

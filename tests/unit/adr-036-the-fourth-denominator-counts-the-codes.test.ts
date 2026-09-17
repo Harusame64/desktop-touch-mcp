@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   fieldAtDepthOne,
   isTypeLiteral,
+  keysAtDepthOne,
   readClassifyArms,
   readEmbeddedScriptCodes,
   readFailArgsCode,
@@ -29,6 +30,22 @@ import {
 import { stripComments } from "../../scripts/lib/route-vocabulary.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
+
+/** Every `.ts` file under `src`, as the checks read them. */
+function srcSources(): { file: string; text: string }[] {
+  const out: { file: string; text: string }[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
+        out.push({ file: full.slice(REPO.length).replace(/\\/g, "/"), text: readFileSync(full, "utf8") });
+      }
+    }
+  };
+  walk(join(REPO, "src"));
+  return out;
+}
 
 describe("the comment stripper the four extractions share", () => {
   it("does not read a `//` that is inside a string", () => {
@@ -144,10 +161,10 @@ return fail("KeyLockerNoSuchBinding", "KeyLockerNoSuchBinding: none");
     expect(codes).toEqual(["KeyLockerDisabled", "KeyLockerNoSuchBinding"]);
   });
 
-  it("reports a code it cannot read instead of counting one less", () => {
-    const problems: string[] = [];
-    read(`failCode(codeFromSomewhere, m);`, problems);
-    expect(problems.join("")).toMatch(/cannot read/);
+  it("records a code it cannot read instead of counting one less", () => {
+    // Round 2 moved this from `problems` to a pinned list: the parser is not broken, the tree has a
+    // producer whose values cannot be enumerated, and the summary says "lower bound" because of it.
+    expect(read(`failCode(codeFromSomewhere, m);`).unreadable.join("")).toMatch(/codeFromSomewhere/);
   });
 
   it("does not read the declaration as a call site", () => {
@@ -311,10 +328,14 @@ failCode(code, m);
     expect(codes).toEqual(["BrowserSearchNoResults", "BrowserSearchTimeout", "ScopeNotFound", "ToolError"]);
   });
 
-  it("2c. reports a binding it cannot read rather than borrowing another site's", () => {
-    const problems: string[] = [];
-    readFailCodeSites([{ file: "f.ts", text: `const code = a ? "A" : somethingElse;\nfailCode(code, m);` }], problems);
-    expect(problems.join("")).toMatch(/cannot read/);
+  it("2c. records a binding it cannot read rather than borrowing another site's", () => {
+    // Round 2 moved this out of `problems`: a call site that forwards a computed value is a producer
+    // whose values cannot be enumerated, not a broken parser. It is pinned, and the summary stops
+    // calling the count a ceiling while the list is non-empty.
+    const { unreadable } = readFailCodeSites([
+      { file: "f.ts", text: `const code = a ? "A" : somethingElse;\nfailCode(code, m);` },
+    ]);
+    expect(unreadable.join("")).toMatch(/somethingElse/);
   });
 
   it("3. resolves the dictionary guard against the enclosing `if`, in both directions", () => {
@@ -398,6 +419,117 @@ failCode(code, m);
       },
     ]);
     expect(found).toEqual([]);
+  });
+});
+
+describe("what gate 2's second pass found, kept as cells", () => {
+  it("1. records a wrapper call that forwards a computed value instead of dropping it", () => {
+    // **The live one**: `key-locker-tool.ts:172` is `fail(code, …)` inside `keyLockerFailure`, where
+    // `code = String(err.code)` — an arbitrary runtime string from a thrown object, forwarded onto
+    // the caller's flat `code`. The wrapper loop skipped any non-literal argument silently, so
+    // `LockerNotBound` and `SshFingerprintSetRequired` reached callers while the summary called the
+    // count a CEILING and exited 0.
+    const { unreadable, codes } = readFailCodeSites([
+      {
+        file: "k.ts",
+        text: `
+function fail(code: string, message: string): ToolResult {
+  return failCode(code, message, { suggest: getSuggestsForCode(code) });
+}
+function present(err: unknown): ToolResult {
+  const code = String((err as { code: unknown }).code);
+  return fail(code, "m");
+}
+return fail("KeyLockerDisabled", "KeyLockerDisabled: not active");
+`,
+      },
+    ]);
+    expect(codes).toEqual(["KeyLockerDisabled"]);
+    expect(unreadable.join("")).toMatch(/fail\(code\)/);
+  });
+
+  it("1b. the real tree still has exactly that one unenumerable call site", () => {
+    const sources = srcSources();
+    const { unreadable } = readFailCodeSites(sources);
+    expect(unreadable).toEqual(["src/tools/key-locker-tool.ts:172: fail(code)"]);
+  });
+
+  it("2. reads the dictionary guard's POLARITY, not its presence", () => {
+    // A substring test cannot tell a check from its negation. `!Object.hasOwn(SUGGESTS, declared)`
+    // makes a producer's message able to name ANY code — the exact unbounding this axis exists to
+    // catch — and left the gate green, still printing "both check the dictionary first".
+    const arm = (cond: string) =>
+      readClassifyArms(
+        `function classify(m) { const d = "x"; if (${cond}) { return { code: d, suggest: [] }; } return { code: "ToolError" }; }`,
+      ).dictionaryArms.map((a: { guarded: boolean }) => a.guarded);
+    expect(arm("d && Object.hasOwn(SUGGESTS, d)")).toEqual([true]);
+    expect(arm("d && !Object.hasOwn(SUGGESTS, d)")).toEqual([false]);
+    expect(arm("Object.hasOwn(SUGGESTS, d) || override")).toEqual([false]);
+    expect(arm("d")).toEqual([false]);
+  });
+
+  it("4. attributes a producer to the declaration that encloses it, function or arrow", () => {
+    // Taking the last `function` keyword above the literal attributed an arrow-const producer to an
+    // unrelated neighbour, and the reachability question was then answered about that neighbour —
+    // a false "no caller outside its file" that also dropped the code from the count.
+    const found = readHandBuiltFlatFailures([
+      {
+        file: "a.ts",
+        text: `function localHelper() { return 1; }\nexport const makeFailure = () => ({ ok: false, code: "ProbeRogueCode", error: "e" });`,
+      },
+    ]);
+    expect(found[0].fn).toBe("makeFailure");
+    expect(found[0].exported).toBe(true);
+  });
+
+  it("4b. does not mistake a local variable for the enclosing declaration", () => {
+    // `const failure: ToolFailure = { … }` is a local. Reading it as the enclosing form answers the
+    // reachability question about a variable — which is how `failArgs` came back as `failure`.
+    const found = readHandBuiltFlatFailures([
+      {
+        file: "a.ts",
+        text: `export function failArgs(m: string) {\n  const failure = { ok: false, code: "InvalidArgs", error: m };\n  return fail(failure);\n}`,
+      },
+    ]);
+    expect(found[0].fn).toBe("failArgs");
+  });
+
+  it("5. does not call a JSON-shaped TypeScript literal an embedded-script code", () => {
+    // The mirror image of the prose defect: the hand-built sweep reads quoted keys now, so the same
+    // site would be recorded twice, each set calling it something different.
+    expect(readEmbeddedScriptCodes([{ file: "a.ts", text: `export const r = { "ok": false, "code": "NotAScript" };` }])).toEqual(
+      [],
+    );
+  });
+
+  it("5b. resolves an interpolated constant that is not exported", () => {
+    const codes = readEmbeddedScriptCodes([
+      { file: "a.ts", text: `const GONE = "aim_window_gone";\nconst ps = \`Write-Output '{"ok":false,"code":"\${GONE}"}'\`;` },
+    ]);
+    expect(codes.map((c: { code: string }) => c.code)).toEqual(["aim_window_gone"]);
+  });
+
+  it("5c. does not read a quoted VALUE sitting in key position as a property", () => {
+    // Found by the mutation round, not by the review: `{ "ok": false, "note": "code", "error": "e" }`
+    // put the string `"code"` where a key would be, and the walker read it as a shorthand property
+    // named `code` — a negative control that went red. Shorthand is a bare identifier by grammar, so
+    // only the unquoted form may omit its colon, and a value is skipped rather than scanned through.
+    expect(
+      readHandBuiltFlatFailures([{ file: "a.ts", text: `export const example = { "ok": false, "note": "code", "error": "e" };` }]),
+    ).toEqual([]);
+    expect(keysAtDepthOne(`{ ok: false, code: "X", error: "e" }`)).toEqual(["ok", "code", "error"]);
+  });
+
+  it("3. states the overlap rather than printing parts that do not add up", () => {
+    // The headline read as a decomposition and its five parts summed to 117 where the same sentence
+    // said 106 — nine failCode codes are also classifier literals, and two codes are counted in two
+    // producer sets each.
+    const out = execFileSync(process.execPath, [join(REPO, "scripts", "check-code-vocabulary.mjs")], {
+      encoding: "utf8",
+    });
+    expect(out).toMatch(/the parts below share \d+ members, so they do not add up to it/);
+    expect(out).toMatch(/LOWER BOUND, not a total/);
+    expect(out).not.toMatch(/at most \d+ codes/);
   });
 });
 
