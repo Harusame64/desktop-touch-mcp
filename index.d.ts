@@ -305,6 +305,9 @@ export interface NativePreprocessOptions {
   height: number
   channels: number
   scale: number
+  /** When true, apply Sauvola adaptive binarization after contrast stretch (output: 0/255 only).
+   * Omitted by napi-rs when the Rust `Option` is `None`, so it is optional here too. */
+  adaptive?: boolean
 }
 
 export interface NativeImageProcessingResult {
@@ -655,7 +658,10 @@ export declare function l1ShutdownForTest(): void
 
 export interface NativeFocusedElement {
   name: string
-  automationId: string | null
+  /** **Omitted** by napi-rs (NOT set to `null`) when the element has no automation id —
+   * the same `Option::None` omission semantic as `NativeFocusedElementWithWallclock.focused`.
+   * Use `el.automationId != null`, which covers the omission and a future explicit `null`. */
+  automationId?: string | null
   /** Human-readable UIA control type name (e.g. "Button", "Pane", "Edit"). */
   controlType: string
   windowTitle: string

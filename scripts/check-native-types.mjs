@@ -5,12 +5,22 @@
 // new `#[napi]` without updating index.d.ts gets no compile error — TS
 // imports from `../../index.js` opaquely. This guard plugs that gap.
 //
-// Scope today: scan source for `#[napi] pub fn <name>` and confirm a
-// corresponding `export declare function <name>` exists in index.d.ts.
+// Scope: (1) scan source for `#[napi] pub fn <name>` and confirm a
+// corresponding `export declare function <name>` exists in index.d.ts;
+// (2) index.d.ts ⇄ index.js parity for those names; (3) `#[napi(object)]`
+// struct FIELDS against index.d.ts and src/engine/native-types.ts — names
+// and optionality, never types. A `bigint` declared as `number` passes.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  parseNapiFunctions,
+  parseNapiObjectStructs,
+  parseTsFunctionParams,
+  parseTsInterfaces,
+} from "./lib/napi-shapes.mjs";
 
 // `fileURLToPath` decodes percent-encoded URL segments (paths with spaces or
 // non-ASCII characters) and normalises Windows drive prefixes — both of
@@ -46,52 +56,19 @@ function rsFiles(dir) {
   return out;
 }
 
-/** snake_case → camelCase (matches napi-rs default rename). */
-function snakeToCamel(s) {
-  return s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
-}
-
 const rustExports = new Set();
+const debugOnlyExports = new Set();
+const rustFunctions = new Map();
+const scanProblems = [];
 
 for (const file of rsFiles(SRC_DIR)) {
-  const src = readFileSync(file, "utf8");
-  const lines = src.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (!/^\s*#\[napi\]\s*$/.test(lines[i])) continue;
-
-    // Walk backward over preceding attrs/comments to detect a `#[cfg(...)]`
-    // gate (e.g. `#[cfg(feature = "vision-gpu")]`). Feature-gated exports
-    // are intentionally absent from the always-on index.d.ts surface; they
-    // are checked at runtime via NativeVision / NativeWin32 interface
-    // probes in src/engine/native-engine.ts.
-    let isFeatureGated = false;
-    for (let k = i - 1; k >= 0; k--) {
-      const t = lines[k].trim();
-      if (t === "" || t.startsWith("//")) continue;
-      if (t.startsWith("#[cfg(")) {
-        isFeatureGated = true;
-        break;
-      }
-      if (t.startsWith("#[")) continue; // unrelated attribute, keep scanning
-      break;
-    }
-    if (isFeatureGated) continue;
-
-    // Skip the rest of the attribute/comment block to reach the fn line.
-    // Blank lines must be skipped too — without that, a blank between
-    // `#[napi]` and `pub fn` would zero out `sig` and the export would
-    // be missed from `rustExports`, weakening the drift check (Codex
-    // review on PR #74).
-    let j = i + 1;
-    while (j < lines.length && /^(\s*$|\s*(#\[|\/\/))/.test(lines[j])) j++;
-    const sig = lines[j] ?? "";
-
-    // Free functions only — struct methods (`pub fn xxx(&self, ...)` or
-    // `&mut self`) are exposed as napi class methods, not free exports.
-    if (/\bpub\s+fn\s+\w+\s*\(\s*&(?:mut\s+)?self\b/.test(sig)) continue;
-
-    const m = sig.match(/\bpub\s+fn\s+(\w+)/);
-    if (m) rustExports.add(snakeToCamel(m[1]));
+  const rel = file.slice(ROOT.length).split(sep).join("/");
+  const { functions, problems } = parseNapiFunctions(readFileSync(file, "utf8"), rel);
+  scanProblems.push(...problems);
+  for (const [name, def] of functions) {
+    rustExports.add(name);
+    if (def.debugOnly) debugOnlyExports.add(name);
+    rustFunctions.set(name, def);
   }
 }
 
@@ -100,7 +77,19 @@ const dtsExports = new Set(
   Array.from(dts.matchAll(/^export declare function (\w+)\s*\(/gm), (m) => m[1]),
 );
 
-const missing = [...rustExports].filter((n) => !dtsExports.has(n));
+// Deliberately off the published surface. `native-engine.ts` reaches these through the raw napi
+// binding (the default export) rather than the named re-exports, so they are callable from TS
+// without `index.d.ts` describing them — which is the point: a debug-only panic trigger has no
+// business in the typings a consumer reads.
+const EXPORT_EXEMPT = new Set(["l1TestForcePanic"]);
+
+// **The exemption is spent only where its reason holds.** Delete the `#[cfg(debug_assertions)]`
+// above `l1_test_force_panic` and it compiles into release builds — at which point it is an
+// ordinary undeclared export and this check says so, instead of staying quiet on the strength of a
+// sentence about a gate it never read (gate 2, second pass).
+const exempt = (n) => EXPORT_EXEMPT.has(n) && debugOnlyExports.has(n);
+
+const missing = [...rustExports].filter((n) => !dtsExports.has(n) && !exempt(n));
 const stale = [...dtsExports].filter((n) => !rustExports.has(n));
 
 let failed = false;
@@ -190,6 +179,8 @@ for (const [file, scan] of [["index.d.ts", dtsScan], ["index.js", jsScan]]) {
 }
 
 const dtsDeclared = dtsScan.names;
+const dtsFunctionCount = [...dts.matchAll(/^export declare function /gm)].length;
+const dtsClassCount = [...dts.matchAll(/^export declare class /gm)].length;
 const jsExported = jsScan.names;
 const staleSet = new Set(stale);
 
@@ -216,13 +207,275 @@ if (notInDts.length > 0) {
   console.error("\n  TS consumers get an untyped export. Add the declaration to index.d.ts.");
 }
 
+// ── `#[napi(object)]` struct shapes ⇄ the two TS declarations ───────────────
+//
+// Everything above compares FUNCTIONS. The shapes those functions return are mirrored by hand in
+// two more places — `index.d.ts` (published with the release artifact) and
+// `src/engine/native-types.ts` (the internal source of truth) — and until this section nothing
+// compared a single FIELD. #667 paid for that gap directly: `src/uia/types.rs` gained
+// `native_window_handle_read`, `native-types.ts` followed, `index.d.ts` did not, and every check
+// was green.
+//
+// **What is compared: field NAMES and OPTIONALITY. Not types.** A `bigint` declared as `number`
+// passes here, and the OK line says so rather than claiming the shapes "agree" (gate 2 on #668:
+// the word asserted more than the code checks).
+//
+// **Optionality is checked in ONE direction, and the asymmetry is the point.** napi OMITS the key
+// for `Option::None` (index.d.ts documents this on `NativeFocusedElementWithWallclock.focused`),
+// so a Rust `Option<T>` declared non-optional in TS promises a key that can be absent. The reverse
+// — required in Rust, `?` in TS — is DELIBERATE: it is how an addon built before a field expresses
+// that it does not send it (#667, and measured on 2026-09-17: the v1.16.0 addon carries no such
+// key at all). Flattening the two would rebuild, in this guard, the collapse that PR removed from
+// the product.
+//
+// **Known limit, carried in `internal#119`**: a field kept in TS as `field?:` for older addons
+// AFTER its Rust counterpart is removed fails the reverse check below. Nothing in the tree is in
+// that state today; when one is, it needs a reason written next to it, not a looser rule.
+//
+// The parsing lives in `lib/napi-shapes.mjs` so it can be fed spellings this repo does not contain
+// yet, and everything it cannot read arrives here as a problem rather than as a smaller count.
+// Shapes `native-types.ts` deliberately does not mirror, with the place they live instead.
+const NATIVE_TYPES_ABSENT = new Set([
+  // Declared in `src/engine/native-engine.ts`, next to the only function that returns it.
+  "NativeUiaEvidence",
+]);
+
+const STRUCT_EXEMPT = new Set([
+  // Empty today. An entry here needs a reason: a struct that no TS consumer ever receives, not a
+  // struct someone did not get round to declaring.
+]);
+
+const shapeProblems = [];
+const rustStructs = new Map();
+for (const file of rsFiles(SRC_DIR)) {
+  // **`/` on both machines.** win2 reads these lines on Windows, where `sep` is `\\`, and a
+  // finding line that cannot be compared byte for byte between the two records is a record that
+  // cannot be diffed (win2, 2026-09-17).
+  const rel = file.slice(ROOT.length).split(sep).join("/");
+  const { structs, problems } = parseNapiObjectStructs(readFileSync(file, "utf8"), rel);
+  shapeProblems.push(...problems);
+  for (const [name, def] of structs) {
+    const clash = rustStructs.get(name);
+    if (clash) {
+      shapeProblems.push(`${def.at}: \`${name}\` is also declared at ${clash.at} — two structs cannot share one JS name`);
+      continue;
+    }
+    rustStructs.set(name, def);
+  }
+}
+
+const TS_SHAPE_FILES = [["index.d.ts", dts]];
+try {
+  TS_SHAPE_FILES.push([
+    "src/engine/native-types.ts",
+    readFileSync(join(SRC_DIR, "engine", "native-types.ts"), "utf8"),
+  ]);
+} catch (e) {
+  // Its own diagnostic, not a node traceback out of the top level: this runs in CI
+  // (`.github/workflows/ci.yml`), where a stack trace reads as a broken runner rather than as a
+  // moved file.
+  shapeProblems.push(`src/engine/native-types.ts could not be read: ${e.message}`);
+}
+
+const tsParams = parseTsFunctionParams(dts);
+const tsFunctionParams = tsParams.params;
+shapeProblems.push(...tsParams.problems.map((p) => `index.d.ts: ${p}`));
+const argumentOnly = new Set();
+const nativeTypesExempt = new Set();
+let comparedFields = 0;
+const pairedPerFile = new Map();
+for (const [label, source] of TS_SHAPE_FILES) {
+  const { interfaces, problems } = parseTsInterfaces(source);
+  shapeProblems.push(...problems.map((p) => `${label}: ${p}`));
+  let paired = 0;
+  for (const [name, { fields, at, rustName }] of rustStructs) {
+    if (STRUCT_EXEMPT.has(name)) continue;
+    // A `js_name` makes the JS name and the Rust name differ; findings say both, because the
+    // reader greps for one and the compiler knows the other.
+    const shown = rustName && rustName !== name ? `${name} (Rust \`${rustName}\`)` : name;
+    const tried = [name, `Native${name}`, name.replace(/^Native/, "")].filter(
+      (c, i, all) => all.indexOf(c) === i,
+    );
+    // **Exactly one, not the first.** Adding a decoy declaration used to retire a real comparison
+    // in silence: `tried` is [name, Native+name, name-without-Native], and an unused
+    // `export interface BoundingRect` shadowed the `NativeBoundingRect` the addon actually returns
+    // (gate 2, fourth pass).
+    const matches = tried.filter((c) => interfaces.has(c));
+    // **An exact-name match is the truth, not a conflict.** A struct already called `Native…`
+    // generates `NativeNative…` and the bare name as candidates, so an unrelated interface with the
+    // bare name turned an unambiguous pairing into a reported conflict (gate 2, verification round).
+    if (matches.length > 1 && matches[0] === name) {
+      matches.length = 1;
+    }
+    if (matches.length > 1) {
+      shapeProblems.push(
+        `${label}: \`${name}\` (${at}) matches ${matches.length} declarations — ${matches.join(", ")}; one struct may pair with one`,
+      );
+      continue;
+    }
+    const alias = matches[0];
+    if (alias === undefined) {
+      // The two files have different duties. `index.d.ts` is the addon's published surface: a
+      // struct a caller can receive and cannot name is the #667 defect, so an unpaired struct
+      // fails there. `native-types.ts` is a curated internal mirror — `NativeUiaEvidence` lives in
+      // `native-engine.ts` instead — so it is checked for AGREEMENT where it declares a shape.
+      // **An argument shape has no named interface, by design: it is written INLINE on the
+      // function that takes it** (`uiaClickElement(opts: { windowTitle: string; … })`). Compare it
+      // through that function rather than exempting it — 13 structs arrived here the moment the
+      // recogniser learned `#[napi_derive::napi(object)]`, and every one of them is a shape a
+      // caller must get right that nothing checked (gate 2, third pass).
+      // **Every function that takes it, not the first one found.** A struct used by two exports had
+      // one callsite compared and the other unchecked, with `comparedFields` not moving at all
+      // (gate 2, fourth pass).
+      const takenBy = [...rustFunctions].filter(([, def]) => def.paramType === name);
+      if (takenBy.length > 0 && label === "index.d.ts") {
+        for (const [fn] of takenBy) {
+          const inline = tsFunctionParams.get(fn);
+          if (!inline) {
+            shapeProblems.push(`${label}: \`${fn}\` does not declare its parameter inline, and \`${name}\` has no interface (${at})`);
+            continue;
+          }
+          for (const [field, def] of fields) {
+            comparedFields++;
+            if (!inline.has(field)) {
+              shapeProblems.push(`${label}: \`${fn}(opts)\` is missing \`${field}\`, which \`${name}\` declares at ${def.at}`);
+              continue;
+            }
+            if (def.optional && inline.get(field).optional === false) {
+              shapeProblems.push(
+                `${label}: \`${fn}(opts).${field}\` (${inline.get(field).at}) is declared required, but Rust has it as \`Option<..>\` ` +
+                  `and napi omits the key for \`None\` — declare it \`${field}?:\``,
+              );
+            }
+          }
+          for (const field of inline.keys()) {
+            if (!fields.has(field)) {
+              shapeProblems.push(`${label}: \`${fn}(opts).${field}\` is declared, but \`${name}\` has no such field (${at})`);
+            }
+          }
+        }
+        paired++;
+        continue;
+      }
+      // **Argument-only shapes are not expected in `native-types.ts`** — nothing in TS holds one,
+      // it is written at the call. **But a shape that is also RETURNED belongs there**, and
+      // skipping on "some function takes it" hid a returned struct's whole comparison behind a
+      // number (gate 2, fourth pass). The test is read from the tree on both sides: taken by a
+      // function AND returned by none.
+      const returnedBySome = [...rustFunctions].some(([, def]) => def.returns?.includes(name));
+      if (takenBy.length > 0 && !returnedBySome) {
+        argumentOnly.add(name);
+        continue;
+      }
+      // `index.d.ts` is the addon's published surface: a struct a caller can receive and cannot
+      // name is the #667 defect. `native-types.ts` is a curated internal mirror — but "curated"
+      // was indistinguishable from "misspelled": renaming an interface there removed a struct from
+      // that half of the comparison and the only trace was a number in the OK line (gate 2, second
+      // pass). Absences there are now a list with a reason.
+      if (label === "index.d.ts" || !NATIVE_TYPES_ABSENT.has(name)) {
+        shapeProblems.push(`${label}: no interface for \`${shown}\` (${at}) — tried ${tried.join(", ")}`);
+      } else {
+        // **Named in the OK line, not left to a number.** 67 − 53 = 14 while the sentence named 13,
+        // and the fourteenth appeared nowhere (gate 2, wiring round).
+        nativeTypesExempt.add(name);
+      }
+      continue;
+    }
+    paired++;
+    const declared = interfaces.get(alias);
+    for (const [field, def] of fields) {
+      comparedFields++;
+      if (!declared.has(field)) {
+        // **The field's own line, not the struct's.** win2 read a finding on Windows and found it
+        // anchored 25 lines above the field it was about (2026-09-17).
+        shapeProblems.push(`${label}: \`${alias}\` is missing \`${field}\`, which \`${name}\` sends at ${def.at}`);
+        continue;
+      }
+      if (def.optional && declared.get(field).optional === false) {
+        shapeProblems.push(
+          `${label}: \`${alias}.${field}\` (${declared.get(field).at}) is declared required, but Rust has it as ` +
+            `\`Option<..>\` at ${def.at} and napi omits the key for \`None\` — declare it \`${field}?:\``,
+        );
+      }
+    }
+    for (const field of declared.keys()) {
+      if (!fields.has(field)) {
+        shapeProblems.push(`${label}: \`${alias}.${field}\` is declared, but \`${name}\` has no such field (${at})`);
+      }
+    }
+  }
+  pairedPerFile.set(label, paired);
+}
+
+// **The reports the scans produce are read here.** They were collected into `scanProblems` and
+// never printed — so "reports any item it cannot read" reached the unit test and nothing else, and
+// an undeclared export whose head the parser could not read still printed OK (gate 2, verification
+// round). A guard that gathers reasons and drops them is the shape this whole file is about.
+// Both scans call the attribute scanner, so an attribute-level problem arrives twice — and the
+// second copy printed under "napi struct shapes disagree with the TS declarations", a heading that
+// is false for "an attribute never closes" (gate 2, wiring round).
+const seenProblem = new Set();
+const dedupe = (list) => list.filter((p) => (seenProblem.has(p) ? false : (seenProblem.add(p), true)));
+scanProblems.splice(0, scanProblems.length, ...dedupe(scanProblems));
+shapeProblems.splice(0, shapeProblems.length, ...dedupe(shapeProblems));
+
+if (scanProblems.length > 0) {
+  failed = true;
+  console.error("\n[check-native-types] FAIL — the Rust scan could not read something:\n");
+  for (const p of scanProblems) console.error(`  - ${p}`);
+}
+
+if (shapeProblems.length > 0) {
+  failed = true;
+  console.error("\n[check-native-types] FAIL — napi struct shapes disagree with the TS declarations:\n");
+  for (const p of shapeProblems) console.error(`  - ${p}`);
+}
+
 if (failed) {
-  console.error("\nAdd the missing `export declare function <name>(...)` lines to index.d.ts.");
+  // Only when a NAME is missing. A shape problem is already told how to fix itself,
+  // and a closing line that advises adding a function declaration for a field that is
+  // one character short of correct sends the reader to the wrong file.
+  if (missing.length > 0 || notInJs.length > 0 || notInDts.length > 0) {
+    console.error("\nAdd the missing `export declare function <name>(...)` lines to index.d.ts.");
+  }
   console.error("Source of truth for shared types: src/engine/native-types.ts.\n");
   process.exit(1);
 }
 
+const exemptSpent = [...rustExports].filter((n) => exempt(n) && !dtsExports.has(n));
+const coveredDeclarations = dtsDeclared.size - staleSet.size;
+if (dtsFunctionCount + dtsClassCount !== dtsDeclared.size) {
+  // The decomposition is counted from a different set than the total it decomposes — function
+  // LINES against declared NAMES — so a TS overload pair would diverge them while the sentence
+  // stayed the same (gate 2, wiring round).
+  shapeProblems.push(
+    `index.d.ts: ${dtsFunctionCount} function lines + ${dtsClassCount} class lines do not add up to ${dtsDeclared.size} declared names`,
+  );
+  failed = true;
+  console.error(`\n[check-native-types] FAIL — ${shapeProblems[shapeProblems.length - 1]}\n`);
+  process.exit(1);
+}
+
 console.log(
-  `[check-native-types] OK — ${rustExports.size} Rust exports all declared in index.d.ts, ` +
-    `and all ${dtsDeclared.size} declarations are exported from index.js.`,
+  // **Every number here is one a check actually covered**, which three of them were not: "all N
+  // declarations are exported" counted the stale names `notInJs` deliberately skips; "(1 exempt by
+  // name)" subtracted the exemption whether or not it was spent; and the shapes exempted from the
+  // `native-types.ts` half vanished into "paired 53" with nothing naming them (gate 2, wiring
+  // round).
+  `[check-native-types] OK — ${rustExports.size} Rust exports, ${rustExports.size - exemptSpent.length} of them declared in index.d.ts` +
+    (exemptSpent.length > 0 ? ` (${exemptSpent.join(", ")} exempt by name)` : "") +
+    `, and ${coveredDeclarations} of ${dtsDeclared.size} index.d.ts declarations (${dtsFunctionCount} functions + ${dtsClassCount} class) are exported from index.js` +
+    (staleSet.size > 0
+      ? `; ${staleSet.size} not checked in that direction because no Rust export matches them (${[...staleSet].sort().join(", ")})`
+      : "") +
+    `. ${rustStructs.size} napi object structs, paired ` +
+    [...pairedPerFile].map(([f, n]) => `${n} against ${f}`).join(" and ") +
+    `, agree on field NAMES and OPTIONALITY (not types) across ${comparedFields} comparisons` +
+    (argumentOnly.size > 0
+      ? `; ${argumentOnly.size} argument-only shapes are compared at their callsites and not mirrored in native-types.ts (${[...argumentOnly].sort().join(", ")})`
+      : "") +
+    (nativeTypesExempt.size > 0
+      ? `; ${nativeTypesExempt.size} declared elsewhere and not mirrored there either (${[...nativeTypesExempt].sort().join(", ")})`
+      : "") +
+    `.`,
 );
