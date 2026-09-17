@@ -3,17 +3,23 @@ name: CI
 on:
   push:
     branches: [main]
+    # **`README.md` and `README.ja.md` are NOT ignored.** Three of the ADR-036 configuration
+    # guard's invariants read them — a switch documented but unread, a switch removed without a
+    # tombstone, and the documented/tombstoned pin itself — so a README-only PR is exactly the
+    # change that can break them. Ignoring the files meant the gate went red on whatever unrelated
+    # PR merged next, which is where a red gate gets blamed on the wrong change.
     paths-ignore:
       - 'site/**'
-      - 'README.md'
-      - 'README.ja.md'
       - '.github/workflows/pages.yml'
   pull_request:
     branches: [main]
+    # **`README.md` and `README.ja.md` are NOT ignored.** Three of the ADR-036 configuration
+    # guard's invariants read them — a switch documented but unread, a switch removed without a
+    # tombstone, and the documented/tombstoned pin itself — so a README-only PR is exactly the
+    # change that can break them. Ignoring the files meant the gate went red on whatever unrelated
+    # PR merged next, which is where a red gate gets blamed on the wrong change.
     paths-ignore:
       - 'site/**'
-      - 'README.md'
-      - 'README.ja.md'
       - '.github/workflows/pages.yml'
 
 jobs:

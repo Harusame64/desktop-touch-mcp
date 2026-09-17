@@ -216,19 +216,65 @@
     "DESKTOP_TOUCH_WATERMARK_SHIFT_MS": [
       "crates:rs"
     ],
+    "DTM_ASKPASS_TICKET": [
+      "tools:cs"
+    ],
     "DTM_BG_AUTO": [
       "src:ts"
     ],
     "DTM_GIT_USERNAME": [
-      "src:ts"
+      "tools:cs"
     ],
     "DTM_LEASH_CHUNK_SIZE": [
       "src:ts"
     ],
+    "DTM_LOCKER_PIPE": [
+      "tools:cs"
+    ],
     "DTM_SET_VALUE_CHAIN": [
+      "src:ts"
+    ],
+    "GH_TOKEN": [
+      "bin:ts"
+    ],
+    "GITHUB_TOKEN": [
+      "bin:ts"
+    ]
+  },
+  "written": {
+    "DESKTOP_TOUCH_STAGE2A_RING": [
+      "benches:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE2B_GATE": [
+      "benches:ts"
+    ],
+    "DTM_GIT_USERNAME": [
       "src:ts"
     ]
   },
+  "platform": [
+    "BASE_REF",
+    "CARGO_CFG_TARGET_ENV",
+    "CARGO_CFG_TARGET_OS",
+    "CARGO_MANIFEST_DIR",
+    "CUDA_PATH",
+    "HEAD_REF",
+    "HOME",
+    "LOCALAPPDATA",
+    "MIGRATION_FIXTURE_SEED",
+    "NODE_ENV",
+    "ORT_DYLIB_PATH",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "ProgramFiles",
+    "ROCM_PATH",
+    "SSH_ASKPASS",
+    "SSH_ASKPASS_REQUIRE",
+    "SystemRoot",
+    "TENSORRT_PATH",
+    "USERPROFILE",
+    "WINDIR"
+  ],
   "roles": {
     "DESKTOP_TOUCH_AIM_PROBE": "instrument",
     "DESKTOP_TOUCH_AIM_PROBE_PATH": "instrument",
@@ -268,10 +314,10 @@
     "DESKTOP_TOUCH_KEY_LOCKER_DOGFOOD": "unclassified",
     "DESKTOP_TOUCH_MAX_BATCH_SIZE": "native",
     "DESKTOP_TOUCH_MAX_STEPS_PER_CMD": "native",
-    "DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED": "unclassified",
-    "DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS": "unclassified",
+    "DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED": "premise",
+    "DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS": "tuning",
     "DESKTOP_TOUCH_MCP_HOME": "unclassified",
-    "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK": "unclassified",
+    "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK": "premise",
     "DESKTOP_TOUCH_MEMORY_PERSIST": "unclassified",
     "DESKTOP_TOUCH_MEMORY_REDACT_TITLES": "unclassified",
     "DESKTOP_TOUCH_MOUSE_SPEED": "unclassified",
@@ -305,8 +351,27 @@
     "DTM_GIT_USERNAME": "unclassified",
     "DTM_LEASH_CHUNK_SIZE": "unclassified",
     "DTM_SET_VALUE_CHAIN": "unclassified",
-    "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2": "removed"
+    "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2": "removed",
+    "DTM_ASKPASS_TICKET": "unclassified",
+    "DTM_LOCKER_PIPE": "unclassified",
+    "GH_TOKEN": "unclassified",
+    "GITHUB_TOKEN": "unclassified",
+    "length": "unclassified",
+    "toLowerCase": "unclassified",
+    "trim": "unclassified",
+    "some": "unclassified"
   },
+  "allowDynamic": [
+    "src/utils/launch.ts:name"
+  ],
+  "unresolvable": [
+    {
+      "site": "src/utils/launch.ts:193",
+      "why": "the key comes from a %VAR% token inside a REG_EXPAND_SZ registry value, so the name is the registry's at run time and no sweep can enumerate it",
+      "found_by": "win2, 2026-09-17, internal dev/config-axis 309c327"
+    }
+  ],
+  "maxUnclassified": 61,
   "documented": [
     "DESKTOP_TOUCH_ALLOWLIST",
     "DESKTOP_TOUCH_AUTO_GUARD",
@@ -317,7 +382,6 @@
     "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2",
     "DESKTOP_TOUCH_DISABLE_KEY_LOCKER",
     "DESKTOP_TOUCH_DOCK_CORNER",
-    "DESKTOP_TOUCH_DOCK_HEIGHT",
     "DESKTOP_TOUCH_DOCK_MARGIN",
     "DESKTOP_TOUCH_DOCK_MONITOR",
     "DESKTOP_TOUCH_DOCK_PIN",
