@@ -113,7 +113,13 @@ for (const name of tombstoned) {
   if (at !== -1) documented.splice(at, 1);
 }
 
-const LEGAL_ROLES = new Set(["axis", "premise", "nested", "instrument", "native", "tuning", "removed", "unclassified"]);
+// **`internal` is not tidiness.** A switch the PRODUCT mints for its own child process is not a
+// dimension a run can be configured with: `injector.ts` writes `DTM_LOCKER_PIPE` and
+// `DTM_ASKPASS_TICKET` fresh per invocation, and `tools/key-askpass/Program.cs` reads them at the
+// other end. win2 measured all three on the machine (2026-09-17, internal `3a38331`) with a fake
+// locker: no pipe name means no connection, the ticket's value arrives inside the request frame,
+// and `DTM_GIT_USERNAME` is read AND loses to a username git supplies itself. Read, and not a slot.
+const LEGAL_ROLES = new Set(["axis", "premise", "nested", "instrument", "internal", "native", "tuning", "removed", "unclassified"]);
 
 if (process.argv.includes("--update")) {
   const roles = { ...pinned.roles };

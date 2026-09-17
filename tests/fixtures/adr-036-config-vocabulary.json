@@ -348,12 +348,12 @@
     "DESKTOP_TOUCH_VISUAL_CROSS_CHECK": "unclassified",
     "DESKTOP_TOUCH_WATERMARK_SHIFT_MS": "native",
     "DTM_BG_AUTO": "unclassified",
-    "DTM_GIT_USERNAME": "unclassified",
+    "DTM_GIT_USERNAME": "internal",
     "DTM_LEASH_CHUNK_SIZE": "unclassified",
     "DTM_SET_VALUE_CHAIN": "unclassified",
     "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2": "removed",
-    "DTM_ASKPASS_TICKET": "unclassified",
-    "DTM_LOCKER_PIPE": "unclassified",
+    "DTM_ASKPASS_TICKET": "internal",
+    "DTM_LOCKER_PIPE": "internal",
     "GH_TOKEN": "unclassified",
     "GITHUB_TOKEN": "unclassified",
     "length": "unclassified",
@@ -371,7 +371,7 @@
       "found_by": "win2, 2026-09-17, internal dev/config-axis 309c327"
     }
   ],
-  "maxUnclassified": 61,
+  "maxUnclassified": 58,
   "documented": [
     "DESKTOP_TOUCH_ALLOWLIST",
     "DESKTOP_TOUCH_AUTO_GUARD",
