@@ -18,35 +18,61 @@
 //    `` `ground_disabled:${KeyboardGround}` ``; reading only quoted literals gives 8 where the
 //    vocabulary is 11.
 
-/** Strip `//` and `/* … *​/` comments, keeping every line's index. */
+/**
+ * Strip `//` and block comments, keeping every line's index — and **without reading inside a
+ * string**.
+ *
+ * The line-at-a-time version this replaces was not string-aware, so a `//` inside a string literal
+ * truncated the line: `"See https://github.com/…"` became `"See https:` and everything after it on
+ * that line was dropped. The cost is not a missing comment — it is an UNBALANCED QUOTE, after which
+ * every brace-matching parser downstream walks into the wrong block and returns less than it should
+ * with `problems` empty. The fourth denominator found it the only way it can be found: the
+ * non-Windows stub's hand-built failure disappeared from a sweep that had listed it minutes before
+ * (2026-09-18).
+ *
+ * A stray quote — one this scanner takes for a string opener when it is an apostrophe in some
+ * construct it does not model — would swallow the rest of the file just as quietly, so a single- or
+ * double-quoted run ends at the newline: TypeScript's do too, and a template literal is the only
+ * one that may cross one.
+ */
 export function stripComments(source) {
-  const out = source.replace(/\r\n/g, "\n").split("\n");
-  let inBlock = false;
-  for (let i = 0; i < out.length; i++) {
-    let line = out[i];
-    if (inBlock) {
-      const end = line.indexOf("*/");
-      if (end === -1) {
-        out[i] = "";
+  const src = source.replace(/\r\n/g, "\n");
+  let out = "";
+  let quote = null;
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (quote !== null) {
+      out += ch;
+      if (ch === "\\") {
+        out += next ?? "";
+        i += 2;
         continue;
       }
-      line = line.slice(end + 2);
-      inBlock = false;
+      if (ch === quote) quote = null;
+      else if (ch === "\n" && quote !== "`") quote = null;
+      i++;
+      continue;
     }
-    for (;;) {
-      const open = line.indexOf("/*");
-      if (open === -1) break;
-      const close = line.indexOf("*/", open + 2);
-      if (close === -1) {
-        line = line.slice(0, open);
-        inBlock = true;
-        break;
+    if (ch === "/" && next === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
+        if (src[i] === "\n") out += "\n";
+        i++;
       }
-      line = line.slice(0, open) + line.slice(close + 2);
+      i += 2;
+      continue;
     }
-    out[i] = line.replace(/\/\/.*$/, "");
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    out += ch;
+    i++;
   }
-  return out.join("\n");
+  return out;
 }
 
 /**
