@@ -163,8 +163,13 @@ describe("the extractor", () => {
     ]);
     readCodedNames([{ file: "a.ts", text: `throw new CodedHandlerError(code);` }], problems);
     expect(problems.join("")).toMatch(/a coded failure takes its name from `code`/);
+    // The exemption names the producing function and the binding must exist — see the cell below.
     const exempt: string[] = [];
-    readCodedNames([{ file: "a.ts", text: `throw new CodedHandlerError(code);` }], exempt, ["a.ts:code"]);
+    readCodedNames(
+      [{ file: "a.ts", text: `const { code } = mapIt(v);\nthrow new CodedHandlerError(code);` }],
+      exempt,
+      [{ file: "a.ts", identifier: "code", from: "mapIt" }],
+    );
     expect(exempt).toEqual([]);
 
     const lease: string[] = [];
@@ -283,6 +288,63 @@ class Dup extends Error { constructor() { super(); this.name = "DupPlainError"; 
     ];
     expect(readEnvelopeErrorNames(both)).toEqual(["DupTyped", "HandlerError"]);
     expect(readEnvelopeErrorNames([...both].reverse())).toEqual(["DupTyped", "HandlerError"]);
+  });
+
+  it("reads a name in either quote spelling, because nothing forces one", () => {
+    // `this.name = 'NewFailure'` was read as neither a literal nor a dynamic value: the class
+    // contributed nothing and raised nothing while the runtime exposed the name (codex, #672).
+    // There is no lint rule in this repository forcing double quotes.
+    expect(
+      readEnvelopeErrorNames([
+        {
+          file: "a.ts",
+          text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class Single extends HandlerError { constructor() { super(); this.name = 'NewFailure'; } }`,
+        },
+      ]),
+    ).toEqual(["HandlerError", "NewFailure"]);
+  });
+
+  it("reports a computed advice key instead of dropping it", () => {
+    // `[HANDLER_ERROR]: ["retry"]` entered the bracket-depth branch and vanished, and the comment
+    // beside the scanner claimed the shape was handled — so adding computed advice for a name that
+    // has none today would change what the caller is told while `withoutAdvice` stayed put and the
+    // gate stayed green (codex, #672). A comment is a claim, not a check.
+    const problems: string[] = [];
+    const keys = readSuggestsKeys(
+      `const SUGGESTS: Record<string, string[]> = {\n  [HANDLER_ERROR]: ["retry"],\n  Ordinary: ["a"],\n};`,
+      problems,
+    );
+    expect(keys).toEqual(["Ordinary"]);
+    expect(problems.join("")).toMatch(/computed key this parser cannot name — the advice coverage is a lower bound/);
+  });
+
+  it("exempts a coded name by the binding it comes from, not by the variable's spelling", () => {
+    // The exemption said "a `code` in `_envelope.ts`", so every future `new CodedHandlerError(code)`
+    // anywhere in that 3500-line file was silently treated as the lease case, whatever value space
+    // it came from (codex, #672). It names the producing function now and the binding must exist —
+    // the same rule the road axis uses for `adr029Refusal`, and the fourth time today that keying
+    // an exemption on a binding rather than a spelling is the answer.
+    const exemption = [{ file: "a.ts", identifier: "code", from: "mapLeaseValidationToTypedReason" }];
+    const bound = `const { code, tryNext } = mapLeaseValidationToTypedReason(v.reason);
+                   throw new CodedHandlerError(code);`;
+    const ok: string[] = [];
+    readCodedNames([{ file: "a.ts", text: bound }], ok, exemption);
+    expect(ok).toEqual([]);
+
+    // A second `code` in the same file, from somewhere else, is NOT exempted.
+    const other: string[] = [];
+    readCodedNames([{ file: "a.ts", text: `${bound}\nthrow new CodedHandlerError(code2);` }], other, exemption);
+    expect(other.join("")).toMatch(/takes its name from `code2`/);
+
+    // And the exemption lifts when the binding stops coming from the named producer.
+    const moved: string[] = [];
+    readCodedNames(
+      [{ file: "a.ts", text: bound.replace("mapLeaseValidationToTypedReason", "someOtherMapper") }],
+      moved,
+      exemption,
+    );
+    expect(moved.join("")).toMatch(/exempted as coming from mapLeaseValidationToTypedReason, but nothing in this file binds it/);
   });
 
   it("does not desync on a regex literal that contains quotes", () => {

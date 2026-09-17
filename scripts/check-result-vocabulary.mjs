@@ -79,7 +79,7 @@ const fallbackCause = readUnexpectedFallback(read("src/tools/_envelope.ts"), pro
 // the thing it stood in for. That counted 82 values nothing produces and missed `handler_error`,
 // `unknown` and the lease codes. Gate 2 on #672 added a fifth lease code and watched the gate print
 // OK. The number went 101 to 26.
-const RESOLVED_CODED = ["src/tools/_envelope.ts:code"];
+const RESOLVED_CODED = [{ file: "src/tools/_envelope.ts", identifier: "code", from: "mapLeaseValidationToTypedReason" }];
 const RESOLVED_DYNAMIC_NAME = ["src/errors/typed-errors.ts:ToolFailureError:code"];
 // **Produced is not the same as reachable, and this extraction only counts producers.**
 // `HandlerError` is constructed twice, both inside `toResultErr` — an exported, documented, tested

@@ -190,6 +190,19 @@ export function readSuggestsKeys(source, problems = []) {
       i++;
       continue;
     }
+    // **A computed key is reported, not dropped.** `[HANDLER_ERROR]: ["retry"]` entered the depth
+    // branch and vanished, and the comment above claimed the shape was handled — so adding computed
+    // advice for a name that has none today would change what the caller is told while
+    // `withoutAdvice` stayed put and the gate stayed green (codex, #672).
+    if (ch === "[" && depth === 0 && atKeyStart) {
+      const computed = body.slice(i).match(/^\[[^\]]*\]\s*:/);
+      if (computed) {
+        problems.push("SUGGESTS has a computed key this parser cannot name — the advice coverage is a lower bound");
+        i += computed[0].length;
+        atKeyStart = false;
+        continue;
+      }
+    }
     if (ch === "{" || ch === "[" || ch === "(") depth++;
     else if (ch === "}" || ch === "]" || ch === ")") depth--;
     else if (ch === ",") atKeyStart = depth === 0;
@@ -241,7 +254,12 @@ export function readEnvelopeErrorNames(sources, problems = [], resolved = []) {
       const key = `${file}:${m[1]}`;
       extendsOf.set(key, m[2]);
       declaredIn.set(m[1], [...(declaredIn.get(m[1]) ?? []), key]);
-      const literal = body.match(/this\.name\s*=\s*"([^"]+)"/);
+      // **Both quote spellings.** The repository has no lint rule forcing double quotes, so
+      // `this.name = 'NewFailure'` is valid and was read as neither a literal NOR a dynamic value:
+      // the class contributed nothing and raised nothing, while the runtime exposed the name
+      // (codex, #672). Enumerating spellings does not end — this one is closed by the alternation
+      // the dynamic branch below already needed.
+      const literal = body.match(/this\.name\s*=\s*["']([^"']+)["']/);
       if (literal) {
         nameOf.set(key, literal[1]);
         continue;
@@ -403,14 +421,28 @@ export function readCodedNames(sources, problems = [], resolved = []) {
     const text = stripComments(raw);
     for (const m of text.matchAll(/new CodedHandlerError\(\s*([^),]*)/g)) {
       const arg = m[1].trim();
-      const literal = arg.match(/^"([A-Za-z_][\w]*)"$/);
+      const literal = arg.match(/^["']([A-Za-z_][\w]*)["']$/);
       if (literal) {
         names.add(literal[1]);
         continue;
       }
-      // A code held in a variable. Its value space is read from the table it comes from, named in
-      // the fixture — the exemption is a written-down list, not a pattern (#670).
-      if (resolved.includes(`${file}:${arg}`)) continue;
+      // **The exemption is keyed on the BINDING, not on the spelling of the variable.** It used to
+      // say "a `code` in `_envelope.ts`", so every future `new CodedHandlerError(code)` anywhere in
+      // that 3500-line file was silently treated as the lease case, whatever value space its `code`
+      // came from (codex, #672). It now names the producing function, and the file must actually
+      // bind that identifier from it — the same rule the road axis uses for `adr029Refusal`, and
+      // the fourth time today that this is the right answer.
+      const exemption = resolved.find((r) => r.file === file && r.identifier === arg);
+      if (exemption) {
+        const bound = new RegExp(
+          `(?:const|let)\\s*\\{[^}]*\\b${arg}\\b[^}]*\\}\\s*=\\s*${exemption.from}\\(|(?:const|let)\\s+${arg}\\s*=\\s*${exemption.from}\\(`,
+        );
+        if (bound.test(text)) continue;
+        problems.push(
+          `${file}: \`${arg}\` is exempted as coming from ${exemption.from}, but nothing in this file binds it from there`,
+        );
+        continue;
+      }
       problems.push(`${file}: a coded failure takes its name from \`${arg}\`, a value this parser cannot enumerate`);
     }
   }
