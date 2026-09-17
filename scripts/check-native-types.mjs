@@ -57,6 +57,7 @@ function snakeToCamel(s) {
 }
 
 const rustExports = new Set();
+const debugOnlyExports = new Set();
 
 for (const file of rsFiles(SRC_DIR)) {
   const src = readFileSync(file, "utf8");
@@ -90,7 +91,23 @@ for (const file of rsFiles(SRC_DIR)) {
     if (/\bpub\s+fn\s+\w+\s*\(\s*&(?:mut\s+)?self\b/.test(sig)) continue;
 
     const m = sig.match(/\bpub\s+fn\s+(\w+)/);
-    if (m) rustExports.add(snakeToCamel(m[1]));
+    if (m) {
+      const name = snakeToCamel(m[1]);
+      rustExports.add(name);
+      // Walk the same attribute block for `#[cfg(debug_assertions)]`. EXPORT_EXEMPT below is
+      // allowed to hide a name only while that gate is what makes it unpublishable — otherwise the
+      // exemption's stated reason ("a debug-only panic trigger") is about a property nothing reads.
+      for (let k = i - 1; k >= 0; k--) {
+        const t = lines[k].trim();
+        if (t === "" || t.startsWith("//")) continue;
+        if (/^#\[cfg\(debug_assertions\)\]/.test(t)) {
+          debugOnlyExports.add(name);
+          break;
+        }
+        if (t.startsWith("#[")) continue;
+        break;
+      }
+    }
   }
 }
 
@@ -105,7 +122,13 @@ const dtsExports = new Set(
 // business in the typings a consumer reads.
 const EXPORT_EXEMPT = new Set(["l1TestForcePanic"]);
 
-const missing = [...rustExports].filter((n) => !dtsExports.has(n) && !EXPORT_EXEMPT.has(n));
+// **The exemption is spent only where its reason holds.** Delete the `#[cfg(debug_assertions)]`
+// above `l1_test_force_panic` and it compiles into release builds — at which point it is an
+// ordinary undeclared export and this check says so, instead of staying quiet on the strength of a
+// sentence about a gate it never read (gate 2, second pass).
+const exempt = (n) => EXPORT_EXEMPT.has(n) && debugOnlyExports.has(n);
+
+const missing = [...rustExports].filter((n) => !dtsExports.has(n) && !exempt(n));
 const stale = [...dtsExports].filter((n) => !rustExports.has(n));
 
 let failed = false;
@@ -248,6 +271,12 @@ if (notInDts.length > 0) {
 //
 // The parsing lives in `lib/napi-shapes.mjs` so it can be fed spellings this repo does not contain
 // yet, and everything it cannot read arrives here as a problem rather than as a smaller count.
+// Shapes `native-types.ts` deliberately does not mirror, with the place they live instead.
+const NATIVE_TYPES_ABSENT = new Set([
+  // Declared in `src/engine/native-engine.ts`, next to the only function that returns it.
+  "NativeUiaEvidence",
+]);
+
 const STRUCT_EXEMPT = new Set([
   // Empty today. An entry here needs a reason: a struct that no TS consumer ever receives, not a
   // struct someone did not get round to declaring.
@@ -299,7 +328,12 @@ for (const [label, source] of TS_SHAPE_FILES) {
       // struct a caller can receive and cannot name is the #667 defect, so an unpaired struct
       // fails there. `native-types.ts` is a curated internal mirror — `NativeUiaEvidence` lives in
       // `native-engine.ts` instead — so it is checked for AGREEMENT where it declares a shape.
-      if (label === "index.d.ts") {
+      // `index.d.ts` is the addon's published surface: a struct a caller can receive and cannot
+      // name is the #667 defect. `native-types.ts` is a curated internal mirror — but "curated"
+      // was indistinguishable from "misspelled": renaming an interface there removed a struct from
+      // that half of the comparison and the only trace was a number in the OK line (gate 2, second
+      // pass). Absences there are now a list with a reason.
+      if (label === "index.d.ts" || !NATIVE_TYPES_ABSENT.has(name)) {
         shapeProblems.push(`${label}: no interface for \`${name}\` (${at}) — tried ${tried.join(", ")}`);
       }
       continue;

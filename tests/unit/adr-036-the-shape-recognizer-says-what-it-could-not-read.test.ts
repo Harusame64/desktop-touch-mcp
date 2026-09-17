@@ -122,8 +122,11 @@ pub struct Thing {
     expect([...structs.get("Thing")!.fields.keys()]).toEqual(["a", "b"]);
   });
 
-  it("refuses a one-line body rather than harvesting the next struct's fields", () => {
-    const { problems } = parse(`
+  it("reads a one-line body instead of harvesting the next struct's fields", () => {
+    // The first version walked to the next bare `}` and took the NEXT struct's fields, which
+    // turned one collapsed line into 26 findings that all named the wrong struct. The brace scan
+    // reads it properly now, and `Other` stays its own struct.
+    const { structs, problems } = parse(`
 #[napi(object)]
 pub struct Thing { pub a: u32 }
 
@@ -132,7 +135,72 @@ pub struct Other {
     pub b: u32,
 }
 `);
-    expect(problems.join("")).toMatch(/written on one line/);
+    expect(problems).toEqual([]);
+    expect([...structs.get("Thing")!.fields.keys()]).toEqual(["a"]);
+    expect([...structs.get("Other")!.fields.keys()]).toEqual(["b"]);
+  });
+
+  it("reads an attribute that wraps, and one followed by a block comment", () => {
+    // Both spellings made the whole struct vanish with the run printing OK: the line-shaped regex
+    // enumerated ONE trailing form (`//`) and could not span lines, and a non-match fell through
+    // before the declaration was even counted (gate 2, second pass).
+    expect(parse(`
+#[napi(
+    object,
+)]
+pub struct Thing {
+    pub a: u32,
+}
+`).structs.has("Thing")).toBe(true);
+    expect(parse(`
+#[napi(object)] /* flat */
+pub struct Thing {
+    pub a: u32,
+}
+`).structs.has("Thing")).toBe(true);
+    // An argument carrying its own parenthesis or bracket, which the narrowed regex also lost.
+    expect(parse(`
+#[napi(object, ts_args_type = "(a: number) => void")]
+pub struct Thing {
+    pub a: u32,
+}
+`).structs.has("Thing")).toBe(true);
+  });
+
+  it("counts a declaration it cannot parse, so the count can report it", () => {
+    // The count used to be incremented INSIDE the branch the attribute regex guarded, so a
+    // spelling the recognizer could not read was never counted and the arithmetic always
+    // balanced — while the comment said the count made a silent drop impossible.
+    const { structs, problems } = parse(`
+#[napi(object)]
+pub enum Thing {
+    A,
+}
+`);
+    expect(structs.size).toBe(0);
+    expect(problems.join("")).toMatch(/could not find the `pub struct` line/);
+  });
+
+  it("reads a field behind a closed block comment on its own line", () => {
+    // The twin of the same-line attribute: the prefix was thrown away with the field behind it.
+    const { structs, problems } = parse(`
+#[napi(object)]
+pub struct Thing {
+    /* see above */ pub a: u32,
+}
+`);
+    expect(problems).toEqual([]);
+    expect([...structs.get("Thing")!.fields.keys()]).toEqual(["a"]);
+  });
+
+  it("treats a fully-qualified Option as optional", () => {
+    const { structs } = parse(`
+#[napi(object)]
+pub struct Thing {
+    pub a: std::option::Option<u32>,
+}
+`);
+    expect(structs.get("Thing")!.fields.get("a")).toBe(true);
   });
 
   it("refuses two structs with one JS name instead of keeping whichever came last", () => {
@@ -194,9 +262,49 @@ export interface Thing {
     // interface for X"; against `native-types.ts`, where an unpaired struct is skipped by design,
     // it disabled the whole half in silence.
     expect(parseTsInterfaces("export interface Thing extends Base {\n  a: number\n}\n").problems.join("")).toMatch(
-      /not a plain/,
+      /does not follow/,
     );
     expect(parseTsInterfaces("export type Thing = {\n  a: number\n}\n").problems.join("")).toMatch(/not a plain/);
+  });
+
+  it("reads `readonly` and `export declare interface`, which used to vanish", () => {
+    // `readonly` is already live in `native-types.ts`; the first version dropped such a line with
+    // no problem, so the comparison then reported the field as MISSING from a file that declares
+    // it — sending the reader to add a line that is already there.
+    const { interfaces, problems } = parseTsInterfaces(`
+export declare interface Thing {
+  readonly a: number
+  b?: string
+}
+`);
+    expect(problems).toEqual([]);
+    expect([...interfaces.get("Thing")!]).toEqual([
+      ["a", false],
+      ["b", true],
+    ]);
+  });
+
+  it("reports what it cannot read in a body, and a name declared twice", () => {
+    expect(parseTsInterfaces("export interface Thing {\n  [k: string]: unknown\n}\n").problems.join("")).toMatch(
+      /cannot read as a field/,
+    );
+    expect(
+      parseTsInterfaces("export interface Thing {\n  a: number\n}\nexport interface Thing {\n  b: number\n}\n")
+        .problems.join(""),
+    ).toMatch(/declared twice/);
+  });
+
+  it("understands a method signature as carrying no field", () => {
+    // `NativeDirtyRectSubscription` describes a napi CLASS; a `#[napi(object)]` field can never be
+    // a method, so this is recognised rather than reported — and rather than silently skipped.
+    const { interfaces, problems } = parseTsInterfaces(`
+export interface Thing {
+  a: number
+  next(timeoutMs: number): Promise<number>
+}
+`);
+    expect(problems).toEqual([]);
+    expect([...interfaces.get("Thing")!.keys()]).toEqual(["a"]);
   });
 });
 
