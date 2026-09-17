@@ -139,8 +139,18 @@ function environmentIdentifiers(text) {
   return names;
 }
 
-/** Every regular-expression metacharacter, escaped — not the subset that came to mind. */
-function escapeForRegExp(text) {
+/**
+ * Every regular-expression metacharacter, escaped — not the subset that came to mind.
+ *
+ * **Exported so a cell can reach it, because no caller can.** The only source of holder names is a
+ * character class that already excludes every metacharacter, so reverting this to the `$`-only
+ * version it started as leaves all 22 cells green and the real tree unchanged — a branch no mutant
+ * can kill. CodeQL was right that the sanitization was incomplete (`js/incomplete-sanitization`,
+ * high, #670); what it could not say is that nothing reaches it today. Both facts belong next to
+ * each other: this is defence in depth against a future caller that reads names some other way,
+ * and the cell pins the FUNCTION rather than pretending to pin a path.
+ */
+export function escapeForRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 

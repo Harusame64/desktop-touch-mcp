@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  escapeForRegExp,
   readDocumentedSwitches,
   readSwitchesFromCSharp,
   readSwitchesFromRust,
@@ -119,23 +120,38 @@ describe("the extractor", () => {
     expect(problems.join("")).toMatch(/cannot name: GetEnvironmentVariable\(fromSomewhereElse\)/);
   });
 
-  it("escapes a holder's name before building a pattern out of it", () => {
-    // CodeQL caught this on #670 (`js/incomplete-sanitization`, high): the holder names go into a
-    // regex and only `$` was escaped — the one metacharacter a JS identifier can legally carry.
-    // The names come out of source text this parser does not control, so a fragment carrying `.`
-    // or `(` would have built a pattern matching something else entirely, silently, and the axis
-    // would come back WRONG rather than short. Same family as every other finding this week: a
-    // rule narrowed to the case its author pictured.
-    const v = readSwitchesFromScript(
-      `const a.b = process.env;
-       const env: NodeJS.ProcessEnv = process.env;
-       const x = env.DESKTOP_TOUCH_STILL_FOUND;`,
-    );
-    expect(v.read).toContain("DESKTOP_TOUCH_STILL_FOUND");
-    // A `$` in a real identifier still works — that is what the original escape was for.
-    expect(readSwitchesFromScript(`const $env: NodeJS.ProcessEnv = process.env; const y = $env.DTM_X;`).read).toEqual([
-      "DTM_X",
-    ]);
+  it("escapes every regex metacharacter, and says why no input reaches it", () => {
+    // CodeQL caught the `$`-only escape on #670 (`js/incomplete-sanitization`, high): holder names
+    // are spliced into a regular expression, and only the one metacharacter a JS identifier can
+    // legally carry was escaped.
+    //
+    // **The cell I wrote first could not fail for that.** Reverting the escape left all 22 green,
+    // because the only source of holder names is a character class that already excludes every
+    // metacharacter — the branch is unreachable through the public API. So the cell tests the
+    // FUNCTION, which is what it can honestly pin, and the export exists for that reason. Defence
+    // in depth against a future caller that reads names some other way; not a live path today.
+    expect(escapeForRegExp("a.b")).toBe("a\\.b");
+    expect(escapeForRegExp("f(x)|y")).toBe("f\\(x\\)\\|y");
+    expect(escapeForRegExp("$env")).toBe("\\$env");
+    expect(new RegExp(escapeForRegExp("a.b")).test("axb")).toBe(false);
+  });
+
+  it("does not report a switch-shaped name that is only PROSE", () => {
+    // A tool description or an error message naming a switch has the shape of a property access
+    // across the sentence: "…keystrokes. DTM_BG_AUTO=1 enables BG globally". Three of those were
+    // being reported as unreadable holders until string literals were masked out.
+    //
+    // **The tree's three all happen to be followed by `=`**, so the assignment rule covers them and
+    // killing the mask leaves the gate green — the mask was a branch no mutant could kill. This is
+    // the shape that reaches it: prose with no `=` after the name.
+    const problems: string[] = [];
+    readSwitchesFromScript(`const d = "see foreground. DESKTOP_TOUCH_SOMETHING for details";`, "x.ts", problems);
+    expect(problems).toEqual([]);
+
+    // And a real read of a name this parser cannot vouch for still surfaces, one line over.
+    const live: string[] = [];
+    readSwitchesFromScript(`function f(bag) { return bag.DESKTOP_TOUCH_SOMETHING; }`, "x.ts", live);
+    expect(live.join("")).toMatch(/DESKTOP_TOUCH_SOMETHING is read from `bag`/);
   });
 
   it("keeps a `//` inside a string from eating the rest of the line", () => {
