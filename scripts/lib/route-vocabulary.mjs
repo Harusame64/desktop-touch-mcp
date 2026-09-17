@@ -19,42 +19,40 @@
 //    vocabulary is 11.
 
 /**
- * Strip `//` and block comments, keeping every line's index — and **without reading inside a
- * string**.
+ * Strip `//` and block comments, keeping every line's index — **without reading inside a string, and
+ * without mistaking a regular expression for a comment**.
  *
- * The line-at-a-time version this replaces was not string-aware, so a `//` inside a string literal
- * truncated the line: `"See https://github.com/…"` became `"See https:` and everything after it on
- * that line was dropped. The cost is not a missing comment — it is an UNBALANCED QUOTE, after which
- * every brace-matching parser downstream walks into the wrong block and returns less than it should
- * with `problems` empty. The fourth denominator found it the only way it can be found: the
- * non-Windows stub's hand-built failure disappeared from a sweep that had listed it minutes before
- * (2026-09-18).
+ * Two defects paid for this function, one on each side of the same line:
  *
- * A stray quote — one this scanner takes for a string opener when it is an apostrophe in some
- * construct it does not model — would swallow the rest of the file just as quietly, so a single- or
- * double-quoted run ends at the newline: TypeScript's do too, and a template literal is the only
- * one that may cross one.
+ * The line-at-a-time version was not string-aware, so a `//` inside a string truncated the line:
+ * `"See https://github.com/…"` became `"See https:`. What that leaves is not a missing comment but
+ * an UNBALANCED QUOTE, after which every brace-matching parser downstream walks into the wrong
+ * block and returns less than it should with `problems` empty. The non-Windows stub's hand-built
+ * failure vanished from a sweep that had listed it minutes before (2026-09-18).
+ *
+ * The first character-scanning rewrite fixed that and reintroduced it one construct over: the `\/`
+ * and the closing `/` of `/^https?:\/\//i` read as a line comment, and the rest of the line — the
+ * `{` that opens the `if` — was dropped. Live on two files (`engine/cdp-bridge.ts:582`,
+ * `engine/key-locker/command-derivation.ts:348`), measured as a brace balance of -1 (gate 2 on
+ * #674). **The same silent under-read, one grammar rule further in.** So a regular-expression
+ * literal is now a state of its own, entered only where a regex can legally begin.
+ *
+ * A stray quote that this scanner takes for an opener would swallow the rest of the file just as
+ * quietly, so a single- or double-quoted run and a regex both end at the newline: TypeScript's do
+ * too, and a template literal is the only one that may cross one.
  */
 export function stripComments(source) {
   const src = source.replace(/\r\n/g, "\n");
+  // A `/` opens a regex only where a value may begin. Reading the last emitted non-space character
+  // answers that for every shape this tree writes (`(`, `,`, `=`, `[`, `!`, `&&`, `return`, …); a
+  // division follows an identifier, a number, or a closing bracket, and those are the else.
+  const opensValue = /(?:[=(,[!&|?:;{}+\-*%^~<>]|\breturn|\btypeof|\bcase|\bin|\bof|\bdo|\belse|\bvoid|\bdelete|\binstanceof|\bnew|\byield|\bawait)\s*$/;
   let out = "";
-  let quote = null;
   let i = 0;
   while (i < src.length) {
     const ch = src[i];
     const next = src[i + 1];
-    if (quote !== null) {
-      out += ch;
-      if (ch === "\\") {
-        out += next ?? "";
-        i += 2;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      else if (ch === "\n" && quote !== "`") quote = null;
-      i++;
-      continue;
-    }
+    // Comments first — the specification agrees: `//` is never an empty regex, `/*` never a regex.
     if (ch === "/" && next === "/") {
       while (i < src.length && src[i] !== "\n") i++;
       continue;
@@ -68,7 +66,44 @@ export function stripComments(source) {
       i += 2;
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      out += ch;
+      i++;
+      while (i < src.length) {
+        const c = src[i];
+        out += c;
+        i++;
+        if (c === "\\") {
+          out += src[i] ?? "";
+          i++;
+          continue;
+        }
+        if (c === quote) break;
+        if (c === "\n" && quote !== "`") break;
+      }
+      continue;
+    }
+    if (ch === "/" && opensValue.test(out)) {
+      out += ch;
+      i++;
+      let inClass = false;
+      while (i < src.length) {
+        const c = src[i];
+        out += c;
+        i++;
+        if (c === "\\") {
+          out += src[i] ?? "";
+          i++;
+          continue;
+        }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) break;
+        else if (c === "\n") break;
+      }
+      continue;
+    }
     out += ch;
     i++;
   }

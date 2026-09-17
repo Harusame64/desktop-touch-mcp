@@ -127,7 +127,8 @@
   "handBuilt": [
     "src/engine/uia-bridge.ts:insertTextViaTextPattern2 → TextPattern2ParseError",
     "src/server-linux-stub.ts:(top level) → UnsupportedPlatform",
-    "src/tools/_errors.ts:failArgs → InvalidArgs"
+    "src/tools/_errors.ts:failArgs → InvalidArgs",
+    "src/tools/_errors.ts:toToolFailure → (computed: code) (no caller outside its file)"
   ],
   "embeddedScriptCodes": [
     "ElementNotFound",

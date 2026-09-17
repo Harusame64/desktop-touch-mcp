@@ -93,62 +93,104 @@ function blockAt(text, from) {
 }
 
 /**
- * The value of `<field>:` at depth 1 of an object literal, as SOURCE TEXT.
+ * Walk an object literal's depth-1 properties, calling `visit(name, valueStart)` for each.
  *
- * Depth is the grammar. Reading `code:` with a regex over the whole object picks up a `code:` in a
- * nested `context: { code: … }` — the same class of mistake as reading a dictionary key at an
- * indent (#672).
+ * **Three spellings name one property**: `code:`, `"code":` and the shorthand `code` with no colon
+ * at all. The first version of this file read only the first, and the shorthand form is exactly how
+ * `toToolFailure` builds the flat failure — so a hand-built copy of the tree's own house style was
+ * skipped with nothing reported, and a JSON-shaped one (`{"ok":false,"code":…}`) was skipped twice
+ * over, because the quoted key was consumed as a string (gate 2 on #674, findings 4 and 7).
+ *
+ * Depth is the grammar: a `code:` nested inside `context: { … }` is not this object's property.
  */
-export function fieldAtDepthOne(objectSource, field) {
+function eachDepthOneProperty(objectSource, visit) {
   let depth = 0;
-  let quote = null;
-  for (let i = 0; i < objectSource.length; i++) {
+  let i = 0;
+  while (i < objectSource.length) {
     const ch = objectSource[i];
-    if (quote) {
-      if (ch === "\\") i++;
-      else if (ch === quote) quote = null;
-      continue;
+    const prev = objectSource[i - 1] ?? "";
+    if (depth === 1 && /[{,\s]/.test(prev)) {
+      const key = /^(?:"([A-Za-z_$][\w$]*)"|'([A-Za-z_$][\w$]*)'|([A-Za-z_$][\w$]*))\s*([:,}])/.exec(objectSource.slice(i));
+      if (key !== null) {
+        const name = key[1] ?? key[2] ?? key[3];
+        const shorthand = key[4] !== ":";
+        const stop = visit(name, shorthand ? null : i + key[0].length);
+        if (stop !== undefined) return stop;
+        i += shorthand ? key[0].length - 1 : key[0].length;
+        continue;
+      }
     }
     if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
+      const quote = ch;
+      i++;
+      while (i < objectSource.length) {
+        const c = objectSource[i];
+        i++;
+        if (c === "\\") i++;
+        else if (c === quote) break;
+      }
       continue;
     }
     if (ch === "{" || ch === "(" || ch === "[") depth++;
     else if (ch === "}" || ch === ")" || ch === "]") depth--;
-    else if (depth === 1) {
-      const m = new RegExp(`^${field}\\s*:`).exec(objectSource.slice(i));
-      if (m && /[{,\s]/.test(objectSource[i - 1] ?? "")) {
-        // Read to the comma or closing brace at THIS depth.
-        let j = i + m[0].length;
-        let d = 0;
-        let q = null;
-        for (; j < objectSource.length; j++) {
-          const c = objectSource[j];
-          if (q) {
-            if (c === "\\") j++;
-            else if (c === q) q = null;
-            continue;
-          }
-          if (c === '"' || c === "'" || c === "`") q = c;
-          else if (c === "{" || c === "(" || c === "[") d++;
-          else if (c === "]" || c === ")") d--;
-          else if (c === "}") {
-            if (d === 0) break;
-            d--;
-          } else if ((c === "," || c === ";") && d === 0) break;
-        }
-        return objectSource.slice(i + m[0].length, j).trim();
-      }
-    }
+    i++;
   }
-  return null;
+  return undefined;
+}
+
+/** The value text that starts at `from`, ending at this depth's `,`, `;` or `}`. */
+function valueAt(objectSource, from) {
+  let d = 0;
+  let q = null;
+  let j = from;
+  for (; j < objectSource.length; j++) {
+    const c = objectSource[j];
+    if (q) {
+      if (c === "\\") j++;
+      else if (c === q) q = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") q = c;
+    else if (c === "{" || c === "(" || c === "[") d++;
+    else if (c === "]" || c === ")") d--;
+    else if (c === "}") {
+      if (d === 0) break;
+      d--;
+    } else if ((c === "," || c === ";") && d === 0) break;
+  }
+  return objectSource.slice(from, j).trim();
+}
+
+/**
+ * The value of `<field>:` at depth 1 of an object literal, as SOURCE TEXT.
+ *
+ * A shorthand property (`{ ok: false, code, error }`) has no value text; the field NAME comes back,
+ * which is what it is — an identifier the caller must resolve or report.
+ */
+export function fieldAtDepthOne(objectSource, field) {
+  return (
+    eachDepthOneProperty(objectSource, (name, valueStart) => {
+      if (name !== field) return undefined;
+      return valueStart === null ? field : valueAt(objectSource, valueStart);
+    }) ?? null
+  );
+}
+
+/** Every depth-1 key of an object literal, in source order. */
+export function keysAtDepthOne(objectSource) {
+  const keys = [];
+  eachDepthOneProperty(objectSource, (name) => {
+    keys.push(name);
+    return undefined;
+  });
+  return keys;
 }
 
 /**
  * Is this object literal a TYPE literal rather than a value?
  *
- * `export type ToolFailure = { ok: false; code: string; error: string }` wears the exact shape the
- * sweep below looks for. The discriminator is the separator: a value's members are comma-separated,
+ * `export interface ToolFailure { ok: false; code: string; error: string }` wears the exact shape
+ * the sweep looks for. The discriminator is the separator: a value's members are comma-separated,
  * a type's are semicolon-separated, and a `;` cannot appear at depth 1 of an object literal. Keying
  * on that rather than on the file or the name means a second declaration somewhere else is excluded
  * by the same rule, without anybody remembering to add it.
@@ -174,13 +216,36 @@ export function isTypeLiteral(objectSource) {
   return false;
 }
 
-/** Every depth-1 key of an object literal, in source order. */
-export function keysAtDepthOne(objectSource) {
-  const keys = [];
+/** `"Literal"` → `Literal`; anything else → null. */
+const literal = (expr) => /^"([^"\\]*)"$/.exec(expr ?? "")?.[1] ?? null;
+
+/**
+ * Every branch of a conditional expression whose leaves are all string literals, or null.
+ *
+ * A ternary is a producer of as many values as it has branches, and the road axis learned that
+ * treating one as "not a literal, therefore unreadable" and treating it as one value are both wrong:
+ * the first is noise, the second under-counts in silence (#669).
+ *
+ * **The chain is parsed, not matched.** The first version read exactly two branches with a regex,
+ * so `browser.ts:2708`'s four-way chain came back as unreadable — and, because the binding was also
+ * resolved from the top of the file, that unreadable result was masked by another site's two codes
+ * (gate 2 on #674, finding 2). Splitting at the top-level `?` and its matching `:` also keeps a
+ * literal that appears in a CONDITION (`r.__error === "ScopeNotFound" ? …`) out of the result: a
+ * condition is not a branch, and counting its literals would put a comparison's right-hand side into
+ * the caller-visible vocabulary.
+ */
+const ternaryLiterals = (expr) => {
+  const text = (expr ?? "").trim();
+  if (text === "") return null;
+  const lit = literal(text);
+  if (lit !== null) return [lit];
+  // Find the top-level `?` (not `?.`, not `??`) and its matching `:`.
   let depth = 0;
   let quote = null;
-  for (let i = 0; i < objectSource.length; i++) {
-    const ch = objectSource[i];
+  let question = -1;
+  let ternaries = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
     if (quote) {
       if (ch === "\\") i++;
       else if (ch === quote) quote = null;
@@ -190,30 +255,87 @@ export function keysAtDepthOne(objectSource) {
       quote = ch;
       continue;
     }
-    if (ch === "{" || ch === "(" || ch === "[") depth++;
-    else if (ch === "}" || ch === ")" || ch === "]") depth--;
-    else if (depth === 1) {
-      const m = /^([A-Za-z_$][\w$]*)\s*:/.exec(objectSource.slice(i));
-      if (m && /[{,\s]/.test(objectSource[i - 1] ?? "")) keys.push(m[1]);
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    else if (depth === 0 && ch === "?") {
+      if (text[i + 1] === "." || text[i + 1] === "?") {
+        i++;
+        continue;
+      }
+      if (question === -1) question = i;
+      else ternaries++;
+    } else if (depth === 0 && ch === ":" && question !== -1) {
+      if (ternaries > 0) {
+        ternaries--;
+        continue;
+      }
+      const left = ternaryLiterals(text.slice(question + 1, i));
+      const right = ternaryLiterals(text.slice(i + 1));
+      if (left === null || right === null) return null;
+      return [...new Set([...left, ...right])];
     }
   }
-  return keys;
-}
-
-/** `"Literal"` → `Literal`; anything else → null. */
-const literal = (expr) => /^"([^"\\]*)"$/.exec(expr ?? "")?.[1] ?? null;
+  return null;
+};
 
 /**
- * Both branches of `cond ? "A" : "B"`, or null when either side is not a literal.
+ * The condition of the `if` that guards the statement starting at `at`, or null.
  *
- * A ternary of two literals is a producer of TWO values, and the road axis learned the hard way
- * that treating it as "not a literal, therefore unreadable" and treating it as one value are both
- * wrong: the first is noise, the second under-counts in silence (#669).
+ * **Resolved against the enclosing `if`, not a byte window.** The first version searched the 400
+ * characters before the arm for `Object.hasOwn(SUGGESTS, …)`, and it was wrong in both directions
+ * (gate 2 on #674, finding 3): a SECOND, unguarded arm placed within 400 characters after a guarded
+ * one read as guarded — the false negative on the one structural invariant this whole axis rests on
+ * — while a guarded arm with a long body ahead of it read as unbounded and would redden CI for
+ * nothing. A window is a spelling; the enclosing statement is the grammar.
  */
-const ternaryLiterals = (expr) => {
-  const m = /^[^?]*\?\s*"([^"\\]*)"\s*:\s*"([^"\\]*)"\s*$/.exec((expr ?? "").replace(/\s+/g, " "));
-  return m === null ? null : [m[1], m[2]];
-};
+function enclosingCondition(body, at) {
+  const skipBack = (i) => {
+    while (i >= 0 && /\s/.test(body[i])) i--;
+    return i;
+  };
+  const matchParen = (i) => {
+    let depth = 0;
+    for (; i >= 0; i--) {
+      if (body[i] === ")") depth++;
+      else if (body[i] === "(") {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  };
+  const conditionEndingAt = (closeParen) => {
+    const open = matchParen(closeParen);
+    if (open < 0) return null;
+    const before = skipBack(open - 1);
+    const keyword = /(\w+)\s*$/.exec(body.slice(0, before + 1));
+    if (keyword === null || keyword[1] !== "if") return null;
+    return body.slice(open + 1, closeParen);
+  };
+
+  // `if (cond) return { … }` — the arm IS the statement, with no block of its own.
+  let i = skipBack(at - 1);
+  const word = /(\w+)\s*$/.exec(body.slice(0, i + 1));
+  if (word !== null && word[1] === "return") i = skipBack(i - word[1].length);
+  if (body[i] === ")") return conditionEndingAt(i);
+
+  // Otherwise the arm sits somewhere inside a block: find the block that encloses it — it may be
+  // preceded by any number of statements, which is why walking back token by token was wrong (it
+  // read a guarded arm with one line ahead of it as unbounded, and would have reddened CI for a
+  // refactor that changed nothing).
+  let depth = 0;
+  for (let j = at - 1; j >= 0; j--) {
+    if (body[j] === "}") depth++;
+    else if (body[j] === "{") {
+      if (depth === 0) {
+        const before = skipBack(j - 1);
+        return body[before] === ")" ? conditionEndingAt(before) : null;
+      }
+      depth--;
+    }
+  }
+  return null;
+}
 
 /**
  * The arms of `classify(message)`, which is the only place the flat road turns a message into a
@@ -221,10 +343,16 @@ const ternaryLiterals = (expr) => {
  *
  * Returns `{ literals, residual, dictionaryArms, unreadable }`:
  *   - `literals`     every code the cascade WRITES;
- *   - `residual`     the code the final `return` produces when nothing matched;
+ *   - `residual`     the code the last arm produces when nothing matched;
  *   - `dictionaryArms` one entry per arm that returns a code read out of the MESSAGE, each with the
  *     identifier it returns and whether it stands behind a `SUGGESTS` membership check;
  *   - `unreadable`   a `code:` this parser could not resolve to either.
+ *
+ * **Every object literal in the body that has a `code` property is an arm** — not only the ones
+ * spelled `return {`. Matching the `return` kept a literal out of the denominator in silence when
+ * the arm built its object in a local first (`const out = { code: "HiddenArm" }; return out;`), and
+ * because the dictionary arms were still found, nothing said the cascade had become unreadable
+ * (gate 2 on #674, finding 5).
  *
  * **The membership check is the ceiling.** With it, the set of codes a message can name is the
  * dictionary's key set; without it, a producer's message names the code and the axis has no upper
@@ -249,36 +377,43 @@ export function readClassifyArms(errorsSource, problems = []) {
   const unreadable = [];
   let residual = null;
 
-  for (const m of body.matchAll(/\breturn\s*\{/g)) {
-    const obj = blockAt(body, m.index);
-    if (obj === null) continue;
+  const seen = new Set();
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "{") continue;
+    const obj = blockAt(body, i);
+    if (obj === null || seen.has(obj.start)) continue;
+    seen.add(obj.start);
+    if (isTypeLiteral(obj.body)) continue;
     const expr = fieldAtDepthOne(obj.body, "code");
     if (expr === null) continue;
     const lit = literal(expr);
     if (lit !== null) {
       literals.add(lit);
-      // The LAST literal return in the body is the residual — the one every un-matched message
-      // reaches. Read, not hard-coded: `"ToolError"` is a value the tree can change, and a gate
-      // that knows the answer in advance stops being a measurement of the tree.
+      // The LAST arm in source order is the residual — the one every un-matched message reaches.
+      // Read, not hard-coded: `"ToolError"` is a value the tree can change, and a gate that knows
+      // the answer in advance has stopped measuring the tree.
       residual = lit;
       continue;
     }
     // A code read out of the message. The arm is only bounded if it checked the dictionary first.
-    const before = body.slice(Math.max(0, obj.start - 400), obj.start);
-    const guarded = new RegExp(`Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${expr.replace(/[$]/g, "\\$")}\\s*\\)`).test(before);
+    const cond = enclosingCondition(body, obj.start);
+    const guarded =
+      cond !== null &&
+      new RegExp(`Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${expr.replace(/[$]/g, "\\$")}\\s*\\)`).test(cond);
     dictionaryArms.push({ identifier: expr, guarded });
     if (!guarded) {
       unreadable.push(expr);
       problems.push(
-        `classify returns \`code: ${expr}\` without checking \`Object.hasOwn(SUGGESTS, ${expr})\` first — ` +
-          "a message can then name a code that is in no dictionary, and this axis has no upper bound",
+        `classify returns \`code: ${expr}\` without checking \`Object.hasOwn(SUGGESTS, ${expr})\` in the ` +
+          "condition that guards it — a message can then name a code that is in no dictionary, and this " +
+          "axis has no upper bound",
       );
     }
   }
   if (dictionaryArms.length === 0) {
     problems.push(
       "classify has no arm that reads a code out of the message — either the cascade was rewritten " +
-        "or this parser stopped matching it; the 30 codes reachable only that way are unaccounted for",
+        "or this parser stopped matching it; the codes reachable only that way are unaccounted for",
     );
   }
   return { literals: [...literals].sort(), residual, dictionaryArms, unreadable };
@@ -323,9 +458,15 @@ export function readFailCodeSites(sources, problems = []) {
       if (lit !== null) resolved = [lit];
       else if (tern !== null) resolved = tern;
       else if (/^[A-Za-z_$][\w$]*$/.test(first.trim())) {
-        const bound = readLocalBinding(text, first.trim());
-        if (bound !== null) resolved = bound;
-        else if ([...wrappers.values()].includes(first.trim())) {
+        const bound = readLocalBinding(text, first.trim(), m.index);
+        if (bound?.codes !== undefined) resolved = bound.codes;
+        else if (bound?.unreadable !== undefined) {
+          problems.push(
+            `${file}:${line}: failCode is given \`${first.trim()}\`, bound to an expression this parser ` +
+              `cannot read: ${bound.unreadable.replace(/\s+/g, " ").slice(0, 80)}`,
+          );
+          continue;
+        } else if ([...wrappers.values()].includes(first.trim())) {
           // The wrapper's own parameter: resolved at ITS call sites, below.
           resolved = [];
         }
@@ -354,14 +495,35 @@ export function readFailCodeSites(sources, problems = []) {
   return { codes: [...codes].sort(), sites };
 }
 
-/** `const X = "lit";` / `const X = a ? "A" : "B";` in the same file, or null. */
-function readLocalBinding(text, identifier) {
-  const m = new RegExp(`\\bconst\\s+${identifier}\\s*(?::[^=;]+)?=\\s*([^;]+);`).exec(text);
-  if (m === undefined || m === null) return null;
-  const expr = m[1].trim();
+/**
+ * The binding of `identifier` that is in force AT `before` — the NEAREST preceding `const`, not the
+ * first one in the file.
+ *
+ * **One site's codes were being attributed to another's.** `browser.ts` binds `const code` twice —
+ * at 1295 (a two-way ternary, `BrowserAmbiguousTarget` / `BrowserNoActionableTarget`) and at 2708 (a
+ * four-way ternary over `r.__error`). Resolving from the top of the file gave BOTH `failCode(code, …)`
+ * sites the first binding's two codes, with `problems` empty — and the four codes the second site
+ * really names were only in the pin because other call sites happened to name them too. Adding a
+ * fifth branch there left the gate green (gate 2 on #674, finding 2).
+ *
+ * Returns `{ codes }` when it can read the expression, `{ unreadable }` when a binding is in force
+ * but this parser cannot read it, and `null` when there is no binding at all. The middle case is the
+ * one the old shape could not express, and it is the four-way ternary.
+ */
+function readLocalBinding(text, identifier, before = text.length) {
+  const re = new RegExp(`\\bconst\\s+${identifier}\\s*(?::[^=;]+)?=\\s*([^;]+);`, "g");
+  let nearest = null;
+  for (const m of text.matchAll(re)) {
+    if (m.index > before) break;
+    nearest = m;
+  }
+  if (nearest === null) return null;
+  const expr = nearest[1].trim();
   const lit = literal(expr);
-  if (lit !== null) return [lit];
-  return ternaryLiterals(expr);
+  if (lit !== null) return { codes: [lit] };
+  const tern = ternaryLiterals(expr);
+  if (tern !== null) return { codes: tern };
+  return { unreadable: expr };
 }
 
 /**
@@ -425,7 +587,12 @@ export function readHandBuiltFlatFailures(sources) {
   const found = [];
   for (const { file, text: raw } of sources) {
     const text = stripComments(raw);
-    for (const m of text.matchAll(/\bok:\s*false\b/g)) {
+    // `"ok": false` is the same literal as `ok: false`; anchoring on the bare spelling missed a
+    // JSON-shaped hand-built failure entirely (gate 2 on #674, finding 7).
+    const inString = stringRanges(text);
+    for (const m of text.matchAll(/["']?\bok["']?:\s*false\b/g)) {
+      // A sentence that DESCRIBES the shape is not a site that builds it.
+      if (inString.some(([a, b]) => m.index > a && m.index < b)) continue;
       // Walk back to the enclosing `{`.
       let depth = 0;
       let i = m.index;
@@ -451,6 +618,40 @@ export function readHandBuiltFlatFailures(sources) {
     }
   }
   return found;
+}
+
+/**
+ * The index ranges covered by string and template literals.
+ *
+ * **Prose quotes the shape it describes.** `wait-until.ts`'s own `caveats:` sentence contains
+ * `{ok:false, code:'WaitTimeout', error, suggest:[...]}`, and the generated catalogue copies it — so
+ * the shape sweep, which reads the tree after comments are stripped but with strings intact, found
+ * two "hand-built failures" that are documentation (gate 2's findings 4 and 7 uncovered them by
+ * teaching the sweep two more spellings; the same widening that found a real producer found these).
+ * Same class as the comment that quotes a road literal, one quote character over.
+ */
+function stringRanges(text) {
+  const ranges = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const start = i;
+      const quote = ch;
+      i++;
+      while (i < text.length) {
+        const c = text[i];
+        i++;
+        if (c === "\\") i++;
+        else if (c === quote) break;
+        else if (c === "\n" && quote !== "`") break;
+      }
+      ranges.push([start, i]);
+      continue;
+    }
+    i++;
+  }
+  return ranges;
 }
 
 /** Is `name` called anywhere outside the file that defines it? */

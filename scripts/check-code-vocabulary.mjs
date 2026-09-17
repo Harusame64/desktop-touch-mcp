@@ -65,7 +65,10 @@ const SKIPPED = new Set([".git", ".github", "node_modules", "dist", "target", "t
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
-    if (SKIPPED.has(relative(REPO, full).split(sep).join("/"))) continue;
+    // **Tested against the entry's NAME.** The relative-path form could never match: `walk` is only
+    // ever called on `src`, so the path it compared always began with `src/` and no entry in the set
+    // could equal it — a filter that asserted a claim it did not make (gate 2 on #674, finding 8).
+    if (SKIPPED.has(entry.name) || SKIPPED.has(relative(REPO, full).split(sep).join("/"))) continue;
     if (entry.isDirectory()) walk(full, out);
     else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) out.push(full);
   }
@@ -93,9 +96,17 @@ const failCode = readFailCodeSites(sources, problems);
 // first read of this tree recorded it as dead on a grep for the wrong name. Asking whether the
 // enclosing function is called from another file answers it structurally, and answered the opposite
 // (`ui-elements.ts:670`).
+//
+// **A site whose code is COMPUTED does not contribute a code.** `toToolFailure` itself is one of
+// these — it is the canonical presenter, and its `code` is the shorthand property holding
+// `err.name`. Carrying the expression text into the count made the headline say a caller can
+// receive a code called `err.name` (gate 2 on #674, finding 6): the overclaim the ceiling exists to
+// prevent, one field further down. The site is still pinned, with its expression, so a new computed
+// builder is a change the grid records — it is the VALUE that stays out of the count.
 const handBuilt = readHandBuiltFlatFailures(sources).map((site) => ({
   where: `${site.file}:${site.fn ?? "(top level)"}`,
-  code: site.code ?? site.expression,
+  code: site.code,
+  expression: site.expression,
   reached: site.fn === null ? null : isCalledOutside(sources, site.fn, site.file),
 }));
 
@@ -145,7 +156,13 @@ const derived = {
   dictionaryOnly,
   failCodeCodes: failCode.codes,
   failArgsCode,
-  handBuilt: handBuilt.map((h) => `${h.where} → ${h.code}${h.reached === false ? " (no caller outside its file)" : ""}`).sort(),
+  handBuilt: handBuilt
+    .map(
+      (h) =>
+        `${h.where} \u2192 ${h.code === null ? `(computed: ${h.expression})` : h.code}` +
+        `${h.reached === false ? " (no caller outside its file)" : ""}`,
+    )
+    .sort(),
   embeddedScriptCodes: embedded,
   adviceLess,
   envelopeWithinFlatCeiling,
@@ -254,8 +271,9 @@ console.log(
     `surface: ${arms.literals.length} written as literals in the classifier (residual "${arms.residual}"), ` +
     `${dictionaryOnly.length} more reachable only when a producer spells the code into its own message, ` +
     `${failCode.codes.length} supplied at failCode call sites (${failCode.sites.length} sites), ` +
-    `one fixed by failArgs ("${failArgsCode}"), and ${reachableHandBuilt.length} hand-built rather than rendered by ` +
-    `the presenter. ${adviceLess.length} of them are in no SUGGESTS entry and reach the caller with whatever ` +
+    `one fixed by failArgs ("${failArgsCode}"), and ${reachableHandBuilt.filter((h) => h.code !== null).length} ` +
+    `hand-built rather than rendered by the presenter (${handBuilt.filter((h) => h.code === null).length} more ` +
+    `build the shape with a COMPUTED code, pinned but contributing no value). ${adviceLess.length} of them are in no SUGGESTS entry and reach the caller with whatever ` +
     `the call site passed. **This is a CEILING, not a lower bound** — the ${arms.dictionaryArms.length} arms that ` +
     `read a code out of a message both check the dictionary first, so a message cannot invent one. ` +
     `${envelopeWithinFlatCeiling.length} of the ${envelopeNames.length} names on the envelope surface fall inside this ` +

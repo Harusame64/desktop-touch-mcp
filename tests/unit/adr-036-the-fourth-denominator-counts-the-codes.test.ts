@@ -10,7 +10,7 @@
  * that is not there.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -229,6 +229,175 @@ describe("failArgs' fixed code", () => {
       problems,
     );
     expect(problems.join("")).toMatch(/no longer builds a literal/);
+  });
+});
+
+describe("what gate 2 found on this PR, kept as cells", () => {
+  // Eight findings, each verified against the tree before it was fixed. The cells are here rather
+  // than in the describe blocks above because what they pin is one round's worth of ways this
+  // extraction can under-read in SILENCE — the single failure mode all four denominators exist to
+  // end.
+
+  it("1. does not read a regex literal's `\\/\\/` as the start of a comment", () => {
+    // The character-scanning rewrite fixed the string case and reintroduced it one construct over:
+    // `/^https?:\/\//i` lost everything after it on the line — including the `{` that opens the
+    // `if` — leaving a brace balance of -1 on two live files.
+    const src = 'if (!/^https?:\\/\\//i.test(url)) {\n  go();\n}\n';
+    const out = stripComments(src);
+    expect(out).toContain("test(url)) {");
+    expect([...out].filter((c) => c === "{").length).toBe(1);
+    // A regex with a `/` inside a character class, and a division that is not a regex.
+    expect(stripComments("const re = /[/]/; const q = a / b; // gone")).toBe("const re = /[/]/; const q = a / b; ");
+  });
+
+  it("1b. loses no block opener anywhere in src", () => {
+    // The tree-wide form of the same claim: every line that ends in `) {` still ends in `{` after
+    // stripping. 2331 lines on 2026-09-18, and the regex defect above broke two of them.
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith(".ts")) files.push(full);
+      }
+    };
+    walk(join(REPO, "src"));
+    const lost: string[] = [];
+    let checked = 0;
+    for (const file of files) {
+      const raw = readFileSync(file, "utf8").split("\n");
+      const stripped = stripComments(readFileSync(file, "utf8")).split("\n");
+      raw.forEach((line, i) => {
+        if (!/\)\s*\{$/.test(line) || /["`]/.test(line)) return;
+        checked++;
+        if (!/\{$/.test((stripped[i] ?? "").trimEnd())) lost.push(`${file}:${i + 1}`);
+      });
+    }
+    expect(checked).toBeGreaterThan(1000);
+    expect(lost).toEqual([]);
+  });
+
+  it("2. resolves a call site's binding to the nearest one before it, not the file's first", () => {
+    // `browser.ts` binds `const code` twice. Resolving from the top gave both `failCode(code, …)`
+    // sites the first binding's two codes, and the four the second site names were in the pin only
+    // because other call sites happened to name them.
+    const text = `
+const code = a ? "First" : "Second";
+failCode(code, m);
+const code = b === "x" ? "Third" : "Fourth";
+failCode(code, m);
+`;
+    const { sites } = readFailCodeSites([{ file: "f.ts", text }]);
+    expect(sites.filter((s: { line: number }) => s.line === 3).map((s: { code: string }) => s.code)).toEqual([
+      "First",
+      "Second",
+    ]);
+    expect(sites.filter((s: { line: number }) => s.line === 5).map((s: { code: string }) => s.code)).toEqual([
+      "Third",
+      "Fourth",
+    ]);
+  });
+
+  it("2b. reads a chain of ternaries, and keeps a condition's literal out of it", () => {
+    // Four branches, and the conditions compare against string literals of their own. A reader that
+    // collected every literal in the expression would put a comparison's right-hand side into the
+    // caller-visible vocabulary.
+    const { codes } = readFailCodeSites([
+      {
+        file: "f.ts",
+        text: `const code = e === "ScopeNotFound" ? "ScopeNotFound" : e === "NoResults" ? "BrowserSearchNoResults" : e === "Timeout" ? "BrowserSearchTimeout" : "ToolError";\nfailCode(code, m);`,
+      },
+    ]);
+    expect(codes).toEqual(["BrowserSearchNoResults", "BrowserSearchTimeout", "ScopeNotFound", "ToolError"]);
+  });
+
+  it("2c. reports a binding it cannot read rather than borrowing another site's", () => {
+    const problems: string[] = [];
+    readFailCodeSites([{ file: "f.ts", text: `const code = a ? "A" : somethingElse;\nfailCode(code, m);` }], problems);
+    expect(problems.join("")).toMatch(/cannot read/);
+  });
+
+  it("3. resolves the dictionary guard against the enclosing `if`, in both directions", () => {
+    // A byte window was wrong both ways: a second, unguarded arm within 400 characters of a guarded
+    // one read as guarded (the false negative on the one invariant this axis rests on), and a
+    // guarded arm with a long body ahead of it read as unbounded.
+    const guarded = (src: string) =>
+      readClassifyArms(src).dictionaryArms.map((a: { guarded: boolean }) => a.guarded);
+    const arm = (cond: string, body = "") =>
+      `function classify(m) { const d = "x"; if (${cond}) { ${body}return { code: d, suggest: [] }; } return { code: "ToolError" }; }`;
+    expect(guarded(arm("d && Object.hasOwn(SUGGESTS, d)"))).toEqual([true]);
+    expect(guarded(arm("d"))).toEqual([false]);
+    // the guarded arm, with 600 characters of body before the return
+    expect(guarded(arm("d && Object.hasOwn(SUGGESTS, d)", `const pad = "${"x".repeat(600)}"; `))).toEqual([true]);
+    // guarded arm followed by an unguarded one: the second must not inherit the first's check
+    expect(
+      guarded(
+        `function classify(m) { const d = "x"; if (d && Object.hasOwn(SUGGESTS, d)) { return { code: d, suggest: [] }; } if (d) { return { code: d, suggest: [] }; } return { code: "ToolError" }; }`,
+      ),
+    ).toEqual([true, false]);
+    // and `if (c) return { … }`, with no block of its own
+    expect(
+      guarded(
+        `function classify(m) { const d = "x"; if (d && Object.hasOwn(SUGGESTS, d)) return { code: d, suggest: [] }; return { code: "ToolError" }; }`,
+      ),
+    ).toEqual([true]);
+  });
+
+  it("4. sees a hand-built failure written in the tree's own shorthand", () => {
+    // `return { ok: false, code, error }` is exactly how `toToolFailure` builds this shape, and the
+    // sweep that promised such a producer "cannot exist quietly" skipped it.
+    const found = readHandBuiltFlatFailures([
+      { file: "a.ts", text: `function f() { return { ok: false, code, error }; }` },
+    ]);
+    expect(found.map((f: { expression: string }) => f.expression)).toEqual(["code"]);
+    expect(found[0].code).toBeNull();
+  });
+
+  it("5. reads an arm that builds its object in a local and returns the local", () => {
+    // Matching `return {` dropped the code silently, and because the dictionary arms were still
+    // found, nothing said the cascade had become unreadable.
+    const problems: string[] = [];
+    const arms = readClassifyArms(
+      `function classify(m) {
+  if (m.includes("q")) { const out = { code: "HiddenArm", suggest: [] }; return out; }
+  const d = "x";
+  if (d && Object.hasOwn(SUGGESTS, d)) { return { code: d, suggest: [] }; }
+  return { code: "ToolError", suggest: [] };
+}`,
+      problems,
+    );
+    expect(arms.literals).toEqual(["HiddenArm", "ToolError"]);
+    expect(problems).toEqual([]);
+  });
+
+  it("6. keeps a computed code out of the count, and still pins the site", () => {
+    // `code: err.name` was entering the ceiling as the STRING "err.name", and the headline said a
+    // caller can receive a code by that name.
+    const found = readHandBuiltFlatFailures([
+      { file: "a.ts", text: `function f() { return { ok: false, code: err.name, error: m }; }` },
+    ]);
+    expect(found[0].code).toBeNull();
+    expect(found[0].expression).toBe("err.name");
+  });
+
+  it("7. sees a JSON-shaped hand-built failure with quoted keys", () => {
+    const found = readHandBuiltFlatFailures([
+      { file: "a.ts", text: `function f() { return { "ok": false, "code": "X", "error": "e" }; }` },
+    ]);
+    expect(found.map((f: { code: string }) => f.code)).toEqual(["X"]);
+  });
+
+  it("7b. does not read a sentence that DESCRIBES the shape as a site that builds it", () => {
+    // Teaching the sweep two more spellings taught it to read prose: `wait-until.ts`'s own caveats
+    // string contains `{ok:false, code:'WaitTimeout', error, suggest:[...]}`, and the generated
+    // catalogue copies it. Same class as a comment quoting a road literal, one quote character over.
+    const found = readHandBuiltFlatFailures([
+      {
+        file: "a.ts",
+        text: `const caveats = "On timeout the response is {ok:false, code:'WaitTimeout', error, suggest:[...]}.";`,
+      },
+    ]);
+    expect(found).toEqual([]);
   });
 });
 
