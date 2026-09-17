@@ -80,7 +80,9 @@ export interface NativeUiaFocusInfo {
 
 export interface NativeFocusedElement {
   name: string
-  automationId: string | null
+  /** **Omitted** by napi-rs (NOT set to `null`) when the element has no automation id:
+   * `l3_bridge::mod.rs` declares it `Option<String>`. Use `el.automationId != null`. */
+  automationId?: string | null
   controlType: string
   windowTitle: string
 }
