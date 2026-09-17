@@ -15,7 +15,12 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { readRoadVocabulary, readUnion, stripComments } from "../../scripts/lib/route-vocabulary.mjs";
+import {
+  readInlineFieldUnion,
+  readRoadVocabulary,
+  readUnion,
+  stripComments,
+} from "../../scripts/lib/route-vocabulary.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -47,24 +52,95 @@ probeRoute("real_road", undefined, entity, { why: "real_why" });
     ]);
   });
 
-  it("reports a road passed as a variable instead of silently shrinking the set", () => {
-    // A non-literal first argument makes every count below it a lower bound, with nothing saying so.
-    const v = readRoadVocabulary(`probeRoute(chosenRoad, undefined, entity, {});`);
-    expect(v.problems.join("")).toMatch(/non-literal road/);
+  it("reports every shape of non-literal, not one of them", () => {
+    // **Gate 2 fed the first version six spellings and five under-counted in silence**: a ternary,
+    // a `const` holding the value, a variable named `route` (exempted BY NAME — an exemption whose
+    // only effect was to open a hole named after the field it guarded), a road with a digit, and a
+    // nested object before `route:`. The promise in the header is that the count is either right or
+    // says it is not.
+    for (const call of [
+      `probeRoute(chosenRoad, undefined, entity, {});`,
+      `probeRoute(cond ? "shell_road" : "wsl_road", undefined, entity, {});`,
+      `const route = "sneaky"; probeRoute(route, undefined, entity, {});`,
+      `probeRoute(NEW_ROAD, undefined, entity, {});`,
+    ]) {
+      expect(readRoadVocabulary(call).problems.join(""), call).toMatch(/non-literal/);
+    }
+    expect(
+      readRoadVocabulary(`probeRoute("uia", undefined, entity, { why: ok ? "a" : "b" });`).problems.join(""),
+    ).toMatch(/why is not a literal/);
+  });
+
+  it("reads a road whose name carries a digit", () => {
+    // `[a-z_]+` where the other fields used `[a-z0-9_]+`: dropped, not reported.
+    expect(readRoadVocabulary(`probeRoute("cdp2", undefined, entity, {});`).route).toContain("cdp2");
+  });
+
+  it("resolves the whys that are written through a variable, by name", () => {
+    // `why: homing.applied ? null : homing.why` and `why: owner.why` are legitimate: the union each
+    // draws from is named in the expression. The caller resolves them, because the caller has the
+    // files — and `why: verdict.why` is kept OUT of this axis, because it is the landing axis
+    // wearing the same field name.
+    const v = readRoadVocabulary(
+      `probeRoute("homing", undefined, entity, { why: homing.applied ? null : homing.why });
+       probeRoute("containment_check", undefined, entity, { why: owner.why });
+       const row = { landing: { confirmed: false, why: verdict.why } };`,
+      (name) => (name === "homing.why" ? ["from_homing"] : name === "owner.why" ? ["from_owner"] : ["from_landing"]),
+    );
+    expect(v.problems).toEqual([]);
+    expect(v.why).toContain("from_homing");
+    expect(v.why).toContain("from_owner");
+    expect(v.why).not.toContain("from_landing");
+    expect(v.landingWhyOnTheRow).toEqual(["from_landing"]);
+  });
+
+  it("skips a type annotation, which is not a value", () => {
+    expect(readRoadVocabulary(`function f(why: "a" | "b") {}`).problems).toEqual([]);
   });
 
   it("says so when the function that produces three refusal grounds has moved", () => {
     // `probedStep` hands `probeRefusal` a variable; three grounds live in `adr029Refusal` and in no
     // call site. If it is renamed, the set is short by three and the run would otherwise pass.
-    const v = readRoadVocabulary(`probeRefusal("mouse_press", "aim_occluded", entity, {});`);
+    // Only reported when something routes through it — an alarm that is always on is read as noise.
+    const v = readRoadVocabulary(`probedStep("mouse_press", () => {});`);
     expect(v.problems.join("")).toMatch(/adr029Refusal has moved/);
+    expect(readRoadVocabulary(`probeRoute("uia", undefined, entity, {});`).problems).toEqual([]);
+  });
+
+  it("reports a union member it cannot read instead of returning a shorter union", () => {
+    // A template whose union it cannot resolve, a backticked member with no interpolation, and a
+    // `typeof ARR[number]` all used to come back as a shorter set — indistinguishable from a
+    // complete one (gate 2 on #669).
+    const problems: string[] = [];
+    readUnion('export type X = "a" | `focus_lost:${Unknown}`;', "X", () => [], problems);
+    readUnion('export type Y = "a" | `plain_backtick`;', "Y", () => [], problems);
+    readUnion("export type Z = (typeof ARR)[number];", "Z", () => [], problems);
+    expect(problems.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("reads a union written inline as a field, anchored on the type's whole name", () => {
+    // `export type PointOwnerVia` sits above `export type PointOwner` in the same file: a substring
+    // search reads the one-liner and answers one value where the vocabulary has four. And a type
+    // can carry the field twice — reading only the first is the same defect one line over.
+    const src = `export type OwnerVia = "a" | "b";
+export type Owner =
+  | { kind: "blocked"; why: "excluded_window"; via: OwnerVia }
+  | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point"; via: OwnerVia };`;
+    expect(readInlineFieldUnion(src, "Owner", "why")).toEqual([
+      "enumeration_failed",
+      "excluded_window",
+      "no_window_at_point",
+    ]);
   });
 
   it("reads the real executor's vocabulary", () => {
     // The numbers are the ones the extraction produced on 2026-09-17 and that the pinned file
     // carries; this cell is here so a change to the EXTRACTOR shows up next to a change to the code.
     const src = readFileSync(join(REPO, "src/tools/desktop-executor.ts"), "utf8");
-    const v = readRoadVocabulary(src);
+    // The real executor writes three whys through a variable; the caller resolves the unions they
+    // name (the check does it from the files). Unresolved, they are reported — which is the cell.
+    expect(readRoadVocabulary(src).problems.join("")).toMatch(/could not be resolved/);
+    const v = readRoadVocabulary(src, () => ["resolved"]);
     expect(v.problems).toEqual([]);
     expect(v.route).toContain("uia");
     expect(v.route).toContain("refusal");

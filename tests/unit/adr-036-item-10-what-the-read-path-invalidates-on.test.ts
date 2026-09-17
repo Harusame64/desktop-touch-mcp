@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const win32 = vi.hoisted(() => ({
   pidOf: new Map<string, number>(),
   startTimeOf: new Map<number, number>(),
+  classOf: new Map<string, string>(),
   alive: new Set<string>(),
 }));
 
@@ -32,7 +33,8 @@ vi.mock("../../src/engine/win32.js", () => ({
     processName: `p${pid}.exe`,
     processStartTimeMs: win32.startTimeOf.get(pid) ?? 0,
   }),
-  enumWindowsInZOrder: () => [...win32.alive].map((h) => ({ hwnd: BigInt(h), title: "", className: "" })),
+  enumWindowsInZOrder: () =>
+    [...win32.alive].map((h) => ({ hwnd: BigInt(h), title: "", className: win32.classOf.get(h) ?? "Window" })),
 }));
 
 const { observeTarget, clearIdentities, takeLastInvalidation } = await import(
@@ -40,15 +42,17 @@ const { observeTarget, clearIdentities, takeLastInvalidation } = await import(
 );
 
 /** Put a window on the desktop: it has a pid, that pid started at `startedMs`, and it is alive. */
-function place(hwnd: bigint, pid: number, startedMs = 1_000): void {
+function place(hwnd: bigint, pid: number, startedMs = 1_000, className = "Window"): void {
   win32.pidOf.set(String(hwnd), pid);
   win32.startTimeOf.set(pid, startedMs);
+  win32.classOf.set(String(hwnd), className);
   win32.alive.add(String(hwnd));
 }
 
 beforeEach(() => {
   win32.pidOf.clear();
   win32.startTimeOf.clear();
+  win32.classOf.clear();
   win32.alive.clear();
   clearIdentities();
   takeLastInvalidation();
@@ -117,13 +121,19 @@ describe("what the read path invalidates on", () => {
 
   it("never looks at the class, on any branch", () => {
     // The half of the map's sentence that is still true, and the reason the act path and the read
-    // path can disagree about the same window. `enumWindowsInZOrder` is mocked to return a class,
-    // and no branch consults it: the recreate case above is the proof — same class, same pid, new
-    // handle, silence.
-    place(0x8888n, 800);
+    // path disagree about the same window: the act path compares `className` and refuses.
+    //
+    // **The first version of this cell could not fail for its own reason** — the mock gave every
+    // window the same empty class, so a tracker that DID compare classes would have seen no
+    // difference and the cell would have stayed green (gate 2 on #669, which mutated the tracker
+    // into comparing classes and watched all 17 cells pass). The pair below differs in class and in
+    // nothing else: same pid, same start time, the old window still alive, only the class moved.
+    place(0x8888n, 800, 1_000, "OldClass");
     observeTarget("calc", 0x8888n, "Calculator");
-    win32.alive.delete("34952");
-    place(0x9999n, 800);
-    expect(observeTarget("calc", 0x9999n, "Calculator").invalidatedBy).toBeNull();
+
+    place(0x9999n, 800, 1_000, "TotallyDifferentClass");
+    const after = observeTarget("calc", 0x9999n, "Calculator");
+    expect(after.invalidatedBy).toBeNull();
+    expect(win32.classOf.get("34952")).not.toBe(win32.classOf.get("39321"));
   });
 });

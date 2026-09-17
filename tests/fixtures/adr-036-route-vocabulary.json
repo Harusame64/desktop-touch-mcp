@@ -1,4 +1,17 @@
 {
+  "landingWhyOnTheRow": [
+    "entity_handle_stale",
+    "entity_windowless",
+    "ground_disabled:other_control",
+    "ground_disabled:other_window",
+    "ground_disabled:read_only",
+    "parents_unread",
+    "receiver_in_other_window",
+    "receiver_in_owned_window",
+    "receiver_is_window",
+    "receiver_unknown",
+    "reference_unknown"
+  ],
   "route": [
     "aim_check",
     "cdp",
@@ -46,8 +59,12 @@
   "why": [
     "cdp_click",
     "cdp_fill",
+    "enumeration_failed",
+    "excluded_window",
     "no_aim_rect_dep",
+    "no_origin_rect",
     "no_rectangle_and_not_gone",
+    "no_window_at_point",
     "owned_popup_at_remembered_point",
     "receiver_unknown",
     "terminal_send",
@@ -55,6 +72,7 @@
     "uia_invoke",
     "uia_set_value",
     "uia_set_value_failed",
+    "unattributable_window",
     "visual_or_read_entity"
   ],
   "touchFailReason": [

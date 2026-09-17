@@ -20,11 +20,20 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readRoadVocabulary, readUnion } from "./lib/route-vocabulary.mjs";
+import { readInlineFieldUnion, readRoadVocabulary, readUnion } from "./lib/route-vocabulary.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PINNED = join(ROOT, "tests", "fixtures", "adr-036-route-vocabulary.json");
 const read = (rel) => readFileSync(join(ROOT, rel), "utf8");
+// The files a DYNAMIC why draws from are read only if one is present: a tree with no such call site
+// (a fixture, a future executor that writes only literals) must not fail on a file it never needs.
+const tryRead = (rel) => {
+  try {
+    return readFileSync(join(ROOT, rel), "utf8");
+  } catch {
+    return "";
+  }
+};
 
 const executor = read("src/tools/desktop-executor.ts");
 const guardedTouch = read("src/engine/world-graph/guarded-touch.ts");
@@ -32,9 +41,26 @@ const keyboardTarget = read("src/engine/keyboard-target.ts");
 const worldTypes = read("src/engine/world-graph/types.ts");
 const capabilities = read("src/capabilities/registry.ts");
 
-const road = readRoadVocabulary(executor);
+const aim = tryRead("src/engine/aim.ts");
+const pointOwner = tryRead("src/engine/point-owner.ts");
+const unionProblems = [];
+// The homing rung writes `homing.why` straight into the row, so `Homing.why`'s members are `why`
+// values. The extractor names the union; resolving it is the caller's job because the caller has
+// the files (gate 2 on #669: the why axis was 12 and the tree can write 9 more).
+const road = readRoadVocabulary(executor, (name) =>
+  name === "homing.why"
+    ? readInlineFieldUnion(aim, "Homing", "why", unionProblems)
+    : name === "landing.why"
+      ? (readUnion(keyboardTarget, "LandingWhy", (n) => (n === "KeyboardGround" ? readUnion(keyboardTarget, "KeyboardGround") ?? [] : []), unionProblems) ?? [])
+      : name === "owner.why"
+        ? [
+            ...readInlineFieldUnion(pointOwner, "PointOwner", "why", unionProblems),
+          ]
+        : [],
+);
 const keyboardGround = readUnion(keyboardTarget, "KeyboardGround") ?? [];
 const derived = {
+  landingWhyOnTheRow: road.landingWhyOnTheRow,
   route: road.route,
   rung: road.rung,
   refused: road.refused,
@@ -46,7 +72,7 @@ const derived = {
   advertisedExecutorKind: readUnion(capabilities, "AdvertisedExecutorKind") ?? [],
 };
 
-const problems = [...road.problems];
+const problems = [...road.problems, ...unionProblems];
 
 // ── Invariants the vocabulary must satisfy, whatever the pinned file says ────
 //
@@ -54,6 +80,19 @@ const problems = [...road.problems];
 for (const name of ["touchFailReason", "landingWhy", "executorKind", "advertisedExecutorKind"]) {
   if (derived[name].length === 0) problems.push(`could not read the ${name} union — has it moved or been renamed?`);
 }
+// The row writes the landing why straight through, so the two must be the same set. They are two
+// axes, not one: merging them on the shared field name `why` is the mistake the vocabulary exists
+// to avoid.
+// Only when the row writes one. An executor that writes none is a different fact, and it is caught
+// by the pin below (the axis is part of `derived`), not by an equality against a union it never
+// touches — the fixture-sized tree tripped exactly that.
+if (road.landingWhyOnTheRow.length > 0 && road.landingWhyOnTheRow.join(",") !== derived.landingWhy.join(",")) {
+  problems.push(
+    `the landing why written on the row (${road.landingWhyOnTheRow.join(", ")}) is not LandingWhy ` +
+      `(${derived.landingWhy.join(", ")})`,
+  );
+}
+
 for (const value of derived.refused) {
   // `refused` is documented as "spelled the way guarded-touch spells the reason". A convention,
   // not a type: nothing in TS makes it hold.
@@ -80,10 +119,33 @@ if (!derived.landingWhy.some((w) => w.startsWith("ground_disabled:"))) {
 // ── The pinned file ──────────────────────────────────────────────────────────
 const update = process.argv.includes("--update");
 if (update) {
+  // **A re-pin that prints nothing is a decision made with no evidence.** The FAIL message demands
+  // one ("every added value is a hole until a cell fills it or the user waives it") and the first
+  // version handed the reader a single "wrote <path>" line (gate 2 on #669).
+  if (problems.length > 0) {
+    console.error("\n[check-route-vocabulary] REFUSING to re-pin — the extraction reported problems:\n");
+    for (const p of problems) console.error(`  - ${p}`);
+    console.error("\n  Fix the extraction first: pinning from a reading it has called unreliable pins the unreliability.\n");
+    process.exit(1);
+  }
+  let previous = {};
+  try {
+    previous = JSON.parse(readFileSync(PINNED, "utf8"));
+  } catch {
+    console.log("[check-route-vocabulary] no previous pin — writing the first one");
+  }
+  for (const axis of new Set([...Object.keys(derived), ...Object.keys(previous)])) {
+    const now = derived[axis] ?? [];
+    const was = previous[axis] ?? [];
+    const added = now.filter((v) => !was.includes(v));
+    const gone = was.filter((v) => !now.includes(v));
+    if (added.length > 0) console.log(`  + ${axis}: ${added.join(", ")}`);
+    if (gone.length > 0) console.log(`  - ${axis}: ${gone.join(", ")}`);
+  }
   mkdirSync(dirname(PINNED), { recursive: true });
   writeFileSync(PINNED, `${JSON.stringify(derived, null, 2)}\n`);
   console.log(`[check-route-vocabulary] wrote ${PINNED}`);
-  process.exit(problems.length > 0 ? 1 : 0);
+  process.exit(0);
 }
 
 let pinned;
@@ -95,8 +157,10 @@ try {
   process.exit(1);
 }
 
-for (const axis of Object.keys(derived)) {
-  const now = derived[axis];
+// **Both key sets.** An axis that is in the pin and not in the extraction is a column the grid
+// counts and nothing produces — the loop over `derived` alone never looked at it.
+for (const axis of new Set([...Object.keys(derived), ...Object.keys(pinned)])) {
+  const now = derived[axis] ?? [];
   const was = pinned[axis] ?? [];
   const added = now.filter((v) => !was.includes(v));
   const gone = was.filter((v) => !now.includes(v));
