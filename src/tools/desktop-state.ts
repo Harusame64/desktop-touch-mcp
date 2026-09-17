@@ -176,9 +176,13 @@ export interface ElementInfo {
  * `crate::uia::control_type_name`, so the output is bit-equal with
  * `buildElementInfoFromUia`'s output for the same logical element.
  *
- * The view's `automationId` is `null` (not `undefined`) when absent,
- * because napi-rs serialises `Option::None` as `null`. We collapse
- * that into "field omitted" to match the UIA / CDP paths' shape.
+ * The view's `automationId` is ABSENT when the element has none: napi-rs
+ * OMITS the key for `Option::None` rather than serialising it as `null`
+ * (`index.d.ts` says so on `NativeFocusedElementWithWallclock.focused`,
+ * and `l3_bridge/mod.rs` declares the field `Option<String>`). This line
+ * said the opposite until 2026-09-17; the code below is unaffected because
+ * it tests truthiness, which covers both. Collapsing it into "field
+ * omitted" matches the UIA / CDP paths' shape either way.
  *
  * The view doesn't currently carry the UIA `ValuePattern` value
  * (the engine-perception `UiElementRef` doesn't include it), so
