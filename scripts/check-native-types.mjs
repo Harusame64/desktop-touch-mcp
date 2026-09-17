@@ -15,7 +15,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parseNapiObjectStructs, parseTsInterfaces } from "./lib/napi-shapes.mjs";
+import { isFeatureGated, parseNapiObjectStructs, parseTsInterfaces } from "./lib/napi-shapes.mjs";
 
 // `fileURLToPath` decodes percent-encoded URL segments (paths with spaces or
 // non-ASCII characters) and normalises Windows drive prefixes — both of
@@ -64,23 +64,17 @@ for (const file of rsFiles(SRC_DIR)) {
   for (let i = 0; i < lines.length; i++) {
     if (!/^\s*#\[napi\]\s*$/.test(lines[i])) continue;
 
-    // Walk backward over preceding attrs/comments to detect a `#[cfg(...)]`
-    // gate (e.g. `#[cfg(feature = "vision-gpu")]`). Feature-gated exports
-    // are intentionally absent from the always-on index.d.ts surface; they
-    // are checked at runtime via NativeVision / NativeWin32 interface
+    // Walk backward for a cargo FEATURE gate (e.g. `#[cfg(feature = "vision-gpu")]`).
+    // Feature-gated exports are intentionally absent from the always-on index.d.ts
+    // surface; they are checked at runtime via NativeVision / NativeWin32 interface
     // probes in src/engine/native-engine.ts.
-    let isFeatureGated = false;
-    for (let k = i - 1; k >= 0; k--) {
-      const t = lines[k].trim();
-      if (t === "" || t.startsWith("//")) continue;
-      if (t.startsWith("#[cfg(")) {
-        isFeatureGated = true;
-        break;
-      }
-      if (t.startsWith("#[")) continue; // unrelated attribute, keep scanning
-      break;
-    }
-    if (isFeatureGated) continue;
+    //
+    // **A PLATFORM gate is not a feature gate**, and this loop used to treat any
+    // `#[cfg(` as one — so 16 `#[cfg(windows)]` functions were out of the check, the
+    // struct section fifty lines below argued the opposite in the same file, and a
+    // Windows-only `#[napi] pub fn` could go undeclared with the run still green.
+    // One name turned up when that was fixed, and it is deliberate: see EXPORT_EXEMPT.
+    if (isFeatureGated(lines, i)) continue;
 
     // Skip the rest of the attribute/comment block to reach the fn line.
     // Blank lines must be skipped too — without that, a blank between
@@ -105,7 +99,13 @@ const dtsExports = new Set(
   Array.from(dts.matchAll(/^export declare function (\w+)\s*\(/gm), (m) => m[1]),
 );
 
-const missing = [...rustExports].filter((n) => !dtsExports.has(n));
+// Deliberately off the published surface. `native-engine.ts` reaches these through the raw napi
+// binding (the default export) rather than the named re-exports, so they are callable from TS
+// without `index.d.ts` describing them — which is the point: a debug-only panic trigger has no
+// business in the typings a consumer reads.
+const EXPORT_EXEMPT = new Set(["l1TestForcePanic"]);
+
+const missing = [...rustExports].filter((n) => !dtsExports.has(n) && !EXPORT_EXEMPT.has(n));
 const stale = [...dtsExports].filter((n) => !rustExports.has(n));
 
 let failed = false;

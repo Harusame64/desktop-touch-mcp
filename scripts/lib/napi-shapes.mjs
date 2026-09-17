@@ -27,6 +27,28 @@ const NAPI_OBJECT_ATTR = /^\s*#\[napi\(([^\])]*)\)\]\s*(?:\/\/.*)?$/;
 const JS_NAME = /js_name\s*=\s*"([^"]+)"/;
 
 /**
+ * Is the item whose attribute sits at `lines[i]` behind a cargo FEATURE gate?
+ *
+ * **A feature gate and a platform gate are not the same question, and this file used to answer
+ * both with `#[cfg(`.** A feature gate means a second item of the same name exists for the other
+ * build — `CapabilityProfile` has a `vision-gpu` shape and a stub — so comparing whichever one a
+ * scan meets against a declaration written for the other reports drift that is not there.
+ * A `#[cfg(windows)]` item is declared in `index.d.ts` like everything else, and treating it as
+ * out of scope is how a Windows-only export could go undeclared with the check still green: the
+ * #667 defect class, on the function side.
+ */
+export function isFeatureGated(lines, i) {
+  for (let k = i - 1; k >= 0; k--) {
+    const t = lines[k].trim();
+    if (t === "" || t.startsWith("//")) continue;
+    if (/^#\[cfg\((?:not\()?\s*feature\b/.test(t)) return true;
+    if (t.startsWith("#[")) continue;
+    break;
+  }
+  return false;
+}
+
+/**
  * Drop `#[...]` attributes from the front of a line, returning what follows.
  *
  * Bracket depth rather than the first `]`, because an attribute can carry one of its own
@@ -81,18 +103,7 @@ export function parseNapiObjectStructs(source, file) {
     // scan meets against a declaration written for the other reports drift that is not there.
     // A PLATFORM gate is different: `#[cfg(windows)]` items are declared in `index.d.ts` like
     // everything else, and skipping them would drop most of this repo's surface out of the check.
-    let featureGated = false;
-    for (let k = i - 1; k >= 0; k--) {
-      const t = lines[k].trim();
-      if (t === "" || t.startsWith("//")) continue;
-      if (/^#\[cfg\((?:not\()?\s*feature\b/.test(t)) {
-        featureGated = true;
-        break;
-      }
-      if (t.startsWith("#[")) continue;
-      break;
-    }
-    if (featureGated) {
+    if (isFeatureGated(lines, i)) {
       declared--;
       continue;
     }

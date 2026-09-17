@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { parseNapiObjectStructs, parseTsInterfaces } from "../../scripts/lib/napi-shapes.mjs";
+import { isFeatureGated, parseNapiObjectStructs, parseTsInterfaces } from "../../scripts/lib/napi-shapes.mjs";
 
 const parse = (src: string) => parseNapiObjectStructs(src, "fixture.rs");
 
@@ -197,5 +197,57 @@ export interface Thing {
       /not a plain/,
     );
     expect(parseTsInterfaces("export type Thing = {\n  a: number\n}\n").problems.join("")).toMatch(/not a plain/);
+  });
+});
+
+describe("the gate predicate", () => {
+  const at = (src: string) => {
+    const lines = src.split("\n");
+    return isFeatureGated(lines, lines.findIndex((l) => l.includes("#[napi")));
+  };
+
+  it("calls a cargo feature gate a feature gate", () => {
+    expect(at(`
+#[cfg(feature = "vision-gpu")]
+#[napi]
+pub fn thing() {}
+`)).toBe(true);
+    expect(at(`
+#[cfg(not(feature = "vision-gpu"))]
+#[napi(object)]
+pub struct Thing {}
+`)).toBe(true);
+  });
+
+  it("does not call a platform gate one", () => {
+    // Treating `#[cfg(windows)]` as out of scope is how a Windows-only `#[napi] pub fn` could go
+    // undeclared with the run still green — the #667 defect class, on the function side.
+    expect(at(`
+#[cfg(windows)]
+#[napi]
+pub fn thing() {}
+`)).toBe(false);
+    expect(at(`
+#[cfg(target_os = "macos")]
+#[napi]
+pub fn thing() {}
+`)).toBe(false);
+  });
+
+  it("looks past unrelated attributes and doc comments, and stops at code", () => {
+    expect(at(`
+#[cfg(feature = "x")]
+/// doc
+#[derive(Debug)]
+#[napi]
+pub fn thing() {}
+`)).toBe(true);
+    expect(at(`
+#[cfg(feature = "x")]
+pub fn other() {}
+
+#[napi]
+pub fn thing() {}
+`)).toBe(false);
   });
 });
