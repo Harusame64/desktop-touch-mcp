@@ -419,6 +419,29 @@ const dedupe = (list) => list.filter((p) => (seenProblem.has(p) ? false : (seenP
 scanProblems.splice(0, scanProblems.length, ...dedupe(scanProblems));
 shapeProblems.splice(0, shapeProblems.length, ...dedupe(shapeProblems));
 
+// **Counted before the common gate, so a second defect is not hidden by the first.** This block
+// used to sit AFTER `if (failed) … process.exit(1)`, with two consequences. Its `failed = true`
+// could never be read — the only reader had already run — so CodeQL called it a useless assignment
+// (`js/useless-assignment-to-local`, alert 181). It was worse than useless: it LOOKED like it
+// joined the common failure path and did not, so deleting the `process.exit(1)` beside it would
+// have made this check go silently green. And because a shape problem exited first, a count
+// mismatch was never reached, although the two are independent.
+const countProblems = [];
+if (dtsFunctionCount + dtsClassCount !== dtsDeclared.size) {
+  // The decomposition is counted from a different set than the total it decomposes — function
+  // LINES against declared NAMES — so a TS overload pair would diverge them while the sentence
+  // stayed the same (gate 2, wiring round).
+  countProblems.push(
+    `index.d.ts: ${dtsFunctionCount} function lines + ${dtsClassCount} class lines do not add up to ${dtsDeclared.size} declared names`,
+  );
+}
+
+if (countProblems.length > 0) {
+  failed = true;
+  console.error("\n[check-native-types] FAIL — the summary's own arithmetic does not hold:\n");
+  for (const p of countProblems) console.error(`  - ${p}`);
+}
+
 if (scanProblems.length > 0) {
   failed = true;
   console.error("\n[check-native-types] FAIL — the Rust scan could not read something:\n");
@@ -444,18 +467,6 @@ if (failed) {
 
 const exemptSpent = [...rustExports].filter((n) => exempt(n) && !dtsExports.has(n));
 const coveredDeclarations = dtsDeclared.size - staleSet.size;
-if (dtsFunctionCount + dtsClassCount !== dtsDeclared.size) {
-  // The decomposition is counted from a different set than the total it decomposes — function
-  // LINES against declared NAMES — so a TS overload pair would diverge them while the sentence
-  // stayed the same (gate 2, wiring round).
-  shapeProblems.push(
-    `index.d.ts: ${dtsFunctionCount} function lines + ${dtsClassCount} class lines do not add up to ${dtsDeclared.size} declared names`,
-  );
-  failed = true;
-  console.error(`\n[check-native-types] FAIL — ${shapeProblems[shapeProblems.length - 1]}\n`);
-  process.exit(1);
-}
-
 console.log(
   // **Every number here is one a check actually covered**, which three of them were not: "all N
   // declarations are exported" counted the stale names `notInJs` deliberately skips; "(1 exempt by
