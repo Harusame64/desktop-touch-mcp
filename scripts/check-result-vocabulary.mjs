@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { readUnion } from "./lib/route-vocabulary.mjs";
 import {
   readCodedNames,
+  readReturnedCodes,
   readEnvelopeErrorNames,
   readLeaseCodes,
   readReasonCatalogue,
@@ -79,6 +80,7 @@ const fallbackCause = readUnexpectedFallback(read("src/tools/_envelope.ts"), pro
 // `unknown` and the lease codes. Gate 2 on #672 added a fifth lease code and watched the gate print
 // OK. The number went 101 to 26.
 const RESOLVED_CODED = ["src/tools/_envelope.ts:code"];
+const RESOLVED_DYNAMIC_NAME = ["src/errors/typed-errors.ts:ToolFailureError:code"];
 // **Produced is not the same as reachable, and this extraction only counts producers.**
 // `HandlerError` is constructed twice, both inside `toResultErr` — an exported, documented, tested
 // helper that NO production code calls (`git grep toResultErr -- src` is four lines, all its own
@@ -105,9 +107,16 @@ const UNRESOLVABLE = [
     counted_by: "npm run check:failwith-fixtures",
   },
 ];
-const errorNames = readEnvelopeErrorNames(sources, problems, UNRESOLVABLE.map((u) => u.producer));
+const errorNames = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
 const codedNames = readCodedNames(sources, problems, RESOLVED_CODED);
-const leaseCodes = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
+// **The lease codes come from the function, not from the table beside it.** Gate 2's third round:
+// `mapLeaseValidationToTypedReason` hard-codes its returns and never consults
+// `LEASE_REASON_TO_TYPED_CODE`, whose own comment calls it a reservation for future expansion. Two
+// of its four names are produced by nothing, and adding a real branch left the gate green.
+const leaseCodes = readReturnedCodes(read("src/tools/_envelope.ts"), "mapLeaseValidationToTypedReason", problems);
+// The table is kept as a COVERAGE check — the role `SUGGESTS` was correctly demoted to. A code the
+// function returns with no reserved name is the shape the reservation exists to prevent.
+const reservedLeaseNames = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
 const producedNames = [
   ...new Set([...errorNames, ...codedNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
 ].sort();
@@ -138,6 +147,7 @@ const derived = {
   // when the difference changes, which is the property that was actually wanted.
   unresolvable: UNRESOLVABLE.map((u) => u.producer),
   withoutProductionCaller: KNOWN_WITHOUT_PRODUCTION_CALLER.map((k) => k.name),
+  reservedLeaseNames,
   cataloguesDifferBy: [
     ...serverCatalogue.filter((n) => !toolCatalogue.includes(n)),
     ...toolCatalogue.filter((n) => !serverCatalogue.includes(n)),
@@ -231,8 +241,14 @@ if (fallbackCause !== null && suggestsKeys.includes(fallbackCause)) {
 
 // **Every produced name should be a key, or the caller gets generic advice.** Not failed on — five
 // are not today — but the SET is pinned above, so one more is a change the grid records.
-for (const name of suggestsKeys) {
-  if (!producedNames.includes(name)) continue;
+for (const code of leaseCodes) {
+  // The residual is not a lease name and is not reserved as one — the table's own comment says the
+  // unpromoted reasons "collapse to `Unknown` at runtime". Everything else it returns should have a
+  // reserved name, which is what the reservation is for.
+  if (code === fallbackCause) continue;
+  if (!reservedLeaseNames.includes(code)) {
+    problems.push(`the lease mapping returns "${code}", which LEASE_REASON_TO_TYPED_CODE does not reserve`);
+  }
 }
 
 if (problems.length > 0) {

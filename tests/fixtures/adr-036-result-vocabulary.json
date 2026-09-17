@@ -34,9 +34,7 @@
     "ExecutorFailed",
     "HandlerError",
     "KeyboardTargetUnsafe",
-    "LeaseDigestMismatch",
     "LeaseExpired",
-    "LeaseGenerationMismatch",
     "ProceduralMemoryKUpperBoundExceeded",
     "RegionOutsideCapturableBounds",
     "SemanticMemoryKUpperBoundExceeded",
@@ -96,9 +94,7 @@
   ],
   "withoutAdvice": [
     "HandlerError",
-    "LeaseDigestMismatch",
     "LeaseExpired",
-    "LeaseGenerationMismatch",
     "Unknown"
   ],
   "unresolvable": [
@@ -106,6 +102,12 @@
   ],
   "withoutProductionCaller": [
     "HandlerError"
+  ],
+  "reservedLeaseNames": [
+    "EntityNotFound",
+    "LeaseDigestMismatch",
+    "LeaseExpired",
+    "LeaseGenerationMismatch"
   ],
   "cataloguesDifferBy": [
     "aim_blocked_by_excluded_window"

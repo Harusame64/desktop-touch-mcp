@@ -27,6 +27,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   PINNED_PASCAL_TO_SNAKE,
+  readReturnedCodes,
   readCodedNames,
   readEnvelopeErrorNames,
   readLeaseCodes,
@@ -137,19 +138,22 @@ describe("the extractor", () => {
     expect(problems).toEqual([]);
 
     // A name this parser cannot enumerate is REPORTED, unless a human wrote the exemption down.
+    const withRoot = `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+                      class Coded extends HandlerError { constructor(code) { super(); this.name = code; } }`;
     const dynamic: string[] = [];
-    readEnvelopeErrorNames(
-      [{ file: "b.ts", text: `class Coded extends HandlerError { constructor(code) { super(); this.name = code; } }` }],
-      dynamic,
-    );
+    readEnvelopeErrorNames([{ file: "b.ts", text: withRoot }], dynamic);
     expect(dynamic.join("")).toMatch(/Coded sets this.name from `code`, a value this parser cannot enumerate/);
+
+    // **The exemption carries the FILE as well as the class.** One written-down entry must not
+    // exempt a same-named class somewhere else — the sibling axes closed exactly this twice.
     const exempted: string[] = [];
-    readEnvelopeErrorNames(
-      [{ file: "b.ts", text: `class Coded extends HandlerError { constructor(code) { super(); this.name = code; } }` }],
-      exempted,
-      ["Coded:code"],
-    );
+    expect(readEnvelopeErrorNames([{ file: "b.ts", text: withRoot }], exempted, ["b.ts:Coded:code"])).toEqual([
+      "HandlerError",
+    ]);
     expect(exempted).toEqual([]);
+    const elsewhere: string[] = [];
+    readEnvelopeErrorNames([{ file: "c.ts", text: withRoot }], elsewhere, ["b.ts:Coded:code"]);
+    expect(elsewhere.join("")).toMatch(/Coded sets this.name from/);
   });
 
   it("reads the coded names, and the lease codes that reach them through a variable", () => {
@@ -173,6 +177,128 @@ describe("the extractor", () => {
     expect(lease).toEqual([]);
     readLeaseCodes(`const SOMETHING = {};`, lease);
     expect(lease.join("")).toMatch(/LEASE_REASON_TO_TYPED_CODE could not be read/);
+  });
+
+  it("reads the lease codes from the function, not from the table beside it", () => {
+    // **Gate 2's third round on this PR.** The rewrite claimed to read producers and then read
+    // `LEASE_REASON_TO_TYPED_CODE` — a table `mapLeaseValidationToTypedReason` never consults. That
+    // function hard-codes its returns, and the table's own comment calls it a reservation "so
+    // expansion can mechanically promote each branch". Two of its names were pinned as produced and
+    // nothing produced them; adding a real branch left the gate green. The same defect as the round
+    // before, one level further in.
+    const problems: string[] = [];
+    expect(
+      readReturnedCodes(
+        `function mapLeaseValidationToTypedReason(
+  reason: string,
+): { code: string; tryNext: TryNextAction[] } {
+  if (reason === "expired") {
+    return { code: "LeaseExpired", tryNext: [] };
+  }
+  return { code: "Unknown", tryNext: [] };
+}`,
+        "mapLeaseValidationToTypedReason",
+        problems,
+      ),
+    ).toEqual(["LeaseExpired", "Unknown"]);
+    // **The signature carries an object RETURN TYPE.** A brace-balancing scan reads `{ code: string
+    // … }` as the body and reports "returns no literal code" about a function full of them, so the
+    // body is taken to a `}` in the first column and the code is read inside a `return {…}` only.
+    expect(problems).toEqual([]);
+
+    const dynamic: string[] = [];
+    readReturnedCodes(
+      `function f(): X {\n  return { code: computeIt(reason), tryNext: [] };\n}`,
+      "f",
+      dynamic,
+    );
+    expect(dynamic.join("")).toMatch(/f returns a code this parser cannot name: computeIt\(reason\)/);
+
+    const missing: string[] = [];
+    readReturnedCodes(`const x = 1;`, "notThere", missing);
+    expect(missing.join("")).toMatch(/notThere could not be found — the codes it returns are unknown, not absent/);
+  });
+
+  it("reads HandlerError's own name from the tree instead of seeding it", () => {
+    // It was a string constant in the extractor, so renaming `this.name = "HandlerError"` — which
+    // changes the value on the wire for EVERY un-typed throw — left the gate green while its own
+    // summary went on naming `handler_error`.
+    const problems: string[] = [];
+    expect(
+      readEnvelopeErrorNames(
+        [
+          {
+            file: "a.ts",
+            text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerFailure"; } }
+                   class Child extends HandlerError { constructor() { super(); this.name = "Child"; } }`,
+          },
+        ],
+        problems,
+      ),
+    ).toEqual(["Child", "HandlerFailure"]);
+    expect(problems).toEqual([]);
+
+    const gone: string[] = [];
+    readEnvelopeErrorNames([{ file: "a.ts", text: `class Other extends Error {}` }], gone);
+    expect(gone.join("")).toMatch(/HandlerError's own name could not be read/);
+  });
+
+  it("stops at the class's own brace, in both directions", () => {
+    // A fixed 900-character window did two things: a constructor longer than it left its class
+    // NAMELESS with `problems` empty, and a class with no `this.name` took the literal of the NEXT
+    // class — including one explicitly outside the family, which is a reason nothing can produce.
+    const long = "    const filler = 1;\n".repeat(90);
+    expect(
+      readEnvelopeErrorNames([
+        { file: "a.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class LongOne extends HandlerError {
+  constructor() {
+    super();
+${long}    this.name = "LongConstructorFailure";
+  }
+}` },
+      ]),
+    ).toContain("LongConstructorFailure");
+
+    expect(
+      readEnvelopeErrorNames([
+        { file: "a.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class InheritsItsParentsName extends HandlerError {}
+class NotInTheFamily extends Error {
+  constructor() { super(); this.name = "GhostReason"; }
+}` },
+      ]),
+    ).toEqual(["HandlerError"]);
+  });
+
+  it("keys a class by its file, because two files declare the same name", () => {
+    // `AimOccludedError` is declared in `src/engine/aim.ts` (extends `Error`) and in
+    // `src/errors/typed-errors.ts` (extends `HandlerError`). With a bare-name key, last writer wins
+    // and the axis was correct only because of the order `readdirSync` returned — move one file and
+    // two real reasons become "the code no longer produces".
+    const both = [
+      { file: "src/engine/aim.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class Dup extends Error { constructor() { super(); this.name = "DupPlainError"; } }` },
+      { file: "src/errors/typed-errors.ts", text: `class Dup extends HandlerError { constructor() { super(); this.name = "DupTyped"; } }` },
+    ];
+    expect(readEnvelopeErrorNames(both)).toEqual(["DupTyped", "HandlerError"]);
+    expect(readEnvelopeErrorNames([...both].reverse())).toEqual(["DupTyped", "HandlerError"]);
+  });
+
+  it("does not desync on a regex literal that contains quotes", () => {
+    // Once the walk covered all of `src/`, two files desynced the stripper: a regex literal with an
+    // odd number of `"` opened a string state that never closed, so every comment below it stopped
+    // being stripped and a commented-out error class entered the axis. And the fix has an order to
+    // it — tried BEFORE the comment checks, `// foo` parses as an empty regex and 94 advice keys
+    // became 20.
+    const src = `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+const re = /^Exception calling "GetCurrentPattern" with "\\d+" argument\\(s\\): ".*/;
+// class CommentOnly extends HandlerError { constructor() { super(); this.name = "CommentGhost"; } }`;
+    expect(readEnvelopeErrorNames([{ file: "a.ts", text: src }])).toEqual(["HandlerError"]);
+    expect(readSuggestsKeys(`const SUGGESTS: Record<string, string[]> = {
+  First: ["a"], // a trailing comment after a brace
+  Second: ["b"],
+};`)).toEqual(["First", "Second"]);
   });
 
   it("does not let a brace inside an advice string close the table early", () => {
@@ -286,13 +412,12 @@ describe("the extractor", () => {
     expect(pinned.toolCatalogue).toContain("aim_blocked_by_excluded_window");
     expect(pinned.serverCatalogue).not.toContain("aim_blocked_by_excluded_window");
     // Five produced names have no advice entry, so the caller gets the generic line.
-    expect(pinned.withoutAdvice).toEqual([
-      "HandlerError",
-      "LeaseDigestMismatch",
-      "LeaseExpired",
-      "LeaseGenerationMismatch",
-      "Unknown",
-    ]);
+    // **Three, not five.** `LeaseGenerationMismatch` and `LeaseDigestMismatch` were pinned here
+    // and nothing produced either: they live in the reservation table, and the mapping that
+    // actually returns codes never reads it (gate 2 on #672, third round).
+    expect(pinned.withoutAdvice).toEqual(["HandlerError", "LeaseExpired", "Unknown"]);
+    expect(pinned.reservedLeaseNames).toContain("LeaseDigestMismatch");
+    expect(pinned.producedNames).not.toContain("LeaseDigestMismatch");
   });
 });
 
@@ -337,6 +462,14 @@ export class NotInFamily extends Error {
       "src/tools/_envelope.ts": `export const LEASE_REASON_TO_TYPED_CODE = {
   expired: "LeaseExpired",
 } as const;
+function mapLeaseValidationToTypedReason(
+  reason: string,
+): { code: string; tryNext: TryNextAction[] } {
+  if (reason === "expired") {
+    return { code: "LeaseExpired", tryNext: [] };
+  }
+  return { code: "Unknown", tryNext: [] };
+}
 const ifUnexp = envelope.if_unexpected ?? { most_likely_cause: "Unknown", try_next: [] };
 function pascalToSnake(s: string): string {
   ${PINNED_PASCAL_TO_SNAKE}
@@ -401,26 +534,44 @@ export class NotInFamily extends Error {
     expect(out).toMatch(/withoutAdvice: the code now produces "BrandNewFailure"/);
   });
 
-  it("is 1 when a lease code is added, which is the arm that shipped green", () => {
-    // Gate 2 on #672 added the fifth lease code the file's own doc anticipates and the gate printed
-    // `OK — 101 reasons`, exit 0. It reaches the wire through `new CodedHandlerError(code)`, so the
-    // table is a producer and modelling the axis with `SUGGESTS` could not see it.
+  it("is 1 when the lease MAPPING gains a branch, and says the truth when only the table moves", () => {
+    // Gate 2 added the fifth lease code twice on this PR. The first time it was added to the table
+    // and the gate went green; the second time the rewrite read the table and the gate went red for
+    // a change that produces nothing. Only the function produces.
     fixture();
     pin();
-    write(
-      "src/tools/_envelope.ts",
-      `export const LEASE_REASON_TO_TYPED_CODE = {
+    const mapping = (extra: string) => `export const LEASE_REASON_TO_TYPED_CODE = {
   expired: "LeaseExpired",
-  superseded: "LeaseSuperseded",
 } as const;
+function mapLeaseValidationToTypedReason(
+  reason: string,
+): { code: string; tryNext: TryNextAction[] } {
+  if (reason === "expired") {
+    return { code: "LeaseExpired", tryNext: [] };
+  }
+${extra}  return { code: "Unknown", tryNext: [] };
+}
 const ifUnexp = envelope.if_unexpected ?? { most_likely_cause: "Unknown", try_next: [] };
 function pascalToSnake(s: string): string {
   ${PINNED_PASCAL_TO_SNAKE}
-}`,
+}`;
+    write("src/tools/_envelope.ts", mapping(`  if (reason === "superseded") {\n    return { code: "LeaseSuperseded", tryNext: [] };\n  }\n`));
+    const added = run();
+    expect(added.status).toBe(1);
+    expect(added.out).toMatch(/computedOnly: the code now produces "lease_superseded"/);
+    // …and it is a code the reservation table does not carry, which the reservation exists for.
+    expect(added.out).toMatch(/the lease mapping returns "LeaseSuperseded", which LEASE_REASON_TO_TYPED_CODE does not reserve/);
+
+    // A row in the table alone changes the RESERVATION, and the message says so — it does not claim
+    // the code now produces a reason.
+    write(
+      "src/tools/_envelope.ts",
+      mapping("").replace('  expired: "LeaseExpired",', '  expired: "LeaseExpired",\n  superseded: "LeaseSuperseded",'),
     );
-    const { status, out } = run();
-    expect(status).toBe(1);
-    expect(out).toMatch(/computedOnly: the code now produces "lease_superseded"/);
+    const reserved = run();
+    expect(reserved.status).toBe(1);
+    expect(reserved.out).toMatch(/reservedLeaseNames: the code now produces "LeaseSuperseded"/);
+    expect(reserved.out).not.toMatch(/computedOnly: the code now produces "lease_superseded"/);
   });
 
   it("stops on an unreadable TouchFailReason too, not only on a changed conversion", () => {

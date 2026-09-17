@@ -82,6 +82,25 @@ export function stripComments(source) {
       i = end;
       continue;
     }
+    // **After the comment checks, never before them.** Placed first, `// foo` parses as an empty
+    // regex literal (`//` plus flags) and the comment is never stripped — 94 SUGGESTS keys became 20
+    // the moment this was tried in the wrong order.
+    //
+    // **A regex literal is not a comment and is not a string, and it can contain both.**
+    // `/^Exception calling "GetCurrentPattern" with "\d+" argument\(s\): ".*/` has five quotes;
+    // once the walk over all of `src/` began (this file used to see five named files), that odd
+    // quote opened a string state that never closed, and every comment BELOW it in that file
+    // stopped being stripped. Gate 2 on #672 showed it live in two files by planting a
+    // commented-out error class after the desync and watching it enter the axis, with the same
+    // comment in a clean file changing nothing.
+    if (ch === "/" && regexCanStartHere(out)) {
+      const end = skipRegexLiteral(text, i);
+      if (end > i) {
+        out += text.slice(i, end);
+        i = end;
+        continue;
+      }
+    }
     out += ch;
     i++;
   }
@@ -205,47 +224,176 @@ export function readSuggestsKeys(source, problems = []) {
 export function readEnvelopeErrorNames(sources, problems = [], resolved = []) {
   const extendsOf = new Map();
   const nameOf = new Map();
+  const declaredIn = new Map();
   for (const { file, text: raw } of sources) {
     const text = stripComments(raw);
-    for (const m of text.matchAll(/\bclass\s+(\w+)\s+extends\s+(\w+)/g)) {
-      const body = text.slice(m.index, m.index + 900);
-      extendsOf.set(m[1], m[2]);
+    for (const m of text.matchAll(/\bclass\s+(\w+)\s+extends\s+([\w.]+)/g)) {
+      // **To the class's own closing brace, not a fixed window.** The first version read 900
+      // characters and gate 2 showed both ends of that: a constructor longer than the window left
+      // its class NAMELESS with `problems` empty, and a class with no `this.name` took the LITERAL
+      // OF THE NEXT CLASS — including from one explicitly outside the family, which put a reason
+      // nothing can produce into the grid.
+      const body = text.slice(m.index, classEnd(text, m.index));
+      // **Keyed by file and class.** `AimOccludedError` is declared twice — `src/engine/aim.ts`
+      // extends `Error`, `src/errors/typed-errors.ts` extends `HandlerError` — so a bare name means
+      // last writer wins, and the axis was right only because of the order `readdirSync` returned.
+      // Moving one file would have turned two real reasons into "the code no longer produces".
+      const key = `${file}:${m[1]}`;
+      extendsOf.set(key, m[2]);
+      declaredIn.set(m[1], [...(declaredIn.get(m[1]) ?? []), key]);
       const literal = body.match(/this\.name\s*=\s*"([^"]+)"/);
       if (literal) {
-        nameOf.set(m[1], literal[1]);
+        nameOf.set(key, literal[1]);
         continue;
       }
       const dynamic = body.match(/this\.name\s*=\s*([A-Za-z_][\w.]*)\s*;/);
-      // `CodedHandlerError` is the recognised dynamic one; its codes are read at the call sites.
       if (!dynamic) continue;
-      // `CodedHandlerError` assigns its `code` parameter and the codes are read at its call sites.
       if (m[1] === "CodedHandlerError" && dynamic[1] === "code") continue;
-      // Anything else is pinned as an UNRESOLVABLE producer or reported. The exemption is a
-      // written-down list, never a pattern (#670) — and a producer on it does not disappear: it
-      // makes the axis a lower bound, and the summary says so.
-      if (resolved.includes(`${m[1]}:${dynamic[1]}`)) continue;
+      // The exemption carries the FILE as well as the class: one written-down entry must not
+      // exempt a same-named class somewhere else.
+      if (resolved.includes(`${file}:${m[1]}:${dynamic[1]}`)) continue;
       problems.push(`${file}: ${m[1]} sets this.name from \`${dynamic[1]}\`, a value this parser cannot enumerate`);
     }
   }
-  const inFamily = (name) => {
-    let cur = name;
-    for (let hops = 0; hops < 30; hops++) {
-      const parent = extendsOf.get(cur);
-      if (parent === undefined) return false;
-      if (parent === "HandlerError") return true;
-      cur = parent;
+  const parentKeys = (name) => declaredIn.get(name) ?? [];
+  const inFamily = (key) => {
+    const seen = new Set();
+    let stack = [key];
+    for (let hops = 0; hops < 40 && stack.length > 0; hops++) {
+      const next = [];
+      for (const k of stack) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const parent = extendsOf.get(k);
+        if (parent === undefined) continue;
+        if (parent === "HandlerError") return true;
+        next.push(...parentKeys(parent.split(".").pop()));
+      }
+      stack = next;
     }
-    problems.push(`the class hierarchy above ${name} does not terminate — the reason axis cannot be derived`);
     return false;
   };
-  const names = new Set(["HandlerError"]);
-  for (const [cls, parent] of extendsOf) {
-    if (parent === "HandlerError" || inFamily(cls)) {
-      const literal = nameOf.get(cls);
-      if (literal !== undefined) names.add(literal);
-    }
+
+  // **`HandlerError`'s own name is read, not seeded.** It was a string constant in this file, so
+  // renaming `this.name = "HandlerError"` in the tree — which changes the value on the wire for
+  // every un-typed throw — left the gate green and its own sentence still naming `handler_error`.
+  const names = new Set();
+  let root = null;
+  for (const [key, literal] of nameOf) {
+    if (key.endsWith(":HandlerError") && extendsOf.get(key) === "Error") root = literal;
+  }
+  if (root === null) problems.push("HandlerError's own name could not be read — every un-typed throw arrives under it");
+  else names.add(root);
+
+  for (const key of extendsOf.keys()) {
+    if (!inFamily(key)) continue;
+    const literal = nameOf.get(key);
+    if (literal !== undefined) names.add(literal);
   }
   return [...names].sort();
+}
+
+/**
+ * Whether a `/` at this point opens a regular expression rather than being division.
+ *
+ * Decided by what came before it, which is the standard way and is not exact — but the inexactness
+ * is one-sided here: treating a division as a regex loses at most the rest of a line, while
+ * treating a regex as division desyncs the whole FILE.
+ */
+function regexCanStartHere(before) {
+  const prev = before.replace(/\s+$/, "").slice(-1);
+  if (prev === "") return true;
+  if ("=(,:[!&|?{};+-*%^~<>".includes(prev)) return true;
+  return /\b(return|typeof|instanceof|case|in|of|do|else|yield|await|new|delete|void)$/.test(before.replace(/\s+$/, ""));
+}
+
+/** The index just past a regex literal starting at `i`, or `i` if this is not one. */
+function skipRegexLiteral(text, i) {
+  let j = i + 1;
+  let inClass = false;
+  while (j < text.length) {
+    const ch = text[j];
+    if (ch === "\n") return i; // a regex literal does not span lines: this was division
+    if (ch === "\\") {
+      j += 2;
+      continue;
+    }
+    if (ch === "[") inClass = true;
+    else if (ch === "]") inClass = false;
+    else if (ch === "/" && !inClass) {
+      j++;
+      while (j < text.length && /[dgimsuvy]/.test(text[j])) j++;
+      return j;
+    }
+    j++;
+  }
+  return i;
+}
+
+/** The index just past a class declaration's closing brace, counting from its `class` keyword. */
+function classEnd(text, start) {
+  const open = text.indexOf("{", start);
+  if (open === -1) return text.length;
+  let depth = 1;
+  let i = open + 1;
+  let quote = null;
+  while (i < text.length && depth > 0) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\") i += 2;
+      else {
+        if (ch === quote) quote = null;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    i++;
+  }
+  return i;
+}
+
+/**
+ * The literal codes a named function RETURNS, which is where the lease reasons actually come from.
+ *
+ * **Gate 2 on #672, third round.** The rewrite claimed to read producers and then read
+ * `LEASE_REASON_TO_TYPED_CODE` — a table `mapLeaseValidationToTypedReason` never consults. That
+ * function hard-codes its returns, and the table is a name RESERVATION its own comment describes as
+ * being there "so expansion can mechanically promote each branch". Two names in it are produced by
+ * nothing, and adding a real branch to the function left the gate green: the same defect as the
+ * round before, one level further in.
+ *
+ * The road axis already had this technique — it reads `adr029Refusal`'s body for the grounds that
+ * reach `probeRefusal` through a variable — and it was not carried over.
+ */
+export function readReturnedCodes(source, functionName, problems = []) {
+  const text = stripComments(source);
+  // **To a `}` in the first column, not to a balanced brace.** A function's signature can carry an
+  // OBJECT RETURN TYPE — `): { code: string; tryNext: TryNextAction[] } {` — so the first `{` after
+  // the name opens the annotation, and a brace-balancing scan reads the type instead of the body
+  // and reports "returns no literal code" about a function full of them. The road axis reads
+  // `adr029Refusal` this way for the same reason.
+  const m = text.match(new RegExp(`function\\s+${functionName}\\b([\\s\\S]*?)\\n\\}`));
+  if (!m) {
+    problems.push(`${functionName} could not be found — the codes it returns are unknown, not absent`);
+    return [];
+  }
+  const body = m[1];
+  // **Inside a `return {…}`, not anywhere in the body.** The body this match captures starts at the
+  // function's NAME, so it carries the signature — and `): { code: string; … }` then reads as a
+  // returned code this parser cannot name. A false alarm on every run is a gate somebody silences.
+  const codes = [];
+  for (const block of body.matchAll(/\breturn\s*\{([\s\S]*?)\}/g)) {
+    const field = block[1].match(/\bcode:\s*([^,\n}]+)/);
+    if (!field) continue;
+    const literal = field[1].trim().match(/^"([A-Za-z_][\w]*)"$/);
+    if (literal) codes.push(literal[1]);
+    else problems.push(`${functionName} returns a code this parser cannot name: ${field[1].trim().slice(0, 40)}`);
+  }
+  if (codes.length === 0) problems.push(`${functionName} returns no literal code — has it been reshaped?`);
+  return [...new Set(codes)].sort();
 }
 
 /** The literal codes handed to `new CodedHandlerError(...)`, whose constructor makes them the name. */
@@ -341,7 +489,7 @@ export function readReasonCatalogue(source) {
     // it that way — a branch no input can produce, which reads as coverage and is not (gate 2 on
     // #672). The bracketed shape (`executor_failed on terminal textbox (action=type) →`) IS live,
     // at `desktop-register.ts:1645`, so the class allows it.
-    const m = line.match(/"\s{2}([a-z_][a-z0-9_ /()='=]*?)\s*→/);
+    const m = line.match(/"\s{2}([a-z_][a-z0-9_ /()=]*?)\s*→/);
     if (!m) continue;
     for (const segment of m[1].split("/")) {
       // **A segment can carry a qualifier**, and the qualifier is not part of the name:
