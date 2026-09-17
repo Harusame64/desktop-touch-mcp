@@ -6,9 +6,17 @@
 // The grid's other three axes are the road (#669), the configuration (#670) and the result
 // (#672 / #673). The result axis ended by naming this one and deliberately not counting it:
 //
-//     reason             snake_case    toFailureEnvelope's raw projection
-//     most_likely_cause  PascalCase    toFailureEnvelope's envelope
-//     code               PascalCase    toToolFailure (`const code = err.name`), enveloped or not
+//     code                             PascalCase   toToolFailure — a handler that RETURNS a flat body
+//     data.code                        PascalCase   the same body, once the envelope wraps it
+//     reason                           snake_case   toFailureEnvelope's raw-compat projection
+//     if_unexpected.most_likely_cause  PascalCase   toFailureEnvelope
+//
+// **Measured, and it corrected the reading this file was started on** (win2, 2026-09-18, internal
+// `96d6e83`; 11 arms x 5 surfaces = 55 cells, no exception): **a cell that carries `code` carries no
+// `reason`, and the reverse holds too — the two roads are disjoint.** `code` does NOT become
+// `most_likely_cause` inside an envelope, because the wrapper's failure arm sends a RETURNED failure
+// through `buildEnvelope` + `compatHoist`, and only a lease check or a THROWN handler error reaches
+// `toFailureEnvelope`. Two presenters, chosen by how the failure left the handler.
 //
 // **`code` shares a producer and a spelling with `most_likely_cause`.** Matching the two by name
 // collapses two axes into one, and the conclusion can be right off a rule that mis-sorts the next
@@ -103,7 +111,14 @@ const ceiling = [...new Set([...arms.literals, ...failCode.codes, ...suggestsKey
 // The keys no arm writes: reachable only when a producer spells the code into its own message.
 const dictionaryOnly = suggestsKeys.filter((k) => !arms.literals.includes(k) && !failCode.codes.includes(k)).sort();
 // A code with no dictionary entry reaches the caller with whatever the call site passed, or with
-// nothing. Pinned rather than failed on: eleven do today, and one of them is the residual.
+// nothing. Pinned rather than failed on: twelve do today, and one of them is the residual.
+//
+// **"With nothing" means the key is absent, not an empty array** — measured on the same round (win2,
+// 2026-09-18): `getSuggestsForCode` returns `[]`, `renderAdviceWithFloor` turns that into
+// `undefined`, and the presenter omits `suggest` entirely. The two states stay distinguishable on
+// the wire, which is what that function was written for. On the OTHER road the advice arrives under
+// a different key again (`if_unexpected.try_next`), so "does this code carry advice" has two answers
+// wearing two names, and this file counts the flat one.
 const adviceLess = ceiling.filter((c) => !suggestsKeys.includes(c)).sort();
 
 // **The overlap with the third axis, stated as a number instead of assumed by spelling.** Both

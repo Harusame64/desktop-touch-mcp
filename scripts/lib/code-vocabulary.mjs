@@ -3,9 +3,17 @@
 // The completion grid's three axes are the road (#669), the configuration (#670) and the result
 // (#672 / #673). The result axis ended by naming a fourth that it deliberately did not count:
 //
-//     reason             snake_case    toFailureEnvelope's raw projection
-//     most_likely_cause  PascalCase    toFailureEnvelope's envelope
-//     code               PascalCase    toToolFailure (`const code = err.name`), enveloped or not
+//     code                             PascalCase   toToolFailure — a handler that RETURNS a flat body
+//     data.code                        PascalCase   the same body, once the envelope wraps it
+//     reason                           snake_case   toFailureEnvelope's raw-compat projection
+//     if_unexpected.most_likely_cause  PascalCase   toFailureEnvelope
+//
+// **Measured, and it corrected the reading this file was started on** (win2, 2026-09-18, internal
+// `96d6e83`; 11 arms x 5 surfaces = 55 cells, no exception): **a cell that carries `code` carries no
+// `reason`, and the reverse holds too — the two roads are disjoint.** `code` does NOT become
+// `most_likely_cause` inside an envelope, because the wrapper's failure arm sends a RETURNED failure
+// through `buildEnvelope` + `compatHoist`, and only a lease check or a THROWN handler error reaches
+// `toFailureEnvelope`. Two presenters, chosen by how the failure left the handler.
 //
 // **`code` shares a producer AND a spelling with `most_likely_cause`, so matching the two by name
 // collapses two axes into one.** This file counts the `code` surface at its own producers.
