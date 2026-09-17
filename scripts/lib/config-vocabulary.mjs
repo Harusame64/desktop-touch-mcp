@@ -139,6 +139,11 @@ function environmentIdentifiers(text) {
   return names;
 }
 
+/** Every regular-expression metacharacter, escaped — not the subset that came to mind. */
+function escapeForRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** The identifier a binding declares, found by walking left from its `=`. */
 function bindingNameBefore(text, equalsIndex) {
   let depth = 0;
@@ -181,7 +186,13 @@ export function readSwitchesFromScript(source, file = "<source>", problems = [],
   const read = new Set();
   const written = new Set();
 
-  const holder = "(?:process\\.env|" + [...envIdents].map((n) => n.replace(/[$]/g, "\\$")).join("|") + ")";
+  // **Escape all of it, not the character that came to mind.** These names are read out of source
+  // text this parser does not control, and the first version escaped `$` alone — the one metacharacter
+  // a JS identifier can legally carry. CodeQL called it (`js/incomplete-sanitization`, high) on #670,
+  // and it is the same family as every other finding this week: a rule narrowed to the case its author
+  // pictured. A fragment carrying `.` or `(` would have built a regex that matches something else
+  // entirely, silently, and the axis would come back wrong rather than short.
+  const holder = "(?:process\\.env|" + [...envIdents].map(escapeForRegExp).join("|") + ")";
   const holderRe = envIdents.size > 0 ? holder : "process\\.env";
 
   // `NAME` after the holder, and the `=` that follows decides read or write. `==` and `=>` are not

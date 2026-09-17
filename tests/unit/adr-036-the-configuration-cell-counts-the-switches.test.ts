@@ -119,6 +119,25 @@ describe("the extractor", () => {
     expect(problems.join("")).toMatch(/cannot name: GetEnvironmentVariable\(fromSomewhereElse\)/);
   });
 
+  it("escapes a holder's name before building a pattern out of it", () => {
+    // CodeQL caught this on #670 (`js/incomplete-sanitization`, high): the holder names go into a
+    // regex and only `$` was escaped — the one metacharacter a JS identifier can legally carry.
+    // The names come out of source text this parser does not control, so a fragment carrying `.`
+    // or `(` would have built a pattern matching something else entirely, silently, and the axis
+    // would come back WRONG rather than short. Same family as every other finding this week: a
+    // rule narrowed to the case its author pictured.
+    const v = readSwitchesFromScript(
+      `const a.b = process.env;
+       const env: NodeJS.ProcessEnv = process.env;
+       const x = env.DESKTOP_TOUCH_STILL_FOUND;`,
+    );
+    expect(v.read).toContain("DESKTOP_TOUCH_STILL_FOUND");
+    // A `$` in a real identifier still works — that is what the original escape was for.
+    expect(readSwitchesFromScript(`const $env: NodeJS.ProcessEnv = process.env; const y = $env.DTM_X;`).read).toEqual([
+      "DTM_X",
+    ]);
+  });
+
   it("keeps a `//` inside a string from eating the rest of the line", () => {
     // A URL is the ordinary way this happens, and the loss was silent — `problems` empty.
     const v = readSwitchesFromScript(`fetch("http://host", { h: process.env.DESKTOP_TOUCH_TOKEN });`);
