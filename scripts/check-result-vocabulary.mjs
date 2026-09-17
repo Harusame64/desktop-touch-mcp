@@ -12,11 +12,14 @@
 // **This file does not sweep the field name.** `reason:` is worn by at least three other axes —
 // `_truncation`, the lease validator, the background-input channel — and a sweep for the spelling
 // merges four axes on a shared word. The axis is defined by its producers instead.
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readUnion } from "./lib/route-vocabulary.mjs";
 import {
+  readCodedNames,
+  readEnvelopeErrorNames,
+  readLeaseCodes,
   readReasonCatalogue,
   readReasonConversion,
   readSuggestsKeys,
@@ -29,6 +32,23 @@ const read = (rel) => readFileSync(join(REPO, rel), "utf8");
 
 const problems = [];
 
+// **The walk is part of the claim.** An error class outside it is one whose name can reach the
+// caller without the grid noticing.
+const SKIPPED = new Set([".git", ".github", "node_modules", "dist", "target", "temp", "tests", "docs", "site"]);
+function walk(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (SKIPPED.has(relative(REPO, full).split(sep).join("/"))) continue;
+    if (entry.isDirectory()) walk(full, out);
+    else if (entry.name.endsWith(".ts")) out.push(full);
+  }
+  return out;
+}
+const sources = walk(join(REPO, "src")).map((file) => ({
+  file: relative(REPO, file).split(sep).join("/"),
+  text: readFileSync(file, "utf8"),
+}));
+
 const typed = readUnion(read("src/engine/world-graph/guarded-touch.ts"), "TouchFailReason", () => [], problems) ?? [];
 if (typed.length === 0) problems.push("TouchFailReason could not be read — the typed half of the axis is unknown, not empty");
 
@@ -36,33 +56,57 @@ const suggestsKeys = readSuggestsKeys(read("src/tools/_errors.ts"), problems);
 const conversion = readReasonConversion(read("src/tools/_envelope.ts"), problems);
 const fallbackCause = readUnexpectedFallback(read("src/tools/_envelope.ts"), problems);
 
-// **Derived only from a conversion this file has seen.** A port written from the function's NAME
-// agrees with the real one for 90 of the 94 keys and differs on four, because the implementation
-// splits `([a-z])([A-Z])` and nothing else. Two implementations that agree most of the time are the
-// worst kind of check, so a changed body stops the derivation rather than guessing at it.
-const computed = conversion.apply ? [...new Set(suggestsKeys.map(conversion.apply))].sort() : [];
+// ── The producers, which is what the first version of this file got wrong ────
+//
+// It modelled the name space with `SUGGESTS` — the ADVICE table, keyed BY the name, downstream of
+// the thing it stood in for. That counted 82 values nothing produces and missed `handler_error`,
+// `unknown` and the lease codes. Gate 2 on #672 added a fifth lease code and watched the gate print
+// OK. The number went 101 to 26.
+const RESOLVED_CODED = ["src/tools/_envelope.ts:code"];
+// **A producer whose values this extraction cannot enumerate.** `ToolFailureError` takes its name
+// from a `code` supplied at 183 `failWith` call sites across the tools; enumerating that space is
+// `check:failwith-fixtures`'s subject, not this one. Listed here rather than silently skipped,
+// because the consequence is that the axis is a LOWER BOUND — the same shape as the configuration
+// axis's registry-supplied switch name (#670), and the summary says so in both.
+const UNRESOLVABLE = [
+  {
+    producer: "ToolFailureError:code",
+    why: "the code is supplied by the failWith call sites across the tools; this extraction does not enumerate them",
+    counted_by: "npm run check:failwith-fixtures",
+  },
+];
+const errorNames = readEnvelopeErrorNames(sources, problems, UNRESOLVABLE.map((u) => u.producer));
+const codedNames = readCodedNames(sources, problems, RESOLVED_CODED);
+const leaseCodes = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
+const producedNames = [
+  ...new Set([...errorNames, ...codedNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
+].sort();
+
+const computed = conversion.apply ? [...new Set(producedNames.map(conversion.apply))].sort() : [];
 const fallbackReason = conversion.apply && fallbackCause !== null ? conversion.apply(fallbackCause) : null;
 
 const serverCatalogue = readReasonCatalogue(read("src/server-windows.ts"));
 const toolCatalogue = readReasonCatalogue(read("src/tools/desktop-register.ts"));
 
-const receivable = [...new Set([...typed, ...computed, ...(fallbackReason === null ? [] : [fallbackReason])])].sort();
+const receivable = [...new Set([...typed, ...computed])].sort();
 const computedOnly = computed.filter((r) => !typed.includes(r));
 const catalogued = new Set([...serverCatalogue, ...toolCatalogue]);
-// A typed reason with no `SUGGESTS` key gets no machine-readable advice — only whatever the prose
-// catalogues say. Recorded rather than failed: prose IS the shipped advice for these today.
-const withoutSuggests = typed.filter((r) => !computed.includes(r));
+// **A produced name with no `SUGGESTS` key reaches the caller with generic advice.** Recorded
+// rather than failed: five do today, and prose is what they carry.
+const withoutAdvice = producedNames.filter((n) => !suggestsKeys.includes(n));
 
 const derived = {
   typed,
+  producedNames,
   computedOnly,
   fallbackReason,
   serverCatalogue,
   toolCatalogue,
-  withoutSuggests,
+  withoutAdvice,
   // The two catalogues disagree today by exactly one name. Pinned as a KNOWN difference rather than
   // failed on: a gate that is red the day it lands is a gate somebody turns off (#670). It fails
   // when the difference changes, which is the property that was actually wanted.
+  unresolvable: UNRESOLVABLE.map((u) => u.producer),
   cataloguesDifferBy: [
     ...serverCatalogue.filter((n) => !toolCatalogue.includes(n)),
     ...toolCatalogue.filter((n) => !serverCatalogue.includes(n)),
@@ -108,7 +152,7 @@ try {
 // computed set, and comparing an empty set against the pin buries the one line that matters under
 // 82 "no longer produces" entries — 96 problems where one is true and the rest are its shadow. The
 // reader then fixes the loudest thing. (The same shape as an error message that names a symptom.)
-if (conversion.apply === null || typed.length === 0) {
+if (conversion.apply === null || typed.length === 0 || suggestsKeys.length === 0 || producedNames.length === 0) {
   console.error("\n[check-result-vocabulary] FAIL — the extraction cannot derive the axis:\n");
   for (const p of problems.sort()) console.error(`  - ${p}`);
   console.error("\n  Everything below this depends on it, so nothing below was compared.\n");
@@ -148,6 +192,12 @@ if (fallbackCause !== null && suggestsKeys.includes(fallbackCause)) {
   problems.push(`the if_unexpected fallback "${fallbackCause}" is now a SUGGESTS key — the reason it produces is no longer advice-less`);
 }
 
+// **Every produced name should be a key, or the caller gets generic advice.** Not failed on — five
+// are not today — but the SET is pinned above, so one more is a change the grid records.
+for (const name of suggestsKeys) {
+  if (!producedNames.includes(name)) continue;
+}
+
 if (problems.length > 0) {
   console.error("\n[check-result-vocabulary] FAIL — the grid's result axis and the code's have diverged:\n");
   for (const p of problems.sort()) console.error(`  - ${p}`);
@@ -161,9 +211,12 @@ if (problems.length > 0) {
 
 console.log(
   `[check-result-vocabulary] OK — a caller can receive ${receivable.length} reasons: ${typed.length} typed ` +
-    `(TouchFailReason) and ${computedOnly.length} more COMPUTED by the wrapper from ${suggestsKeys.length} ` +
-    `advice-table keys, plus "${fallbackReason}" when an envelope carries no if_unexpected. ` +
-    `${[...catalogued].length} are catalogued for the caller, so ${receivable.length - [...catalogued].length} ` +
-    `are not; ${withoutSuggests.length} typed reasons have no SUGGESTS entry and carry only prose advice. ` +
-    `The two catalogues differ by ${derived.cataloguesDifferBy.length}.`,
+    `(TouchFailReason), ${typed.filter((r) => computed.includes(r)).length} of which also arrive through the ` +
+    `envelope, plus ${computedOnly.length} more COMPUTED from the name of the error that ` +
+    `reached it — including "handler_error", which is every un-typed throw, and "${fallbackReason}", which is an ` +
+    `envelope with no if_unexpected. ${[...catalogued].length} are catalogued for the caller, so ` +
+    `${receivable.filter((r) => !catalogued.has(r)).length} are not; ${withoutAdvice.length} produced names have no ` +
+    `SUGGESTS entry and reach the caller with generic advice. The two catalogues differ by ` +
+    `${derived.cataloguesDifferBy.length}. ${UNRESOLVABLE.length} producer${UNRESOLVABLE.length === 1 ? " takes" : "s take"} ` +
+    `a name this extraction cannot enumerate, so the count is a LOWER BOUND, not a total.`,
 );

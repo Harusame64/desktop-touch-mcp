@@ -4,33 +4,47 @@
 // (the user's decision, 2026-09-11). The road axis got its extractor in #669 and the configuration
 // axis in #670. This is the third and last.
 //
-// **What makes this one hard is that the axis has a type for a fifth of itself.** The loop's
+// **What makes this one hard is that the axis has a type for two thirds of itself.** The loop's
 // failure arm is `reason: TouchFailReason` — eighteen values, enumerated, compile-checked. But the
 // wrapper ABOVE it returns `CompatRawFailureShape`, whose `reason` is a plain `string`, and it does
-// not write that string: it COMPUTES it.
+// not write that string: it COMPUTES it from the name of the error that reached it.
 //
-//     reason: pascalToSnake(ifUnexp.most_likely_cause)
+//     const errorName = result.error.name;                 // _envelope.ts
+//     reason: pascalToSnake(ifUnexp.most_likely_cause)     // most_likely_cause === errorName
 //
-// `most_likely_cause` is a PascalCase code looked up in `SUGGESTS`, a `Record<string, string[]>`
-// with 94 keys and no union, defaulting to `"Unknown"`. So the reason space a caller can receive is
-// the eighteen UNION the image of that conversion over 94 keys, plus `"unknown"` — and only the
-// eighteen are typed. Grepping for `reason: "…"` finds the literals and misses all of it, which is
-// the same shape as the other two axes: **the value is not written, it is produced**.
+// **The producer is `error.name`, and the first version of this file modelled it with `SUGGESTS`.**
+// That table is the ADVICE lookup, keyed BY the name — downstream of the thing it was standing in
+// for. Taking its 94 keys as the reason space was wrong in both directions at once: it counted 82
+// values nothing can produce, and it missed `handler_error` (every un-typed throw collapses into
+// `HandlerError` at `toResultErr`), `unknown` (the `if_unexpected` fallback) and the three lease
+// codes, none of which are keys. Gate 2 on #672 caught it by adding a fifth lease code and watching
+// the gate print OK. **The number went 101 to 26.**
 //
-// **Two rules this file is built on:**
+// So this file reads the PRODUCERS, the way the road axis reads `probeRoute` call sites:
+//
+//  1. every class that reaches `HandlerError` by inheritance, and the literal `this.name` it sets —
+//     anything NOT in that family is wrapped by `toResultErr` and arrives as `HandlerError`;
+//  2. `HandlerError` itself, which is how every ordinary throw reaches the caller;
+//  3. the literal codes handed to `new CodedHandlerError(...)`, whose constructor assigns
+//     `this.name = code`;
+//  4. the values of `LEASE_REASON_TO_TYPED_CODE`, which reach that constructor through a variable;
+//  5. the `if_unexpected` fallback, for an envelope that carries none.
+//
+// `SUGGESTS` is still read — but as a COVERAGE check. A produced name that is not one of its keys
+// reaches the caller with generic advice, and five do today.
+//
+// **Two further rules, both bought with defects:**
 //
 // **Do not sweep the field name.** `reason:` is worn by at least three other axes — `_truncation`
-// (`ring_underflow` / `capacity_cap`), the lease validator (`expired` / `generation_mismatch` / …)
-// and the background-input channel (`chromium` / `uwp_sandboxed` / …). A sweep for the spelling
-// merges four axes on a shared word, which is the mistake this whole vocabulary exists to avoid.
-// The axis is defined by its PRODUCERS instead: the union, and the conversion.
+// (`ring_underflow` / `capacity_cap`), the lease validator and the background-input channel. A
+// sweep for the spelling merges four axes on a shared word, which is the mistake this vocabulary
+// exists to avoid.
 //
-// **Do not re-implement the conversion.** A port of `pascalToSnake` written from its name agrees
-// with the real one for 90 of the 94 keys and differs on four: the implementation only splits
-// `([a-z])([A-Z])`, so `WorkingMemoryNUpperBoundExceeded` becomes `working_memory_nupper_bound_…`
-// and not `…_n_upper_…`. Two implementations that agree most of the time are the worst kind of
-// check — so this file extracts the body, pins it, and refuses to compute an image from a
-// conversion it has not seen before.
+// **Do not re-implement the conversion.** A port written from `pascalToSnake`'s name agrees with the
+// real one for most inputs and differs on the four `…NUpperBoundExceeded` codes, because the
+// implementation splits `([a-z])([A-Z])` and nothing else. Two implementations that agree most of
+// the time are the worst kind of check, so the body is pinned and a changed one stops the
+// derivation rather than guessing at its image.
 
 /** Strip `//` and block comments, keeping every line's index — and leaving string literals alone. */
 export function stripComments(source) {
@@ -82,9 +96,27 @@ function bodyAfter(text, head) {
   if (open === -1) return null;
   let depth = 1;
   let i = open + 1;
+  let quote = null;
   while (i < text.length && depth > 0) {
-    if (text[i] === "{") depth++;
-    else if (text[i] === "}") depth--;
+    const ch = text[i];
+    // **A brace inside a string is not a brace.** The advice table is dense with them —
+    // `"Run {tool:list_window_titles}"`, `"browser_open({launch:{}})"`, `"until:{mode:'exit'}"` —
+    // and today every one of them is balanced, so a counter that cannot see strings happens to
+    // work. An unbalanced `{` would run off the end and be REPORTED; an unbalanced `}` would close
+    // the table early and return a short key set with `problems` empty, and `--update` would then
+    // write that short set into the grid (gate 2 on #672 ran it end to end). The asymmetry is what
+    // makes it worth fixing before it happens rather than after.
+    if (quote) {
+      if (ch === "\\") i += 2;
+      else {
+        if (ch === quote) quote = null;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "{") depth++;
+    else if (ch === "}") depth--;
     i++;
   }
   return depth === 0 ? text.slice(open + 1, i - 1) : null;
@@ -101,13 +133,153 @@ export function readSuggestsKeys(source, problems = []) {
   const text = stripComments(source);
   const body = bodyAfter(text, "const SUGGESTS: Record<string, string[]> = {");
   if (body === null) {
-    problems.push("SUGGESTS could not be read — the computed half of the reason axis is unknown, not empty");
+    problems.push("SUGGESTS could not be read — the advice coverage of the reason axis is unknown, not empty");
     return [];
   }
-  // Keys at the table's own indent. A nested object's keys sit deeper and are advice, not codes.
-  const keys = [...body.matchAll(/^ {2}"?([A-Za-z_][\w]*)"?\s*:/gm)].map((m) => m[1]);
-  if (keys.length === 0) problems.push("SUGGESTS has no keys at its own indent — has the table been reshaped?");
+  // **Read at depth 1 of the object, not at an indent.** The first version anchored on exactly two
+  // spaces and an optional DOUBLE quote — so a single-quoted key, a computed `[CODE]:` key, a key
+  // on the header line and a reformat to four spaces were each dropped with `problems` empty, and
+  // a quoted advice STRING that happened to contain a colon was added as a key (gate 2 on #672
+  // probed seven shapes; four were silent). Depth is the grammar; an indent is a spelling, and
+  // enumerating spellings does not end.
+  const keys = [];
+  let depth = 0;
+  let quote = null;
+  let i = 0;
+  let atKeyStart = true;
+  while (i < body.length) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === "\\") i += 2;
+      else {
+        if (ch === quote) quote = null;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      if (depth === 0 && atKeyStart) {
+        const m = body.slice(i).match(/^(["'])([A-Za-z_][\w]*)\1\s*:/);
+        if (m) {
+          keys.push(m[2]);
+          i += m[0].length;
+          atKeyStart = false;
+          continue;
+        }
+      }
+      quote = ch;
+      i++;
+      continue;
+    }
+    if (ch === "{" || ch === "[" || ch === "(") depth++;
+    else if (ch === "}" || ch === "]" || ch === ")") depth--;
+    else if (ch === ",") atKeyStart = depth === 0;
+    else if (depth === 0 && atKeyStart && /[A-Za-z_]/.test(ch)) {
+      const m = body.slice(i).match(/^([A-Za-z_][\w]*)\s*:/);
+      if (m) {
+        keys.push(m[1]);
+        i += m[0].length;
+        atKeyStart = false;
+        continue;
+      }
+      atKeyStart = false;
+    } else if (depth === 0 && !/\s/.test(ch)) atKeyStart = false;
+    i++;
+  }
+  if (keys.length === 0) problems.push("SUGGESTS has no keys at depth 1 — has the table been reshaped?");
   return [...new Set(keys)].sort();
+}
+
+/**
+ * Every error name that can reach the failure envelope, which is what the wrapper converts.
+ *
+ * **Only the `HandlerError` family arrives under its own name.** `toResultErr` wraps everything
+ * else, so the twenty-odd engine error classes that extend plain `Error` all collapse into
+ * `HandlerError` rather than each adding a reason — and `HandlerError` itself is therefore one of
+ * the names, and one of the two that no catalogue mentions.
+ *
+ * `sources` is a list of `{ file, text }`. A dynamic `this.name = x` is reported unless it is the
+ * one recognised case: `CodedHandlerError` assigns its `code` parameter, and the codes are read
+ * separately below.
+ */
+export function readEnvelopeErrorNames(sources, problems = [], resolved = []) {
+  const extendsOf = new Map();
+  const nameOf = new Map();
+  for (const { file, text: raw } of sources) {
+    const text = stripComments(raw);
+    for (const m of text.matchAll(/\bclass\s+(\w+)\s+extends\s+(\w+)/g)) {
+      const body = text.slice(m.index, m.index + 900);
+      extendsOf.set(m[1], m[2]);
+      const literal = body.match(/this\.name\s*=\s*"([^"]+)"/);
+      if (literal) {
+        nameOf.set(m[1], literal[1]);
+        continue;
+      }
+      const dynamic = body.match(/this\.name\s*=\s*([A-Za-z_][\w.]*)\s*;/);
+      // `CodedHandlerError` is the recognised dynamic one; its codes are read at the call sites.
+      if (!dynamic) continue;
+      // `CodedHandlerError` assigns its `code` parameter and the codes are read at its call sites.
+      if (m[1] === "CodedHandlerError" && dynamic[1] === "code") continue;
+      // Anything else is pinned as an UNRESOLVABLE producer or reported. The exemption is a
+      // written-down list, never a pattern (#670) — and a producer on it does not disappear: it
+      // makes the axis a lower bound, and the summary says so.
+      if (resolved.includes(`${m[1]}:${dynamic[1]}`)) continue;
+      problems.push(`${file}: ${m[1]} sets this.name from \`${dynamic[1]}\`, a value this parser cannot enumerate`);
+    }
+  }
+  const inFamily = (name) => {
+    let cur = name;
+    for (let hops = 0; hops < 30; hops++) {
+      const parent = extendsOf.get(cur);
+      if (parent === undefined) return false;
+      if (parent === "HandlerError") return true;
+      cur = parent;
+    }
+    problems.push(`the class hierarchy above ${name} does not terminate — the reason axis cannot be derived`);
+    return false;
+  };
+  const names = new Set(["HandlerError"]);
+  for (const [cls, parent] of extendsOf) {
+    if (parent === "HandlerError" || inFamily(cls)) {
+      const literal = nameOf.get(cls);
+      if (literal !== undefined) names.add(literal);
+    }
+  }
+  return [...names].sort();
+}
+
+/** The literal codes handed to `new CodedHandlerError(...)`, whose constructor makes them the name. */
+export function readCodedNames(sources, problems = [], resolved = []) {
+  const names = new Set();
+  for (const { file, text: raw } of sources) {
+    const text = stripComments(raw);
+    for (const m of text.matchAll(/new CodedHandlerError\(\s*([^),]*)/g)) {
+      const arg = m[1].trim();
+      const literal = arg.match(/^"([A-Za-z_][\w]*)"$/);
+      if (literal) {
+        names.add(literal[1]);
+        continue;
+      }
+      // A code held in a variable. Its value space is read from the table it comes from, named in
+      // the fixture — the exemption is a written-down list, not a pattern (#670).
+      if (resolved.includes(`${file}:${arg}`)) continue;
+      problems.push(`${file}: a coded failure takes its name from \`${arg}\`, a value this parser cannot enumerate`);
+    }
+  }
+  return [...names].sort();
+}
+
+/** The typed codes a lease validation maps to, which reach `CodedHandlerError` through a variable. */
+export function readLeaseCodes(source, problems = []) {
+  const text = stripComments(source);
+  const body = bodyAfter(text, "LEASE_REASON_TO_TYPED_CODE = {");
+  if (body === null) {
+    problems.push("LEASE_REASON_TO_TYPED_CODE could not be read — the lease reasons are unknown, not absent");
+    return [];
+  }
+  const values = [...body.matchAll(/:\s*"([A-Za-z_][\w]*)"/g)].map((m) => m[1]);
+  if (values.length === 0) problems.push("LEASE_REASON_TO_TYPED_CODE has no code values — has the table been reshaped?");
+  return [...new Set(values)].sort();
 }
 
 /**
@@ -165,11 +337,18 @@ export function readReasonCatalogue(source) {
   const names = new Set();
   for (const line of source.replace(/\r\n/g, "\n").split("\n")) {
     // A catalogue entry is `"  a / b / c → …"` inside a quoted instruction line.
-    const m = line.match(/"\s{2}([a-z_][a-z0-9_ /]*?)\s*(?:→|->)/);
+    // **`→` only.** The first version also accepted `->`, and no catalogue line in the tree spells
+    // it that way — a branch no input can produce, which reads as coverage and is not (gate 2 on
+    // #672). The bracketed shape (`executor_failed on terminal textbox (action=type) →`) IS live,
+    // at `desktop-register.ts:1645`, so the class allows it.
+    const m = line.match(/"\s{2}([a-z_][a-z0-9_ /()='=]*?)\s*→/);
     if (!m) continue;
-    for (const name of m[1].split("/")) {
-      const t = name.trim();
-      if (t !== "") names.add(t);
+    for (const segment of m[1].split("/")) {
+      // **A segment can carry a qualifier**, and the qualifier is not part of the name:
+      // `"  executor_failed on terminal textbox (action=type) → …"` catalogues `executor_failed`,
+      // not a reason nobody produces. Take the leading identifier and drop the prose after it.
+      const name = segment.trim().match(/^[a-z_][a-z0-9_]*/);
+      if (name) names.add(name[0]);
     }
   }
   return [...names].sort();

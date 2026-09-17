@@ -6,14 +6,17 @@
  * produced.**
  *
  * The loop's failure arm is typed — `reason: TouchFailReason`, eighteen values, compile-checked.
- * The wrapper ABOVE it returns `reason: string` and does not write it:
+ * The wrapper ABOVE it returns `reason: string` and does not write it: it computes it from the NAME
+ * OF THE ERROR that reached it.
  *
+ *     const errorName = result.error.name;                 // _envelope.ts
  *     reason: pascalToSnake(ifUnexp.most_likely_cause)
  *
- * `most_likely_cause` is a PascalCase code from `SUGGESTS`, a 94-key `Record<string, string[]>`
- * with no union, defaulting to `"Unknown"`. So a caller can receive **101** distinct reasons, of
- * which 18 are enumerated anywhere and 83 are in neither catalogue. Grepping for `reason: "…"`
- * finds the literals and misses all of it.
+ * **The first version of this file modelled that producer with `SUGGESTS`** — the advice table,
+ * keyed BY the name, downstream of the thing it stood in for. It counted 82 values nothing can
+ * produce and missed `handler_error` (every un-typed throw collapses there at `toResultErr`),
+ * `unknown` (the fallback) and the three lease codes. Gate 2 on #672 added a fifth lease code and
+ * watched the gate print OK. **The number went 101 to 26.**
  */
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -24,6 +27,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   PINNED_PASCAL_TO_SNAKE,
+  readCodedNames,
+  readEnvelopeErrorNames,
+  readLeaseCodes,
   readReasonCatalogue,
   readReasonConversion,
   readSuggestsKeys,
@@ -108,34 +114,172 @@ describe("the extractor", () => {
     ).toEqual(["entity_not_found", "lease_expired", "lease_generation_mismatch", "modal_blocking"]);
   });
 
-  it("runs over the real tree, and the numbers are the ones the grid pins", () => {
-    // **Runs the extraction.** The sibling axis shipped a cell named for reading the real tree whose
-    // body read the checked-in JSON — it could not fail for any change to the extractor, and gate 2
-    // proved it by blinding the extractor and watching the cell stay green (#670).
+  it("reads the producers: the HandlerError family, and everything else collapsing into it", () => {
+    // **Only that family arrives under its own name.** `toResultErr` wraps everything else, so the
+    // twenty-odd engine error classes extending plain `Error` all become `HandlerError` rather than
+    // each adding a reason — and `HandlerError` is therefore one of the names, and one of the two
+    // in no catalogue.
+    const problems: string[] = [];
+    const names = readEnvelopeErrorNames(
+      [
+        {
+          file: "a.ts",
+          text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+                 class ExecutorFailed extends HandlerError { constructor() { super(); this.name = "ExecutorFailed"; } }
+                 class Deeper extends ExecutorFailed { constructor() { super(); this.name = "Deeper"; } }
+                 class NotInFamily extends Error { constructor() { super(); this.name = "NotInFamily"; } }`,
+        },
+      ],
+      problems,
+    );
+    expect(names).toEqual(["Deeper", "ExecutorFailed", "HandlerError"]);
+    expect(names).not.toContain("NotInFamily");
+    expect(problems).toEqual([]);
+
+    // A name this parser cannot enumerate is REPORTED, unless a human wrote the exemption down.
+    const dynamic: string[] = [];
+    readEnvelopeErrorNames(
+      [{ file: "b.ts", text: `class Coded extends HandlerError { constructor(code) { super(); this.name = code; } }` }],
+      dynamic,
+    );
+    expect(dynamic.join("")).toMatch(/Coded sets this.name from `code`, a value this parser cannot enumerate/);
+    const exempted: string[] = [];
+    readEnvelopeErrorNames(
+      [{ file: "b.ts", text: `class Coded extends HandlerError { constructor(code) { super(); this.name = code; } }` }],
+      exempted,
+      ["Coded:code"],
+    );
+    expect(exempted).toEqual([]);
+  });
+
+  it("reads the coded names, and the lease codes that reach them through a variable", () => {
+    const problems: string[] = [];
+    expect(readCodedNames([{ file: "a.ts", text: `throw new CodedHandlerError("WorkingMemoryNUpperBoundExceeded");` }], problems)).toEqual([
+      "WorkingMemoryNUpperBoundExceeded",
+    ]);
+    readCodedNames([{ file: "a.ts", text: `throw new CodedHandlerError(code);` }], problems);
+    expect(problems.join("")).toMatch(/a coded failure takes its name from `code`/);
+    const exempt: string[] = [];
+    readCodedNames([{ file: "a.ts", text: `throw new CodedHandlerError(code);` }], exempt, ["a.ts:code"]);
+    expect(exempt).toEqual([]);
+
+    const lease: string[] = [];
+    expect(
+      readLeaseCodes(`export const LEASE_REASON_TO_TYPED_CODE = {
+  expired: "LeaseExpired",
+  digest_mismatch: "LeaseDigestMismatch",
+} as const;`, lease),
+    ).toEqual(["LeaseDigestMismatch", "LeaseExpired"]);
+    expect(lease).toEqual([]);
+    readLeaseCodes(`const SOMETHING = {};`, lease);
+    expect(lease.join("")).toMatch(/LEASE_REASON_TO_TYPED_CODE could not be read/);
+  });
+
+  it("does not let a brace inside an advice string close the table early", () => {
+    // The advice text is dense with braces — `"Run {tool:list_window_titles}"`, `"until:{mode}"` —
+    // and today every one is balanced, so a counter that cannot see strings happens to work. An
+    // unbalanced `}` would close the table early and return a SHORT key set with `problems` empty,
+    // and `--update` would then write that short set into the grid. Gate 2 on #672 ran it end to
+    // end: the first check was loud, the re-pin laundered it, and the next key was invisible.
+    const problems: string[] = [];
+    expect(
+      readSuggestsKeys(
+        `const SUGGESTS: Record<string, string[]> = {
+  First: ["close it with } or press Escape"],
+  Second: ["after the stray brace"],
+};`,
+        problems,
+      ),
+    ).toEqual(["First", "Second"]);
+    expect(problems).toEqual([]);
+  });
+
+  it("reads a key by the grammar, not by its indent and one quote spelling", () => {
+    // Seven shapes were probed on #672 and four were silent: a single-quoted key, a computed
+    // `[CODE]:` key, a key on the header line, and a four-space reformat. Meanwhile an advice
+    // STRING containing a colon at the right indent was added as a fake key. Depth is the grammar;
+    // an indent is a spelling, and enumerating spellings does not end.
+    const problems: string[] = [];
+    const keys = readSuggestsKeys(
+      `const SUGGESTS: Record<string, string[]> = { OnHeaderLine: ["a"],
+    FourSpaces: ["b"],
+  'SingleQuoted': ["c"],
+  "DoubleQuoted": ["d"],
+  WithFakeKeyInside: ["NotAKey: advice text", \`a template
+    spanning lines\`],
+};`,
+      problems,
+    );
+    expect(keys).toEqual(["DoubleQuoted", "FourSpaces", "OnHeaderLine", "SingleQuoted", "WithFakeKeyInside"]);
+    expect(problems).toEqual([]);
+  });
+
+  it("says the table is unreadable, and says it is EMPTY, as two different things", () => {
+    // Both arms were unkillable on #672: the only "unreadable" cell used a source with no table at
+    // all, which returns two lines earlier at `body === null`.
+    const gone: string[] = [];
+    expect(readSuggestsKeys(`const SOMETHING_ELSE = {};`, gone)).toEqual([]);
+    expect(gone.join("")).toMatch(/SUGGESTS could not be read/);
+
+    const reshaped: string[] = [];
+    expect(readSuggestsKeys(`const SUGGESTS: Record<string, string[]> = {
+  ...spreadFromSomewhere,
+};`, reshaped)).toEqual([]);
+    expect(reshaped.join("")).toMatch(/SUGGESTS has no keys at depth 1/);
+
+    // And an unbalanced `{` runs off the end rather than returning a truncated body.
+    const unbalanced: string[] = [];
+    expect(readSuggestsKeys(`const SUGGESTS: Record<string, string[]> = {
+  First: ["a"],
+`, unbalanced)).toEqual([]);
+    expect(unbalanced.join("")).toMatch(/SUGGESTS could not be read/);
+  });
+
+  it("takes the leading name from a catalogue entry and drops its qualifier", () => {
+    // `"  executor_failed on terminal textbox (action=type) → …"` catalogues `executor_failed`, not
+    // a reason nobody produces. The first version's character class excluded `(`, so it skipped the
+    // line entirely; widening it without this rule invented a name instead.
+    expect(
+      readReasonCatalogue(`"  executor_failed on terminal textbox (action=type) → use V1 terminal instead."`),
+    ).toEqual(["executor_failed"]);
+    // An empty segment in an `a / / b` list contributes nothing.
+    expect(readReasonCatalogue(`"  a_reason / / b_reason → do a thing"`)).toEqual(["a_reason", "b_reason"]);
+  });
+
+  it("runs over the real tree, and the numbers in the sentence are the ones the grid pins", () => {
+    // **Runs the extraction, and asserts the sentence.** On #672 the OK line's numbers were pinned
+    // nowhere: the count could be printed as `999` and all fifteen cells passed. The headline of a
+    // gate is the part a reader quotes, so it is the part that has to be checked.
     const out = execFileSync(process.execPath, [join(REPO, "scripts", "check-result-vocabulary.mjs")], {
       encoding: "utf8",
     });
     expect(out).toMatch(/^\[check-result-vocabulary\] OK/m);
-    // Named, not counted: these are the claims the axis rests on.
-    expect(out).toMatch(/18 typed \(TouchFailReason\)/);
-    expect(out).toMatch(/COMPUTED by the wrapper/);
     const pinned = JSON.parse(readFileSync(join(REPO, "tests/fixtures/adr-036-result-vocabulary.json"), "utf8"));
-    // The fifth of the axis that has a type, and the four fifths that do not.
-    expect(pinned.typed).toHaveLength(18);
-    expect(pinned.computedOnly.length).toBeGreaterThan(80);
+    const receivable = new Set([...pinned.typed, ...pinned.computedOnly]);
+    expect(out).toContain(`a caller can receive ${receivable.size} reasons`);
+    expect(out).toContain(`${pinned.typed.length} typed (TouchFailReason)`);
+    expect(out).toContain(`plus ${pinned.computedOnly.length} more COMPUTED`);
+    expect(out).toContain(`${pinned.withoutAdvice.length} produced names have no SUGGESTS entry`);
+    expect(out).toContain(`The two catalogues differ by ${pinned.cataloguesDifferBy.length}`);
+    expect(out).toContain("LOWER BOUND, not a total");
+
+    // The two the wrapper adds that no type and no catalogue carries.
+    expect(pinned.computedOnly).toContain("handler_error");
+    expect(pinned.computedOnly).toContain("unknown");
     expect(pinned.fallbackReason).toBe("unknown");
-    // The two catalogues disagree by exactly one name, and the tool description is the longer one.
+    // The producer whose values this extraction does not enumerate, which is why it is a bound.
+    expect(pinned.unresolvable).toEqual(["ToolFailureError:code"]);
+    // The catalogues differ by exactly one name, and the tool description is the longer one.
     expect(pinned.cataloguesDifferBy).toEqual(["aim_blocked_by_excluded_window"]);
     expect(pinned.toolCatalogue).toContain("aim_blocked_by_excluded_window");
     expect(pinned.serverCatalogue).not.toContain("aim_blocked_by_excluded_window");
-    // Six typed reasons have no machine-readable advice — prose is all they carry.
-    expect(pinned.withoutSuggests).toEqual([
-      "entity_outside_viewport",
-      "lease_digest_mismatch",
-      "lease_expired",
-      "lease_generation_mismatch",
-      "modal_blocking",
-      "origin_window_not_visible",
+    // Five produced names have no advice entry, so the caller gets the generic line.
+    expect(pinned.withoutAdvice).toEqual([
+      "HandlerError",
+      "LeaseDigestMismatch",
+      "LeaseExpired",
+      "LeaseGenerationMismatch",
+      "Unknown",
     ]);
   });
 });
@@ -162,12 +306,26 @@ describe("the check's exit code", () => {
     }
   };
 
-  /** The smallest tree the check accepts: one typed reason, one advice key, both catalogues. */
+  /** The smallest tree the check accepts: a producer family, an advice table, both catalogues. */
   const fixture = (over: Record<string, string> = {}) => {
     const files: Record<string, string> = {
       "src/engine/world-graph/guarded-touch.ts": `export type TouchFailReason =\n  | "executor_failed"\n  | "modal_blocking";`,
-      "src/tools/_errors.ts": `const SUGGESTS: Record<string, string[]> = {\n  ExecutorFailed: ["fall back"],\n  SomeOtherFailure: ["try again"],\n};`,
-      "src/tools/_envelope.ts": `const ifUnexp = envelope.if_unexpected ?? { most_likely_cause: "Unknown", try_next: [] };
+      // The producers. `NotInFamily` extends plain Error, so it collapses into `HandlerError` at
+      // `toResultErr` rather than adding a reason of its own — that collapse is the axis's shape.
+      "src/errors/typed-errors.ts": `export class HandlerError extends Error {
+  constructor(m) { super(m); this.name = "HandlerError"; }
+}
+export class ExecutorFailed extends HandlerError {
+  constructor(m) { super(m); this.name = "ExecutorFailed"; }
+}
+export class NotInFamily extends Error {
+  constructor(m) { super(m); this.name = "NotInFamily"; }
+}`,
+      "src/tools/_errors.ts": `const SUGGESTS: Record<string, string[]> = {\n  ExecutorFailed: ["fall back"],\n  ModalBlocking: ["dismiss"],\n};`,
+      "src/tools/_envelope.ts": `export const LEASE_REASON_TO_TYPED_CODE = {
+  expired: "LeaseExpired",
+} as const;
+const ifUnexp = envelope.if_unexpected ?? { most_likely_cause: "Unknown", try_next: [] };
 function pascalToSnake(s: string): string {
   ${PINNED_PASCAL_TO_SNAKE}
 }`,
@@ -202,15 +360,67 @@ function pascalToSnake(s: string): string {
     expect(run().status).toBe(0);
   });
 
-  it("is 1 when an advice key is added, because a caller can now receive one more reason", () => {
-    // This is the half with no type. A new key is a new value on the wire, and nothing in the
-    // compiler, the catalogues or the tests would otherwise say so.
+  it("is 1 when a new error class joins the family, because that IS a new reason", () => {
+    // **The producer, not the advice table.** The first version asserted that adding a `SUGGESTS`
+    // key added a reason — it does not; the table is keyed BY the name and is downstream of it.
+    // Adding a class to the `HandlerError` family is what puts a new value on the wire.
     fixture();
     pin();
-    write("src/tools/_errors.ts", `const SUGGESTS: Record<string, string[]> = {\n  ExecutorFailed: ["fall back"],\n  SomeOtherFailure: ["try again"],\n  BrandNewFailure: ["do something"],\n};`);
+    write(
+      "src/errors/typed-errors.ts",
+      `export class HandlerError extends Error {
+  constructor(m) { super(m); this.name = "HandlerError"; }
+}
+export class ExecutorFailed extends HandlerError {
+  constructor(m) { super(m); this.name = "ExecutorFailed"; }
+}
+export class BrandNewFailure extends HandlerError {
+  constructor(m) { super(m); this.name = "BrandNewFailure"; }
+}
+export class NotInFamily extends Error {
+  constructor(m) { super(m); this.name = "NotInFamily"; }
+}`,
+    );
     const { status, out } = run();
     expect(status).toBe(1);
+    expect(out).toMatch(/producedNames: the code now produces "BrandNewFailure"/);
     expect(out).toMatch(/computedOnly: the code now produces "brand_new_failure"/);
+    // …and it has no advice entry, which the grid records too.
+    expect(out).toMatch(/withoutAdvice: the code now produces "BrandNewFailure"/);
+  });
+
+  it("is 1 when a lease code is added, which is the arm that shipped green", () => {
+    // Gate 2 on #672 added the fifth lease code the file's own doc anticipates and the gate printed
+    // `OK — 101 reasons`, exit 0. It reaches the wire through `new CodedHandlerError(code)`, so the
+    // table is a producer and modelling the axis with `SUGGESTS` could not see it.
+    fixture();
+    pin();
+    write(
+      "src/tools/_envelope.ts",
+      `export const LEASE_REASON_TO_TYPED_CODE = {
+  expired: "LeaseExpired",
+  superseded: "LeaseSuperseded",
+} as const;
+const ifUnexp = envelope.if_unexpected ?? { most_likely_cause: "Unknown", try_next: [] };
+function pascalToSnake(s: string): string {
+  ${PINNED_PASCAL_TO_SNAKE}
+}`,
+    );
+    const { status, out } = run();
+    expect(status).toBe(1);
+    expect(out).toMatch(/computedOnly: the code now produces "lease_superseded"/);
+  });
+
+  it("stops on an unreadable TouchFailReason too, not only on a changed conversion", () => {
+    // The early exit's other arm. It was unkillable on #672: with the typed union unreadable the
+    // banner printed with ZERO problems under it, which tells the reader nothing at all.
+    fixture();
+    pin();
+    write("src/engine/world-graph/guarded-touch.ts", `export type SomethingElse = "a";`);
+    const { status, out } = run();
+    expect(status).toBe(1);
+    expect(out).toMatch(/cannot derive the axis/);
+    expect(out).toMatch(/TouchFailReason could not be read — the typed half of the axis is unknown, not empty/);
   });
 
   it("names the broken derivation alone, instead of its 82 shadows", () => {
@@ -231,7 +441,11 @@ function pascalToSnake(s: string): string {
     expect(out).toMatch(/cannot derive the axis/);
     expect(out).toMatch(/pascalToSnake has changed/);
     expect(out).toMatch(/nothing below was compared/);
-    expect(out.match(/^\s+- /gm) ?? []).toHaveLength(1);
+    // **No shadows.** On the real tree the first version printed 96 problems where one was true and
+    // 82 were the empty computed set being compared against the pin. What is checked is the absence
+    // of that class of line, not a count — a count moves for reasons unrelated to the property.
+    expect(out).not.toMatch(/which the code no longer produces/);
+    expect(out).not.toMatch(/which the grid does not count/);
   });
 
   it("is 1 when a catalogue promises a reason nothing produces", () => {
