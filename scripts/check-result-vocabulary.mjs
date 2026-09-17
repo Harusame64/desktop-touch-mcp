@@ -78,7 +78,7 @@ const fallbackCause = readUnexpectedFallback(read("src/tools/_envelope.ts"), pro
 // It modelled the name space with `SUGGESTS` — the ADVICE table, keyed BY the name, downstream of
 // the thing it stood in for. That counted 82 values nothing produces and missed `handler_error`,
 // `unknown` and the lease codes. Gate 2 on #672 added a fifth lease code and watched the gate print
-// OK. The number went 101 to 26.
+// OK. The number went 101 to 26, and to 23 when arrival replaced membership (#673).
 const RESOLVED_CODED = [{ file: "src/tools/_envelope.ts", identifier: "code", from: "mapLeaseValidationToTypedReason" }];
 const RESOLVED_DYNAMIC_NAME = ["src/errors/typed-errors.ts:ToolFailureError:code"];
 // **Reachability is derived now, not pinned by hand.** `handler_error` used to be carried here as
@@ -123,7 +123,6 @@ const UNRESOLVABLE = [
 // into one. Getting the conclusion right off a wrong rule is how the next case is mis-sorted.
 const family = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
 const errorNames = readPresentedNames(sources, family.nameOfClass, problems, RESOLVED_CODED);
-const codedNames = [];
 // **The lease codes come from the function, not from the table beside it.** Gate 2's third round:
 // `mapLeaseValidationToTypedReason` hard-codes its returns and never consults
 // `LEASE_REASON_TO_TYPED_CODE`, whose own comment calls it a reservation for future expansion. Two
@@ -133,7 +132,7 @@ const leaseCodes = readReturnedCodes(read("src/tools/_envelope.ts"), "mapLeaseVa
 // function returns with no reserved name is the shape the reservation exists to prevent.
 const reservedLeaseNames = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
 const producedNames = [
-  ...new Set([...errorNames, ...codedNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
+  ...new Set([...errorNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
 ].sort();
 
 const computed = conversion.apply ? [...new Set(producedNames.map(conversion.apply))].sort() : [];
@@ -146,7 +145,7 @@ const receivable = [...new Set([...typed, ...computed])].sort();
 const computedOnly = computed.filter((r) => !typed.includes(r));
 const catalogued = new Set([...serverCatalogue, ...toolCatalogue]);
 // **A produced name with no `SUGGESTS` key reaches the caller with generic advice.** Recorded
-// rather than failed: five do today, and prose is what they carry.
+// rather than failed: two do today, and prose is what they carry.
 const withoutAdvice = producedNames.filter((n) => !suggestsKeys.includes(n));
 
 const derived = {
@@ -162,6 +161,11 @@ const derived = {
   // when the difference changes, which is the property that was actually wanted.
   unresolvable: UNRESOLVABLE.map((u) => u.producer),
   reservedLeaseNames,
+  // **Two classes are declared twice with different names**, and both are presented. Which one a
+  // presented class means depends on the walk order, so it is pinned as a fact rather than failed
+  // on — a gate that is red the day it lands is a gate somebody turns off (#670). A THIRD collision,
+  // or either of these two changing, is a change the grid records.
+  classNameCollisions: family.collisions,
   cataloguesDifferBy: [
     ...serverCatalogue.filter((n) => !toolCatalogue.includes(n)),
     ...toolCatalogue.filter((n) => !serverCatalogue.includes(n)),
@@ -276,8 +280,7 @@ console.log(
     `most_likely_cause, which carries no reason field at all): ${typed.length} typed ` +
     `(TouchFailReason), ${typed.filter((r) => computed.includes(r)).length} of which also arrive through the ` +
     `envelope, plus ${computedOnly.length} more COMPUTED from the name of the error that ` +
-    `reached it — including "handler_error", which is every un-typed throw, and "${fallbackReason}", which is an ` +
-    `envelope with no if_unexpected. ${[...catalogued].length} are catalogued for the caller, so ` +
+    `reached it${computedOnly.includes(fallbackReason) ? `, including "${fallbackReason}"` : ""}. ${[...catalogued].length} are catalogued for the caller, so ` +
     `${receivable.filter((r) => !catalogued.has(r)).length} are not; ${withoutAdvice.length} produced names have no ` +
     `SUGGESTS entry and reach the caller with generic advice. The two catalogues differ by ` +
     `${derived.cataloguesDifferBy.length}. ${UNRESOLVABLE.length} producer${UNRESOLVABLE.length === 1 ? " takes" : "s take"} ` +

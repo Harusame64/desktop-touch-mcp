@@ -254,6 +254,185 @@ toFailureEnvelope(Err(new CodedHandlerError("LiteralCode")), { optIn });`,
     expect(lease.join("")).toMatch(/LEASE_REASON_TO_TYPED_CODE could not be read/);
   });
 
+  // ── Restored ────────────────────────────────────────────────────────────────
+  //
+  // **These six were deleted by the commit that changed the producer model, and none of them
+  // covers code that commit removed.** Gate 2 on #673 re-broke five and watched them survive:
+  // seeding `HandlerError`'s name, the fixed 900-character window, the bare-name class key, the
+  // double-quote-only `this.name` match, and the regex-literal desync. Each was bought with a
+  // defect found by codex or an earlier round, and each comment explaining the defect outlived the
+  // check that enforced it.
+  //
+  // The lesson is about how the edit was made, not about the code: replacing a block wholesale
+  // swallows the cells inside it, and the swallowed ones are invisible in a green run.
+
+  it("reads HandlerError's own name from the tree instead of seeding it", () => {
+    // It was a string constant in the extractor, so renaming `this.name = "HandlerError"` — which
+    // changes the value on the wire for EVERY un-typed throw — left the gate green while its own
+    // summary went on naming `handler_error`.
+    const problems: string[] = [];
+    expect(
+      readEnvelopeErrorNames(
+        [
+          {
+            file: "a.ts",
+            text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerFailure"; } }
+                   class Child extends HandlerError { constructor() { super(); this.name = "Child"; } }`,
+          },
+        ],
+        problems,
+      ).names,
+    ).toEqual(["Child", "HandlerFailure"]);
+    expect(problems).toEqual([]);
+
+    const gone: string[] = [];
+    readEnvelopeErrorNames([{ file: "a.ts", text: `class Other extends Error {}` }], gone);
+    expect(gone.join("")).toMatch(/HandlerError's own name could not be read/);
+  });
+
+  it("stops at the class's own brace, in both directions", () => {
+    // A fixed 900-character window did two things: a constructor longer than it left its class
+    // NAMELESS with `problems` empty, and a class with no `this.name` took the literal of the NEXT
+    // class — including one explicitly outside the family, which is a reason nothing can produce.
+    const long = "    const filler = 1;\n".repeat(90);
+    expect(
+      readEnvelopeErrorNames([
+        { file: "a.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class LongOne extends HandlerError {
+  constructor() {
+    super();
+${long}    this.name = "LongConstructorFailure";
+  }
+}` },
+      ]).names,
+    ).toContain("LongConstructorFailure");
+
+    expect(
+      readEnvelopeErrorNames([
+        { file: "a.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class InheritsItsParentsName extends HandlerError {}
+class NotInTheFamily extends Error {
+  constructor() { super(); this.name = "GhostReason"; }
+}` },
+      ]).names,
+    ).toEqual(["HandlerError"]);
+  });
+
+  it("keys a class by its file, because two files declare the same name", () => {
+    // `AimOccludedError` is declared in `src/engine/aim.ts` (extends `Error`) and in
+    // `src/errors/typed-errors.ts` (extends `HandlerError`). With a bare-name key, last writer wins
+    // and the axis was correct only because of the order `readdirSync` returned — move one file and
+    // two real reasons become "the code no longer produces".
+    const both = [
+      { file: "src/engine/aim.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class Dup extends Error { constructor() { super(); this.name = "DupPlainError"; } }` },
+      { file: "src/errors/typed-errors.ts", text: `class Dup extends HandlerError { constructor() { super(); this.name = "DupTyped"; } }` },
+    ];
+    expect(readEnvelopeErrorNames(both).names).toEqual(["DupTyped", "HandlerError"]);
+    expect(readEnvelopeErrorNames([...both].reverse()).names).toEqual(["DupTyped", "HandlerError"]);
+  });
+
+  it("reads a name in either quote spelling, because nothing forces one", () => {
+    // `this.name = 'NewFailure'` was read as neither a literal nor a dynamic value: the class
+    // contributed nothing and raised nothing while the runtime exposed the name (codex, #672).
+    // There is no lint rule in this repository forcing double quotes.
+    expect(
+      readEnvelopeErrorNames([
+        {
+          file: "a.ts",
+          text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class Single extends HandlerError { constructor() { super(); this.name = 'NewFailure'; } }`,
+        },
+      ]).names,
+    ).toEqual(["HandlerError", "NewFailure"]);
+  });
+
+  it("reports a computed advice key instead of dropping it", () => {
+    // `[HANDLER_ERROR]: ["retry"]` entered the bracket-depth branch and vanished, and the comment
+    // beside the scanner claimed the shape was handled — so adding computed advice for a name that
+    // has none today would change what the caller is told while `withoutAdvice` stayed put and the
+    // gate stayed green (codex, #672). A comment is a claim, not a check.
+    const problems: string[] = [];
+    const keys = readSuggestsKeys(
+      `const SUGGESTS: Record<string, string[]> = {\n  [HANDLER_ERROR]: ["retry"],\n  Ordinary: ["a"],\n};`,
+      problems,
+    );
+    expect(keys).toEqual(["Ordinary"]);
+    expect(problems.join("")).toMatch(/computed key this parser cannot name — the advice coverage is a lower bound/);
+  });
+
+  it("does not desync on a regex literal that contains quotes", () => {
+    // Once the walk covered all of `src/`, two files desynced the stripper: a regex literal with an
+    // odd number of `"` opened a string state that never closed, so every comment below it stopped
+    // being stripped and a commented-out error class entered the axis. And the fix has an order to
+    // it — tried BEFORE the comment checks, `// foo` parses as an empty regex and 94 advice keys
+    // became 20.
+    const src = `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+const re = /^Exception calling "GetCurrentPattern" with "\\d+" argument\\(s\\): ".*/;
+// class CommentOnly extends HandlerError { constructor() { super(); this.name = "CommentGhost"; } }`;
+    expect(readEnvelopeErrorNames([{ file: "a.ts", text: src }]).names).toEqual(["HandlerError"]);
+    expect(readSuggestsKeys(`const SUGGESTS: Record<string, string[]> = {
+  First: ["a"], // a trailing comment after a brace
+  Second: ["b"],
+};`)).toEqual(["First", "Second"]);
+  });
+
+  it("reads the producer, which is buildFailureEnvelope, not the function that calls it", () => {
+    // **The fifth proxy in a row.** `most_likely_cause` is written by `buildFailureEnvelope(name, …)`,
+    // which is EXPORTED — `toFailureEnvelope` is one of its callers, and the tree's own docs call the
+    // direct call a pattern that existed and was migrated away from. Gate 2 on #673 added a direct
+    // call with a fresh literal: it type-checked and the gate printed OK.
+    const nameOfClass = new Map([["HandlerError", "HandlerError"]]);
+    const problems: string[] = [];
+    expect(
+      readPresentedNames(
+        [{ file: "a.ts", text: `export function brandNew() {\n  return buildFailureEnvelope("BrandNewCause", []);\n}` }],
+        nameOfClass,
+        problems,
+      ),
+    ).toEqual(["BrandNewCause"]);
+    expect(problems).toEqual([]);
+
+    // A name it cannot enumerate there is reported, and the function's own declaration is not a
+    // call site — the road axis learned that about `probeRoute(route: string, …)`.
+    const dynamic: string[] = [];
+    readPresentedNames([{ file: "a.ts", text: `buildFailureEnvelope(computeIt(x), []);` }], nameOfClass, dynamic);
+    expect(dynamic.join("")).toMatch(/buildFailureEnvelope is given `computeIt\(x`/);
+    const decl: string[] = [];
+    readPresentedNames(
+      [{ file: "a.ts", text: `export function buildFailureEnvelope(\n  mostLikelyCause: string,\n) {}` }],
+      nameOfClass,
+      decl,
+    );
+    expect(decl).toEqual([]);
+  });
+
+  it("takes the two-argument coded form, which is documented and supported", () => {
+    // Requiring `)` right after the string made a name-preserving edit go red with two lines
+    // claiming the code "no longer produces" a name it produces unchanged — and `--update` refuses
+    // while problems exist, so that edit hard-blocked the gate (gate 2, #673).
+    const nameOfClass = new Map([["HandlerError", "HandlerError"]]);
+    expect(
+      readPresentedNames(
+        [{ file: "a.ts", text: `toFailureEnvelope(Err(new CodedHandlerError("Foo", "a message")), { optIn });` }],
+        nameOfClass,
+      ),
+    ).toEqual(["Foo"]);
+  });
+
+  it("reports two files that declare a class with different names, instead of picking one", () => {
+    // `nameOf` is keyed `file:class` precisely because `AimOccludedError` is declared twice with
+    // different `this.name` values, and both are presented. Collapsing to a bare name is
+    // last-writer-wins over walk order — correct today only because `engine/` sorts first.
+    const both = [
+      { file: "src/engine/aim.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class Dup extends HandlerError { constructor() { super(); this.name = "DupLong"; } }` },
+      { file: "src/errors/typed-errors.ts", text: `class Dup extends HandlerError { constructor() { super(); this.name = "Dup"; } }` },
+    ];
+    expect(readEnvelopeErrorNames(both).collisions).toEqual(["Dup: Dup / DupLong"]);
+    expect(readEnvelopeErrorNames([...both].reverse()).collisions).toEqual(["Dup: Dup / DupLong"]);
+  });
+
   it("does not let a brace inside an advice string close the table early", () => {
     // The advice text is dense with braces — `"Run {tool:list_window_titles}"`, `"until:{mode}"` —
     // and today every one is balanced, so a counter that cannot see strings happens to work. An

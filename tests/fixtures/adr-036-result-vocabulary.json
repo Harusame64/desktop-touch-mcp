@@ -99,6 +99,10 @@
     "LeaseExpired",
     "LeaseGenerationMismatch"
   ],
+  "classNameCollisions": [
+    "AimIdentityChangedError: AimIdentityChanged / AimIdentityChangedError",
+    "AimOccludedError: AimOccluded / AimOccludedError"
+  ],
   "cataloguesDifferBy": [
     "aim_blocked_by_excluded_window"
   ]
