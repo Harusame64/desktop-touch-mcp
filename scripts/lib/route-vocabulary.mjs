@@ -19,6 +19,19 @@
 //    vocabulary is 11.
 
 /**
+ * Quote every regex metacharacter in a name read out of the source.
+ *
+ * All four extractions build patterns out of names they PARSED — a union's name, a holder's name, a
+ * function's name, an identifier an arm returns. When the parse is wrong the string is not an
+ * identifier at all, and an unescaped interpolation then builds a pattern that matches something
+ * other than what it names: the extraction's own failure mode, inside the tool that detects it.
+ * (CodeQL flagged the partial `$`-only escaping on #674; the class is the reason, not the alert.)
+ */
+export function quoteForRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * Strip `//` and block comments, keeping every line's index — **without reading inside a string, and
  * without mistaking a regular expression for a comment**.
  *
@@ -120,7 +133,7 @@ export function stripComments(source) {
  */
 export function readUnion(source, name, resolve = () => [], problems = []) {
   const text = stripComments(source);
-  const m = text.match(new RegExp(`export type ${name}\\s*=([\\s\\S]*?);`));
+  const m = text.match(new RegExp(`export type ${quoteForRegExp(name)}\\s*=([\\s\\S]*?);`));
   if (!m) return null;
   const body = m[1];
   const values = [...body.matchAll(/"([^"]+)"/g)].map((x) => x[1]);
@@ -165,7 +178,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // **Anchored on a word boundary.** `export type PointOwnerVia` sits above `export type
   // PointOwner` in the same file, and a substring search reads the one-liner instead — one value
   // where the vocabulary has four, with nothing saying so.
-  const start = text.search(new RegExp(`export type ${typeName}\\b`));
+  const start = text.search(new RegExp(`export type ${quoteForRegExp(typeName)}\\b`));
   if (start === -1) {
     problems.push(`${typeName} not found — the ${field} union it carries is not being read`);
     return [];
@@ -205,7 +218,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // which is how a union usually grows — and stopping at the newline read one member of however
   // many (gate 2 on #669, second pass). Run to the field's own terminator instead: a `;`, a brace,
   // or the next `name:` field on the same object.
-  for (const m of body.matchAll(new RegExp(`\\b${field}:\\s*([^;{}]*)`, "g"))) {
+  for (const m of body.matchAll(new RegExp(`\\b${quoteForRegExp(field)}:\\s*([^;{}]*)`, "g"))) {
     seen = true;
     const value = m[1].split(/,\s*\w+\s*:/)[0];
     for (const v of value.matchAll(/"([^"]+)"/g)) values.push(v[1]);

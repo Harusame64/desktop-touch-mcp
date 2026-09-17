@@ -27,6 +27,8 @@ import {
   readFailCodeSites,
   readHandBuiltFlatFailures,
 } from "../../scripts/lib/code-vocabulary.mjs";
+import { stripComments as stripConfigComments } from "../../scripts/lib/config-vocabulary.mjs";
+import { stripComments as stripResultComments } from "../../scripts/lib/result-vocabulary.mjs";
 import { stripComments } from "../../scripts/lib/route-vocabulary.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -73,6 +75,26 @@ describe("the comment stripper the four extractions share", () => {
     // because TypeScript's does.
     const src = "const s = 'it\nconst code = \"StillHere\";\n";
     expect(stripComments(src)).toContain("StillHere");
+  });
+});
+
+describe("all three comment strippers, because there are three", () => {
+  it("none of them reads a regex literal's `\\/\\/` as a comment", () => {
+    // **The same defect has three audiences.** This tree carries three implementations of
+    // `stripComments` — `route-vocabulary` (the road and code axes), `result-vocabulary` and
+    // `config-vocabulary` — and fixing the one this PR touched left the configuration axis reading
+    // `/^https?:\/\//i` as a comment: `engine/cdp-bridge.ts:582` lost the `{` that opens its `if`,
+    // so every brace-matching read after it walked into the wrong block with nothing reported. The
+    // configuration pin did not move (79 switches before and after), so the corruption was latent —
+    // which is exactly how it would have stayed until something downstream depended on it.
+    const line = 'if (!/^https?:\\/\\//i.test(url)) {';
+    for (const [name, strip] of [
+      ["route", stripComments],
+      ["result", stripResultComments],
+      ["config", stripConfigComments],
+    ] as const) {
+      expect(strip(`${line}\n  go();\n}\n`).split("\n")[0], name).toBe(line);
+    }
   });
 });
 

@@ -53,7 +53,8 @@
 // below is keyed on the flat failure's SHAPE (`ok:false` + `code` + `error` at one depth), because
 // the shape is the grammar and the field name is a spelling shared with four neighbours.
 
-import { stripComments } from "./route-vocabulary.mjs";
+import { quoteForRegExp, stripComments } from "./route-vocabulary.mjs";
+
 
 /**
  * The body of a function whose `function` keyword is at `at`, skipping its RETURN TYPE.
@@ -372,7 +373,7 @@ function enclosingCondition(body, at) {
  * means some other operand can carry the branch on its own.
  */
 function dictionaryMembershipRequired(condition, expr) {
-  const call = new RegExp(`(!\\s*)?Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${expr.replace(/[$]/g, "\\$")}\\s*\\)`, "g");
+  const call = new RegExp(`(!\\s*)?Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${quoteForRegExp(expr)}\\s*\\)`, "g");
   let positive = false;
   for (const m of condition.matchAll(call)) {
     if (m[1] === undefined) positive = true;
@@ -539,7 +540,7 @@ export function readFailCodeSites(sources, problems = []) {
     }
     // One level of wrapper: `fail("KeyLockerDisabled", …)` inside the same file.
     for (const name of wrappers.keys()) {
-      for (const m of text.matchAll(new RegExp(`\\b${name}\\(`, "g"))) {
+      for (const m of text.matchAll(new RegExp(`\\b${quoteForRegExp(name)}\\(`, "g"))) {
         const args = readArgList(text, m.index + m[0].length - 1);
         if (args === null) continue;
         const lit = literal((args[0] ?? "").trim());
@@ -580,7 +581,7 @@ export function readFailCodeSites(sources, problems = []) {
  * one the old shape could not express, and it is the four-way ternary.
  */
 function readLocalBinding(text, identifier, before = text.length) {
-  const re = new RegExp(`\\bconst\\s+${identifier}\\s*(?::[^=;]+)?=\\s*([^;]+);`, "g");
+  const re = new RegExp(`\\bconst\\s+${quoteForRegExp(identifier)}\\s*(?::[^=;]+)?=\\s*([^;]+);`, "g");
   let nearest = null;
   for (const m of text.matchAll(re)) {
     if (m.index > before) break;
@@ -741,7 +742,7 @@ function stringRanges(text) {
 
 /** Is `name` called anywhere outside the file that defines it? */
 export function isCalledOutside(sources, name, definingFile) {
-  const call = new RegExp(`\\b${name}\\s*\\(`);
+  const call = new RegExp(`\\b${quoteForRegExp(name)}\\s*\\(`);
   return sources.some(({ file, text }) => file !== definingFile && call.test(stripComments(text)));
 }
 

@@ -82,6 +82,32 @@ function stripCommentsWithMask(source) {
       while (i < text.length && text[i] !== "\n") i++;
       continue;
     }
+    // **A regex literal's `\/\/` is not a comment either.** The same defect as the string case
+    // above, one grammar rule further in: `/^https?:\/\//i` in `engine/cdp-bridge.ts:582` lost the
+    // rest of its line — including the `{` that opens the `if` — so every brace-matching read after
+    // it walked into the wrong block, silently. Measured on 2026-09-18 while the road extractor was
+    // being fixed for the same thing; this file kept its own copy of the strip and so kept the
+    // defect. A regex is entered only where a value may begin.
+    if (ch === "/" && /(?:[=(,[!&|?:;{}+\-*%^~<>]|\breturn|\btypeof|\bcase|\bin|\bof|\bdo|\belse|\bvoid|\bdelete|\binstanceof|\bnew|\byield|\bawait)\s*$/.test(out)) {
+      push(ch, false);
+      i++;
+      let inClass = false;
+      while (i < text.length) {
+        const c = text[i];
+        push(c, false);
+        i++;
+        if (c === "\\") {
+          push(text[i] ?? "", false);
+          i++;
+          continue;
+        }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) break;
+        else if (c === "\n") break;
+      }
+      continue;
+    }
     if (ch === "/" && text[i + 1] === "*") {
       const close = text.indexOf("*/", i + 2);
       const end = close === -1 ? text.length : close + 2;
@@ -324,6 +350,32 @@ function stripRustComments(source) {
     }
     if (ch === "/" && text[i + 1] === "/") {
       while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    // **A regex literal's `\/\/` is not a comment either.** The same defect as the string case
+    // above, one grammar rule further in: `/^https?:\/\//i` in `engine/cdp-bridge.ts:582` lost the
+    // rest of its line — including the `{` that opens the `if` — so every brace-matching read after
+    // it walked into the wrong block, silently. Measured on 2026-09-18 while the road extractor was
+    // being fixed for the same thing; this file kept its own copy of the strip and so kept the
+    // defect. A regex is entered only where a value may begin.
+    if (ch === "/" && /(?:[=(,[!&|?:;{}+\-*%^~<>]|\breturn|\btypeof|\bcase|\bin|\bof|\bdo|\belse|\bvoid|\bdelete|\binstanceof|\bnew|\byield|\bawait)\s*$/.test(out)) {
+      push(ch, false);
+      i++;
+      let inClass = false;
+      while (i < text.length) {
+        const c = text[i];
+        push(c, false);
+        i++;
+        if (c === "\\") {
+          push(text[i] ?? "", false);
+          i++;
+          continue;
+        }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) break;
+        else if (c === "\n") break;
+      }
       continue;
     }
     if (ch === "/" && text[i + 1] === "*") {
