@@ -25,11 +25,12 @@ describe("identity-tracker", () => {
     expect(takeLastInvalidation()).toBeNull();
   });
 
-  it("detects hwnd_reused when same hwnd observed with a different pid", () => {
+  it("fires nothing when the same window is observed twice unchanged", () => {
+    // **Renamed to what it checks.** It used to be called "detects hwnd_reused when same hwnd
+    // observed with a different pid" while its own comment said it could not force a different pid
+    // — so it asserted the opposite of its name. The branches it was named for are driven with a
+    // mocked win32 in `adr-036-item-10-what-the-read-path-invalidates-on.test.ts`.
     observeTarget("calc", 0x1234n, "Calculator");
-    // Second observation cannot easily force a different pid because the
-    // helper resolves pid from the HWND via Win32. We only assert that the
-    // tracker does NOT falsely fire invalidation when nothing changed.
     const r2 = observeTarget("calc", 0x1234n, "Calculator");
     expect(r2.invalidatedBy).toBeNull();
   });

@@ -1,0 +1,130 @@
+{
+  "landingWhyOnTheRow": [
+    "receiver_unknown"
+  ],
+  "landingWhyFromTheUnion": [
+    "verdict.why"
+  ],
+  "route": [
+    "aim_check",
+    "cdp",
+    "containment_check",
+    "homing",
+    "keyboard",
+    "mouse",
+    "refusal",
+    "terminal",
+    "uia"
+  ],
+  "rung": [
+    "cdp_click",
+    "excluded_window",
+    "identity_changed",
+    "keyboard",
+    "mouse_press",
+    "moved_during_read",
+    "occluded",
+    "owned_window_not_origin",
+    "point_outside_window",
+    "reachable_bounds",
+    "terminal_send",
+    "uia_click",
+    "uia_downgrade",
+    "uia_set_value",
+    "uia_set_value_then_keyboard",
+    "window_gone",
+    "window_off_desktop",
+    "window_resized"
+  ],
+  "refused": [
+    "aim_blocked_by_excluded_window",
+    "aim_identity_changed",
+    "aim_occluded",
+    "aim_point_outside_window",
+    "aim_route_failed",
+    "aim_window_gone",
+    "coordinate_outside_reachable_bounds",
+    "cursor_placement_blocked",
+    "entity_not_found",
+    "keyboard_target_unsafe",
+    "window_excluded"
+  ],
+  "why": [
+    "cdp_click",
+    "cdp_fill",
+    "enumeration_failed",
+    "excluded_window",
+    "keyboard_only_entity",
+    "measured_in_another_window",
+    "measurement_moment_unknown",
+    "moved_during_read",
+    "no_aim_rect_dep",
+    "no_origin_rect",
+    "no_rectangle_and_not_gone",
+    "no_window_at_point",
+    "not_moved",
+    "owned_popup_at_remembered_point",
+    "point_was_outside_origin",
+    "terminal_send",
+    "uia_downgrade",
+    "uia_invoke",
+    "uia_set_value",
+    "uia_set_value_failed",
+    "unattributable_window",
+    "visual_or_read_entity",
+    "window_off_desktop",
+    "window_resized"
+  ],
+  "touchFailReason": [
+    "aim_blocked_by_excluded_window",
+    "aim_identity_changed",
+    "aim_occluded",
+    "aim_point_outside_window",
+    "aim_route_failed",
+    "aim_window_gone",
+    "coordinate_outside_reachable_bounds",
+    "cursor_placement_blocked",
+    "entity_not_found",
+    "entity_outside_viewport",
+    "executor_failed",
+    "keyboard_target_unsafe",
+    "lease_digest_mismatch",
+    "lease_expired",
+    "lease_generation_mismatch",
+    "modal_blocking",
+    "origin_window_not_visible",
+    "window_excluded"
+  ],
+  "landingWhy": [
+    "entity_handle_stale",
+    "entity_windowless",
+    "ground_disabled:other_control",
+    "ground_disabled:other_window",
+    "ground_disabled:read_only",
+    "parents_unread",
+    "receiver_in_other_window",
+    "receiver_in_owned_window",
+    "receiver_is_window",
+    "receiver_unknown",
+    "reference_unknown"
+  ],
+  "keyboardGround": [
+    "other_control",
+    "other_window",
+    "read_only"
+  ],
+  "executorKind": [
+    "cdp",
+    "keyboard",
+    "mouse",
+    "terminal",
+    "uia"
+  ],
+  "advertisedExecutorKind": [
+    "cdp",
+    "keyboard",
+    "mouse",
+    "terminal",
+    "uia"
+  ]
+}

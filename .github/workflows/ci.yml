@@ -63,6 +63,12 @@ jobs:
       - name: Check no koffi (ADR-007 §6 P4 acceptance — zero koffi.X call sites)
         run: npm run check:no-koffi
 
+      - name: Check the ADR-036 route vocabulary (the completion grid's denominator)
+        # The gate's denominator is the vocabulary extracted from the code, not a hand list: a road
+        # added in `desktop-executor.ts` must not quietly become a slot nobody counted. The unit
+        # suite does not run in this job, so this is where the drift is caught.
+        run: npm run check:route-vocabulary
+
       - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)
         # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the
         # program and ESLint is not type-aware: a config key that stops existing keeps
