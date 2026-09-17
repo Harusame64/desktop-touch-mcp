@@ -104,6 +104,9 @@
   "unresolvable": [
     "ToolFailureError:code"
   ],
+  "withoutProductionCaller": [
+    "HandlerError"
+  ],
   "cataloguesDifferBy": [
     "aim_blocked_by_excluded_window"
   ]

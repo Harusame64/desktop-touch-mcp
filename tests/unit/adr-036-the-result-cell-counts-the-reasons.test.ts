@@ -269,6 +269,12 @@ describe("the extractor", () => {
     expect(pinned.fallbackReason).toBe("unknown");
     // The producer whose values this extraction does not enumerate, which is why it is a bound.
     expect(pinned.unresolvable).toEqual(["ToolFailureError:code"]);
+    // **Produced is not reachable.** `HandlerError` is constructed only inside `toResultErr`, an
+    // exported and tested helper no production code calls — so the grid counts a reason no shipped
+    // path produces. Pinned rather than dropped: a name that becomes reachable the day somebody
+    // wires the documented handler pattern should already be in the grid.
+    expect(pinned.withoutProductionCaller).toEqual(["HandlerError"]);
+    expect(out).toContain("has no production caller");
     // The catalogues differ by exactly one name, and the tool description is the longer one.
     expect(pinned.cataloguesDifferBy).toEqual(["aim_blocked_by_excluded_window"]);
     expect(pinned.toolCatalogue).toContain("aim_blocked_by_excluded_window");
