@@ -95,15 +95,16 @@ export function scanNapiAttributes(source, file) {
   // nothing reported (gate 2, fourth pass) — the predicate was exact on the last segment, so the
   // renamed attribute was simply "some other attribute".
   const aliases = new Set(["napi"]);
-  for (const u of text.matchAll(/^\s*(?:pub\s+)?use\s+([A-Za-z_][A-Za-z0-9_:\s]*)\s+as\s+(\w+)\s*;/gm)) {
-    if (u[1].split("::").pop().trim() === "napi") aliases.add(u[2]);
-  }
-  // Grouped imports rename too: `use napi_derive::{napi as n};`. A GLOB cannot rename, and
-  // `use napi::bindgen_prelude::*` brings in types rather than the attribute macro, so neither is
-  // a hole — only `as` is.
-  for (const u of text.matchAll(/^\s*(?:pub\s+)?use\s+[^;\n]*\{([^}]*)\}\s*;/gm)) {
-    for (const item of u[1].split(",")) {
-      const pair = item.trim().match(/^([A-Za-z_][A-Za-z0-9_:]*)\s+as\s+(\w+)$/);
+  // **A grammar, not a list of spellings.** The first version enumerated two `use` forms and four
+  // legal ones went silent — `pub(crate)`, a leading `::`, a `#[cfg(…)] use`, and a grouped
+  // `pub(crate) use` — and the two regexes even disagreed with each other about `::`, which is the
+  // signature of enumeration (gate 2, verification round).
+  for (const u of text.matchAll(/^[ \t]*(?:#\[[^\]]*\]\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?use\s+([^;]+);/gm)) {
+    const body = u[1].replace(/^\s*::/, "").trim();
+    const group = body.match(/^([^{]*)\{([^}]*)\}$/);
+    const items = group ? group[2].split(",") : [body];
+    for (const item of items) {
+      const pair = item.trim().match(/^(?:::)?([A-Za-z_][A-Za-z0-9_:]*)\s+as\s+(\w+)$/);
       if (pair && pair[1].split("::").pop() === "napi") aliases.add(pair[2]);
     }
   }
@@ -155,6 +156,7 @@ export function scanNapiAttributes(source, file) {
  * undeclared export in silence — the same spelling, one function over (gate 2, fourth pass).
  */
 function walkToItem(rest) {
+  const started = rest.length;
   for (;;) {
     const before = rest;
     rest = rest.replace(/^[ \t]*\n/, "");
@@ -162,24 +164,51 @@ function walkToItem(rest) {
     if (/^[ \t]*#\[/.test(rest)) {
       const open = rest.indexOf("[");
       const end = endOfBracketed(rest, open, "[", "]");
-      if (end === -1) return rest;
+      if (end === -1) return { rest, consumed: started - rest.length };
       rest = rest.slice(end);
     }
     if (/^[ \t]*\/\*/.test(rest)) {
       const end = rest.indexOf("*/");
-      if (end === -1) return rest;
+      if (end === -1) return { rest, consumed: started - rest.length };
       rest = rest.slice(end + 2);
     }
-    if (rest === before) return rest;
+    if (rest === before) return { rest, consumed: started - rest.length };
   }
+}
+
+/** An attribute's arguments, split at depth 0 so a `,` inside a string or a nested list stays put. */
+function splitArgs(args) {
+  const out = [];
+  let depth = 0;
+  let quote = "";
+  let current = "";
+  for (const ch of args) {
+    if (quote) {
+      if (ch === quote) quote = "";
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    if (ch === ")" || ch === "]" || ch === "}") depth--;
+    if (ch === "," && depth === 0) {
+      out.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim() !== "") out.push(current.trim());
+  return out;
 }
 
 /** Does this attribute's argument list carry `object` as an argument (in any position)? */
 function hasObjectArg(args) {
-  return args
-    .split(",")
-    .map((a) => a.trim())
-    .some((a) => a === "object");
+  return splitArgs(args).some((a) => a === "object");
 }
 
 /**
@@ -216,29 +245,11 @@ export function parseNapiObjectStructs(source, file) {
       continue;
     }
 
-    // Walk forward over further attributes, comments and blank lines to the `pub struct` line.
-    let rest = text.slice(attr.endIndex);
-    let consumed = attr.endIndex;
-    for (;;) {
-      const before = rest;
-      rest = rest.replace(/^[ \t]*\n/, "");
-      rest = rest.replace(/^[ \t]*\/\/[^\n]*\n/, "");
-      const attr = rest.match(/^[ \t]*#\[/);
-      if (attr) {
-        const open = rest.indexOf("[");
-        const end = endOfBracketed(rest, open, "[", "]");
-        if (end === -1) break;
-        rest = rest.slice(end);
-      }
-      const block = rest.match(/^[ \t]*\/\*/);
-      if (block) {
-        const end = rest.indexOf("*/");
-        if (end === -1) break;
-        rest = rest.slice(end + 2);
-      }
-      if (rest === before) break;
-    }
-    consumed += text.slice(attr.endIndex).length - rest.length;
+    // The same walk as the function scan uses — it had been copied, and the copies drifted: the
+    // struct side learned to step over a block comment a round before the function side did.
+    const walked = walkToItem(text.slice(attr.endIndex));
+    const rest = walked.rest;
+    const consumed = attr.endIndex + walked.consumed;
 
     const decl = rest.match(/^[ \t]*pub struct (\w+)[^\n{]*\{/);
     if (!decl) {
@@ -334,13 +345,20 @@ export function parseNapiFunctions(source, file) {
     if (hasObjectArg(attr.args)) continue;
     // A constructor, getter or setter is a napi CLASS member, not a free export: `new` is not a
     // name `index.d.ts` declares as a function.
-    if (/\b(constructor|getter|setter)\b/.test(attr.args)) continue;
+    // **Tokens, not a substring of the whole argument string.** `ts_args_type = "opts: { setter:
+    // string }"` made a free export vanish because the word appeared inside a string literal
+    // (gate 2, verification round).
+    const argTokens = splitArgs(attr.args);
+    if (argTokens.some((a) => a === "constructor" || a === "getter" || a === "setter")) continue;
     if (isFeatureGated(lines, attr.startLine - 1)) continue;
     declared++;
 
-    const rest = walkToItem(text.slice(attr.endIndex));
-    // `impl` blocks carry the attribute for the type, not for an export.
-    if (/^\s*impl\b/.test(rest)) {
+    const { rest } = walkToItem(text.slice(attr.endIndex));
+    // `impl` blocks carry the attribute for the type, not for an export — and so does a napi
+    // CLASS (`#[napi] pub struct DirtyRectSubscription`, `src/duplication/mod.rs`). Recognising
+    // the class POSITIVELY is what lets the reports below be wired to the exit code at all: it was
+    // the one live "cannot read the item" in the tree (gate 2, verification round).
+    if (/^\s*impl\b/.test(rest) || /^\s*pub(?:\s*\([^)]*\))?\s+(?:struct|enum|type|const|static)\b/.test(rest)) {
       declared--;
       continue;
     }
@@ -378,7 +396,10 @@ export function parseNapiFunctions(source, file) {
     // The return type, by name, so a struct that is RETURNED can be told from one that is only an
     // argument. Skipping the `native-types.ts` half for anything a function takes hid a returned
     // shape's whole comparison behind a number (gate 2, fourth pass).
-    const returnsRaw = rest.slice(parenEnd).match(/^\s*->\s*([^{;\n]+)/)?.[1] ?? "";
+    // **Across lines.** `[^{;\n]` ended the capture at a line break, so a rustfmt-wrapped return
+    // type demoted a RETURNED struct to "argument-only" — and the OK line then asserted exactly
+    // what the parser had failed to see (gate 2, verification round).
+    const returnsRaw = rest.slice(parenEnd).match(/^\s*->\s*([^{;]+)/)?.[1] ?? "";
     const returns = [...returnsRaw.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
     const debugOnly = (() => {
       for (let k = attr.startLine - 2; k >= 0; k--) {
@@ -397,6 +418,9 @@ export function parseNapiFunctions(source, file) {
     functions.set(jsName, { rustName: head[1], paramType, returns, at: attr.at, debugOnly });
   }
 
+  // **No input reaches this**, the same as the struct scan's net: every path after `declared++`
+  // sets a function, pushes a problem, or decrements. It is kept for the NEXT edit — a `continue`
+  // added later without a report — and said out loud rather than left to look tested.
   if (functions.size + problems.length < declared) {
     problems.push(`${file}: ${declared} napi function attributes, but only ${functions.size} were understood`);
   }
@@ -420,9 +444,14 @@ export function parseTsFunctionParams(source) {
     const end = endOfBracketed(text, brace, "{", "}");
     if (end === -1) continue;
     const fields = new Map();
+    let offset = brace + 1;
     for (const part of text.slice(brace + 1, end - 1).split(";")) {
       const fm = part.trim().match(/^(\w+)(\??):/);
-      if (fm) fields.set(fm[1], { optional: fm[2] === "?", at: `line ${lineAt(brace)}` });
+      // The field's own line, not the opening brace's: an inline object written across lines put
+      // every field on the brace's line, and the value was never printed, so nothing said so
+      // (gate 2, verification round).
+      if (fm) fields.set(fm[1], { optional: fm[2] === "?", at: `line ${lineAt(offset + part.indexOf(fm[1]))}` });
+      offset += part.length + 1;
     }
     out.set(m[1], fields);
   }

@@ -180,6 +180,7 @@ for (const [file, scan] of [["index.d.ts", dtsScan], ["index.js", jsScan]]) {
 
 const dtsDeclared = dtsScan.names;
 const dtsFunctionCount = [...dts.matchAll(/^export declare function /gm)].length;
+const dtsClassCount = [...dts.matchAll(/^export declare class /gm)].length;
 const jsExported = jsScan.names;
 const staleSet = new Set(stale);
 
@@ -294,6 +295,12 @@ for (const [label, source] of TS_SHAPE_FILES) {
     // `export interface BoundingRect` shadowed the `NativeBoundingRect` the addon actually returns
     // (gate 2, fourth pass).
     const matches = tried.filter((c) => interfaces.has(c));
+    // **An exact-name match is the truth, not a conflict.** A struct already called `Native…`
+    // generates `NativeNative…` and the bare name as candidates, so an unrelated interface with the
+    // bare name turned an unambiguous pairing into a reported conflict (gate 2, verification round).
+    if (matches.length > 1 && matches[0] === name) {
+      matches.length = 1;
+    }
     if (matches.length > 1) {
       shapeProblems.push(
         `${label}: \`${name}\` (${at}) matches ${matches.length} declarations — ${matches.join(", ")}; one struct may pair with one`,
@@ -390,6 +397,16 @@ for (const [label, source] of TS_SHAPE_FILES) {
   pairedPerFile.set(label, paired);
 }
 
+// **The reports the scans produce are read here.** They were collected into `scanProblems` and
+// never printed — so "reports any item it cannot read" reached the unit test and nothing else, and
+// an undeclared export whose head the parser could not read still printed OK (gate 2, verification
+// round). A guard that gathers reasons and drops them is the shape this whole file is about.
+if (scanProblems.length > 0) {
+  failed = true;
+  console.error("\n[check-native-types] FAIL — the Rust scan could not read something:\n");
+  for (const p of scanProblems) console.error(`  - ${p}`);
+}
+
 if (shapeProblems.length > 0) {
   failed = true;
   console.error("\n[check-native-types] FAIL — napi struct shapes disagree with the TS declarations:\n");
@@ -418,7 +435,7 @@ console.log(
     // index.d.ts declarations are not the same 97: the second is 96 functions plus a class, and the
     // first counts the exempt name the second does not. They agree today by coincidence, and the
     // sentence would not change when they stop (win2, 2026-09-17).
-    `(${dtsFunctionCount} functions + ${dtsDeclared.size - dtsFunctionCount} class) are exported from index.js. ` +
+    `(${dtsFunctionCount} functions + ${dtsClassCount} class) are exported from index.js. ` +
     `${rustStructs.size} napi object structs, paired ` +
     [...pairedPerFile].map(([f, n]) => `${n} against ${f}`).join(" and ") +
     `, agree on field NAMES and OPTIONALITY (not types) across ${comparedFields} comparisons` +

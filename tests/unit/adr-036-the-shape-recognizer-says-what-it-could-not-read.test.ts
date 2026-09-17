@@ -435,11 +435,23 @@ pub struct Thing {}
       }
     }
     expect(heads.size).toBeGreaterThan(1); // the tree really does spell it more than one way
+    // The `use` lines are harvested too, rather than synthesised in the one form the collector
+    // accepts — a fixture that writes its own input can only exercise what the code already takes
+    // (gate 2, verification round).
+    const uses = new Set<string>();
+    for (const f of files) {
+      for (const m of readFileSync(f, "utf8").matchAll(/^[^\n]*\buse\b[^\n;]*\bnapi\b[^\n;]*;/gm)) {
+        uses.add(m[0].trim());
+      }
+    }
+    expect(uses.size).toBeGreaterThan(0);
     for (const path of heads) {
-      const src = `use napi_derive::napi as ${path.split("::").pop()};\n#[${path}(object)]\npub struct Thing {\n    pub a: u32,\n}\n`;
-      const { attrs, problems } = scan(path.split("::").pop() === "napi" ? src.split("\n").slice(1).join("\n") : src);
-      // Read it, or say it could not be read. Never silence.
-      expect(attrs.length > 0 || problems.length > 0, path).toBe(true);
+      const body = `#[${path}(object)]\npub struct Thing {\n    pub a: u32,\n}\n`;
+      for (const use of [...uses, ""]) {
+        const { attrs, problems } = scan(`${use}\n${body}`);
+        // Read it, or say it could not be read. Never silence.
+        expect(attrs.length > 0 || problems.length > 0, `${path} with ${use}`).toBe(true);
+      }
     }
   });
 });
@@ -519,12 +531,68 @@ pub fn four(x: u32) -> u32 { x }
     expect([...functions.keys()].sort()).toEqual(["four", "one", "three", "two"]);
   });
 
-  it("reports an item it cannot read instead of dropping the export", () => {
-    const { problems } = fns(`
+  it("recognises a napi class, and reports a head it cannot read", () => {
+    // **A `#[napi] pub struct` is a napi CLASS** (`src/duplication/mod.rs`), not an unreadable
+    // item — recognising it positively is what let the reports be wired to the exit code at all.
+    const cls = fns(`
 #[napi]
-pub static NOT_A_FUNCTION: u32 = 1;
+pub struct DirtyRectSubscription {
+    inner: u32,
+}
 `);
-    expect(problems.join("")).toMatch(/cannot read the item/);
+    expect(cls.problems).toEqual([]);
+    expect([...cls.functions.keys()]).toEqual([]);
+
+    // A generic list this parser does not read is REPORTED — and the caller fails on it, which is
+    // the half that was missing: every problem the scan produced was collected and dropped.
+    expect(
+      fns(`
+#[napi]
+pub fn gen<T: Into<String>>(x: u32) -> u32 { x }
+`).problems.join(""),
+    ).toMatch(/cannot read the item/);
+  });
+
+  it("does not let a word inside a string literal retire an export", () => {
+    // `ts_args_type = "opts: { setter: string }"` made a free export vanish, because the
+    // constructor/getter/setter test was a substring of the whole argument string.
+    const { functions, problems } = fns(`
+#[napi(ts_args_type = "opts: { setter: string }")]
+pub fn do_thing(opts: Opts) -> u32 { 1 }
+`);
+    expect(problems).toEqual([]);
+    expect([...functions.keys()]).toEqual(["doThing"]);
+  });
+
+  it("collects an alias however the `use` is spelled", () => {
+    // Four legal spellings went silent, and the two regexes disagreed with each other about a
+    // leading `::` — the signature of enumeration where a grammar was needed.
+    for (const line of [
+      "use napi_derive::napi as na;",
+      "pub use napi_derive::napi as na;",
+      "pub(crate) use napi_derive::napi as na;",
+      "use ::napi_derive::napi as na;",
+      "#[cfg(windows)] use napi_derive::napi as na;",
+      "pub(crate) use napi_derive::{napi as na};",
+      "use ::napi_derive::{napi as na};",
+    ]) {
+      const { functions, problems } = fns(`${line}\n#[na]\npub fn hidden(x: u32) -> u32 { x }\n`);
+      expect(problems, line).toEqual([]);
+      expect([...functions.keys()], line).toEqual(["hidden"]);
+    }
+  });
+
+  it("reads a return type that wraps across lines", () => {
+    // `[^{;\n]` ended the capture at the line break, so a rustfmt-wrapped return type demoted a
+    // RETURNED struct to "argument-only" — and the OK line then asserted exactly what the parser
+    // had failed to see.
+    const { functions } = fns(`
+#[napi]
+pub fn echo(opts: uia::text::GetTextOptions) -> napi::Result<
+    uia::text::GetTextOptions,
+> { todo!() }
+`);
+    expect(functions.get("echo")!.returns).toContain("GetTextOptions");
   });
 
   it("follows a napi attribute imported under another name", () => {
