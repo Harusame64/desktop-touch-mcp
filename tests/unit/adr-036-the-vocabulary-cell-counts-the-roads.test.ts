@@ -118,6 +118,32 @@ async function probedStep(rung, aimHwnd, entity, step) {
     expect(v.refused).not.toContain("smuggled_ground");
     expect(v.problems.join("")).toMatch(/probedStep no longer forwards/);
     expect(v.problems.join("")).toMatch(/probeRefusal is given a non-literal/);
+
+    // **What the binding HOLDS is the property; its annotation is not.** win2 priced the tightening
+    // on 2026-09-17 (internal `f493bad`): wrapping, whitespace and a trailing comment are free, and
+    // an annotation was the one meaning-preserving edit that went red. Narrowing a match rule is
+    // harder than loosening it, so the four shapes that DO change the value are pinned beside it.
+    const annotated = readable.replace("const refused =", "const refused: string | undefined =");
+    expect(readRoadVocabulary(annotated).problems).toEqual([]);
+    for (const smuggle of [
+      'adr029Refusal(err) ?? "x";',
+      'adr029Refusal(err) || "x";',
+      'err ? adr029Refusal(err) : "x";',
+    ]) {
+      const bent = readable.replace("adr029Refusal(err);", smuggle);
+      expect(readRoadVocabulary(bent).problems.join(""), smuggle).toMatch(/probedStep no longer forwards/);
+    }
+    // **`const` is load-bearing**: it is what rules out a later `refused = "smuggled"`, which the
+    // binding test cannot see because it reads one statement. Writing the rule this way means the
+    // day somebody relaxes it to `let`, the exemption lifts rather than widening in silence — and
+    // this cell is where that shows. (Found by the loop above, which asserted the reassignment
+    // shape and went green: `const refused = …; refused = "x";` does not compile, so the case is
+    // unreachable — but `let` does, and that is the one to pin.)
+    const reassigned = readable.replace("const refused =", "let refused =").replace(
+      "adr029Refusal(err);",
+      'adr029Refusal(err);\n  refused = "smuggled_ground";',
+    );
+    expect(readRoadVocabulary(reassigned).problems.join("")).toMatch(/probedStep no longer forwards/);
   });
 
   it("collects a refusal ground written straight onto the row", () => {

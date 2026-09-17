@@ -226,7 +226,14 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
   // bind `refused` to `adr029Refusal(…)` and nothing else. Append a `??`, a `||`, a ternary or a
   // second assignment and the binding stops matching, the exemption lifts, and the call site is
   // reported as what it then is — a road field this parser cannot read.
-  const forwardsTheReadBinding = /\bconst\s+refused\s*=\s*adr029Refusal\([A-Za-z_$][\w$]*\)\s*;/.test(text);
+  //
+  // **A type annotation is not a change of binding.** win2 measured the cost of tightening
+  // (2026-09-17, internal `f493bad`): of four meaning-preserving edits, wrapping, whitespace and a
+  // trailing comment are free, and `const refused: string | undefined = adr029Refusal(err);` went
+  // red. What this test is about is what the binding HOLDS, and an annotation changes nothing
+  // about that — so it is allowed, while `??`, `||`, a ternary and a second assignment all still
+  // lift the exemption, because the `)` must be followed by the statement's `;`.
+  const forwardsTheReadBinding = /\bconst\s+refused\s*(?::[^=;]+)?=\s*adr029Refusal\([A-Za-z_$][\w$]*\)\s*;/.test(text);
   if (/\bprobedStep\(/.test(text) && !forwardsTheReadBinding) {
     problems.push(
       "probedStep no longer forwards `const refused = adr029Refusal(err);` — the grounds read out of " +
