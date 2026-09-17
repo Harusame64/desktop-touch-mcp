@@ -82,6 +82,13 @@ jobs:
         # not know about, and nothing else in this repo would say so.
         run: npm run check:config-vocabulary
 
+      - name: Check the ADR-036 result vocabulary (the grid's third denominator)
+        # The loop's failure arm is typed; the wrapper above it returns a `reason: string` it
+        # COMPUTES from a 94-key advice table with no union. A caller can receive 101 distinct
+        # reasons, 18 of them enumerated anywhere — so a new advice key is a new value on the wire
+        # that neither the compiler nor either catalogue would mention.
+        run: npm run check:result-vocabulary
+
       - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)
         # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the
         # program and ESLint is not type-aware: a config key that stops existing keeps

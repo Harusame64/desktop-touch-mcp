@@ -1,0 +1,115 @@
+{
+  "typed": [
+    "aim_blocked_by_excluded_window",
+    "aim_identity_changed",
+    "aim_occluded",
+    "aim_point_outside_window",
+    "aim_route_failed",
+    "aim_window_gone",
+    "coordinate_outside_reachable_bounds",
+    "cursor_placement_blocked",
+    "entity_not_found",
+    "entity_outside_viewport",
+    "executor_failed",
+    "keyboard_target_unsafe",
+    "lease_digest_mismatch",
+    "lease_expired",
+    "lease_generation_mismatch",
+    "modal_blocking",
+    "origin_window_not_visible",
+    "window_excluded"
+  ],
+  "producedNames": [
+    "AimBlockedByExcludedWindow",
+    "AimIdentityChanged",
+    "AimOccluded",
+    "AimPointOutsideWindow",
+    "AimRouteFailed",
+    "AimWindowGone",
+    "CaptureBackendFailed",
+    "CoordinateOutsideReachableBounds",
+    "CursorPlacementBlocked",
+    "EntityNotFound",
+    "EpisodicMemoryNUpperBoundExceeded",
+    "ExecutorFailed",
+    "HandlerError",
+    "KeyboardTargetUnsafe",
+    "LeaseExpired",
+    "ProceduralMemoryKUpperBoundExceeded",
+    "RegionOutsideCapturableBounds",
+    "SemanticMemoryKUpperBoundExceeded",
+    "Unknown",
+    "WindowExcluded",
+    "WorkingMemoryNUpperBoundExceeded"
+  ],
+  "computedOnly": [
+    "capture_backend_failed",
+    "episodic_memory_nupper_bound_exceeded",
+    "handler_error",
+    "procedural_memory_kupper_bound_exceeded",
+    "region_outside_capturable_bounds",
+    "semantic_memory_kupper_bound_exceeded",
+    "unknown",
+    "working_memory_nupper_bound_exceeded"
+  ],
+  "fallbackReason": "unknown",
+  "serverCatalogue": [
+    "aim_identity_changed",
+    "aim_occluded",
+    "aim_point_outside_window",
+    "aim_route_failed",
+    "aim_window_gone",
+    "coordinate_outside_reachable_bounds",
+    "cursor_placement_blocked",
+    "entity_not_found",
+    "entity_outside_viewport",
+    "executor_failed",
+    "keyboard_target_unsafe",
+    "lease_digest_mismatch",
+    "lease_expired",
+    "lease_generation_mismatch",
+    "modal_blocking",
+    "origin_window_not_visible",
+    "window_excluded"
+  ],
+  "toolCatalogue": [
+    "aim_blocked_by_excluded_window",
+    "aim_identity_changed",
+    "aim_occluded",
+    "aim_point_outside_window",
+    "aim_route_failed",
+    "aim_window_gone",
+    "coordinate_outside_reachable_bounds",
+    "cursor_placement_blocked",
+    "entity_not_found",
+    "entity_outside_viewport",
+    "executor_failed",
+    "keyboard_target_unsafe",
+    "lease_digest_mismatch",
+    "lease_expired",
+    "lease_generation_mismatch",
+    "modal_blocking",
+    "origin_window_not_visible",
+    "window_excluded"
+  ],
+  "withoutAdvice": [
+    "HandlerError",
+    "LeaseExpired",
+    "Unknown"
+  ],
+  "unresolvable": [
+    "ToolFailureError:code"
+  ],
+  "withoutProductionCaller": [
+    "HandlerError"
+  ],
+  "reservedLeaseNames": [
+    "EntityNotFound",
+    "LeaseDigestMismatch",
+    "LeaseExpired",
+    "LeaseGenerationMismatch"
+  ],
+  "cataloguesDifferBy": [
+    "aim_blocked_by_excluded_window"
+  ]
+}
