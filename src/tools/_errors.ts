@@ -532,6 +532,20 @@ const SUGGESTS: Record<string, string[]> = {
     "Do NOT retry by coordinate: the entity's rect is where the element used to be, and whatever is there now would take the press.",
     "If the element should still be there, let the page or dialog settle and discover again — a list that is re-rendering can drop an element for a moment.",
   ],
+  // internal#125 — the two lease mismatches got their own names, so they need their own advice.
+  // Without an entry here the promotion splits the CODE and leaves the advice empty: the resolver
+  // answers `[]` for a code it has no entry for, and `renderAdviceWithFloor` turns `[]` into
+  // `undefined`, which drops the key entirely (measured, not inferred). Both say what the lease
+  // could not vouch for and both refuse to suggest a coordinate — the press this refusal exists
+  // to stop is exactly the one a caller reaches for next.
+  LeaseDigestMismatch: [
+    "Re-run {tool:reidentify_element} and act on the fresh entity: the element is still there, but something about it changed after it was described — its text, its state or its position — so the lease no longer vouches for what is being acted on.",
+    "Do NOT retry by coordinate: what changed may be exactly what moved the element, and the old rect is where it used to be.",
+  ],
+  LeaseGenerationMismatch: [
+    "Re-run {tool:reidentify_element} and act on the fresh entity: the view this lease came from has been superseded — another discover has run against the same target — so the entity ids in hand belong to an older view.",
+    "Do NOT retry by coordinate: an id from a superseded view says nothing about where its element is now.",
+  ],
   // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
   // advice is deliberately short on alternatives — every "try the other tool" line would be an
   // instruction to walk around a security boundary. Worded for BOTH families: `desktop_act`'s

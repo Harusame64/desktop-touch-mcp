@@ -127,10 +127,20 @@ const errorNames = readPresentedNames(sources, family.nameOfClass, problems, RES
 // `mapLeaseValidationToTypedReason` hard-codes its returns and never consults
 // `LEASE_REASON_TO_TYPED_CODE`, whose own comment calls it a reservation for future expansion. Two
 // of its four names are produced by nothing, and adding a real branch left the gate green.
-const leaseCodes = readReturnedCodes(read("src/tools/_envelope.ts"), "mapLeaseValidationToTypedReason", problems);
 // The table is kept as a COVERAGE check — the role `SUGGESTS` was correctly demoted to. A code the
 // function returns with no reserved name is the shape the reservation exists to prevent.
 const reservedLeaseNames = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
+// internal#125 — the function now READS the table for two of its four reasons, so the table is
+// handed in as the one expression this parser may resolve. Read before the function, because the
+// function's codes depend on it now; the comment above about "the function, not the table" still
+// holds as the RULE — what changed is that the function consults the table, so following it there
+// is reading the producer rather than reading something adjacent to it.
+const leaseCodes = readReturnedCodes(
+  read("src/tools/_envelope.ts"),
+  "mapLeaseValidationToTypedReason",
+  problems,
+  { name: "LEASE_REASON_TO_TYPED_CODE", values: reservedLeaseNames },
+);
 const producedNames = [
   ...new Set([...errorNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
 ].sort();

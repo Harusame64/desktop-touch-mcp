@@ -1128,10 +1128,36 @@ export function mapLeaseValidationToTypedReason(
       tryNext: getSuggestsForCode("EntityNotFound").map((action) => ({ action })),
     };
   }
-  // Sub-plan §7 R4: residual 2 reasons collapse to `Unknown` at runtime
-  // in S4 trunk. The PascalCase names are pinned in
-  // `LEASE_REASON_TO_TYPED_CODE` so expansion can mechanically promote
-  // each branch into its own typed code without re-deriving the mapping.
+  // internal#125 — the residual is gone. It used to collapse `generation_mismatch` and
+  // `digest_mismatch` into `Unknown` with no advice, and a caller could not tell either of them
+  // from a THROWN handler: all three arrived as the same bytes
+  // (`{ok:false,reason:"unknown",diff:[],if_unexpected:{most_likely_cause:"Unknown",try_next:[]}}`
+  // — measured on the real machine, four arms and one distinct byte string, internal `6bdcdce`
+  // and `4f1a8a4`). `Unknown` now means exactly one thing: the handler threw.
+  //
+  // THE NAME IS READ FROM THE TABLE, not copied into a literal here. The two names were pinned in
+  // `LEASE_REASON_TO_TYPED_CODE` from the start and nothing read it, so the reservation and the
+  // mapping could drift without anything going red — the same shape #672 found elsewhere. Reading
+  // it makes the table a thing that is CHECKED rather than a thing that is described.
+  if (reason === "generation_mismatch" || reason === "digest_mismatch") {
+    // SPELLED `code:`, NOT SHORTHAND. `check-result-vocabulary` reads this function's returns by
+    // matching `code:` inside a `return {…}`, so `return { code, … }` is skipped — and skipped
+    // SILENTLY, with no problem raised, which is how a producer becomes invisible to the gate that
+    // exists to count producers. Measured here on the way in: the shorthand version left the gate's
+    // summary byte-identical to main's. The mirror of what gate 2 found on #674, where a string
+    // whose VALUE was "code" was read as a shorthand key.
+    return {
+      code: LEASE_REASON_TO_TYPED_CODE[reason],
+      tryNext: getSuggestsForCode(LEASE_REASON_TO_TYPED_CODE[reason]).map((action) => ({ action })),
+    };
+  }
+  // Exhaustiveness, at compile time: a fifth reason added to the union stops compiling here
+  // rather than silently landing in the runtime fallback below. The fallback stays because the
+  // union is a promise the type system makes about callers, not about values arriving from
+  // outside TypeScript — and keeping it means this addition is purely additive, so no shipped
+  // shape moves.
+  const _exhaustive: never = reason;
+  void _exhaustive;
   return { code: "Unknown", tryNext: [] };
 }
 

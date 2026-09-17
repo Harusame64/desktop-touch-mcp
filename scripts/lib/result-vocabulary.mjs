@@ -411,7 +411,7 @@ function classEnd(text, start) {
  * The road axis already had this technique — it reads `adr029Refusal`'s body for the grounds that
  * reach `probeRefusal` through a variable — and it was not carried over.
  */
-export function readReturnedCodes(source, functionName, problems = []) {
+export function readReturnedCodes(source, functionName, problems = [], resolvable = null) {
   const text = stripComments(source);
   // **To a `}` in the first column, not to a balanced brace.** A function's signature can carry an
   // OBJECT RETURN TYPE — `): { code: string; tryNext: TryNextAction[] } {` — so the first `{` after
@@ -430,10 +430,38 @@ export function readReturnedCodes(source, functionName, problems = []) {
   const codes = [];
   for (const block of body.matchAll(/\breturn\s*\{([\s\S]*?)\}/g)) {
     const field = block[1].match(/\bcode:\s*([^,\n}]+)/);
-    if (!field) continue;
-    const literal = field[1].trim().match(/^"([A-Za-z_][\w]*)"$/);
-    if (literal) codes.push(literal[1]);
-    else problems.push(`${functionName} returns a code this parser cannot name: ${field[1].trim().slice(0, 40)}`);
+    if (!field) {
+      // **A SHORTHAND `code` IS A PRODUCER THIS PARSER USED TO DROP IN SILENCE.** `return { code, … }`
+      // carries no `code:`, so the match above fails and the loop simply moved on — no name, no
+      // problem, and a gate whose summary stayed byte-identical to the version without the branch.
+      // Measured on internal#125's first draft, which was written that way by accident. The mirror
+      // of #674's gate-2 finding, where a string whose VALUE was "code" was read AS a shorthand key:
+      // both are the same lesson from opposite sides — decide what a key is by where it sits, and
+      // say so out loud when you cannot.
+      if (/(?:^|[,{]\s*)code\s*(?=[,}\n])/.test(block[1])) {
+        problems.push(
+          `${functionName} returns a SHORTHAND \`code\` this parser cannot follow — spell it \`code: <expr>\` so the name is readable here`,
+        );
+      }
+      continue;
+    }
+    const expression = field[1].trim();
+    const literal = expression.match(/^"([A-Za-z_][\w]*)"$/);
+    if (literal) {
+      codes.push(literal[1]);
+      continue;
+    }
+    // **A read of a known table resolves to every value in it.** internal#125 promoted the two
+    // reserved lease names by READING `LEASE_REASON_TO_TYPED_CODE` rather than copying its values
+    // into literals — which is what makes the reservation a checked thing instead of a described
+    // one. A parser that only knows literals would then report the fix as "a code it cannot name",
+    // so the caller passes the table it is allowed to resolve, and the names arrive.
+    // Deliberately NOT a general expression evaluator: anything else still becomes a problem.
+    if (resolvable && expression.startsWith(`${resolvable.name}[`)) {
+      codes.push(...resolvable.values);
+      continue;
+    }
+    problems.push(`${functionName} returns a code this parser cannot name: ${expression.slice(0, 40)}`);
   }
   if (codes.length === 0) problems.push(`${functionName} returns no literal code — has it been reshaped?`);
   return [...new Set(codes)].sort();
