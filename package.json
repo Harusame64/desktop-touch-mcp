@@ -100,6 +100,7 @@
     "check:config-types": "tsc -p tsconfig.config-files.json",
     "check:wire-pins": "node scripts/check-wire-pins.mjs",
     "check:route-vocabulary": "node scripts/check-route-vocabulary.mjs",
+    "check:config-vocabulary": "node scripts/check-config-vocabulary.mjs",
     "test:native-clipboard": "cargo test -p desktop-touch-engine --locked clipboard -- --ignored --test-threads=1",
     "check:rs-workspace": "cargo check --workspace --locked",
     "check:rs-test-compile": "cargo test --workspace --locked --no-run",

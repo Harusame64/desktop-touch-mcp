@@ -69,6 +69,13 @@ jobs:
         # suite does not run in this job, so this is where the drift is caught.
         run: npm run check:route-vocabulary
 
+      - name: Check the ADR-036 configuration vocabulary (the grid's second denominator)
+        # Switches have no type, no registry and no single reading site: they are read from four
+        # roots in six syntactic shapes, and the obvious sweep (`process.env.NAME` under `src/`)
+        # sees fewer than two thirds of them. A switch added anywhere is a dimension the grid does
+        # not know about, and nothing else in this repo would say so.
+        run: npm run check:config-vocabulary
+
       - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)
         # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the
         # program and ESLint is not type-aware: a config key that stops existing keeps
