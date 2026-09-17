@@ -276,6 +276,7 @@ try {
 }
 
 const tsFunctionParams = parseTsFunctionParams(dts);
+const argumentOnly = new Set();
 let comparedFields = 0;
 const pairedPerFile = new Map();
 for (const [label, source] of TS_SHAPE_FILES) {
@@ -287,7 +288,18 @@ for (const [label, source] of TS_SHAPE_FILES) {
     const tried = [name, `Native${name}`, name.replace(/^Native/, "")].filter(
       (c, i, all) => all.indexOf(c) === i,
     );
-    const alias = tried.find((c) => interfaces.has(c));
+    // **Exactly one, not the first.** Adding a decoy declaration used to retire a real comparison
+    // in silence: `tried` is [name, Native+name, name-without-Native], and an unused
+    // `export interface BoundingRect` shadowed the `NativeBoundingRect` the addon actually returns
+    // (gate 2, fourth pass).
+    const matches = tried.filter((c) => interfaces.has(c));
+    if (matches.length > 1) {
+      shapeProblems.push(
+        `${label}: \`${name}\` (${at}) matches ${matches.length} declarations — ${matches.join(", ")}; one struct may pair with one`,
+      );
+      continue;
+    }
+    const alias = matches[0];
     if (alias === undefined) {
       // The two files have different duties. `index.d.ts` is the addon's published surface: a
       // struct a caller can receive and cannot name is the #667 defect, so an unpaired struct
@@ -298,37 +310,49 @@ for (const [label, source] of TS_SHAPE_FILES) {
       // through that function rather than exempting it — 13 structs arrived here the moment the
       // recogniser learned `#[napi_derive::napi(object)]`, and every one of them is a shape a
       // caller must get right that nothing checked (gate 2, third pass).
-      const takenBy = [...rustFunctions].find(([, def]) => def.paramType === name);
-      if (takenBy && label === "index.d.ts") {
-        const inline = tsFunctionParams.get(takenBy[0]);
-        if (!inline) {
-          shapeProblems.push(`${label}: \`${takenBy[0]}\` does not declare its parameter inline, and \`${name}\` has no interface (${at})`);
-          continue;
-        }
-        for (const [field, isOption] of fields) {
-          comparedFields++;
-          if (!inline.has(field)) {
-            shapeProblems.push(`${label}: \`${takenBy[0]}(opts)\` is missing \`${field}\`, which \`${name}\` declares (${at})`);
+      // **Every function that takes it, not the first one found.** A struct used by two exports had
+      // one callsite compared and the other unchecked, with `comparedFields` not moving at all
+      // (gate 2, fourth pass).
+      const takenBy = [...rustFunctions].filter(([, def]) => def.paramType === name);
+      if (takenBy.length > 0 && label === "index.d.ts") {
+        for (const [fn] of takenBy) {
+          const inline = tsFunctionParams.get(fn);
+          if (!inline) {
+            shapeProblems.push(`${label}: \`${fn}\` does not declare its parameter inline, and \`${name}\` has no interface (${at})`);
             continue;
           }
-          if (isOption && inline.get(field) === false) {
-            shapeProblems.push(
-              `${label}: \`${takenBy[0]}(opts).${field}\` is declared required, but Rust has it as \`Option<..>\` ` +
-                `and napi omits the key for \`None\` — declare it \`${field}?:\``,
-            );
+          for (const [field, def] of fields) {
+            comparedFields++;
+            if (!inline.has(field)) {
+              shapeProblems.push(`${label}: \`${fn}(opts)\` is missing \`${field}\`, which \`${name}\` declares at ${def.at}`);
+              continue;
+            }
+            if (def.optional && inline.get(field).optional === false) {
+              shapeProblems.push(
+                `${label}: \`${fn}(opts).${field}\` is declared required, but Rust has it as \`Option<..>\` ` +
+                  `and napi omits the key for \`None\` — declare it \`${field}?:\``,
+              );
+            }
           }
-        }
-        for (const field of inline.keys()) {
-          if (!fields.has(field)) {
-            shapeProblems.push(`${label}: \`${takenBy[0]}(opts).${field}\` is declared, but \`${name}\` has no such field (${at})`);
+          for (const field of inline.keys()) {
+            if (!fields.has(field)) {
+              shapeProblems.push(`${label}: \`${fn}(opts).${field}\` is declared, but \`${name}\` has no such field (${at})`);
+            }
           }
         }
         paired++;
         continue;
       }
-      // An argument shape is not expected in `native-types.ts`: nothing in TS holds one, it is
-      // written at the call. That is read from the tree (a napi function takes it), not from a list.
-      if (takenBy) continue;
+      // **Argument-only shapes are not expected in `native-types.ts`** — nothing in TS holds one,
+      // it is written at the call. **But a shape that is also RETURNED belongs there**, and
+      // skipping on "some function takes it" hid a returned struct's whole comparison behind a
+      // number (gate 2, fourth pass). The test is read from the tree on both sides: taken by a
+      // function AND returned by none.
+      const returnedBySome = [...rustFunctions].some(([, def]) => def.returns?.includes(name));
+      if (takenBy.length > 0 && !returnedBySome) {
+        argumentOnly.add(name);
+        continue;
+      }
       // `index.d.ts` is the addon's published surface: a struct a caller can receive and cannot
       // name is the #667 defect. `native-types.ts` is a curated internal mirror — but "curated"
       // was indistinguishable from "misspelled": renaming an interface there removed a struct from
@@ -341,16 +365,18 @@ for (const [label, source] of TS_SHAPE_FILES) {
     }
     paired++;
     const declared = interfaces.get(alias);
-    for (const [field, isOption] of fields) {
+    for (const [field, def] of fields) {
       comparedFields++;
       if (!declared.has(field)) {
-        shapeProblems.push(`${label}: \`${alias}\` is missing \`${field}\`, which \`${name}\` sends (${at})`);
+        // **The field's own line, not the struct's.** win2 read a finding on Windows and found it
+        // anchored 25 lines above the field it was about (2026-09-17).
+        shapeProblems.push(`${label}: \`${alias}\` is missing \`${field}\`, which \`${name}\` sends at ${def.at}`);
         continue;
       }
-      if (isOption && declared.get(field) === false) {
+      if (def.optional && declared.get(field).optional === false) {
         shapeProblems.push(
-          `${label}: \`${alias}.${field}\` is declared required, but Rust has it as \`Option<..>\` ` +
-            `and napi omits the key for \`None\` — declare it \`${field}?:\``,
+          `${label}: \`${alias}.${field}\` (${declared.get(field).at}) is declared required, but Rust has it as ` +
+            `\`Option<..>\` at ${def.at} and napi omits the key for \`None\` — declare it \`${field}?:\``,
         );
       }
     }
@@ -381,9 +407,16 @@ if (failed) {
 }
 
 console.log(
-  `[check-native-types] OK — ${rustExports.size} Rust exports all declared in index.d.ts, ` +
-    `and all ${dtsDeclared.size} declarations are exported from index.js. ` +
+  // **Two different sets used to print the same number and read as one.** `rustExports` is 97 and
+  // `index.d.ts` declares 96 functions plus one class; the missing function is the exempt
+  // `l1TestForcePanic`, so "all 97 are declared" was false by exactly the exemption (gate 2,
+  // fourth pass).
+  `[check-native-types] OK — ${rustExports.size} Rust exports, ${rustExports.size - [...rustExports].filter((n) => exempt(n)).length} of them declared in index.d.ts ` +
+    `(${[...rustExports].filter((n) => exempt(n)).length} exempt by name), and all ${dtsDeclared.size} index.d.ts declarations are exported from index.js. ` +
     `${rustStructs.size} napi object structs, paired ` +
     [...pairedPerFile].map(([f, n]) => `${n} against ${f}`).join(" and ") +
-    `, agree on field NAMES and OPTIONALITY (not types) across ${comparedFields} comparisons.`,
+    `, agree on field NAMES and OPTIONALITY (not types) across ${comparedFields} comparisons` +
+    (argumentOnly.size > 0
+      ? `; ${argumentOnly.size} argument-only shapes are compared at their callsites and not mirrored in native-types.ts (${[...argumentOnly].sort().join(", ")}).`
+      : "."),
 );

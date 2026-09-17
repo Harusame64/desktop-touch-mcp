@@ -18,8 +18,11 @@
 //    version incremented it inside the branch its own regex guarded, so a struct the regex could
 //    not read was never counted and the arithmetic always balanced. The comment claimed the count
 //    made a silent drop impossible; it did not ([[a-comment-is-a-claim-not-a-check]]).
-// 3. **Nothing is skipped quietly, on either side.** Anything unreadable is returned in `problems`
-//    and the caller fails on it. A guard that exists to end "a struct nobody compares" may not drop
+// 3. **A skip is either POSITIVELY RECOGNISED or REPORTED.** A class member (`&self`, a
+//    constructor, getter or setter, an `impl` block) and a feature gate are recognised and stepped
+//    over; everything else unreadable goes into `problems` and the caller fails on it. The claim
+//    used to be the flat "nothing is skipped quietly", and it was false for the function scan,
+//    which had three silent `continue`s (gate 2, fourth pass). A guard that exists to end "a struct nobody compares" may not drop
 //    one without saying so — and the TS half reported nothing at all until the second round.
 
 /** snake_case → camelCase (matches napi-rs's default rename). */
@@ -88,6 +91,23 @@ export function scanNapiAttributes(source, file) {
   const problems = [];
   const lineAt = (index) => text.slice(0, index).split("\n").length;
 
+  // **An alias is still napi.** `use napi_derive::napi as napi_alias;` made both scans blind with
+  // nothing reported (gate 2, fourth pass) — the predicate was exact on the last segment, so the
+  // renamed attribute was simply "some other attribute".
+  const aliases = new Set(["napi"]);
+  for (const u of text.matchAll(/^\s*(?:pub\s+)?use\s+([A-Za-z_][A-Za-z0-9_:\s]*)\s+as\s+(\w+)\s*;/gm)) {
+    if (u[1].split("::").pop().trim() === "napi") aliases.add(u[2]);
+  }
+  // Grouped imports rename too: `use napi_derive::{napi as n};`. A GLOB cannot rename, and
+  // `use napi::bindgen_prelude::*` brings in types rather than the attribute macro, so neither is
+  // a hole — only `as` is.
+  for (const u of text.matchAll(/^\s*(?:pub\s+)?use\s+[^;\n]*\{([^}]*)\}\s*;/gm)) {
+    for (const item of u[1].split(",")) {
+      const pair = item.trim().match(/^([A-Za-z_][A-Za-z0-9_:]*)\s+as\s+(\w+)$/);
+      if (pair && pair[1].split("::").pop() === "napi") aliases.add(pair[2]);
+    }
+  }
+
   for (const m of [...text.matchAll(/^[ \t]*#\[/gm)]) {
     const open = text.indexOf("[", m.index);
     const close = endOfBracketed(text, open, "[", "]");
@@ -107,7 +127,7 @@ export function scanNapiAttributes(source, file) {
       }
       continue;
     }
-    if (last !== "napi") continue;
+    if (!aliases.has(last)) continue;
     const rest = inner.slice(inner.indexOf(path) + path.length).trim();
     let args = "";
     if (rest.startsWith("(")) {
@@ -124,6 +144,34 @@ export function scanNapiAttributes(source, file) {
     attrs.push({ at, args, path, endIndex: close, startLine });
   }
   return { attrs, problems };
+}
+
+/**
+ * From just after an attribute, skip blank lines, `//` lines, block comments and further
+ * attributes, and return the rest of the source starting at the item.
+ *
+ * **Shared, because the two scans drifted.** The struct walk learned to step over a block comment
+ * and grew a cell for it; the function walk did not, so `#[napi]` followed by `/* … *​/` dropped an
+ * undeclared export in silence — the same spelling, one function over (gate 2, fourth pass).
+ */
+function walkToItem(rest) {
+  for (;;) {
+    const before = rest;
+    rest = rest.replace(/^[ \t]*\n/, "");
+    rest = rest.replace(/^[ \t]*\/\/[^\n]*\n/, "");
+    if (/^[ \t]*#\[/.test(rest)) {
+      const open = rest.indexOf("[");
+      const end = endOfBracketed(rest, open, "[", "]");
+      if (end === -1) return rest;
+      rest = rest.slice(end);
+    }
+    if (/^[ \t]*\/\*/.test(rest)) {
+      const end = rest.indexOf("*/");
+      if (end === -1) return rest;
+      rest = rest.slice(end + 2);
+    }
+    if (rest === before) return rest;
+  }
 }
 
 /** Does this attribute's argument list carry `object` as an argument (in any position)? */
@@ -228,7 +276,10 @@ export function parseNapiObjectStructs(source, file) {
       if (fm) {
         // `Option<…>` and `std::option::Option<…>` are the same thing to napi: the key is OMITTED
         // for `None`.
-        fields.set(snakeToCamel(fm[1]), /(^|::)Option</.test(fm[2]));
+        fields.set(snakeToCamel(fm[1]), {
+          optional: /(^|::)Option</.test(fm[2]),
+          at: `${file}:${lineAt(bodyStart) + offset}`,
+        });
         continue;
       }
       problems.push(`${where}: \`${decl[1]}\` has a line this parser cannot read as a field: ${stripped}`);
@@ -273,50 +324,62 @@ export function parseNapiFunctions(source, file) {
   const lines = text.split("\n");
   const { attrs, problems } = scanNapiAttributes(source, file);
   const functions = new Map();
+  // **Counted before parsed**, the way the struct scan already counts: the four spellings that
+  // dropped an undeclared export in silence (an `async` fn, an `unsafe` fn, a generic fn, and a fn
+  // behind a block comment) all left through a quiet `continue` here, and `97 Rust exports` never
+  // moved (gate 2, fourth pass).
+  let declared = 0;
 
   for (const attr of attrs) {
     if (hasObjectArg(attr.args)) continue;
     // A constructor, getter or setter is a napi CLASS member, not a free export: `new` is not a
-    // name `index.d.ts` declares as a function. The old line-regex entry excluded them by accident,
-    // because it demanded the bare attribute alone on its line.
+    // name `index.d.ts` declares as a function.
     if (/\b(constructor|getter|setter)\b/.test(attr.args)) continue;
     if (isFeatureGated(lines, attr.startLine - 1)) continue;
-    // Walk to the item this attribute decorates, over further attributes and comments.
-    let rest = text.slice(attr.endIndex);
-    for (;;) {
-      const before = rest;
-      rest = rest.replace(/^[ \t]*\n/, "");
-      rest = rest.replace(/^[ \t]*\/\/[^\n]*\n/, "");
-      if (/^[ \t]*#\[/.test(rest)) {
-        const open = rest.indexOf("[");
-        const end = endOfBracketed(rest, open, "[", "]");
-        if (end === -1) break;
-        rest = rest.slice(end);
-      }
-      if (rest === before) break;
+    declared++;
+
+    const rest = walkToItem(text.slice(attr.endIndex));
+    // `impl` blocks carry the attribute for the type, not for an export.
+    if (/^\s*impl\b/.test(rest)) {
+      declared--;
+      continue;
     }
-    // **The signature is read to its closing paren, not to the end of the line.** A wrapper whose
-    // parameter sits on its own line (`pub fn uia_click_element(\n    opts: …,\n)`) is the common
-    // shape in `lib.rs` — reading one line found the parameter of 1 function in 22.
-    const head = rest.match(/^\s*pub\s+fn\s+(\w+)\s*\(/);
-    if (!head) continue;
-    const parenStart = rest.indexOf("(", head.index);
+    // `pub async fn`, `pub unsafe fn`, `pub const fn`, `pub extern "C" fn`, and a generic list —
+    // all legal, all previously unreadable and silent.
+    const head = rest.match(
+      /^\s*pub(?:\s*\([^)]*\))?\s+(?:(?:async|unsafe|const|extern(?:\s+"[^"]*")?)\s+)*fn\s+(\w+)\s*(?:<[^>(]*>)?\s*\(/,
+    );
+    if (!head) {
+      problems.push(`${attr.at}: this parser cannot read the item this napi attribute decorates`);
+      continue;
+    }
+    const parenStart = rest.indexOf("(", head.index + head[0].length - 1);
     const parenEnd = endOfBracketed(rest, parenStart, "(", ")");
-    if (parenEnd === -1) continue;
+    if (parenEnd === -1) {
+      problems.push(`${attr.at}: \`${head[1]}\`'s parameter list never closes`);
+      continue;
+    }
     const params = rest.slice(parenStart + 1, parenEnd - 1).trim();
-    // Methods are napi class methods, not free exports.
-    if (/^&(?:mut\s+)?self\b/.test(params)) continue;
-    const m = [null, head[1], params];
-    const jsName = attr.args.match(/js_name\s*=\s*"([^"]+)"/)?.[1] ?? snakeToCamel(m[1]);
+    // A method takes a receiver: a napi class member, not a free export.
+    if (/^&(?:mut\s+)?self\b/.test(params) || /^self\b/.test(params)) {
+      declared--;
+      continue;
+    }
+    const jsName = attr.args.match(/js_name\s*=\s*"([^"]+)"/)?.[1] ?? snakeToCamel(head[1]);
     // The wrapper names the type through its module (`opts: uia::tree::GetElementsOptions`), and
     // the struct is keyed by its last segment — so take the last segment here too.
     const paramType =
-      m[2]
+      params
         .replace(/,\s*$/, "")
         .match(/^\s*\w+\s*:\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*$/)?.[1]
         ?.split("::")
         .pop()
         .trim() ?? null;
+    // The return type, by name, so a struct that is RETURNED can be told from one that is only an
+    // argument. Skipping the `native-types.ts` half for anything a function takes hid a returned
+    // shape's whole comparison behind a number (gate 2, fourth pass).
+    const returnsRaw = rest.slice(parenEnd).match(/^\s*->\s*([^{;\n]+)/)?.[1] ?? "";
+    const returns = [...returnsRaw.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
     const debugOnly = (() => {
       for (let k = attr.startLine - 2; k >= 0; k--) {
         const t = lines[k].trim();
@@ -327,7 +390,15 @@ export function parseNapiFunctions(source, file) {
       }
       return false;
     })();
-    functions.set(jsName, { rustName: m[1], paramType, at: attr.at, debugOnly });
+    if (functions.has(jsName)) {
+      problems.push(`${attr.at}: \`${jsName}\` is already exported from ${functions.get(jsName).at}`);
+      continue;
+    }
+    functions.set(jsName, { rustName: head[1], paramType, returns, at: attr.at, debugOnly });
+  }
+
+  if (functions.size + problems.length < declared) {
+    problems.push(`${file}: ${declared} napi function attributes, but only ${functions.size} were understood`);
   }
   return { functions, problems };
 }
@@ -342,6 +413,7 @@ export function parseNapiFunctions(source, file) {
  */
 export function parseTsFunctionParams(source) {
   const text = source.replace(/\r\n/g, "\n");
+  const lineAt = (index) => text.slice(0, index).split("\n").length;
   const out = new Map();
   for (const m of text.matchAll(/^export declare function (\w+)\s*\(\s*\w+\s*:\s*\{/gm)) {
     const brace = text.indexOf("{", m.index + m[0].length - 1);
@@ -350,7 +422,7 @@ export function parseTsFunctionParams(source) {
     const fields = new Map();
     for (const part of text.slice(brace + 1, end - 1).split(";")) {
       const fm = part.trim().match(/^(\w+)(\??):/);
-      if (fm) fields.set(fm[1], fm[2] === "?");
+      if (fm) fields.set(fm[1], { optional: fm[2] === "?", at: `line ${lineAt(brace)}` });
     }
     out.set(m[1], fields);
   }
@@ -441,7 +513,7 @@ export function parseTsInterfaces(source) {
     const fields = new Map();
     let broken = false;
     let inBlockComment = false;
-    for (const raw of text.slice(brace + 1, end - 1).split("\n")) {
+    for (const [offset, raw] of text.slice(brace + 1, end - 1).split("\n").entries()) {
       let line = raw.trim();
       if (inBlockComment) {
         const close = line.indexOf("*/");
@@ -464,7 +536,7 @@ export function parseTsInterfaces(source) {
       if (/^(?:readonly\s+)?\w+\s*(?:<[^>]*>)?\(/.test(line)) continue;
       const fm = line.match(/^(?:readonly\s+)?(\w+)(\??):/);
       if (fm) {
-        fields.set(fm[1], fm[2] === "?");
+        fields.set(fm[1], { optional: fm[2] === "?", at: `line ${lineAt(brace) + offset}` });
         continue;
       }
       problems.push(`${name} (${where}) has a line this parser cannot read as a field: ${line}`);

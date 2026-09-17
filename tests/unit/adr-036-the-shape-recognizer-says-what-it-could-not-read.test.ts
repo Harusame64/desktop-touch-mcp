@@ -34,10 +34,13 @@ pub struct Thing {
 `);
     expect(problems).toEqual([]);
     expect([...structs.keys()]).toEqual(["Thing"]);
-    expect([...structs.get("Thing")!.fields]).toEqual([
+    expect([...structs.get("Thing")!.fields].map(([n, d]) => [n, d.optional])).toEqual([
       ["a", false],
       ["b", true],
     ]);
+    // **Every field carries its own line.** A finding used to anchor the struct's attribute — on
+    // the real machine that was 25 lines above the field it was about (win2, 2026-09-17).
+    expect(structs.get("Thing")!.fields.get("a")!.at).toBe("fixture.rs:4");
   });
 
   it("survives a multi-line attribute between the napi line and the struct", () => {
@@ -210,7 +213,7 @@ pub struct Thing {
     pub a: std::option::Option<u32>,
 }
 `);
-    expect(structs.get("Thing")!.fields.get("a")).toBe(true);
+    expect(structs.get("Thing")!.fields.get("a")!.optional).toBe(true);
   });
 
   it("refuses two structs with one JS name instead of keeping whichever came last", () => {
@@ -261,7 +264,7 @@ export interface Thing {
 }
 `);
     expect(problems).toEqual([]);
-    expect([...interfaces.get("Thing")!]).toEqual([
+    expect([...interfaces.get("Thing")!].map(([n, d]) => [n, d.optional])).toEqual([
       ["a", false],
       ["b", true],
     ]);
@@ -288,7 +291,7 @@ export declare interface Thing {
 }
 `);
     expect(problems).toEqual([]);
-    expect([...interfaces.get("Thing")!]).toEqual([
+    expect([...interfaces.get("Thing")!].map(([n, d]) => [n, d.optional])).toEqual([
       ["a", false],
       ["b", true],
     ]);
@@ -423,14 +426,20 @@ pub struct Thing {}
     for (const f of files) {
       for (const m of readFileSync(f, "utf8").matchAll(/^[ \t]*#\[([A-Za-z_][A-Za-z0-9_:\s]*?)[\s(\]]/gm)) {
         const path = m[1].replace(/\s+/g, "");
-        if (path.split("::").pop() === "napi") heads.add(path);
+        // **Harvested by a DIFFERENT rule than the recognizer's own.** Collecting with
+        // `last segment === "napi"` could only ever feed the recognizer spellings it already
+        // accepts — a fixture structurally unable to fail for the class that leaks (gate 2, fourth
+        // pass). `napi` as a SUBSTRING is broader: an alias like `napi_alias` is harvested, and the
+        // assertion below is then "read it or report it", never "pass quietly".
+        if (/napi/.test(path)) heads.add(path);
       }
     }
     expect(heads.size).toBeGreaterThan(1); // the tree really does spell it more than one way
     for (const path of heads) {
-      const { attrs, problems } = scan(`#[${path}(object)]\npub struct Thing {\n    pub a: u32,\n}\n`);
-      expect(problems, path).toEqual([]);
-      expect(attrs.length, path).toBe(1);
+      const src = `use napi_derive::napi as ${path.split("::").pop()};\n#[${path}(object)]\npub struct Thing {\n    pub a: u32,\n}\n`;
+      const { attrs, problems } = scan(path.split("::").pop() === "napi" ? src.split("\n").slice(1).join("\n") : src);
+      // Read it, or say it could not be read. Never silence.
+      expect(attrs.length > 0 || problems.length > 0, path).toBe(true);
     }
   });
 });
@@ -477,9 +486,84 @@ pub fn method(&self) -> u32 { 1 }
     const params = parseTsFunctionParams(
       'export declare function uiaClickElement(opts: { windowTitle: string; name?: string }): Promise<void>\n',
     );
-    expect([...params.get("uiaClickElement")!]).toEqual([
+    expect([...params.get("uiaClickElement")!].map(([n, d]) => [n, d.optional])).toEqual([
       ["windowTitle", false],
       ["name", true],
     ]);
+  });
+});
+
+describe("the function scan says what it could not read", () => {
+  const fns = (src: string) => parseNapiFunctions(src, "fixture.rs");
+
+  it("reads an async, unsafe, generic or comment-separated export", () => {
+    // **Four spellings that used to leave through a quiet `continue`**, each an undeclared export
+    // with the run printing OK and the export count unmoved (gate 2, fourth pass). The block
+    // comment is the sharpest: the STRUCT walk had learned it a round earlier — same spelling, one
+    // function over, silent.
+    const { functions, problems } = fns(`
+#[napi]
+pub async fn one() -> u32 { 1 }
+
+#[napi]
+pub unsafe fn two(x: u32) -> u32 { x }
+
+#[napi]
+pub fn three<T: Clone>(x: u32) -> u32 { x }
+
+#[napi]
+/* keep this one */
+pub fn four(x: u32) -> u32 { x }
+`);
+    expect(problems).toEqual([]);
+    expect([...functions.keys()].sort()).toEqual(["four", "one", "three", "two"]);
+  });
+
+  it("reports an item it cannot read instead of dropping the export", () => {
+    const { problems } = fns(`
+#[napi]
+pub static NOT_A_FUNCTION: u32 = 1;
+`);
+    expect(problems.join("")).toMatch(/cannot read the item/);
+  });
+
+  it("follows a napi attribute imported under another name", () => {
+    // `use napi_derive::napi as napi_alias;` made both scans blind, with nothing reported.
+    const { functions, problems } = fns(`
+use napi_derive::napi as napi_alias;
+
+#[napi_alias]
+pub fn aliased(x: u32) -> u32 { x }
+`);
+    expect(problems).toEqual([]);
+    expect([...functions.keys()]).toEqual(["aliased"]);
+
+    const grouped = parseNapiObjectStructs(
+      `use napi_derive::{napi as n};\n#[n(object)]\npub struct Thing {\n    pub a: u32,\n}\n`,
+      "fixture.rs",
+    );
+    expect(grouped.structs.has("Thing")).toBe(true);
+  });
+
+  it("records what a function returns, so an argument shape can be told from a returned one", () => {
+    const { functions } = fns(`
+#[napi]
+pub fn takes_and_returns(opts: uia::types::BoundingRect) -> napi::Result<BoundingRect> { todo!() }
+`);
+    const def = functions.get("takesAndReturns")!;
+    expect(def.paramType).toBe("BoundingRect");
+    expect(def.returns).toContain("BoundingRect");
+  });
+
+  it("refuses two exports with one JS name", () => {
+    expect(
+      fns(`
+#[napi]
+pub fn twice(x: u32) -> u32 { x }
+
+#[napi(js_name = "twice")]
+pub fn other(x: u32) -> u32 { x }
+`).problems.join(""),
+    ).toMatch(/already exported/);
   });
 });
