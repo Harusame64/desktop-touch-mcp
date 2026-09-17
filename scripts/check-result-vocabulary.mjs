@@ -33,7 +33,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readUnion } from "./lib/route-vocabulary.mjs";
 import {
-  readCodedNames,
+  readPresentedNames,
   readReturnedCodes,
   readEnvelopeErrorNames,
   readLeaseCodes,
@@ -78,23 +78,14 @@ const fallbackCause = readUnexpectedFallback(read("src/tools/_envelope.ts"), pro
 // It modelled the name space with `SUGGESTS` — the ADVICE table, keyed BY the name, downstream of
 // the thing it stood in for. That counted 82 values nothing produces and missed `handler_error`,
 // `unknown` and the lease codes. Gate 2 on #672 added a fifth lease code and watched the gate print
-// OK. The number went 101 to 26.
+// OK. The number went 101 to 26, and to 23 when arrival replaced membership (#673).
 const RESOLVED_CODED = [{ file: "src/tools/_envelope.ts", identifier: "code", from: "mapLeaseValidationToTypedReason" }];
 const RESOLVED_DYNAMIC_NAME = ["src/errors/typed-errors.ts:ToolFailureError:code"];
-// **Produced is not the same as reachable, and this extraction only counts producers.**
-// `HandlerError` is constructed twice, both inside `toResultErr` — an exported, documented, tested
-// helper that NO production code calls (`git grep toResultErr -- src` is four lines, all its own
-// declaration and prose). So `handler_error` is a reason the grid counts and no shipped path
-// produces. Recorded rather than dropped: a name that becomes reachable the day somebody wires the
-// documented handler pattern is one the grid should already know about, and a name silently
-// removed is one nobody notices arriving. The same distinction as internal #122, one level up.
-const KNOWN_WITHOUT_PRODUCTION_CALLER = [
-  {
-    name: "HandlerError",
-    why: "constructed only inside toResultErr, which no production code calls",
-    checked_on: "cf6d0063",
-  },
-];
+// **Reachability is derived now, not pinned by hand.** `handler_error` used to be carried here as
+// "produced but with no production caller", maintained as a written-down list. Reading the
+// presenter's own call sites answers it structurally: `toResultErr` never appears at one, so the
+// name never enters the set and there is nothing to keep in step. A derived fact beats an exemption
+// somebody has to remember to update.
 // **A producer whose values this extraction cannot enumerate.** `ToolFailureError` takes its name
 // from a `code` supplied at 183 `failWith` call sites across the tools; enumerating that space is
 // `check:failwith-fixtures`'s subject, not this one. Listed here rather than silently skipped,
@@ -107,8 +98,31 @@ const UNRESOLVABLE = [
     counted_by: "npm run check:failwith-fixtures",
   },
 ];
-const errorNames = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
-const codedNames = readCodedNames(sources, problems, RESOLVED_CODED);
+// **Read at the presenter's call sites, not by family membership.** Membership was a proxy, and it
+// was wrong for two classes: `RegionOutsideCapturableBoundsError` and `CaptureBackendFailedError`
+// extend `HandlerError` and are thrown by the capture engine, but no `toFailureEnvelope(` site ever
+// receives them (codex, #672, P1). The family read stays, but only to map a constructed class to
+// the literal name it sets.
+//
+// **It is NOT that those two never reach an envelope.** win2 measured it (2026-09-17, internal
+// `4ef46b4`): ask for a region off every monitor and the envelope is there — it just carries a
+// different shape.
+//
+//   toFailureEnvelope path : data: null                      → if_unexpected.most_likely_cause
+//   the engine's path      : data: { ok:false, code: … }     → data.code, and no if_unexpected
+//
+// So the distinction is not "does it reach the envelope" but **which key inside carries the cause**,
+// and `err.name` reaches a caller on THREE of them:
+//
+//   reason             snake_case    toFailureEnvelope's raw projection
+//   most_likely_cause  PascalCase    toFailureEnvelope's envelope
+//   code               PascalCase    `toToolFailure` (`const code = err.name`), enveloped or not
+//
+// **This file counts the `toFailureEnvelope` path only.** `code` is a DIFFERENT axis that shares a
+// producer and a spelling with `most_likely_cause`, so matching the two by name would collapse them
+// into one. Getting the conclusion right off a wrong rule is how the next case is mis-sorted.
+const family = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
+const errorNames = readPresentedNames(sources, family.nameOfClass, problems, RESOLVED_CODED);
 // **The lease codes come from the function, not from the table beside it.** Gate 2's third round:
 // `mapLeaseValidationToTypedReason` hard-codes its returns and never consults
 // `LEASE_REASON_TO_TYPED_CODE`, whose own comment calls it a reservation for future expansion. Two
@@ -118,7 +132,7 @@ const leaseCodes = readReturnedCodes(read("src/tools/_envelope.ts"), "mapLeaseVa
 // function returns with no reserved name is the shape the reservation exists to prevent.
 const reservedLeaseNames = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
 const producedNames = [
-  ...new Set([...errorNames, ...codedNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
+  ...new Set([...errorNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
 ].sort();
 
 const computed = conversion.apply ? [...new Set(producedNames.map(conversion.apply))].sort() : [];
@@ -131,7 +145,7 @@ const receivable = [...new Set([...typed, ...computed])].sort();
 const computedOnly = computed.filter((r) => !typed.includes(r));
 const catalogued = new Set([...serverCatalogue, ...toolCatalogue]);
 // **A produced name with no `SUGGESTS` key reaches the caller with generic advice.** Recorded
-// rather than failed: five do today, and prose is what they carry.
+// rather than failed: two do today, and prose is what they carry.
 const withoutAdvice = producedNames.filter((n) => !suggestsKeys.includes(n));
 
 const derived = {
@@ -146,8 +160,12 @@ const derived = {
   // failed on: a gate that is red the day it lands is a gate somebody turns off (#670). It fails
   // when the difference changes, which is the property that was actually wanted.
   unresolvable: UNRESOLVABLE.map((u) => u.producer),
-  withoutProductionCaller: KNOWN_WITHOUT_PRODUCTION_CALLER.map((k) => k.name),
   reservedLeaseNames,
+  // **Two classes are declared twice with different names**, and both are presented. Which one a
+  // presented class means depends on the walk order, so it is pinned as a fact rather than failed
+  // on — a gate that is red the day it lands is a gate somebody turns off (#670). A THIRD collision,
+  // or either of these two changing, is a change the grid records.
+  classNameCollisions: family.collisions,
   cataloguesDifferBy: [
     ...serverCatalogue.filter((n) => !toolCatalogue.includes(n)),
     ...toolCatalogue.filter((n) => !serverCatalogue.includes(n)),
@@ -226,12 +244,6 @@ for (const name of typed) {
   if (!catalogued.has(name)) problems.push(`${name} is a TouchFailReason no catalogue mentions`);
 }
 
-// **A name pinned as having no production caller must still BE a produced name.** If the class goes
-// away the entry is stale, and a stale exemption is how a real value walks past later.
-for (const { name } of KNOWN_WITHOUT_PRODUCTION_CALLER) {
-  if (!producedNames.includes(name)) problems.push(`${name} is pinned as having no production caller, but nothing produces it at all any more`);
-}
-
 // **The fallback carries no advice, and that is a pinned fact.** `"Unknown"` is not a `SUGGESTS`
 // key, so the reason it produces reaches the caller with an empty advice list. If it ever becomes a
 // key the axis changes shape, and this line is where that shows.
@@ -268,12 +280,12 @@ console.log(
     `most_likely_cause, which carries no reason field at all): ${typed.length} typed ` +
     `(TouchFailReason), ${typed.filter((r) => computed.includes(r)).length} of which also arrive through the ` +
     `envelope, plus ${computedOnly.length} more COMPUTED from the name of the error that ` +
-    `reached it — including "handler_error", which is every un-typed throw, and "${fallbackReason}", which is an ` +
-    `envelope with no if_unexpected. ${[...catalogued].length} are catalogued for the caller, so ` +
+    `reached it${computedOnly.includes(fallbackReason) ? `, including "${fallbackReason}"` : ""}. ${[...catalogued].length} are catalogued for the caller, so ` +
     `${receivable.filter((r) => !catalogued.has(r)).length} are not; ${withoutAdvice.length} produced names have no ` +
     `SUGGESTS entry and reach the caller with generic advice. The two catalogues differ by ` +
     `${derived.cataloguesDifferBy.length}. ${UNRESOLVABLE.length} producer${UNRESOLVABLE.length === 1 ? " takes" : "s take"} ` +
     `a name this extraction cannot enumerate, so the count is a LOWER BOUND, not a total. ` +
-    `${KNOWN_WITHOUT_PRODUCTION_CALLER.length} of the names (${KNOWN_WITHOUT_PRODUCTION_CALLER.map((k) => k.name).join(", ")}) ` +
-    `${KNOWN_WITHOUT_PRODUCTION_CALLER.length === 1 ? "has" : "have"} no production caller, so counting a producer is not the same as counting a reachable cell.`,
+    `The names are read at the presenter's own call sites, so a class thrown but never handed to ` +
+    `\`toFailureEnvelope\` is not counted here — it reaches the caller on \`code\`, which is its own ` +
+    `axis sharing this one's spellings.`,
 );

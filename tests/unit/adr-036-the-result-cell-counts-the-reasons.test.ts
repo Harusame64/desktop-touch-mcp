@@ -28,7 +28,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   PINNED_PASCAL_TO_SNAKE,
   readReturnedCodes,
-  readCodedNames,
+  readPresentedNames,
   readEnvelopeErrorNames,
   readLeaseCodes,
   readReasonCatalogue,
@@ -122,7 +122,7 @@ describe("the extractor", () => {
     // in no catalogue.
     const problems: string[] = [];
     const names = readEnvelopeErrorNames(
-      [
+[
         {
           file: "a.ts",
           text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
@@ -133,64 +133,93 @@ describe("the extractor", () => {
       ],
       problems,
     );
-    expect(names).toEqual(["Deeper", "ExecutorFailed", "HandlerError"]);
-    expect(names).not.toContain("NotInFamily");
+    // The family read now returns the map the presenter read needs alongside the set.
+    expect(names.names).toEqual(["Deeper", "ExecutorFailed", "HandlerError"]);
+    expect(names.names).not.toContain("NotInFamily");
+    expect(names.nameOfClass.get("Deeper")).toBe("Deeper");
     expect(problems).toEqual([]);
 
     // A name this parser cannot enumerate is REPORTED, unless a human wrote the exemption down.
     const withRoot = `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
                       class Coded extends HandlerError { constructor(code) { super(); this.name = code; } }`;
     const dynamic: string[] = [];
-    readEnvelopeErrorNames([{ file: "b.ts", text: withRoot }], dynamic);
+    readEnvelopeErrorNames(
+[{ file: "b.ts", text: withRoot }], dynamic);
     expect(dynamic.join("")).toMatch(/Coded sets this.name from `code`, a value this parser cannot enumerate/);
 
     // **The exemption carries the FILE as well as the class.** One written-down entry must not
     // exempt a same-named class somewhere else — the sibling axes closed exactly this twice.
     const exempted: string[] = [];
-    expect(readEnvelopeErrorNames([{ file: "b.ts", text: withRoot }], exempted, ["b.ts:Coded:code"])).toEqual([
+    expect(readEnvelopeErrorNames([{ file: "b.ts", text: withRoot }], exempted, ["b.ts:Coded:code"]).names).toEqual([
       "HandlerError",
     ]);
     expect(exempted).toEqual([]);
     const elsewhere: string[] = [];
-    readEnvelopeErrorNames([{ file: "c.ts", text: withRoot }], elsewhere, ["b.ts:Coded:code"]);
+    readEnvelopeErrorNames(
+[{ file: "c.ts", text: withRoot }], elsewhere, ["b.ts:Coded:code"]);
     expect(elsewhere.join("")).toMatch(/Coded sets this.name from/);
   });
 
-  it("reads the coded names, and the lease codes that reach them through a variable", () => {
-    const problems: string[] = [];
-    expect(readCodedNames([{ file: "a.ts", text: `throw new CodedHandlerError("WorkingMemoryNUpperBoundExceeded");` }], problems)).toEqual([
-      "WorkingMemoryNUpperBoundExceeded",
+  it("reads the names at the presenter's call sites, not by family membership", () => {
+    // **Membership was a proxy and the proxy was wrong for two classes.** They extend
+    // `HandlerError` and are thrown by the capture engine, but no `toFailureEnvelope(` site ever
+    // receives them — they reach a caller through the flat `failWith` surface, so the axis carried
+    // two envelope cells that cannot exist (codex, #672, P1). Fourth time today that the answer is
+    // the same: read the thing at the point it happens, not something adjacent to it.
+    const nameOfClass = new Map([
+      ["HandlerError", "HandlerError"],
+      ["Presented", "PresentedName"],
+      ["NeverPresented", "NeverPresentedName"],
     ]);
-    readCodedNames([{ file: "a.ts", text: `throw new CodedHandlerError(code);` }], problems);
-    expect(problems.join("")).toMatch(/a coded failure takes its name from `code`/);
-    // The exemption names the producing function and the binding must exist — see the cell below.
-    const exempt: string[] = [];
-    readCodedNames(
-      [{ file: "a.ts", text: `const { code } = mapIt(v);\nthrow new CodedHandlerError(code);` }],
-      exempt,
-      [{ file: "a.ts", identifier: "code", from: "mapIt" }],
-    );
-    expect(exempt).toEqual([]);
-
-    const lease: string[] = [];
+    const problems: string[] = [];
     expect(
-      readLeaseCodes(`export const LEASE_REASON_TO_TYPED_CODE = {
-  expired: "LeaseExpired",
-  digest_mismatch: "LeaseDigestMismatch",
-} as const;`, lease),
-    ).toEqual(["LeaseDigestMismatch", "LeaseExpired"]);
-    expect(lease).toEqual([]);
-    readLeaseCodes(`const SOMETHING = {};`, lease);
-    expect(lease.join("")).toMatch(/LEASE_REASON_TO_TYPED_CODE could not be read/);
+      readPresentedNames(
+        [
+          {
+            file: "a.ts",
+            text: `toFailureEnvelope(
+  Err(new Presented("boom")),
+  { optIn },
+);
+throw new NeverPresented("thrown, never handed to the envelope");
+toFailureEnvelope(Err(new CodedHandlerError("LiteralCode")), { optIn });`,
+          },
+        ],
+        nameOfClass,
+        problems,
+      ),
+    ).toEqual(["LiteralCode", "PresentedName"]);
+    expect(problems).toEqual([]);
+
+    // `toResultErr` is where everything outside the family arrives — but only if a site uses it.
+    expect(
+      readPresentedNames([{ file: "a.ts", text: `toFailureEnvelope(toResultErr(e), { optIn });` }], nameOfClass),
+    ).toEqual(["HandlerError"]);
+
+    // A coded name held in a variable is exempted by the binding it comes from, and reported when
+    // the binding is not there.
+    const bound = `const { code } = mapIt(v);\ntoFailureEnvelope(Err(new CodedHandlerError(code)), { optIn });`;
+    const ok: string[] = [];
+    readPresentedNames([{ file: "a.ts", text: bound }], nameOfClass, ok, [
+      { file: "a.ts", identifier: "code", from: "mapIt" },
+    ]);
+    expect(ok).toEqual([]);
+    const moved: string[] = [];
+    readPresentedNames([{ file: "a.ts", text: bound.replace("mapIt", "other") }], nameOfClass, moved, [
+      { file: "a.ts", identifier: "code", from: "mapIt" },
+    ]);
+    expect(moved.join("")).toMatch(/exempted as coming from mapIt, but nothing in this file binds it/);
+
+    // A shape it cannot name is reported, not skipped.
+    const odd: string[] = [];
+    readPresentedNames([{ file: "a.ts", text: `toFailureEnvelope(buildIt(x), { optIn });` }], nameOfClass, odd);
+    expect(odd.join("")).toMatch(/a shape this parser cannot name/);
   });
 
   it("reads the lease codes from the function, not from the table beside it", () => {
-    // **Gate 2's third round on this PR.** The rewrite claimed to read producers and then read
-    // `LEASE_REASON_TO_TYPED_CODE` — a table `mapLeaseValidationToTypedReason` never consults. That
-    // function hard-codes its returns, and the table's own comment calls it a reservation "so
-    // expansion can mechanically promote each branch". Two of its names were pinned as produced and
-    // nothing produced them; adding a real branch left the gate green. The same defect as the round
-    // before, one level further in.
+    // Gate 2's third round on #672: the rewrite claimed to read producers and then read
+    // `LEASE_REASON_TO_TYPED_CODE` — a table `mapLeaseValidationToTypedReason` never consults. Two
+    // of its names were pinned as produced and nothing produced them.
     const problems: string[] = [];
     expect(
       readReturnedCodes(
@@ -206,23 +235,36 @@ describe("the extractor", () => {
         problems,
       ),
     ).toEqual(["LeaseExpired", "Unknown"]);
-    // **The signature carries an object RETURN TYPE.** A brace-balancing scan reads `{ code: string
-    // … }` as the body and reports "returns no literal code" about a function full of them, so the
-    // body is taken to a `}` in the first column and the code is read inside a `return {…}` only.
+    // **The signature carries an object RETURN TYPE.** A brace-balancing scan reads
+    // `{ code: string; … }` as the body and reports "returns no literal code" about a function full
+    // of them, so the body runs to a `}` in the first column and the code is read inside a
+    // `return {…}` only.
     expect(problems).toEqual([]);
 
     const dynamic: string[] = [];
-    readReturnedCodes(
-      `function f(): X {\n  return { code: computeIt(reason), tryNext: [] };\n}`,
-      "f",
-      dynamic,
-    );
+    readReturnedCodes(`function f(): X {\n  return { code: computeIt(reason), tryNext: [] };\n}`, "f", dynamic);
     expect(dynamic.join("")).toMatch(/f returns a code this parser cannot name: computeIt\(reason\)/);
 
-    const missing: string[] = [];
-    readReturnedCodes(`const x = 1;`, "notThere", missing);
-    expect(missing.join("")).toMatch(/notThere could not be found — the codes it returns are unknown, not absent/);
+    // The table survives as a COVERAGE check — the role SUGGESTS was correctly demoted to.
+    const lease: string[] = [];
+    expect(
+      readLeaseCodes(`export const LEASE_REASON_TO_TYPED_CODE = {\n  expired: "LeaseExpired",\n} as const;`, lease),
+    ).toEqual(["LeaseExpired"]);
+    readLeaseCodes(`const SOMETHING = {};`, lease);
+    expect(lease.join("")).toMatch(/LEASE_REASON_TO_TYPED_CODE could not be read/);
   });
+
+  // ── Restored ────────────────────────────────────────────────────────────────
+  //
+  // **These six were deleted by the commit that changed the producer model, and none of them
+  // covers code that commit removed.** Gate 2 on #673 re-broke five and watched them survive:
+  // seeding `HandlerError`'s name, the fixed 900-character window, the bare-name class key, the
+  // double-quote-only `this.name` match, and the regex-literal desync. Each was bought with a
+  // defect found by codex or an earlier round, and each comment explaining the defect outlived the
+  // check that enforced it.
+  //
+  // The lesson is about how the edit was made, not about the code: replacing a block wholesale
+  // swallows the cells inside it, and the swallowed ones are invisible in a green run.
 
   it("reads HandlerError's own name from the tree instead of seeding it", () => {
     // It was a string constant in the extractor, so renaming `this.name = "HandlerError"` — which
@@ -239,7 +281,7 @@ describe("the extractor", () => {
           },
         ],
         problems,
-      ),
+      ).names,
     ).toEqual(["Child", "HandlerFailure"]);
     expect(problems).toEqual([]);
 
@@ -262,7 +304,7 @@ class LongOne extends HandlerError {
 ${long}    this.name = "LongConstructorFailure";
   }
 }` },
-      ]),
+      ]).names,
     ).toContain("LongConstructorFailure");
 
     expect(
@@ -272,7 +314,7 @@ class InheritsItsParentsName extends HandlerError {}
 class NotInTheFamily extends Error {
   constructor() { super(); this.name = "GhostReason"; }
 }` },
-      ]),
+      ]).names,
     ).toEqual(["HandlerError"]);
   });
 
@@ -286,8 +328,8 @@ class NotInTheFamily extends Error {
 class Dup extends Error { constructor() { super(); this.name = "DupPlainError"; } }` },
       { file: "src/errors/typed-errors.ts", text: `class Dup extends HandlerError { constructor() { super(); this.name = "DupTyped"; } }` },
     ];
-    expect(readEnvelopeErrorNames(both)).toEqual(["DupTyped", "HandlerError"]);
-    expect(readEnvelopeErrorNames([...both].reverse())).toEqual(["DupTyped", "HandlerError"]);
+    expect(readEnvelopeErrorNames(both).names).toEqual(["DupTyped", "HandlerError"]);
+    expect(readEnvelopeErrorNames([...both].reverse()).names).toEqual(["DupTyped", "HandlerError"]);
   });
 
   it("reads a name in either quote spelling, because nothing forces one", () => {
@@ -301,7 +343,7 @@ class Dup extends Error { constructor() { super(); this.name = "DupPlainError"; 
           text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
 class Single extends HandlerError { constructor() { super(); this.name = 'NewFailure'; } }`,
         },
-      ]),
+      ]).names,
     ).toEqual(["HandlerError", "NewFailure"]);
   });
 
@@ -319,34 +361,6 @@ class Single extends HandlerError { constructor() { super(); this.name = 'NewFai
     expect(problems.join("")).toMatch(/computed key this parser cannot name — the advice coverage is a lower bound/);
   });
 
-  it("exempts a coded name by the binding it comes from, not by the variable's spelling", () => {
-    // The exemption said "a `code` in `_envelope.ts`", so every future `new CodedHandlerError(code)`
-    // anywhere in that 3500-line file was silently treated as the lease case, whatever value space
-    // it came from (codex, #672). It names the producing function now and the binding must exist —
-    // the same rule the road axis uses for `adr029Refusal`, and the fourth time today that keying
-    // an exemption on a binding rather than a spelling is the answer.
-    const exemption = [{ file: "a.ts", identifier: "code", from: "mapLeaseValidationToTypedReason" }];
-    const bound = `const { code, tryNext } = mapLeaseValidationToTypedReason(v.reason);
-                   throw new CodedHandlerError(code);`;
-    const ok: string[] = [];
-    readCodedNames([{ file: "a.ts", text: bound }], ok, exemption);
-    expect(ok).toEqual([]);
-
-    // A second `code` in the same file, from somewhere else, is NOT exempted.
-    const other: string[] = [];
-    readCodedNames([{ file: "a.ts", text: `${bound}\nthrow new CodedHandlerError(code2);` }], other, exemption);
-    expect(other.join("")).toMatch(/takes its name from `code2`/);
-
-    // And the exemption lifts when the binding stops coming from the named producer.
-    const moved: string[] = [];
-    readCodedNames(
-      [{ file: "a.ts", text: bound.replace("mapLeaseValidationToTypedReason", "someOtherMapper") }],
-      moved,
-      exemption,
-    );
-    expect(moved.join("")).toMatch(/exempted as coming from mapLeaseValidationToTypedReason, but nothing in this file binds it/);
-  });
-
   it("does not desync on a regex literal that contains quotes", () => {
     // Once the walk covered all of `src/`, two files desynced the stripper: a regex literal with an
     // odd number of `"` opened a string state that never closed, so every comment below it stopped
@@ -356,11 +370,67 @@ class Single extends HandlerError { constructor() { super(); this.name = 'NewFai
     const src = `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
 const re = /^Exception calling "GetCurrentPattern" with "\\d+" argument\\(s\\): ".*/;
 // class CommentOnly extends HandlerError { constructor() { super(); this.name = "CommentGhost"; } }`;
-    expect(readEnvelopeErrorNames([{ file: "a.ts", text: src }])).toEqual(["HandlerError"]);
+    expect(readEnvelopeErrorNames([{ file: "a.ts", text: src }]).names).toEqual(["HandlerError"]);
     expect(readSuggestsKeys(`const SUGGESTS: Record<string, string[]> = {
   First: ["a"], // a trailing comment after a brace
   Second: ["b"],
 };`)).toEqual(["First", "Second"]);
+  });
+
+  it("reads the producer, which is buildFailureEnvelope, not the function that calls it", () => {
+    // **The fifth proxy in a row.** `most_likely_cause` is written by `buildFailureEnvelope(name, …)`,
+    // which is EXPORTED — `toFailureEnvelope` is one of its callers, and the tree's own docs call the
+    // direct call a pattern that existed and was migrated away from. Gate 2 on #673 added a direct
+    // call with a fresh literal: it type-checked and the gate printed OK.
+    const nameOfClass = new Map([["HandlerError", "HandlerError"]]);
+    const problems: string[] = [];
+    expect(
+      readPresentedNames(
+        [{ file: "a.ts", text: `export function brandNew() {\n  return buildFailureEnvelope("BrandNewCause", []);\n}` }],
+        nameOfClass,
+        problems,
+      ),
+    ).toEqual(["BrandNewCause"]);
+    expect(problems).toEqual([]);
+
+    // A name it cannot enumerate there is reported, and the function's own declaration is not a
+    // call site — the road axis learned that about `probeRoute(route: string, …)`.
+    const dynamic: string[] = [];
+    readPresentedNames([{ file: "a.ts", text: `buildFailureEnvelope(computeIt(x), []);` }], nameOfClass, dynamic);
+    expect(dynamic.join("")).toMatch(/buildFailureEnvelope is given `computeIt\(x`/);
+    const decl: string[] = [];
+    readPresentedNames(
+      [{ file: "a.ts", text: `export function buildFailureEnvelope(\n  mostLikelyCause: string,\n) {}` }],
+      nameOfClass,
+      decl,
+    );
+    expect(decl).toEqual([]);
+  });
+
+  it("takes the two-argument coded form, which is documented and supported", () => {
+    // Requiring `)` right after the string made a name-preserving edit go red with two lines
+    // claiming the code "no longer produces" a name it produces unchanged — and `--update` refuses
+    // while problems exist, so that edit hard-blocked the gate (gate 2, #673).
+    const nameOfClass = new Map([["HandlerError", "HandlerError"]]);
+    expect(
+      readPresentedNames(
+        [{ file: "a.ts", text: `toFailureEnvelope(Err(new CodedHandlerError("Foo", "a message")), { optIn });` }],
+        nameOfClass,
+      ),
+    ).toEqual(["Foo"]);
+  });
+
+  it("reports two files that declare a class with different names, instead of picking one", () => {
+    // `nameOf` is keyed `file:class` precisely because `AimOccludedError` is declared twice with
+    // different `this.name` values, and both are presented. Collapsing to a bare name is
+    // last-writer-wins over walk order — correct today only because `engine/` sorts first.
+    const both = [
+      { file: "src/engine/aim.ts", text: `class HandlerError extends Error { constructor() { super(); this.name = "HandlerError"; } }
+class Dup extends HandlerError { constructor() { super(); this.name = "DupLong"; } }` },
+      { file: "src/errors/typed-errors.ts", text: `class Dup extends HandlerError { constructor() { super(); this.name = "Dup"; } }` },
+    ];
+    expect(readEnvelopeErrorNames(both).collisions).toEqual(["Dup: Dup / DupLong"]);
+    expect(readEnvelopeErrorNames([...both].reverse()).collisions).toEqual(["Dup: Dup / DupLong"]);
   });
 
   it("does not let a brace inside an advice string close the table early", () => {
@@ -457,18 +527,35 @@ const re = /^Exception calling "GetCurrentPattern" with "\\d+" argument\\(s\\): 
     expect(out).toContain(`The two catalogues differ by ${pinned.cataloguesDifferBy.length}`);
     expect(out).toContain("LOWER BOUND, not a total");
 
-    // The two the wrapper adds that no type and no catalogue carries.
-    expect(pinned.computedOnly).toContain("handler_error");
+    // The one the wrapper adds that no type and no catalogue carries. `handler_error` is NOT here:
+    // `toResultErr` appears at no `toFailureEnvelope(` call site, so the name never arrives.
     expect(pinned.computedOnly).toContain("unknown");
+    expect(pinned.computedOnly).not.toContain("handler_error");
     expect(pinned.fallbackReason).toBe("unknown");
     // The producer whose values this extraction does not enumerate, which is why it is a bound.
     expect(pinned.unresolvable).toEqual(["ToolFailureError:code"]);
-    // **Produced is not reachable.** `HandlerError` is constructed only inside `toResultErr`, an
-    // exported and tested helper no production code calls — so the grid counts a reason no shipped
-    // path produces. Pinned rather than dropped: a name that becomes reachable the day somebody
-    // wires the documented handler pattern should already be in the grid.
-    expect(pinned.withoutProductionCaller).toEqual(["HandlerError"]);
-    expect(out).toContain("has no production caller");
+    // **Three keys carry `err.name` to a caller, and this file counts one of them** (win2 measured
+    // it on the machine, 2026-09-17, internal `4ef46b4`):
+    //
+    //   reason             snake_case    toFailureEnvelope's raw projection   ← counted here
+    //   most_likely_cause  PascalCase    toFailureEnvelope's envelope         ← counted here
+    //   code               PascalCase    toToolFailure (`const code = err.name`)
+    //
+    // The engine's path DOES get an envelope — it just carries `data: {ok:false, code:…}` with no
+    // `if_unexpected`, where the `toFailureEnvelope` path carries `data: null`. So "it never reaches
+    // an envelope" was the wrong rule for a right conclusion, and `code` is a separate axis that
+    // shares this one's spellings: matching the two by name would collapse them into one.
+    //
+    // **Reachability is derived, not pinned by hand.** `handler_error` used to be carried as
+    // "produced but with no production caller". Reading the presenter's own call sites answers it
+    // structurally — `toResultErr` never appears at one — and two more names leave with it:
+    // `RegionOutsideCapturableBoundsError` and `CaptureBackendFailedError` extend `HandlerError`
+    // and are thrown by the capture engine, but no `toFailureEnvelope(` site receives them, so they
+    // reach a caller through the flat `failWith` surface instead (codex, #672, P1).
+    for (const gone of ["HandlerError", "CaptureBackendFailed", "RegionOutsideCapturableBounds"]) {
+      expect(pinned.producedNames, gone).not.toContain(gone);
+    }
+    expect(out).toContain("read at the presenter's own call sites");
     // The catalogues differ by exactly one name, and the tool description is the longer one.
     expect(pinned.cataloguesDifferBy).toEqual(["aim_blocked_by_excluded_window"]);
     expect(pinned.toolCatalogue).toContain("aim_blocked_by_excluded_window");
@@ -477,7 +564,9 @@ const re = /^Exception calling "GetCurrentPattern" with "\\d+" argument\\(s\\): 
     // **Three, not five.** `LeaseGenerationMismatch` and `LeaseDigestMismatch` were pinned here
     // and nothing produced either: they live in the reservation table, and the mapping that
     // actually returns codes never reads it (gate 2 on #672, third round).
-    expect(pinned.withoutAdvice).toEqual(["HandlerError", "LeaseExpired", "Unknown"]);
+    // **Two, not three.** `HandlerError` went with the presenter read: `toResultErr` appears at no
+    // `toFailureEnvelope(` call site, so the name never arrives and there is nothing to advise on.
+    expect(pinned.withoutAdvice).toEqual(["LeaseExpired", "Unknown"]);
     expect(pinned.reservedLeaseNames).toContain("LeaseDigestMismatch");
     expect(pinned.producedNames).not.toContain("LeaseDigestMismatch");
   });
@@ -567,15 +656,13 @@ function pascalToSnake(s: string): string {
     expect(run().status).toBe(0);
   });
 
-  it("is 1 when a new error class joins the family, because that IS a new reason", () => {
-    // **The producer, not the advice table.** The first version asserted that adding a `SUGGESTS`
-    // key added a reason — it does not; the table is keyed BY the name and is downstream of it.
-    // Adding a class to the `HandlerError` family is what puts a new value on the wire.
+  it("is 1 when a new class is HANDED TO the presenter, and silent when it is only thrown", () => {
+    // **Joining the family is not enough, and that was the P1.** Two classes extend `HandlerError`
+    // and are thrown by the capture engine, but no `toFailureEnvelope(` site receives them — they
+    // reach a caller through the flat `failWith` surface — and the axis counted them anyway.
     fixture();
     pin();
-    write(
-      "src/errors/typed-errors.ts",
-      `export class HandlerError extends Error {
+    const family = `export class HandlerError extends Error {
   constructor(m) { super(m); this.name = "HandlerError"; }
 }
 export class ExecutorFailed extends HandlerError {
@@ -583,17 +670,20 @@ export class ExecutorFailed extends HandlerError {
 }
 export class BrandNewFailure extends HandlerError {
   constructor(m) { super(m); this.name = "BrandNewFailure"; }
-}
-export class NotInFamily extends Error {
-  constructor(m) { super(m); this.name = "NotInFamily"; }
-}`,
+}`;
+    // Thrown only: the axis does not move.
+    write("src/errors/typed-errors.ts", `${family}\nthrow new BrandNewFailure("never presented");`);
+    expect(run().status).toBe(0);
+
+    // Handed to the presenter: it does.
+    write(
+      "src/errors/typed-errors.ts",
+      `${family}\ntoFailureEnvelope(Err(new BrandNewFailure("presented")), { optIn });`,
     );
     const { status, out } = run();
     expect(status).toBe(1);
     expect(out).toMatch(/producedNames: the code now produces "BrandNewFailure"/);
     expect(out).toMatch(/computedOnly: the code now produces "brand_new_failure"/);
-    // …and it has no advice entry, which the grid records too.
-    expect(out).toMatch(/withoutAdvice: the code now produces "BrandNewFailure"/);
   });
 
   it("is 1 when the lease MAPPING gains a branch, and says the truth when only the table moves", () => {
