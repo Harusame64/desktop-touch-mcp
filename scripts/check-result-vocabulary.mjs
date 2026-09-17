@@ -3,6 +3,22 @@
 //
 // Run: `npm run check:result-vocabulary` (add `--update` to re-pin, together with the decision).
 //
+// **There are two caller-visible surfaces, and a grid keyed on one never contains the other.**
+//
+// win2 measured it (2026-09-17, internal `d524953`): `desktop_state`'s memory-bound checks promote
+// `optIn` implicitly, so asking for `working:51` turns envelope mode ON and the failure returns
+// `{"_version":"1.0","data":null,…,"if_unexpected":{"most_likely_cause":
+// "WorkingMemoryNUpperBoundExceeded"}}` — **PascalCase, with no `reason` field at all**. Only a
+// caller that explicitly asks for `"raw"` sees `reason: "working_memory_nupper_bound_exceeded"`.
+// One result, two spellings, both reaching callers. `desktop_act` is the other way round: its
+// handler passes `optIn: false` at every site, so `reason` IS its surface. Both sets are pinned —
+// `producedNames` is the PascalCase surface, `typed` + `computedOnly` the snake_case one.
+//
+// **So this file does not claim to count what `desktop_act` can return.** It counts what the shared
+// machinery can produce. The four memory-bound codes are thrown in `desktop_state`'s handler and no
+// act path reaches them; narrowing to one tool's reachable subset is a call-graph question this
+// extraction does not answer, and saying so is cheaper than a number that reads as its answer.
+//
 // **The axis has a type for a fifth of itself.** The loop's failure arm is typed
 // (`TouchFailReason`, eighteen values). The wrapper above it returns a `reason: string` it does not
 // write but COMPUTES — `pascalToSnake(ifUnexp.most_likely_cause)` over a 94-key advice table with
@@ -231,7 +247,9 @@ if (problems.length > 0) {
 }
 
 console.log(
-  `[check-result-vocabulary] OK — a caller can receive ${receivable.length} reasons: ${typed.length} typed ` +
+  `[check-result-vocabulary] OK — the failure-envelope machinery can produce ${receivable.length} reasons ` +
+    `on the raw surface and ${producedNames.length} names on the envelope surface (PascalCase, in ` +
+    `most_likely_cause, which carries no reason field at all): ${typed.length} typed ` +
     `(TouchFailReason), ${typed.filter((r) => computed.includes(r)).length} of which also arrive through the ` +
     `envelope, plus ${computedOnly.length} more COMPUTED from the name of the error that ` +
     `reached it — including "handler_error", which is every un-typed throw, and "${fallbackReason}", which is an ` +

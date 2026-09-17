@@ -256,7 +256,13 @@ describe("the extractor", () => {
     expect(out).toMatch(/^\[check-result-vocabulary\] OK/m);
     const pinned = JSON.parse(readFileSync(join(REPO, "tests/fixtures/adr-036-result-vocabulary.json"), "utf8"));
     const receivable = new Set([...pinned.typed, ...pinned.computedOnly]);
-    expect(out).toContain(`a caller can receive ${receivable.size} reasons`);
+    // **Both surfaces, named.** win2 measured that one result reaches callers in two spellings —
+    // `reason: "working_memory_nupper_bound_exceeded"` only when `"raw"` is asked for, and
+    // `most_likely_cause: "WorkingMemoryNUpperBoundExceeded"` otherwise, in an envelope with NO
+    // `reason` field. A grid keyed on one never contains the other.
+    expect(out).toContain(`can produce ${receivable.size} reasons on the raw surface`);
+    expect(out).toContain(`${pinned.producedNames.length} names on the envelope surface`);
+    expect(out).toContain("which carries no reason field at all");
     expect(out).toContain(`${pinned.typed.length} typed (TouchFailReason)`);
     expect(out).toContain(`plus ${pinned.computedOnly.length} more COMPUTED`);
     expect(out).toContain(`${pinned.withoutAdvice.length} produced names have no SUGGESTS entry`);
