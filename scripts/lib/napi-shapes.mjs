@@ -438,24 +438,52 @@ export function parseNapiFunctions(source, file) {
 export function parseTsFunctionParams(source) {
   const text = source.replace(/\r\n/g, "\n");
   const lineAt = (index) => text.slice(0, index).split("\n").length;
-  const out = new Map();
+  const params = new Map();
+  const problems = [];
   for (const m of text.matchAll(/^export declare function (\w+)\s*\(\s*\w+\s*:\s*\{/gm)) {
     const brace = text.indexOf("{", m.index + m[0].length - 1);
     const end = endOfBracketed(text, brace, "{", "}");
-    if (end === -1) continue;
-    const fields = new Map();
-    let offset = brace + 1;
-    for (const part of text.slice(brace + 1, end - 1).split(";")) {
-      const fm = part.trim().match(/^(\w+)(\??):/);
-      // The field's own line, not the opening brace's: an inline object written across lines put
-      // every field on the brace's line, and the value was never printed, so nothing said so
-      // (gate 2, verification round).
-      if (fm) fields.set(fm[1], { optional: fm[2] === "?", at: `line ${lineAt(offset + part.indexOf(fm[1]))}` });
-      offset += part.length + 1;
+    if (end === -1) {
+      problems.push(`${m[1]} (line ${lineAt(m.index)}): the inline parameter object has no closing brace`);
+      continue;
     }
-    out.set(m[1], fields);
+    const fields = new Map();
+    // **Members separate on `;` OR `,`, at depth 0.** Splitting on `;` alone lost every field after
+    // the first in a comma-separated object — silently, in the "TS declares a field Rust does not
+    // have" direction, which is the #667 class back again (gate 2, wiring round). This was the one
+    // producer in the pipeline with nowhere to report to.
+    let depth = 0;
+    let current = "";
+    let start = brace + 1;
+    const members = [];
+    for (let i = brace + 1; i < end - 1; i++) {
+      const ch = text[i];
+      if (ch === "{" || ch === "(" || ch === "[" || ch === "<") depth++;
+      if (ch === "}" || ch === ")" || ch === "]" || ch === ">") depth--;
+      if ((ch === ";" || ch === ",") && depth === 0) {
+        members.push([current, start]);
+        current = "";
+        start = i + 1;
+        continue;
+      }
+      current += ch;
+    }
+    members.push([current, start]);
+    for (const [member, offset] of members) {
+      const trimmed = member.trim();
+      if (trimmed === "") continue;
+      const fm = trimmed.match(/^(?:readonly\s+)?(\w+)(\??):/);
+      if (!fm) {
+        problems.push(
+          `${m[1]} (line ${lineAt(offset)}): this parser cannot read \`${trimmed}\` as a parameter field`,
+        );
+        continue;
+      }
+      fields.set(fm[1], { optional: fm[2] === "?", at: `${m[1]}(opts), line ${lineAt(offset + member.indexOf(fm[1]))}` });
+    }
+    params.set(m[1], fields);
   }
-  return out;
+  return { params, problems };
 }
 
 /**

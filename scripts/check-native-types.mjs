@@ -277,16 +277,22 @@ try {
   shapeProblems.push(`src/engine/native-types.ts could not be read: ${e.message}`);
 }
 
-const tsFunctionParams = parseTsFunctionParams(dts);
+const tsParams = parseTsFunctionParams(dts);
+const tsFunctionParams = tsParams.params;
+shapeProblems.push(...tsParams.problems.map((p) => `index.d.ts: ${p}`));
 const argumentOnly = new Set();
+const nativeTypesExempt = new Set();
 let comparedFields = 0;
 const pairedPerFile = new Map();
 for (const [label, source] of TS_SHAPE_FILES) {
   const { interfaces, problems } = parseTsInterfaces(source);
   shapeProblems.push(...problems.map((p) => `${label}: ${p}`));
   let paired = 0;
-  for (const [name, { fields, at }] of rustStructs) {
+  for (const [name, { fields, at, rustName }] of rustStructs) {
     if (STRUCT_EXEMPT.has(name)) continue;
+    // A `js_name` makes the JS name and the Rust name differ; findings say both, because the
+    // reader greps for one and the compiler knows the other.
+    const shown = rustName && rustName !== name ? `${name} (Rust \`${rustName}\`)` : name;
     const tried = [name, `Native${name}`, name.replace(/^Native/, "")].filter(
       (c, i, all) => all.indexOf(c) === i,
     );
@@ -337,7 +343,7 @@ for (const [label, source] of TS_SHAPE_FILES) {
             }
             if (def.optional && inline.get(field).optional === false) {
               shapeProblems.push(
-                `${label}: \`${fn}(opts).${field}\` is declared required, but Rust has it as \`Option<..>\` ` +
+                `${label}: \`${fn}(opts).${field}\` (${inline.get(field).at}) is declared required, but Rust has it as \`Option<..>\` ` +
                   `and napi omits the key for \`None\` — declare it \`${field}?:\``,
               );
             }
@@ -367,7 +373,11 @@ for (const [label, source] of TS_SHAPE_FILES) {
       // that half of the comparison and the only trace was a number in the OK line (gate 2, second
       // pass). Absences there are now a list with a reason.
       if (label === "index.d.ts" || !NATIVE_TYPES_ABSENT.has(name)) {
-        shapeProblems.push(`${label}: no interface for \`${name}\` (${at}) — tried ${tried.join(", ")}`);
+        shapeProblems.push(`${label}: no interface for \`${shown}\` (${at}) — tried ${tried.join(", ")}`);
+      } else {
+        // **Named in the OK line, not left to a number.** 67 − 53 = 14 while the sentence named 13,
+        // and the fourteenth appeared nowhere (gate 2, wiring round).
+        nativeTypesExempt.add(name);
       }
       continue;
     }
@@ -401,6 +411,14 @@ for (const [label, source] of TS_SHAPE_FILES) {
 // never printed — so "reports any item it cannot read" reached the unit test and nothing else, and
 // an undeclared export whose head the parser could not read still printed OK (gate 2, verification
 // round). A guard that gathers reasons and drops them is the shape this whole file is about.
+// Both scans call the attribute scanner, so an attribute-level problem arrives twice — and the
+// second copy printed under "napi struct shapes disagree with the TS declarations", a heading that
+// is false for "an attribute never closes" (gate 2, wiring round).
+const seenProblem = new Set();
+const dedupe = (list) => list.filter((p) => (seenProblem.has(p) ? false : (seenProblem.add(p), true)));
+scanProblems.splice(0, scanProblems.length, ...dedupe(scanProblems));
+shapeProblems.splice(0, shapeProblems.length, ...dedupe(shapeProblems));
+
 if (scanProblems.length > 0) {
   failed = true;
   console.error("\n[check-native-types] FAIL — the Rust scan could not read something:\n");
@@ -424,22 +442,40 @@ if (failed) {
   process.exit(1);
 }
 
+const exemptSpent = [...rustExports].filter((n) => exempt(n) && !dtsExports.has(n));
+const coveredDeclarations = dtsDeclared.size - staleSet.size;
+if (dtsFunctionCount + dtsClassCount !== dtsDeclared.size) {
+  // The decomposition is counted from a different set than the total it decomposes — function
+  // LINES against declared NAMES — so a TS overload pair would diverge them while the sentence
+  // stayed the same (gate 2, wiring round).
+  shapeProblems.push(
+    `index.d.ts: ${dtsFunctionCount} function lines + ${dtsClassCount} class lines do not add up to ${dtsDeclared.size} declared names`,
+  );
+  failed = true;
+  console.error(`\n[check-native-types] FAIL — ${shapeProblems[shapeProblems.length - 1]}\n`);
+  process.exit(1);
+}
+
 console.log(
-  // **Two different sets used to print the same number and read as one.** `rustExports` is 97 and
-  // `index.d.ts` declares 96 functions plus one class; the missing function is the exempt
-  // `l1TestForcePanic`, so "all 97 are declared" was false by exactly the exemption (gate 2,
-  // fourth pass).
-  `[check-native-types] OK — ${rustExports.size} Rust exports, ${rustExports.size - [...rustExports].filter((n) => exempt(n)).length} of them declared in index.d.ts ` +
-    `(${[...rustExports].filter((n) => exempt(n)).length} exempt by name), and all ${dtsDeclared.size} index.d.ts declarations ` +
-    // **Two different sets printed the same number and read as one.** 97 Rust exports and 97
-    // index.d.ts declarations are not the same 97: the second is 96 functions plus a class, and the
-    // first counts the exempt name the second does not. They agree today by coincidence, and the
-    // sentence would not change when they stop (win2, 2026-09-17).
-    `(${dtsFunctionCount} functions + ${dtsClassCount} class) are exported from index.js. ` +
-    `${rustStructs.size} napi object structs, paired ` +
+  // **Every number here is one a check actually covered**, which three of them were not: "all N
+  // declarations are exported" counted the stale names `notInJs` deliberately skips; "(1 exempt by
+  // name)" subtracted the exemption whether or not it was spent; and the shapes exempted from the
+  // `native-types.ts` half vanished into "paired 53" with nothing naming them (gate 2, wiring
+  // round).
+  `[check-native-types] OK — ${rustExports.size} Rust exports, ${rustExports.size - exemptSpent.length} of them declared in index.d.ts` +
+    (exemptSpent.length > 0 ? ` (${exemptSpent.join(", ")} exempt by name)` : "") +
+    `, and ${coveredDeclarations} of ${dtsDeclared.size} index.d.ts declarations (${dtsFunctionCount} functions + ${dtsClassCount} class) are exported from index.js` +
+    (staleSet.size > 0
+      ? `; ${staleSet.size} not checked in that direction because no Rust export matches them (${[...staleSet].sort().join(", ")})`
+      : "") +
+    `. ${rustStructs.size} napi object structs, paired ` +
     [...pairedPerFile].map(([f, n]) => `${n} against ${f}`).join(" and ") +
     `, agree on field NAMES and OPTIONALITY (not types) across ${comparedFields} comparisons` +
     (argumentOnly.size > 0
-      ? `; ${argumentOnly.size} argument-only shapes are compared at their callsites and not mirrored in native-types.ts (${[...argumentOnly].sort().join(", ")}).`
-      : "."),
+      ? `; ${argumentOnly.size} argument-only shapes are compared at their callsites and not mirrored in native-types.ts (${[...argumentOnly].sort().join(", ")})`
+      : "") +
+    (nativeTypesExempt.size > 0
+      ? `; ${nativeTypesExempt.size} declared elsewhere and not mirrored there either (${[...nativeTypesExempt].sort().join(", ")})`
+      : "") +
+    `.`,
 );

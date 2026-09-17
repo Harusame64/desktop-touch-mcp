@@ -493,15 +493,32 @@ pub fn method(&self) -> u32 { 1 }
     expect([...functions.keys()]).toEqual([]);
   });
 
-  it("reads the inline parameter object a .d.ts declares", () => {
-    // The argument shapes have no named interface: they are written at the function.
-    const params = parseTsFunctionParams(
-      'export declare function uiaClickElement(opts: { windowTitle: string; name?: string }): Promise<void>\n',
-    );
-    expect([...params.get("uiaClickElement")!].map(([n, d]) => [n, d.optional])).toEqual([
-      ["windowTitle", false],
-      ["name", true],
-    ]);
+  it("reads the inline parameter object a .d.ts declares, separated by `;` or `,`", () => {
+    // The argument shapes have no named interface: they are written at the function. **Splitting on
+    // `;` alone lost every field after the first in a comma-separated object** — silently, in the
+    // direction where TS declares a field Rust does not have (gate 2, wiring round).
+    for (const sep of [";", ","]) {
+      const { params, problems } = parseTsFunctionParams(
+        `export declare function uiaClickElement(opts: { windowTitle: string${sep} name?: string }): Promise<void>\n`,
+      );
+      expect(problems, sep).toEqual([]);
+      expect([...params.get("uiaClickElement")!].map(([n, d]) => [n, d.optional]), sep).toEqual([
+        ["windowTitle", false],
+        ["name", true],
+      ]);
+    }
+  });
+
+  it("reports an inline parameter member it cannot read, and an unclosed one", () => {
+    // This was the only producer in the pipeline with nowhere to report to.
+    expect(
+      parseTsFunctionParams(
+        "export declare function f(opts: { [k: string]: number }): void\n",
+      ).problems.join(""),
+    ).toMatch(/cannot read/);
+    expect(
+      parseTsFunctionParams("export declare function f(opts: { a: number\n").problems.join(""),
+    ).toMatch(/no closing brace/);
   });
 });
 
