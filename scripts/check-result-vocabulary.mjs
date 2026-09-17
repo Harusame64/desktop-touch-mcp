@@ -101,9 +101,26 @@ const UNRESOLVABLE = [
 // **Read at the presenter's call sites, not by family membership.** Membership was a proxy, and it
 // was wrong for two classes: `RegionOutsideCapturableBoundsError` and `CaptureBackendFailedError`
 // extend `HandlerError` and are thrown by the capture engine, but no `toFailureEnvelope(` site ever
-// receives them — they reach a caller through the flat `failWith` surface. The axis carried two
-// envelope cells that cannot exist (codex, #672, P1). The family read stays, but only to map a
-// constructed class to the literal name it sets.
+// receives them (codex, #672, P1). The family read stays, but only to map a constructed class to
+// the literal name it sets.
+//
+// **It is NOT that those two never reach an envelope.** win2 measured it (2026-09-17, internal
+// `4ef46b4`): ask for a region off every monitor and the envelope is there — it just carries a
+// different shape.
+//
+//   toFailureEnvelope path : data: null                      → if_unexpected.most_likely_cause
+//   the engine's path      : data: { ok:false, code: … }     → data.code, and no if_unexpected
+//
+// So the distinction is not "does it reach the envelope" but **which key inside carries the cause**,
+// and `err.name` reaches a caller on THREE of them:
+//
+//   reason             snake_case    toFailureEnvelope's raw projection
+//   most_likely_cause  PascalCase    toFailureEnvelope's envelope
+//   code               PascalCase    `toToolFailure` (`const code = err.name`), enveloped or not
+//
+// **This file counts the `toFailureEnvelope` path only.** `code` is a DIFFERENT axis that shares a
+// producer and a spelling with `most_likely_cause`, so matching the two by name would collapse them
+// into one. Getting the conclusion right off a wrong rule is how the next case is mis-sorted.
 const family = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
 const errorNames = readPresentedNames(sources, family.nameOfClass, problems, RESOLVED_CODED);
 const codedNames = [];
@@ -265,6 +282,7 @@ console.log(
     `SUGGESTS entry and reach the caller with generic advice. The two catalogues differ by ` +
     `${derived.cataloguesDifferBy.length}. ${UNRESOLVABLE.length} producer${UNRESOLVABLE.length === 1 ? " takes" : "s take"} ` +
     `a name this extraction cannot enumerate, so the count is a LOWER BOUND, not a total. ` +
-    `The names are read at the presenter's own call sites, so a class that is thrown but never ` +
-    `handed to the envelope is not counted.`,
+    `The names are read at the presenter's own call sites, so a class thrown but never handed to ` +
+    `\`toFailureEnvelope\` is not counted here — it reaches the caller on \`code\`, which is its own ` +
+    `axis sharing this one's spellings.`,
 );

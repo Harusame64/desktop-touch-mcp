@@ -355,6 +355,18 @@ toFailureEnvelope(Err(new CodedHandlerError("LiteralCode")), { optIn });`,
     expect(pinned.fallbackReason).toBe("unknown");
     // The producer whose values this extraction does not enumerate, which is why it is a bound.
     expect(pinned.unresolvable).toEqual(["ToolFailureError:code"]);
+    // **Three keys carry `err.name` to a caller, and this file counts one of them** (win2 measured
+    // it on the machine, 2026-09-17, internal `4ef46b4`):
+    //
+    //   reason             snake_case    toFailureEnvelope's raw projection   ← counted here
+    //   most_likely_cause  PascalCase    toFailureEnvelope's envelope         ← counted here
+    //   code               PascalCase    toToolFailure (`const code = err.name`)
+    //
+    // The engine's path DOES get an envelope — it just carries `data: {ok:false, code:…}` with no
+    // `if_unexpected`, where the `toFailureEnvelope` path carries `data: null`. So "it never reaches
+    // an envelope" was the wrong rule for a right conclusion, and `code` is a separate axis that
+    // shares this one's spellings: matching the two by name would collapse them into one.
+    //
     // **Reachability is derived, not pinned by hand.** `handler_error` used to be carried as
     // "produced but with no production caller". Reading the presenter's own call sites answers it
     // structurally — `toResultErr` never appears at one — and two more names leave with it:
