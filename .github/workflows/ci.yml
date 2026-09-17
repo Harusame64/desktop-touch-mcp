@@ -3,17 +3,23 @@ name: CI
 on:
   push:
     branches: [main]
+    # **`README.md` and `README.ja.md` are NOT ignored.** Three of the ADR-036 configuration
+    # guard's invariants read them — a switch documented but unread, a switch removed without a
+    # tombstone, and the documented/tombstoned pin itself — so a README-only PR is exactly the
+    # change that can break them. Ignoring the files meant the gate went red on whatever unrelated
+    # PR merged next, which is where a red gate gets blamed on the wrong change.
     paths-ignore:
       - 'site/**'
-      - 'README.md'
-      - 'README.ja.md'
       - '.github/workflows/pages.yml'
   pull_request:
     branches: [main]
+    # **`README.md` and `README.ja.md` are NOT ignored.** Three of the ADR-036 configuration
+    # guard's invariants read them — a switch documented but unread, a switch removed without a
+    # tombstone, and the documented/tombstoned pin itself — so a README-only PR is exactly the
+    # change that can break them. Ignoring the files meant the gate went red on whatever unrelated
+    # PR merged next, which is where a red gate gets blamed on the wrong change.
     paths-ignore:
       - 'site/**'
-      - 'README.md'
-      - 'README.ja.md'
       - '.github/workflows/pages.yml'
 
 jobs:
@@ -68,6 +74,13 @@ jobs:
         # added in `desktop-executor.ts` must not quietly become a slot nobody counted. The unit
         # suite does not run in this job, so this is where the drift is caught.
         run: npm run check:route-vocabulary
+
+      - name: Check the ADR-036 configuration vocabulary (the grid's second denominator)
+        # Switches have no type, no registry and no single reading site: they are read from four
+        # roots in six syntactic shapes, and the obvious sweep (`process.env.NAME` under `src/`)
+        # sees fewer than two thirds of them. A switch added anywhere is a dimension the grid does
+        # not know about, and nothing else in this repo would say so.
+        run: npm run check:config-vocabulary
 
       - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)
         # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the

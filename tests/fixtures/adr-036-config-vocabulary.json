@@ -1,0 +1,411 @@
+{
+  "readIn": {
+    "DESKTOP_TOUCH_AIM_PROBE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_AIM_PROBE_PATH": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_ALLOWLIST": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_AUTO_GUARD": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_CAPTURE_BACKEND": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_CONFIG": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_CPU_WATCHDOG_DISABLE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_CPU_WATCHDOG_THRESHOLD_PCT": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_CPU_WATCHDOG_WINDOW_MS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DISABLE_DIRTY_RECTS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DISABLE_KEY_LOCKER": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DISABLE_NATIVE_UIA": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DISABLE_VISUAL_GPU": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_CORNER": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_HEIGHT": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_MARGIN": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_MONITOR": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_PIN": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_SCALE_DPI": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_TIMEOUT_MS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_TITLE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DOCK_WIDTH": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_DRAIN_OVERSIZE_THRESHOLD": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_ENABLE_ONNX_BACKEND": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_ENVELOPE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_FAILSAFE_HOLD_MS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_FORCE_FOCUS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD": [
+      "src:rs"
+    ],
+    "DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN": [
+      "src:rs"
+    ],
+    "DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS": [
+      "crates:rs"
+    ],
+    "DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_KEY_LOCKER_DOGFOOD": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_MAX_BATCH_SIZE": [
+      "crates:rs"
+    ],
+    "DESKTOP_TOUCH_MAX_STEPS_PER_CMD": [
+      "crates:rs"
+    ],
+    "DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED": [
+      "bin:ts"
+    ],
+    "DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS": [
+      "bin:ts"
+    ],
+    "DESKTOP_TOUCH_MCP_HOME": [
+      "bin:ts",
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK": [
+      "bin:ts"
+    ],
+    "DESKTOP_TOUCH_MEMORY_PERSIST": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_MEMORY_REDACT_TITLES": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_MOUSE_SPEED": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_NATIVE_WINEVENTS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_PERCEPTION_DEBUG_RESOURCES": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_PERCEPTION_DORMANCY_DISABLE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_PERCEPTION_IDLE_MS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_PERCEPTION_LOCATION_EVENTS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_PERCEPTION_RESOURCES": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_REQUIRE_DESTINATION": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_RESOLVE_LOG_RAW": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_RING_CAPACITY": [
+      "src:rs"
+    ],
+    "DESKTOP_TOUCH_SCREENSHOTS_DIR": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_AGE_MS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_BYTES": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_SESSION_MODE": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_SIDECAR_PATH": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE2A_RING": [
+      "benches:ts",
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE2B_GATE": [
+      "benches:ts",
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE4_SSIM": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE5B_FOLD_OCR": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE5_DXGI": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_VISUAL_CROSS_CHECK": [
+      "src:ts"
+    ],
+    "DESKTOP_TOUCH_WATERMARK_SHIFT_MS": [
+      "crates:rs"
+    ],
+    "DTM_ASKPASS_TICKET": [
+      "tools:cs"
+    ],
+    "DTM_BG_AUTO": [
+      "src:ts"
+    ],
+    "DTM_GIT_USERNAME": [
+      "tools:cs"
+    ],
+    "DTM_LEASH_CHUNK_SIZE": [
+      "src:ts"
+    ],
+    "DTM_LOCKER_PIPE": [
+      "tools:cs"
+    ],
+    "DTM_SET_VALUE_CHAIN": [
+      "src:ts"
+    ],
+    "GH_TOKEN": [
+      "bin:ts"
+    ],
+    "GITHUB_TOKEN": [
+      "bin:ts"
+    ]
+  },
+  "written": {
+    "DESKTOP_TOUCH_STAGE2A_RING": [
+      "benches:ts"
+    ],
+    "DESKTOP_TOUCH_STAGE2B_GATE": [
+      "benches:ts"
+    ],
+    "DTM_GIT_USERNAME": [
+      "src:ts"
+    ]
+  },
+  "platform": [
+    "BASE_REF",
+    "CARGO_CFG_TARGET_ENV",
+    "CARGO_CFG_TARGET_OS",
+    "CARGO_MANIFEST_DIR",
+    "CUDA_PATH",
+    "HEAD_REF",
+    "HOME",
+    "LOCALAPPDATA",
+    "MIGRATION_FIXTURE_SEED",
+    "NODE_ENV",
+    "ORT_DYLIB_PATH",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "ProgramFiles",
+    "ROCM_PATH",
+    "SSH_ASKPASS",
+    "SSH_ASKPASS_REQUIRE",
+    "SystemRoot",
+    "TENSORRT_PATH",
+    "USERPROFILE",
+    "WINDIR"
+  ],
+  "roles": {
+    "DESKTOP_TOUCH_AIM_PROBE": "instrument",
+    "DESKTOP_TOUCH_AIM_PROBE_PATH": "instrument",
+    "DESKTOP_TOUCH_ALLOWLIST": "unclassified",
+    "DESKTOP_TOUCH_AUTO_GUARD": "unclassified",
+    "DESKTOP_TOUCH_CAPTURE_BACKEND": "unclassified",
+    "DESKTOP_TOUCH_CONFIG": "unclassified",
+    "DESKTOP_TOUCH_CPU_WATCHDOG_DISABLE": "unclassified",
+    "DESKTOP_TOUCH_CPU_WATCHDOG_THRESHOLD_PCT": "unclassified",
+    "DESKTOP_TOUCH_CPU_WATCHDOG_WINDOW_MS": "unclassified",
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE": "unclassified",
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES": "unclassified",
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH": "unclassified",
+    "DESKTOP_TOUCH_DISABLE_DIRTY_RECTS": "unclassified",
+    "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2": "premise",
+    "DESKTOP_TOUCH_DISABLE_KEY_LOCKER": "unclassified",
+    "DESKTOP_TOUCH_DISABLE_NATIVE_UIA": "axis",
+    "DESKTOP_TOUCH_DISABLE_VISUAL_GPU": "unclassified",
+    "DESKTOP_TOUCH_DOCK_CORNER": "unclassified",
+    "DESKTOP_TOUCH_DOCK_HEIGHT": "unclassified",
+    "DESKTOP_TOUCH_DOCK_MARGIN": "unclassified",
+    "DESKTOP_TOUCH_DOCK_MONITOR": "unclassified",
+    "DESKTOP_TOUCH_DOCK_PIN": "unclassified",
+    "DESKTOP_TOUCH_DOCK_SCALE_DPI": "unclassified",
+    "DESKTOP_TOUCH_DOCK_TIMEOUT_MS": "unclassified",
+    "DESKTOP_TOUCH_DOCK_TITLE": "unclassified",
+    "DESKTOP_TOUCH_DOCK_WIDTH": "unclassified",
+    "DESKTOP_TOUCH_DRAIN_OVERSIZE_THRESHOLD": "unclassified",
+    "DESKTOP_TOUCH_ENABLE_ONNX_BACKEND": "unclassified",
+    "DESKTOP_TOUCH_ENVELOPE": "unclassified",
+    "DESKTOP_TOUCH_FAILSAFE_HOLD_MS": "unclassified",
+    "DESKTOP_TOUCH_FORCE_FOCUS": "unclassified",
+    "DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD": "native",
+    "DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN": "native",
+    "DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS": "native",
+    "DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED": "axis",
+    "DESKTOP_TOUCH_KEY_LOCKER_DOGFOOD": "unclassified",
+    "DESKTOP_TOUCH_MAX_BATCH_SIZE": "native",
+    "DESKTOP_TOUCH_MAX_STEPS_PER_CMD": "native",
+    "DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED": "premise",
+    "DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS": "tuning",
+    "DESKTOP_TOUCH_MCP_HOME": "unclassified",
+    "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK": "premise",
+    "DESKTOP_TOUCH_MEMORY_PERSIST": "unclassified",
+    "DESKTOP_TOUCH_MEMORY_REDACT_TITLES": "unclassified",
+    "DESKTOP_TOUCH_MOUSE_SPEED": "unclassified",
+    "DESKTOP_TOUCH_NATIVE_WINEVENTS": "unclassified",
+    "DESKTOP_TOUCH_PERCEPTION_DEBUG_RESOURCES": "unclassified",
+    "DESKTOP_TOUCH_PERCEPTION_DORMANCY_DISABLE": "unclassified",
+    "DESKTOP_TOUCH_PERCEPTION_IDLE_MS": "unclassified",
+    "DESKTOP_TOUCH_PERCEPTION_LOCATION_EVENTS": "unclassified",
+    "DESKTOP_TOUCH_PERCEPTION_RESOURCES": "unclassified",
+    "DESKTOP_TOUCH_REQUIRE_DESTINATION": "nested",
+    "DESKTOP_TOUCH_RESOLVE_LOG_RAW": "unclassified",
+    "DESKTOP_TOUCH_RING_CAPACITY": "native",
+    "DESKTOP_TOUCH_SCREENSHOTS_DIR": "unclassified",
+    "DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE": "unclassified",
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_AGE_MS": "unclassified",
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_BYTES": "unclassified",
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT": "unclassified",
+    "DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS": "unclassified",
+    "DESKTOP_TOUCH_SESSION_MODE": "unclassified",
+    "DESKTOP_TOUCH_SIDECAR_PATH": "unclassified",
+    "DESKTOP_TOUCH_STAGE2A_RING": "unclassified",
+    "DESKTOP_TOUCH_STAGE2B_GATE": "nested",
+    "DESKTOP_TOUCH_STAGE4_SSIM": "unclassified",
+    "DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD": "unclassified",
+    "DESKTOP_TOUCH_STAGE5B_FOLD_OCR": "nested",
+    "DESKTOP_TOUCH_STAGE5_DXGI": "unclassified",
+    "DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK": "unclassified",
+    "DESKTOP_TOUCH_VISUAL_CROSS_CHECK": "unclassified",
+    "DESKTOP_TOUCH_WATERMARK_SHIFT_MS": "native",
+    "DTM_BG_AUTO": "unclassified",
+    "DTM_GIT_USERNAME": "internal",
+    "DTM_LEASH_CHUNK_SIZE": "unclassified",
+    "DTM_SET_VALUE_CHAIN": "unclassified",
+    "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2": "removed",
+    "DTM_ASKPASS_TICKET": "internal",
+    "DTM_LOCKER_PIPE": "internal",
+    "GH_TOKEN": "unclassified",
+    "GITHUB_TOKEN": "unclassified",
+    "length": "unclassified",
+    "toLowerCase": "unclassified",
+    "trim": "unclassified",
+    "some": "unclassified"
+  },
+  "allowDynamic": [
+    "src/utils/launch.ts:name"
+  ],
+  "unresolvable": [
+    {
+      "site": "src/utils/launch.ts:193",
+      "why": "the key comes from a %VAR% token inside a REG_EXPAND_SZ registry value, so the name is the registry's at run time and no sweep can enumerate it",
+      "found_by": "win2, 2026-09-17, internal dev/config-axis 309c327"
+    }
+  ],
+  "maxUnclassified": 58,
+  "documented": [
+    "DESKTOP_TOUCH_ALLOWLIST",
+    "DESKTOP_TOUCH_AUTO_GUARD",
+    "DESKTOP_TOUCH_CAPTURE_BACKEND",
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE",
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES",
+    "DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH",
+    "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2",
+    "DESKTOP_TOUCH_DISABLE_KEY_LOCKER",
+    "DESKTOP_TOUCH_DOCK_CORNER",
+    "DESKTOP_TOUCH_DOCK_MARGIN",
+    "DESKTOP_TOUCH_DOCK_MONITOR",
+    "DESKTOP_TOUCH_DOCK_PIN",
+    "DESKTOP_TOUCH_DOCK_SCALE_DPI",
+    "DESKTOP_TOUCH_DOCK_TIMEOUT_MS",
+    "DESKTOP_TOUCH_DOCK_TITLE",
+    "DESKTOP_TOUCH_DOCK_WIDTH",
+    "DESKTOP_TOUCH_FAILSAFE_HOLD_MS",
+    "DESKTOP_TOUCH_FORCE_FOCUS",
+    "DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED",
+    "DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS",
+    "DESKTOP_TOUCH_MCP_HOME",
+    "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK",
+    "DESKTOP_TOUCH_MOUSE_SPEED",
+    "DESKTOP_TOUCH_REQUIRE_DESTINATION",
+    "DESKTOP_TOUCH_RESOLVE_LOG_RAW",
+    "DESKTOP_TOUCH_SCREENSHOTS_DIR",
+    "DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE",
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_AGE_MS",
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_BYTES",
+    "DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT",
+    "DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS"
+  ],
+  "tombstoned": [
+    "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2"
+  ]
+}
