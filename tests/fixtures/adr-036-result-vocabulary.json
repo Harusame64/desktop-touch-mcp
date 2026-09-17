@@ -26,28 +26,22 @@
     "AimPointOutsideWindow",
     "AimRouteFailed",
     "AimWindowGone",
-    "CaptureBackendFailed",
     "CoordinateOutsideReachableBounds",
     "CursorPlacementBlocked",
     "EntityNotFound",
     "EpisodicMemoryNUpperBoundExceeded",
     "ExecutorFailed",
-    "HandlerError",
     "KeyboardTargetUnsafe",
     "LeaseExpired",
     "ProceduralMemoryKUpperBoundExceeded",
-    "RegionOutsideCapturableBounds",
     "SemanticMemoryKUpperBoundExceeded",
     "Unknown",
     "WindowExcluded",
     "WorkingMemoryNUpperBoundExceeded"
   ],
   "computedOnly": [
-    "capture_backend_failed",
     "episodic_memory_nupper_bound_exceeded",
-    "handler_error",
     "procedural_memory_kupper_bound_exceeded",
-    "region_outside_capturable_bounds",
     "semantic_memory_kupper_bound_exceeded",
     "unknown",
     "working_memory_nupper_bound_exceeded"
@@ -93,15 +87,11 @@
     "window_excluded"
   ],
   "withoutAdvice": [
-    "HandlerError",
     "LeaseExpired",
     "Unknown"
   ],
   "unresolvable": [
     "ToolFailureError:code"
-  ],
-  "withoutProductionCaller": [
-    "HandlerError"
   ],
   "reservedLeaseNames": [
     "EntityNotFound",

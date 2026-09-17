@@ -296,6 +296,8 @@ export function readEnvelopeErrorNames(sources, problems = [], resolved = []) {
   // renaming `this.name = "HandlerError"` in the tree — which changes the value on the wire for
   // every un-typed throw — left the gate green and its own sentence still naming `handler_error`.
   const names = new Set();
+  const nameOfClass = new Map();
+  for (const [key, literal] of nameOf) nameOfClass.set(key.split(":").pop(), literal);
   let root = null;
   for (const [key, literal] of nameOf) {
     if (key.endsWith(":HandlerError") && extendsOf.get(key) === "Error") root = literal;
@@ -308,7 +310,9 @@ export function readEnvelopeErrorNames(sources, problems = [], resolved = []) {
     const literal = nameOf.get(key);
     if (literal !== undefined) names.add(literal);
   }
-  return [...names].sort();
+  // `names` is the family; `nameOfClass` is what the presenter read needs, because a class that
+  // reaches `toFailureEnvelope` is named by the literal it sets, not by its own identifier.
+  return { names: [...names].sort(), nameOfClass };
 }
 
 /**
@@ -412,6 +416,73 @@ export function readReturnedCodes(source, functionName, problems = []) {
   }
   if (codes.length === 0) problems.push(`${functionName} returns no literal code — has it been reshaped?`);
   return [...new Set(codes)].sort();
+}
+
+/**
+ * The names that actually REACH the failure envelope, read at the presenter's own call sites.
+ *
+ * **Family membership was a proxy, and the proxy was wrong for two classes.**
+ * `RegionOutsideCapturableBoundsError` and `CaptureBackendFailedError` extend `HandlerError` and are
+ * thrown by the capture engine, but no `toFailureEnvelope(` site ever receives them — they reach a
+ * caller through the flat `failWith` surface instead. So the axis carried two envelope cells that
+ * cannot exist, and the report named only `HandlerError` as lacking a caller (codex, #672, P1).
+ *
+ * This is the fourth time today that the answer is the same: read the thing at the point it happens,
+ * not something adjacent to it. The road axis reads `probeRoute` call sites; this reads
+ * `toFailureEnvelope` call sites.
+ *
+ * `nameOfClass` maps a constructed class to the literal `this.name` it sets. `resolved` exempts a
+ * coded name held in a variable, by the binding it comes from.
+ */
+export function readPresentedNames(sources, nameOfClass, problems = [], resolved = []) {
+  const names = new Set();
+  for (const { file, text: raw } of sources) {
+    const text = stripComments(raw);
+    // **Anchored on the shape, not on a character budget.** These calls wrap across lines
+    // (`toFailureEnvelope(\n  Err(new CodedHandlerError("X")),\n  { optIn },\n)`), so a lazy scan to
+    // the first `,` or `(` stops at `Err(` and reads the argument as the string "Err".
+    for (const m of text.matchAll(/\btoFailureEnvelope\(\s*(Err\(\s*new\s+([A-Za-z_][\w]*)|toResultErr\b|[^\s)])/g)) {
+      if (m[1] === "toResultErr") {
+        // Everything not in the family arrives here, under `HandlerError`'s own name.
+        const handler = nameOfClass.get("HandlerError");
+        if (handler === undefined) problems.push(`${file}: toResultErr reaches the envelope but HandlerError's name could not be read`);
+        else names.add(handler);
+        continue;
+      }
+      const cls = m[2];
+      if (cls === undefined) {
+        problems.push(`${file}: toFailureEnvelope is given \`${m[1].slice(0, 40)}\`, a shape this parser cannot name`);
+        continue;
+      }
+      if (cls === "CodedHandlerError") {
+        const rest = text.slice(m.index + m[0].length);
+        const literal = rest.match(/^\(\s*["']([A-Za-z_][\w]*)["']\s*\)/);
+        if (literal) {
+          names.add(literal[1]);
+          continue;
+        }
+        const ident = rest.match(/^\(\s*([A-Za-z_][\w$]*)\s*\)/);
+        const exemption = ident && resolved.find((r) => r.file === file && r.identifier === ident[1]);
+        if (exemption) {
+          const bound = new RegExp(
+            `(?:const|let)\\s*\\{[^}]*\\b${ident[1]}\\b[^}]*\\}\\s*=\\s*${exemption.from}\\(|(?:const|let)\\s+${ident[1]}\\s*=\\s*${exemption.from}\\(`,
+          );
+          if (bound.test(text)) continue;
+          problems.push(`${file}: \`${ident[1]}\` is exempted as coming from ${exemption.from}, but nothing in this file binds it from there`);
+          continue;
+        }
+        problems.push(`${file}: a coded failure reaches the envelope with a name this parser cannot enumerate: ${(ident?.[1] ?? rest.slice(0, 30)).trim()}`);
+        continue;
+      }
+      const name = nameOfClass.get(cls);
+      if (name === undefined) {
+        problems.push(`${file}: ${cls} reaches the envelope and this parser cannot read the name it sets`);
+        continue;
+      }
+      names.add(name);
+    }
+  }
+  return [...names].sort();
 }
 
 /** The literal codes handed to `new CodedHandlerError(...)`, whose constructor makes them the name. */

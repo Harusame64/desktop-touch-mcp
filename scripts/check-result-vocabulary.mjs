@@ -33,7 +33,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readUnion } from "./lib/route-vocabulary.mjs";
 import {
-  readCodedNames,
+  readPresentedNames,
   readReturnedCodes,
   readEnvelopeErrorNames,
   readLeaseCodes,
@@ -81,20 +81,11 @@ const fallbackCause = readUnexpectedFallback(read("src/tools/_envelope.ts"), pro
 // OK. The number went 101 to 26.
 const RESOLVED_CODED = [{ file: "src/tools/_envelope.ts", identifier: "code", from: "mapLeaseValidationToTypedReason" }];
 const RESOLVED_DYNAMIC_NAME = ["src/errors/typed-errors.ts:ToolFailureError:code"];
-// **Produced is not the same as reachable, and this extraction only counts producers.**
-// `HandlerError` is constructed twice, both inside `toResultErr` — an exported, documented, tested
-// helper that NO production code calls (`git grep toResultErr -- src` is four lines, all its own
-// declaration and prose). So `handler_error` is a reason the grid counts and no shipped path
-// produces. Recorded rather than dropped: a name that becomes reachable the day somebody wires the
-// documented handler pattern is one the grid should already know about, and a name silently
-// removed is one nobody notices arriving. The same distinction as internal #122, one level up.
-const KNOWN_WITHOUT_PRODUCTION_CALLER = [
-  {
-    name: "HandlerError",
-    why: "constructed only inside toResultErr, which no production code calls",
-    checked_on: "cf6d0063",
-  },
-];
+// **Reachability is derived now, not pinned by hand.** `handler_error` used to be carried here as
+// "produced but with no production caller", maintained as a written-down list. Reading the
+// presenter's own call sites answers it structurally: `toResultErr` never appears at one, so the
+// name never enters the set and there is nothing to keep in step. A derived fact beats an exemption
+// somebody has to remember to update.
 // **A producer whose values this extraction cannot enumerate.** `ToolFailureError` takes its name
 // from a `code` supplied at 183 `failWith` call sites across the tools; enumerating that space is
 // `check:failwith-fixtures`'s subject, not this one. Listed here rather than silently skipped,
@@ -107,8 +98,15 @@ const UNRESOLVABLE = [
     counted_by: "npm run check:failwith-fixtures",
   },
 ];
-const errorNames = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
-const codedNames = readCodedNames(sources, problems, RESOLVED_CODED);
+// **Read at the presenter's call sites, not by family membership.** Membership was a proxy, and it
+// was wrong for two classes: `RegionOutsideCapturableBoundsError` and `CaptureBackendFailedError`
+// extend `HandlerError` and are thrown by the capture engine, but no `toFailureEnvelope(` site ever
+// receives them — they reach a caller through the flat `failWith` surface. The axis carried two
+// envelope cells that cannot exist (codex, #672, P1). The family read stays, but only to map a
+// constructed class to the literal name it sets.
+const family = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
+const errorNames = readPresentedNames(sources, family.nameOfClass, problems, RESOLVED_CODED);
+const codedNames = [];
 // **The lease codes come from the function, not from the table beside it.** Gate 2's third round:
 // `mapLeaseValidationToTypedReason` hard-codes its returns and never consults
 // `LEASE_REASON_TO_TYPED_CODE`, whose own comment calls it a reservation for future expansion. Two
@@ -146,7 +144,6 @@ const derived = {
   // failed on: a gate that is red the day it lands is a gate somebody turns off (#670). It fails
   // when the difference changes, which is the property that was actually wanted.
   unresolvable: UNRESOLVABLE.map((u) => u.producer),
-  withoutProductionCaller: KNOWN_WITHOUT_PRODUCTION_CALLER.map((k) => k.name),
   reservedLeaseNames,
   cataloguesDifferBy: [
     ...serverCatalogue.filter((n) => !toolCatalogue.includes(n)),
@@ -226,12 +223,6 @@ for (const name of typed) {
   if (!catalogued.has(name)) problems.push(`${name} is a TouchFailReason no catalogue mentions`);
 }
 
-// **A name pinned as having no production caller must still BE a produced name.** If the class goes
-// away the entry is stale, and a stale exemption is how a real value walks past later.
-for (const { name } of KNOWN_WITHOUT_PRODUCTION_CALLER) {
-  if (!producedNames.includes(name)) problems.push(`${name} is pinned as having no production caller, but nothing produces it at all any more`);
-}
-
 // **The fallback carries no advice, and that is a pinned fact.** `"Unknown"` is not a `SUGGESTS`
 // key, so the reason it produces reaches the caller with an empty advice list. If it ever becomes a
 // key the axis changes shape, and this line is where that shows.
@@ -274,6 +265,6 @@ console.log(
     `SUGGESTS entry and reach the caller with generic advice. The two catalogues differ by ` +
     `${derived.cataloguesDifferBy.length}. ${UNRESOLVABLE.length} producer${UNRESOLVABLE.length === 1 ? " takes" : "s take"} ` +
     `a name this extraction cannot enumerate, so the count is a LOWER BOUND, not a total. ` +
-    `${KNOWN_WITHOUT_PRODUCTION_CALLER.length} of the names (${KNOWN_WITHOUT_PRODUCTION_CALLER.map((k) => k.name).join(", ")}) ` +
-    `${KNOWN_WITHOUT_PRODUCTION_CALLER.length === 1 ? "has" : "have"} no production caller, so counting a producer is not the same as counting a reachable cell.`,
+    `The names are read at the presenter's own call sites, so a class that is thrown but never ` +
+    `handed to the envelope is not counted.`,
 );
