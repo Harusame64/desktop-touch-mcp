@@ -58,8 +58,7 @@ import { quoteForRegExp } from "./route-vocabulary.mjs";
 // had grown its own copy of the first and no copy of the second. Importing them is the fix for
 // two findings at once, because both findings are the same defect: a second reader.
 import {
-  literalEnd,
-  significantBefore,
+  literalSpans,
   fieldsAtDepthOne,
   isShorthandAtDepthOne,
 } from "./code-vocabulary.mjs";
@@ -453,26 +452,25 @@ export function maskStringContents(source) {
   // Hand-walked, still: the regex version of this was mangled twice on the way into the file by
   // escaping layers, and a SILENTLY WRONG mask is worse here than none. But the walk no longer
   // decides what a literal is; it only decides what to blank.
+  // **A view of `literalSpans`, not a walk of its own.** Round 3 made this ask `literalEnd` what a
+  // literal is, which closed the defect; the loop around that question was still a fourth copy of
+  // the same loop, so it is gone too. What is left decides only what to BLANK.
+  //
+  // **The LENGTH is the contract** — spans found on the mask index the original exactly. The
+  // opening and closing characters stay, so the mask still reads as what it masks; the interior
+  // becomes blanks, and a newline inside a template literal stays a newline so line structure
+  // survives. A regex literal is blanked the same way: its `{`, `}` and quotes must not be counted
+  // by anything that balances braces on this copy.
   let out = "";
-  let i = 0;
-  while (i < source.length) {
-    const end = literalEnd(source, i, significantBefore(source, i));
-    if (end === -1) {
-      out += source[i];
-      i++;
-      continue;
-    }
-    // **The LENGTH is the contract** — spans found on the mask index the original exactly. The
-    // opening and closing characters stay, so the mask still reads as what it masks; the interior
-    // becomes blanks, and a newline inside a template literal stays a newline so line structure
-    // survives. A regex literal is blanked the same way: its `{`, `}` and quotes must not be
-    // counted by anything that balances braces on this copy.
-    out += source[i];
-    for (let j = i + 1; j < end - 1; j++) out += source[j] === "\n" ? "\n" : " ";
-    if (end - 1 > i) out += source[end - 1];
-    i = end;
+  let at = 0;
+  for (const [start, end] of literalSpans(source)) {
+    out += source.slice(at, start);
+    out += source[start];
+    for (let j = start + 1; j < end - 1; j++) out += source[j] === "\n" ? "\n" : " ";
+    if (end - 1 > start) out += source[end - 1];
+    at = end;
   }
-  return out;
+  return out + source.slice(at);
 }
 
 /**
