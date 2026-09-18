@@ -124,6 +124,32 @@ describe("what the parser says, named rather than compared", () => {
     expect(oldReadInlineFieldUnion(source, "T", "why", [])).toEqual(["from_the_object"]);
   });
 
+  it.each([
+    ['grouped inside a field\'s union', 'export type T =\n  | { why: "a" | ("b" | "c") };\n', ["a", "b", "c"]],
+    ["around the whole field", 'export type T =\n  | { why: ("b" | "c") };\n', ["b", "c"]],
+    ["around an object member of the outer union", 'export type T =\n  | { why: "a" }\n  | ({ why: "b" });\n', ["a", "b"]],
+  ])("reads through parentheses %s", (_label, source, expected) => {
+    // **Parentheses are not a type**, they group one. Reading the `ParenthesizedTypeNode` as a
+    // member instead of what it wraps returned ["a"] with `problems` EMPTY — a shorter set that
+    // looks exactly like a complete one, which is the failure this module exists to end. codex
+    // found the first shape; the third is the same node one level out, on the outer union, and no
+    // review named it. They are one fix because they are one grammar fact.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(expected);
+    expect(problems).toEqual([]);
+    expect(oldReadInlineFieldUnion(source as string, "T", "why", [])).toEqual(expected);
+  });
+
+  it("says so when a FIELD's member is not a quoted literal, rather than dropping it", () => {
+    // The same contract `readUnion` keeps. The reader being replaced drops this one in silence, so
+    // this is a place the new reader says MORE than the old one — named here rather than left to
+    // be read as a differential surprise.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion('export type T = { why: "a" | SomeOtherUnion };\n', "T", "why", problems)).toEqual(["a"]);
+    expect(problems.join("\n")).toContain("is not a quoted literal this parser reads");
+    expect(oldReadInlineFieldUnion('export type T = { why: "a" | SomeOtherUnion };\n', "T", "why", [])).toEqual(["a"]);
+  });
+
   it("says so when a member is not a quoted literal", () => {
     const problems: string[] = [];
     expect(readUnion('export type T = "a" | SomeOtherUnion;\n', "T", () => [], problems)).toEqual(["a"]);

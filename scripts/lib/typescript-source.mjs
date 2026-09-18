@@ -78,9 +78,28 @@ function typeAliasNamed(file, name) {
   return null;
 }
 
-/** The members of a union type, or the single type if it is not a union. */
+/**
+ * The members of a union type, or the single type if it is not a union.
+ *
+ * **Parentheses are not a type**, they group one — `"a" | ("b" | "c")` has three members, and
+ * `("b" | "c")` alone has two. Reading the `ParenthesizedTypeNode` as a member instead of what it
+ * wraps dropped `b` and `c` while leaving `problems` empty, which is the silent under-read this
+ * module exists to end (codex found it on the inline reader; the same node wrapping an object
+ * member of the outer union lost a whole member the same way). The grammar says unwrap, so this
+ * says unwrap, once, where every caller passes through.
+ */
 function unionMembers(node) {
-  return ts.isUnionTypeNode(node) ? [...node.types] : [node];
+  const members = [];
+  const flatten = (n) => {
+    const inner = ts.isParenthesizedTypeNode(n) ? n.type : n;
+    if (ts.isUnionTypeNode(inner)) {
+      for (const type of inner.types) flatten(type);
+      return;
+    }
+    members.push(inner);
+  };
+  flatten(node);
+  return members;
 }
 
 const stringLiteralType = (node) =>
@@ -161,7 +180,13 @@ export function readInlineFieldUnion(source, typeName, field, problems = [], fil
       seen = true;
       for (const value of unionMembers(property.type)) {
         const literal = stringLiteralType(value);
-        if (literal !== null) values.push(literal);
+        if (literal !== null) {
+          values.push(literal);
+          continue;
+        }
+        // The same contract `readUnion` keeps: a member this parser will not turn into a value is
+        // named, because a shorter set and a complete one look alike from the gate's side.
+        problems.push(`${typeName}.${field}: member \`${memberText(file, value)}\` is not a quoted literal this parser reads`);
       }
     }
   }
