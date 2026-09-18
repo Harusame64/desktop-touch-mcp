@@ -67,14 +67,28 @@ export function* walk(node) {
   for (const child of node.getChildren()) yield* walk(child);
 }
 
-/** The exported `type <name> = …` declaration, or null. */
-function typeAliasNamed(file, name) {
+/**
+ * The exported `type <name> = …` declaration, or null.
+ *
+ * **Absent and unreadable are different answers**, and returning null for both is how a gate is
+ * told an axis has no values instead of being told nothing. A declaration with this name that this
+ * reader will not take — not exported, or written as an interface — is named before the null.
+ */
+function typeAliasNamed(file, name, problems = []) {
+  let withheld = null;
   for (const statement of file.statements) {
-    if (!ts.isTypeAliasDeclaration(statement)) continue;
+    const isAlias = ts.isTypeAliasDeclaration(statement);
+    if (!isAlias && !ts.isInterfaceDeclaration(statement)) continue;
     if (statement.name.text !== name) continue;
+    if (!isAlias) {
+      withheld ??= `${name} is declared as an interface here, and this reader reads type aliases — it is being read as ABSENT`;
+      continue;
+    }
     const exported = ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
     if (exported) return statement;
+    withheld ??= `${name} is declared here but not exported, and this reader takes exported declarations only — it is being read as ABSENT`;
   }
+  if (withheld !== null) problems.push(withheld);
   return null;
 }
 
@@ -124,7 +138,7 @@ const stringLiteralType = (node) =>
  */
 export function readUnion(source, name, resolve = () => [], problems = [], fileName = "source.ts") {
   const file = parseSource(source, fileName, problems);
-  const alias = typeAliasNamed(file, name);
+  const alias = typeAliasNamed(file, name, problems);
   if (alias === null) return null;
 
   const values = [];
@@ -168,7 +182,7 @@ function memberText(file, node) {
  */
 export function readInlineFieldUnion(source, typeName, field, problems = [], fileName = "source.ts") {
   const file = parseSource(source, fileName, problems);
-  const alias = typeAliasNamed(file, typeName);
+  const alias = typeAliasNamed(file, typeName, problems);
   if (alias === null) {
     problems.push(`${typeName} not found — the ${field} union it carries is not being read`);
     return [];
@@ -192,8 +206,22 @@ export function readInlineFieldUnion(source, typeName, field, problems = [], fil
       continue;
     }
     for (const property of member.members) {
-      if (!ts.isPropertySignature(property) || property.name === undefined) continue;
-      if (propertyName(property.name) !== field || property.type === undefined) continue;
+      // A name this parser cannot read is not a member it can rule out: an index signature has no
+      // name at all, and a computed one is not a string here. Skipping those quietly is the same
+      // silence as the member-level one, one level further in.
+      const name = property.name === undefined ? null : propertyName(property.name);
+      if (name === null) {
+        problems.push(
+          `${typeName}: a member of \`${memberText(file, member)}\` has a name this parser cannot read — ` +
+            `any ${field} it carries is NOT in this answer`,
+        );
+        continue;
+      }
+      if (name !== field) continue;
+      if (!ts.isPropertySignature(property) || property.type === undefined) {
+        problems.push(`${typeName}.${field} is declared, but not as a property with a type this parser reads`);
+        continue;
+      }
       seen = true;
       for (const value of unionMembers(property.type)) {
         const literal = stringLiteralType(value);

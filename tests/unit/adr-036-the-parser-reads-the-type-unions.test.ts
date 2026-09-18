@@ -235,10 +235,40 @@ describe("what the parser says, named rather than compared", () => {
     expect(problems.join("\n")).toContain("not found");
   });
 
-  it("does not take a type that is declared but not exported", () => {
+  it("does not take a type that is declared but not exported, AND says it is there", () => {
     // The scanner searched for the text `export type <name>`; the parser is asked the same question
-    // about the node, and a local type alias is a different declaration.
-    expect(readUnion('type T = "a";\n', "T", () => [], [])).toBeNull();
+    // about the node, and a local type alias is a different declaration. **Absent and withheld are
+    // different answers** — returning null for both is how a gate is told an axis has no values
+    // rather than told nothing, so the null is now preceded by the reason.
+    const problems: string[] = [];
+    expect(readUnion('type T = "a";\n', "T", () => [], problems)).toBeNull();
+    expect(problems.join("\n")).toContain("not exported");
+    expect(problems.join("\n")).toContain("read as ABSENT");
+  });
+
+  it("says so when the name belongs to an interface rather than a type alias", () => {
+    const problems: string[] = [];
+    expect(readInlineFieldUnion('export interface T { why: "a" }\n', "T", "why", problems)).toEqual([]);
+    expect(problems.join("\n")).toContain("declared as an interface");
+  });
+
+  it.each([
+    ["an index signature", 'export type T = { [k: string]: "a" } | { why: "b" };\n', "has a name this parser cannot read"],
+    ["the field written as a method", "export type T = { why(): void } | { why: \"b\" };\n", "not as a property with a type"],
+  ])("names %s inside an object member rather than skipping it", (_label, source, expected) => {
+    // The member-level silence had a twin one level further in: an index signature has no name at
+    // all, and a method is not a property with a type. Both used to `continue`.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(["b"]);
+    expect(problems.join("\n")).toContain(expected as string);
+  });
+
+  it("stays silent on a union of plain objects, which is what the gates actually pass", () => {
+    // The control for all of the above: every rule added this round must leave a healthy type
+    // completely quiet, or the gates fill with noise and stop being read.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion('export type T = { why: "a" } | { why: "b" };\n', "T", "why", problems)).toEqual(["a", "b"]);
+    expect(problems).toEqual([]);
   });
 
   it("REPORTS A FILE THAT DID NOT PARSE, and still returns what it could", () => {
