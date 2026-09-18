@@ -53,6 +53,8 @@
 // the time are the worst kind of check, so the body is pinned and a changed one stops the
 // derivation rather than guessing at its image.
 
+import { quoteForRegExp } from "./route-vocabulary.mjs";
+
 /** Strip `//` and block comments, keeping every line's index — and leaving string literals alone. */
 export function stripComments(source) {
   const text = source.replace(/\r\n/g, "\n");
@@ -536,7 +538,7 @@ export function readReturnedCodes(source, functionName, problems = [], resolvabl
   // the name opens the annotation, and a brace-balancing scan reads the type instead of the body
   // and reports "returns no literal code" about a function full of them. The road axis reads
   // `adr029Refusal` this way for the same reason.
-  const m = text.match(new RegExp(`function\\s+${functionName}\\b([\\s\\S]*?)\\n\\}`));
+  const m = text.match(new RegExp(`function\\s+${quoteForRegExp(functionName)}\\b([\\s\\S]*?)\\n\\}`));
   if (!m) {
     problems.push(`${functionName} could not be found — the codes it returns are unknown, not absent`);
     return [];

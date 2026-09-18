@@ -18,35 +18,109 @@
 //    `` `ground_disabled:${KeyboardGround}` ``; reading only quoted literals gives 8 where the
 //    vocabulary is 11.
 
-/** Strip `//` and `/* … *​/` comments, keeping every line's index. */
+/**
+ * Quote every regex metacharacter in a name read out of the source.
+ *
+ * All four extractions build patterns out of names they PARSED — a union's name, a holder's name, a
+ * function's name, an identifier an arm returns. When the parse is wrong the string is not an
+ * identifier at all, and an unescaped interpolation then builds a pattern that matches something
+ * other than what it names: the extraction's own failure mode, inside the tool that detects it.
+ * (CodeQL flagged the partial `$`-only escaping on #674; the class is the reason, not the alert.)
+ */
+export function quoteForRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Strip `//` and block comments, keeping every line's index — **without reading inside a string, and
+ * without mistaking a regular expression for a comment**.
+ *
+ * Two defects paid for this function, one on each side of the same line:
+ *
+ * The line-at-a-time version was not string-aware, so a `//` inside a string truncated the line:
+ * `"See https://github.com/…"` became `"See https:`. What that leaves is not a missing comment but
+ * an UNBALANCED QUOTE, after which every brace-matching parser downstream walks into the wrong
+ * block and returns less than it should with `problems` empty. The non-Windows stub's hand-built
+ * failure vanished from a sweep that had listed it minutes before (2026-09-18).
+ *
+ * The first character-scanning rewrite fixed that and reintroduced it one construct over: the `\/`
+ * and the closing `/` of `/^https?:\/\//i` read as a line comment, and the rest of the line — the
+ * `{` that opens the `if` — was dropped. Live on two files (`engine/cdp-bridge.ts:582`,
+ * `engine/key-locker/command-derivation.ts:348`), measured as a brace balance of -1 (gate 2 on
+ * #674). **The same silent under-read, one grammar rule further in.** So a regular-expression
+ * literal is now a state of its own, entered only where a regex can legally begin.
+ *
+ * A stray quote that this scanner takes for an opener would swallow the rest of the file just as
+ * quietly, so a single- or double-quoted run and a regex both end at the newline: TypeScript's do
+ * too, and a template literal is the only one that may cross one.
+ */
 export function stripComments(source) {
-  const out = source.replace(/\r\n/g, "\n").split("\n");
-  let inBlock = false;
-  for (let i = 0; i < out.length; i++) {
-    let line = out[i];
-    if (inBlock) {
-      const end = line.indexOf("*/");
-      if (end === -1) {
-        out[i] = "";
-        continue;
-      }
-      line = line.slice(end + 2);
-      inBlock = false;
+  const src = source.replace(/\r\n/g, "\n");
+  // A `/` opens a regex only where a value may begin. Reading the last emitted non-space character
+  // answers that for every shape this tree writes (`(`, `,`, `=`, `[`, `!`, `&&`, `return`, …); a
+  // division follows an identifier, a number, or a closing bracket, and those are the else.
+  const opensValue = /(?:[=(,[!&|?:;{}+\-*%^~<>]|\breturn|\btypeof|\bcase|\bin|\bof|\bdo|\belse|\bvoid|\bdelete|\binstanceof|\bnew|\byield|\bawait)\s*$/;
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    const next = src[i + 1];
+    // Comments first — the specification agrees: `//` is never an empty regex, `/*` never a regex.
+    if (ch === "/" && next === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
     }
-    for (;;) {
-      const open = line.indexOf("/*");
-      if (open === -1) break;
-      const close = line.indexOf("*/", open + 2);
-      if (close === -1) {
-        line = line.slice(0, open);
-        inBlock = true;
-        break;
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
+        if (src[i] === "\n") out += "\n";
+        i++;
       }
-      line = line.slice(0, open) + line.slice(close + 2);
+      i += 2;
+      continue;
     }
-    out[i] = line.replace(/\/\/.*$/, "");
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      out += ch;
+      i++;
+      while (i < src.length) {
+        const c = src[i];
+        out += c;
+        i++;
+        if (c === "\\") {
+          out += src[i] ?? "";
+          i++;
+          continue;
+        }
+        if (c === quote) break;
+        if (c === "\n" && quote !== "`") break;
+      }
+      continue;
+    }
+    if (ch === "/" && opensValue.test(out)) {
+      out += ch;
+      i++;
+      let inClass = false;
+      while (i < src.length) {
+        const c = src[i];
+        out += c;
+        i++;
+        if (c === "\\") {
+          out += src[i] ?? "";
+          i++;
+          continue;
+        }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) break;
+        else if (c === "\n") break;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
   }
-  return out.join("\n");
+  return out;
 }
 
 /**
@@ -59,7 +133,7 @@ export function stripComments(source) {
  */
 export function readUnion(source, name, resolve = () => [], problems = []) {
   const text = stripComments(source);
-  const m = text.match(new RegExp(`export type ${name}\\s*=([\\s\\S]*?);`));
+  const m = text.match(new RegExp(`export type ${quoteForRegExp(name)}\\s*=([\\s\\S]*?);`));
   if (!m) return null;
   const body = m[1];
   const values = [...body.matchAll(/"([^"]+)"/g)].map((x) => x[1]);
@@ -104,7 +178,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // **Anchored on a word boundary.** `export type PointOwnerVia` sits above `export type
   // PointOwner` in the same file, and a substring search reads the one-liner instead — one value
   // where the vocabulary has four, with nothing saying so.
-  const start = text.search(new RegExp(`export type ${typeName}\\b`));
+  const start = text.search(new RegExp(`export type ${quoteForRegExp(typeName)}\\b`));
   if (start === -1) {
     problems.push(`${typeName} not found — the ${field} union it carries is not being read`);
     return [];
@@ -144,7 +218,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // which is how a union usually grows — and stopping at the newline read one member of however
   // many (gate 2 on #669, second pass). Run to the field's own terminator instead: a `;`, a brace,
   // or the next `name:` field on the same object.
-  for (const m of body.matchAll(new RegExp(`\\b${field}:\\s*([^;{}]*)`, "g"))) {
+  for (const m of body.matchAll(new RegExp(`\\b${quoteForRegExp(field)}:\\s*([^;{}]*)`, "g"))) {
     seen = true;
     const value = m[1].split(/,\s*\w+\s*:/)[0];
     for (const v of value.matchAll(/"([^"]+)"/g)) values.push(v[1]);

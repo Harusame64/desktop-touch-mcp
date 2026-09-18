@@ -56,7 +56,10 @@ const SKIPPED = new Set([".git", ".github", "node_modules", "dist", "target", "t
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
-    if (SKIPPED.has(relative(REPO, full).split(sep).join("/"))) continue;
+    // **Tested against the entry's NAME.** The relative-path form could never match: `walk` is only
+    // ever called on `src`, so the path it compared always began with `src/` and no entry in the set
+    // could equal it — a filter that asserted a claim it did not make (gate 2 on #674, finding 8).
+    if (SKIPPED.has(entry.name) || SKIPPED.has(relative(REPO, full).split(sep).join("/"))) continue;
     if (entry.isDirectory()) walk(full, out);
     else if (entry.name.endsWith(".ts")) out.push(full);
   }

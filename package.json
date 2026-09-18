@@ -102,6 +102,7 @@
     "check:route-vocabulary": "node scripts/check-route-vocabulary.mjs",
     "check:config-vocabulary": "node scripts/check-config-vocabulary.mjs",
     "check:result-vocabulary": "node scripts/check-result-vocabulary.mjs",
+    "check:code-vocabulary": "node scripts/check-code-vocabulary.mjs",
     "test:native-clipboard": "cargo test -p desktop-touch-engine --locked clipboard -- --ignored --test-threads=1",
     "check:rs-workspace": "cargo check --workspace --locked",
     "check:rs-test-compile": "cargo test --workspace --locked --no-run",
