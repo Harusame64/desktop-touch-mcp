@@ -62,7 +62,34 @@ export function stripComments(source) {
   const opensValue = /(?:[=(,[!&|?:;{}+\-*%^~<>]|\breturn|\btypeof|\bcase|\bin|\bof|\bdo|\belse|\bvoid|\bdelete|\binstanceof|\bnew|\byield|\bawait)\s*$/;
   let out = "";
   let i = 0;
+  // Templates currently open, innermost last. A `{ template: true }` entry means the walk is in
+  // quoted text; `{ template: false, depth }` means it is in that template's `${…}`, which is code.
+  const stack = [];
   while (i < src.length) {
+    const top = stack[stack.length - 1];
+    if (top !== undefined && top.template) {
+      const c = src[i];
+      if (c === "\\") {
+        out += c + (src[i + 1] ?? "");
+        i += 2;
+        continue;
+      }
+      if (c === "`") {
+        out += c;
+        stack.pop();
+        i++;
+        continue;
+      }
+      if (c === "$" && src[i + 1] === "{") {
+        out += "${";
+        stack.push({ template: false, depth: 0 });
+        i += 2;
+        continue;
+      }
+      out += c;
+      i++;
+      continue;
+    }
     const ch = src[i];
     const next = src[i + 1];
     // Comments first — the specification agrees: `//` is never an empty regex, `/*` never a regex.
@@ -71,6 +98,16 @@ export function stripComments(source) {
       continue;
     }
     if (ch === "/" && next === "*") {
+      // **A block comment separates two tokens, and deleting it joins them.** `foo/**/bar` came out
+      // as `foobar`, `return/**/x;` as `returnx;`, and `x+/**/+ /re/` as `x++ /re/` — which the
+      // operator-run rule then reads as a postfix increment, so the regex after it is called
+      // division and its quotes are counted (gate 2 on #679, round 2). Every reader in this tree
+      // did this, and has since before #674; it is one character to fix, in each of the three
+      // strippers, and the shape it breaks is one nobody has written yet.
+      //
+      // The space goes in FIRST so the line's newlines still land where they did: this function's
+      // contract is that every line keeps its index, not its width.
+      out += " ";
       i += 2;
       while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
         if (src[i] === "\n") out += "\n";
@@ -79,7 +116,20 @@ export function stripComments(source) {
       i += 2;
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === "`") {
+    // **A template's `${…}` is code, so the walk leaves the literal there.** Taking the whole
+    // template as quoted text left a `/* … */` inside an interpolation UNSTRIPPED — harmless while
+    // nothing looked inside, and not harmless once `literalSpans` did: the closing `/` of `*/` sits
+    // after a `*`, which is in the "a value may begin here" class, so it opened a regex that ate the
+    // rest of the line and a `probeAim` after it vanished with `problems` empty (gate 2 on #679,
+    // round 3). The stripper is a reader, and this is the rule every reader in this tree has to
+    // learn at the same time.
+    if (ch === "`") {
+      out += ch;
+      stack.push({ template: true, depth: 0 });
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
       const quote = ch;
       out += ch;
       i++;
@@ -116,6 +166,18 @@ export function stripComments(source) {
         else if (c === "\n") break;
       }
       continue;
+    }
+    if (top !== undefined) {
+      if (ch === "{") top.depth++;
+      else if (ch === "}") {
+        if (top.depth === 0) {
+          out += ch;
+          stack.pop();
+          i++;
+          continue;
+        }
+        top.depth--;
+      }
     }
     out += ch;
     i++;
@@ -175,7 +237,11 @@ export function literalEnd(text, i, previous) {
   if (ch !== "/") return -1;
   // A regex only starts where a value may begin — `previous` is the last significant character
   // before `i`. A `/` after an identifier, a number or a closing bracket is division.
-  if (!/[=(,[!&|?:;{}+\-*%^~<>]/.test(previous ?? "(") && !/^(?:return|typeof|case|in|of|do|else|void|delete|instanceof|new|yield|await)$/.test(previous ?? "")) {
+  // **Anchored.** `.test` on an unanchored class asks "does this string CONTAIN one of these", and
+  // `previous` is not always one character: `significantBefore` answers `++` for a postfix increment,
+  // and `"++".includes("+")` is true, so the very distinction that answer exists to draw was
+  // swallowed by the test that read it. A keyword answer is already anchored on the right-hand side.
+  if (!/^[=(,[!&|?:;{}+\-*%^~<>]$/.test(previous ?? "(") && !/^(?:return|typeof|case|in|of|do|else|void|delete|instanceof|new|yield|await)$/.test(previous ?? "")) {
     return -1;
   }
   if (text[i + 1] === "/" || text[i + 1] === "*") return -1; // a comment, not a regex
@@ -190,8 +256,15 @@ export function literalEnd(text, i, previous) {
     j++;
     if (c === "[") inClass = true;
     else if (c === "]") inClass = false;
-    else if (c === "/" && !inClass) break;
-    else if (c === "\n") break;
+    else if (c === "/" && !inClass) {
+      // **The flags belong to the literal.** They are letters, so leaving them out changed no
+      // reader's answer — but it was the ONLY thing TypeScript's own scanner and this one disagreed
+      // about across `src/`: 82 characters in 2,124,147, all of them flags. Taking them in makes the
+      // agreement exact, and an invariant with no permitted exceptions is one that cannot rot into
+      // a list nobody re-reads.
+      while (j < text.length && /[dgimsuvy]/.test(text[j])) j++;
+      break;
+    } else if (c === "\n") break;
   }
   return j;
 }
@@ -203,6 +276,32 @@ export function significantBefore(text, i) {
   let j = i - 1;
   while (j >= 0 && /\s/.test(text[j])) j--;
   if (j < 0) return "(";
+  // **A postfix `++` or `--` ends a VALUE, so what follows is division.** The character class below
+  // holds `+` and `-` because a regex may follow a binary one (`x + /re/.test(s)`), and reading only
+  // the last character cannot tell `x + /` from `x++ /`. It answered "regex" for both, so
+  // `x++ / 2; keep;` had everything to the end of the line read as a literal and blanked out of the
+  // masked copy — a producer sitting there would leave the axis in silence.
+  //
+  // This was spelled three times in this tree (`opensValue` here, this table, and
+  // `regexCanStartHere` in `result-vocabulary.mjs`) and all three agreed on being wrong; #678 made
+  // them one, so this is one line instead of three. A PREFIX `++x` needs no rule — its significant
+  // character is the identifier, which already reads as a value.
+  if (text[j] === "+" || text[j] === "-") {
+    // **The RUN is counted, because the last two characters are not the last token.** `x+++/re/`
+    // tokenises as `x++ + /re/` — a postfix increment and then a BINARY plus, after which a regex
+    // may begin. Reading the two characters nearest the slash sees `++` and answers division, so the
+    // regex's quotes were counted and everything after it on the line was blanked (round 1 on #679;
+    // reproduced here with a sentinel in live code after the construct — a sentinel INSIDE the regex
+    // cannot tell the two readings apart, because it is blanked either way).
+    //
+    // An even run ends in `++`, which closes a value; an odd run ends in a single `+`, which opens
+    // one. This is the same mistake the bound it replaced made, one level in: a fixed amount of
+    // context standing in for the token boundary.
+    const op = text[j];
+    let run = 0;
+    for (let k = j; k >= 0 && text[k] === op; k--) run++;
+    return run % 2 === 0 ? `${op}${op}` : op;
+  }
   if (!/\w/.test(text[j])) return text[j];
   // **Bounded.** Slicing from the start of the file to read the word behind the cursor made this
   // O(n²) over a 2 MB tree — the scan took minutes instead of milliseconds. The longest keyword that
@@ -220,15 +319,313 @@ export function significantBefore(text, i) {
  * this identical loop. They are views now, not walks. Three views of one answer can disagree only
  * about presentation; three walks can disagree about the grammar, and two of them did.
  */
+/**
+ * `source` with every literal's INTERIOR blanked, delimiters and length kept — a view of
+ * `literalSpans`.
+ *
+ * Lived in `result-vocabulary.mjs`, which cannot be imported from here (this is the base module).
+ * It is used by anything that has to balance brackets on a copy where a `{` inside a string or a
+ * regex is not a bracket, so it belongs where every reader can reach it.
+ *
+ * **The length is the contract** — a span found on the copy indexes the original exactly. A newline
+ * inside a template literal survives so line structure does.
+ */
+export function maskLiteralContents(source) {
+  let out = "";
+  let at = 0;
+  for (const [start, end] of literalSpans(source)) {
+    out += source.slice(at, start);
+    out += source[start];
+    for (let j = start + 1; j < end - 1; j++) out += source[j] === "\n" ? "\n" : " ";
+    if (end - 1 > start) out += source[end - 1];
+    at = end;
+  }
+  return out + source.slice(at);
+}
+
+/**
+ * Does a top-level declaration begin at `at`? `export`-prefixed or not, with any whitespace between.
+ */
+function declarationStartsAt(text, at) {
+  DECLARATION.lastIndex = at;
+  return DECLARATION.test(text);
+}
+const DECLARATION = /(?:export\s+)?(?:type|interface|const|function|class)\b/y;
+
 export function literalSpans(text) {
   const spans = [];
   for (let i = 0; i < text.length; i++) {
+    if (text[i] === "`") {
+      i = walkTemplate(text, i, spans) - 1;
+      continue;
+    }
     const end = literalEnd(text, i, significantBefore(text, i));
     if (end === -1) continue;
     spans.push([i, end]);
     i = end - 1;
   }
   return spans;
+}
+
+/**
+ * A template literal's TEXT chunks, with its `${…}` interpolations left as code.
+ *
+ * **`literalEnd` and this function answer different questions, on purpose.** `literalEnd` answers
+ * "where does the literal token starting here end", which is what a scanner stepping over tokens
+ * needs. `literalSpans` answers "which regions of this text are not code", and the inside of a
+ * `${…}` IS code — a producer written there is as real as one written anywhere else. Treating the
+ * whole template as quoted prose made `` `${probeAim("act.route", { route: "x" })}` `` invisible to
+ * the road axis, with no road and no problem reported (gate 2 on #679, round 2). The window this PR
+ * removed found that call, because a window does not know what a literal is; the mask that replaced
+ * it knew too much.
+ *
+ * Each chunk keeps a real delimiter at both ends — the backtick or the `{` of `${`, and the `}` or
+ * the closing backtick — so a copy with the interiors blanked still balances its braces.
+ *
+ * Returns the index just past the closing backtick.
+ */
+function walkTemplate(text, start, spans) {
+  let chunkStart = start;
+  let i = start + 1;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === "`") {
+      spans.push([chunkStart, i + 1]);
+      return i + 1;
+    }
+    if (ch === "$" && text[i + 1] === "{") {
+      spans.push([chunkStart, i + 2]);
+      const close = walkInterpolation(text, i + 2, spans);
+      chunkStart = close;
+      i = close + 1;
+      continue;
+    }
+    i++;
+  }
+  // Unterminated: say the rest is text rather than guess where it ends. An empty span is not
+  // pushed — `maskLiteralContents` reads `source[start]` as a delimiter, and a start at the end of
+  // the input gave it `undefined`, which it appended to the mask as the word "undefined" and broke
+  // the length contract in silence (seen while measuring round 3's finding).
+  if (chunkStart < text.length) spans.push([chunkStart, text.length]);
+  return text.length;
+}
+
+/** From just past a `${`, the index of its matching `}`, collecting the literals inside on the way. */
+function walkInterpolation(text, from, spans) {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === "`") {
+      i = walkTemplate(text, i, spans) - 1;
+      continue;
+    }
+    const end = literalEnd(text, i, significantBefore(text, i));
+    if (end !== -1) {
+      spans.push([i, end]);
+      i = end - 1;
+      continue;
+    }
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      if (depth === 0) return i;
+      depth--;
+    }
+  }
+  return text.length;
+}
+
+/** The body of the brace-delimited block that starts at the first `{` at or after `from`. */
+export function blockAt(text, from) {
+  const open = text.indexOf("{", from);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const skip = literalEnd(text, i, significantBefore(text, i));
+    if (skip !== -1) {
+      i = skip - 1;
+      continue;
+    }
+    const ch = text[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return { body: text.slice(open, i + 1), start: open, end: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * ## The depth-1 reader, down here for the same reason the literal reader is
+ *
+ * "Is this property THIS object's, or one nested inside it?" is a grammar question, and it was
+ * answerable only in `code-vocabulary.mjs` — which imports from here, so the road axis could not
+ * ask it. That is why the road axis read `route:` out of a fixed-length window instead: not because
+ * a window is the right tool, but because it was the only one in reach.
+ *
+ * Moved, unchanged, so there is one answer rather than a fourth copy of the question.
+ */
+
+/**
+ * Walk an object literal's depth-1 properties, calling `visit(name, valueStart)` for each.
+ *
+ * **Three spellings name one property**: `code:`, `"code":` and the shorthand `code` with no colon
+ * at all. The first version of this file read only the first, and the shorthand form is exactly how
+ * `toToolFailure` builds the flat failure — so a hand-built copy of the tree's own house style was
+ * skipped with nothing reported, and a JSON-shaped one (`{"ok":false,"code":…}`) was skipped twice
+ * over, because the quoted key was consumed as a string (gate 2 on #674, findings 4 and 7).
+ *
+ * Depth is the grammar: a `code:` nested inside `context: { … }` is not this object's property.
+ */
+function eachDepthOneProperty(objectSource, visit) {
+  let depth = 0;
+  let i = 0;
+  while (i < objectSource.length) {
+    const prev = objectSource[i - 1] ?? "";
+    if (depth === 1 && /[{,\s]/.test(prev)) {
+      // **A spread carries this object's properties too.** `{ ok:false, ...(c ? {code:"A"} : {code:"B"}), … }`
+      // is the tree's own idiom, and counting brackets uniformly buried the key two levels down
+      // where the depth-1 walk could not see it (gate 2 on #674, round 3, finding 6).
+      if (objectSource.startsWith("...", i)) {
+        const span = valueSpan(objectSource, i + 3);
+        for (const inner of objectLiteralsIn(span.text)) {
+          // **The index belongs to the inner source.** Handing the visitor an inner offset while it
+          // read from the outer text produced `code` values spliced out of the wrong string
+          // (`macro.ts` came back with the expression `step: i`).
+          const stop = eachDepthOneProperty(inner, visit);
+          if (stop !== undefined) return stop;
+        }
+        i = span.end;
+        continue;
+      }
+      const key = /^(?:"([A-Za-z_$][\w$]*)"\s*:|'([A-Za-z_$][\w$]*)'\s*:|([A-Za-z_$][\w$]*)\s*([:,}]))/.exec(objectSource.slice(i));
+      // **A quoted STRING is not a shorthand key.** `{ "ok": false, "note": "code", … }` put the
+      // VALUE `"code"` in key position and the walker read it as a property named `code` — the
+      // mutation round caught it as a negative control that went red (2026-09-18). Shorthand is a
+      // bare identifier by grammar, so only the unquoted alternative may omit its colon.
+      if (key !== null) {
+        const name = key[1] ?? key[2] ?? key[3];
+        const shorthand = key[3] !== undefined && key[4] !== ":";
+        const valueStart = shorthand ? null : i + key[0].length;
+        const stop = visit(name, valueStart, objectSource);
+        if (stop !== undefined) return stop;
+        i = shorthand ? i + key[0].length - 1 : valueSpan(objectSource, valueStart).end;
+        continue;
+      }
+    }
+    const skip = literalEnd(objectSource, i, significantBefore(objectSource, i));
+    if (skip !== -1) {
+      i = skip;
+      continue;
+    }
+    const ch = objectSource[i];
+    if (ch === "{" || ch === "(" || ch === "[") depth++;
+    else if (ch === "}" || ch === ")" || ch === "]") depth--;
+    i++;
+  }
+  return undefined;
+}
+
+/**
+ * Whether `field` at depth 1 is written as a SHORTHAND (`{ code }`) rather than `code: <expr>`.
+ *
+ * Asked here rather than by the caller because the caller would have to walk the object again to
+ * answer it — and a second walk is how this tree keeps growing scanners that fall behind the one.
+ * `{ code }` and `{ code: code }` both leave the produced name unreadable, but only the first can
+ * be fixed by spelling it out, so they are told apart and advised differently.
+ */
+export function isShorthandAtDepthOne(objectSource, field) {
+  let shorthand = false;
+  eachDepthOneProperty(objectSource, (name, valueStart) => {
+    if (name === field && valueStart === null) shorthand = true;
+    return undefined;
+  });
+  return shorthand;
+}
+
+/** Every top-level object literal inside an expression, as source text. */
+function objectLiteralsIn(expression) {
+  const out = [];
+  for (let i = 0; i < expression.length; i++) {
+    const skip = literalEnd(expression, i, significantBefore(expression, i));
+    if (skip !== -1) {
+      i = skip - 1;
+      continue;
+    }
+    if (expression[i] !== "{") continue;
+    const block = blockAt(expression, i);
+    if (block === null) continue;
+    out.push(block.body);
+    i = block.end;
+  }
+  return out;
+}
+
+/** The value that starts at `from`: its trimmed text and the index just past it. */
+function valueSpan(objectSource, from) {
+  let d = 0;
+  let j = from;
+  for (; j < objectSource.length; j++) {
+    const skip = literalEnd(objectSource, j, significantBefore(objectSource, j));
+    if (skip !== -1) {
+      j = skip - 1;
+      continue;
+    }
+    const c = objectSource[j];
+    if (c === "{" || c === "(" || c === "[") d++;
+    else if (c === "]" || c === ")") d--;
+    else if (c === "}") {
+      if (d === 0) break;
+      d--;
+    } else if ((c === "," || c === ";") && d === 0) break;
+  }
+  return { text: objectSource.slice(from, j).trim(), end: j };
+}
+
+/** The value text that starts at `from`, ending at this depth's `,`, `;` or `}`. */
+function valueAt(objectSource, from) {
+  return valueSpan(objectSource, from).text;
+}
+
+/**
+ * The value of `<field>:` at depth 1 of an object literal, as SOURCE TEXT.
+ *
+ * A shorthand property (`{ ok: false, code, error }`) has no value text; the field NAME comes back,
+ * which is what it is — an identifier the caller must resolve or report.
+ */
+export function fieldAtDepthOne(objectSource, field) {
+  const values = fieldsAtDepthOne(objectSource, field);
+  return values.length === 0 ? null : values[0];
+}
+
+/**
+ * EVERY value `field` takes at depth 1 — a conditional spread gives it more than one.
+ *
+ * `{ ok:false, ...(c ? { code:"AAA" } : { code:"BBB" }), … }` produces two codes, and stopping at the
+ * first left `BBB` out of the axis with nothing in `problems` and nothing in `unreadable`: a caller
+ * can receive it and the grid does not count it (gate 2 on #674, round 4, finding 5).
+ */
+export function fieldsAtDepthOne(objectSource, field) {
+  const values = [];
+  eachDepthOneProperty(objectSource, (name, valueStart, source) => {
+    if (name !== field) return undefined;
+    values.push(valueStart === null ? field : valueAt(source, valueStart));
+    return undefined;
+  });
+  return values;
+}
+
+/** Every depth-1 key of an object literal, in source order. */
+export function keysAtDepthOne(objectSource) {
+  const keys = [];
+  eachDepthOneProperty(objectSource, (name) => {
+    keys.push(name);
+    return undefined;
+  });
+  return keys;
 }
 
 /**
@@ -294,10 +691,20 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // To the declaration's terminating `;` **at brace depth 0**. Two cuts were wrong before this
   // one: the first blank line (comment-stripping leaves blanks inside a type) and the first `;`
   // (a member object separates its own fields with `;`). Both read part of a union as the whole.
+  // **The depth is counted on the mask, because a brace inside a literal is not a brace.** This
+  // scan read `text` directly, so a literal type whose value carries one threw the count off:
+  //
+  //     export type T = { why: "a" | "{tool:x}" };   →  ["a"], problems: []   ← a value gone, silent
+  //     export type T = { why: "a" | "}" };          →  ["a", "not_mine"]     ← the next type's, loud
+  //
+  // This tree's advice strings are full of `{tool:…}`, so the shape is not exotic here. Found on a
+  // re-read of this function AFTER five review rounds, none of which reached it — they were anchored
+  // on the lines this branch changed, and this one sits two lines above them.
+  const masked = maskLiteralContents(text);
   let depth = 0;
   let end = -1;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
+  for (let i = start; i < masked.length; i++) {
+    const ch = masked[i];
     if (ch === "{" || ch === "(" || ch === "[") depth++;
     else if (ch === "}" || ch === ")" || ch === "]") depth--;
     else if (ch === ";" && depth === 0) {
@@ -308,7 +715,17 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
     // — one dropped semicolon and every `why:` in every type BELOW this one joined the axis, in
     // silence, until the pin failed against values nothing can produce (gate 2 on #669, second
     // pass). A declaration that starts at depth 0 ends the one above it just as well.
-    else if (depth === 0 && ch === "\n" && /^(export\s+)?(type|interface|const|function|class)\b/.test(text.slice(i + 1, i + 40))) {
+    //
+    // **Anchored, because the whitespace between two tokens has no length.** That test was a
+    // thirty-nine character slice, and the grounds recorded for the bound were "the longest spelling
+    // is `export interface`, sixteen characters" — which measures the longest MINIMAL spelling, not
+    // the longest legal one. TypeScript allows any amount of whitespace between `export` and `type`,
+    // so thirty spaces walk the window out, this type never ends, and every `why:` in the type BELOW
+    // it joins the axis. `problems` stays empty, because the next declaration's `;` is found at
+    // depth 0 and the "read to the end of the file" guard never fires. Measured at the arithmetic
+    // edge: 29 spaces reads two values, 30 reads three (win2 found the misclassification; mac had
+    // put this window in the "guaranteed by the grammar" column).
+    else if (depth === 0 && ch === "\n" && declarationStartsAt(masked, i + 1)) {
       end = i;
       break;
     }
@@ -318,6 +735,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
     end = text.length;
   }
   const body = text.slice(start, end);
+  const maskedBody = masked.slice(start, end);
   // A type can carry the field more than once — `PointOwner` has a `why` on two of its members,
   // and reading only the first gives one value where the vocabulary has four.
   const values = [];
@@ -326,9 +744,16 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // which is how a union usually grows — and stopping at the newline read one member of however
   // many (gate 2 on #669, second pass). Run to the field's own terminator instead: a `;`, a brace,
   // or the next `name:` field on the same object.
-  for (const m of body.matchAll(new RegExp(`\\b${quoteForRegExp(field)}:\\s*([^;{}]*)`, "g"))) {
+  //
+  // **The terminator is found on the MASK, and the values are read from the real text at its
+  // offsets.** `[^;{}]` on the raw body stops at a brace inside a LITERAL: `why: "a" | "{tool:x}"`
+  // ended at the `{` and the second member was dropped with `problems` empty. The same defect as
+  // the depth count above, one layer in — the one that survived fixing the other.
+  for (const m of maskedBody.matchAll(new RegExp(`\\b${quoteForRegExp(field)}:\\s*([^;{}]*)`, "g"))) {
     seen = true;
-    const value = m[1].split(/,\s*\w+\s*:/)[0];
+    const from = m.index + m[0].length - m[1].length;
+    const real = body.slice(from, from + m[1].length);
+    const value = real.split(/,\s*\w+\s*:/)[0];
     for (const v of value.matchAll(/"([^"]+)"/g)) values.push(v[1]);
   }
   if (!seen) {
@@ -349,7 +774,60 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
  */
 export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
   const text = stripComments(executorSource);
+  // The same text with every literal's interior blanked, at the same indices. Anything that has to
+  // find punctuation — a brace that opens an object, a `probeAim(` that is a call rather than a
+  // sentence quoting one — asks this copy, and reads the value back out of `text`.
+  const masked = maskLiteralContents(text);
   const problems = [];
+  // **`probeRoute`'s own body, found from its parameter list — not the first block that happens to
+  // contain the position.** The first version walked up to eight `{…}` candidates after the
+  // `function` keyword until one spanned the call, which reads past the helper entirely: a direct
+  // `probeAim("act.route", { route })` in a LATER function landed inside that function's block, the
+  // walk accepted it, and the shorthand exemption then swallowed a dynamic producer with neither a
+  // road nor a problem (gate 2 on #679, round 4). Eight was also one more arbitrary bound in a PR
+  // about removing them.
+  //
+  // The body is the first `{` after the parameter list's closing `)`. A return-type annotation can
+  // carry braces of its own (`): { a: string } {`), and this reader cannot tell that `{` from the
+  // body's — so when the text between the two holds a `<` or a `{` it says so and exempts nothing,
+  // which is the loud direction.
+  const helperAt = text.search(/\bfunction\s+probeRoute\s*\(/);
+  const helperBody = (() => {
+    if (helperAt === -1) return null;
+    const open = masked.indexOf("(", helperAt);
+    if (open === -1) return null;
+    let depth = 0;
+    let i = open;
+    for (; i < masked.length; i++) {
+      if (masked[i] === "(") depth++;
+      else if (masked[i] === ")") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if (depth !== 0) return null;
+    const brace = masked.indexOf("{", i);
+    if (brace === -1) return null;
+    // **Is a block after the parameter list the BODY, or part of an object return type?** Told apart
+    // by what follows it: a type CONTINUES, and a body does not. `): { ok } {` continues with
+    // another brace; `): Promise<{ ok }> {` with `>`; `): { ok } | null {` with `|`. Only checking
+    // for an immediately following `{` took the type literal as the body in the wrapped forms, and
+    // the helper's own forwarding call was then reported — loud, and wrong (gate 2 on #679, round 5).
+    //
+    // The continuation has to START with a type character, not merely contain one: after a real
+    // body, `}\nexport { probeRoute };` also has an identifier and then a brace, and matching that
+    // would walk out of the function into the export.
+    let block = blockAt(text, brace);
+    for (;;) {
+      if (block === null) return null;
+      const rest = masked.slice(block.end + 1);
+      const continues = /^\s*\{/.test(rest) || /^\s*[>|&[\],.][\s\w>|&[\],.]*\{/.test(rest);
+      if (!continues) return block;
+      const next = rest.indexOf("{");
+      block = blockAt(text, block.end + 1 + next);
+    }
+  })();
+  const insideProbeRoute = (at) => helperBody !== null && at > helperBody.start && at < helperBody.end;
   // Unions a `why` draws from at runtime, by name — expanded by the caller, which has the files.
   const dynamicWhy = new Set();
   // Whys spelled only in a producer's parameter annotation, because the call site uses a shorthand.
@@ -363,7 +841,48 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
   // `probeAim("act.route", { route: "x" })` written directly would be a second producer; the tree
   // routes everything through `probeRoute`, and a direct call now arrives as a reported non-literal
   // rather than as a rule that matches nothing (gate 2 on #669: three such rules were dead).
-  add(route, /probeAim\(\s*"act\.route"\s*,\s*\{[\s\S]{0,400}?\broute:\s*"([a-z0-9_]+)"/g);
+  // **The object is read, not windowed.** This was `\{[\s\S]{0,400}?\broute:` — four hundred
+  // characters from the brace to the key, and a road written past that simply leaves the axis, with
+  // `problems` empty. Measured at the edge: the road survives a gap of 400 and is gone at 401, the
+  // gate's output byte-identical on both sides.
+  //
+  // Reading it properly needs two things the road module did not have until #678 and this PR: a
+  // literal reader (so a `{` inside a string is not a brace) and a depth-1 reader (so a `route:`
+  // nested in some other property is not this call's road). It has both now, and the window is
+  // simply gone — an object of any size is read, and a shape that CANNOT be read says so.
+  for (const m of text.matchAll(/\bprobeAim\(\s*"act\.route"\s*,\s*(?=\{)/g)) {
+    // **Matched on the text, checked against the mask.** The mask blanks a literal's CONTENTS, so
+    // `"act.route"` is not there to match — searching the masked copy for this call finds nothing at
+    // all, which is the shape of a rule that matches nothing while looking like a rule. What the
+    // mask answers is the other question: is this occurrence CODE, or a sentence quoting it? Prose
+    // in this tree does quote the shapes it describes (gate 2 on #669), and inside a literal the
+    // characters are blanked, so they differ from `text` here.
+    if (!masked.startsWith("probeAim", m.index)) continue;
+    const obj = blockAt(text, m.index + m[0].length);
+    if (obj === null) {
+      problems.push(`probeAim("act.route", …) at ${m.index} has an object this parser cannot balance — its road is unknown, not absent`);
+      continue;
+    }
+    // **`probeRoute`'s own forwarding call, recognised by WHERE it is, not by what it is called.**
+    // The helper's body ends with `probeAim("act.route", { route, … })`, forwarding the parameter it
+    // was given — so this site names no road, and the roads that reach it are exactly the literals
+    // the `probeRoute("…")` rule above already reads. Reporting it would make the gate red on
+    // arrival about a producer that is fully enumerated one rule up.
+    //
+    // The test is containment in `probeRoute`'s block, because this file has been bitten by the
+    // other kind: its first version exempted an argument that was NAMED `route`, and gate 2 on #669
+    // called that an exemption whose only effect was to open a hole named after the field it
+    // guarded. A shorthand ANYWHERE ELSE is still reported.
+    if (insideProbeRoute(m.index) && isShorthandAtDepthOne(obj.body, "route")) continue;
+    const value = fieldAtDepthOne(obj.body, "route");
+    if (value === null) {
+      problems.push(`probeAim("act.route", …) at ${m.index} carries no \`route\` of its own — a nested one is not this call's road`);
+      continue;
+    }
+    const literal = value.trim().match(/^"([a-z0-9_]+)"$/);
+    if (literal) route.add(literal[1]);
+    else problems.push(`probeAim("act.route", …) is given a non-literal road: ${value.trim().slice(0, 60)}`);
+  }
 
   // **Anything that is not a string literal, at any producer, is reported.** The first version
   // reported one shape out of six: a ternary, a `const` holding the value, a variable named

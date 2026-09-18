@@ -57,8 +57,22 @@
 // reach them too — it was the one reader with no answer to "is this a literal". Re-exported
 // here because `result-vocabulary.mjs` imports them from this file, and a module that re-exports
 // is not a second scanner.
-import { quoteForRegExp, stripComments, literalEnd, significantBefore, literalSpans } from "./route-vocabulary.mjs";
-export { literalEnd, significantBefore, literalSpans };
+import {
+  quoteForRegExp,
+  stripComments,
+  literalEnd,
+  significantBefore,
+  literalSpans,
+  blockAt,
+  maskLiteralContents,
+  isShorthandAtDepthOne,
+  fieldAtDepthOne,
+  fieldsAtDepthOne,
+  keysAtDepthOne,
+} from "./route-vocabulary.mjs";
+export { literalEnd, significantBefore, literalSpans, maskLiteralContents };
+// Re-exported because `result-vocabulary.mjs` names this file as their home; the walk is one.
+export { isShorthandAtDepthOne, fieldAtDepthOne, fieldsAtDepthOne, keysAtDepthOne };
 
 
 
@@ -81,185 +95,7 @@ function functionBody(text, at) {
   return null;
 }
 
-/** The body of the brace-delimited block that starts at the first `{` at or after `from`. */
-function blockAt(text, from) {
-  const open = text.indexOf("{", from);
-  if (open === -1) return null;
-  let depth = 0;
-  for (let i = open; i < text.length; i++) {
-    const skip = literalEnd(text, i, significantBefore(text, i));
-    if (skip !== -1) {
-      i = skip - 1;
-      continue;
-    }
-    const ch = text[i];
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return { body: text.slice(open, i + 1), start: open, end: i };
-    }
-  }
-  return null;
-}
 
-/**
- * Walk an object literal's depth-1 properties, calling `visit(name, valueStart)` for each.
- *
- * **Three spellings name one property**: `code:`, `"code":` and the shorthand `code` with no colon
- * at all. The first version of this file read only the first, and the shorthand form is exactly how
- * `toToolFailure` builds the flat failure — so a hand-built copy of the tree's own house style was
- * skipped with nothing reported, and a JSON-shaped one (`{"ok":false,"code":…}`) was skipped twice
- * over, because the quoted key was consumed as a string (gate 2 on #674, findings 4 and 7).
- *
- * Depth is the grammar: a `code:` nested inside `context: { … }` is not this object's property.
- */
-function eachDepthOneProperty(objectSource, visit) {
-  let depth = 0;
-  let i = 0;
-  while (i < objectSource.length) {
-    const prev = objectSource[i - 1] ?? "";
-    if (depth === 1 && /[{,\s]/.test(prev)) {
-      // **A spread carries this object's properties too.** `{ ok:false, ...(c ? {code:"A"} : {code:"B"}), … }`
-      // is the tree's own idiom, and counting brackets uniformly buried the key two levels down
-      // where the depth-1 walk could not see it (gate 2 on #674, round 3, finding 6).
-      if (objectSource.startsWith("...", i)) {
-        const span = valueSpan(objectSource, i + 3);
-        for (const inner of objectLiteralsIn(span.text)) {
-          // **The index belongs to the inner source.** Handing the visitor an inner offset while it
-          // read from the outer text produced `code` values spliced out of the wrong string
-          // (`macro.ts` came back with the expression `step: i`).
-          const stop = eachDepthOneProperty(inner, visit);
-          if (stop !== undefined) return stop;
-        }
-        i = span.end;
-        continue;
-      }
-      const key = /^(?:"([A-Za-z_$][\w$]*)"\s*:|'([A-Za-z_$][\w$]*)'\s*:|([A-Za-z_$][\w$]*)\s*([:,}]))/.exec(objectSource.slice(i));
-      // **A quoted STRING is not a shorthand key.** `{ "ok": false, "note": "code", … }` put the
-      // VALUE `"code"` in key position and the walker read it as a property named `code` — the
-      // mutation round caught it as a negative control that went red (2026-09-18). Shorthand is a
-      // bare identifier by grammar, so only the unquoted alternative may omit its colon.
-      if (key !== null) {
-        const name = key[1] ?? key[2] ?? key[3];
-        const shorthand = key[3] !== undefined && key[4] !== ":";
-        const valueStart = shorthand ? null : i + key[0].length;
-        const stop = visit(name, valueStart, objectSource);
-        if (stop !== undefined) return stop;
-        i = shorthand ? i + key[0].length - 1 : valueSpan(objectSource, valueStart).end;
-        continue;
-      }
-    }
-    const skip = literalEnd(objectSource, i, significantBefore(objectSource, i));
-    if (skip !== -1) {
-      i = skip;
-      continue;
-    }
-    const ch = objectSource[i];
-    if (ch === "{" || ch === "(" || ch === "[") depth++;
-    else if (ch === "}" || ch === ")" || ch === "]") depth--;
-    i++;
-  }
-  return undefined;
-}
-
-/**
- * Whether `field` at depth 1 is written as a SHORTHAND (`{ code }`) rather than `code: <expr>`.
- *
- * Asked here rather than by the caller because the caller would have to walk the object again to
- * answer it — and a second walk is how this tree keeps growing scanners that fall behind the one.
- * `{ code }` and `{ code: code }` both leave the produced name unreadable, but only the first can
- * be fixed by spelling it out, so they are told apart and advised differently.
- */
-export function isShorthandAtDepthOne(objectSource, field) {
-  let shorthand = false;
-  eachDepthOneProperty(objectSource, (name, valueStart) => {
-    if (name === field && valueStart === null) shorthand = true;
-    return undefined;
-  });
-  return shorthand;
-}
-
-/** Every top-level object literal inside an expression, as source text. */
-function objectLiteralsIn(expression) {
-  const out = [];
-  for (let i = 0; i < expression.length; i++) {
-    const skip = literalEnd(expression, i, significantBefore(expression, i));
-    if (skip !== -1) {
-      i = skip - 1;
-      continue;
-    }
-    if (expression[i] !== "{") continue;
-    const block = blockAt(expression, i);
-    if (block === null) continue;
-    out.push(block.body);
-    i = block.end;
-  }
-  return out;
-}
-
-/** The value that starts at `from`: its trimmed text and the index just past it. */
-function valueSpan(objectSource, from) {
-  let d = 0;
-  let j = from;
-  for (; j < objectSource.length; j++) {
-    const skip = literalEnd(objectSource, j, significantBefore(objectSource, j));
-    if (skip !== -1) {
-      j = skip - 1;
-      continue;
-    }
-    const c = objectSource[j];
-    if (c === "{" || c === "(" || c === "[") d++;
-    else if (c === "]" || c === ")") d--;
-    else if (c === "}") {
-      if (d === 0) break;
-      d--;
-    } else if ((c === "," || c === ";") && d === 0) break;
-  }
-  return { text: objectSource.slice(from, j).trim(), end: j };
-}
-
-/** The value text that starts at `from`, ending at this depth's `,`, `;` or `}`. */
-function valueAt(objectSource, from) {
-  return valueSpan(objectSource, from).text;
-}
-
-/**
- * The value of `<field>:` at depth 1 of an object literal, as SOURCE TEXT.
- *
- * A shorthand property (`{ ok: false, code, error }`) has no value text; the field NAME comes back,
- * which is what it is — an identifier the caller must resolve or report.
- */
-export function fieldAtDepthOne(objectSource, field) {
-  const values = fieldsAtDepthOne(objectSource, field);
-  return values.length === 0 ? null : values[0];
-}
-
-/**
- * EVERY value `field` takes at depth 1 — a conditional spread gives it more than one.
- *
- * `{ ok:false, ...(c ? { code:"AAA" } : { code:"BBB" }), … }` produces two codes, and stopping at the
- * first left `BBB` out of the axis with nothing in `problems` and nothing in `unreadable`: a caller
- * can receive it and the grid does not count it (gate 2 on #674, round 4, finding 5).
- */
-export function fieldsAtDepthOne(objectSource, field) {
-  const values = [];
-  eachDepthOneProperty(objectSource, (name, valueStart, source) => {
-    if (name !== field) return undefined;
-    values.push(valueStart === null ? field : valueAt(source, valueStart));
-    return undefined;
-  });
-  return values;
-}
-
-/** Every depth-1 key of an object literal, in source order. */
-export function keysAtDepthOne(objectSource) {
-  const keys = [];
-  eachDepthOneProperty(objectSource, (name) => {
-    keys.push(name);
-    return undefined;
-  });
-  return keys;
-}
 
 /**
  * Is this object literal a TYPE literal rather than a value?
@@ -810,6 +646,20 @@ export function readArgList(text, open) {
  * Each site carries the name of the function that returns it, so the caller above can ask the one
  * question that decides whether it belongs in the axis: is that function called anywhere?
  */
+/**
+ * Is `ok: false` (or `"ok": false`, or `'ok': false`) written at exactly `i`?
+ *
+ * Sticky rather than windowed: the whitespace between the key and the value is unbounded in the
+ * grammar, so any window is a guess about formatting, and this one guessed eight characters. The
+ * regex is module-level because a sticky regex carries `lastIndex` as state — it is reset on every
+ * call, never read across them.
+ */
+const OK_FALSE = /["']?\bok["']?:\s*false\b/y;
+function anchoredOkFalse(text, i) {
+  OK_FALSE.lastIndex = i;
+  return OK_FALSE.test(text);
+}
+
 export function readHandBuiltFlatFailures(sources) {
   const found = [];
   for (const { file, text: raw } of sources) {
@@ -827,7 +677,13 @@ export function readHandBuiltFlatFailures(sources) {
       const anchored =
         open.length > 0 &&
         /[{,\s]/.test(text[i - 1] ?? "") &&
-        /^["']?\bok["']?:\s*false\b/.test(text.slice(i, i + 16)) &&
+        // **Anchored with `y`, not cut out with a slice.** This was `/^…/.test(text.slice(i, i + 16))`,
+        // and sixteen characters is `ok:` + `false` plus eight to spare — so nine spaces between the
+        // key and the value, or seven after the JSON-styled `"ok":`, or a line break with two levels
+        // of indent, and the site stops being a hand-built failure. It is not reported: it simply
+        // leaves the axis. A sticky regex asks the same question at the same place with no bound at
+        // all, and costs a `lastIndex` assignment instead of a substring.
+        anchoredOkFalse(text, i) &&
         // A sentence that DESCRIBES the shape is not a site that builds it.
         !inString.some(([a, b]) => i > a && i < b);
       // **Resume past the KEY, not one character into it.** Testing the anchor before the literal

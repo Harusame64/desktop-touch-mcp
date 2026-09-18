@@ -57,72 +57,18 @@ import { quoteForRegExp } from "./route-vocabulary.mjs";
 // **The one scanner, and the one depth-1 reader.** Both already exist in this tree; this file
 // had grown its own copy of the first and no copy of the second. Importing them is the fix for
 // two findings at once, because both findings are the same defect: a second reader.
-import {
-  literalSpans,
-  fieldsAtDepthOne,
-  isShorthandAtDepthOne,
-} from "./code-vocabulary.mjs";
+import { maskLiteralContents, stripComments as stripRouteComments } from "./route-vocabulary.mjs";
+import { fieldsAtDepthOne, isShorthandAtDepthOne } from "./code-vocabulary.mjs";
 
-/** Strip `//` and block comments, keeping every line's index — and leaving string literals alone. */
-export function stripComments(source) {
-  const text = source.replace(/\r\n/g, "\n");
-  let out = "";
-  let i = 0;
-  let quote = null;
-  while (i < text.length) {
-    const ch = text[i];
-    if (quote) {
-      out += ch;
-      if (ch === "\\" && i + 1 < text.length) {
-        out += text[i + 1];
-        i += 2;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "*") {
-      const close = text.indexOf("*/", i + 2);
-      const end = close === -1 ? text.length : close + 2;
-      for (let j = i; j < end; j++) if (text[j] === "\n") out += "\n";
-      i = end;
-      continue;
-    }
-    // **After the comment checks, never before them.** Placed first, `// foo` parses as an empty
-    // regex literal (`//` plus flags) and the comment is never stripped — 94 SUGGESTS keys became 20
-    // the moment this was tried in the wrong order.
-    //
-    // **A regex literal is not a comment and is not a string, and it can contain both.**
-    // `/^Exception calling "GetCurrentPattern" with "\d+" argument\(s\): ".*/` has five quotes;
-    // once the walk over all of `src/` began (this file used to see five named files), that odd
-    // quote opened a string state that never closed, and every comment BELOW it in that file
-    // stopped being stripped. Gate 2 on #672 showed it live in two files by planting a
-    // commented-out error class after the desync and watching it enter the axis, with the same
-    // comment in a clean file changing nothing.
-    if (ch === "/" && regexCanStartHere(out)) {
-      const end = skipRegexLiteral(text, i);
-      if (end > i) {
-        out += text.slice(i, end);
-        i = end;
-        continue;
-      }
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
+/**
+ * Strip `//` and block comments — **the base module's, under the name this file's callers use.**
+ *
+ * This was a second copy of the same walk. It produced byte-identical output to the road module's
+ * on all 208 files in `src` and `scripts/lib`, which is what a copy looks like right up until one of
+ * them learns something: in this PR the road module's learned that a block comment separates two
+ * tokens, and that a template's `${…}` is code. A copy would have learned neither.
+ */
+export const stripComments = stripRouteComments;
 
 /** The body of a brace-delimited initialiser, from the `{` that follows `head`. */
 function bodyAfter(text, head) {
@@ -346,43 +292,6 @@ export function readEnvelopeErrorNames(sources, problems = [], resolved = []) {
   return { names: [...names].sort(), nameOfClass, collisions: [...new Set(collisions)].sort() };
 }
 
-/**
- * Whether a `/` at this point opens a regular expression rather than being division.
- *
- * Decided by what came before it, which is the standard way and is not exact — but the inexactness
- * is one-sided here: treating a division as a regex loses at most the rest of a line, while
- * treating a regex as division desyncs the whole FILE.
- */
-function regexCanStartHere(before) {
-  const prev = before.replace(/\s+$/, "").slice(-1);
-  if (prev === "") return true;
-  if ("=(,:[!&|?{};+-*%^~<>".includes(prev)) return true;
-  return /\b(return|typeof|instanceof|case|in|of|do|else|yield|await|new|delete|void)$/.test(before.replace(/\s+$/, ""));
-}
-
-/** The index just past a regex literal starting at `i`, or `i` if this is not one. */
-function skipRegexLiteral(text, i) {
-  let j = i + 1;
-  let inClass = false;
-  while (j < text.length) {
-    const ch = text[j];
-    if (ch === "\n") return i; // a regex literal does not span lines: this was division
-    if (ch === "\\") {
-      j += 2;
-      continue;
-    }
-    if (ch === "[") inClass = true;
-    else if (ch === "]") inClass = false;
-    else if (ch === "/" && !inClass) {
-      j++;
-      while (j < text.length && /[dgimsuvy]/.test(text[j])) j++;
-      return j;
-    }
-    j++;
-  }
-  return i;
-}
-
 /** The index just past a class declaration's closing brace, counting from its `class` keyword. */
 function classEnd(text, start) {
   const open = text.indexOf("{", start);
@@ -422,56 +331,15 @@ function classEnd(text, start) {
  * reach `probeRefusal` through a variable — and it was not carried over.
  */
 /**
- * A copy of `source` where every string literal's CONTENTS are blanked, with the quotes and the
- * length kept. Spans found on the copy therefore index the original exactly.
+ * A copy of `source` where every literal's CONTENTS are blanked, with the delimiters and the length
+ * kept — **now the base module's `maskLiteralContents`, under the name this file's callers use.**
  *
- * Why length matters: the boundaries of a returned object have to be found somewhere that `}` means
- * "close a block", and inside a string it does not. Blanking the contents is the smallest thing that
- * makes punctuation mean what it says, and keeping the length lets the value still be read off the
- * real text at the same offsets.
+ * Three rounds got it here. It began as a hand walk over quotes that did not know regex literals,
+ * which silently dropped producers whenever one carried an odd number of quotes. Round 3 made it ask
+ * `literalEnd` what a literal is. #678 made the loop around that question a view instead of a fourth
+ * copy. This line is what is left: the base module owns the walk, and this name points at it.
  */
-export function maskStringContents(source) {
-  // **It asks the one scanner what a literal is.** This was its own walk over quotes — a NINTH
-  // scanner in the file whose `literalEnd` comment states the lesson out loud: a grammar rule
-  // learned in one scanner has to be learned by all of them, and the way to make that true is to
-  // have one. The walk knew strings and not regex literals, and `stripComments` leaves a regex
-  // literal in the body on purpose, so an odd number of quotes inside one desynchronised the mask.
-  //
-  // Measured on this branch BEFORE the fix, same file, four arrangements of one regex:
-  //   between two returns → codes ["CodeA"], problems []   two producers gone, in SILENCE
-  //   above all of them   → codes [],        problems 1    the same defect, loud
-  //   below all of them   → all three                      the desync had nothing left to eat
-  //   EVEN number of quotes → all three                    the state came back
-  // The loud arrangement is the only one a gate would have caught, and which arrangement occurs is
-  // a property of the file being read, not of the defect.
-  //
-  // This is #672's finding (`stripComments` learning regexes) and #677's (each language reader
-  // learning its own grammar) reproduced INSIDE the PR written after both — the shape this repo
-  // keeps producing, where the PR that adds a guard re-grows the defect inside the guard.
-  //
-  // Hand-walked, still: the regex version of this was mangled twice on the way into the file by
-  // escaping layers, and a SILENTLY WRONG mask is worse here than none. But the walk no longer
-  // decides what a literal is; it only decides what to blank.
-  // **A view of `literalSpans`, not a walk of its own.** Round 3 made this ask `literalEnd` what a
-  // literal is, which closed the defect; the loop around that question was still a fourth copy of
-  // the same loop, so it is gone too. What is left decides only what to BLANK.
-  //
-  // **The LENGTH is the contract** — spans found on the mask index the original exactly. The
-  // opening and closing characters stay, so the mask still reads as what it masks; the interior
-  // becomes blanks, and a newline inside a template literal stays a newline so line structure
-  // survives. A regex literal is blanked the same way: its `{`, `}` and quotes must not be counted
-  // by anything that balances braces on this copy.
-  let out = "";
-  let at = 0;
-  for (const [start, end] of literalSpans(source)) {
-    out += source.slice(at, start);
-    out += source[start];
-    for (let j = start + 1; j < end - 1; j++) out += source[j] === "\n" ? "\n" : " ";
-    if (end - 1 > start) out += source[end - 1];
-    at = end;
-  }
-  return out + source.slice(at);
-}
+export const maskStringContents = maskLiteralContents;
 
 /**
  * Every `return { … }` in a function body, as balanced spans.
@@ -567,6 +435,18 @@ export function readLeaseTable(source, problems = []) {
   }
   return table;
 }
+
+/**
+ * **The third encoding of "where may a regex begin" lived here, and it is gone.**
+ *
+ * `regexCanStartHere` and `skipRegexLiteral` were this file's own copy of the rule, used only by its
+ * own copy of `stripComments`. Both copies are the base module's now. The fact is still spelled
+ * twice — `opensValue` in `stripComments`, which reads the text it has already emitted, and
+ * `literalEnd`'s table, which reads the source — and those two answer about different inputs on
+ * purpose: a `/` after a stripped comment has a different predecessor in each. They are checked
+ * against each other, and against TypeScript, by the cells in
+ * `adr-036-one-literal-reader-answers-for-every-view.test.ts`.
+ */
 
 export function readReturnedCodes(source, functionName, problems = [], resolvable = null) {
   const text = stripComments(source);

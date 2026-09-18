@@ -56,8 +56,36 @@ function stripCommentsWithMask(source) {
   };
   let i = 0;
   let quote = null;
+  // Templates currently open, innermost last. `{ template: true }` is quoted text; `{ template:
+  // false, depth }` is that template's `${…}`, which is CODE — see the note on the backtick branch.
+  const stack = [];
   while (i < text.length) {
     const ch = text[i];
+    const top = stack[stack.length - 1];
+    if (quote === null && top !== undefined && top.template) {
+      if (ch === "\\" && i + 1 < text.length) {
+        push(ch, true);
+        push(text[i + 1], true);
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        push(ch, false);
+        stack.pop();
+        i++;
+        continue;
+      }
+      if (ch === "$" && text[i + 1] === "{") {
+        push(ch, false);
+        push("{", false);
+        stack.push({ template: false, depth: 0 });
+        i += 2;
+        continue;
+      }
+      push(ch, true);
+      i++;
+      continue;
+    }
     if (quote) {
       push(ch, true);
       if (ch === "\\" && i + 1 < text.length) {
@@ -72,7 +100,18 @@ function stripCommentsWithMask(source) {
     // **A `//` inside a string is not a comment.** `fetch("http://host", { h: process.env.TOKEN })`
     // lost its switch to the line-comment rule, silently, in the first version of this file and in
     // the road extractor it was copied from.
-    if (ch === '"' || ch === "'" || ch === "`") {
+    // **A template's `${…}` is code, so the strip has to go in there.** Taking the whole template as
+    // one quoted run left a `/* … */` inside an interpolation unstripped, and the prose in it was
+    // then read as source: `` `${/* process.env.DTM_GHOST */ 1}` `` put DTM_GHOST in the
+    // configuration axis, beside the real switches (gate 2 on #679, round 3, measured here). The
+    // same rule the road module's strip and `literalSpans` learned in this PR.
+    if (ch === "`") {
+      push(ch, false);
+      stack.push({ template: true, depth: 0 });
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
       quote = ch;
       push(ch, false);
       i++;
@@ -83,6 +122,10 @@ function stripCommentsWithMask(source) {
       continue;
     }
     if (ch === "/" && text[i + 1] === "*") {
+      // **A block comment separates two tokens; deleting it joins them** — `foo/**/bar` came out
+      // as `foobar` (gate 2 on #679, round 2). The separator is kept, and the newlines still land
+      // where they did, because the contract here is the line index, not the column.
+      push(" ", false);
       const close = text.indexOf("*/", i + 2);
       const end = close === -1 ? text.length : close + 2;
       for (let j = i; j < end; j++) if (text[j] === "\n") push("\n", false);
@@ -119,6 +162,18 @@ function stripCommentsWithMask(source) {
         else if (c === "\n") break;
       }
       continue;
+    }
+    if (top !== undefined && !top.template) {
+      if (ch === "{") top.depth++;
+      else if (ch === "}") {
+        if (top.depth === 0) {
+          push(ch, false);
+          stack.pop();
+          i++;
+          continue;
+        }
+        top.depth--;
+      }
     }
     push(ch, false);
     i++;
@@ -324,6 +379,25 @@ export function readSwitchesFromRust(source, file = "<source>", problems = []) {
  * Returns the stripped text and a mask saying which of its characters sit inside a string, because
  * the caller needs to tell a call from a call QUOTED IN PROSE.
  */
+/**
+ * A Rust raw-string opener at `i`, or `null`: `r"`, `r#"`, `br##"`, … with any number of `#`.
+ *
+ * Counted rather than matched inside a fixed slice. Rust permits up to 255 `#`, and the count is
+ * what the closing delimiter has to match, so an opener this reader declines to recognise is a
+ * literal it then walks INTO — where a `"` is a delimiter again and every following quote is
+ * counted with the wrong parity.
+ */
+function readRustRawOpener(text, i) {
+  let k = i;
+  if (text[k] === "b") k++;
+  if (text[k] !== "r") return null;
+  k++;
+  const from = k;
+  while (text[k] === "#") k++;
+  if (text[k] !== '"') return null;
+  return { hashes: text.slice(from, k), openEnd: k + 1 };
+}
+
 function stripRustComments(source) {
   const text = source.replace(/\r\n/g, "\n");
   let out = "";
@@ -356,13 +430,23 @@ function stripRustComments(source) {
     // **And mac's own sweep had called this shape safe**, because the example it fired
     // (`r#"say "hi" here"#`) happens to hold an EVEN number of quotes, so the state came back in
     // sync by luck. A shape that was not fired looks exactly like a shape that passed.
-    const raw = /^(?:b?r)(#*)"/.exec(text.slice(i, i + 12));
+    // **The `#` run is counted, not windowed.** This was `/^(?:b?r)(#*)"/` against `slice(i, i + 12)`,
+    // which recognises ten `#` for `r` and nine for `br` — Rust permits 255. Past the window the
+    // opener stops being an opener, the literal is entered as an ordinary string, and the first
+    // unpaired `"` inside it desynchronises the scan for the rest of the file. `problems` stays
+    // empty: measured by win2 at exactly the arithmetic bound (`r` survives `#`×10 and dies at 11,
+    // `br` survives 9 and dies at 10, the prefix eating one character of the window).
+    //
+    // **A bound whose grounds are not written down is a bound nobody can check.** Where this file
+    // does keep one — the three characters for a C# verbatim prefix below — the grammar guarantees
+    // it, and the comment says so. Twelve was not that; it was a number that fit the examples.
+    const raw = readRustRawOpener(text, i);
     if (raw !== null && !/[A-Za-z0-9_]/.test(text[i - 1] ?? "")) {
-      const close = `"${raw[1]}`;
-      const openEnd = i + raw[0].length;
+      const close = `"${raw.hashes}`;
+      const openEnd = raw.openEnd;
       const at = text.indexOf(close, openEnd);
       const end = at === -1 ? text.length : at + close.length;
-      for (let j = i; j < end; j++) push(text[j], j >= openEnd - 1 && j < end - raw[1].length);
+      for (let j = i; j < end; j++) push(text[j], j >= openEnd - 1 && j < end - raw.hashes.length);
       i = end;
       continue;
     }
@@ -383,6 +467,9 @@ function stripRustComments(source) {
     // per-language readers exist to prevent.** Removed, with a cell that shoots division here and a
     // regex literal at the TypeScript reader.
     if (ch === "/" && text[i + 1] === "*") {
+      // The separator, for the same reason as the other three strippers — Rust's block comments
+      // nest, which is the only part of this branch that differs.
+      push(" ", false);
       let depth = 1;
       let j = i + 2;
       while (j < text.length && depth > 0) {
@@ -476,6 +563,10 @@ function stripCSharpComments(source) {
       continue;
     }
     if (ch === "/" && text[i + 1] === "*") {
+      // **A block comment separates two tokens; deleting it joins them** — `foo/**/bar` came out
+      // as `foobar` (gate 2 on #679, round 2). The separator is kept, and the newlines still land
+      // where they did, because the contract here is the line index, not the column.
+      out += " ";
       const close = text.indexOf("*/", i + 2);
       const end = close === -1 ? text.length : close + 2;
       for (let j = i; j < end; j++) if (text[j] === "\n") out += "\n";

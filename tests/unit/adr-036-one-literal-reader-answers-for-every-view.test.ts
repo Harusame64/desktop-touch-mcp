@@ -16,9 +16,10 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { literalSpans, literalEnd, significantBefore } from "../../scripts/lib/route-vocabulary.mjs";
+import { literalSpans, literalEnd, significantBefore, stripComments } from "../../scripts/lib/route-vocabulary.mjs";
 import { maskStringContents } from "../../scripts/lib/result-vocabulary.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -162,6 +163,155 @@ describe("the mask promises length, and the views promise agreement", () => {
       }
     }
     expect(spansSeen).toBeGreaterThan(10000);
+    expect(disagreed).toEqual([]);
+  });
+});
+
+describe("the one reader, against TypeScript's own scanner", () => {
+  /**
+   * Every character TypeScript says belongs to a literal's TEXT. A template's `${…}` is code, so
+   * `TemplateHead` / `Middle` / `Tail` are marked and the expressions between them are not.
+   */
+  const oracle = (source: string): Uint8Array => {
+    const marked = new Uint8Array(source.length);
+    const file = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const kinds = new Set<ts.SyntaxKind>([
+      ts.SyntaxKind.StringLiteral,
+      ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+      ts.SyntaxKind.RegularExpressionLiteral,
+      ts.SyntaxKind.TemplateHead,
+      ts.SyntaxKind.TemplateMiddle,
+      ts.SyntaxKind.TemplateTail,
+    ]);
+    const mark = (node: ts.Node): void => {
+      if (kinds.has(node.kind)) {
+        for (let i = node.getStart(file); i < node.getEnd(); i++) marked[i] = 1;
+        return;
+      }
+      node.forEachChild(mark);
+    };
+    file.forEachChild(mark);
+    return marked;
+  };
+
+  it("classifies every character of every source file exactly as TypeScript does", () => {
+    // **An oracle, not a second opinion.** Every other agreement cell in this file compares two
+    // things this tree wrote, and both can be wrong the same way — three hand-written encodings of
+    // "where may a regex begin" agreed for years while all three allowed one after `x++`. This one
+    // compares against the compiler that defines the answer.
+    //
+    // The comparison is on the STRIPPED text, because that is what every gate reads; a backtick in
+    // prose is not a template, and TypeScript would be right to say it is.
+    //
+    // Zero permitted exceptions, on purpose. It ran with one — regular-expression FLAG letters,
+    // 82 characters in 2,124,147 — and taking them into the literal cost a single line. A list of
+    // allowed differences is a list nobody re-reads.
+    const files = sourceFiles();
+    expect(files.length).toBeGreaterThan(100);
+    const disagreed: string[] = [];
+    let compared = 0;
+    for (const path of files) {
+      const source = stripComments(readFileSync(path, "utf8"));
+      let expectedMask: Uint8Array;
+      try {
+        expectedMask = oracle(source);
+      } catch {
+        continue;
+      }
+      const mine = new Uint8Array(source.length);
+      for (const [start, end] of literalSpans(source)) for (let i = start; i < end; i++) mine[i] = 1;
+      for (let i = 0; i < source.length; i++) {
+        compared++;
+        if (expectedMask[i] === mine[i]) continue;
+        const line = source.slice(0, i).split("\n").length;
+        disagreed.push(`${path}:${line} typescript=${expectedMask[i]} ours=${mine[i]} ${JSON.stringify(source.slice(Math.max(0, i - 30), i + 10))}`);
+        break;
+      }
+    }
+    expect(compared).toBeGreaterThan(1_000_000);
+    expect(disagreed).toEqual([]);
+  });
+
+  it("removes exactly TypeScript's comments, leaving its token stream untouched", () => {
+    // **The invariant is the TOKEN stream, not the characters.** The stripper leaves a separator
+    // where a comment was, on purpose, so comparing text would report a difference that is the fix.
+    // Comparing tokens is what a separator protects and what deleting one destroys: before #679 all
+    // four strippers turned `foo/**/bar` into `foobar`, and this cell would have said so on the day
+    // it landed.
+    //
+    // The comment ranges come from the syntax tree, not from a bare `ts.createScanner` loop — a raw
+    // scanner desynchronises on a template literal and on a regex unless it is driven with
+    // `reScanTemplateToken` / `reScanSlashToken`, and it reported 99 of 203 files as disagreeing
+    // when the disagreement was its own.
+    const commentRanges = (source: string): Uint8Array => {
+      const marked = new Uint8Array(source.length);
+      const file = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const seen = new Set<number>();
+      const visit = (node: ts.Node): void => {
+        const full = node.getFullStart();
+        if (!seen.has(full)) {
+          seen.add(full);
+          for (const r of ts.getLeadingCommentRanges(source, full) ?? []) {
+            for (let i = r.pos; i < r.end; i++) marked[i] = 1;
+          }
+        }
+        const end = node.getEnd();
+        if (!seen.has(-end - 1)) {
+          seen.add(-end - 1);
+          // A comment after the last token on a line is TRAILING and belongs to nothing's leading
+          // trivia — `"ConsoleWindowClass", // conhost.exe` is the shape.
+          for (const r of ts.getTrailingCommentRanges(source, end) ?? []) {
+            for (let i = r.pos; i < r.end; i++) marked[i] = 1;
+          }
+        }
+        node.getChildren(file).forEach(visit);
+      };
+      file.getChildren(file).forEach(visit);
+      return marked;
+    };
+    const tokens = (source: string): string[] => {
+      const file = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const out: string[] = [];
+      const visit = (node: ts.Node): void => {
+        const kids = node.getChildren(file);
+        if (kids.length === 0) {
+          const text = node.getText(file);
+          if (text !== "") out.push(text);
+          return;
+        }
+        kids.forEach(visit);
+      };
+      file.getChildren(file).forEach(visit);
+      return out;
+    };
+
+    const files = sourceFiles();
+    const disagreed: string[] = [];
+    let compared = 0;
+    for (const path of files) {
+      const source = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+      let marks: Uint8Array;
+      try {
+        marks = commentRanges(source);
+      } catch {
+        continue;
+      }
+      let withoutComments = "";
+      for (let i = 0; i < source.length; i++) if (marks[i] === 0) withoutComments += source[i];
+      let expectedTokens: string[];
+      let ourTokens: string[];
+      try {
+        expectedTokens = tokens(withoutComments);
+        ourTokens = tokens(stripComments(source));
+      } catch {
+        continue;
+      }
+      compared++;
+      if (expectedTokens.length === ourTokens.length && expectedTokens.every((x, n) => x === ourTokens[n])) continue;
+      const k = expectedTokens.findIndex((x, n) => x !== ourTokens[n]);
+      disagreed.push(`${path} token ${k}: typescript=${JSON.stringify(expectedTokens.slice(k, k + 4))} ours=${JSON.stringify(ourTokens.slice(k, k + 4))}`);
+    }
+    expect(compared).toBeGreaterThan(100);
     expect(disagreed).toEqual([]);
   });
 });
