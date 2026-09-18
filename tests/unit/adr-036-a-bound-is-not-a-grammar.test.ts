@@ -33,10 +33,17 @@ import {
   readRoadVocabulary,
   stripComments as stripRouteComments,
 } from "../../scripts/lib/route-vocabulary.mjs";
-import { readInlineFieldUnion as parsedReadInlineFieldUnion } from "../../scripts/lib/typescript-source.mjs";
+import {
+  readInlineFieldUnion as parsedReadInlineFieldUnion,
+  readRoadVocabulary as parsedReadRoadVocabulary,
+} from "../../scripts/lib/typescript-source.mjs";
 
 // **Both type readers.** The gates read through the parser since #681; these cells were written
 // against the scanner and would otherwise guard only a reader no gate calls (gate 2 on #681).
+const ROAD_READERS = [
+  { name: "scanner", readRoadVocabulary },
+  { name: "parser", readRoadVocabulary: parsedReadRoadVocabulary },
+];
 const TYPE_READERS = [
   { name: "scanner", readInlineFieldUnion },
   { name: "parser", readInlineFieldUnion: parsedReadInlineFieldUnion },
@@ -112,7 +119,7 @@ describe("length: `ok: false` is anchored, and the whitespace in it has no lengt
   });
 });
 
-describe("length: the probeAim object is read, not measured", () => {
+describe.each(ROAD_READERS)("length: the probeAim object is read, not measured ($name)", ({ readRoadVocabulary }) => {
   const call = (gap: number): string =>
     `function e() {\n  probeAim("act.route", {\n    note: "${"p".repeat(gap)}",\n    route: "gap_${gap}",\n  });\n}\n`;
 
@@ -239,7 +246,7 @@ describe("a comment is a token separator, and four strippers were deleting it", 
   });
 });
 
-describe("a template's interpolation is code, and its text is prose", () => {
+describe.each(ROAD_READERS)("a template's interpolation is code, and its text is prose ($name)", ({ readRoadVocabulary }) => {
   it("finds a producer written inside `${…}`", () => {
     // The mask that replaced the 400-character window knew too much: it blanked the whole template,
     // including the executable `${…}`, so this call was invisible with no road and no problem
@@ -271,7 +278,7 @@ describe("a template's interpolation is code, and its text is prose", () => {
   });
 });
 
-describe("a comment inside a template's interpolation is still a comment", () => {
+describe.each(ROAD_READERS)("a comment inside a template's interpolation is still a comment ($name)", ({ readRoadVocabulary }) => {
   it("strips it, so its prose cannot enter an axis as code", () => {
     // Gate 2 on this PR, round 3. Every stripper here took a template as one quoted run, so a
     // `/* … */` inside a `${…}` survived. Harmless while nothing looked inside — and this PR made
@@ -300,7 +307,7 @@ describe("a comment inside a template's interpolation is still a comment", () =>
   });
 });
 
-describe("the helper's forwarding call is exempted by WHERE it is, and only there", () => {
+describe.each(ROAD_READERS)("the helper's forwarding call is exempted by WHERE it is, and only there ($name)", ({ readRoadVocabulary }) => {
   const helper = 'function probeRoute(route: string, aimHwnd: bigint, entity: UiEntity, extra = {}): void {\n  probeAim("act.route", { route, ...extra });\n}\n';
 
   it("exempts probeRoute's own forwarding call", () => {

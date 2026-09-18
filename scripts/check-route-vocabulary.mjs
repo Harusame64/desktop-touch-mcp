@@ -20,13 +20,11 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readRoadVocabulary } from "./lib/route-vocabulary.mjs";
-// **The two type readers come from the parser.** `readUnion` and `readInlineFieldUnion` used to
-// find a declaration's end by counting braces on a masked copy and cut its members out with
-// `[^;{}]`; both were defects (#679, and the re-read after it). A type alias is a node and its
-// members are a list. `readRoadVocabulary` is still the hand-written one — it is the next axis,
-// and keeping it here keeps the old module as the control the replacement is measured against.
-import { readInlineFieldUnion, readUnion } from "./lib/typescript-source.mjs";
+// **Every reader this gate calls comes from the parser.** The type readers moved in #681; the road
+// reader followed, after a survey of the executor's shapes and a source check of the design
+// (internal `docs/the-road-reader-on-the-parser.md`). The hand-written ones in
+// `route-vocabulary.mjs` stay as the differential control the replacement is measured against.
+import { readInlineFieldUnion, readRoadVocabulary, readUnion } from "./lib/typescript-source.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PINNED = join(ROOT, "tests", "fixtures", "adr-036-route-vocabulary.json");
@@ -62,14 +60,17 @@ const landingWhy = typeUnion(keyboardTarget, "src/engine/keyboard-target.ts", "L
 // The homing rung writes `homing.why` straight into the row, so `Homing.why`'s members are `why`
 // values. The extractor names the union; resolving it is the caller's job because the caller has
 // the files (gate 2 on #669: the why axis was 12 and the tree can write 9 more).
-const road = readRoadVocabulary(executor, (name) =>
-  name === "homing.why"
-    ? readInlineFieldUnion(aim, "Homing", "why", unionProblems, "src/engine/aim.ts")
-    : name === "landing.why"
-      ? landingWhy
-      : name === "owner.why"
-        ? readInlineFieldUnion(pointOwner, "PointOwner", "why", unionProblems, "src/engine/point-owner.ts")
-        : [],
+const road = readRoadVocabulary(
+  executor,
+  (name) =>
+    name === "homing.why"
+      ? readInlineFieldUnion(aim, "Homing", "why", unionProblems, "src/engine/aim.ts")
+      : name === "landing.why"
+        ? landingWhy
+        : name === "owner.why"
+          ? readInlineFieldUnion(pointOwner, "PointOwner", "why", unionProblems, "src/engine/point-owner.ts")
+          : [],
+  "src/tools/desktop-executor.ts",
 );
 const derived = {
   landingWhyOnTheRow: road.landingWhyOnTheRow,
