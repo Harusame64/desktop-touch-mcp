@@ -16,10 +16,9 @@
  *   G3-S4-7  query wrapper happy path → no ToolCall events emitted (query-axis), envelope shape returned
  *   G3-S4-8  query wrapper passes lease_token in `data.lease` through to envelope (handler-side issuance, wrapper untouched)
  *
- * Plus residual-reason mapping pins (sub-plan §2.2 + §7 R4): the
- * other 3 LeaseStore reasons map to typed-code-name `Unknown` at
- * runtime (contract pin in `LEASE_REASON_TO_TYPED_CODE` for expansion
- * mechanical-copy).
+ * Plus lease-reason mapping pins: every `LeaseStore` reason maps to its OWN typed code,
+ * read from `LEASE_REASON_TO_TYPED_CODE` (internal#125, 2026-09-18). Until then the last
+ * two collapsed to `Unknown`, which a caller could not tell apart from a thrown handler.
  *
  * The wrapper accepts an injected `l1Emitter` so tests assert push
  * call shape deterministically without driving the real napi
@@ -108,10 +107,16 @@ describe("mapLeaseValidationToTypedReason — runtime path (sub-plan §7 R4)", (
     // surface the expectation belongs to.
     expect(renderAdviceWith([m.tryNext[0].action], adviceConfigurationFromEnv({}))[0]).toBe("desktop_discover");
   });
-  it("generation_mismatch → Unknown with empty try_next (S4 trunk Unknown fallback)", () => {
+  // **2026-09-18, internal#125 — this cell asserted the defect, and updating it is the declaration.**
+  // It read `Unknown` with an empty `try_next`, which is exactly what made a generation mismatch
+  // indistinguishable from a digest mismatch AND from a thrown handler: one byte string for three
+  // causes, measured on the real machine (internal `6bdcdce` / `4f1a8a4`).
+  it("generation_mismatch → LeaseGenerationMismatch, with advice (internal#125)", () => {
     const m = mapLeaseValidationToTypedReason("generation_mismatch");
-    expect(m.code).toBe("Unknown");
-    expect(m.tryNext).toEqual([]);
+    expect(m.code).toBe("LeaseGenerationMismatch");
+    expect(m.tryNext.length).toBeGreaterThan(0);
+    // Same corner pin as the cells around it: the placeholder resolves to the v2 tool name.
+    expect(renderAdviceWith(m.tryNext.map((t) => t.action), adviceConfigurationFromEnv({})).join(" ")).toMatch(/desktop_discover/);
   });
   it("entity_not_found → EntityNotFound with the table's advice (ADR-036 item 16)", () => {
     // Promoted: the touch returns the same reason and desktop_act rebuilds it as EntityNotFound, so
@@ -121,10 +126,20 @@ describe("mapLeaseValidationToTypedReason — runtime path (sub-plan §7 R4)", (
     // Corner pinned, same reason as the cell above.
     expect(renderAdviceWith(m.tryNext.map((t) => t.action), adviceConfigurationFromEnv({})).join(" ")).toMatch(/desktop_discover/);
   });
-  it("digest_mismatch → Unknown with empty try_next (S4 trunk)", () => {
+  it("digest_mismatch → LeaseDigestMismatch, with advice (internal#125)", () => {
     const m = mapLeaseValidationToTypedReason("digest_mismatch");
-    expect(m.code).toBe("Unknown");
-    expect(m.tryNext).toEqual([]);
+    expect(m.code).toBe("LeaseDigestMismatch");
+    expect(m.tryNext.length).toBeGreaterThan(0);
+    expect(renderAdviceWith(m.tryNext.map((t) => t.action), adviceConfigurationFromEnv({})).join(" ")).toMatch(/desktop_discover/);
+  });
+  it("and Unknown now means exactly one thing: nothing in the lease road returns it", () => {
+    // The residual is gone. `Unknown` is still reachable — the commit wrapper hands it to
+    // `CodedHandlerError` when the HANDLER THREW — and keeping that the only producer is the whole
+    // point of the change. A future reason added to the union stops compiling at the exhaustiveness
+    // check rather than landing here silently.
+    const codes = (["expired", "generation_mismatch", "entity_not_found", "digest_mismatch"] as const)
+      .map((r) => mapLeaseValidationToTypedReason(r).code);
+    expect(codes).not.toContain("Unknown");
   });
 });
 
@@ -352,8 +367,14 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     expect(emitter.completedCalls).toHaveLength(0);
   });
 
-  it("G3-S4-2b: residual lease reasons → Unknown typed code (sub-plan §7 R4)", async () => {
-    // entity_not_found left this list in ADR-036 item 16 (G3-S4-2c).
+  it("G3-S4-2b: the two lease mismatches reach the envelope under their own names (internal#125)", async () => {
+    // entity_not_found left this list in ADR-036 item 16 (G3-S4-2c); the other two left it here.
+    // This cell used to assert `Unknown` + `try_next: []` for BOTH — the same envelope for two
+    // different causes, and for a thrown handler as well.
+    const expected = {
+      generation_mismatch: "LeaseGenerationMismatch",
+      digest_mismatch: "LeaseDigestMismatch",
+    } as const;
     for (const reason of ["generation_mismatch", "digest_mismatch"] as const) {
       _resetToolCallSeqForTest();
       const { wrapped } = buildCommitWrapped({
@@ -365,8 +386,8 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
       } as never)) as ToolResultLike;
       const parsed = parseResult(result) as Record<string, unknown>;
       const ifUnexp = parsed.if_unexpected as { most_likely_cause: string; try_next: unknown[] };
-      expect(ifUnexp.most_likely_cause).toBe("Unknown");
-      expect(ifUnexp.try_next).toEqual([]);
+      expect(ifUnexp.most_likely_cause).toBe(expected[reason]);
+      expect(ifUnexp.try_next.length).toBeGreaterThan(0);
     }
   });
 
@@ -551,11 +572,12 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     expect((parsed.if_unexpected as { most_likely_cause: string }).most_likely_cause).toBe("LeaseExpired");
   });
 
-  it("default raw mode on residual lease reason → {ok:false, reason:'unknown', diff:[]}", async () => {
-    // Sub-plan §7 R4: residual 3 reasons collapse to Unknown at runtime
-    // in S4 trunk. The PascalCase→snake_case projection (Unknown→unknown)
-    // is the legacy-compat reason for raw clients. `diff: []` preserved
-    // for pre-S4 `result.diff.length` reads (Opus Round 1 P2 §3.2).
+  it("default raw mode on a lease mismatch → {ok:false, reason:'lease_generation_mismatch', diff:[]}", async () => {
+    // Sub-plan §7 R4 collapsed the residual reasons to Unknown, so this cell read
+    // `reason: "unknown"` — the same word a THROWN handler produces, on the road a caller reaches
+    // WITHOUT asking for anything (internal#125, measured). The PascalCase→snake_case projection is
+    // unchanged and now carries the real name; `diff: []` is still preserved for pre-S4
+    // `result.diff.length` reads (Opus Round 1 P2 §3.2).
     _resetToolCallSeqForTest();
     const { wrapped } = buildCommitWrapped({
       validation: { ok: false, reason: "generation_mismatch" },
@@ -563,8 +585,10 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     const result = (await wrapped({ lease: { entityId: "ent_1" } } as never)) as ToolResultLike;
     const parsed = parseResult(result) as Record<string, unknown>;
     expect(parsed.ok).toBe(false);
-    expect(parsed.reason).toBe("unknown");
+    expect(parsed.reason).toBe("lease_generation_mismatch");
     expect(parsed.diff).toEqual([]);
+    // The cell BELOW pins the throw road at `reason: "unknown"`. Keeping both in the same file is
+    // the point: the two roads must not answer with the same word any more.
   });
 
   it("default raw mode on handler throw → {ok:false, reason:'unknown', diff:[]} (NOT literal null)", async () => {

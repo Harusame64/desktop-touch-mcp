@@ -567,8 +567,24 @@ class Dup extends HandlerError { constructor() { super(); this.name = "DupLong";
     // **Two, not three.** `HandlerError` went with the presenter read: `toResultErr` appears at no
     // `toFailureEnvelope(` call site, so the name never arrives and there is nothing to advise on.
     expect(pinned.withoutAdvice).toEqual(["LeaseExpired", "Unknown"]);
+    // **2026-09-18, internal#125 — the sentence above is kept and this is the correction.** Both
+    // reserved names are produced now: `mapLeaseValidationToTypedReason` grew the two branches and
+    // READS `LEASE_REASON_TO_TYPED_CODE` for them, so the reservation is a checked thing. The two
+    // assertions that follow were the opposite of these until this change, and flipping them IS the
+    // declaration that the vocabulary moved on purpose rather than drifting.
+    //
+    // Why it was worth doing: measured on the real machine, a thrown handler, a lease
+    // `digest_mismatch` and a lease `generation_mismatch` reached the caller as ONE byte string
+    // (`Unknown`, no advice, nothing to tell them apart — internal `6bdcdce` / `4f1a8a4`).
     expect(pinned.reservedLeaseNames).toContain("LeaseDigestMismatch");
-    expect(pinned.producedNames).not.toContain("LeaseDigestMismatch");
+    expect(pinned.producedNames).toContain("LeaseDigestMismatch");
+    expect(pinned.producedNames).toContain("LeaseGenerationMismatch");
+    // **The reverse direction, which nothing asserted before** (mac's review of the #125 plan): a
+    // reserved name with no producer is exactly the shape the reservation was found in, and until
+    // now the axis only checked "produced with no reservation". Both directions are closed here.
+    for (const reserved of pinned.reservedLeaseNames) {
+      expect(pinned.producedNames, `${reserved} is reserved and nothing produces it`).toContain(reserved);
+    }
   });
 });
 
@@ -642,8 +658,13 @@ function pascalToSnake(s: string): string {
     mkdirSync(join(root, "scripts", "lib"), { recursive: true });
     mkdirSync(join(root, "tests", "fixtures"), { recursive: true });
     cpSync(join(REPO, "scripts", "check-result-vocabulary.mjs"), join(root, "scripts", "check-result-vocabulary.mjs"));
-    cpSync(join(REPO, "scripts", "lib", "result-vocabulary.mjs"), join(root, "scripts", "lib", "result-vocabulary.mjs"));
-    cpSync(join(REPO, "scripts", "lib", "route-vocabulary.mjs"), join(root, "scripts", "lib", "route-vocabulary.mjs"));
+    // **The whole `scripts/lib`, not a list of the files it needs today.** Each of these fixtures
+    // used to name its imports one by one, and the list was a hand-written copy of the import
+    // graph: the moment `result-vocabulary.mjs` imported `code-vocabulary.mjs` (round 3 of
+    // internal#125, to stop keeping a second scanner), two fixtures could not start the gate at
+    // all. The failure is loud, but a list that has to be edited by hand is wrong from the commit
+    // that outgrows it until someone notices. Copying the directory removes the list.
+    cpSync(join(REPO, "scripts", "lib"), join(root, "scripts", "lib"), { recursive: true });
   });
 
   afterAll(() => {

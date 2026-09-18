@@ -37,6 +37,7 @@ import {
   readReturnedCodes,
   readEnvelopeErrorNames,
   readLeaseCodes,
+  readLeaseTable,
   readReasonCatalogue,
   readReasonConversion,
   readSuggestsKeys,
@@ -126,14 +127,28 @@ const UNRESOLVABLE = [
 // into one. Getting the conclusion right off a wrong rule is how the next case is mis-sorted.
 const family = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
 const errorNames = readPresentedNames(sources, family.nameOfClass, problems, RESOLVED_CODED);
-// **The lease codes come from the function, not from the table beside it.** Gate 2's third round:
-// `mapLeaseValidationToTypedReason` hard-codes its returns and never consults
-// `LEASE_REASON_TO_TYPED_CODE`, whose own comment calls it a reservation for future expansion. Two
-// of its four names are produced by nothing, and adding a real branch left the gate green.
-const leaseCodes = readReturnedCodes(read("src/tools/_envelope.ts"), "mapLeaseValidationToTypedReason", problems);
+// **The lease codes come from the function, not from the table beside it.** Gate 2's third round
+// (#672): `mapLeaseValidationToTypedReason` hard-coded its returns and never consulted
+// `LEASE_REASON_TO_TYPED_CODE`, whose own comment called it a reservation for future expansion. Two
+// of its four names were produced by nothing, and adding a real branch left the gate green.
+// **internal#125 gave those two branches, and the function now READS the table** — so the read is
+// resolved through the branch's own discriminants, not to the whole table. Resolving it to the
+// whole table would make "a reserved name nothing produces" true by construction, which is the
+// #672 defect wearing the fix's clothes (Opus review Round 1 measured exactly that).
 // The table is kept as a COVERAGE check — the role `SUGGESTS` was correctly demoted to. A code the
 // function returns with no reserved name is the shape the reservation exists to prevent.
 const reservedLeaseNames = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
+// internal#125 — the function now READS the table for two of its four reasons, so the table is
+// handed in as the one expression this parser may resolve. Read before the function, because the
+// function's codes depend on it now; the comment above about "the function, not the table" still
+// holds as the RULE — what changed is that the function consults the table, so following it there
+// is reading the producer rather than reading something adjacent to it.
+const leaseCodes = readReturnedCodes(
+  read("src/tools/_envelope.ts"),
+  "mapLeaseValidationToTypedReason",
+  problems,
+  { name: "LEASE_REASON_TO_TYPED_CODE", table: readLeaseTable(read("src/tools/_envelope.ts"), problems) },
+);
 const producedNames = [
   ...new Set([...errorNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
 ].sort();
@@ -258,7 +273,9 @@ if (fallbackCause !== null && suggestsKeys.includes(fallbackCause)) {
 // are not today — but the SET is pinned above, so one more is a change the grid records.
 for (const code of leaseCodes) {
   // The residual is not a lease name and is not reserved as one — the table's own comment says the
-  // unpromoted reasons "collapse to `Unknown` at runtime". Everything else it returns should have a
+  // unpromoted reasons "collapse to `Unknown` at runtime" — a sentence internal#125 removed when it
+  // gave those reasons branches, so the quotation is kept here as history rather than as a citation.
+  // Everything else it returns should have a
   // reserved name, which is what the reservation is for.
   if (code === fallbackCause) continue;
   if (!reservedLeaseNames.includes(code)) {

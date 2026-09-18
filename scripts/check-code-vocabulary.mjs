@@ -36,11 +36,11 @@
 // while exiting 0 (gate 2 on #674, round 2). Such a site is now NAMED — pinned, and the summary says
 // "lower bound" for as long as the list is non-empty.
 //
-// **What it does NOT claim.** 24 of the dictionary's keys are written by no arm and named at no
+// **What it does NOT claim.** 26 of the dictionary's keys are written by no arm and named at no
 // call site: they are reachable only when some producer spells the code into its own message —
 // `KeyLockerDisabled: the key locker live wiring is not active` does, and `AimOccludedError`'s prose
 // sentence ("The window this action was aimed at…") does not — so whether the flat surface can say
-// `AimOccluded` at all is decided by text this file does not read. Which of the 24 are
+// `AimOccluded` at all is decided by text this file does not read. Which of the 26 are
 // spelled is a question about message TEXT across the tree, and this file counts the ceiling and
 // says so instead of answering it with a number. The measurement that can answer it is a round
 // on the real machine (win2, 2026-09-18).

@@ -54,6 +54,15 @@
 // derivation rather than guessing at its image.
 
 import { quoteForRegExp } from "./route-vocabulary.mjs";
+// **The one scanner, and the one depth-1 reader.** Both already exist in this tree; this file
+// had grown its own copy of the first and no copy of the second. Importing them is the fix for
+// two findings at once, because both findings are the same defect: a second reader.
+import {
+  literalEnd,
+  significantBefore,
+  fieldsAtDepthOne,
+  isShorthandAtDepthOne,
+} from "./code-vocabulary.mjs";
 
 /** Strip `//` and block comments, keeping every line's index — and leaving string literals alone. */
 export function stripComments(source) {
@@ -413,7 +422,155 @@ function classEnd(text, start) {
  * The road axis already had this technique — it reads `adr029Refusal`'s body for the grounds that
  * reach `probeRefusal` through a variable — and it was not carried over.
  */
-export function readReturnedCodes(source, functionName, problems = []) {
+/**
+ * A copy of `source` where every string literal's CONTENTS are blanked, with the quotes and the
+ * length kept. Spans found on the copy therefore index the original exactly.
+ *
+ * Why length matters: the boundaries of a returned object have to be found somewhere that `}` means
+ * "close a block", and inside a string it does not. Blanking the contents is the smallest thing that
+ * makes punctuation mean what it says, and keeping the length lets the value still be read off the
+ * real text at the same offsets.
+ */
+export function maskStringContents(source) {
+  // **It asks the one scanner what a literal is.** This was its own walk over quotes — a NINTH
+  // scanner in the file whose `literalEnd` comment states the lesson out loud: a grammar rule
+  // learned in one scanner has to be learned by all of them, and the way to make that true is to
+  // have one. The walk knew strings and not regex literals, and `stripComments` leaves a regex
+  // literal in the body on purpose, so an odd number of quotes inside one desynchronised the mask.
+  //
+  // Measured on this branch BEFORE the fix, same file, four arrangements of one regex:
+  //   between two returns → codes ["CodeA"], problems []   two producers gone, in SILENCE
+  //   above all of them   → codes [],        problems 1    the same defect, loud
+  //   below all of them   → all three                      the desync had nothing left to eat
+  //   EVEN number of quotes → all three                    the state came back
+  // The loud arrangement is the only one a gate would have caught, and which arrangement occurs is
+  // a property of the file being read, not of the defect.
+  //
+  // This is #672's finding (`stripComments` learning regexes) and #677's (each language reader
+  // learning its own grammar) reproduced INSIDE the PR written after both — the shape this repo
+  // keeps producing, where the PR that adds a guard re-grows the defect inside the guard.
+  //
+  // Hand-walked, still: the regex version of this was mangled twice on the way into the file by
+  // escaping layers, and a SILENTLY WRONG mask is worse here than none. But the walk no longer
+  // decides what a literal is; it only decides what to blank.
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const end = literalEnd(source, i, significantBefore(source, i));
+    if (end === -1) {
+      out += source[i];
+      i++;
+      continue;
+    }
+    // **The LENGTH is the contract** — spans found on the mask index the original exactly. The
+    // opening and closing characters stay, so the mask still reads as what it masks; the interior
+    // becomes blanks, and a newline inside a template literal stays a newline so line structure
+    // survives. A regex literal is blanked the same way: its `{`, `}` and quotes must not be
+    // counted by anything that balances braces on this copy.
+    out += source[i];
+    for (let j = i + 1; j < end - 1; j++) out += source[j] === "\n" ? "\n" : " ";
+    if (end - 1 > i) out += source[end - 1];
+    i = end;
+  }
+  return out;
+}
+
+/**
+ * Every `return { … }` in a function body, as balanced spans.
+ *
+ * Balanced, not non-greedy: a returned object that itself contains an object (`tryNext: [{ … }]`)
+ * ends at ITS OWN closing brace, and the previous pattern ended at the inner one. Returns both the
+ * real text and the masked text for the same span, so a decision about SHAPE is never made on
+ * string contents and a decision about VALUE is never made on a blank.
+ */
+export function returnObjectSpans(masked, original) {
+  const spans = [];
+  const opener = /\breturn\s*\{/g;
+  let m;
+  while ((m = opener.exec(masked)) !== null) {
+    let depth = 0;
+    let i = m.index + m[0].length - 1; // at the `{`
+    for (; i < masked.length; i++) {
+      const ch = masked[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if (depth !== 0) continue; // unbalanced: say nothing rather than guess
+    const start = m.index + m[0].length - 1;
+    spans.push({ start, text: original.slice(start, i + 1), masked: masked.slice(start, i + 1) });
+    opener.lastIndex = i + 1;
+  }
+  return spans;
+}
+
+/**
+ * The discriminant literals of the `if (…)` that encloses a position in a function body.
+ *
+ * Used to answer "which names can THIS return produce" when the returned code is a table read
+ * rather than a literal. Deliberately shallow: the last `if (` before the position, its condition
+ * up to `) {`, and the `<ident> === "literal"` comparisons in it. A branch shaped any other way
+ * yields nothing, and the caller reports that instead of guessing — an empty answer here must not
+ * read as "produces nothing".
+ */
+export function reasonsGuarding(body, index) {
+  // **THE BLOCK HAS TO CONTAIN THE POSITION.** The first version took the last `if (` before the
+  // return and asked no further question, so a return AFTER a closed `if` block was attributed to
+  // that block's discriminants — and a `switch`-guarded return took the discriminants of whatever
+  // `if` happened to sit above it. Round 2 measured three such shapes and all three answered
+  // CONFIDENTLY AND WRONGLY, with `problems: []`. That is the Round 1 defect run backwards: instead
+  // of counting names nothing produces, it stops counting names something does produce, and in both
+  // directions the caller is told nothing went unread.
+  //
+  // The candidate is searched from the end, its block is balanced on a string-masked copy, and the
+  // position must land inside it. Nothing matching means the caller is TOLD, not guessed at.
+  const masked = maskStringContents(body);
+  let from = index;
+  for (;;) {
+    const at = masked.lastIndexOf("if", from - 1);
+    if (at === -1) return [];
+    const header = masked.slice(at).match(/^if\s*\(([\s\S]*?)\)\s*\{/);
+    if (!header) { from = at; continue; }
+    const openAt = at + header[0].length - 1;
+    let depth = 0;
+    let i = openAt;
+    for (; i < masked.length; i++) {
+      const ch = masked[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) break; }
+    }
+    if (depth !== 0) return []; // unbalanced: say nothing rather than guess
+    if (index > openAt && index < i) {
+      return [...new Set([...body.slice(at, at + header[0].length).matchAll(/===\s*"([A-Za-z_][\w]*)"/g)].map((m) => m[1]))];
+    }
+    from = at; // that block does not contain the position — keep looking outward
+  }
+}
+
+/**
+ * The key → code map of the lease reservation table, for resolving a table read at a return.
+ *
+ * `readLeaseCodes` answers the VALUES, which is what the coverage check needs; resolving a branch
+ * needs the KEYS too, because the question is "which entry does this reason select".
+ */
+export function readLeaseTable(source, problems = []) {
+  const text = stripComments(source);
+  const body = bodyAfter(text, "LEASE_REASON_TO_TYPED_CODE = {");
+  if (body === null) {
+    problems.push("LEASE_REASON_TO_TYPED_CODE could not be read — the lease reasons are unknown, not absent");
+    return {};
+  }
+  const table = {};
+  for (const m of body.matchAll(/([A-Za-z_][\w]*)\s*:\s*"([A-Za-z_][\w]*)"/g)) table[m[1]] = m[2];
+  if (Object.keys(table).length === 0) {
+    problems.push("LEASE_REASON_TO_TYPED_CODE has no entries — has the table been reshaped?");
+  }
+  return table;
+}
+
+export function readReturnedCodes(source, functionName, problems = [], resolvable = null) {
   const text = stripComments(source);
   // **To a `}` in the first column, not to a balanced brace.** A function's signature can carry an
   // OBJECT RETURN TYPE — `): { code: string; tryNext: TryNextAction[] } {` — so the first `{` after
@@ -430,12 +587,95 @@ export function readReturnedCodes(source, functionName, problems = []) {
   // function's NAME, so it carries the signature — and `): { code: string; … }` then reads as a
   // returned code this parser cannot name. A false alarm on every run is a gate somebody silences.
   const codes = [];
-  for (const block of body.matchAll(/\breturn\s*\{([\s\S]*?)\}/g)) {
-    const field = block[1].match(/\bcode:\s*([^,\n}]+)/);
-    if (!field) continue;
-    const literal = field[1].trim().match(/^"([A-Za-z_][\w]*)"$/);
-    if (literal) codes.push(literal[1]);
-    else problems.push(`${functionName} returns a code this parser cannot name: ${field[1].trim().slice(0, 40)}`);
+  // **The object's boundaries are found on a copy where strings cannot contain punctuation.**
+  // The previous pattern was `\breturn\s*\{([\s\S]*?)\}` — non-greedy, and therefore stopping at the
+  // first `}` EVEN INSIDE A STRING. This repo's advice lines carry `{tool:reidentify_element}`, so a
+  // return whose first property is such a string gets truncated mid-word, and everything decided
+  // afterwards is decided about a fragment. The mask keeps the same LENGTH, so spans found on it
+  // index the original exactly, and the value extraction still reads real text.
+  //
+  // Round 1 of the Opus review found the same class from the other end: the capture also consumed
+  // `{` and `}`, so the shorthand detector below could not fire when `code` was the first property —
+  // four of five shapes came back false, including the exact draft its own comment cites. A flag
+  // that cannot fire is indistinguishable from a negative, so both are fixed here rather than
+  // patched around.
+  const masked = maskStringContents(body);
+  for (const block of returnObjectSpans(masked, body)) {
+    const objectText = block.text; // includes the braces
+    // **THE KEY IS DECIDED BY WHERE IT SITS, NOT BY WHAT SPELLS IT.** Round 1 built the mask and
+    // then searched the raw span with it sitting unused one line above — so a string whose
+    // CONTENTS spell `code: "…"` was read as the produced name, and the real `code:` after it was
+    // never reached. Measured in Round 2:
+    //   return { hint: 'pass code: "Fabricated", or nothing', code: "Real" }
+    //   → codes: ["Fabricated"], problems: []   ← a fabricated name, and silence
+    // That is #674's gate-2 finding reproduced INSIDE the function written to end it, which is this
+    // parser's recurring shape. The mask preserves length, so the offsets index the original exactly.
+    // **THE KEY IS READ BY THE ONE SCANNER, AT DEPTH 1.** This was a regex over the masked span,
+    // which asked neither question the two findings on this PR asked: `\bcode:` matches at ANY
+    // depth, so `return { tryNext: [{ args: { code: "Nested" } }], code: "Real" }` was read as
+    // producing `Nested` — measured on this branch: codes ["Nested"], problems []. Today's four
+    // returns all carry `code` at the top, so the defect is one reordering away from firing, which
+    // is the same kind of latency the window findings had.
+    //
+    // `fieldsAtDepthOne` is the reader this tree already has for exactly this question
+    // (`code-vocabulary.mjs`), it is built on the one scanner, and it answers three things the
+    // regex could not: depth, a conditional spread that gives `code` more than one value, and a
+    // quoted string sitting in key position. Using it deletes a reader rather than teaching it.
+    const expressions = fieldsAtDepthOne(objectText, "code");
+    if (expressions.length === 0) {
+      // No `code` at depth 1. Nothing to report: a `return` in this function may legitimately
+      // carry none, and the `codes.length === 0` guard below speaks for the function as a whole.
+      continue;
+    }
+    for (const expression of expressions) {
+      // **A SHORTHAND `code` IS A PRODUCER THIS PARSER USED TO DROP IN SILENCE.** `return { code, … }`
+      // carries no `code:`, so the old regex failed and the loop simply moved on — no name, no
+      // problem, and a gate whose summary stayed byte-identical to the version without the branch.
+      // Measured on internal#125's first draft, which was written that way by accident.
+      // `fieldsAtDepthOne` reports a shorthand as the field's own name, and `{ code: code }` reads
+      // the same way — both are names this parser cannot follow, and both say so here.
+      if (expression === "code") {
+        problems.push(
+          isShorthandAtDepthOne(objectText, "code")
+            ? `${functionName} returns a SHORTHAND \`code\` this parser cannot follow — spell it \`code: <expr>\` so the name is readable here`
+            : `${functionName} returns \`code: code\`, a bare name this parser cannot follow — give it a literal or a read of a known table so the name is readable here`,
+        );
+        continue;
+      }
+      const literal = expression.match(/^"([A-Za-z_][\w]*)"$/);
+      if (literal) {
+        codes.push(literal[1]);
+        continue;
+      }
+      // **A read of a known table resolves to the values THE BRANCH CAN REACH, not to every value in
+      // it.** internal#125 promoted the two reserved lease names by READING
+      // `LEASE_REASON_TO_TYPED_CODE` rather than copying its values into literals, which is what
+      // makes the reservation a checked thing instead of a described one. The first version resolved
+      // the read to the WHOLE table — and Round 1 of the Opus review measured what that costs: with
+      // `reservedLeaseNames ⊆ producedNames` true by construction, adding a reserved name that no
+      // branch returns left the extraction silent and the grid then ASSERTED a name nothing produces.
+      // That is #672's defect back again, one layer further in, which is this parser's recurring
+      // shape. So the guard around the return is read, and only the reasons it names are resolved.
+      if (resolvable && expression.startsWith(`${resolvable.name}[`)) {
+        const guarded = reasonsGuarding(body, block.start);
+        if (guarded.length === 0) {
+          problems.push(
+            `${functionName} reads ${resolvable.name} inside a branch this parser cannot read — it cannot tell which names that return can produce`,
+          );
+          continue;
+        }
+        for (const reason of guarded) {
+          const value = resolvable.table[reason];
+          if (value === undefined) {
+            problems.push(`${functionName} branches on "${reason}", which ${resolvable.name} has no entry for`);
+            continue;
+          }
+          codes.push(value);
+        }
+        continue;
+      }
+      problems.push(`${functionName} returns a code this parser cannot name: ${expression.slice(0, 40)}`);
+    }
   }
   if (codes.length === 0) problems.push(`${functionName} returns no literal code — has it been reshaped?`);
   return [...new Set(codes)].sort();

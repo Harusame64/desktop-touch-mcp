@@ -113,7 +113,7 @@ export function literalEnd(text, i, previous) {
 /**
  * The last significant character (or word) before `i`, for deciding whether a `/` opens a regex.
  */
-function significantBefore(text, i) {
+export function significantBefore(text, i) {
   let j = i - 1;
   while (j >= 0 && /\s/.test(text[j])) j--;
   if (j < 0) return "(";
@@ -224,6 +224,23 @@ function eachDepthOneProperty(objectSource, visit) {
     i++;
   }
   return undefined;
+}
+
+/**
+ * Whether `field` at depth 1 is written as a SHORTHAND (`{ code }`) rather than `code: <expr>`.
+ *
+ * Asked here rather than by the caller because the caller would have to walk the object again to
+ * answer it — and a second walk is how this tree keeps growing scanners that fall behind the one.
+ * `{ code }` and `{ code: code }` both leave the produced name unreadable, but only the first can
+ * be fixed by spelling it out, so they are told apart and advised differently.
+ */
+export function isShorthandAtDepthOne(objectSource, field) {
+  let shorthand = false;
+  eachDepthOneProperty(objectSource, (name, valueStart) => {
+    if (name === field && valueStart === null) shorthand = true;
+    return undefined;
+  });
+  return shorthand;
 }
 
 /** Every top-level object literal inside an expression, as source text. */

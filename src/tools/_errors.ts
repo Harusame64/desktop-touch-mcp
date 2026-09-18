@@ -532,6 +532,26 @@ const SUGGESTS: Record<string, string[]> = {
     "Do NOT retry by coordinate: the entity's rect is where the element used to be, and whatever is there now would take the press.",
     "If the element should still be there, let the page or dialog settle and discover again — a list that is re-rendering can drop an element for a moment.",
   ],
+  // internal#125 — the two lease mismatches got their own names, so they need their own advice.
+  // Without an entry here the promotion splits the CODE and leaves the advice empty: the resolver
+  // answers `[]` for a code it has no entry for, and `renderAdviceWithFloor` turns `[]` into
+  // `undefined`, which drops the key entirely (measured, not inferred). Both say what the lease
+  // could not vouch for and both refuse to suggest a coordinate — the press this refusal exists
+  // to stop is exactly the one a caller reaches for next.
+  LeaseDigestMismatch: [
+    "Re-run {tool:reidentify_element} and act on the fresh entity: the element is still there, but the evidence it was described by no longer matches, so the lease does not vouch for what would be acted on. WHICH property changed is not reported here.",
+    "Do NOT retry by coordinate: whatever changed may be what moved the element, and the old rect is where it used to be.",
+  ],
+  // **The cause is deliberately not asserted below** — the `EntityNotFound` entry does the same, for
+  // the same reason (gate 2 on #624). A superseded view does NOT arrive here: `replaceViewId`
+  // deletes the old id, so a lease from it answers `entity_not_found` before the generation is ever
+  // compared. What reaches this code is a generation that does not match for a reason this layer
+  // cannot see — including a caller passing a `targetGeneration` that never came from a lease, where
+  // naming a cause would be simply false (Opus review Round 1, 2026-09-18).
+  LeaseGenerationMismatch: [
+    "Re-run {tool:reidentify_element} and act on the fresh entity: this lease's targetGeneration is not the one the view is on now, so the ids it carries describe a snapshot the server no longer answers from. Pass the lease back exactly as discover returned it — the cause is not known at this layer and none is asserted.",
+    "Do NOT retry by coordinate: an id whose generation no longer matches says nothing about where its element is now.",
+  ],
   // R3 tool exclusion. Not a route that failed: a window this server may not touch at all. The
   // advice is deliberately short on alternatives — every "try the other tool" line would be an
   // instruction to walk around a security boundary. Worded for BOTH families: `desktop_act`'s
