@@ -368,7 +368,13 @@ export type LandingWhy =
     root = mkdtempSync(join(tmpdir(), "route-vocabulary-"));
     mkdirSync(join(root, "scripts", "lib"), { recursive: true });
     cpSync(join(REPO, "scripts", "check-route-vocabulary.mjs"), join(root, "scripts", "check-route-vocabulary.mjs"));
-    cpSync(join(REPO, "scripts", "lib", "route-vocabulary.mjs"), join(root, "scripts", "lib", "route-vocabulary.mjs"));
+    // **The whole `scripts/lib`, not a list of the files it needs today.** Each of these fixtures
+    // used to name its imports one by one, and the list was a hand-written copy of the import
+    // graph: the moment `result-vocabulary.mjs` imported `code-vocabulary.mjs` (round 3 of
+    // internal#125, to stop keeping a second scanner), two fixtures could not start the gate at
+    // all. The failure is loud, but a list that has to be edited by hand is wrong from the commit
+    // that outgrows it until someone notices. Copying the directory removes the list.
+    cpSync(join(REPO, "scripts", "lib"), join(root, "scripts", "lib"), { recursive: true });
   });
 
   afterAll(() => {

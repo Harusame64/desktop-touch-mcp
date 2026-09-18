@@ -252,3 +252,168 @@ describe("internal#125 Round 2 — the two the mask and the guard still got wron
       .toEqual(["CodeB"]);
   });
 });
+describe("internal#125 Round 3 — the reader this file grew, and the depth it did not ask", () => {
+  // Both findings on this round are one defect: **this file had its own scanner.** Its
+  // `literalEnd` comment states the rule — a grammar rule learned in one scanner has to be learned
+  // by all of them, and the way to make that true is to have one — and the mask added sixty lines
+  // below it knew strings and not regex literals. `stripComments` leaves a regex literal in the
+  // body ON PURPOSE, so an odd number of quotes inside one desynchronised the mask.
+  //
+  // Each cell below was measured BEFORE the fix, and the arrangement is part of the measurement:
+  // which producers disappear, and whether anything is said about it, depends on WHERE the regex
+  // sits relative to the returns. Only one of the four arrangements is loud.
+  const RX = 'const bad = /^Exception calling "Get/;';
+  const three = (pre: string, post = "") =>
+    [
+      "function f(",
+      "  r: R,",
+      "): X {",
+      pre,
+      '  if (r === "a") {',
+      '    return { code: "CodeA", tryNext: [] };',
+      "  }",
+      '  if (r === "b") {',
+      '    return { code: "CodeB", tryNext: [] };',
+      "  }",
+      '  return { code: "CodeC", tryNext: [] };',
+      post,
+      "}",
+    ]
+      .filter((line) => line !== "")
+      .join("\n");
+  const codesOf = (src: string) => {
+    const problems: string[] = [];
+    return { codes: readReturnedCodes(src, "f", problems, null), problems };
+  };
+
+  it("reads all three producers wherever a regex literal with an ODD quote sits", () => {
+    // Measured before the fix, same instrument, four arrangements of the same regex:
+    //   above all returns  → codes [],        problems 1   ← the only LOUD one
+    //   between two        → codes ["CodeA"], problems []  ← two producers gone, in silence
+    //   below all          → all three                     ← the desync had nothing left to eat
+    // A gate would have caught exactly one of these, and which one occurs is a property of the
+    // file being read rather than of the defect.
+    expect(codesOf(three("  " + RX)).codes).toEqual(["CodeA", "CodeB", "CodeC"]);
+    // **The silent arrangement, built where it actually is silent.** A regex BETWEEN two returns
+    // leaves the first one readable, so the `codes.length === 0` guard never fires and the two
+    // producers after it disappear with nothing said. Measured on HEAD: codes ["CodeA"],
+    // problems []. The first draft of this cell put the regex above every return instead, which
+    // measures the LOUD arrangement while its comment claimed the quiet one — the cell was not a
+    // cell, and the mutation table is what said so.
+    const between = [
+      "function f(",
+      "  r: R,",
+      "): X {",
+      '  if (r === "a") {',
+      '    return { code: "CodeA", tryNext: [] };',
+      "  }",
+      "  " + RX,
+      '  if (r === "b") {',
+      '    return { code: "CodeB", tryNext: [] };',
+      "  }",
+      '  return { code: "CodeC", tryNext: [] };',
+      "}",
+    ].join("\n");
+    expect(codesOf(between)).toEqual({ codes: ["CodeA", "CodeB", "CodeC"], problems: [] });
+    expect(codesOf(three("", "  " + RX)).codes).toEqual(["CodeA", "CodeB", "CodeC"]);
+    expect(codesOf(three("  " + RX)).problems).toEqual([]);
+  });
+
+  it("gives the same answer for an EVEN number of quotes, which is why the odd side is the cell", () => {
+    // **The even case passed before the fix too**, because the state came back. Pinning only the
+    // even side would have recorded "this survived" about a reader that loses producers — the same
+    // trap as the Rust raw string whose inner quotes happened to be balanced (#677).
+    expect(codesOf(three('  const ok = /^a "b" c/;')).codes).toEqual(["CodeA", "CodeB", "CodeC"]);
+  });
+
+  it("reads the real shape from this tree, which carries FIVE quotes", () => {
+    // The literal that started all of this, in `stripComments` on #672. Five quotes is odd, so this
+    // one belongs with the kills and not beside the even control — the first draft of these cells
+    // put it in the control's `it`, and the whole block then went red without the fix for a reason
+    // its name did not describe.
+    expect(codesOf(three('  const five = /^Exception calling "X" with "\\d+" arg: ".*/;')).codes).toEqual([
+      "CodeA",
+      "CodeB",
+      "CodeC",
+    ]);
+  });
+
+  it("still reads DIVISION as division — the fix must not lean the other way", () => {
+    // A scanner that has just learned about regex literals fails in the opposite direction: a `/`
+    // after an identifier is division, and reading it as a literal blanks the rest of the line in
+    // silence. `literalEnd` decides by what precedes the slash, so these are the negative controls
+    // that say the fix bought the first direction without selling the second.
+    expect(codesOf(three("  const x = a / b;")).codes).toEqual(["CodeA", "CodeB", "CodeC"]);
+    expect(codesOf(three("  const x = a / b / c;")).codes).toEqual(["CodeA", "CodeB", "CodeC"]);
+    expect(codesOf(three('  const x = a / b; const s = "q";')).codes).toEqual(["CodeA", "CodeB", "CodeC"]);
+  });
+
+  it("tells division from a regex on the SAME line, which is where the two rules meet", () => {
+    // `a / b` then `/c" d/` — one slash is division and the next opens a literal with an odd quote.
+    // This one is a kill, not a control: it was red before the fix. It sat in the division `it` at
+    // first, which made a control block fail for a reason its name did not describe.
+    expect(codesOf(three('  const x = a / b; const r = /c" d/;')).codes).toEqual(["CodeA", "CodeB", "CodeC"]);
+  });
+
+  it("does not let a brace inside a literal end the returned object", () => {
+    // The mask exists so a decision about SHAPE is never made on string contents. A regex is now
+    // blanked the same way a string is, because its `{` and `}` must not be counted by anything
+    // balancing braces on that copy. The third line is this repo's real advice prose.
+    // **The ORDER decides whether this is a cell at all.** With `code` BEFORE the brace-bearing
+    // literal, the truncated span still contains the key, so the old reader answered correctly by
+    // luck of arrangement — green on both sides, a control and not a measurement. Put `code` after
+    // it and the cell fires: measured on HEAD, codes [] and one problem.
+    const one = (body: string) =>
+      codesOf(["function f(", "  r: R,", "): X {", body, "}"].join("\n")).codes;
+    expect(one('  return { t: /a}b/, code: "Kept" };')).toEqual(["Kept"]);
+    // Controls, green before the fix too: a string's brace was already masked, and this repo's own
+    // advice prose carries `{tool:reidentify_element}` inside a string.
+    expect(one('  return { t: "a}b", code: "Kept" };')).toEqual(["Kept"]);
+    expect(one('  return { hint: "use {tool:reidentify_element}", code: "Kept" };')).toEqual(["Kept"]);
+    expect(one('  return { code: "Kept", t: /a}b/ };')).toEqual(["Kept"]);
+  });
+
+  it("reads `code` at depth 1 only, so a nested one is not read as the produced name", () => {
+    // Measured before the fix:
+    //   return { tryNext: [{ args: { code: "Nested" } }], code: "Real" }
+    //   → codes ["Nested"], problems []
+    // Today's four returns all carry `code` at the top, so this was one reordering away from
+    // firing — the same latency the bounded-window findings had. `fieldsAtDepthOne` is the reader
+    // this tree already had for the question, so the fix DELETES a reader rather than teaching it.
+    const one = (body: string) => {
+      const problems: string[] = [];
+      const codes = readReturnedCodes(["function f(", "  r: R,", "): X {", body, "}"].join("\n"), "f", problems, null);
+      return { codes, problems };
+    };
+    expect(one('  return { code: "TopLevel", tryNext: [] };').codes).toEqual(["TopLevel"]);
+    expect(one('  return { tryNext: [{ args: { code: "Nested" } }], code: "TopLevel" };').codes).toEqual([
+      "TopLevel",
+    ]);
+    // A nested `code` with NO top-level one produces nothing — it used to produce a name the
+    // function cannot return, which is worse than producing none.
+    expect(one('  return { tryNext: [{ args: { code: "Nested" } }] };').codes).toEqual([]);
+  });
+
+  it("keeps the two mouths it already closed: shorthand reported, a key-shaped string refused", () => {
+    const one = (body: string) => {
+      const problems: string[] = [];
+      const codes = readReturnedCodes(["function f(", "  r: R,", "): X {", body, "}"].join("\n"), "f", problems, null);
+      return { codes, problems: problems.join(" ") };
+    };
+    expect(one("  return { code, tryNext: [] };").problems).toMatch(/SHORTHAND/);
+    expect(one('  return { "note": "code", code: "Kept" };').codes).toEqual(["Kept"]);
+  });
+
+  it("tells `{ code }` from `{ code: code }`, because only one of them can be spelled out", () => {
+    const one = (body: string) => {
+      const problems: string[] = [];
+      readReturnedCodes(["function f(", "  r: R,", "): X {", body, "}"].join("\n"), "f", problems, null);
+      return problems.join(" ");
+    };
+    // Before this round both arrived as "returns a code this parser cannot name" — true and
+    // useless. The shorthand one says what to type; the other cannot be fixed that way, so it is
+    // told to give a literal or a table read instead.
+    expect(one("  return { code, tryNext: [] };")).toMatch(/SHORTHAND/);
+    expect(one("  return { code: code, tryNext: [] };")).toMatch(/bare name/);
+  });
+});
