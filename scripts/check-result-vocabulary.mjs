@@ -71,7 +71,7 @@ const sources = walk(join(REPO, "src")).map((file) => ({
   text: readFileSync(file, "utf8"),
 }));
 
-const typed = readUnion(read("src/engine/world-graph/guarded-touch.ts"), "TouchFailReason", () => [], problems) ?? [];
+const typed = readUnion(read("src/engine/world-graph/guarded-touch.ts"), "TouchFailReason", () => [], problems, "src/engine/world-graph/guarded-touch.ts") ?? [];
 if (typed.length === 0) problems.push("TouchFailReason could not be read — the typed half of the axis is unknown, not empty");
 
 const suggestsKeys = readSuggestsKeys(read("src/tools/_errors.ts"), problems);

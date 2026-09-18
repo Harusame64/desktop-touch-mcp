@@ -88,6 +88,17 @@ function typeAliasNamed(file, name, problems = []) {
     if (exported) return statement;
     withheld ??= `${name} is declared here but not exported, and this reader takes exported declarations only — it is being read as ABSENT`;
   }
+  // Only the top-level statements are this file's exports. The same name declared inside a
+  // `namespace` or a block is withheld too, and returning a bare null for it was the "absent" answer
+  // to a question whose answer is "there, and not taken" (gate 2 on #681).
+  if (withheld === null) {
+    for (const node of walk(file)) {
+      if ((ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) && node.name.text === name) {
+        withheld = `${name} is declared here, but not at the top level of the file, and this reader takes top-level declarations only — it is being read as ABSENT`;
+        break;
+      }
+    }
+  }
   if (withheld !== null) problems.push(withheld);
   return null;
 }
@@ -124,6 +135,20 @@ const stringLiteralType = (node) =>
   ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal) ? node.literal.text : null;
 
 /**
+ * Is this member of a VALUE union the absence of a value — `undefined`, `null`, `never`?
+ *
+ * `why?: never` on one arm of a discriminated union, `why: "a" | undefined`, `why: "a" | null`
+ * all say "no value here", and a vocabulary loses nothing by not listing them. Reporting them made
+ * the gate red over a type that hides nothing (gate 2 on #681) — the same rule `carriesNoProperties`
+ * keeps one level out. Deliberately NOT a numeric or boolean literal: `why: "a" | 1` is a value this
+ * reader will not turn into a string, and that one is still named.
+ */
+const holdsNoValue = (node) =>
+  node.kind === ts.SyntaxKind.UndefinedKeyword ||
+  node.kind === ts.SyntaxKind.NeverKeyword ||
+  (ts.isLiteralTypeNode(node) && node.literal.kind === ts.SyntaxKind.NullKeyword);
+
+/**
  * The quoted members of `export type <name> = "a" | "b" | …;`, expanding template members.
  *
  * Same contract as the hand-written reader it replaces: `null` when the declaration is absent, a
@@ -148,6 +173,7 @@ export function readUnion(source, name, resolve = () => [], problems = [], fileN
       values.push(literal);
       continue;
     }
+    if (holdsNoValue(member)) continue;
     // `` `ground_disabled:${KeyboardGround}` `` is a member, not decoration: expand it against the
     // union it names, or the count is short by however many that union has.
     if (ts.isTemplateLiteralTypeNode(member) && member.templateSpans.length === 1) {
@@ -234,6 +260,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = [], fil
           values.push(literal);
           continue;
         }
+        if (holdsNoValue(value)) continue;
         // The same contract `readUnion` keeps: a member this parser will not turn into a value is
         // named, because a shorter set and a complete one look alike from the gate's side.
         problems.push(`${typeName}.${field}: member \`${memberText(file, value)}\` is not a quoted literal this parser reads`);
@@ -252,18 +279,29 @@ export function readInlineFieldUnion(source, typeName, field, problems = [], fil
  * Can this type be shown to hold no properties at all?
  *
  * Deliberately a short list of things whose emptiness is a syntactic fact — a quoted or numeric
- * literal, `true`/`false`/`null`, and the keywords that have no members. Everything else, including
- * `any` and `object`, answers NO: not because it necessarily carries the field, but because this
+ * literal, `true`/`false`/`null`, and the primitive keywords (`string`, `boolean`, `undefined`, …),
+ * none of which is an object with fields. Everything else, including `any`, `unknown` and
+ * `object`, answers NO: not because it necessarily carries the field, but because this
  * parser cannot say that it does not, and an unknown reported beats an unknown skipped.
  */
 function carriesNoProperties(node) {
   if (ts.isLiteralTypeNode(node)) return true;
-  return (
-    node.kind === ts.SyntaxKind.UndefinedKeyword ||
-    node.kind === ts.SyntaxKind.NeverKeyword ||
-    node.kind === ts.SyntaxKind.VoidKeyword
-  );
+  // The primitive keywords are the literals' own types: `boolean` IS `true | false`, and reporting
+  // the keyword while keeping the two literals silent was one fact with two answers (gate 2 on
+  // #681). None of them is an object with fields.
+  return PRIMITIVE_KEYWORDS.has(node.kind);
 }
+
+const PRIMITIVE_KEYWORDS = new Set([
+  ts.SyntaxKind.UndefinedKeyword,
+  ts.SyntaxKind.NeverKeyword,
+  ts.SyntaxKind.VoidKeyword,
+  ts.SyntaxKind.BooleanKeyword,
+  ts.SyntaxKind.StringKeyword,
+  ts.SyntaxKind.NumberKeyword,
+  ts.SyntaxKind.BigIntKeyword,
+  ts.SyntaxKind.SymbolKeyword,
+]);
 
 /** A property's name as written, whether it is an identifier or a quoted key. */
 export function propertyName(name) {

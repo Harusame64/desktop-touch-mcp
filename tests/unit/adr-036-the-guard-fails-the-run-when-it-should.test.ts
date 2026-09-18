@@ -96,10 +96,6 @@ beforeAll(() => {
   // all. The failure is loud, but a list that has to be edited by hand is wrong from the commit
   // that outgrows it until someone notices. Copying the directory removes the list.
   cpSync(join(REPO, "scripts", "lib"), join(root, "scripts", "lib"), { recursive: true });
-  // **The gate needs the compiler now.** `scripts/lib/typescript-source.mjs` imports
-  // `typescript`, and node resolves that by walking up from the script — which, in a temp
-  // directory, walks past nothing. CI has it because `npm ci` runs before these gates; this
-  // harness has to provide what CI provides, or it tests a tree the gate cannot run in.
 });
 
 afterAll(() => {

@@ -128,18 +128,23 @@ describe("a real type in this tree that the scanner asserted the absence of", ()
 });
 
 describe("what the parser says, named rather than compared", () => {
-  it("reads a member whose text carries braces, which the scanner lost in silence", () => {
-    // The defect that survived five review rounds on the function this replaces: the brace count
-    // ran on the raw text, so `"{tool:x}"` ended the type early. There is no brace count now.
-    const source = 'export type T = "a" | "{tool:x}" | "}";\nexport type Other = "not_mine";\n';
-    expect(readUnion(source, "T", () => [], [])).toEqual(["a", "{tool:x}", "}"]);
+  it("reads a field member whose text carries braces, where the scanner once lost one in silence", () => {
+    // **Behaviour named, not a regression kill.** The inline scanner counted braces on the raw text
+    // until #679 moved the count onto a mask; at the base of this branch it answers this correctly
+    // too, so this cell cannot tell the two readers apart and does not claim to (gate 2 on #681
+    // found the earlier version asserting it against `readUnion`, which never had the defect).
+    // There is no brace count in the parser to break; this pins what it answers.
+    const source = 'export type T =\n  | { why: "a" | "{tool:x}" }\n  | { why: "}" };\nexport type Other = { why: "not_mine" };\n';
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source, "T", "why", problems)).toEqual(["a", "{tool:x}", "}"]);
+    expect(problems).toEqual([]);
   });
 
   it("stops at the declaration, whatever sits between it and the next one", () => {
-    // The thirty-nine character window is gone with the scanner. Whitespace between two tokens has
-    // no length, and the declaration is a node either way.
-    const source = `export type T = "a";\nexport${" ".repeat(400)}type Other = "not_mine";\n`;
-    expect(readUnion(source, "T", () => [], [])).toEqual(["a"]);
+    // Behaviour named, as above: the thirty-nine character window was the inline scanner's, #679
+    // anchored it, and the parser has no window. Whitespace between two tokens has no length.
+    const source = `export type T = { why: "a" };\nexport${" ".repeat(400)}type Other = { why: "not_mine" };\n`;
+    expect(readInlineFieldUnion(source, "T", "why", [])).toEqual(["a"]);
   });
 
   it("reads an inline union whose members are not all objects", () => {
@@ -196,6 +201,9 @@ describe("what the parser says, named rather than compared", () => {
   it.each([
     ["a plain literal", 'export type T =\n  | "a_plain_member"\n  | { why: "from_the_object" };\n', ["from_the_object"]],
     ["undefined", 'export type T = undefined | { why: "b" };\n', ["b"]],
+    // `boolean` IS `true | false`, which was silent while the keyword was reported (gate 2 on #681).
+    ["boolean", 'export type T = boolean | { why: "b" };\n', ["b"]],
+    ["string", 'export type T = string | { why: "b" };\n', ["b"]],
   ])("stays silent about %s, which provably carries no field at all", (_label, source, expected) => {
     // **Not every skip is a silence worth breaking.** A member whose emptiness is a syntactic fact
     // contributes nothing and there is nothing to report; making this noisy too would be a rule
@@ -204,6 +212,44 @@ describe("what the parser says, named rather than compared", () => {
     const problems: string[] = [];
     expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(expected);
     expect(problems).toEqual([]);
+  });
+
+  it("still names `unknown` in the outer union, which may be an object with the field", () => {
+    // The edge the primitive keywords must not widen past: `unknown` and `any` can hold anything.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion('export type T = unknown | { why: "b" };\n', "T", "why", problems)).toEqual(["b"]);
+    expect(problems.join("\n")).toContain("is NOT in this answer");
+  });
+
+  it.each([
+    ["`never` on the arm that has no value", 'export type T = { ok: true; why?: never } | { ok: false; why: "a" };\n'],
+    ["`| undefined`", 'export type T = { why?: "a" | undefined };\n'],
+    ["`| null`", 'export type T = { why: "a" | null };\n'],
+  ])("stays silent about %s in a FIELD's union, which is the absence of a value", (_label, source) => {
+    // Gate 2 on #681: all three were "not a quoted literal", so a discriminated union written the
+    // ordinary way turned the route gate red over a type that hides nothing.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(["a"]);
+    expect(problems).toEqual([]);
+  });
+
+  it("stays silent about `| undefined` in a named union, and still names a number", () => {
+    // The same rule in `readUnion`, and its edge: `1` IS a value, one this reader will not spell.
+    const quiet: string[] = [];
+    expect(readUnion('export type T = "a" | undefined | null | never;\n', "T", () => [], quiet)).toEqual(["a"]);
+    expect(quiet).toEqual([]);
+    const loud: string[] = [];
+    expect(readInlineFieldUnion('export type T = { why: "a" | 1 };\n', "T", "why", loud)).toEqual(["a"]);
+    expect(loud.join("\n")).toContain("member `1` is not a quoted literal");
+  });
+
+  it("says a name declared inside a namespace is there and not taken, rather than absent", () => {
+    const problems: string[] = [];
+    expect(readUnion('namespace N {\n  export type T = "a";\n}\n', "T", () => [], problems)).toBeNull();
+    expect(problems.join("\n")).toContain("not at the top level");
+    const none: string[] = [];
+    expect(readUnion('export type U = "a";\n', "T", () => [], none)).toBeNull();
+    expect(none).toEqual([]);
   });
 
   it("says so when a FIELD's member is not a quoted literal, rather than dropping it", () => {

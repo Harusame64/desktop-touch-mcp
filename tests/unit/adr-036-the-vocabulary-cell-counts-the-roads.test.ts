@@ -21,6 +21,10 @@ import {
   readUnion,
   stripComments,
 } from "../../scripts/lib/route-vocabulary.mjs";
+import {
+  readInlineFieldUnion as parsedReadInlineFieldUnion,
+  readUnion as parsedReadUnion,
+} from "../../scripts/lib/typescript-source.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -37,19 +41,6 @@ probeRoute("real_road", undefined, entity, { why: "real_why" });
     expect(v.route).toEqual(["real_road"]);
     expect(v.why).toEqual(["real_why"]);
     expect(stripComments(src).split("\n").length).toBe(src.split("\n").length);
-  });
-
-  it("expands a template member of a union instead of dropping it", () => {
-    // `LandingWhy` ends in `ground_disabled:${KeyboardGround}`. Reading only quoted literals gives
-    // 8 values where the vocabulary is 11 — a smaller number that looks like a complete one.
-    const kb = `export type KeyboardGround = "a" | "b";`;
-    const src = "export type LandingWhy =\n  | \"plain\"\n  | `ground_disabled:${KeyboardGround}`;";
-    const ground = readUnion(kb, "KeyboardGround")!;
-    expect(readUnion(src, "LandingWhy", (n) => (n === "KeyboardGround" ? ground : []))).toEqual([
-      "ground_disabled:a",
-      "ground_disabled:b",
-      "plain",
-    ]);
   });
 
   it("reports every shape of non-literal, not one of them", () => {
@@ -226,75 +217,119 @@ async function probedStep(rung, aimHwnd, entity, step) {
     expect(readRoadVocabulary(`probeRoute("uia", undefined, entity, {});`).problems).toEqual([]);
   });
 
-  it("reports a union member it cannot read instead of returning a shorter union", () => {
-    // A template whose union it cannot resolve, a backticked member with no interpolation, and a
-    // `typeof ARR[number]` all used to come back as a shorter set — indistinguishable from a
-    // complete one (gate 2 on #669).
-    const problems: string[] = [];
-    readUnion('export type X = "a" | `focus_lost:${Unknown}`;', "X", () => [], problems);
-    readUnion('export type Y = "a" | `plain_backtick`;', "Y", () => [], problems);
-    readUnion("export type Z = (typeof ARR)[number];", "Z", () => [], problems);
-    // **A total is not a content.** `>= 3` stays green if one rule starts reporting twice while
-    // another goes silent; the shapes are what the cell is about (gate 2 on #669, second pass).
-    expect(problems).toEqual([
-      "X: cannot resolve the template member `focus_lost:${Unknown}`",
-      "Y: member `plain_backtick` is not a quoted literal this parser reads",
-      "Z: no quoted members — `(typeof ARR)[number]` is not a union this parser reads",
-      "Z: member `(typeof ARR)[number]` is not a quoted literal this parser reads",
-    ]);
-  });
+  // **The same cells, over BOTH type readers.** The gates read unions through the parser since
+  // #681, and these cells were written against the scanner — so they guarded a reader no gate
+  // called any more, and a mutation of the one that IS called could not reach them (gate 2 on
+  // #681). The scanner stays as the differential control until the last axis moves, so it keeps
+  // its row. Where the two word a problem differently, each row carries its own wording; the
+  // SHAPES are the claim, and both must name all three.
+  describe.each([
+    {
+      reader: {
+        name: "scanner",
+        readUnion,
+        readInlineFieldUnion,
+        unreadable: [
+          "X: cannot resolve the template member `focus_lost:${Unknown}`",
+          "Y: member `plain_backtick` is not a quoted literal this parser reads",
+          "Z: no quoted members — `(typeof ARR)[number]` is not a union this parser reads",
+          "Z: member `(typeof ARR)[number]` is not a quoted literal this parser reads",
+        ],
+      },
+    },
+    {
+      reader: {
+        name: "parser",
+        readUnion: parsedReadUnion,
+        readInlineFieldUnion: parsedReadInlineFieldUnion,
+        unreadable: [
+          "X: cannot resolve the template member `focus_lost:${Unknown}`",
+          "Y: member ``plain_backtick`` is not a quoted literal this parser reads",
+          "Z: member `(typeof ARR)[number]` is not a quoted literal this parser reads",
+        ],
+      },
+    },
+  ])("the type reader ($reader.name)", ({ reader }) => {
+    const { readUnion, readInlineFieldUnion } = reader;
 
-  it("does not throw away the first member of a single-line union", () => {
-    // `.slice(1)` was written for the leading-pipe style, where element 0 is the whitespace before
-    // the first `|`. On one line it discards a REAL member, and `values.length === 0` does not fire
-    // because the other member was read — one of two, coming back complete-looking, which is the
-    // failure this parser exists to end (gate 2 on #669, second pass).
-    const problems: string[] = [];
-    expect(readUnion('export type K = OtherUnion | "uia";', "K", () => [], problems)).toEqual(["uia"]);
-    expect(problems).toEqual(["K: member `OtherUnion` is not a quoted literal this parser reads"]);
-  });
+    it("expands a template member of a union instead of dropping it", () => {
+      // `LandingWhy` ends in `ground_disabled:${KeyboardGround}`. Reading only quoted literals gives
+      // 8 values where the vocabulary is 11 — a smaller number that looks like a complete one.
+      const kb = `export type KeyboardGround = "a" | "b";`;
+      const src = "export type LandingWhy =\n  | \"plain\"\n  | `ground_disabled:${KeyboardGround}`;";
+      const ground = readUnion(kb, "KeyboardGround")!;
+      expect(readUnion(src, "LandingWhy", (n) => (n === "KeyboardGround" ? ground : []))).toEqual([
+        "ground_disabled:a",
+        "ground_disabled:b",
+        "plain",
+      ]);
+    });
 
-  it("reads a union written inline as a field, anchored on the type's whole name", () => {
-    // `export type PointOwnerVia` sits above `export type PointOwner` in the same file: a substring
-    // search reads the one-liner and answers one value where the vocabulary has four. And a type
-    // can carry the field twice — reading only the first is the same defect one line over.
-    const src = `export type OwnerVia = "a" | "b";
+    it("reports a union member it cannot read instead of returning a shorter union", () => {
+      // A template whose union it cannot resolve, a backticked member with no interpolation, and a
+      // `typeof ARR[number]` all used to come back as a shorter set — indistinguishable from a
+      // complete one (gate 2 on #669).
+      const problems: string[] = [];
+      readUnion('export type X = "a" | `focus_lost:${Unknown}`;', "X", () => [], problems);
+      readUnion('export type Y = "a" | `plain_backtick`;', "Y", () => [], problems);
+      readUnion("export type Z = (typeof ARR)[number];", "Z", () => [], problems);
+      // **A total is not a content.** `>= 3` stays green if one rule starts reporting twice while
+      // another goes silent; the shapes are what the cell is about (gate 2 on #669, second pass).
+      expect(problems).toEqual(reader.unreadable);
+    });
+
+    it("does not throw away the first member of a single-line union", () => {
+      // `.slice(1)` was written for the leading-pipe style, where element 0 is the whitespace before
+      // the first `|`. On one line it discards a REAL member, and `values.length === 0` does not fire
+      // because the other member was read — one of two, coming back complete-looking, which is the
+      // failure this parser exists to end (gate 2 on #669, second pass).
+      const problems: string[] = [];
+      expect(readUnion('export type K = OtherUnion | "uia";', "K", () => [], problems)).toEqual(["uia"]);
+      expect(problems).toEqual(["K: member `OtherUnion` is not a quoted literal this parser reads"]);
+    });
+
+    it("reads a union written inline as a field, anchored on the type's whole name", () => {
+      // `export type PointOwnerVia` sits above `export type PointOwner` in the same file: a substring
+      // search reads the one-liner and answers one value where the vocabulary has four. And a type
+      // can carry the field twice — reading only the first is the same defect one line over.
+      const src = `export type OwnerVia = "a" | "b";
 export type Owner =
   | { kind: "blocked"; why: "excluded_window"; via: OwnerVia }
   | { kind: "unknown"; why: "enumeration_failed" | "no_window_at_point"; via: OwnerVia };`;
-    expect(readInlineFieldUnion(src, "Owner", "why")).toEqual([
-      "enumeration_failed",
-      "excluded_window",
-      "no_window_at_point",
-    ]);
-  });
+      expect(readInlineFieldUnion(src, "Owner", "why")).toEqual([
+        "enumeration_failed",
+        "excluded_window",
+        "no_window_at_point",
+      ]);
+    });
 
-  it("reads a field union that was broken over lines, which is how a union grows", () => {
-    // Stopping at the newline read one member of however many, silently. The real `Homing.why` is
-    // written this way: the shipped extractor answered ONE of its nine with `problems` empty, and
-    // the why axis was short by eight (gate 2 on #669, second pass — the count went 17 → 24).
-    const problems: string[] = [];
-    const src = `export type Owner =
+    it("reads a field union that was broken over lines, which is how a union grows", () => {
+      // Stopping at the newline read one member of however many, silently. The real `Homing.why` is
+      // written this way: the shipped extractor answered ONE of its nine with `problems` empty, and
+      // the why axis was short by eight (gate 2 on #669, second pass — the count went 17 → 24).
+      const problems: string[] = [];
+      const src = `export type Owner =
   | { kind: "unknown";
       why:
         | "enumeration_failed"
         | "no_window_at_point"; };`;
-    expect(readInlineFieldUnion(src, "Owner", "why", problems)).toEqual([
-      "enumeration_failed",
-      "no_window_at_point",
-    ]);
-    expect(problems).toEqual([]);
-  });
+      expect(readInlineFieldUnion(src, "Owner", "why", problems)).toEqual([
+        "enumeration_failed",
+        "no_window_at_point",
+      ]);
+      expect(problems).toEqual([]);
+    });
 
-  it("stops at the next declaration when TypeScript's optional `;` is absent", () => {
-    // The fall-through used to be end-of-file, so one dropped semicolon pulled every `why:` from
-    // every type BELOW into the axis — values nothing on the road can produce, which then inflate
-    // the completion denominator once they are re-pinned (gate 2 on #669, second pass).
-    const problems: string[] = [];
-    const src = `export type Owner = { why: "a" }
+    it("stops at the next declaration when TypeScript's optional `;` is absent", () => {
+      // The fall-through used to be end-of-file, so one dropped semicolon pulled every `why:` from
+      // every type BELOW into the axis — values nothing on the road can produce, which then inflate
+      // the completion denominator once they are re-pinned (gate 2 on #669, second pass).
+      const problems: string[] = [];
+      const src = `export type Owner = { why: "a" }
 export type Unrelated = { why: "leaked_from_below" };`;
-    expect(readInlineFieldUnion(src, "Owner", "why", problems)).toEqual(["a"]);
-    expect(problems).toEqual([]);
+      expect(readInlineFieldUnion(src, "Owner", "why", problems)).toEqual(["a"]);
+      expect(problems).toEqual([]);
+    });
   });
 
   it("reads the real executor's vocabulary", () => {
@@ -463,6 +498,54 @@ function adr029Refusal(kind) {
     write("src/capabilities/registry.ts", `export type AdvertisedExecutorKind = "uia" | "cdp" | "terminal" | "mouse";`);
     const { status, out } = run();
     expect(out).toMatch(/diverged/);
+    expect(status).toBe(1);
+  });
+
+  it.each([
+    [
+      "KeyboardGround",
+      "src/engine/keyboard-target.ts",
+      `export type KeyboardGround = "other_window" | "read_only" | ExtraGround;
+export type LandingWhy =
+  | "receiver_unknown"
+  | \`ground_disabled:\${KeyboardGround}\`;`,
+    ],
+    [
+      "ExecutorKind",
+      "src/engine/world-graph/types.ts",
+      `export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard" | ExtraKind;`,
+    ],
+  ])("is 1 when %s gains a member the reader cannot read, and refuses to re-pin", (_name, path, body) => {
+    // Gate 2 on #681: six of the nine type reads passed no `problems`, so the reader named this
+    // member and the gate dropped what it said — OK, exit 0, and `--update` re-pinned the short
+    // set. The pin cannot see it either: the readable members did not change.
+    fixture();
+    execFileSync(process.execPath, [join(root, "scripts", "check-route-vocabulary.mjs"), "--update"], {
+      stdio: "ignore",
+    });
+    write(path as string, body as string);
+    const { status, out } = run();
+    expect(out).toMatch(/is not a quoted literal this parser reads/);
+    expect(status).toBe(1);
+    let refused = false;
+    try {
+      execFileSync(process.execPath, [join(root, "scripts", "check-route-vocabulary.mjs"), "--update"], { stdio: "pipe" });
+    } catch {
+      refused = true;
+    }
+    expect(refused).toBe(true);
+  });
+
+  it("names the FILE that did not parse, of the five it reads unions from", () => {
+    // Gate 2 on #681: no gate passed a file name, so a parse failure in any of them read
+    // "source.ts did not parse", and this gate merges five files into one list.
+    fixture();
+    execFileSync(process.execPath, [join(root, "scripts", "check-route-vocabulary.mjs"), "--update"], {
+      stdio: "ignore",
+    });
+    write("src/engine/world-graph/types.ts", `export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard";\nexport type Broken = {;`);
+    const { status, out } = run();
+    expect(out).toContain("src/engine/world-graph/types.ts did not parse");
     expect(status).toBe(1);
   });
 

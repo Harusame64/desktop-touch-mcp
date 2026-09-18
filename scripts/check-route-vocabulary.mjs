@@ -50,21 +50,27 @@ const capabilities = read("src/capabilities/registry.ts");
 const aim = tryRead("src/engine/aim.ts");
 const pointOwner = tryRead("src/engine/point-owner.ts");
 const unionProblems = [];
+// **Every type read passes `problems` and its file name.** Six of the nine used to pass neither, so
+// whatever the reader said — a member it could not read, a file that did not parse, a declaration
+// it would not take — was dropped on the floor: `KeyboardGround` gaining `| ExtraGround` left this
+// gate OK, and `--update` re-pinned the short set (gate 2 on #681). The reader's rule is that it
+// never answers short in silence; that rule only holds if the caller keeps what it is told. Each
+// union is read ONCE, so a problem is reported once however many derived fields draw on it.
+const typeUnion = (source, file, name, resolve = () => []) => readUnion(source, name, resolve, unionProblems, file) ?? [];
+const keyboardGround = typeUnion(keyboardTarget, "src/engine/keyboard-target.ts", "KeyboardGround");
+const landingWhy = typeUnion(keyboardTarget, "src/engine/keyboard-target.ts", "LandingWhy", (n) => (n === "KeyboardGround" ? keyboardGround : []));
 // The homing rung writes `homing.why` straight into the row, so `Homing.why`'s members are `why`
 // values. The extractor names the union; resolving it is the caller's job because the caller has
 // the files (gate 2 on #669: the why axis was 12 and the tree can write 9 more).
 const road = readRoadVocabulary(executor, (name) =>
   name === "homing.why"
-    ? readInlineFieldUnion(aim, "Homing", "why", unionProblems)
+    ? readInlineFieldUnion(aim, "Homing", "why", unionProblems, "src/engine/aim.ts")
     : name === "landing.why"
-      ? (readUnion(keyboardTarget, "LandingWhy", (n) => (n === "KeyboardGround" ? readUnion(keyboardTarget, "KeyboardGround") ?? [] : []), unionProblems) ?? [])
+      ? landingWhy
       : name === "owner.why"
-        ? [
-            ...readInlineFieldUnion(pointOwner, "PointOwner", "why", unionProblems),
-          ]
+        ? readInlineFieldUnion(pointOwner, "PointOwner", "why", unionProblems, "src/engine/point-owner.ts")
         : [],
 );
-const keyboardGround = readUnion(keyboardTarget, "KeyboardGround") ?? [];
 const derived = {
   landingWhyOnTheRow: road.landingWhyOnTheRow,
   // **Pinned, not asserted.** The one dynamic spelling (`why: verdict.why`) is what lets the row
@@ -77,11 +83,11 @@ const derived = {
   rung: road.rung,
   refused: road.refused,
   why: road.why,
-  touchFailReason: readUnion(guardedTouch, "TouchFailReason") ?? [],
-  landingWhy: readUnion(keyboardTarget, "LandingWhy", (n) => (n === "KeyboardGround" ? keyboardGround : [])) ?? [],
+  touchFailReason: typeUnion(guardedTouch, "src/engine/world-graph/guarded-touch.ts", "TouchFailReason"),
+  landingWhy,
   keyboardGround,
-  executorKind: readUnion(worldTypes, "ExecutorKind") ?? [],
-  advertisedExecutorKind: readUnion(capabilities, "AdvertisedExecutorKind") ?? [],
+  executorKind: typeUnion(worldTypes, "src/engine/world-graph/types.ts", "ExecutorKind"),
+  advertisedExecutorKind: typeUnion(capabilities, "src/capabilities/registry.ts", "AdvertisedExecutorKind"),
 };
 
 const problems = [...road.problems, ...unionProblems];
