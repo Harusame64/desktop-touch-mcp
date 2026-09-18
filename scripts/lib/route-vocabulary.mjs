@@ -241,7 +241,11 @@ export function literalEnd(text, i, previous) {
   // `previous` is not always one character: `significantBefore` answers `++` for a postfix increment,
   // and `"++".includes("+")` is true, so the very distinction that answer exists to draw was
   // swallowed by the test that read it. A keyword answer is already anchored on the right-hand side.
-  if (!/^[=(,[!&|?:;{}+\-*%^~<>]$/.test(previous ?? "(") && !/^(?:return|typeof|case|in|of|do|else|void|delete|instanceof|new|yield|await)$/.test(previous ?? "")) {
+  // `if` / `while` / `for` are here because `significantBefore` answers with the KEYWORD when the
+  // `)` before the slash is the one that closes their header — see the note there. They can never
+  // be the significant character in their own right (`if /re/` is not a program), so adding them
+  // widens nothing else.
+  if (!/^[=(,[!&|?:;{}+\-*%^~<>]$/.test(previous ?? "(") && !/^(?:return|typeof|case|in|of|do|else|void|delete|instanceof|new|yield|await|if|while|for)$/.test(previous ?? "")) {
     return -1;
   }
   if (text[i + 1] === "/" || text[i + 1] === "*") return -1; // a comment, not a regex
@@ -270,12 +274,88 @@ export function literalEnd(text, i, previous) {
 }
 
 /**
+ * For each `)` that closes an `if` / `while` / `for` HEADER, that keyword — the whole file at once.
+ *
+ * **Computed on a mask, and re-entrant.** Parentheses inside a literal are not parentheses, so the
+ * walk needs to know what a literal is — and deciding that calls `significantBefore`, which calls
+ * this. The flag breaks the cycle: while the mask is being built, a `)` reads as a value, which is
+ * the answer this module gave everywhere until now. The only position where the two answers differ
+ * is a `/` immediately after a header's `)`, and a regex THERE cannot change which `(` a `)` closes
+ * unless it carries an unbalanced parenthesis of its own — `if (a) /)/ .test(b)` is the shape, and
+ * it is recorded rather than handled.
+ *
+ * **The memo is load-bearing, not an optimisation.** `significantBefore` is called once per
+ * character, so rebuilding the map on each `)` makes the reader quadratic: measured on
+ * `src/tools/desktop-executor.ts` (50,279 characters), 36 ms with the memo and 9,449 ms without —
+ * the same answer, 262 times slower, and the unit suite times out rather than failing. This module
+ * has been here before: the first `significantBefore` sliced from the start of the file to read the
+ * word behind the cursor, and the scan took minutes over a 2 MB tree.
+ *
+ * It is keyed by REFERENCE, because every caller walks one file to the end before moving to the
+ * next, and comparing the strings by value would put the cost back.
+ *
+ * No timing cell pins this. A timing assertion is flaky on a loaded machine, and the failure it
+ * would catch announces itself anyway — a gate that took 36 ms takes minutes. It is written down
+ * here instead, with the measurement, which is what a bound whose grounds are recorded looks like.
+ */
+let parenText = null;
+let parenMap = null;
+let buildingParenMap = false;
+function controlHeaderParens(text) {
+  if (parenText === text) return parenMap;
+  if (buildingParenMap) return EMPTY_PARENS;
+  buildingParenMap = true;
+  let masked;
+  try {
+    masked = maskLiteralContents(text);
+  } finally {
+    buildingParenMap = false;
+  }
+  const map = new Map();
+  const stack = [];
+  for (let i = 0; i < masked.length; i++) {
+    const ch = masked[i];
+    if (ch === "(") {
+      let w = i - 1;
+      while (w >= 0 && /\s/.test(masked[w])) w--;
+      const end = w;
+      while (w >= 0 && /\w/.test(masked[w])) w--;
+      const word = masked.slice(w + 1, end + 1);
+      stack.push(/^(?:if|while|for)$/.test(word) ? word : null);
+    } else if (ch === ")") {
+      const word = stack.pop();
+      if (word) map.set(i, word);
+    }
+  }
+  parenText = text;
+  parenMap = map;
+  return map;
+}
+const EMPTY_PARENS = new Map();
+
+/**
  * The last significant character (or word) before `i`, for deciding whether a `/` opens a regex.
  */
 export function significantBefore(text, i) {
   let j = i - 1;
   while (j >= 0 && /\s/.test(text[j])) j--;
   if (j < 0) return "(";
+  // **A `)` is not always a value.** After the one that closes an `if` / `while` / `for` HEADER a
+  // statement begins, and a statement may begin with a regular expression: `if (r) /"/.test(x);`.
+  // Reading the character alone answered "value", so the slash was division, the quote inside the
+  // regex opened a string, and everything after it on the line was blanked out of the mask — the
+  // producer sitting there left the axis in silence. Found by gate 2 on internal#125 (round 4) and
+  // pinned as it behaved until now; unreachable in this tree, which is why only a shape fired on
+  // purpose could say so.
+  //
+  // Which `)` that is cannot be read from the `)`: it has to be matched back to its `(` and the
+  // word before it. The answer is a property of the TEXT, so it is computed once for the whole file
+  // and looked up — a per-position backward walk would make this function quadratic, and this
+  // function is called once per character.
+  if (text[j] === ")") {
+    const keyword = controlHeaderParens(text).get(j);
+    if (keyword !== undefined) return keyword;
+  }
   // **A postfix `++` or `--` ends a VALUE, so what follows is division.** The character class below
   // holds `+` and `-` because a regex may follow a binary one (`x + /re/.test(s)`), and reading only
   // the last character cannot tell `x + /` from `x++ /`. It answered "regex" for both, so

@@ -94,18 +94,24 @@ describe("what the one reader says a literal is", () => {
     expect(text.slice(spans[0][0], spans[0][1])).toBe("`one\ntwo`");
   });
 
-  it("READS A CONTROL HEADER'S `)` AS A VALUE — a known gap, pinned so the fix is visible", () => {
-    // After the `)` that closes an `if`/`while`/`for` header a regex may legally begin, but
-    // `significantBefore` answers `)` and `literalEnd` reads the slash as division. Found by gate 2
-    // on internal#125 (round 4). It is unreachable in this tree today — `src` and `scripts` contain
-    // no unbraced control body that is a regex literal — and it is a property of `literalEnd`, which
-    // this PR moved without changing. Pinned as it BEHAVES, not as it should, so that the PR which
-    // fixes it has to come here and say so.
-    const text = 'if (r) /"/.test(x);\n';
-    expect(significantBefore(text, text.indexOf("/"))).toBe(")");
-    expect(literalEnd(text, text.indexOf("/"), ")")).toBe(-1);
-    // and the same slash after a value really is division, which is why the answer is not simply
+  it("reads a control header's `)` as the KEYWORD, and any other `)` as a value", () => {
+    // **This cell was pinned the other way round, on purpose, and this is the PR that came back.**
+    // Through #678 and #679 it asserted the defect — `significantBefore` answered `)` for the `)`
+    // that closes an `if` header, so `literalEnd` read the slash after it as division, the quote
+    // inside the regex opened a string, and the rest of the line was blanked out of the mask. It was
+    // unreachable in this tree, so nothing but a cell could hold the fact still; pinning it as it
+    // BEHAVED is what made the fix have to change a test rather than quietly agree with one.
+    //
+    // The keyword comes back because `literalEnd` reads `previous` as either a character or a word,
+    // and a word it already knows how to accept. Which `)` closes a header is a property of the
+    // whole text, not of the `)`, so it is mapped once per file — see `controlHeaderParens`.
+    const header = 'if (r) /"/.test(x);\n';
+    expect(significantBefore(header, header.indexOf('/"'))).toBe("if");
+    expect(literalEnd(header, header.indexOf('/"'), "if")).toBeGreaterThan(header.indexOf('/"'));
+    // and a `)` that closes a CALL is still a value, which is why the answer is not simply
     // "a `)` allows a regex".
+    const call = "let v = f(a) / 2;\n";
+    expect(significantBefore(call, call.indexOf("/ 2"))).toBe(")");
     expect(literalEnd("const q = a / b;\n", "const q = a ".length, "a")).toBe(-1);
   });
 });
