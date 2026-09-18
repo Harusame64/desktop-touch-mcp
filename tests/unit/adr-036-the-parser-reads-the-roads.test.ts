@@ -18,26 +18,21 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { readRoadVocabulary as scannerRead } from "../../scripts/lib/route-vocabulary.mjs";
-import { readInlineFieldUnion, readRoadVocabulary, readUnion } from "../../scripts/lib/typescript-source.mjs";
+import { readInlineFieldUnion, readRoadVocabulary } from "../../scripts/lib/typescript-source.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const read = (rel: string): string => readFileSync(join(REPO, rel), "utf8");
 
 /** The resolver `check-route-vocabulary.mjs` passes — the differential has to call it the same way. */
 function gateResolver(): (name: string) => string[] {
-  const kb = read("src/engine/keyboard-target.ts");
-  const ground = readUnion(kb, "KeyboardGround") ?? [];
-  const landing = readUnion(kb, "LandingWhy", (n) => (n === "KeyboardGround" ? ground : [])) ?? [];
   const aim = read("src/engine/aim.ts");
   const owner = read("src/engine/point-owner.ts");
   return (name) =>
     name === "homing.why"
       ? readInlineFieldUnion(aim, "Homing", "why", [])
-      : name === "landing.why"
-        ? landing
-        : name === "owner.why"
-          ? readInlineFieldUnion(owner, "PointOwner", "why", [])
-          : [];
+      : name === "owner.why"
+        ? readInlineFieldUnion(owner, "PointOwner", "why", [])
+        : [];
 }
 
 /** The two producers whose bodies spread a caller's `extra` over the row, as the executor writes them. */
@@ -313,4 +308,112 @@ describe("the landing axis", () => {
 it("REPORTS AN EXECUTOR THAT DID NOT PARSE, and names the file", () => {
   const problems = readRoadVocabulary('probeRoute("uia", undefined, entity, {\n', () => [], "src/tools/desktop-executor.ts").problems;
   expect(problems.join("\n")).toContain("src/tools/desktop-executor.ts did not parse");
+});
+
+describe("gate 2 on #682 — each finding's own input, as a cell", () => {
+  it("ends when one function spreads two parameters (it hung the gate)", () => {
+    const started = Date.now();
+    // Road fields before EACH spread, so both parameters are recorded as overriding — the shape
+    // that flipped the single index per name forever. `{ ...a, ...b }` alone no longer reaches it:
+    // a spread with nothing before it overrides nothing and is skipped first.
+    const out = readRoadVocabulary(
+      `${PRODUCERS}\nfunction merge(a: object, b: object) {\n  return { route: "r", ...a, why: "w", ...b };\n}\nmerge({ route: "x" }, { why: "y" });\n`,
+    );
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(out.problems.join("\n")).toMatch(/merge\(…\) at line \d+ passes `route`/);
+    expect(out.problems.join("\n")).toMatch(/merge\(…\) at line \d+ passes `why`/);
+  });
+
+  it.each([
+    ["a variable", `${PRODUCERS}\nconst extra = { route: "mouse" };\nprobeRoute("uia", undefined, entity, extra);\n`, /passes `extra` where a route in it would override/],
+    ["a conditional of objects", `${PRODUCERS}\nprobeRoute("uia", undefined, entity, c ? { route: "mouse" } : {});\n`, /passes `route` in an object spread over the row/],
+  ])("reports %s in the extra position, which can carry a route", (_label, source, expected) => {
+    expect(readRoadVocabulary(source as string).problems.join("\n")).toMatch(expected as RegExp);
+  });
+
+  it("reads a producer called as a method, as the scanner did", () => {
+    const out = readRoadVocabulary('this.refusal("hidden_rung", "hidden_ground", new Error("x"));\nprobes.probeRoute("hidden_road", undefined, entity, {});');
+    expect(out.rung).toEqual(["hidden_rung"]);
+    expect(out.refused).toEqual(["hidden_ground"]);
+    expect(out.route).toEqual(["hidden_road"]);
+  });
+
+  it("does not accept a forward whose parameter the body writes to", () => {
+    const source = `function probeRefusal(rung: string, refused: string, aimHwnd: bigint | undefined, entity: UiEntity) {
+  refused = pickAny();
+  probeRoute("refusal", aimHwnd, entity, { rung, refused });
+}`;
+    expect(readRoadVocabulary(source).problems.join("\n")).toContain("a shorthand `refused` is not a forward");
+  });
+
+  it("resolves the refusal binding by scope, not by the first declaration of the name", () => {
+    const source = `function adr029Refusal(err: unknown) {
+  return "g";
+}
+async function probedStep(rung: string, aimHwnd: bigint | undefined, entity: UiEntity, step: () => void) {
+  try {
+    return await step();
+  } catch (err) {
+    if (err) {
+      const refused = adr029Refusal(err);
+      log(refused);
+    }
+    const refused = pickAnyGround(err);
+    probeRefusal(rung, refused, aimHwnd, entity);
+    throw err;
+  }
+}
+probedStep("a_step", undefined, entity, () => {});`;
+    expect(readRoadVocabulary(source).problems.join("\n")).toMatch(/probedStep no longer forwards/);
+  });
+
+  it("reads the grounds of an adr029Refusal written as an expression-bodied arrow", () => {
+    const source = `const adr029Refusal = (err: unknown) => (err instanceof A ? "ground_a" : err instanceof B ? "ground_b" : undefined);`;
+    const out = readRoadVocabulary(source);
+    expect(out.refused).toEqual(["ground_a", "ground_b"]);
+    expect(out.problems).toEqual([]);
+  });
+
+  it("says adr029Refusal has moved when the exemption was USED, whatever the caller is called", () => {
+    const source = `import { adr029Refusal } from "./elsewhere";
+async function stepWithProbe(rung: string, aimHwnd: bigint | undefined, entity: UiEntity) {
+  const refused = adr029Refusal(err);
+  probeRefusal("step_rung", refused, aimHwnd, entity);
+}`;
+    expect(readRoadVocabulary(source).problems.join("\n")).toContain("adr029Refusal has moved");
+  });
+
+  it.each([
+    ["a shorthand why", "const why = pick();\nfunction a() { return { landing: { confirmed: false, why } }; }\n", "a landing why is not a literal: why (shorthand)"],
+    ["a spread", "function a() { return { landing: { confirmed: false, ...x } }; }\n", "a landing object spreads `x`"],
+  ])("reports %s in a landing object", (_label, source, expected) => {
+    expect(readRoadVocabulary(source as string).problems.join("\n")).toContain(expected as string);
+  });
+
+  it.each([
+    ["a template literal", 'probeAim(`act.route`, { route: "from_a_template" });', "from_a_template"],
+    ["parentheses", 'probeAim(("act.route"), { route: "from_parentheses" });', "from_parentheses"],
+  ])("reads the act.route row when its kind is written as %s", (_label, source, expected) => {
+    expect(readRoadVocabulary(source as string).route).toEqual([expected]);
+  });
+
+  it.each([
+    ["an assignment to a property", 'facts.why = "assigned_why";', "why", "assigned_why"],
+    ["an assignment by element", 'row["rung"] = "assigned_rung";', "rung", "assigned_rung"],
+    ["a computed key", 'probeRoute("uia", undefined, entity, { ["why"]: "computed_why" });', "why", "computed_why"],
+  ])("reads a row field written as %s", (_label, source, field, value) => {
+    const out = readRoadVocabulary(source as string) as unknown as Record<string, string[]>;
+    expect(out[field as string]).toContain(value);
+  });
+
+  it.each([
+    ['"w" as const', 'probeRoute("uia" as const, undefined, entity, { why: "w" as const });'],
+    ['"w" satisfies T', 'probeRoute("uia", undefined, entity, { why: "w" satisfies string });'],
+    ["a non-null assertion", 'probeRoute("uia", undefined, entity, { why: ("w")! });'],
+  ])("reads a literal wrapped as %s, which the scanner read by its prefix", (_label, source) => {
+    const out = readRoadVocabulary(source as string);
+    expect(out.why).toEqual(["w"]);
+    expect(out.route).toEqual(["uia"]);
+    expect(out.problems).toEqual([]);
+  });
 });

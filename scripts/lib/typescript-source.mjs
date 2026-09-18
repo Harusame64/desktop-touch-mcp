@@ -316,6 +316,11 @@ const PRIMITIVE_KEYWORDS = new Set([
 export function propertyName(name) {
   if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) return name.text;
   if (ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  // `{ ["why"]: … }` is `{ why: … }` (gate 2 on #682: it was dropped in silence).
+  if (ts.isComputedPropertyName(name)) {
+    const key = skipParentheses(name.expression);
+    if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+  }
   return null;
 }
 
@@ -351,10 +356,36 @@ function vocabularyLiteral(node) {
   return VOCABULARY_WORD.test(inner.text) ? inner.text : null;
 }
 
+/**
+ * The expression a value's wrappers hold. `"uia" as const`, `x!`, `(<T>x)` and `x satisfies T` are
+ * the same value as `x`, and the scanner read `"w" as const` by its prefix — unwrapping only
+ * parentheses reported it as a non-literal, a false red (gate 2 on #682).
+ */
 function skipParentheses(node) {
   let inner = node;
-  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isAsExpression(inner) ||
+    ts.isNonNullExpression(inner) ||
+    ts.isTypeAssertionExpression(inner) ||
+    ts.isSatisfiesExpression(inner)
+  ) {
+    inner = inner.expression;
+  }
   return inner;
+}
+
+/**
+ * The name a call is made BY: `refusal(…)` and `this.refusal(…)` are the same producer. The
+ * scanner's `\brefusal\(` matched both; reading only a bare identifier dropped the method form in
+ * silence (gate 2 on #682). An alias (`const go = probeRoute`) or `.call` is not followed — see the
+ * PR for the surfaces this reader does not see.
+ */
+function calleeName(call) {
+  const callee = skipParentheses(call.expression);
+  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) return callee.name.text;
+  return null;
 }
 
 const isAbsence = (node) => {
@@ -381,6 +412,51 @@ function functionName(fn) {
 
 const parameterNamed = (fn, name) =>
   fn.parameters.find((p) => ts.isIdentifier(p.name) && p.name.text === name) ?? null;
+
+/** Does the body of `fn` write to the name — `x = …`, `x ??= …`, `x++`? */
+function assignedIn(fn, name) {
+  for (const node of walk(fn.body ?? fn)) {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      ts.isIdentifier(skipParentheses(node.left)) &&
+      skipParentheses(node.left).text === name
+    ) {
+      return true;
+    }
+    if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
+      ts.isIdentifier(node.operand) &&
+      node.operand.text === name
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The variable declaration an identifier refers to, by block scope, up to its function's boundary;
+ * null for a parameter, or for anything declared outside the function.
+ */
+function declarationOf(identifier) {
+  for (let at = identifier.parent; at !== undefined; at = at.parent) {
+    const statements =
+      ts.isBlock(at) || ts.isSourceFile(at) || ts.isCaseClause(at) || ts.isDefaultClause(at) || ts.isModuleBlock(at) ? at.statements : null;
+    if (statements !== null) {
+      for (const statement of statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const d of statement.declarationList.declarations) {
+          if (ts.isIdentifier(d.name) && d.name.text === identifier.text) return d;
+        }
+      }
+    }
+    if (ts.isFunctionLike(at)) return null;
+  }
+  return null;
+}
 
 /** Every member of a type annotation, if all of them are vocabulary literals; otherwise null. */
 function literalMembers(typeNode) {
@@ -433,6 +509,9 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
     if (fn === null) return false;
     const parameter = parameterNamed(fn, identifier.text);
     if (parameter === null) return false;
+    // A parameter the body writes to is not what the caller passed: `refused = pickAny()` inside
+    // `probeRefusal` made `{ rung, refused }` carry a value no call site spells (gate 2 on #682).
+    if (assignedIn(fn, identifier.text)) return false;
     const name = functionName(fn);
     const positions = name === null ? undefined : ROAD_PRODUCERS[name];
     if (positions !== undefined && positions[field] === fn.parameters.indexOf(parameter)) return true;
@@ -463,24 +542,26 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
    * an annotation is not a change of binding (win2, internal `f493bad`), and a `??`, `||`, ternary
    * or `let` lifts the exemption, because then the local holds something the body does not return.
    */
+  let refusalBindingUsed = false;
   const bindsTheReadRefusal = (identifier) => {
     const fn = enclosingFunction(identifier);
     if (fn === null || identifier.text !== "refused") return false;
-    for (const node of walk(fn.body ?? fn)) {
-      if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || node.name.text !== "refused") continue;
-      if (enclosingFunction(node) !== fn) continue;
-      if ((node.parent.flags & ts.NodeFlags.Const) === 0) return false;
-      const init = node.initializer === undefined ? undefined : skipParentheses(node.initializer);
-      return (
-        init !== undefined &&
-        ts.isCallExpression(init) &&
-        ts.isIdentifier(init.expression) &&
-        init.expression.text === "adr029Refusal" &&
-        init.arguments.length === 1 &&
-        ts.isIdentifier(init.arguments[0])
-      );
-    }
-    return false;
+    // **The declaration this identifier REFERS to**, found by scope — not the first `refused` in
+    // document order. A `const refused = adr029Refusal(err)` inside an `if` block, followed by an
+    // outer `const refused = pickAnyGround(err)` passed on, was exempted by the name-matching
+    // version (gate 2 on #682) — the spelling hole this reader was written to close.
+    const declaration = declarationOf(identifier);
+    if (declaration === null || enclosingFunction(declaration) !== fn) return false;
+    if ((declaration.parent.flags & ts.NodeFlags.Const) === 0) return false;
+    const init = declaration.initializer === undefined ? undefined : skipParentheses(declaration.initializer);
+    const binds =
+      init !== undefined &&
+      ts.isCallExpression(init) &&
+      calleeName(init) === "adr029Refusal" &&
+      init.arguments.length === 1 &&
+      ts.isIdentifier(init.arguments[0]);
+    if (binds) refusalBindingUsed = true;
+    return binds;
   };
 
   /** Read a row field's value: a literal, a conditional of literals and absences, or a forward. */
@@ -514,8 +595,8 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
   const inLanding = new Set();
   for (const node of walk(file)) {
     // The producers' positional arguments.
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const callee = node.expression.text;
+    const callee = ts.isCallExpression(node) ? calleeName(node) : null;
+    if (callee !== null) {
       const positions = ROAD_PRODUCERS[callee];
       if (positions !== undefined) {
         for (const [field, index] of Object.entries(positions)) {
@@ -545,9 +626,12 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
         }
       }
       // `probeAim("act.route", { … })` — the road named on the row itself.
-      if (callee === "probeAim" && vocabularyLiteral(node.arguments[0]) === null) {
-        const first = node.arguments[0];
-        if (first !== undefined && ts.isStringLiteral(first) && first.text === "act.route") readActRoute(node);
+      if (callee === "probeAim" && node.arguments[0] !== undefined) {
+        // `"act.route"`, `` `act.route` `` and `("act.route")` are one row kind (gate 2 on #682: the
+        // two wrapped spellings dropped the row's road in silence). A kind held in a variable is not
+        // read — see the PR for the surfaces this reader does not see.
+        const first = skipParentheses(node.arguments[0]);
+        if ((ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) && first.text === "act.route") readActRoute(node);
       }
     }
 
@@ -558,6 +642,16 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
       const object = skipParentheses(node.initializer);
       for (const inner of walk(object)) inLanding.add(inner);
       for (const property of object.properties) {
+        // A shorthand `why` or a spread in a landing object carries a landing why this parser cannot
+        // read, and it used to fall through both axes in silence (gate 2 on #682).
+        if (ts.isShorthandPropertyAssignment(property) && property.name.text === "why") {
+          problems.push(`a landing why is not a literal: ${property.name.text} (shorthand)`);
+          continue;
+        }
+        if (ts.isSpreadAssignment(property)) {
+          problems.push(`a landing object spreads \`${oneLine(file, property.expression)}\` — a why in it is on neither axis`);
+          continue;
+        }
         if (!ts.isPropertyAssignment(property) || propertyName(property.name) !== "why") continue;
         const value = skipParentheses(property.initializer);
         const literal = vocabularyLiteral(value);
@@ -575,7 +669,19 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
       continue;
     }
 
-    // Row fields, wherever the executor writes them.
+    // Row fields, wherever the executor writes them — an object's property, or an assignment to
+    // one (`facts.why = …`, `row["rung"] = …`; gate 2 on #682: both were dropped in silence).
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const target = skipParentheses(node.left);
+      const field = ts.isPropertyAccessExpression(target)
+        ? target.name.text
+        : ts.isElementAccessExpression(target) && (ts.isStringLiteral(target.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(target.argumentExpression))
+          ? target.argumentExpression.text
+          : null;
+      if (field !== null && ROW_FIELDS.has(field)) {
+        readValue(field, node.right, (inner) => problems.push(`a ${field} is not a literal: ${oneLine(file, inner)}`));
+      }
+    }
     if (ts.isPropertyAssignment(node)) {
       const field = propertyName(node.name);
       if (field !== null && ROW_FIELDS.has(field)) {
@@ -622,15 +728,32 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
 
   // ── `adr029Refusal`'s own returns — the grounds `probedStep` forwards ──
   const adr029 = functions.get("adr029Refusal");
+  const readGround = (expression) => {
+    const inner = skipParentheses(expression);
+    if (isAbsence(inner)) return;
+    const literal = vocabularyLiteral(inner);
+    if (literal !== null) return void refused.add(literal);
+    if (ts.isConditionalExpression(inner)) {
+      readGround(inner.whenTrue);
+      readGround(inner.whenFalse);
+      return;
+    }
+    problems.push(`adr029Refusal returns a non-literal ground: ${oneLine(file, inner)}`);
+  };
   if (adr029 !== undefined) {
+    // An arrow with an EXPRESSION body has no return statement; its body is the one return (gate 2
+    // on #682: `(err) => err instanceof A ? "ground_a" : undefined` read as no grounds, silently).
+    if (adr029.body !== undefined && !ts.isBlock(adr029.body)) readGround(adr029.body);
     for (const node of walk(adr029.body ?? adr029)) {
       if (!ts.isReturnStatement(node) || enclosingFunction(node) !== adr029) continue;
-      if (node.expression === undefined || isAbsence(node.expression)) continue;
-      const literal = vocabularyLiteral(node.expression);
-      if (literal !== null) refused.add(literal);
-      else problems.push(`adr029Refusal returns a non-literal ground: ${oneLine(file, node.expression)}`);
+      if (node.expression !== undefined) readGround(node.expression);
     }
-  } else if ([...walk(file)].some((n) => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "probedStep")) {
+  } else if (
+    // Keyed on the exemption having been USED, not on a caller being named `probedStep`: renaming
+    // the caller or importing `adr029Refusal` kept the exemption and read no grounds (gate 2 on #682).
+    refusalBindingUsed ||
+    [...walk(file)].some((n) => ts.isCallExpression(n) && calleeName(n) === "probedStep")
+  ) {
     problems.push("adr029Refusal has moved: three refusal grounds are reachable only through it");
   }
 
@@ -639,7 +762,12 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
   // replaces the positional one, so the value read is not the value on the row (win2, internal
   // `cb0f6d6`: the scanner dropped the row's road in silence, and over-counted rung/refused).
   // Found from the producers' bodies, transitively through a producer that forwards its extra.
+  // `overrides`: producer name → parameter index → the road fields a spread of it overrides. Keyed
+  // by index because one function can spread two parameters; a single index per name flipped on
+  // every pass and the fixed point never came (gate 2 on #682: `{ ...a, ...b }` hung the gate).
+  // The sets only grow and are bounded by four fields, so the loop ends.
   const overrides = new Map();
+  const overridden = (name, index) => overrides.get(name)?.get(index);
   for (let changed = true; changed; ) {
     changed = false;
     for (const [name, fn] of functions) {
@@ -653,14 +781,16 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
             const fields = new Set(before);
             // Transitively: this object is itself an argument in another producer's spread position.
             const parent = node.parent;
-            if (ts.isCallExpression(parent) && ts.isIdentifier(parent.expression)) {
-              const outer = overrides.get(parent.expression.text);
-              if (outer !== undefined && outer.index === parent.arguments.indexOf(node)) for (const f of outer.fields) fields.add(f);
+            if (ts.isCallExpression(parent)) {
+              const outer = calleeName(parent) === null ? undefined : overridden(calleeName(parent), parent.arguments.indexOf(node));
+              if (outer !== undefined) for (const f of outer) fields.add(f);
             }
+            if (fields.size === 0) continue;
             const index = fn.parameters.indexOf(parameter);
-            const known = overrides.get(name);
-            if (known === undefined || known.index !== index || [...fields].some((f) => !known.fields.has(f))) {
-              overrides.set(name, { index, fields: new Set([...(known?.index === index ? known.fields : []), ...fields]) });
+            if (!overrides.has(name)) overrides.set(name, new Map());
+            const known = overrides.get(name).get(index) ?? new Set();
+            if ([...fields].some((f) => !known.has(f))) {
+              overrides.get(name).set(index, new Set([...known, ...fields]));
               changed = true;
             }
           } else if (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) {
@@ -671,20 +801,40 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
       }
     }
   }
-  for (const node of walk(file)) {
-    if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) continue;
-    const override = overrides.get(node.expression.text);
-    if (override === undefined) continue;
-    const arg = node.arguments[override.index];
-    if (arg === undefined || !ts.isObjectLiteralExpression(skipParentheses(arg))) continue;
-    for (const p of skipParentheses(arg).properties) {
+  const checkExtra = (call, callee, index, fields, arg) => {
+    const inner = skipParentheses(arg);
+    if (ts.isConditionalExpression(inner)) {
+      checkExtra(call, callee, index, fields, inner.whenTrue);
+      checkExtra(call, callee, index, fields, inner.whenFalse);
+      return;
+    }
+    if (isAbsence(inner)) return;
+    if (!ts.isObjectLiteralExpression(inner)) {
+      // A variable or a call in this position can carry a road field this parser cannot see, and
+      // one there overrides the value read (gate 2 on #682: `const extra = { route: "mouse" }`).
+      problems.push(
+        `${callee}(…) at line ${lineOf(file, call)} passes \`${oneLine(file, inner)}\` where a ${[...fields].join("/")} in it would override the positional one — this parser cannot see into it`,
+      );
+      return;
+    }
+    for (const p of inner.properties) {
       if (!(ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))) continue;
       const key = propertyName(p.name);
-      if (key !== null && override.fields.has(key)) {
+      if (key !== null && fields.has(key)) {
         problems.push(
-          `${node.expression.text}(…) at line ${lineOf(file, node)} passes \`${key}\` in an object spread over the row AFTER the positional ${key} — the row carries this one, not the one read`,
+          `${callee}(…) at line ${lineOf(file, call)} passes \`${key}\` in an object spread over the row AFTER the positional ${key} — the row carries this one, not the one read`,
         );
       }
+    }
+  };
+  for (const node of walk(file)) {
+    if (!ts.isCallExpression(node)) continue;
+    const callee = calleeName(node);
+    const byIndex = callee === null ? undefined : overrides.get(callee);
+    if (byIndex === undefined) continue;
+    for (const [index, fields] of byIndex) {
+      const arg = node.arguments[index];
+      if (arg !== undefined) checkExtra(node, callee, index, fields, arg);
     }
   }
 

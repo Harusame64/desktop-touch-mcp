@@ -62,14 +62,15 @@ const landingWhy = typeUnion(keyboardTarget, "src/engine/keyboard-target.ts", "L
 // the files (gate 2 on #669: the why axis was 12 and the tree can write 9 more).
 const road = readRoadVocabulary(
   executor,
+  // `landing.why` is not asked for: the landing's draw from the union is a flag on the result
+  // (`landingWhyDrawsFromTheUnion`), and neither reader resolves it (gate 2 on #682 found the
+  // branch dead).
   (name) =>
     name === "homing.why"
       ? readInlineFieldUnion(aim, "Homing", "why", unionProblems, "src/engine/aim.ts")
-      : name === "landing.why"
-        ? landingWhy
-        : name === "owner.why"
-          ? readInlineFieldUnion(pointOwner, "PointOwner", "why", unionProblems, "src/engine/point-owner.ts")
-          : [],
+      : name === "owner.why"
+        ? readInlineFieldUnion(pointOwner, "PointOwner", "why", unionProblems, "src/engine/point-owner.ts")
+        : [],
   "src/tools/desktop-executor.ts",
 );
 const derived = {
