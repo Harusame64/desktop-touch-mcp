@@ -31,7 +31,8 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readUnion } from "./lib/route-vocabulary.mjs";
+// The type reader comes from the parser — see the note in `check-route-vocabulary.mjs`.
+import { readUnion } from "./lib/typescript-source.mjs";
 import {
   readPresentedNames,
   readReturnedCodes,

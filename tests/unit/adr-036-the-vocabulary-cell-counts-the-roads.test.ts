@@ -8,7 +8,7 @@
  * suite does not run in this repo's CI, and a guard nothing runs is a guard that is not there.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -375,6 +375,11 @@ export type LandingWhy =
     // all. The failure is loud, but a list that has to be edited by hand is wrong from the commit
     // that outgrows it until someone notices. Copying the directory removes the list.
     cpSync(join(REPO, "scripts", "lib"), join(root, "scripts", "lib"), { recursive: true });
+    // **The gate needs the compiler now.** `scripts/lib/typescript-source.mjs` imports
+    // `typescript`, and node resolves that by walking up from the script — which, in a temp
+    // directory, walks past nothing. CI has it because `npm ci` runs before these gates; this
+    // harness has to provide what CI provides, or it tests a tree the gate cannot run in.
+    symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"), "dir");
   });
 
   afterAll(() => {

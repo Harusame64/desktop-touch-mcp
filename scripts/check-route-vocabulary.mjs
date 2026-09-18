@@ -20,7 +20,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readInlineFieldUnion, readRoadVocabulary, readUnion } from "./lib/route-vocabulary.mjs";
+import { readRoadVocabulary } from "./lib/route-vocabulary.mjs";
+// **The two type readers come from the parser.** `readUnion` and `readInlineFieldUnion` used to
+// find a declaration's end by counting braces on a masked copy and cut its members out with
+// `[^;{}]`; both were defects (#679, and the re-read after it). A type alias is a node and its
+// members are a list. `readRoadVocabulary` is still the hand-written one — it is the next axis,
+// and keeping it here keeps the old module as the control the replacement is measured against.
+import { readInlineFieldUnion, readUnion } from "./lib/typescript-source.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PINNED = join(ROOT, "tests", "fixtures", "adr-036-route-vocabulary.json");
