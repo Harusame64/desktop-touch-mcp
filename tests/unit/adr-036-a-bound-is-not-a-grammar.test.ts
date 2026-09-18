@@ -291,3 +291,41 @@ describe("a comment inside a template's interpolation is still a comment", () =>
     expect(readSwitchesFromScript(source, "f.ts", []).read).toEqual(["DTM_KEPT"]);
   });
 });
+
+describe("the helper's forwarding call is exempted by WHERE it is, and only there", () => {
+  const helper = 'function probeRoute(route: string, aimHwnd: bigint, entity: UiEntity, extra = {}): void {\n  probeAim("act.route", { route, ...extra });\n}\n';
+
+  it("exempts probeRoute's own forwarding call", () => {
+    // The helper's body ends with `probeAim("act.route", { route, … })`, forwarding the parameter it
+    // was given. That site names no road; the roads that reach it are exactly the literals the
+    // `probeRoute("…")` rule reads, so reporting it would make the gate red about a producer that is
+    // already fully enumerated one rule up.
+    const source = `${helper}function caller(): void {\n  probeRoute("a_real_one", h, e, {});\n}\n`;
+    const out = readRoadVocabulary(source);
+    expect([...out.route]).toContain("a_real_one");
+    expect(out.problems).toEqual([]);
+  });
+
+  it("reports a shorthand `route` in ANY OTHER function", () => {
+    // Gate 2 on this PR, round 4. The first version walked up to eight `{…}` candidates after the
+    // `function` keyword until one spanned the call — which reads straight past the helper: a direct
+    // `probeAim("act.route", { route })` in a later function landed inside THAT function's block,
+    // the walk accepted it, and the exemption swallowed a dynamic producer with neither a road nor a
+    // problem. Eight was also one more arbitrary bound, in a PR about removing them.
+    const source = `${helper}function somethingElse(route: string): void {\n  probeAim("act.route", { route });\n}\n`;
+    const out = readRoadVocabulary(source);
+    expect(out.problems.join("\n")).toContain("non-literal road");
+  });
+
+  it("finds the body past an OBJECT RETURN TYPE, which opens a brace of its own", () => {
+    // `): { ok: boolean } {` puts two blocks in a row after the parameter list, and the first is the
+    // annotation. They are told apart by what follows the first one closing — another `{` means the
+    // first was a type. Taking the wrong one does not fail loudly here: the exemption simply stops
+    // applying to the helper's own call, which reports a producer that IS enumerated one rule up.
+    const source =
+      'function probeRoute(route: string): { ok: boolean } {\n  probeAim("act.route", { route });\n  return { ok: true };\n}\nfunction caller(): void {\n  probeRoute("a_real_one", h, e, {});\n}\n';
+    const out = readRoadVocabulary(source);
+    expect([...out.route]).toContain("a_real_one");
+    expect(out.problems).toEqual([]);
+  });
+});

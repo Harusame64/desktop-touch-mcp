@@ -760,27 +760,45 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
   // sentence quoting one — asks this copy, and reads the value back out of `text`.
   const masked = maskLiteralContents(text);
   const problems = [];
-  // `probeRoute`'s own block, so its forwarding `probeAim` call can be told from a caller's.
+  // **`probeRoute`'s own body, found from its parameter list — not the first block that happens to
+  // contain the position.** The first version walked up to eight `{…}` candidates after the
+  // `function` keyword until one spanned the call, which reads past the helper entirely: a direct
+  // `probeAim("act.route", { route })` in a LATER function landed inside that function's block, the
+  // walk accepted it, and the shorthand exemption then swallowed a dynamic producer with neither a
+  // road nor a problem (gate 2 on #679, round 4). Eight was also one more arbitrary bound in a PR
+  // about removing them.
   //
-  // **The first `{` after the declaration is not the body.** `probeRoute`'s signature ends
-  // `extra: Record<string, unknown> = {}`, so taking the first brace gives a two-character block
-  // that contains nothing — the containment test then answers "not inside" for the one call that
-  // is. `code-vocabulary.mjs` learned this on #674 (a parameter's object type, `Promise<{ … }>` in
-  // a return type); the candidates are walked in order until one spans the position, and running
-  // out means "unknown", not "somebody else's".
+  // The body is the first `{` after the parameter list's closing `)`. A return-type annotation can
+  // carry braces of its own (`): { a: string } {`), and this reader cannot tell that `{` from the
+  // body's — so when the text between the two holds a `<` or a `{` it says so and exempts nothing,
+  // which is the loud direction.
   const helperAt = text.search(/\bfunction\s+probeRoute\s*\(/);
-  const insideProbeRoute = (at) => {
-    if (helperAt === -1 || at < helperAt) return false;
-    let from = helperAt;
-    for (let tries = 0; tries < 8; tries++) {
-      const block = blockAt(text, from);
-      if (block === null) return false;
-      if (at > block.start && at < block.end) return true;
-      if (block.end <= from) return false;
-      from = block.end + 1;
+  const helperBody = (() => {
+    if (helperAt === -1) return null;
+    const open = masked.indexOf("(", helperAt);
+    if (open === -1) return null;
+    let depth = 0;
+    let i = open;
+    for (; i < masked.length; i++) {
+      if (masked[i] === "(") depth++;
+      else if (masked[i] === ")") {
+        depth--;
+        if (depth === 0) break;
+      }
     }
-    return false;
-  };
+    if (depth !== 0) return null;
+    const brace = masked.indexOf("{", i);
+    if (brace === -1) return null;
+    // **Is the first block after the parameter list the BODY, or an object return type?** The two
+    // are told apart by what follows: `): { ok: boolean } {` puts another `{` right after the first
+    // block closes, and `): void {` does not. A return type inside `<…>` never opens at depth 0, so
+    // it is not a candidate at all.
+    const first = blockAt(text, brace);
+    if (first === null) return null;
+    const after = masked.slice(first.end + 1).match(/^\s*\{/);
+    return after === null ? first : blockAt(text, first.end + 1);
+  })();
+  const insideProbeRoute = (at) => helperBody !== null && at > helperBody.start && at < helperBody.end;
   // Unions a `why` draws from at runtime, by name — expanded by the caller, which has the files.
   const dynamicWhy = new Set();
   // Whys spelled only in a producer's parameter annotation, because the call site uses a shorthand.
