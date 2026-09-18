@@ -22,6 +22,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   readSwitchesFromRust,
+  readSwitchesFromScript,
   stripComments as stripConfigComments,
 } from "../../scripts/lib/config-vocabulary.mjs";
 import { readHandBuiltFlatFailures } from "../../scripts/lib/code-vocabulary.mjs";
@@ -259,5 +260,34 @@ describe("a template's interpolation is code, and its text is prose", () => {
     expect(masked).toContain("x ?");          // the interpolation is code
     expect(masked).not.toContain("SENTINEL"); // and the string after it is still a string
     expect(masked).not.toContain("abc");
+  });
+});
+
+describe("a comment inside a template's interpolation is still a comment", () => {
+  it("strips it, so its prose cannot enter an axis as code", () => {
+    // Gate 2 on this PR, round 3. Every stripper here took a template as one quoted run, so a
+    // `/* … */` inside a `${…}` survived. Harmless while nothing looked inside — and this PR made
+    // `literalSpans` look: the closing `/` of `*/` sits after a `*`, which opens a value, so it read
+    // as a regex and ate the rest of the line.
+    const source = 'const s = `${/* x */ 1}`; probeAim("act.route", { route: "after" });\n';
+    const out = readRoadVocabulary(source);
+    expect([...out.route]).toContain("after");
+    expect(out.problems).toEqual([]);
+  });
+
+  it("keeps a switch named only in such a comment out of the configuration axis", () => {
+    // The other direction, and the one that was already wrong before this PR: the comment's prose
+    // was read as source, so a name written there joined the axis beside the real switches.
+    const source = 'const s = `${/* process.env.DTM_GHOST */ 1}`;\nconst v = process.env.DTM_REAL;\n';
+    const found = readSwitchesFromScript(source, "f.ts", []);
+    expect(found.read).toEqual(["DTM_REAL"]);
+  });
+
+  it("still leaves a template's TEXT alone, comment-looking or not", () => {
+    // The pair: `${…}` is code, the text around it is not, and a `//` in the text is not a comment.
+    const source = 'const s = `see https://example.com/ and /* not a comment */ here`;\nconst v = process.env.DTM_KEPT;\n';
+    expect(stripRouteComments(source)).toContain("https://example.com/");
+    expect(stripRouteComments(source)).toContain("/* not a comment */");
+    expect(readSwitchesFromScript(source, "f.ts", []).read).toEqual(["DTM_KEPT"]);
   });
 });

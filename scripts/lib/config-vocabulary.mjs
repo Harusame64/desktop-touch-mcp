@@ -56,8 +56,36 @@ function stripCommentsWithMask(source) {
   };
   let i = 0;
   let quote = null;
+  // Templates currently open, innermost last. `{ template: true }` is quoted text; `{ template:
+  // false, depth }` is that template's `${…}`, which is CODE — see the note on the backtick branch.
+  const stack = [];
   while (i < text.length) {
     const ch = text[i];
+    const top = stack[stack.length - 1];
+    if (quote === null && top !== undefined && top.template) {
+      if (ch === "\\" && i + 1 < text.length) {
+        push(ch, true);
+        push(text[i + 1], true);
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        push(ch, false);
+        stack.pop();
+        i++;
+        continue;
+      }
+      if (ch === "$" && text[i + 1] === "{") {
+        push(ch, false);
+        push("{", false);
+        stack.push({ template: false, depth: 0 });
+        i += 2;
+        continue;
+      }
+      push(ch, true);
+      i++;
+      continue;
+    }
     if (quote) {
       push(ch, true);
       if (ch === "\\" && i + 1 < text.length) {
@@ -72,7 +100,18 @@ function stripCommentsWithMask(source) {
     // **A `//` inside a string is not a comment.** `fetch("http://host", { h: process.env.TOKEN })`
     // lost its switch to the line-comment rule, silently, in the first version of this file and in
     // the road extractor it was copied from.
-    if (ch === '"' || ch === "'" || ch === "`") {
+    // **A template's `${…}` is code, so the strip has to go in there.** Taking the whole template as
+    // one quoted run left a `/* … */` inside an interpolation unstripped, and the prose in it was
+    // then read as source: `` `${/* process.env.DTM_GHOST */ 1}` `` put DTM_GHOST in the
+    // configuration axis, beside the real switches (gate 2 on #679, round 3, measured here). The
+    // same rule the road module's strip and `literalSpans` learned in this PR.
+    if (ch === "`") {
+      push(ch, false);
+      stack.push({ template: true, depth: 0 });
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
       quote = ch;
       push(ch, false);
       i++;
@@ -123,6 +162,18 @@ function stripCommentsWithMask(source) {
         else if (c === "\n") break;
       }
       continue;
+    }
+    if (top !== undefined && !top.template) {
+      if (ch === "{") top.depth++;
+      else if (ch === "}") {
+        if (top.depth === 0) {
+          push(ch, false);
+          stack.pop();
+          i++;
+          continue;
+        }
+        top.depth--;
+      }
     }
     push(ch, false);
     i++;

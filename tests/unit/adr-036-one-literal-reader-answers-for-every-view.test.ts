@@ -231,4 +231,87 @@ describe("the one reader, against TypeScript's own scanner", () => {
     expect(compared).toBeGreaterThan(1_000_000);
     expect(disagreed).toEqual([]);
   });
+
+  it("removes exactly TypeScript's comments, leaving its token stream untouched", () => {
+    // **The invariant is the TOKEN stream, not the characters.** The stripper leaves a separator
+    // where a comment was, on purpose, so comparing text would report a difference that is the fix.
+    // Comparing tokens is what a separator protects and what deleting one destroys: before #679 all
+    // four strippers turned `foo/**/bar` into `foobar`, and this cell would have said so on the day
+    // it landed.
+    //
+    // The comment ranges come from the syntax tree, not from a bare `ts.createScanner` loop — a raw
+    // scanner desynchronises on a template literal and on a regex unless it is driven with
+    // `reScanTemplateToken` / `reScanSlashToken`, and it reported 99 of 203 files as disagreeing
+    // when the disagreement was its own.
+    const commentRanges = (source: string): Uint8Array => {
+      const marked = new Uint8Array(source.length);
+      const file = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const seen = new Set<number>();
+      const visit = (node: ts.Node): void => {
+        const full = node.getFullStart();
+        if (!seen.has(full)) {
+          seen.add(full);
+          for (const r of ts.getLeadingCommentRanges(source, full) ?? []) {
+            for (let i = r.pos; i < r.end; i++) marked[i] = 1;
+          }
+        }
+        const end = node.getEnd();
+        if (!seen.has(-end - 1)) {
+          seen.add(-end - 1);
+          // A comment after the last token on a line is TRAILING and belongs to nothing's leading
+          // trivia — `"ConsoleWindowClass", // conhost.exe` is the shape.
+          for (const r of ts.getTrailingCommentRanges(source, end) ?? []) {
+            for (let i = r.pos; i < r.end; i++) marked[i] = 1;
+          }
+        }
+        node.getChildren(file).forEach(visit);
+      };
+      file.getChildren(file).forEach(visit);
+      return marked;
+    };
+    const tokens = (source: string): string[] => {
+      const file = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const out: string[] = [];
+      const visit = (node: ts.Node): void => {
+        const kids = node.getChildren(file);
+        if (kids.length === 0) {
+          const text = node.getText(file);
+          if (text !== "") out.push(text);
+          return;
+        }
+        kids.forEach(visit);
+      };
+      file.getChildren(file).forEach(visit);
+      return out;
+    };
+
+    const files = sourceFiles();
+    const disagreed: string[] = [];
+    let compared = 0;
+    for (const path of files) {
+      const source = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+      let marks: Uint8Array;
+      try {
+        marks = commentRanges(source);
+      } catch {
+        continue;
+      }
+      let withoutComments = "";
+      for (let i = 0; i < source.length; i++) if (marks[i] === 0) withoutComments += source[i];
+      let expectedTokens: string[];
+      let ourTokens: string[];
+      try {
+        expectedTokens = tokens(withoutComments);
+        ourTokens = tokens(stripComments(source));
+      } catch {
+        continue;
+      }
+      compared++;
+      if (expectedTokens.length === ourTokens.length && expectedTokens.every((x, n) => x === ourTokens[n])) continue;
+      const k = expectedTokens.findIndex((x, n) => x !== ourTokens[n]);
+      disagreed.push(`${path} token ${k}: typescript=${JSON.stringify(expectedTokens.slice(k, k + 4))} ours=${JSON.stringify(ourTokens.slice(k, k + 4))}`);
+    }
+    expect(compared).toBeGreaterThan(100);
+    expect(disagreed).toEqual([]);
+  });
 });

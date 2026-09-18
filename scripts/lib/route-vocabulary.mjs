@@ -62,7 +62,34 @@ export function stripComments(source) {
   const opensValue = /(?:[=(,[!&|?:;{}+\-*%^~<>]|\breturn|\btypeof|\bcase|\bin|\bof|\bdo|\belse|\bvoid|\bdelete|\binstanceof|\bnew|\byield|\bawait)\s*$/;
   let out = "";
   let i = 0;
+  // Templates currently open, innermost last. A `{ template: true }` entry means the walk is in
+  // quoted text; `{ template: false, depth }` means it is in that template's `${…}`, which is code.
+  const stack = [];
   while (i < src.length) {
+    const top = stack[stack.length - 1];
+    if (top !== undefined && top.template) {
+      const c = src[i];
+      if (c === "\\") {
+        out += c + (src[i + 1] ?? "");
+        i += 2;
+        continue;
+      }
+      if (c === "`") {
+        out += c;
+        stack.pop();
+        i++;
+        continue;
+      }
+      if (c === "$" && src[i + 1] === "{") {
+        out += "${";
+        stack.push({ template: false, depth: 0 });
+        i += 2;
+        continue;
+      }
+      out += c;
+      i++;
+      continue;
+    }
     const ch = src[i];
     const next = src[i + 1];
     // Comments first — the specification agrees: `//` is never an empty regex, `/*` never a regex.
@@ -89,7 +116,20 @@ export function stripComments(source) {
       i += 2;
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === "`") {
+    // **A template's `${…}` is code, so the walk leaves the literal there.** Taking the whole
+    // template as quoted text left a `/* … */` inside an interpolation UNSTRIPPED — harmless while
+    // nothing looked inside, and not harmless once `literalSpans` did: the closing `/` of `*/` sits
+    // after a `*`, which is in the "a value may begin here" class, so it opened a regex that ate the
+    // rest of the line and a `probeAim` after it vanished with `problems` empty (gate 2 on #679,
+    // round 3). The stripper is a reader, and this is the rule every reader in this tree has to
+    // learn at the same time.
+    if (ch === "`") {
+      out += ch;
+      stack.push({ template: true, depth: 0 });
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
       const quote = ch;
       out += ch;
       i++;
@@ -126,6 +166,18 @@ export function stripComments(source) {
         else if (c === "\n") break;
       }
       continue;
+    }
+    if (top !== undefined) {
+      if (ch === "{") top.depth++;
+      else if (ch === "}") {
+        if (top.depth === 0) {
+          out += ch;
+          stack.pop();
+          i++;
+          continue;
+        }
+        top.depth--;
+      }
     }
     out += ch;
     i++;
@@ -354,8 +406,11 @@ function walkTemplate(text, start, spans) {
     }
     i++;
   }
-  // Unterminated: say the rest is text rather than guess where it ends.
-  spans.push([chunkStart, text.length]);
+  // Unterminated: say the rest is text rather than guess where it ends. An empty span is not
+  // pushed — `maskLiteralContents` reads `source[start]` as a delimiter, and a start at the end of
+  // the input gave it `undefined`, which it appended to the mask as the word "undefined" and broke
+  // the length contract in silence (seen while measuring round 3's finding).
+  if (chunkStart < text.length) spans.push([chunkStart, text.length]);
   return text.length;
 }
 

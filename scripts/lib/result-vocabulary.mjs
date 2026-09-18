@@ -57,73 +57,18 @@ import { quoteForRegExp } from "./route-vocabulary.mjs";
 // **The one scanner, and the one depth-1 reader.** Both already exist in this tree; this file
 // had grown its own copy of the first and no copy of the second. Importing them is the fix for
 // two findings at once, because both findings are the same defect: a second reader.
-import { maskLiteralContents } from "./route-vocabulary.mjs";
+import { maskLiteralContents, stripComments as stripRouteComments } from "./route-vocabulary.mjs";
 import { fieldsAtDepthOne, isShorthandAtDepthOne } from "./code-vocabulary.mjs";
 
-/** Strip `//` and block comments, keeping every line's index — and leaving string literals alone. */
-export function stripComments(source) {
-  const text = source.replace(/\r\n/g, "\n");
-  let out = "";
-  let i = 0;
-  let quote = null;
-  while (i < text.length) {
-    const ch = text[i];
-    if (quote) {
-      out += ch;
-      if (ch === "\\" && i + 1 < text.length) {
-        out += text[i + 1];
-        i += 2;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "*") {
-      // **A block comment separates two tokens; deleting it joins them** — `foo/**/bar` came out
-      // as `foobar` (gate 2 on #679, round 2). The separator is kept, and the newlines still land
-      // where they did, because the contract here is the line index, not the column.
-      out += " ";
-      const close = text.indexOf("*/", i + 2);
-      const end = close === -1 ? text.length : close + 2;
-      for (let j = i; j < end; j++) if (text[j] === "\n") out += "\n";
-      i = end;
-      continue;
-    }
-    // **After the comment checks, never before them.** Placed first, `// foo` parses as an empty
-    // regex literal (`//` plus flags) and the comment is never stripped — 94 SUGGESTS keys became 20
-    // the moment this was tried in the wrong order.
-    //
-    // **A regex literal is not a comment and is not a string, and it can contain both.**
-    // `/^Exception calling "GetCurrentPattern" with "\d+" argument\(s\): ".*/` has five quotes;
-    // once the walk over all of `src/` began (this file used to see five named files), that odd
-    // quote opened a string state that never closed, and every comment BELOW it in that file
-    // stopped being stripped. Gate 2 on #672 showed it live in two files by planting a
-    // commented-out error class after the desync and watching it enter the axis, with the same
-    // comment in a clean file changing nothing.
-    if (ch === "/" && regexCanStartHere(out)) {
-      const end = skipRegexLiteral(text, i);
-      if (end > i) {
-        out += text.slice(i, end);
-        i = end;
-        continue;
-      }
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
+/**
+ * Strip `//` and block comments — **the base module's, under the name this file's callers use.**
+ *
+ * This was a second copy of the same walk. It produced byte-identical output to the road module's
+ * on all 208 files in `src` and `scripts/lib`, which is what a copy looks like right up until one of
+ * them learns something: in this PR the road module's learned that a block comment separates two
+ * tokens, and that a template's `${…}` is code. A copy would have learned neither.
+ */
+export const stripComments = stripRouteComments;
 
 /** The body of a brace-delimited initialiser, from the `{` that follows `head`. */
 function bodyAfter(text, head) {
@@ -347,43 +292,6 @@ export function readEnvelopeErrorNames(sources, problems = [], resolved = []) {
   return { names: [...names].sort(), nameOfClass, collisions: [...new Set(collisions)].sort() };
 }
 
-/**
- * Whether a `/` at this point opens a regular expression rather than being division.
- *
- * Decided by what came before it, which is the standard way and is not exact — but the inexactness
- * is one-sided here: treating a division as a regex loses at most the rest of a line, while
- * treating a regex as division desyncs the whole FILE.
- */
-function regexCanStartHere(before) {
-  const prev = before.replace(/\s+$/, "").slice(-1);
-  if (prev === "") return true;
-  if ("=(,:[!&|?{};+-*%^~<>".includes(prev)) return true;
-  return /\b(return|typeof|instanceof|case|in|of|do|else|yield|await|new|delete|void)$/.test(before.replace(/\s+$/, ""));
-}
-
-/** The index just past a regex literal starting at `i`, or `i` if this is not one. */
-function skipRegexLiteral(text, i) {
-  let j = i + 1;
-  let inClass = false;
-  while (j < text.length) {
-    const ch = text[j];
-    if (ch === "\n") return i; // a regex literal does not span lines: this was division
-    if (ch === "\\") {
-      j += 2;
-      continue;
-    }
-    if (ch === "[") inClass = true;
-    else if (ch === "]") inClass = false;
-    else if (ch === "/" && !inClass) {
-      j++;
-      while (j < text.length && /[dgimsuvy]/.test(text[j])) j++;
-      return j;
-    }
-    j++;
-  }
-  return i;
-}
-
 /** The index just past a class declaration's closing brace, counting from its `class` keyword. */
 function classEnd(text, start) {
   const open = text.indexOf("{", start);
@@ -527,6 +435,18 @@ export function readLeaseTable(source, problems = []) {
   }
   return table;
 }
+
+/**
+ * **The third encoding of "where may a regex begin" lived here, and it is gone.**
+ *
+ * `regexCanStartHere` and `skipRegexLiteral` were this file's own copy of the rule, used only by its
+ * own copy of `stripComments`. Both copies are the base module's now. The fact is still spelled
+ * twice — `opensValue` in `stripComments`, which reads the text it has already emitted, and
+ * `literalEnd`'s table, which reads the source — and those two answer about different inputs on
+ * purpose: a `/` after a stripped comment has a different predecessor in each. They are checked
+ * against each other, and against TypeScript, by the cells in
+ * `adr-036-one-literal-reader-answers-for-every-view.test.ts`.
+ */
 
 export function readReturnedCodes(source, functionName, problems = [], resolvable = null) {
   const text = stripComments(source);
