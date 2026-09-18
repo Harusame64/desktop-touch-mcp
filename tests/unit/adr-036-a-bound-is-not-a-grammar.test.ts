@@ -317,6 +317,33 @@ describe("the helper's forwarding call is exempted by WHERE it is, and only ther
     expect(out.problems.join("\n")).toContain("non-literal road");
   });
 
+  it.each([
+    "Promise<{ ok: boolean }>",
+    "{ ok: boolean } | null",
+    "Array<{ a: 1 }>[]",
+    "{ ok: boolean } & { more: 1 }",
+  ])("finds the body past a WRAPPED return type: %s", (annotation) => {
+    // Gate 2 on this PR, round 5. Checking only for an immediately following `{` took the type
+    // literal as the body whenever the type continued with `>` or `|` instead — and the helper's own
+    // forwarding call was then reported, so the gate went red about a producer that is enumerated
+    // one rule up. A type CONTINUES after its block; a body does not.
+    const source = `function probeRoute(route: string): ${annotation} {\n  probeAim("act.route", { route });\n  return null as never;\n}\nfunction caller(): void {\n  probeRoute("a_real_one", h, e, {});\n}\n`;
+    const out = readRoadVocabulary(source);
+    expect([...out.route]).toContain("a_real_one");
+    expect(out.problems).toEqual([]);
+  });
+
+  it("does not walk out of the body into an `export { … }` that follows it", () => {
+    // The pair for that loosening: after a REAL body, `}\nexport { probeRoute };` also offers an
+    // identifier and then a brace. The continuation has to START with a type character, or the
+    // search leaves the function.
+    const source =
+      'function probeRoute(route: string): void {\n  probeAim("act.route", { route });\n}\nexport { probeRoute };\nfunction caller(): void {\n  probeRoute("a_real_one", h, e, {});\n}\n';
+    const out = readRoadVocabulary(source);
+    expect([...out.route]).toContain("a_real_one");
+    expect(out.problems).toEqual([]);
+  });
+
   it("finds the body past an OBJECT RETURN TYPE, which opens a brace of its own", () => {
     // `): { ok: boolean } {` puts two blocks in a row after the parameter list, and the first is the
     // annotation. They are told apart by what follows the first one closing — another `{` means the

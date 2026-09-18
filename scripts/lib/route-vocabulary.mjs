@@ -789,14 +789,24 @@ export function readRoadVocabulary(executorSource, resolveUnion = () => []) {
     if (depth !== 0) return null;
     const brace = masked.indexOf("{", i);
     if (brace === -1) return null;
-    // **Is the first block after the parameter list the BODY, or an object return type?** The two
-    // are told apart by what follows: `): { ok: boolean } {` puts another `{` right after the first
-    // block closes, and `): void {` does not. A return type inside `<…>` never opens at depth 0, so
-    // it is not a candidate at all.
-    const first = blockAt(text, brace);
-    if (first === null) return null;
-    const after = masked.slice(first.end + 1).match(/^\s*\{/);
-    return after === null ? first : blockAt(text, first.end + 1);
+    // **Is a block after the parameter list the BODY, or part of an object return type?** Told apart
+    // by what follows it: a type CONTINUES, and a body does not. `): { ok } {` continues with
+    // another brace; `): Promise<{ ok }> {` with `>`; `): { ok } | null {` with `|`. Only checking
+    // for an immediately following `{` took the type literal as the body in the wrapped forms, and
+    // the helper's own forwarding call was then reported — loud, and wrong (gate 2 on #679, round 5).
+    //
+    // The continuation has to START with a type character, not merely contain one: after a real
+    // body, `}\nexport { probeRoute };` also has an identifier and then a brace, and matching that
+    // would walk out of the function into the export.
+    let block = blockAt(text, brace);
+    for (;;) {
+      if (block === null) return null;
+      const rest = masked.slice(block.end + 1);
+      const continues = /^\s*\{/.test(rest) || /^\s*[>|&[\],.][\s\w>|&[\],.]*\{/.test(rest);
+      if (!continues) return block;
+      const next = rest.indexOf("{");
+      block = blockAt(text, block.end + 1 + next);
+    }
   })();
   const insideProbeRoute = (at) => helperBody !== null && at > helperBody.start && at < helperBody.end;
   // Unions a `why` draws from at runtime, by name — expanded by the caller, which has the files.
