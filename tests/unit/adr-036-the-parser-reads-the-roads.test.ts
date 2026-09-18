@@ -11,6 +11,7 @@
  * gate's own call; a producer neither reader has seen, written into the real executor; and
  * behaviour named, with the scanner's answer beside it wherever the two differ on purpose.
  */
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -312,6 +313,18 @@ it("REPORTS AN EXECUTOR THAT DID NOT PARSE, and names the file", () => {
 
 describe("gate 2 on #682 — each finding's own input, as a cell", () => {
   it("ends when one function spreads two parameters (it hung the gate)", () => {
+    // **In a child process with a timeout**, because a synchronous infinite loop never reaches an
+    // `expect` and vitest cannot interrupt it — a same-process cell cannot tell "ends" from "hangs"
+    // (gate 2 on #682, second pass). The timeout makes a hang a red cell.
+    const moduleUrl = new URL("../../scripts/lib/typescript-source.mjs", import.meta.url).href;
+    const script = `import { readRoadVocabulary } from ${JSON.stringify(moduleUrl)};\nconst out = readRoadVocabulary(process.env.SOURCE);\nprocess.stdout.write(JSON.stringify(out.problems));`;
+    const hangSource = `${PRODUCERS}\nfunction merge(a: object, b: object) {\n  return { route: "r", ...a, why: "w", ...b };\n}\n`;
+    const printed = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, SOURCE: hangSource },
+      timeout: 10_000,
+    });
+    expect(JSON.parse(printed)).toEqual([]);
     const started = Date.now();
     // Road fields before EACH spread, so both parameters are recorded as overriding — the shape
     // that flipped the single index per name forever. `{ ...a, ...b }` alone no longer reaches it:
@@ -331,11 +344,15 @@ describe("gate 2 on #682 — each finding's own input, as a cell", () => {
     expect(readRoadVocabulary(source as string).problems.join("\n")).toMatch(expected as RegExp);
   });
 
-  it("reads a producer called as a method, as the scanner did", () => {
-    const out = readRoadVocabulary('this.refusal("hidden_rung", "hidden_ground", new Error("x"));\nprobes.probeRoute("hidden_road", undefined, entity, {});');
-    expect(out.rung).toEqual(["hidden_rung"]);
-    expect(out.refused).toEqual(["hidden_ground"]);
-    expect(out.route).toEqual(["hidden_road"]);
+  it("reports a producer's name called through a receiver, and reads none of its values", () => {
+    // Round 1 read `this.refusal(…)` as the scanner did; round 2 showed `policy.refusal(…)` and
+    // `console.probeRoute(…)` then put ANOTHER object's arguments into the axis. Which function a
+    // receiver reaches is not a syntax fact, so it is reported, loud, instead of guessed.
+    const out = readRoadVocabulary('this.refusal("hidden_rung", "hidden_ground", new Error("x"));\npolicy.probeRoute("hidden_road", undefined, entity, {});');
+    expect(out.rung).toEqual([]);
+    expect(out.route).toEqual([]);
+    expect(out.problems.join("\n")).toContain("`this.refusal(…)` at line 1 calls a producer's name through a receiver");
+    expect(out.problems.join("\n")).toContain("`policy.probeRoute(…)` at line 2 calls a producer's name through a receiver");
   });
 
   it("does not accept a forward whose parameter the body writes to", () => {
@@ -397,13 +414,29 @@ async function stepWithProbe(rung: string, aimHwnd: bigint | undefined, entity: 
     expect(readRoadVocabulary(source as string).route).toEqual([expected]);
   });
 
+  it("reads a row field written with a computed key", () => {
+    expect(readRoadVocabulary('probeRoute("uia", undefined, entity, { ["why"]: "computed_why" });').why).toEqual(["computed_why"]);
+  });
+
   it.each([
-    ["an assignment to a property", 'facts.why = "assigned_why";', "why", "assigned_why"],
-    ["an assignment by element", 'row["rung"] = "assigned_rung";', "rung", "assigned_rung"],
-    ["a computed key", 'probeRoute("uia", undefined, entity, { ["why"]: "computed_why" });', "why", "computed_why"],
-  ])("reads a row field written as %s", (_label, source, field, value) => {
-    const out = readRoadVocabulary(source as string) as unknown as Record<string, string[]>;
-    expect(out[field as string]).toContain(value);
+    ["a property", 'facts.why = "assigned_why";'],
+    ["an element", 'row["rung"] = "assigned_rung";'],
+    ["a logical assignment", 'row.why ??= "late_why";'],
+    ["a landing's field", 'row.landing.why = "receiver_unknown";'],
+    ["an Error's field", "(err as any).why = err.message;"],
+  ])("reports a road field written by assignment to %s, instead of reading it", (_label, source) => {
+    // Round 1 READ `x.why = …`; round 2 found that miss `??=`, land a landing's why on the road
+    // axis, and take an Error's field as a row value. Reading each form does not end; a road field
+    // written by assignment in ANY form is reported, and the executor has none.
+    const out = readRoadVocabulary(source as string);
+    expect(out.problems.join("\n")).toMatch(/is written by assignment at line 1/);
+    expect([...out.why, ...out.rung]).toEqual([]);
+  });
+
+  it("reports a road field's name handed to a call as a string", () => {
+    expect(readRoadVocabulary('Reflect.set(row, "why", "set_by_reflection");').problems.join("\n")).toContain('"why" is handed to a call as a string');
+    // The read that the executor does write — `"why" in owner` — is not a call argument.
+    expect(readRoadVocabulary('const has = "why" in owner;').problems).toEqual([]);
   });
 
   it.each([
@@ -415,5 +448,71 @@ async function stepWithProbe(rung: string, aimHwnd: bigint | undefined, entity: 
     expect(out.why).toEqual(["w"]);
     expect(out.route).toEqual(["uia"]);
     expect(out.problems).toEqual([]);
+  });
+});
+
+describe("gate 2 on #682, second pass — the fixes' own holes", () => {
+  it.each([
+    ["an array pattern", "[refused] = pickAny();"],
+    ["an object pattern", "({ refused } = pickAny());"],
+    ["a for-of head", "for (refused of grounds) log(refused);"],
+  ])("does not accept a forward whose parameter is reassigned through %s", (_label, write) => {
+    const source = `function probeRefusal(rung: string, refused: string, aimHwnd: bigint | undefined, entity: UiEntity) {
+  ${write}
+  probeRoute("refusal", aimHwnd, entity, { rung, refused });
+}`;
+    const text = readRoadVocabulary(source).problems.join("\n");
+    expect(text).toContain("a shorthand `refused` is not a forward");
+    expect(text).toMatch(/`refused` is written by assignment/);
+  });
+
+  it.each([
+    ["a catch variable", "catch (refused) { probeRefusal(rung, refused, aimHwnd, entity); }"],
+    ["a for-of binding", "finally { for (const refused of all) probeRefusal(rung, refused, aimHwnd, entity); }"],
+    ["a destructured binding", "finally { const { refused } = pick(); probeRefusal(rung, refused, aimHwnd, entity); }"],
+  ])("does not let the outer const exempt %s of the same name", (_label, inner) => {
+    const source = `function adr029Refusal(err: unknown) {
+  return "g";
+}
+async function probedStep(rung: string, aimHwnd: bigint | undefined, entity: UiEntity, step: () => void) {
+  const refused = adr029Refusal(step);
+  try {
+    await step();
+  } ${inner}
+}
+probedStep("a_step", undefined, entity, () => {});`;
+    expect(readRoadVocabulary(source).problems.join("\n")).toMatch(/probedStep no longer forwards/);
+  });
+
+  it("follows a forwarded extra through a conditional to the call it is passed to", () => {
+    const source = `function probeRoute(route: string, aimHwnd: bigint | undefined, entity: UiEntity, extra: Record<string, unknown> = {}): void {
+  probeAim("act.route", { route, ...extra });
+}
+function probeRefusal(rung: string, refused: string, aimHwnd: bigint | undefined, entity: UiEntity, extra: Record<string, unknown> = {}): void {
+  probeRoute("refusal", aimHwnd, entity, cond ? { rung, refused, ...extra } : {});
+}
+probeRefusal("r", "g", undefined, entity, { route: "mouse" });`;
+    expect(readRoadVocabulary(source).problems.join("\n")).toMatch(/probeRefusal\(…\) at line \d+ passes `route`/);
+  });
+
+  it("reports a variable spread inside an extra object, and leaves a call spread to internal #130", () => {
+    const variable = readRoadVocabulary(`${PRODUCERS}\nconst x = { route: "mouse" };\nprobeRoute("uia", undefined, entity, { ...x });\n`);
+    expect(variable.problems.join("\n")).toMatch(/spreads `x` into an object that is spread over the row/);
+    const call = readRoadVocabulary(`${PRODUCERS}\nprobeRoute("uia", undefined, entity, { ...keyboardLanding(entity) });\n`);
+    expect(call.problems).toEqual([]);
+  });
+
+  it("names the refused forward's real reason when the annotation IS all literals", () => {
+    const source = `function k(why: "a_why" | "b_why") {\n  why = pick();\n  probeRoute("k", undefined, entity, { why });\n}`;
+    const text = readRoadVocabulary(source).problems.join("\n");
+    expect(text).not.toContain("not all quoted literals");
+    expect(text).toContain("a shorthand `why` is not a forward");
+  });
+
+  it("reports a local named like a road field and written to, even in a nested function — rename it", () => {
+    // The cost of closing the assignment forms: the check is by name, not by binding, so a local
+    // that merely shares a road field's name and is reassigned goes red. Loud, and a rename away.
+    const out = readRoadVocabulary('function f() {\n  let refused = "x";\n  refused = "y";\n}\n');
+    expect(out.problems.join("\n")).toMatch(/`refused` is written by assignment at line 3/);
   });
 });
