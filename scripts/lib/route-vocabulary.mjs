@@ -691,10 +691,20 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // To the declaration's terminating `;` **at brace depth 0**. Two cuts were wrong before this
   // one: the first blank line (comment-stripping leaves blanks inside a type) and the first `;`
   // (a member object separates its own fields with `;`). Both read part of a union as the whole.
+  // **The depth is counted on the mask, because a brace inside a literal is not a brace.** This
+  // scan read `text` directly, so a literal type whose value carries one threw the count off:
+  //
+  //     export type T = { why: "a" | "{tool:x}" };   →  ["a"], problems: []   ← a value gone, silent
+  //     export type T = { why: "a" | "}" };          →  ["a", "not_mine"]     ← the next type's, loud
+  //
+  // This tree's advice strings are full of `{tool:…}`, so the shape is not exotic here. Found on a
+  // re-read of this function AFTER five review rounds, none of which reached it — they were anchored
+  // on the lines this branch changed, and this one sits two lines above them.
+  const masked = maskLiteralContents(text);
   let depth = 0;
   let end = -1;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
+  for (let i = start; i < masked.length; i++) {
+    const ch = masked[i];
     if (ch === "{" || ch === "(" || ch === "[") depth++;
     else if (ch === "}" || ch === ")" || ch === "]") depth--;
     else if (ch === ";" && depth === 0) {
@@ -705,16 +715,17 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
     // — one dropped semicolon and every `why:` in every type BELOW this one joined the axis, in
     // silence, until the pin failed against values nothing can produce (gate 2 on #669, second
     // pass). A declaration that starts at depth 0 ends the one above it just as well.
-    // **Anchored, because the whitespace between two tokens has no length.** This tested a
-    // thirty-nine character slice, and the grounds recorded for that bound were "the longest
-    // spelling is `export interface`, sixteen characters" — which measures the longest MINIMAL
-    // spelling, not the longest legal one. TypeScript allows any amount of whitespace between
-    // `export` and `type`, so thirty spaces walk the window out, this type never ends, and every
-    // `why:` in the type BELOW it joins the axis. `problems` stays empty, because the next
-    // declaration's `;` is found at depth 0 and the "read to the end of the file" guard never fires.
-    // Measured at the arithmetic edge: 29 spaces reads two values, 30 reads three (win2 found the
-    // misclassification; mac had put this window in the "guaranteed by the grammar" column).
-    else if (depth === 0 && ch === "\n" && declarationStartsAt(text, i + 1)) {
+    //
+    // **Anchored, because the whitespace between two tokens has no length.** That test was a
+    // thirty-nine character slice, and the grounds recorded for the bound were "the longest spelling
+    // is `export interface`, sixteen characters" — which measures the longest MINIMAL spelling, not
+    // the longest legal one. TypeScript allows any amount of whitespace between `export` and `type`,
+    // so thirty spaces walk the window out, this type never ends, and every `why:` in the type BELOW
+    // it joins the axis. `problems` stays empty, because the next declaration's `;` is found at
+    // depth 0 and the "read to the end of the file" guard never fires. Measured at the arithmetic
+    // edge: 29 spaces reads two values, 30 reads three (win2 found the misclassification; mac had
+    // put this window in the "guaranteed by the grammar" column).
+    else if (depth === 0 && ch === "\n" && declarationStartsAt(masked, i + 1)) {
       end = i;
       break;
     }
@@ -724,6 +735,7 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
     end = text.length;
   }
   const body = text.slice(start, end);
+  const maskedBody = masked.slice(start, end);
   // A type can carry the field more than once — `PointOwner` has a `why` on two of its members,
   // and reading only the first gives one value where the vocabulary has four.
   const values = [];
@@ -732,9 +744,16 @@ export function readInlineFieldUnion(source, typeName, field, problems = []) {
   // which is how a union usually grows — and stopping at the newline read one member of however
   // many (gate 2 on #669, second pass). Run to the field's own terminator instead: a `;`, a brace,
   // or the next `name:` field on the same object.
-  for (const m of body.matchAll(new RegExp(`\\b${quoteForRegExp(field)}:\\s*([^;{}]*)`, "g"))) {
+  //
+  // **The terminator is found on the MASK, and the values are read from the real text at its
+  // offsets.** `[^;{}]` on the raw body stops at a brace inside a LITERAL: `why: "a" | "{tool:x}"`
+  // ended at the `{` and the second member was dropped with `problems` empty. The same defect as
+  // the depth count above, one layer in — the one that survived fixing the other.
+  for (const m of maskedBody.matchAll(new RegExp(`\\b${quoteForRegExp(field)}:\\s*([^;{}]*)`, "g"))) {
     seen = true;
-    const value = m[1].split(/,\s*\w+\s*:/)[0];
+    const from = m.index + m[0].length - m[1].length;
+    const real = body.slice(from, from + m[1].length);
+    const value = real.split(/,\s*\w+\s*:/)[0];
     for (const v of value.matchAll(/"([^"]+)"/g)) values.push(v[1]);
   }
   if (!seen) {

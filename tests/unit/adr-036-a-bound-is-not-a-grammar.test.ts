@@ -356,3 +356,39 @@ describe("the helper's forwarding call is exempted by WHERE it is, and only ther
     expect(out.problems).toEqual([]);
   });
 });
+
+describe("a brace inside a literal is not a brace, in the type reader too", () => {
+  // Found on a calm re-read of `readInlineFieldUnion` AFTER five review rounds, none of which
+  // reached it: the rounds were anchored on the lines this branch changed, and these two sit just
+  // above and just below them. The function ends a type at a `;` "at brace depth 0" and reads the
+  // field's value up to `[^;{}]` — and neither knew what a literal was, in a module that by then
+  // had a mask sitting three hundred lines up.
+  const pair = (member: string): string =>
+    `export type T = {\n  why: "a" | ${member}\n};\nexport type Other = {\n  why: "not_mine"\n};\n`;
+
+  it("reads a member whose text contains `{`", () => {
+    // This tree's advice strings are full of `{tool:…}`, so the shape is not exotic here. It was
+    // dropped with `problems` empty — the silent direction.
+    expect(readInlineFieldUnion(pair('"{tool:x}"'), "T", "why", [])).toEqual(["a", "{tool:x}"]);
+  });
+
+  it("reads a member whose text contains `}`, and does not run on into the next type", () => {
+    // The loud direction of the same defect: the stray `}` closed the type early, and the NEXT
+    // type's values joined this one's union.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(pair('"}"'), "T", "why", problems)).toEqual(["a", "}"]);
+    expect(problems).toEqual([]);
+  });
+
+  it("still ends the type at the next top-level declaration", () => {
+    // The pair: making the scan literal-aware must not make it blind to the end of the type.
+    expect(readInlineFieldUnion(pair('"b"'), "T", "why", [])).toEqual(["a", "b"]);
+  });
+
+  it("still says so when the union is not one of string literals", () => {
+    const problems: string[] = [];
+    const source = 'export type T = {\n  why: `pre_${string}`\n};\n';
+    expect(readInlineFieldUnion(source, "T", "why", problems)).toEqual([]);
+    expect(problems.join("\n")).toContain("stopped being a union of literals");
+  });
+});
