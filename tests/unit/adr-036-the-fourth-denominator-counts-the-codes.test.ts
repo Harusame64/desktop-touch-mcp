@@ -304,19 +304,39 @@ describe("what gate 2 found on this PR, kept as cells", () => {
       }
     };
     walk(join(REPO, "src"));
-    const lost: string[] = [];
-    let checked = 0;
-    for (const file of files) {
-      const raw = readFileSync(file, "utf8").split("\n");
-      const stripped = stripComments(readFileSync(file, "utf8")).split("\n");
-      raw.forEach((line, i) => {
-        if (!/\)\s*\{$/.test(line) || /["`]/.test(line)) return;
-        checked++;
-        if (!/\{$/.test((stripped[i] ?? "").trimEnd())) lost.push(`${file}:${i + 1}`);
-      });
-    }
-    expect(checked).toBeGreaterThan(1000);
-    expect(lost).toEqual([]);
+    // **Split on `\r?\n`, because the checkout decides the line ending and the tree does not.**
+    // `split("\n")` leaves a `\r` at the end of every line on a machine with `autocrlf=true`, so
+    // `/\)\s*\{$/` matched nothing, `checked` was 0, and `lost` was empty for the most vacuous
+    // reason there is. win2 found it red on their box against an untouched `44583edf` (2026-09-18):
+    // 203 of 203 `.ts` files are CRLF there, 0 lines matched where 2857 do here.
+    //
+    // **The emptiness guard is what made it visible** — without `checked > 1000` this cell would
+    // have passed on both machines while measuring nothing on one. And CI could not have caught it:
+    // the unit suite does not run there.
+    //
+    // So the sweep runs twice: once over the checkout as it is, and once over a CRLF copy of it. The
+    // second run is the one that says this cell measures the tree rather than the checkout.
+    const sweep = (mangle: (text: string) => string) => {
+      const lost: string[] = [];
+      let checked = 0;
+      for (const file of files) {
+        const source = mangle(readFileSync(file, "utf8"));
+        const raw = source.split(/\r?\n/);
+        const stripped = stripComments(source).split(/\r?\n/);
+        raw.forEach((line, i) => {
+          if (!/\)\s*\{\s*$/.test(line) || /["`]/.test(line)) return;
+          checked++;
+          if (!/\{$/.test((stripped[i] ?? "").trimEnd())) lost.push(`${file}:${i + 1}`);
+        });
+      }
+      return { lost, checked };
+    };
+    const asIs = sweep((t) => t);
+    const asCrlf = sweep((t) => t.replace(/\r?\n/g, "\r\n"));
+    expect(asIs.checked).toBeGreaterThan(1000);
+    expect(asCrlf.checked).toBe(asIs.checked);
+    expect(asIs.lost).toEqual([]);
+    expect(asCrlf.lost).toEqual([]);
   });
 
   it("2. resolves a call site's binding to the nearest one before it, not the file's first", () => {
