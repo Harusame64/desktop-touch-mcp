@@ -263,6 +263,19 @@ describe("what the parser says, named rather than compared", () => {
     expect(problems.join("\n")).toContain(expected as string);
   });
 
+  it.each([
+    ["a call signature", 'export type T = { (): void; why: "a" } | { why: "b" };\n'],
+    ["a construct signature", 'export type T = { new (): T; why: "a" } | { why: "b" };\n'],
+  ])("stays silent about %s inside an object member, which declares no property", (_label, source) => {
+    // codex, round 3. A call signature has no name for the same reason an index signature has
+    // none, and the rule above read both as "a name this parser cannot read" — so the route gate
+    // went red over a type that hides nothing. The index-signature cell above is what keeps this
+    // exemption from widening into "every nameless member": that one CAN hold `why`.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(["a", "b"]);
+    expect(problems).toEqual([]);
+  });
+
   it("stays silent on a union of plain objects, which is what the gates actually pass", () => {
     // The control for all of the above: every rule added this round must leave a healthy type
     // completely quiet, or the gates fill with noise and stop being read.

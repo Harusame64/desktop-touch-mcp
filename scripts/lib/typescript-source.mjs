@@ -206,6 +206,11 @@ export function readInlineFieldUnion(source, typeName, field, problems = [], fil
       continue;
     }
     for (const property of member.members) {
+      // A call or construct signature — `(): void`, `new (): T` — has no name because it cannot
+      // have one: it says how the object is called, and declares no property at all. Its emptiness
+      // is a syntactic fact, the same kind `carriesNoProperties` keeps silent one level out, and
+      // reporting it made the route gate red over a type that hides nothing (codex, round 3).
+      if (ts.isCallSignatureDeclaration(property) || ts.isConstructSignatureDeclaration(property)) continue;
       // A name this parser cannot read is not a member it can rule out: an index signature has no
       // name at all, and a computed one is not a string here. Skipping those quietly is the same
       // silence as the member-level one, one level further in.
