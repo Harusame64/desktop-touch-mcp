@@ -33,6 +33,14 @@ import {
   readRoadVocabulary,
   stripComments as stripRouteComments,
 } from "../../scripts/lib/route-vocabulary.mjs";
+import { readInlineFieldUnion as parsedReadInlineFieldUnion } from "../../scripts/lib/typescript-source.mjs";
+
+// **Both type readers.** The gates read through the parser since #681; these cells were written
+// against the scanner and would otherwise guard only a reader no gate calls (gate 2 on #681).
+const TYPE_READERS = [
+  { name: "scanner", readInlineFieldUnion },
+  { name: "parser", readInlineFieldUnion: parsedReadInlineFieldUnion },
+];
 
 describe("length: the Rust raw-string `#` run is counted, not windowed", () => {
   // The literal holds an ODD number of quotes on purpose. With an even number the parse comes back
@@ -136,7 +144,7 @@ describe("length: the probeAim object is read, not measured", () => {
   });
 });
 
-describe("length: a declaration ends the one above it, however much whitespace it carries", () => {
+describe.each(TYPE_READERS)("length: a declaration ends the one above it, however much whitespace it carries ($name)", ({ readInlineFieldUnion }) => {
   const pair = (gap: number): string =>
     `\nexport type FirstType = {\n  why: "mine"\n}\nexport${" ".repeat(gap)}type SecondType = {\n  why: "not_mine"\n};\n`;
 
@@ -357,7 +365,7 @@ describe("the helper's forwarding call is exempted by WHERE it is, and only ther
   });
 });
 
-describe("a brace inside a literal is not a brace, in the type reader too", () => {
+describe.each(TYPE_READERS)("a brace inside a literal is not a brace, in the type reader too ($name)", ({ readInlineFieldUnion }) => {
   // Found on a calm re-read of `readInlineFieldUnion` AFTER five review rounds, none of which
   // reached it: the rounds were anchored on the lines this branch changed, and these two sit just
   // above and just below them. The function ends a type at a `;` "at brace depth 0" and reads the

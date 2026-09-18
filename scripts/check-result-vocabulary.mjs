@@ -31,7 +31,8 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readUnion } from "./lib/route-vocabulary.mjs";
+// The type reader comes from the parser — see the note in `check-route-vocabulary.mjs`.
+import { readUnion } from "./lib/typescript-source.mjs";
 import {
   readPresentedNames,
   readReturnedCodes,
@@ -70,7 +71,7 @@ const sources = walk(join(REPO, "src")).map((file) => ({
   text: readFileSync(file, "utf8"),
 }));
 
-const typed = readUnion(read("src/engine/world-graph/guarded-touch.ts"), "TouchFailReason", () => [], problems) ?? [];
+const typed = readUnion(read("src/engine/world-graph/guarded-touch.ts"), "TouchFailReason", () => [], problems, "src/engine/world-graph/guarded-touch.ts") ?? [];
 if (typed.length === 0) problems.push("TouchFailReason could not be read — the typed half of the axis is unknown, not empty");
 
 const suggestsKeys = readSuggestsKeys(read("src/tools/_errors.ts"), problems);
