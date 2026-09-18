@@ -505,7 +505,7 @@ function adr029Refusal(kind) {
     [
       "KeyboardGround",
       "src/engine/keyboard-target.ts",
-      `export type KeyboardGround = "other_window" | "read_only" | ExtraGround;
+      `export type KeyboardGround = "other_window" | "read_only" | "new_ground" | ExtraGround;
 export type LandingWhy =
   | "receiver_unknown"
   | \`ground_disabled:\${KeyboardGround}\`;`,
@@ -513,7 +513,7 @@ export type LandingWhy =
     [
       "ExecutorKind",
       "src/engine/world-graph/types.ts",
-      `export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard" | ExtraKind;`,
+      `export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard" | "new_kind" | ExtraKind;`,
     ],
   ])("is 1 when %s gains a member the reader cannot read, and refuses to re-pin", (_name, path, body) => {
     // Gate 2 on #681: six of the nine type reads passed no `problems`, so the reader named this
@@ -527,13 +527,20 @@ export type LandingWhy =
     const { status, out } = run();
     expect(out).toMatch(/is not a quoted literal this parser reads/);
     expect(status).toBe(1);
-    let refused = false;
+    // **Refused, not merely non-zero.** Gate 2's second pass: a gate that wrote the short pin and
+    // THEN exited 1 passed the first version of this cell. The pin must be byte-identical after —
+    // and the edit carries a READABLE new member beside the unreadable one, because otherwise the
+    // short set equals the old pin and a write is invisible (the mutation survived that version).
+    const pin = join(root, "tests", "fixtures", "adr-036-route-vocabulary.json");
+    const before = readFileSync(pin, "utf8");
+    let stderr = "";
     try {
-      execFileSync(process.execPath, [join(root, "scripts", "check-route-vocabulary.mjs"), "--update"], { stdio: "pipe" });
-    } catch {
-      refused = true;
+      execFileSync(process.execPath, [join(root, "scripts", "check-route-vocabulary.mjs"), "--update"], { stdio: "pipe", encoding: "utf8" });
+    } catch (e) {
+      stderr = String((e as { stderr: string }).stderr);
     }
-    expect(refused).toBe(true);
+    expect(stderr).toMatch(/REFUSING to re-pin/);
+    expect(readFileSync(pin, "utf8")).toBe(before);
   });
 
   it("names the FILE that did not parse, of the five it reads unions from", () => {
@@ -547,6 +554,19 @@ export type LandingWhy =
     const { status, out } = run();
     expect(out).toContain("src/engine/world-graph/types.ts did not parse");
     expect(status).toBe(1);
+    // And ONCE for a file two unions are read from: the reason is one, however many reads meet it.
+    fixture();
+    write(
+      "src/engine/keyboard-target.ts",
+      `export type KeyboardGround = "other_window" | "read_only";
+export type LandingWhy =
+  | "receiver_unknown"
+  | \`ground_disabled:\${KeyboardGround}\`;
+export type Broken = {;`,
+    );
+    const twice = run();
+    expect(twice.out.split("src/engine/keyboard-target.ts did not parse").length - 1).toBe(1);
+    expect(twice.status).toBe(1);
   });
 
   it("is 1 when LandingWhy loses its template member", () => {

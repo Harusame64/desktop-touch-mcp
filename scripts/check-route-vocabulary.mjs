@@ -90,7 +90,8 @@ const derived = {
   advertisedExecutorKind: typeUnion(capabilities, "src/capabilities/registry.ts", "AdvertisedExecutorKind"),
 };
 
-const problems = [...road.problems, ...unionProblems];
+// A file that does not parse is reported once per union read from it; the reason is one.
+const problems = [...road.problems, ...new Set(unionProblems)];
 
 // ── Invariants the vocabulary must satisfy, whatever the pinned file says ────
 //

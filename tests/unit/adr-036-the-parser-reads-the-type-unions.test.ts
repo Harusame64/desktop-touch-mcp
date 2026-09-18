@@ -233,15 +233,32 @@ describe("what the parser says, named rather than compared", () => {
     expect(problems).toEqual([]);
   });
 
-  it("stays silent about `| undefined` in a named union, and still names a number", () => {
-    // The same rule in `readUnion`, and its edge: `1` IS a value, one this reader will not spell.
+  it("stays silent about `never` in a named union, and still names a number in a field", () => {
+    // `never` vanishes wherever it goes, a template included. `1` IS a value, one this reader will
+    // not spell.
     const quiet: string[] = [];
-    expect(readUnion('export type T = "a" | undefined | null | never;\n', "T", () => [], quiet)).toEqual(["a"]);
+    expect(readUnion('export type T = "a" | never;\n', "T", () => [], quiet)).toEqual(["a"]);
     expect(quiet).toEqual([]);
     const loud: string[] = [];
     expect(readInlineFieldUnion('export type T = { why: "a" | 1 };\n', "T", "why", loud)).toEqual(["a"]);
     expect(loud.join("\n")).toContain("member `1` is not a quoted literal");
   });
+
+  it.each([["null"], ["undefined"]])(
+    "still names `%s` in a named union, because a template spells it out",
+    (keyword) => {
+      // Gate 2 on #681, second pass: the fix for the field-level false red was applied to
+      // `readUnion` too, and a named union is also a template placeholder in this tree.
+      // `` `ground_disabled:${KeyboardGround}` `` with `| null` in the ground is
+      // `"ground_disabled:null"` — a value `tsc --strict` accepts and the row can write — and the
+      // reader returned the short set with `problems` empty.
+      const source = `export type KeyboardGround = "other_window" | ${keyword};\nexport type LandingWhy = \`ground_disabled:\${KeyboardGround}\`;\n`;
+      const problems: string[] = [];
+      const ground = readUnion(source, "KeyboardGround", () => [], problems) ?? [];
+      expect(ground).toEqual(["other_window"]);
+      expect(problems.join("\n")).toContain(`member \`${keyword}\` is not a quoted literal`);
+    },
+  );
 
   it("says a name declared inside a namespace is there and not taken, rather than absent", () => {
     const problems: string[] = [];

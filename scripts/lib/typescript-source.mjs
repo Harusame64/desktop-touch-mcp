@@ -142,6 +142,13 @@ const stringLiteralType = (node) =>
  * the gate red over a type that hides nothing (gate 2 on #681) — the same rule `carriesNoProperties`
  * keeps one level out. Deliberately NOT a numeric or boolean literal: `why: "a" | 1` is a value this
  * reader will not turn into a string, and that one is still named.
+ *
+ * **For a FIELD's union only.** A named union is also a template placeholder here —
+ * `` `ground_disabled:${KeyboardGround}` `` — and inside a template `null` and `undefined` are
+ * spelled out: `"ground_disabled:null"` is a value `tsc --strict` accepts. Dropping them from
+ * `readUnion` answered short in silence, the defect this module exists to end, written by the fix
+ * for the false red (gate 2 on #681, second pass). `readUnion` skips only `never`, which vanishes
+ * in a template too.
  */
 const holdsNoValue = (node) =>
   node.kind === ts.SyntaxKind.UndefinedKeyword ||
@@ -173,7 +180,9 @@ export function readUnion(source, name, resolve = () => [], problems = [], fileN
       values.push(literal);
       continue;
     }
-    if (holdsNoValue(member)) continue;
+    // `never` only — see `holdsNoValue` for why `null` and `undefined` are NOT the absence of a
+    // value in a union that a template spells out.
+    if (member.kind === ts.SyntaxKind.NeverKeyword) continue;
     // `` `ground_disabled:${KeyboardGround}` `` is a member, not decoration: expand it against the
     // union it names, or the count is short by however many that union has.
     if (ts.isTemplateLiteralTypeNode(member) && member.templateSpans.length === 1) {
