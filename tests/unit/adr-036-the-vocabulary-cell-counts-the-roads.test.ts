@@ -222,9 +222,18 @@ async function probedStep(rung, aimHwnd, entity, step) {
     expect(v.problems).toEqual([]);
     // A union that is NOT all quoted literals is reported, not skipped — the skip is what hid the
     // hole above, so the narrow case is the only one that stays silent.
-    expect(readRoadVocabulary(`function f(why: KeyboardRungWhy | "a") {}`).problems).toEqual([
-      "a why union is not all quoted literals: KeyboardRungWhy | \"a\"",
-    ]);
+    if (name === "scanner") {
+      expect(readRoadVocabulary(`function f(why: KeyboardRungWhy | "a") {}`).problems).toEqual([
+        "a why union is not all quoted literals: KeyboardRungWhy | \"a\"",
+      ]);
+    } else {
+      // **The parser reads an annotation only as the values of a forward** — a declaration nothing
+      // passes on is not a value the executor writes (win2, internal `b660d03`). So the same union
+      // is reported where it would reach the row, and a bare declaration is silent.
+      const forwarded = `function f(why: KeyboardRungWhy | "a") {\n  probeRoute("keyboard", undefined, entity, { why });\n}`;
+      expect(readRoadVocabulary(forwarded).problems).toEqual(["a why union is not all quoted literals: KeyboardRungWhy | \"a\""]);
+      expect(readRoadVocabulary(`function f(why: KeyboardRungWhy | "a") {}`).problems).toEqual([]);
+    }
   });
 
   it("says so when the function that produces three refusal grounds has moved", () => {

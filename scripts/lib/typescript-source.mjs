@@ -408,7 +408,6 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
   const refused = new Set();
   const why = new Set();
   const sets = { route, rung, refused, why };
-  const annotatedWhy = new Set();
   const dynamicWhy = new Set();
   const landingLiteralWhy = new Set();
   let landingDrawsFromTheUnion = false;
@@ -437,8 +436,24 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
     const name = functionName(fn);
     const positions = name === null ? undefined : ROAD_PRODUCERS[name];
     if (positions !== undefined && positions[field] === fn.parameters.indexOf(parameter)) return true;
-    if (field === "why" && parameter.type !== undefined && literalMembers(parameter.type) !== null) return true;
-    return false;
+    // **The annotation is read HERE, and only here** — as the values of a forward this rule has
+    // just accepted. Reading every `why:` annotation in the file counted type DECLARATIONS as values
+    // the executor writes (win2, internal `b660d03`: a type literal's field and an unrelated
+    // parameter both came back as road whys, one of them silently).
+    const members = parameter.type === undefined ? null : literalMembers(parameter.type);
+    if (members === null) return false;
+    for (const v of members) sets[field].add(v);
+    return true;
+  };
+
+  /** Why a forward was refused, in the words the reader is looking for. */
+  const refusedForward = (identifier, field) => {
+    const fn = enclosingFunction(identifier);
+    const parameter = fn === null ? null : parameterNamed(fn, identifier.text);
+    if (parameter?.type !== undefined && ts.isUnionTypeNode(parameter.type)) {
+      return `a ${field} union is not all quoted literals: ${oneLine(file, parameter.type)}`;
+    }
+    return null;
   };
 
   /**
@@ -571,21 +586,9 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
     } else if (ts.isShorthandPropertyAssignment(node)) {
       const field = node.name.text;
       if (ROW_FIELDS.has(field) && !forwards(node.name, field) && !(field === "refused" && bindsTheReadRefusal(node.name))) {
-        problems.push(`a shorthand \`${field}\` is not a forward this parser can read: line ${lineOf(file, node)}`);
-      }
-    } else if ((ts.isParameter(node) || ts.isPropertySignature(node)) && node.type !== undefined && ts.isIdentifier(node.name)) {
-      // **A type annotation is where a shorthand's values are written.** `keyboardRung` passes
-      // `{ why, … }` and the only place its values are spelled is the parameter's annotation.
-      const field = node.name.text;
-      if (field === "why") {
-        const members = literalMembers(node.type);
-        if (members !== null) for (const v of members) annotatedWhy.add(v);
-        else if (ts.isUnionTypeNode(node.type)) problems.push(`a why union is not all quoted literals: ${oneLine(file, node.type)}`);
-        else problems.push(`a why is not a literal: ${oneLine(file, node.type)}`);
-      } else if (field === "rung" || field === "refused") {
-        // A parameter declared `string` is a forward's declaration, answered by Rule F at its uses.
-        const members = literalMembers(node.type);
-        if (members !== null) for (const v of members) sets[field].add(v);
+        problems.push(
+          refusedForward(node.name, field) ?? `a shorthand \`${field}\` is not a forward this parser can read: line ${lineOf(file, node)}`,
+        );
       }
     }
   }
@@ -685,7 +688,6 @@ export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "
     }
   }
 
-  for (const v of annotatedWhy) why.add(v);
   for (const name of dynamicWhy) {
     const members = resolveUnion(name);
     if (members.length === 0) problems.push(`a why draws from ${name}, which could not be resolved`);

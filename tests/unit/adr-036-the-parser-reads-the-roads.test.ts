@@ -247,6 +247,20 @@ throw refusal("a_rung", "a_ground", new Error("x"));`;
   });
 });
 
+describe("a type declaration is not a value the executor writes", () => {
+  it.each([
+    ["a type literal's field", 'type Shape = { why: "declared_not_written"; via: Via };\n'],
+    ["an interface's field", 'interface Shape {\n  why: "declared_not_written";\n}\n'],
+    ["a parameter nobody forwards", 'function f(why: "declared_not_written" | "also_declared") {\n  return why.length;\n}\n'],
+  ])("does not count %s as a why", (_label, source) => {
+    // win2, internal `b660d03`: the first version read every `why:` annotation in the file, so a
+    // type declaration counted as a road value — silently, when its value was a literal.
+    const out = readRoadVocabulary(source as string);
+    expect(out.why).toEqual([]);
+    expect(out.problems).toEqual([]);
+  });
+});
+
 describe("Rule S — a spread comes last, so a caller's extra overrides the positional value", () => {
   it("reports a route passed in probeRoute's extra: the row carries it, not the one read", () => {
     // win2 measured the scanner on this: ["uia"], no problem — the row's `mouse` dropped in silence.
