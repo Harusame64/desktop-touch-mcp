@@ -357,32 +357,12 @@ function stripRustComments(source) {
       while (i < text.length && text[i] !== "\n") i++;
       continue;
     }
-    // **A regex literal's `\/\/` is not a comment either.** The same defect as the string case
-    // above, one grammar rule further in: `/^https?:\/\//i` in `engine/cdp-bridge.ts:582` lost the
-    // rest of its line — including the `{` that opens the `if` — so every brace-matching read after
-    // it walked into the wrong block, silently. Measured on 2026-09-18 while the road extractor was
-    // being fixed for the same thing; this file kept its own copy of the strip and so kept the
-    // defect. A regex is entered only where a value may begin.
-    if (ch === "/" && /(?:[=(,[!&|?:;{}+\-*%^~<>]|\breturn|\btypeof|\bcase|\bin|\bof|\bdo|\belse|\bvoid|\bdelete|\binstanceof|\bnew|\byield|\bawait)\s*$/.test(out)) {
-      push(ch, false);
-      i++;
-      let inClass = false;
-      while (i < text.length) {
-        const c = text[i];
-        push(c, false);
-        i++;
-        if (c === "\\") {
-          push(text[i] ?? "", false);
-          i++;
-          continue;
-        }
-        if (c === "[") inClass = true;
-        else if (c === "]") inClass = false;
-        else if (c === "/" && !inClass) break;
-        else if (c === "\n") break;
-      }
-      continue;
-    }
+    // **No regex-literal rule here: Rust has none.** This branch was copied in from the TypeScript
+    // strip on 2026-09-18 while fixing that one, and a `/` in Rust is division. It was inert — the
+    // scan pushes the characters it walks and stops at the newline, so nothing was lost — and inert
+    // is the point: **a rule from another language's grammar sitting in this reader is the drift the
+    // per-language readers exist to prevent.** Removed, with a cell that shoots division here and a
+    // regex literal at the TypeScript reader.
     if (ch === "/" && text[i + 1] === "*") {
       let depth = 1;
       let j = i + 2;

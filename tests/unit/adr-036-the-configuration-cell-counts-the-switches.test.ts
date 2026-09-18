@@ -29,6 +29,43 @@ import {
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+describe("each language's reader carries only its own grammar", () => {
+  // **A rule from another language's grammar sitting in this reader is the drift the per-language
+  // readers exist to prevent.** On 2026-09-18 the TypeScript strip learned that a regex literal's
+  // `\/\/` is not a comment, and the same branch was copied into the Rust strip in the same sitting
+  // — where a `/` is division and no regex literal exists. It was inert, and inert is the point: the
+  // copy is what a reviewer or a later edit would have built on.
+  it("reads a Rust division, a lifetime, a raw string and a char literal", () => {
+    const sw = (src: string) => readSwitchesFromRust(src, "probe.rs", []);
+    expect(sw(`fn f() { let x = a / b; let v = std::env::var("DESKTOP_TOUCH_AFTER_DIV"); }`)).toEqual([
+      "DESKTOP_TOUCH_AFTER_DIV",
+    ]);
+    expect(sw(`fn f<'a>(x: &'a str) { let v = std::env::var("DESKTOP_TOUCH_AFTER_LIFETIME"); }`)).toEqual([
+      "DESKTOP_TOUCH_AFTER_LIFETIME",
+    ]);
+    expect(sw(`fn g() { let s = r#"say "hi" here"#; let v = std::env::var("DESKTOP_TOUCH_AFTER_RAW"); }`)).toEqual([
+      "DESKTOP_TOUCH_AFTER_RAW",
+    ]);
+    expect(sw(`fn i() { let c = '}'; let v = std::env::var("DESKTOP_TOUCH_AFTER_CHAR"); }`)).toEqual([
+      "DESKTOP_TOUCH_AFTER_CHAR",
+    ]);
+    // and a `//` inside a Rust string is still not a comment
+    expect(sw(`fn h() { let u = "https://x/y"; let v = std::env::var("DESKTOP_TOUCH_AFTER_URL"); }`)).toEqual([
+      "DESKTOP_TOUCH_AFTER_URL",
+    ]);
+  });
+
+  it("reads C#'s verbatim and interpolated strings", () => {
+    const sw = (src: string) => readSwitchesFromCSharp(src, "probe.cs", []);
+    expect(
+      sw(`class K { void M() { var p = @"C:\\a\\b"; var v = Environment.GetEnvironmentVariable("DESKTOP_TOUCH_V"); } }`),
+    ).toEqual(["DESKTOP_TOUCH_V"]);
+    expect(
+      sw(`class K { void M() { var p = $"x{y}z"; var v = Environment.GetEnvironmentVariable("DESKTOP_TOUCH_I"); } }`),
+    ).toEqual(["DESKTOP_TOUCH_I"]);
+  });
+});
+
 describe("the extractor", () => {
   it("reads a switch through every shape the product actually uses", () => {
     // Six shapes, five of them in TypeScript. The middle three are the ones a `process.env.` sweep
