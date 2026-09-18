@@ -273,7 +273,9 @@ if (fallbackCause !== null && suggestsKeys.includes(fallbackCause)) {
 // are not today — but the SET is pinned above, so one more is a change the grid records.
 for (const code of leaseCodes) {
   // The residual is not a lease name and is not reserved as one — the table's own comment says the
-  // unpromoted reasons "collapse to `Unknown` at runtime". Everything else it returns should have a
+  // unpromoted reasons "collapse to `Unknown` at runtime" — a sentence internal#125 removed when it
+  // gave those reasons branches, so the quotation is kept here as history rather than as a citation.
+  // Everything else it returns should have a
   // reserved name, which is what the reservation is for.
   if (code === fallbackCause) continue;
   if (!reservedLeaseNames.includes(code)) {

@@ -198,3 +198,57 @@ describe("internal#125 — the extractor that has to SEE the fix", () => {
     expect(problems.join(" ")).toMatch(/cannot read/);
   });
 });
+
+describe("internal#125 Round 2 — the two the mask and the guard still got wrong", () => {
+  // Round 1 built a string mask and then searched the RAW span with it, and read the last `if`
+  // before a return without asking whether that `if` contained it. Both are the same defect this
+  // parser keeps reproducing — a decision about shape taken on text that says something else — and
+  // both were measured before being fixed, so both are pinned by the inputs that measured them.
+  const fn = (body: string) => ["function f(", "  r: R,", "): X {", body, "}"].join("\n");
+  const read = (src: string, resolvable: unknown = null) => {
+    const problems: string[] = [];
+    const codes = readReturnedCodes(src, "f", problems, resolvable);
+    return { codes, problems };
+  };
+  const TBL = { name: "TBL", table: { a: "CodeA", b: "CodeB", c: "CodeC" } };
+
+  it("does not read a name out of a string that spells the key", () => {
+    // Measured before the fix: codes were ["Fabricated"] with problems [] — a name nothing produces,
+    // reported with no sign that anything was unread. This repo's advice prose spells `code:`.
+    const { codes, problems } = read(
+      fn('  return { hint: \'pass code: "Fabricated", or nothing\', code: "Real" };'),
+    );
+    expect(codes).toEqual(["Real"]);
+    expect(problems).toEqual([]);
+  });
+
+  it("refuses to attribute an UNGUARDED return to the if block above it", () => {
+    // Measured before the fix: the return after a closed block was credited with that block's
+    // discriminants, silently. Counting names something does NOT produce is the Round 1 defect;
+    // this is the same error pointed the other way, and both answered with problems: [].
+    const { codes, problems } = read(
+      fn('  if (r === "a") {\n    doThing();\n  }\n  return { code: TBL[r] };'),
+      TBL,
+    );
+    expect(codes).toEqual([]);
+    expect(problems.join(" ")).toMatch(/cannot read/);
+  });
+
+  it("refuses a switch-guarded return rather than borrowing a nearby if", () => {
+    const { codes, problems } = read(
+      fn('  if (r === "a") {\n    doThing();\n  }\n  switch (r) {\n    case "b":\n      return { code: TBL[r] };\n  }'),
+      TBL,
+    );
+    expect(codes).toEqual([]);
+    expect(problems.join(" ")).toMatch(/cannot read/);
+  });
+
+  it("reads a guard spelled without a space, and takes the INNERMOST one", () => {
+    // `if(` is the same branch to a reader and a different string to a matcher; a mutation spelling
+    // it that way made both promoted names vanish with no problem raised.
+    expect(read(fn('  if(r === "a" || r === "b") {\n    return { code: TBL[r] };\n  }'), TBL).codes)
+      .toEqual(["CodeA", "CodeB"]);
+    expect(read(fn('  if (r === "a") {\n    if (r === "b") {\n      return { code: TBL[r] };\n    }\n  }'), TBL).codes)
+      .toEqual(["CodeB"]);
+  });
+});

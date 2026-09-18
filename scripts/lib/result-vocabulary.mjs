@@ -502,12 +502,37 @@ export function returnObjectSpans(masked, original) {
  * read as "produces nothing".
  */
 export function reasonsGuarding(body, index) {
-  const head = body.slice(0, index);
-  const at = head.lastIndexOf("if (");
-  if (at === -1) return [];
-  const condition = head.slice(at).match(/^if \(([\s\S]*?)\)\s*\{/);
-  if (!condition) return [];
-  return [...new Set([...condition[1].matchAll(/===\s*"([A-Za-z_][\w]*)"/g)].map((m) => m[1]))];
+  // **THE BLOCK HAS TO CONTAIN THE POSITION.** The first version took the last `if (` before the
+  // return and asked no further question, so a return AFTER a closed `if` block was attributed to
+  // that block's discriminants — and a `switch`-guarded return took the discriminants of whatever
+  // `if` happened to sit above it. Round 2 measured three such shapes and all three answered
+  // CONFIDENTLY AND WRONGLY, with `problems: []`. That is the Round 1 defect run backwards: instead
+  // of counting names nothing produces, it stops counting names something does produce, and in both
+  // directions the caller is told nothing went unread.
+  //
+  // The candidate is searched from the end, its block is balanced on a string-masked copy, and the
+  // position must land inside it. Nothing matching means the caller is TOLD, not guessed at.
+  const masked = maskStringContents(body);
+  let from = index;
+  for (;;) {
+    const at = masked.lastIndexOf("if", from - 1);
+    if (at === -1) return [];
+    const header = masked.slice(at).match(/^if\s*\(([\s\S]*?)\)\s*\{/);
+    if (!header) { from = at; continue; }
+    const openAt = at + header[0].length - 1;
+    let depth = 0;
+    let i = openAt;
+    for (; i < masked.length; i++) {
+      const ch = masked[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) break; }
+    }
+    if (depth !== 0) return []; // unbalanced: say nothing rather than guess
+    if (index > openAt && index < i) {
+      return [...new Set([...body.slice(at, at + header[0].length).matchAll(/===\s*"([A-Za-z_][\w]*)"/g)].map((m) => m[1]))];
+    }
+    from = at; // that block does not contain the position — keep looking outward
+  }
 }
 
 /**
@@ -564,7 +589,15 @@ export function readReturnedCodes(source, functionName, problems = [], resolvabl
   for (const block of returnObjectSpans(masked, body)) {
     const objectText = block.text; // includes the braces
     const shapeText = block.masked; // same span, string contents blanked
-    const field = objectText.match(/\bcode:\s*([^,\n}]+)/);
+    // **THE KEY IS FOUND ON THE MASK, AND ONLY THE VALUE IS READ FROM THE REAL TEXT.** Round 1 built
+    // the mask and then searched the raw span with it sitting unused one line above — so a string
+    // whose CONTENTS spell `code: "…"` was read as the produced name, and the real `code:` after it
+    // was never reached. Measured in Round 2:
+    //   return { hint: 'pass code: "Fabricated", or nothing', code: "Real" }
+    //   → codes: ["Fabricated"], problems: []   ← a fabricated name, and silence
+    // That is #674's gate-2 finding reproduced INSIDE the function written to end it, which is this
+    // parser's recurring shape. The mask preserves length, so the offsets index the original exactly.
+    const field = shapeText.match(/\bcode:\s*([^,\n}]+)/);
     if (!field) {
       // **A SHORTHAND `code` IS A PRODUCER THIS PARSER USED TO DROP IN SILENCE.** `return { code, … }`
       // carries no `code:`, so the match above fails and the loop simply moved on — no name, no
@@ -580,7 +613,10 @@ export function readReturnedCodes(source, functionName, problems = [], resolvabl
       }
       continue;
     }
-    const expression = field[1].trim();
+    // The VALUE comes from the real text at the mask's offsets — a literal must be readable, and a
+    // blanked one would parse as an empty string.
+    const valueStart = field.index + field[0].length - field[1].length;
+    const expression = objectText.slice(valueStart, field.index + field[0].length).trim();
     const literal = expression.match(/^"([A-Za-z_][\w]*)"$/);
     if (literal) {
       codes.push(literal[1]);

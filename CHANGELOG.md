@@ -18,10 +18,12 @@
     longer matches, so the lease does not vouch for what would be acted on. Discover again rather
     than retrying by coordinate: whatever changed may be what moved it.
 
-  `reason: "unknown"` still exists and now means one thing on this road: the tool itself threw.
-  If you branch on `reason`, the two new values are the ones to add; nothing that used to work
-  stops working, and the `most_likely_cause` in the envelope carries the same split
-  (`LeaseGenerationMismatch` / `LeaseDigestMismatch`).
+  `reason: "unknown"` still exists, and for these refusals it no longer appears: it now means the
+  tool itself threw. **If you branch on `reason`, read this as a breaking change for one case** —
+  code that recognised a stale lease by `reason === "unknown"` will stop matching, and should test
+  for the two new values instead. Everything that matched a NAMED reason is unaffected, and the
+  `most_likely_cause` in the envelope carries the same split (`LeaseGenerationMismatch` /
+  `LeaseDigestMismatch`).
 - **A click aimed at a window now checks that it is still that window, and follows it when it moves.**
   A `desktop_discover` returns coordinates, and `desktop_act` used to press them
   without asking whether anything had changed in between. Three things can have
