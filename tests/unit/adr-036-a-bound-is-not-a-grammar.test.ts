@@ -166,6 +166,21 @@ describe("spelling: a postfix `++` ends a value, so the slash after it is divisi
     expect(maskLiteralContents('const r = /"INSIDE/;')).not.toContain("INSIDE");
   });
 
+  it("counts the RUN of `+`, because `x+++/re/` is `x++ + /re/`", () => {
+    // Round 1 of gate 2 on this PR. The first version of the rule read the two characters nearest
+    // the slash: in a run of three it sees `++`, answers division, and the regex's quote then opens
+    // a string that blanks the rest of the line. An even run ends in `++`, which closes a value; an
+    // odd run ends in a single `+`, which opens one.
+    //
+    // **The sentinel is in live code after the construct.** One placed INSIDE the regex is blanked
+    // either way — as a regex's interior when the reader is right, and as a string's interior when
+    // it is wrong — so it cannot tell the two readings apart. The first instrument used here did
+    // exactly that and reported the defect fixed while it was still there.
+    expect(maskLiteralContents('let a = x+++/"/.test(s); KEEPME;')).toContain("KEEPME");
+    expect(maskLiteralContents('let a = x--- /"/.test(s); KEEPME;')).toContain("KEEPME");
+    expect(maskLiteralContents('let a = x+ /"/.test(s); KEEPME;')).toContain("KEEPME");
+  });
+
   it("needs no rule for a PREFIX `++`, because its significant character is the identifier", () => {
     expect(maskLiteralContents("++x / 2; KEEPME;")).toContain("KEEPME");
     expect(maskLiteralContents("--x / 2; KEEPME;")).toContain("KEEPME");

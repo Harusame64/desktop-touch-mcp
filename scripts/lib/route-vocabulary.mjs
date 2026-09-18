@@ -217,7 +217,22 @@ export function significantBefore(text, i) {
   // `regexCanStartHere` in `result-vocabulary.mjs`) and all three agreed on being wrong; #678 made
   // them one, so this is one line instead of three. A PREFIX `++x` needs no rule — its significant
   // character is the identifier, which already reads as a value.
-  if ((text[j] === "+" || text[j] === "-") && text[j - 1] === text[j]) return `${text[j]}${text[j]}`;
+  if (text[j] === "+" || text[j] === "-") {
+    // **The RUN is counted, because the last two characters are not the last token.** `x+++/re/`
+    // tokenises as `x++ + /re/` — a postfix increment and then a BINARY plus, after which a regex
+    // may begin. Reading the two characters nearest the slash sees `++` and answers division, so the
+    // regex's quotes were counted and everything after it on the line was blanked (round 1 on #679;
+    // reproduced here with a sentinel in live code after the construct — a sentinel INSIDE the regex
+    // cannot tell the two readings apart, because it is blanked either way).
+    //
+    // An even run ends in `++`, which closes a value; an odd run ends in a single `+`, which opens
+    // one. This is the same mistake the bound it replaced made, one level in: a fixed amount of
+    // context standing in for the token boundary.
+    const op = text[j];
+    let run = 0;
+    for (let k = j; k >= 0 && text[k] === op; k--) run++;
+    return run % 2 === 0 ? `${op}${op}` : op;
+  }
   if (!/\w/.test(text[j])) return text[j];
   // **Bounded.** Slicing from the start of the file to read the word behind the cursor made this
   // O(n²) over a 2 MB tree — the scan took minutes instead of milliseconds. The longest keyword that
