@@ -55,6 +55,41 @@ describe("each language's reader carries only its own grammar", () => {
     ]);
   });
 
+  it("knows Rust's raw strings, including the ones with an odd number of quotes inside", () => {
+    // **The shape mac's own sweep called safe.** `r#"say "hi" here"#` holds an EVEN number of
+    // quotes, so entering it as an ordinary string came back in sync by luck and the sentinel after
+    // it was found. win2 fired `r#"a " b"#` — one quote — and the sentinel vanished (2026-09-18).
+    // The stripper had no raw-string handling at all: `grep -c 'r#'` over its body answered 0.
+    //
+    // **A shape that was not fired looks exactly like a shape that passed.** Both are here now.
+    const sw = (src: string) => readSwitchesFromRust(src, "probe.rs", []);
+    const after = (body: string) => `fn g() { ${body} let v = std::env::var("DESKTOP_TOUCH_SENTINEL"); }`;
+    expect(sw(after(`let s = r#"say "hi" here"#;`))).toEqual(["DESKTOP_TOUCH_SENTINEL"]);
+    expect(sw(after(`let s = r#"a " b"#;`))).toEqual(["DESKTOP_TOUCH_SENTINEL"]);
+    expect(sw(after(`let s = r"ab";`))).toEqual(["DESKTOP_TOUCH_SENTINEL"]);
+    expect(sw(after(`let s = r##"nested "# inside"##;`))).toEqual(["DESKTOP_TOUCH_SENTINEL"]);
+    expect(sw(after(`let s = br#"bytes " here"#;`))).toEqual(["DESKTOP_TOUCH_SENTINEL"]);
+    // and a `//` inside a raw string is still not a comment
+    expect(sw(after(`let s = r#"https://x/y"#;`))).toEqual(["DESKTOP_TOUCH_SENTINEL"]);
+  });
+
+  it("does not let a C# verbatim string swallow the comment after it", () => {
+    // C# was read with the TypeScript strip, where `\` escapes. In a verbatim string it does not,
+    // so `@"C:\dir\"` did not end where it ends and the real `//` comment after it survived —
+    // making a COMMENTED-OUT switch name count as a live switch. Rust's missing raw string LOSES a
+    // switch; C#'s misread verbatim string INVENTS one. Same cause, opposite directions.
+    const sw = (src: string) => readSwitchesFromCSharp(src, "probe.cs", []);
+    expect(
+      sw(
+        `class K { void M() { var p = @"C:\\dir\\"; // Environment.GetEnvironmentVariable("SWALLOWED")\n var v = Environment.GetEnvironmentVariable("DTM_SENTINEL_LAYER"); } }`,
+      ),
+    ).toEqual(["DTM_SENTINEL_LAYER"]);
+    // a doubled quote inside a verbatim string is one quote, not the end of it
+    expect(
+      sw(`class K { void M() { var p = @"say ""hi"""; var v = Environment.GetEnvironmentVariable("DTM_AFTER_DOUBLED"); } }`),
+    ).toEqual(["DTM_AFTER_DOUBLED"]);
+  });
+
   it("reads C#'s verbatim and interpolated strings", () => {
     const sw = (src: string) => readSwitchesFromCSharp(src, "probe.cs", []);
     expect(

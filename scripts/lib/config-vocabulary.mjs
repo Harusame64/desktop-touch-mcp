@@ -347,6 +347,25 @@ function stripRustComments(source) {
       i++;
       continue;
     }
+    // **A raw string, which this reader did not know existed.** `r"…"`, `r#"…"#`, `r##"…"##` and the
+    // byte forms `b`/`br`: inside one, a `\` is an ordinary character and the run ends only at a
+    // `"` followed by the SAME number of `#`. Entering it as a normal string desyncs on any odd
+    // number of quotes inside — `r#"a " b"#` swallowed the rest of the file and the switch after it
+    // was lost (win2, 2026-09-18, reproduced here).
+    //
+    // **And mac's own sweep had called this shape safe**, because the example it fired
+    // (`r#"say "hi" here"#`) happens to hold an EVEN number of quotes, so the state came back in
+    // sync by luck. A shape that was not fired looks exactly like a shape that passed.
+    const raw = /^(?:b?r)(#*)"/.exec(text.slice(i, i + 12));
+    if (raw !== null && !/[A-Za-z0-9_]/.test(text[i - 1] ?? "")) {
+      const close = `"${raw[1]}`;
+      const openEnd = i + raw[0].length;
+      const at = text.indexOf(close, openEnd);
+      const end = at === -1 ? text.length : at + close.length;
+      for (let j = i; j < end; j++) push(text[j], j >= openEnd - 1 && j < end - raw[1].length);
+      i = end;
+      continue;
+    }
     if (ch === '"') {
       inString = true;
       push(ch, false);
@@ -396,8 +415,81 @@ function stripRustComments(source) {
  * the grid did not count at all, and a third (`DTM_GIT_USERNAME`) was pinned at a TypeScript site
  * that only WRITES it.
  */
+/**
+ * C#'s comments — and its two string forms, which are not TypeScript's.
+ *
+ * **C# was being read with the TypeScript strip**, and the rule that differs is the one that bit: in
+ * a VERBATIM string (`@"…"`) a backslash is an ordinary character and the run ends at a `"` (doubled
+ * `""` escapes one). TypeScript's rule treats the `\` as an escape, so `@"C:\dir\"` did not end
+ * where it ends — and the real `//` comment after it was never stripped, which made a
+ * COMMENTED-OUT switch name count as a live switch (win2, 2026-09-18; reproduced here, the answer
+ * was `["DTM_SENTINEL_LAYER", "SWALLOWED"]`).
+ *
+ * The two languages' errors point opposite ways from the same cause: Rust's missing raw string LOSES
+ * a switch, C#'s misread verbatim string INVENTS one.
+ */
+function stripCSharpComments(source) {
+  const text = source.replace(/\r\n/g, "\n");
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    // `@"…"` / `$@"…"` / `@$"…"` — no escapes, `""` is one quote.
+    const verbatim = /^(?:@\$?|\$@)"/.exec(text.slice(i, i + 3));
+    if (verbatim !== null) {
+      out += text.slice(i, i + verbatim[0].length);
+      i += verbatim[0].length;
+      while (i < text.length) {
+        if (text[i] === '"' && text[i + 1] === '"') {
+          out += '""';
+          i += 2;
+          continue;
+        }
+        out += text[i];
+        if (text[i] === '"') {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      out += ch;
+      i++;
+      while (i < text.length) {
+        const c = text[i];
+        out += c;
+        i++;
+        if (c === "\\") {
+          out += text[i] ?? "";
+          i++;
+          continue;
+        }
+        if (c === quote || c === "\n") break;
+      }
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      const end = close === -1 ? text.length : close + 2;
+      for (let j = i; j < end; j++) if (text[j] === "\n") out += "\n";
+      i = end;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 export function readSwitchesFromCSharp(source, file = "<source>", problems = []) {
-  const text = stripComments(source);
+  const text = stripCSharpComments(source);
   const names = new Set();
   for (const m of text.matchAll(/\bEnvironment\.GetEnvironmentVariable\s*\(\s*([^)]*)\)/g)) {
     const literal = m[1].trim().match(/^"([^"]+)"$/);
