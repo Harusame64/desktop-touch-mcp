@@ -176,7 +176,19 @@ const derived = {
   // Pinned WITHOUT the line number, for the reason `handBuilt` drops it: a comment added above the
   // site moved it and the gate failed in both directions for an edit that changed nothing (gate 2 on
   // #674, round 4, finding 4).
-  unreadableCallSites: [...new Set(failCode.unreadable.map((u) => u.replace(/^([^:]+):\d+: /, "$1: ")))].sort(),
+  // **Deduping after stripping the line hid a second site.** Two `String(err.code)` forwards in one
+  // file collapsed to one pin entry, so adding another left the pin byte-identical and the gate
+  // green — a new producer of unenumerable codes landing unnoticed (gate 2 on #674, round 5,
+  // finding 4). The count survives the strip, so the set still changes when a site is added.
+  unreadableCallSites: Object.entries(
+    failCode.unreadable.reduce((acc, u) => {
+      const key = u.replace(/^([^:]+):\d+: /, "$1: ");
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {}),
+  )
+    .map(([key, n]) => (n === 1 ? key : `${key} (x${n})`))
+    .sort(),
   residual: arms.residual,
   dictionaryArms: arms.dictionaryArms.map((a) => a.identifier).sort(),
   dictionaryOnly,

@@ -652,17 +652,43 @@ describe("what gate 2's fourth pass found, kept as cells", () => {
     expect(found[0].exported).toBe(true);
   });
 
-  it("2. sees the inversion in every spelling, not only the adjacent `!`", () => {
-    // `!(Object.hasOwn(…))` and `Object.hasOwn(…) === false` both removed the one structural
-    // invariant this axis rests on, and both left the gate at exit 0.
+  it("2. reads the guard's POLARITY from the expression's structure", () => {
+    // **The cell this replaces was written from the fix's output.** It asserted the three spellings
+    // the alternation had been written for, so it stayed green for `=== true`, `!== false`, `!!x`
+    // and `!(a && x)` — the four the predicate actually got wrong, one of which left the axis
+    // unbounded at exit 0 (gate 2 on #674, round 5, finding 7). The title claimed a class its body
+    // did not measure.
+    //
+    // **And enumerating spellings does not terminate**: three rounds added one at a time and each
+    // found the next. The property is "the arm is entered only when membership holds", so the table
+    // below is the property's truth table, and the reader answers it by parsing rather than by
+    // matching text.
     const arm = (cond: string) =>
       readClassifyArms(
         `function classify(m) { const d = "x"; if (${cond}) { return { code: d, suggest: [] }; } return { code: "ToolError" }; }`,
-      ).dictionaryArms.map((a: { guarded: boolean }) => a.guarded);
-    expect(arm("d && Object.hasOwn(SUGGESTS, d)")).toEqual([true]);
-    expect(arm("d && !Object.hasOwn(SUGGESTS, d)")).toEqual([false]);
-    expect(arm("d && !(Object.hasOwn(SUGGESTS, d))")).toEqual([false]);
-    expect(arm("d && Object.hasOwn(SUGGESTS, d) === false")).toEqual([false]);
+      ).dictionaryArms.map((a: { guarded: boolean }) => a.guarded)[0];
+    const table: [string, boolean][] = [
+      ["d && Object.hasOwn(SUGGESTS, d)", true],
+      ["d && !Object.hasOwn(SUGGESTS, d)", false],
+      ["d && !(Object.hasOwn(SUGGESTS, d))", false],
+      ["d && Object.hasOwn(SUGGESTS, d) === false", false],
+      ["d && Object.hasOwn(SUGGESTS, d) !== true", false],
+      // positives that a spelling-matcher read as inversions and reddened CI for
+      ["d && Object.hasOwn(SUGGESTS, d) === true", true],
+      ["d && Object.hasOwn(SUGGESTS, d) !== false", true],
+      ["d && !!Object.hasOwn(SUGGESTS, d)", true],
+      // inversions that a spelling-matcher read as positive, leaving the axis unbounded at exit 0
+      ["!(d && Object.hasOwn(SUGGESTS, d))", false],
+      ["!((Object.hasOwn(SUGGESTS, d)))", false],
+      // a disjunct can reach the arm on its own
+      ["Object.hasOwn(SUGGESTS, d) || override", false],
+      [`d && Object.hasOwn(SUGGESTS, d) || d === "z"`, false],
+      // brackets and operators inside a string are neither
+      [`d && !m.includes("(") && Object.hasOwn(SUGGESTS, d)`, true],
+      [`d && m !== "a||b" && Object.hasOwn(SUGGESTS, d)`, true],
+      ["d", false],
+    ];
+    for (const [cond, required] of table) expect(arm(cond), cond).toBe(required);
   });
 
   it("3. the guard reader knows the shared grammar too", () => {
@@ -703,9 +729,13 @@ describe("what gate 2's fourth pass found, kept as cells", () => {
   });
 
   it("7. does not read a method call as a call to a free function", () => {
-    // `Object.keys(o)` answered reachability for a producer whose enclosing name is `keys`.
-    expect(isCalledOutside([{ file: "a.ts", text: "const z = Object.keys(o);" }], "keys", "b.ts")).toBe(false);
+    // `Object.keys(o)` answered reachability TRUE for a producer whose enclosing name is `keys`.
+    // Round 5 then showed that answering FALSE is just as wrong — a producer reached through a
+    // property is called — so the property form now answers `null`, and only the absence of both
+    // forms answers `false`. `null` keeps the code in the count; `false` removes it.
+    expect(isCalledOutside([{ file: "a.ts", text: "const z = Object.keys(o);" }], "keys", "b.ts")).toBeNull();
     expect(isCalledOutside([{ file: "a.ts", text: "const z = keys(o);" }], "keys", "b.ts")).toBe(true);
+    expect(isCalledOutside([{ file: "a.ts", text: "const z = 1;" }], "keys", "b.ts")).toBe(false);
   });
 
   it("9. finds the wrapper's own declaration whatever it names its parameter", () => {
@@ -724,6 +754,46 @@ return fail("KeyLockerDisabled", "m");
     ]);
     expect(codes).toEqual(["KeyLockerDisabled"]);
     expect(unreadable).toEqual([]);
+  });
+});
+
+describe("what gate 2's fifth pass found, kept as cells", () => {
+  it("5. resolves an arrow whose parameters or return type contain parentheses", () => {
+    // Round 4's fix demanded a paren-FREE parameter list, which lost `(a, b = f())` and
+    // `(cb: (n) => void)` — both of which the form it replaced had resolved correctly. And while
+    // fixing that, excluding `>` from the return-type slot lost `): Promise<ToolResult> =>`, which
+    // is how `macro.ts`'s site was attributed to `dispatchableStepNames` for one run.
+    const fn = (text: string) => readHandBuiltFlatFailures([{ file: "a.ts", text }])[0];
+    expect(fn(`export const h = (a, b = fallback()) => { return { ok: false, code: "X", error: "e" }; };`).fn).toBe("h");
+    expect(fn(`export const h = (cb: (n: number) => void) => { return { ok: false, code: "Y", error: "e" }; };`).fn).toBe("h");
+    expect(
+      fn(`export const h = async ({ a }: Args): Promise<R> => { return { ok: false, code: "Z", error: "e" }; };`).fn,
+    ).toBe("h");
+  });
+
+  it("6. answers UNKNOWN, not `false`, when the only call is through a property", () => {
+    // `false` is the one answer that REMOVES a code from the count, so a producer reached through a
+    // dispatch table or a re-export must not be answered with it.
+    expect(isCalledOutside([{ file: "a.ts", text: "api.insertText(1);" }], "insertText", "b.ts")).toBeNull();
+    expect(isCalledOutside([{ file: "a.ts", text: "insertText(1);" }], "insertText", "b.ts")).toBe(true);
+    expect(isCalledOutside([{ file: "a.ts", text: "const z = 1;" }], "insertText", "b.ts")).toBe(false);
+  });
+
+  it("4. a second unenumerable call site in the same file changes the pin", () => {
+    // Deduping after the line number was stripped collapsed two `String(err.code)` forwards into one
+    // entry, so adding another left the pin byte-identical and the gate green.
+    const { unreadable } = readFailCodeSites([
+      {
+        file: "x.ts",
+        text: `
+function fail(code: string, m: string) { return failCode(code, m); }
+export const a = (e: { code: string }) => fail(String(e.code), "m");
+export const b = (e: { code: string }) => fail(String(e.code), "m");
+`,
+      },
+    ]);
+    expect(unreadable.length).toBe(2);
+    expect(new Set(unreadable.map((u: string) => u.replace(/^([^:]+):\d+: /, "$1: "))).size).toBe(1);
   });
 });
 

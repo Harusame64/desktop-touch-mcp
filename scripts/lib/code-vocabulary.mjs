@@ -464,41 +464,108 @@ function enclosingCondition(body, at) {
 }
 
 /**
- * Does this condition REQUIRE `Object.hasOwn(SUGGESTS, expr)` to hold?
+ * Does taking this branch REQUIRE `Object.hasOwn(SUGGESTS, expr)` to hold?
  *
- * **A substring test cannot tell a check from its negation.** The first version asked whether the
- * condition text contained the call, so `if (declared && !Object.hasOwn(SUGGESTS, declared))` — which
- * makes a producer's message able to name ANY code, the exact unbounding this axis exists to catch —
- * left the gate at exit 0, still printing "both check the dictionary first" (gate 2 on #674, round 2,
- * finding 2). `|| override` fails the same way, for the same reason: the call is present and does not
- * decide the branch.
+ * **Parsed, not matched — because enumerating spellings does not terminate.** Three rounds of gate 2
+ * were spent adding one spelling at a time and each round found the next: first the adjacent `!`,
+ * then `!(…)` and `=== false`, then `!(a && …)`, `!!x`, `=== true` and `!== false`. Two of those
+ * left the axis unbounded with the gate at exit 0 and two reddened CI for a behaviour-preserving
+ * edit. **The polarity is a property of the expression's structure, so it is read from the
+ * structure**: split at the top-level `||`, and a branch requires membership only when EVERY
+ * disjunct does; inside a disjunct, split at `&&` and ask whether any conjunct is the call in
+ * positive polarity, following `!` and parentheses down.
  *
- * So: the call must appear un-negated, and the condition must have no top-level `||` — a disjunction
- * means some other operand can carry the branch on its own.
+ * Bracket depth is counted over the MASKED text, so a `(` or a `||` inside a string literal is
+ * neither a bracket nor an operator — the rule `enclosingCondition` learned, which its own
+ * top-level-`||` scan three lines below had not (gate 2 on #674, round 5).
  */
 function dictionaryMembershipRequired(condition, expr) {
-  const call = new RegExp(`Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${quoteForRegExp(expr)}\\s*\\)`, "g");
-  let positive = false;
-  for (const m of condition.matchAll(call)) {
-    // **Every spelling of the inversion, not just the adjacent `!`.** `!(Object.hasOwn(…))` and
-    // `Object.hasOwn(…) === false` are ordinary ways to write the same thing, and both came back
-    // `guarded: true` with the gate at exit 0 — removing the one structural invariant this axis
-    // rests on while CI stayed green (gate 2 on #674, round 4, finding 2).
-    const before = condition.slice(0, m.index);
-    const after = condition.slice(m.index + m[0].length);
-    if (/!\s*\(?\s*$/.test(before)) return false;
-    if (/^\s*(?:===?|!==?)\s*(?:false|true)/.test(after)) return false;
-    positive = true;
+  const masked = maskLiterals(condition);
+  return requiresTerm(condition, masked, 0, condition.length, new RegExp(`^Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${quoteForRegExp(expr)}\\s*\\)$`), true);
+}
+
+/** Positions covered by a string, template or regex literal. */
+function maskLiterals(text) {
+  const masked = new Set();
+  for (let i = 0; i < text.length; i++) {
+    const end = literalEnd(text, i, significantBefore(text, i));
+    if (end === -1) continue;
+    for (let j = i; j < end; j++) masked.add(j);
+    i = end - 1;
   }
-  if (!positive) return false;
+  return masked;
+}
+
+/** Split `[from, to)` at a top-level operator, over masked text. */
+function splitTopLevel(text, masked, from, to, op) {
+  const parts = [];
   let depth = 0;
-  for (let i = 0; i < condition.length - 1; i++) {
-    const ch = condition[i];
+  let start = from;
+  for (let i = from; i < to; i++) {
+    if (masked.has(i)) continue;
+    const ch = text[i];
     if (ch === "(" || ch === "[" || ch === "{") depth++;
     else if (ch === ")" || ch === "]" || ch === "}") depth--;
-    else if (depth === 0 && ch === "|" && condition[i + 1] === "|") return false;
+    else if (depth === 0 && ch === op[0] && text[i + 1] === op[1] && i + 1 < to) {
+      parts.push([start, i]);
+      i++;
+      start = i + 1;
+    }
   }
-  return true;
+  parts.push([start, to]);
+  return parts;
+}
+
+const trimSpan = (text, from, to) => {
+  while (from < to && /\s/.test(text[from])) from++;
+  while (to > from && /\s/.test(text[to - 1])) to--;
+  return [from, to];
+};
+
+/**
+ * Does the expression in `[from, to)` require the term (matched by `term`) to be TRUE, under
+ * `wanted` polarity?
+ */
+function requiresTerm(text, masked, from, to, term, wanted) {
+  [from, to] = trimSpan(text, from, to);
+  if (from >= to) return false;
+
+  // `a || b` — required only if BOTH sides require it. `a && b` — required if EITHER does.
+  for (const [op, everyBranch] of [["||", true], ["&&", false]]) {
+    const parts = splitTopLevel(text, masked, from, to, op);
+    if (parts.length > 1) {
+      const answers = parts.map(([a, b]) => requiresTerm(text, masked, a, b, term, wanted));
+      return everyBranch ? answers.every(Boolean) : answers.some(Boolean);
+    }
+  }
+
+  // `!x` — the same question with the polarity flipped.
+  if (text[from] === "!" && !masked.has(from)) {
+    return requiresTerm(text, masked, from + 1, to, term, !wanted);
+  }
+
+  // `(x)` — unwrap only when the parentheses span the whole expression.
+  if (text[from] === "(" && !masked.has(from)) {
+    let depth = 0;
+    for (let i = from; i < to; i++) {
+      if (masked.has(i)) continue;
+      if (text[i] === "(") depth++;
+      else if (text[i] === ")") {
+        depth--;
+        if (depth === 0) return i === to - 1 && requiresTerm(text, masked, from + 1, i, term, wanted);
+      }
+    }
+    return false;
+  }
+
+  // `x === true` / `x !== false` keep the polarity; `=== false` / `!== true` flip it.
+  const comparison = /^([\s\S]*?)\s*(===?|!==?)\s*(true|false)\s*$/.exec(text.slice(from, to));
+  if (comparison !== null) {
+    const negating = (comparison[2].startsWith("!") ? 1 : 0) ^ (comparison[3] === "false" ? 1 : 0);
+    return requiresTerm(text, masked, from, from + comparison[1].length, term, negating ? !wanted : wanted);
+  }
+
+  return wanted && term.test(text.slice(from, to).trim());
 }
 
 /**
@@ -821,13 +888,13 @@ export function readHandBuiltFlatFailures(sources) {
           // A FUNCTION-LIKE declaration only: `const failure: ToolFailure = { … }` is a local, and
           // taking it as the enclosing declaration answers the reachability question about a
           // variable. The const form must be followed by a function or an arrow's parameter list.
-          // **`= (` is not enough.** It matches any parenthesised expression — `const trimmed = (s ??
-          // "").trim()` — and `declarationEncloses` then confirms it, because the first `{` after
-          // such a line is usually the producer's own object literal. `macro.ts`'s site was
-          // attributed to `const keys = (rawStep as {…})?.keys` instead of `runMacroHandler`, so
-          // `exported` read false and the reachability answer was about the wrong name (gate 2 on
-          // #674, round 4, finding 1). An arrow has to show its `=>`.
-          /\b(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?:async\s+)?(?:function\b|\([^()]*\)\s*(?::[^=;]+?)?=>|[A-Za-z_$][\w$]*\s*=>))/g,
+          // **`= (` is not enough, and "no parentheses inside" is too much.** The bare form matched
+          // any parenthesised expression (`const trimmed = (s ?? "").trim()`) and the reachability
+          // answer was then about the wrong name (round 4, finding 1); requiring a paren-FREE
+          // parameter list then lost `(a, b = f())` and `(cb: (n) => void)`, which the bare form had
+          // got right (round 5, finding 5). One level of nesting is what a parameter list needs, and
+          // the `=>` still has to be there.
+          /\b(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?:async\s+)?(?:function\b|\((?:[^()]|\([^()]*\))*\)\s*(?::[^;{]*?)?=>|[A-Za-z_$][\w$]*\s*=>))/g,
         ),
       ].at(-1);
       let fn = decl === undefined ? null : (decl[2] ?? decl[3] ?? null);
@@ -893,8 +960,22 @@ export function isCalledOutside(sources, name, definingFile) {
   // **`Object.keys(o)` is not a call to a function named `keys`.** The bare `\b` boundary answered
   // reachability by coincidence for any producer whose enclosing name collides with a common method
   // — `keys`, `list`, `get`, `send`, `parse` (gate 2 on #674, round 4, finding 7).
-  const call = new RegExp(`(^|[^.\\w$])${quoteForRegExp(name)}\\s*\\(`);
-  return sources.some(({ file, text }) => file !== definingFile && call.test(stripComments(text)));
+  //
+  // **But excluding the property form cannot answer "no".** A producer reached through a dispatch
+  // table or a re-export (`api.insertText(…)`) is called, and `false` is the one answer that REMOVES
+  // a code from the count. So a property call of the same name returns `null` — unknown — and the
+  // caller keeps the code (gate 2, round 5, finding 6: a narrowing that reduces detection is the
+  // direction that needs its control re-fired).
+  const free = new RegExp(`(^|[^.\\w$])${quoteForRegExp(name)}\\s*\\(`);
+  const property = new RegExp(`\\.\\s*${quoteForRegExp(name)}\\s*\\(`);
+  let viaProperty = false;
+  for (const { file, text } of sources) {
+    if (file === definingFile) continue;
+    const stripped = stripComments(text);
+    if (free.test(stripped)) return true;
+    if (property.test(stripped)) viaProperty = true;
+  }
+  return viaProperty ? null : false;
 }
 
 /**
