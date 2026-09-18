@@ -767,14 +767,37 @@ export function readFailCodeSites(sources) {
  * one the old shape could not express, and it is the four-way ternary.
  */
 function readLocalBinding(text, identifier, before = text.length) {
-  const re = new RegExp(`\\bconst\\s+${quoteForRegExp(identifier)}\\s*(?::[^=;]+)?=\\s*([^;]+);`, "g");
+  // **The expression ends at a `;` that is not inside a literal.** `[^;]+` stopped at the semicolon
+  // in `const code = cond ? "a;b" : "Second";`, and the truncated text was then reported as
+  // unreadable — an under-read wearing an honest answer's clothes. win2 found the same class in
+  // their own extraction on 2026-09-18 (a non-greedy `}` stopping inside `{tool:reidentify_element}`)
+  // and the user's new rule is to chase the root rather than the site, so it is fixed here too
+  // rather than waited for.
+  const re = new RegExp(`\\bconst\\s+${quoteForRegExp(identifier)}\\s*(?::[^=;]+)?=\\s*`, "g");
   let nearest = null;
   for (const m of text.matchAll(re)) {
     if (m.index > before) break;
     nearest = m;
   }
   if (nearest === null) return null;
-  const expr = nearest[1].trim();
+  const from = nearest.index + nearest[0].length;
+  let depth = 0;
+  let end = text.length;
+  for (let i = from; i < text.length; i++) {
+    const skip = literalEnd(text, i, significantBefore(text, i));
+    if (skip !== -1) {
+      i = skip - 1;
+      continue;
+    }
+    const ch = text[i];
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    else if (ch === ";" && depth <= 0) {
+      end = i;
+      break;
+    }
+  }
+  const expr = text.slice(from, end).trim();
   const lit = literal(expr);
   if (lit !== null) return { codes: [lit] };
   const tern = ternaryLiterals(expr);

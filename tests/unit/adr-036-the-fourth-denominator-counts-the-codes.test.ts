@@ -797,6 +797,24 @@ export const b = (e: { code: string }) => fail(String(e.code), "m");
   });
 });
 
+describe("the root class win2 found in their own extraction, swept here", () => {
+  it("ends a binding at a `;` that is not inside a literal", () => {
+    // win2's Opus round on internal#125 found a non-greedy `}` stopping inside
+    // `{tool:reidentify_element}` — an object cut short because the scan did not know what a string
+    // is. The user's rule of 2026-09-18 is to ask whether a pinpoint fix is enough and chase the
+    // root, so the same class was swept here: `[^;]+` stopped at the semicolon inside
+    // `cond ? "a;b" : "Second"`, and the truncated text was then reported as UNREADABLE — an
+    // under-read wearing an honest answer's clothes, which is worse than a wrong one.
+    const read = (text: string) => readFailCodeSites([{ file: "f.ts", text }]);
+    expect(read(`const code = cond ? "a;b" : "Second";\nfailCode(code, m);`).codes).toEqual(["Second", "a;b"]);
+    expect(read(`const code = "{tool:reidentify_element}";\nfailCode(code, m);`).codes).toEqual([
+      "{tool:reidentify_element}",
+    ]);
+    // and a genuinely unreadable binding is still reported as one
+    expect(read(`const code = somethingElse;\nfailCode(code, m);`).unreadable.length).toBe(1);
+  });
+});
+
 describe("the check's exit code", () => {
   let root = "";
 
