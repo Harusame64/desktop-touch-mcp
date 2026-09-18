@@ -177,6 +177,35 @@ describe("what the parser says, named rather than compared", () => {
     expect(problems).toEqual([]);
   });
 
+  it.each([
+    ["an intersection", 'export type T = ({ tag: "x" } & { why: "a" }) | { why: "b" };\n'],
+    ["a wrapper type", 'export type T = Readonly<{ why: "a" }> | { why: "b" };\n'],
+  ])("names %s in the outer union instead of skipping it, because it may carry the field", (_label, source) => {
+    // codex, round 2, and it is the SAME defect as the parentheses one arriving at its third
+    // address: `if (!ts.isTypeLiteralNode(member)) continue;` was a silent skip. The direct object
+    // sets `seen`, so the reader answered `["b"]` and reported nothing while the scanner it
+    // replaces found both. This parser is syntax-only and will not decide what `A & B` or
+    // `Readonly<T>` contains — but it says so, and an unknown reported beats an unknown skipped.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(["b"]);
+    expect(problems.join("\n")).toContain("is not an object type this parser reads");
+    expect(problems.join("\n")).toContain("is NOT in this answer");
+    expect(oldReadInlineFieldUnion(source as string, "T", "why", [])).toEqual(["a", "b"]);
+  });
+
+  it.each([
+    ["a plain literal", 'export type T =\n  | "a_plain_member"\n  | { why: "from_the_object" };\n', ["from_the_object"]],
+    ["undefined", 'export type T = undefined | { why: "b" };\n', ["b"]],
+  ])("stays silent about %s, which provably carries no field at all", (_label, source, expected) => {
+    // **Not every skip is a silence worth breaking.** A member whose emptiness is a syntactic fact
+    // contributes nothing and there is nothing to report; making this noisy too would be a rule
+    // that cannot tell "no field here" from "cannot see whether there is a field here", which is
+    // the distinction the cells above exist for.
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(expected);
+    expect(problems).toEqual([]);
+  });
+
   it("says so when a FIELD's member is not a quoted literal, rather than dropping it", () => {
     // The same contract `readUnion` keeps. The reader being replaced drops this one in silence, so
     // this is a place the new reader says MORE than the old one — named here rather than left to

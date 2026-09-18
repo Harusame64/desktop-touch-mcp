@@ -177,7 +177,20 @@ export function readInlineFieldUnion(source, typeName, field, problems = [], fil
   const values = [];
   let seen = false;
   for (const member of unionMembers(alias.type)) {
-    if (!ts.isTypeLiteralNode(member)) continue;
+    if (!ts.isTypeLiteralNode(member)) {
+      // **Not every skip is a silence.** A member that provably carries no properties contributes
+      // no `field` and there is nothing to say about it. A member this parser cannot see INSIDE —
+      // an intersection, a `Readonly<{…}>`, a reference to a type declared elsewhere — might carry
+      // one, and skipping it quietly is how a denominator shrinks with the gate still green
+      // (codex, round 2). It is named instead.
+      if (!carriesNoProperties(member)) {
+        problems.push(
+          `${typeName}: member \`${memberText(file, member)}\` is not an object type this parser reads — ` +
+            `any ${field} it carries is NOT in this answer`,
+        );
+      }
+      continue;
+    }
     for (const property of member.members) {
       if (!ts.isPropertySignature(property) || property.name === undefined) continue;
       if (propertyName(property.name) !== field || property.type === undefined) continue;
@@ -200,6 +213,23 @@ export function readInlineFieldUnion(source, typeName, field, problems = [], fil
   }
   if (values.length === 0) problems.push(`${typeName}.${field} read as empty — has it stopped being a union of literals?`);
   return [...new Set(values)].sort();
+}
+
+/**
+ * Can this type be shown to hold no properties at all?
+ *
+ * Deliberately a short list of things whose emptiness is a syntactic fact — a quoted or numeric
+ * literal, `true`/`false`/`null`, and the keywords that have no members. Everything else, including
+ * `any` and `object`, answers NO: not because it necessarily carries the field, but because this
+ * parser cannot say that it does not, and an unknown reported beats an unknown skipped.
+ */
+function carriesNoProperties(node) {
+  if (ts.isLiteralTypeNode(node)) return true;
+  return (
+    node.kind === ts.SyntaxKind.UndefinedKeyword ||
+    node.kind === ts.SyntaxKind.NeverKeyword ||
+    node.kind === ts.SyntaxKind.VoidKeyword
+  );
 }
 
 /** A property's name as written, whether it is an identifier or a quoted key. */

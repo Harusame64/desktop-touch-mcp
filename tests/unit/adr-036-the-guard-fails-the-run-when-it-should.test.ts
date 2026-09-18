@@ -13,7 +13,7 @@
  * has not reached anybody.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,11 +100,6 @@ beforeAll(() => {
   // `typescript`, and node resolves that by walking up from the script — which, in a temp
   // directory, walks past nothing. CI has it because `npm ci` runs before these gates; this
   // harness has to provide what CI provides, or it tests a tree the gate cannot run in.
-  // `"junction"`, not `"dir"`: on Windows a symlink needs Developer Mode or elevation and this
-  // threw EPERM on win2's machine, skipping every cell in the file; a junction needs neither.
-  // The type is ignored off Windows, so there is no branch. (win2 measured all three there: both
-  // symlink forms EPERM, junction created and resolving `typescript`.)
-  symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"), "junction");
 });
 
 afterAll(() => {
