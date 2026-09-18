@@ -83,6 +83,10 @@ function stripCommentsWithMask(source) {
       continue;
     }
     if (ch === "/" && text[i + 1] === "*") {
+      // **A block comment separates two tokens; deleting it joins them** — `foo/**/bar` came out
+      // as `foobar` (gate 2 on #679, round 2). The separator is kept, and the newlines still land
+      // where they did, because the contract here is the line index, not the column.
+      push(" ", false);
       const close = text.indexOf("*/", i + 2);
       const end = close === -1 ? text.length : close + 2;
       for (let j = i; j < end; j++) if (text[j] === "\n") push("\n", false);
@@ -412,6 +416,9 @@ function stripRustComments(source) {
     // per-language readers exist to prevent.** Removed, with a cell that shoots division here and a
     // regex literal at the TypeScript reader.
     if (ch === "/" && text[i + 1] === "*") {
+      // The separator, for the same reason as the other three strippers — Rust's block comments
+      // nest, which is the only part of this branch that differs.
+      push(" ", false);
       let depth = 1;
       let j = i + 2;
       while (j < text.length && depth > 0) {
@@ -505,6 +512,10 @@ function stripCSharpComments(source) {
       continue;
     }
     if (ch === "/" && text[i + 1] === "*") {
+      // **A block comment separates two tokens; deleting it joins them** — `foo/**/bar` came out
+      // as `foobar` (gate 2 on #679, round 2). The separator is kept, and the newlines still land
+      // where they did, because the contract here is the line index, not the column.
+      out += " ";
       const close = text.indexOf("*/", i + 2);
       const end = close === -1 ? text.length : close + 2;
       for (let j = i; j < end; j++) if (text[j] === "\n") out += "\n";

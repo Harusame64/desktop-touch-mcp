@@ -729,7 +729,11 @@ describe("what gate 2's fourth pass found, kept as cells", () => {
     // between the `//` and `/*` tests, `const x = /* … */ 5;` read as a regex literal, so comment
     // prose entered the configuration axis as code — and a multi-line one desynced the string mask,
     // which hides a real switch. `browser.ts:2490` hits the first form today.
-    expect(stripConfigComments(`const x = /* SECRET */ 5;`)).toBe("const x =  5;");
+    // **Three spaces, not two, since #679**: the one either side of the comment, plus the separator
+    // the stripper now leaves in its place. A block comment separates two tokens, and deleting it
+    // joined them — `foo/**/bar` came out `foobar` in all four strippers (gate 2 on #679, round 2).
+    // This cell pins the stripper's OUTPUT, so it is the one that had to move; no gate summary did.
+    expect(stripConfigComments(`const x = /* SECRET */ 5;`)).toBe("const x =   5;");
     expect(stripConfigComments(`if (!/^https?:\\/\\//i.test(u)) {`)).toBe(`if (!/^https?:\\/\\//i.test(u)) {`);
     // the multi-line form, whose damage was to the mask rather than to the text
     expect(stripConfigComments(`const a =\n  /* note\n     with a " quote */ 1;\nconst d = process.env.AFTER;`)).toContain(

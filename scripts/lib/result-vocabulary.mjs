@@ -90,6 +90,10 @@ export function stripComments(source) {
       continue;
     }
     if (ch === "/" && text[i + 1] === "*") {
+      // **A block comment separates two tokens; deleting it joins them** — `foo/**/bar` came out
+      // as `foobar` (gate 2 on #679, round 2). The separator is kept, and the newlines still land
+      // where they did, because the contract here is the line index, not the column.
+      out += " ";
       const close = text.indexOf("*/", i + 2);
       const end = close === -1 ? text.length : close + 2;
       for (let j = i; j < end; j++) if (text[j] === "\n") out += "\n";

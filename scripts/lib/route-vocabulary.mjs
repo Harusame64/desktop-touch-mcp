@@ -71,6 +71,16 @@ export function stripComments(source) {
       continue;
     }
     if (ch === "/" && next === "*") {
+      // **A block comment separates two tokens, and deleting it joins them.** `foo/**/bar` came out
+      // as `foobar`, `return/**/x;` as `returnx;`, and `x+/**/+ /re/` as `x++ /re/` — which the
+      // operator-run rule then reads as a postfix increment, so the regex after it is called
+      // division and its quotes are counted (gate 2 on #679, round 2). Every reader in this tree
+      // did this, and has since before #674; it is one character to fix, in each of the three
+      // strippers, and the shape it breaks is one nobody has written yet.
+      //
+      // The space goes in FIRST so the line's newlines still land where they did: this function's
+      // contract is that every line keeps its index, not its width.
+      out += " ";
       i += 2;
       while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
         if (src[i] === "\n") out += "\n";
@@ -194,8 +204,15 @@ export function literalEnd(text, i, previous) {
     j++;
     if (c === "[") inClass = true;
     else if (c === "]") inClass = false;
-    else if (c === "/" && !inClass) break;
-    else if (c === "\n") break;
+    else if (c === "/" && !inClass) {
+      // **The flags belong to the literal.** They are letters, so leaving them out changed no
+      // reader's answer — but it was the ONLY thing TypeScript's own scanner and this one disagreed
+      // about across `src/`: 82 characters in 2,124,147, all of them flags. Taking them in makes the
+      // agreement exact, and an invariant with no permitted exceptions is one that cannot rot into
+      // a list nobody re-reads.
+      while (j < text.length && /[dgimsuvy]/.test(text[j])) j++;
+      break;
+    } else if (c === "\n") break;
   }
   return j;
 }
@@ -286,12 +303,83 @@ const DECLARATION = /(?:export\s+)?(?:type|interface|const|function|class)\b/y;
 export function literalSpans(text) {
   const spans = [];
   for (let i = 0; i < text.length; i++) {
+    if (text[i] === "`") {
+      i = walkTemplate(text, i, spans) - 1;
+      continue;
+    }
     const end = literalEnd(text, i, significantBefore(text, i));
     if (end === -1) continue;
     spans.push([i, end]);
     i = end - 1;
   }
   return spans;
+}
+
+/**
+ * A template literal's TEXT chunks, with its `${…}` interpolations left as code.
+ *
+ * **`literalEnd` and this function answer different questions, on purpose.** `literalEnd` answers
+ * "where does the literal token starting here end", which is what a scanner stepping over tokens
+ * needs. `literalSpans` answers "which regions of this text are not code", and the inside of a
+ * `${…}` IS code — a producer written there is as real as one written anywhere else. Treating the
+ * whole template as quoted prose made `` `${probeAim("act.route", { route: "x" })}` `` invisible to
+ * the road axis, with no road and no problem reported (gate 2 on #679, round 2). The window this PR
+ * removed found that call, because a window does not know what a literal is; the mask that replaced
+ * it knew too much.
+ *
+ * Each chunk keeps a real delimiter at both ends — the backtick or the `{` of `${`, and the `}` or
+ * the closing backtick — so a copy with the interiors blanked still balances its braces.
+ *
+ * Returns the index just past the closing backtick.
+ */
+function walkTemplate(text, start, spans) {
+  let chunkStart = start;
+  let i = start + 1;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === "`") {
+      spans.push([chunkStart, i + 1]);
+      return i + 1;
+    }
+    if (ch === "$" && text[i + 1] === "{") {
+      spans.push([chunkStart, i + 2]);
+      const close = walkInterpolation(text, i + 2, spans);
+      chunkStart = close;
+      i = close + 1;
+      continue;
+    }
+    i++;
+  }
+  // Unterminated: say the rest is text rather than guess where it ends.
+  spans.push([chunkStart, text.length]);
+  return text.length;
+}
+
+/** From just past a `${`, the index of its matching `}`, collecting the literals inside on the way. */
+function walkInterpolation(text, from, spans) {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === "`") {
+      i = walkTemplate(text, i, spans) - 1;
+      continue;
+    }
+    const end = literalEnd(text, i, significantBefore(text, i));
+    if (end !== -1) {
+      spans.push([i, end]);
+      i = end - 1;
+      continue;
+    }
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      if (depth === 0) return i;
+      depth--;
+    }
+  }
+  return text.length;
 }
 
 /** The body of the brace-delimited block that starts at the first `{` at or after `from`. */

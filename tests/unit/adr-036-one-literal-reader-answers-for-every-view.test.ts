@@ -16,9 +16,10 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { literalSpans, literalEnd, significantBefore } from "../../scripts/lib/route-vocabulary.mjs";
+import { literalSpans, literalEnd, significantBefore, stripComments } from "../../scripts/lib/route-vocabulary.mjs";
 import { maskStringContents } from "../../scripts/lib/result-vocabulary.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -162,6 +163,72 @@ describe("the mask promises length, and the views promise agreement", () => {
       }
     }
     expect(spansSeen).toBeGreaterThan(10000);
+    expect(disagreed).toEqual([]);
+  });
+});
+
+describe("the one reader, against TypeScript's own scanner", () => {
+  /**
+   * Every character TypeScript says belongs to a literal's TEXT. A template's `${…}` is code, so
+   * `TemplateHead` / `Middle` / `Tail` are marked and the expressions between them are not.
+   */
+  const oracle = (source: string): Uint8Array => {
+    const marked = new Uint8Array(source.length);
+    const file = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const kinds = new Set<ts.SyntaxKind>([
+      ts.SyntaxKind.StringLiteral,
+      ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+      ts.SyntaxKind.RegularExpressionLiteral,
+      ts.SyntaxKind.TemplateHead,
+      ts.SyntaxKind.TemplateMiddle,
+      ts.SyntaxKind.TemplateTail,
+    ]);
+    const mark = (node: ts.Node): void => {
+      if (kinds.has(node.kind)) {
+        for (let i = node.getStart(file); i < node.getEnd(); i++) marked[i] = 1;
+        return;
+      }
+      node.forEachChild(mark);
+    };
+    file.forEachChild(mark);
+    return marked;
+  };
+
+  it("classifies every character of every source file exactly as TypeScript does", () => {
+    // **An oracle, not a second opinion.** Every other agreement cell in this file compares two
+    // things this tree wrote, and both can be wrong the same way — three hand-written encodings of
+    // "where may a regex begin" agreed for years while all three allowed one after `x++`. This one
+    // compares against the compiler that defines the answer.
+    //
+    // The comparison is on the STRIPPED text, because that is what every gate reads; a backtick in
+    // prose is not a template, and TypeScript would be right to say it is.
+    //
+    // Zero permitted exceptions, on purpose. It ran with one — regular-expression FLAG letters,
+    // 82 characters in 2,124,147 — and taking them into the literal cost a single line. A list of
+    // allowed differences is a list nobody re-reads.
+    const files = sourceFiles();
+    expect(files.length).toBeGreaterThan(100);
+    const disagreed: string[] = [];
+    let compared = 0;
+    for (const path of files) {
+      const source = stripComments(readFileSync(path, "utf8"));
+      let expectedMask: Uint8Array;
+      try {
+        expectedMask = oracle(source);
+      } catch {
+        continue;
+      }
+      const mine = new Uint8Array(source.length);
+      for (const [start, end] of literalSpans(source)) for (let i = start; i < end; i++) mine[i] = 1;
+      for (let i = 0; i < source.length; i++) {
+        compared++;
+        if (expectedMask[i] === mine[i]) continue;
+        const line = source.slice(0, i).split("\n").length;
+        disagreed.push(`${path}:${line} typescript=${expectedMask[i]} ours=${mine[i]} ${JSON.stringify(source.slice(Math.max(0, i - 30), i + 10))}`);
+        break;
+      }
+    }
+    expect(compared).toBeGreaterThan(1_000_000);
     expect(disagreed).toEqual([]);
   });
 });

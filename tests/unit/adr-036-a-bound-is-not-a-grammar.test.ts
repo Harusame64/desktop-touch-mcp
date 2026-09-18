@@ -20,12 +20,17 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { readSwitchesFromRust } from "../../scripts/lib/config-vocabulary.mjs";
+import {
+  readSwitchesFromRust,
+  stripComments as stripConfigComments,
+} from "../../scripts/lib/config-vocabulary.mjs";
 import { readHandBuiltFlatFailures } from "../../scripts/lib/code-vocabulary.mjs";
+import { stripComments as stripResultComments } from "../../scripts/lib/result-vocabulary.mjs";
 import {
   maskLiteralContents,
   readInlineFieldUnion,
   readRoadVocabulary,
+  stripComments as stripRouteComments,
 } from "../../scripts/lib/route-vocabulary.mjs";
 
 describe("length: the Rust raw-string `#` run is counted, not windowed", () => {
@@ -190,5 +195,69 @@ describe("spelling: a postfix `++` ends a value, so the slash after it is divisi
     expect(maskLiteralContents("f(a) / 2; KEEPME;")).toContain("KEEPME");
     expect(maskLiteralContents("m[i] / 2; KEEPME;")).toContain("KEEPME");
     expect(maskLiteralContents("(a + b) / 2; KEEPME;")).toContain("KEEPME");
+  });
+});
+
+describe("a comment is a token separator, and four strippers were deleting it", () => {
+  it.each([
+    ["route", stripRouteComments],
+    ["result", stripResultComments],
+    ["config", stripConfigComments],
+  ])("%s keeps the tokens a block comment separates", (_name, strip) => {
+    // `foo/**/bar` came out as `foobar`, `return/**/x;` as `returnx;`. Every reader in this tree did
+    // it, and has since before #674 — found by gate 2 on this PR, through the one consequence that
+    // had just become visible: `x+/**/+ /re/` becomes `x++ /re/`, which the operator-run rule then
+    // reads as a postfix increment and calls the regex division.
+    expect(strip("foo/**/bar")).toBe("foo bar");
+    expect(strip("return/**/x;")).toBe("return x;");
+  });
+
+  it("the Rust stripper keeps it too, through a NESTED block comment", () => {
+    // Rust's block comments nest, which is the only part of that branch that differs.
+    const source = 'fn main() { let a = foo/* outer /* inner */ still */bar; let v = std::env::var("DTM_AFTER_NESTED"); }';
+    expect(readSwitchesFromRust(source, "m.rs", [])).toEqual(["DTM_AFTER_NESTED"]);
+  });
+
+  it("does not lose the line a comment sat on", () => {
+    // The pair: the contract of these functions is that every line keeps its INDEX. The separator
+    // must not add one, and a multi-line comment must still leave its newlines behind.
+    const source = "const a = 1;\n/* two\n   lines */\nconst b = 2;\n";
+    expect(stripRouteComments(source).split("\n")).toHaveLength(source.split("\n").length);
+  });
+
+  it("keeps the code after `x+/**/+ /re/`, because those are two operators", () => {
+    expect(maskLiteralContents(stripRouteComments('let v = x+/**/+ /"/.test(s); KEEPME;'))).toContain("KEEPME");
+  });
+});
+
+describe("a template's interpolation is code, and its text is prose", () => {
+  it("finds a producer written inside `${…}`", () => {
+    // The mask that replaced the 400-character window knew too much: it blanked the whole template,
+    // including the executable `${…}`, so this call was invisible with no road and no problem
+    // reported. The window it replaced DID find it, because a window does not know what a literal
+    // is (gate 2 on this PR, round 2).
+    const source = 'function e() {\n  const s = `${probeAim("act.route", { route: "templated" })}`;\n}\n';
+    const out = readRoadVocabulary(source);
+    expect([...out.route]).toContain("templated");
+    expect(out.problems).toEqual([]);
+  });
+
+  it("still does not find one written in a template's TEXT", () => {
+    // The pair, and the reason the mask is there at all: prose in this tree quotes the shapes it
+    // describes, and a quoted call is not a call.
+    const source = 'function e() {\n  const doc = `probeAim("act.route", { route: "in_prose" })`;\n}\n';
+    expect([...readRoadVocabulary(source).route]).not.toContain("in_prose");
+  });
+
+  it("reads a template nested inside an interpolation, where the old model desynchronised", () => {
+    // Taking the whole template as one literal ended it at the INNER template's opening backtick,
+    // after which the reader had string text as code and code as string text for the rest of the
+    // expression. Ten files in `src` are shaped this way.
+    const source = 'const m = `a${x ? `b${y}c` : "d"}e`; const after = "SENTINEL";\n';
+    const masked = maskLiteralContents(source);
+    expect(masked).toHaveLength(source.length);
+    expect(masked).toContain("x ?");          // the interpolation is code
+    expect(masked).not.toContain("SENTINEL"); // and the string after it is still a string
+    expect(masked).not.toContain("abc");
   });
 });
