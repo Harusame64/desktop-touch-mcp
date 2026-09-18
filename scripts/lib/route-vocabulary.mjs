@@ -124,6 +124,114 @@ export function stripComments(source) {
 }
 
 /**
+ * ## The literal reader, and why it lives in this file
+ *
+ * `stripComments` above is this tree's oldest grammar reader, and every defect it has paid for was
+ * the same one: **a scanner that did not know a rule another scanner had already learned.** #672
+ * taught it that a regex literal is not a comment. #674 found that eight scanners below it still
+ * read a regex's quote as a string delimiter. #677 found the rule had been copied into a reader for
+ * a language that has no regex literals at all, where it sat inert. internal#125 grew a ninth
+ * scanner sixty lines below the comment that says not to.
+ *
+ * `literalEnd` was written to end that, and it did — for the two modules that could reach it.
+ * **This one could not.** `code-vocabulary.mjs` imports from here, so a reader living there is
+ * unreachable from the base module, and the road axis has been parsing without a literal reader
+ * ever since. It is the only module with no answer to "is this a literal", which is why its
+ * bounded windows are the ones that have to guess.
+ *
+ * So the reader moves down to the module everything else imports. Nothing about it changes.
+ */
+
+/**
+ * If a literal starts at `i`, the index just past it; otherwise `-1`.
+ *
+ * **One scanner, because there were eight.** Round 2 taught `stripComments` that a regex literal is
+ * not a comment; round 3 found that every scanner BELOW it still read a regex's `'` or `"` as a
+ * string delimiter — so `error: s.replace(/'/g, "''")` left the parse with an unbalanced quote and
+ * the producer beside it vanished, silently, from a function with no `problems` channel at all.
+ * Five files in `src` already parse with an unbalanced brace model under the old rule.
+ *
+ * The lesson the three rounds share is not about regexes. **A grammar rule learned in one scanner
+ * has to be learned by all of them**, and the way to make that true is to have one.
+ */
+export function literalEnd(text, i, previous) {
+  const ch = text[i];
+  if (ch === '"' || ch === "'" || ch === "`") {
+    let j = i + 1;
+    while (j < text.length) {
+      const c = text[j];
+      if (c === "\\") {
+        j += 2;
+        continue;
+      }
+      j++;
+      if (c === ch) break;
+      // A single- or double-quoted run cannot cross a newline; a stray quote must not swallow the
+      // rest of the file.
+      if (c === "\n" && ch !== "`") break;
+    }
+    return j;
+  }
+  if (ch !== "/") return -1;
+  // A regex only starts where a value may begin — `previous` is the last significant character
+  // before `i`. A `/` after an identifier, a number or a closing bracket is division.
+  if (!/[=(,[!&|?:;{}+\-*%^~<>]/.test(previous ?? "(") && !/^(?:return|typeof|case|in|of|do|else|void|delete|instanceof|new|yield|await)$/.test(previous ?? "")) {
+    return -1;
+  }
+  if (text[i + 1] === "/" || text[i + 1] === "*") return -1; // a comment, not a regex
+  let j = i + 1;
+  let inClass = false;
+  while (j < text.length) {
+    const c = text[j];
+    if (c === "\\") {
+      j += 2;
+      continue;
+    }
+    j++;
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) break;
+    else if (c === "\n") break;
+  }
+  return j;
+}
+
+/**
+ * The last significant character (or word) before `i`, for deciding whether a `/` opens a regex.
+ */
+export function significantBefore(text, i) {
+  let j = i - 1;
+  while (j >= 0 && /\s/.test(text[j])) j--;
+  if (j < 0) return "(";
+  if (!/\w/.test(text[j])) return text[j];
+  // **Bounded.** Slicing from the start of the file to read the word behind the cursor made this
+  // O(n²) over a 2 MB tree — the scan took minutes instead of milliseconds. The longest keyword that
+  // can precede a regex is `instanceof`; sixteen characters is more than the grammar needs.
+  let k = j;
+  while (k >= 0 && j - k < 16 && /\w/.test(text[k])) k--;
+  return text.slice(k + 1, j + 1);
+}
+
+/**
+ * Every literal in `text`, as `[start, end)` spans — **the one walk**.
+ *
+ * `maskLiterals` (a set of covered positions), `stringRanges` (the same spans as an array) and
+ * `maskStringContents` (a length-preserving blanked copy) were three functions in two files running
+ * this identical loop. They are views now, not walks. Three views of one answer can disagree only
+ * about presentation; three walks can disagree about the grammar, and two of them did.
+ */
+export function literalSpans(text) {
+  const spans = [];
+  for (let i = 0; i < text.length; i++) {
+    const end = literalEnd(text, i, significantBefore(text, i));
+    if (end === -1) continue;
+    spans.push([i, end]);
+    i = end - 1;
+  }
+  return spans;
+}
+
+/**
  * Every quoted member of `export type <name> = …;`, expanding template members.
  *
  * `problems` (optional) collects members this parser cannot read — a template whose named union it

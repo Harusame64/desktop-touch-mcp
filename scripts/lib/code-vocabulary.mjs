@@ -53,78 +53,14 @@
 // below is keyed on the flat failure's SHAPE (`ok:false` + `code` + `error` at one depth), because
 // the shape is the grammar and the field name is a spelling shared with four neighbours.
 
-import { quoteForRegExp, stripComments } from "./route-vocabulary.mjs";
+// **`literalEnd` and `significantBefore` moved down to the base module** so the road axis can
+// reach them too — it was the one reader with no answer to "is this a literal". Re-exported
+// here because `result-vocabulary.mjs` imports them from this file, and a module that re-exports
+// is not a second scanner.
+import { quoteForRegExp, stripComments, literalEnd, significantBefore, literalSpans } from "./route-vocabulary.mjs";
+export { literalEnd, significantBefore, literalSpans };
 
 
-/**
- * If a literal starts at `i`, the index just past it; otherwise `-1`.
- *
- * **One scanner, because there were eight.** Round 2 taught `stripComments` that a regex literal is
- * not a comment; round 3 found that every scanner BELOW it still read a regex's `'` or `"` as a
- * string delimiter — so `error: s.replace(/'/g, "''")` left the parse with an unbalanced quote and
- * the producer beside it vanished, silently, from a function with no `problems` channel at all.
- * Five files in `src` already parse with an unbalanced brace model under the old rule.
- *
- * The lesson the three rounds share is not about regexes. **A grammar rule learned in one scanner
- * has to be learned by all of them**, and the way to make that true is to have one.
- */
-export function literalEnd(text, i, previous) {
-  const ch = text[i];
-  if (ch === '"' || ch === "'" || ch === "`") {
-    let j = i + 1;
-    while (j < text.length) {
-      const c = text[j];
-      if (c === "\\") {
-        j += 2;
-        continue;
-      }
-      j++;
-      if (c === ch) break;
-      // A single- or double-quoted run cannot cross a newline; a stray quote must not swallow the
-      // rest of the file.
-      if (c === "\n" && ch !== "`") break;
-    }
-    return j;
-  }
-  if (ch !== "/") return -1;
-  // A regex only starts where a value may begin — `previous` is the last significant character
-  // before `i`. A `/` after an identifier, a number or a closing bracket is division.
-  if (!/[=(,[!&|?:;{}+\-*%^~<>]/.test(previous ?? "(") && !/^(?:return|typeof|case|in|of|do|else|void|delete|instanceof|new|yield|await)$/.test(previous ?? "")) {
-    return -1;
-  }
-  if (text[i + 1] === "/" || text[i + 1] === "*") return -1; // a comment, not a regex
-  let j = i + 1;
-  let inClass = false;
-  while (j < text.length) {
-    const c = text[j];
-    if (c === "\\") {
-      j += 2;
-      continue;
-    }
-    j++;
-    if (c === "[") inClass = true;
-    else if (c === "]") inClass = false;
-    else if (c === "/" && !inClass) break;
-    else if (c === "\n") break;
-  }
-  return j;
-}
-
-/**
- * The last significant character (or word) before `i`, for deciding whether a `/` opens a regex.
- */
-export function significantBefore(text, i) {
-  let j = i - 1;
-  while (j >= 0 && /\s/.test(text[j])) j--;
-  if (j < 0) return "(";
-  if (!/\w/.test(text[j])) return text[j];
-  // **Bounded.** Slicing from the start of the file to read the word behind the cursor made this
-  // O(n²) over a 2 MB tree — the scan took minutes instead of milliseconds. The longest keyword that
-  // can precede a regex is `instanceof`; sixteen characters is more than the grammar needs.
-  let k = j;
-  while (k >= 0 && j - k < 16 && /\w/.test(text[k])) k--;
-  return text.slice(k + 1, j + 1);
-}
 
 /**
  * The body of a function whose `function` keyword is at `at`, skipping its RETURN TYPE.
@@ -501,14 +437,17 @@ function dictionaryMembershipRequired(condition, expr) {
   return requiresTerm(condition, masked, 0, condition.length, new RegExp(`^Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${quoteForRegExp(expr)}\\s*\\)$`), true);
 }
 
-/** Positions covered by a string, template or regex literal. */
+/**
+ * Positions covered by a string, template or regex literal — **a view of `literalSpans`.**
+ *
+ * This used to be its own walk, byte-identical to `stringRanges` four hundred lines below it apart
+ * from what it returned. Two walks that agree today are two walks that can disagree tomorrow, and
+ * the way this tree has always found that out is a producer going missing in silence.
+ */
 function maskLiterals(text) {
   const masked = new Set();
-  for (let i = 0; i < text.length; i++) {
-    const end = literalEnd(text, i, significantBefore(text, i));
-    if (end === -1) continue;
-    for (let j = i; j < end; j++) masked.add(j);
-    i = end - 1;
+  for (const [start, end] of literalSpans(text)) {
+    for (let j = start; j < end; j++) masked.add(j);
   }
   return masked;
 }
@@ -965,14 +904,9 @@ export function readHandBuiltFlatFailures(sources) {
  * Same class as the comment that quotes a road literal, one quote character over.
  */
 function stringRanges(text) {
-  const ranges = [];
-  for (let i = 0; i < text.length; i++) {
-    const end = literalEnd(text, i, significantBefore(text, i));
-    if (end === -1) continue;
-    ranges.push([i, end]);
-    i = end - 1;
-  }
-  return ranges;
+  // **A view, not a walk.** `literalSpans` already answers this exactly; the loop that used to be
+  // here was the same one `maskLiterals` ran, four hundred lines above.
+  return literalSpans(text);
 }
 
 /**
