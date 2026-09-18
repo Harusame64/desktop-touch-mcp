@@ -316,5 +316,661 @@ const PRIMITIVE_KEYWORDS = new Set([
 export function propertyName(name) {
   if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) return name.text;
   if (ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  // `{ ["why"]: … }` is `{ why: … }` (gate 2 on #682: it was dropped in silence).
+  if (ts.isComputedPropertyName(name)) {
+    const key = skipParentheses(name.expression);
+    if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+  }
   return null;
+}
+
+// ── The road vocabulary ──────────────────────────────────────────────────────
+//
+// `readRoadVocabulary` in `route-vocabulary.mjs` answered this with regexes over comment-stripped
+// text, a literal mask, a brace walk to find `probeRoute`'s body, a `[^{}]*` window for `landing`,
+// and a file-wide regex for the one binding that forwards a refusal. Each was a position rule
+// standing in for a fact the parse tree states outright. The design, its survey of the executor
+// and win2's source check are in internal `docs/the-road-reader-on-the-parser.md`.
+//
+// **What an axis is, the pin already decided**: `rung`, `refused` and `why` are FIELD NAMES,
+// collected wherever the executor writes them — the `act.identity` row's `rung`/`refused` and the
+// `why` nested three levels inside `pointOwner` are pinned today (win2's B1/B2). Only `route` is
+// scoped, because it is the field that names the road.
+
+/** The producers whose arguments ARE the vocabulary, by position. */
+const ROAD_PRODUCERS = {
+  probeRoute: { route: 0 },
+  probedStep: { rung: 0 },
+  refusal: { rung: 0, refused: 1 },
+  probeRefusal: { rung: 0, refused: 1 },
+};
+const ROW_FIELDS = new Set(["rung", "refused", "why"]);
+/** Names that, called through a receiver, would be a producer this reader cannot resolve. */
+const RECEIVED_NAMES = new Set([...Object.keys(ROAD_PRODUCERS), "probeAim", "adr029Refusal"]);
+const ROAD_FIELDS = new Set(["route", "rung", "refused", "why"]);
+const VOCABULARY_WORD = /^[a-z0-9_]+$/;
+
+/** A literal in this vocabulary's spelling, or null. */
+function vocabularyLiteral(node) {
+  if (node === undefined) return null;
+  const inner = skipParentheses(node);
+  if (!ts.isStringLiteral(inner) && !ts.isNoSubstitutionTemplateLiteral(inner)) return null;
+  return VOCABULARY_WORD.test(inner.text) ? inner.text : null;
+}
+
+/**
+ * The expression a value's wrappers hold. `"uia" as const`, `x!`, `(<T>x)` and `x satisfies T` are
+ * the same value as `x`, and the scanner read `"w" as const` by its prefix — unwrapping only
+ * parentheses reported it as a non-literal, a false red (gate 2 on #682).
+ */
+function skipParentheses(node) {
+  let inner = node;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isAsExpression(inner) ||
+    ts.isNonNullExpression(inner) ||
+    ts.isTypeAssertionExpression(inner) ||
+    ts.isSatisfiesExpression(inner)
+  ) {
+    inner = inner.expression;
+  }
+  return inner;
+}
+
+/**
+ * The name a call is made by, when it is made by a bare name — the only form whose target this
+ * reader can know is the function declared here. `this.refusal(…)` and `policy.refusal(…)` look the
+ * same and are not the same producer: reading every `x.refusal(…)` put another object's arguments
+ * into the axis (gate 2 on #682, second pass). A receiver call to a producer's name is REPORTED.
+ */
+function bareCallee(call) {
+  const callee = skipParentheses(call.expression);
+  return ts.isIdentifier(callee) ? callee.text : null;
+}
+
+const isAbsence = (node) => {
+  const inner = skipParentheses(node);
+  return inner.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(inner) && inner.text === "undefined");
+};
+
+/** The function a node sits in — a declaration, or an arrow/function expression. */
+function enclosingFunction(node) {
+  for (let at = node.parent; at !== undefined; at = at.parent) {
+    if (ts.isFunctionDeclaration(at) || ts.isArrowFunction(at) || ts.isFunctionExpression(at) || ts.isMethodDeclaration(at)) {
+      return at;
+    }
+  }
+  return null;
+}
+
+/** A function's name: its own, or — for `const refusal = (…) => …` — the binding's. */
+function functionName(fn) {
+  if (fn.name !== undefined && ts.isIdentifier(fn.name)) return fn.name.text;
+  if (ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name)) return fn.parent.name.text;
+  return null;
+}
+
+const parameterNamed = (fn, name) =>
+  fn.parameters.find((p) => ts.isIdentifier(p.name) && p.name.text === name) ?? null;
+
+/**
+ * Is this expression WRITTEN — the target of an assignment of any operator, of `++`/`--`, of a
+ * `for…in/of` head, or an element of a destructuring pattern that is? The grammar of assignment
+ * targets is closed, so this is the whole of it. The first version looked only at `x = …` and
+ * `x++`, and `[x] = …`, `({ x } = …)` and `for (x of …)` walked past it (gate 2 on #682, second pass).
+ */
+function isAssignmentTarget(node) {
+  for (let at = node; ; ) {
+    const parent = at.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isTypeAssertionExpression(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isSpreadElement(parent) ||
+      ts.isSpreadAssignment(parent)
+    ) {
+      at = parent;
+      continue;
+    }
+    if (ts.isShorthandPropertyAssignment(parent) || ts.isPropertyAssignment(parent)) {
+      // Inside an object literal: a target only if the literal itself is a destructuring target.
+      const isValue = ts.isShorthandPropertyAssignment(parent) ? parent.name === at : parent.initializer === at;
+      if (!isValue) return false;
+      at = parent.parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent)) {
+      return (
+        parent.left === at &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    }
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) {
+      return parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken;
+    }
+    if (ts.isForInStatement(parent) || ts.isForOfStatement(parent)) return parent.initializer === at;
+    return false;
+  }
+}
+
+/** The call and argument index an expression is passed as, through wrappers and conditionals; or null. */
+function argumentPosition(node) {
+  let at = node;
+  for (;;) {
+    const parent = at.parent;
+    if (parent === undefined) return null;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isTypeAssertionExpression(parent) ||
+      (ts.isConditionalExpression(parent) && parent.condition !== at)
+    ) {
+      at = parent;
+      continue;
+    }
+    if (ts.isCallExpression(parent)) {
+      const index = parent.arguments.indexOf(at);
+      return index === -1 ? null : { call: parent, index };
+    }
+    return null;
+  }
+}
+
+/** Does the body of `fn` write to the name, in any form of assignment? */
+function assignedIn(fn, name) {
+  for (const node of walk(fn.body ?? fn)) {
+    if (ts.isIdentifier(node) && node.text === name && isAssignmentTarget(node)) return true;
+  }
+  return false;
+}
+
+/** How many bindings of `name` the function itself declares — variables, patterns, parameters, a catch. */
+function bindingsNamed(fn, name) {
+  let count = 0;
+  for (const node of walk(fn)) {
+    if (!ts.isIdentifier(node) || node.text !== name) continue;
+    const parent = node.parent;
+    const declares =
+      ((ts.isVariableDeclaration(parent) || ts.isParameter(parent) || ts.isBindingElement(parent)) && parent.name === node);
+    if (declares && enclosingFunction(node) === fn) count++;
+  }
+  return count;
+}
+
+/**
+ * The variable declaration an identifier refers to, by block scope, up to its function's boundary;
+ * null for a parameter, or for anything declared outside the function.
+ */
+function declarationOf(identifier) {
+  for (let at = identifier.parent; at !== undefined; at = at.parent) {
+    const statements =
+      ts.isBlock(at) || ts.isSourceFile(at) || ts.isCaseClause(at) || ts.isDefaultClause(at) || ts.isModuleBlock(at) ? at.statements : null;
+    if (statements !== null) {
+      for (const statement of statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const d of statement.declarationList.declarations) {
+          if (ts.isIdentifier(d.name) && d.name.text === identifier.text) return d;
+        }
+      }
+    }
+    if (ts.isFunctionLike(at)) return null;
+  }
+  return null;
+}
+
+/** Every member of a type annotation, if all of them are vocabulary literals; otherwise null. */
+function literalMembers(typeNode) {
+  const members = unionMembers(typeNode);
+  const values = members.map(stringLiteralType);
+  return values.every((v) => v !== null && VOCABULARY_WORD.test(v)) ? values : null;
+}
+
+const oneLine = (file, node) => node.getText(file).replace(/\s+/g, " ").trim().slice(0, 60);
+const lineOf = (file, node) => file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1;
+
+/**
+ * The road vocabulary as the executor writes it — the same answer shape as the scanner's
+ * `readRoadVocabulary`, read off the parse tree.
+ *
+ * `problems` carries anything that would make the extraction lie. Every rule below either reads a
+ * value, recognises a forward whose values are read elsewhere, or says it could not.
+ */
+export function readRoadVocabulary(source, resolveUnion = () => [], fileName = "desktop-executor.ts") {
+  const problems = [];
+  const file = parseSource(source, fileName, problems);
+
+  const route = new Set();
+  const rung = new Set();
+  const refused = new Set();
+  const why = new Set();
+  const sets = { route, rung, refused, why };
+  const dynamicWhy = new Set();
+  const landingLiteralWhy = new Set();
+  let landingDrawsFromTheUnion = false;
+
+  // ── Functions by name, and which of their parameters a producer forwards ──
+  const functions = new Map();
+  for (const node of walk(file)) {
+    if (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+      const name = functionName(node);
+      if (name !== null && !functions.has(name)) functions.set(name, node);
+    }
+  }
+
+  /**
+   * **Rule F — a forward.** An identifier standing for a road field is accepted iff it is a
+   * PARAMETER of the function it sits in, and that function's values for the field are read
+   * somewhere this reader looks: its call sites put the field in a position `ROAD_PRODUCERS` reads,
+   * or the parameter's annotation is a union of vocabulary literals (collected here, for `why`).
+   * Containment by the parse tree, keyed on the binding — not a brace walk, not a spelling.
+   */
+  const forwards = (identifier, field) => {
+    const fn = enclosingFunction(identifier);
+    if (fn === null) return false;
+    const parameter = parameterNamed(fn, identifier.text);
+    if (parameter === null) return false;
+    // A parameter the body writes to is not what the caller passed: `refused = pickAny()` inside
+    // `probeRefusal` made `{ rung, refused }` carry a value no call site spells (gate 2 on #682).
+    if (assignedIn(fn, identifier.text)) return false;
+    const name = functionName(fn);
+    const positions = name === null ? undefined : ROAD_PRODUCERS[name];
+    if (positions !== undefined && positions[field] === fn.parameters.indexOf(parameter)) return true;
+    // **The annotation is read HERE, and only here** — as the values of a forward this rule has
+    // just accepted. Reading every `why:` annotation in the file counted type DECLARATIONS as values
+    // the executor writes (win2, internal `b660d03`: a type literal's field and an unrelated
+    // parameter both came back as road whys, one of them silently).
+    const members = parameter.type === undefined ? null : literalMembers(parameter.type);
+    if (members === null) return false;
+    for (const v of members) sets[field].add(v);
+    return true;
+  };
+
+  /** Why a forward was refused, in the words the reader is looking for. */
+  const refusedForward = (identifier, field) => {
+    const fn = enclosingFunction(identifier);
+    const parameter = fn === null ? null : parameterNamed(fn, identifier.text);
+    if (parameter?.type !== undefined && ts.isUnionTypeNode(parameter.type) && literalMembers(parameter.type) === null) {
+      return `a ${field} union is not all quoted literals: ${oneLine(file, parameter.type)}`;
+    }
+    return null;
+  };
+
+  /**
+   * `probedStep` hands `probeRefusal` a LOCAL `refused`, not a parameter, so Rule F cannot see it.
+   * The grounds are read out of `adr029Refusal`'s body instead — which is only true while the local
+   * IS `adr029Refusal(<identifier>)` and nothing else. A `const` declaration, in the same function;
+   * an annotation is not a change of binding (win2, internal `f493bad`), and a `??`, `||`, ternary
+   * or `let` lifts the exemption, because then the local holds something the body does not return.
+   */
+  let refusalBindingUsed = false;
+  const bindsTheReadRefusal = (identifier) => {
+    const fn = enclosingFunction(identifier);
+    if (fn === null || identifier.text !== "refused") return false;
+    // **The declaration this identifier REFERS to**, found by scope — not the first `refused` in
+    // document order. A `const refused = adr029Refusal(err)` inside an `if` block, followed by an
+    // outer `const refused = pickAnyGround(err)` passed on, was exempted by the name-matching
+    // version (gate 2 on #682) — the spelling hole this reader was written to close.
+    // …and the ONLY binding of that name in the function. A `catch (refused)`, a `for (const
+    // refused of …)` or a `const { refused } = …` in an inner scope is a different value the scope
+    // walk below would step past to the outer const (gate 2 on #682, second pass).
+    if (bindingsNamed(fn, "refused") !== 1) return false;
+    const declaration = declarationOf(identifier);
+    if (declaration === null || enclosingFunction(declaration) !== fn) return false;
+    if ((declaration.parent.flags & ts.NodeFlags.Const) === 0) return false;
+    const init = declaration.initializer === undefined ? undefined : skipParentheses(declaration.initializer);
+    const binds =
+      init !== undefined &&
+      ts.isCallExpression(init) &&
+      bareCallee(init) === "adr029Refusal" &&
+      init.arguments.length === 1 &&
+      ts.isIdentifier(init.arguments[0]);
+    if (binds) refusalBindingUsed = true;
+    return binds;
+  };
+
+  /** Read a row field's value: a literal, a conditional of literals and absences, or a forward. */
+  const readValue = (field, value, report) => {
+    const inner = skipParentheses(value);
+    const literal = vocabularyLiteral(inner);
+    if (literal !== null) {
+      sets[field].add(literal);
+      return;
+    }
+    if (ts.isConditionalExpression(inner)) {
+      // **Both branches.** The scanner's `?` rule read the literal after `?` only.
+      for (const branch of [inner.whenTrue, inner.whenFalse]) {
+        if (isAbsence(branch)) continue;
+        readValue(field, branch, report);
+      }
+      return;
+    }
+    if (ts.isIdentifier(inner) && forwards(inner, field)) return;
+    if (field === "why" && ts.isPropertyAccessExpression(inner) && inner.name.text === "why") {
+      const owner = skipParentheses(inner.expression);
+      const base = ts.isPropertyAccessExpression(owner) ? owner.name.text : ts.isIdentifier(owner) ? owner.text : null;
+      // One dynamic `why` each, drawn from a named union the CALLER resolves (it has the files).
+      if (base === "homing") return void dynamicWhy.add("homing.why");
+      if (base === "owner") return void dynamicWhy.add("owner.why");
+    }
+    report(inner);
+  };
+
+  // ── Every node, once ──
+  const inLanding = new Set();
+  for (const node of walk(file)) {
+    // The producers' positional arguments.
+    const callee = ts.isCallExpression(node) ? bareCallee(node) : null;
+    if (ts.isCallExpression(node) && callee === null) {
+      const target = skipParentheses(node.expression);
+      if (ts.isPropertyAccessExpression(target) && RECEIVED_NAMES.has(target.name.text)) {
+        problems.push(
+          `\`${oneLine(file, target)}(…)\` at line ${lineOf(file, node)} calls a producer's name through a receiver — which function it reaches is not something this parser knows, so its values are NOT read`,
+        );
+      }
+    }
+    if (callee !== null) {
+      const positions = ROAD_PRODUCERS[callee];
+      if (positions !== undefined) {
+        for (const [field, index] of Object.entries(positions)) {
+          const arg = node.arguments[index];
+          if (arg === undefined) {
+            problems.push(`${callee} is given a non-literal: (no ${field} argument)`);
+            continue;
+          }
+          // The same reading a row field gets — a literal, a conditional of literals (both roads are
+          // producible), or a forward — so the two places a value can be written obey one rule.
+          let unreadable = false;
+          readValue(field, arg, () => {
+            unreadable = true;
+          });
+          if (!unreadable) continue;
+          const inner = skipParentheses(arg);
+          if (ts.isIdentifier(inner) && field === "refused" && bindsTheReadRefusal(inner)) continue;
+          if (ts.isIdentifier(inner) && field === "refused" && inner.text === "refused") {
+            const fn = enclosingFunction(inner);
+            problems.push(
+              `${(fn && functionName(fn)) ?? "a function"} no longer forwards \`const refused = adr029Refusal(err);\` — ` +
+                "the grounds read out of that function are not the grounds written",
+            );
+          }
+          const args = node.arguments.map((a) => a.getText(file)).join(", ").replace(/\s+/g, " ").slice(0, 60);
+          problems.push(`${callee} is given a non-literal${index === 0 ? "" : ` ${field}`}: ${args}`);
+        }
+      }
+      // `probeAim("act.route", { … })` — the road named on the row itself.
+      if (callee === "probeAim" && node.arguments[0] !== undefined) {
+        // `"act.route"`, `` `act.route` `` and `("act.route")` are one row kind (gate 2 on #682: the
+        // two wrapped spellings dropped the row's road in silence). A kind held in a variable is not
+        // read — see the PR for the surfaces this reader does not see.
+        const first = skipParentheses(node.arguments[0]);
+        if ((ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) && first.text === "act.route") readActRoute(node);
+      }
+    }
+
+    // `landing: { … }` — a different axis wearing the same field name. Its direct `why` is the
+    // landing's; the subtree is marked so the road-why rule below skips it (scoped, where the
+    // scanner subtracted globally and would have deleted a road why of the same spelling).
+    if (ts.isPropertyAssignment(node) && propertyName(node.name) === "landing" && ts.isObjectLiteralExpression(skipParentheses(node.initializer))) {
+      const object = skipParentheses(node.initializer);
+      for (const inner of walk(object)) inLanding.add(inner);
+      for (const property of object.properties) {
+        // A shorthand `why` or a spread in a landing object carries a landing why this parser cannot
+        // read, and it used to fall through both axes in silence (gate 2 on #682).
+        if (ts.isShorthandPropertyAssignment(property) && property.name.text === "why") {
+          problems.push(`a landing why is not a literal: ${property.name.text} (shorthand)`);
+          continue;
+        }
+        if (ts.isSpreadAssignment(property)) {
+          problems.push(`a landing object spreads \`${oneLine(file, property.expression)}\` — a why in it is on neither axis`);
+          continue;
+        }
+        if (!ts.isPropertyAssignment(property) || propertyName(property.name) !== "why") continue;
+        const value = skipParentheses(property.initializer);
+        const literal = vocabularyLiteral(value);
+        if (literal !== null) landingLiteralWhy.add(literal);
+        else if (ts.isPropertyAccessExpression(value) && value.name.text === "why" && ts.isIdentifier(value.expression) && value.expression.text === "verdict") {
+          landingDrawsFromTheUnion = true;
+        } else problems.push(`a landing why is not a literal: ${oneLine(file, value)}`);
+      }
+      continue;
+    }
+    if (inLanding.has(node)) {
+      if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) && propertyName(node.name) === "why" && node.parent.parent !== undefined && !(ts.isPropertyAssignment(node.parent.parent) && propertyName(node.parent.parent.name) === "landing")) {
+        problems.push(`a why nested inside a landing object is on neither axis: ${oneLine(file, node)}`);
+      }
+      continue;
+    }
+
+    // Row fields, wherever the executor writes them as an object literal's property. A write in
+    // any other form is reported by the mention check below, not read.
+    if (ts.isPropertyAssignment(node)) {
+      const field = propertyName(node.name);
+      if (field !== null && ROW_FIELDS.has(field)) {
+        readValue(field, node.initializer, (inner) =>
+          problems.push(`a ${field} is not a literal: ${oneLine(file, inner)}`),
+        );
+      }
+    } else if (ts.isShorthandPropertyAssignment(node)) {
+      const field = node.name.text;
+      if (ROW_FIELDS.has(field) && !forwards(node.name, field) && !(field === "refused" && bindsTheReadRefusal(node.name))) {
+        problems.push(
+          refusedForward(node.name, field) ?? `a shorthand \`${field}\` is not a forward this parser can read: line ${lineOf(file, node)}`,
+        );
+      }
+    }
+  }
+
+  function readActRoute(call) {
+    const line = lineOf(file, call);
+    const object = call.arguments[1] === undefined ? undefined : skipParentheses(call.arguments[1]);
+    if (object === undefined || !ts.isObjectLiteralExpression(object)) {
+      problems.push(`probeAim("act.route", …) at line ${line} is not given an object literal — its road is unknown, not absent`);
+      return;
+    }
+    const own = object.properties.filter(
+      (p) => (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && propertyName(p.name) === "route",
+    );
+    if (own.length === 0) {
+      problems.push(`probeAim("act.route", …) at line ${line} carries no \`route\` of its own — a nested one is not this call's road`);
+      return;
+    }
+    for (const p of own) {
+      if (ts.isShorthandPropertyAssignment(p)) {
+        if (!forwards(p.name, "route")) problems.push(`probeAim("act.route", …) is given a non-literal road: ${p.name.text}`);
+        continue;
+      }
+      const literal = vocabularyLiteral(p.initializer);
+      if (literal !== null) route.add(literal);
+      else if (!(ts.isIdentifier(skipParentheses(p.initializer)) && forwards(skipParentheses(p.initializer), "route"))) {
+        problems.push(`probeAim("act.route", …) is given a non-literal road: ${oneLine(file, p.initializer)}`);
+      }
+    }
+  }
+
+  // ── `adr029Refusal`'s own returns — the grounds `probedStep` forwards ──
+  const adr029 = functions.get("adr029Refusal");
+  const readGround = (expression) => {
+    const inner = skipParentheses(expression);
+    if (isAbsence(inner)) return;
+    const literal = vocabularyLiteral(inner);
+    if (literal !== null) return void refused.add(literal);
+    if (ts.isConditionalExpression(inner)) {
+      readGround(inner.whenTrue);
+      readGround(inner.whenFalse);
+      return;
+    }
+    problems.push(`adr029Refusal returns a non-literal ground: ${oneLine(file, inner)}`);
+  };
+  if (adr029 !== undefined) {
+    // An arrow with an EXPRESSION body has no return statement; its body is the one return (gate 2
+    // on #682: `(err) => err instanceof A ? "ground_a" : undefined` read as no grounds, silently).
+    if (adr029.body !== undefined && !ts.isBlock(adr029.body)) readGround(adr029.body);
+    for (const node of walk(adr029.body ?? adr029)) {
+      if (!ts.isReturnStatement(node) || enclosingFunction(node) !== adr029) continue;
+      if (node.expression !== undefined) readGround(node.expression);
+    }
+  } else if (
+    // Keyed on the exemption having been USED, not on a caller being named `probedStep`: renaming
+    // the caller or importing `adr029Refusal` kept the exemption and read no grounds (gate 2 on #682).
+    refusalBindingUsed ||
+    [...walk(file)].some((n) => ts.isCallExpression(n) && bareCallee(n) === "probedStep")
+  ) {
+    problems.push("adr029Refusal has moved: three refusal grounds are reachable only through it");
+  }
+
+  // ── Rule S — a spread comes last, so it overrides ──
+  // `probeRoute(route, …, extra)` writes `{ route, …, ...extra }`: a `route` in the caller's extra
+  // replaces the positional one, so the value read is not the value on the row (win2, internal
+  // `cb0f6d6`: the scanner dropped the row's road in silence, and over-counted rung/refused).
+  // Found from the producers' bodies, transitively through a producer that forwards its extra.
+  // `overrides`: producer name → parameter index → the road fields a spread of it overrides. Keyed
+  // by index because one function can spread two parameters; a single index per name flipped on
+  // every pass and the fixed point never came (gate 2 on #682: `{ ...a, ...b }` hung the gate).
+  // The sets only grow and are bounded by four fields, so the loop ends.
+  const overrides = new Map();
+  const overridden = (name, index) => overrides.get(name)?.get(index);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [name, fn] of functions) {
+      for (const node of walk(fn.body ?? fn)) {
+        if (!ts.isObjectLiteralExpression(node) || enclosingFunction(node) !== fn) continue;
+        const before = new Set();
+        for (const p of node.properties) {
+          if (ts.isSpreadAssignment(p) && ts.isIdentifier(p.expression)) {
+            const parameter = parameterNamed(fn, p.expression.text);
+            if (parameter === null) continue;
+            const fields = new Set(before);
+            // Transitively: this object is itself an argument in another producer's spread position —
+            // through parentheses, `as`, `!` and either branch of a conditional, which the first
+            // version did not climb (gate 2 on #682, second pass: `cond ? { …, ...extra } : {}`).
+            const position = argumentPosition(node);
+            if (position !== null) {
+              const outer = bareCallee(position.call) === null ? undefined : overridden(bareCallee(position.call), position.index);
+              if (outer !== undefined) for (const f of outer) fields.add(f);
+            }
+            if (fields.size === 0) continue;
+            const index = fn.parameters.indexOf(parameter);
+            if (!overrides.has(name)) overrides.set(name, new Map());
+            const known = overrides.get(name).get(index) ?? new Set();
+            if ([...fields].some((f) => !known.has(f))) {
+              overrides.get(name).set(index, new Set([...known, ...fields]));
+              changed = true;
+            }
+          } else if (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) {
+            const key = propertyName(p.name);
+            if (key !== null && ROAD_FIELDS.has(key)) before.add(key);
+          }
+        }
+      }
+    }
+  }
+  /** A spread inside a caller's extra object: which ones this reader can vouch for. */
+  const checkSpread = (call, callee, spread) => {
+    const expression = skipParentheses(spread.expression);
+    // The producer forwarding its OWN extra (`probeRefusal` → `probeRoute`): followed transitively above.
+    if (ts.isIdentifier(expression)) {
+      const fn = enclosingFunction(call);
+      const parameter = fn === null ? null : parameterNamed(fn, expression.text);
+      const name = fn === null ? null : functionName(fn);
+      if (parameter !== null && name !== null && overridden(name, fn.parameters.indexOf(parameter)) !== undefined) return;
+    }
+    // A spread of a CALL is not seen into — internal #130; the executor has three
+    // (`...keyboardLanding(…)`), whose keys carry no road field today.
+    if (ts.isCallExpression(expression)) return;
+    problems.push(
+      `${callee}(…) at line ${lineOf(file, call)} spreads \`${oneLine(file, expression)}\` into an object that is spread over the row — a road field in it would override the positional one, and this parser cannot see into it`,
+    );
+  };
+
+  const checkExtra = (call, callee, index, fields, arg) => {
+    const inner = skipParentheses(arg);
+    if (ts.isConditionalExpression(inner)) {
+      checkExtra(call, callee, index, fields, inner.whenTrue);
+      checkExtra(call, callee, index, fields, inner.whenFalse);
+      return;
+    }
+    if (isAbsence(inner)) return;
+    if (!ts.isObjectLiteralExpression(inner)) {
+      // A variable or a call in this position can carry a road field this parser cannot see, and
+      // one there overrides the value read (gate 2 on #682: `const extra = { route: "mouse" }`).
+      problems.push(
+        `${callee}(…) at line ${lineOf(file, call)} passes \`${oneLine(file, inner)}\` where a ${[...fields].join("/")} in it would override the positional one — this parser cannot see into it`,
+      );
+      return;
+    }
+    for (const p of inner.properties) {
+      if (ts.isSpreadAssignment(p)) {
+        checkSpread(call, callee, p);
+        continue;
+      }
+      if (!(ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))) continue;
+      const key = propertyName(p.name);
+      if (key !== null && fields.has(key)) {
+        problems.push(
+          `${callee}(…) at line ${lineOf(file, call)} passes \`${key}\` in an object spread over the row AFTER the positional ${key} — the row carries this one, not the one read`,
+        );
+      }
+    }
+  };
+  for (const node of walk(file)) {
+    if (!ts.isCallExpression(node)) continue;
+    const callee = bareCallee(node);
+    const byIndex = callee === null ? undefined : overrides.get(callee);
+    if (byIndex === undefined) continue;
+    for (const [index, fields] of byIndex) {
+      const arg = node.arguments[index];
+      if (arg !== undefined) checkExtra(node, callee, index, fields, arg);
+    }
+  }
+
+  // ── Every mention of a road field's name, in a position this reader accounts for ──
+  // **The closure the rules above cannot give on their own.** Each round of review found one more
+  // FORM a value can be written in (an assignment, a destructuring, `Reflect.set`), and reading each
+  // form one at a time does not end. So a road field's name is allowed in a closed set of positions
+  // — an object literal's property (read above), a declaration, a type, a read — and a WRITE in any
+  // other form, or the name handed to a call as a string, is reported. On the executor at
+  // `fa8b9b83` every one of its 57 mentions is in an accepted position.
+  for (const node of walk(file)) {
+    const named = (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && ROAD_FIELDS.has(node.text);
+    if (!named) continue;
+    const parent = node.parent;
+    const written =
+      (ts.isPropertyAccessExpression(parent) && parent.name === node && isAssignmentTarget(parent)) ||
+      (ts.isElementAccessExpression(parent) && parent.argumentExpression === node && isAssignmentTarget(parent)) ||
+      (ts.isIdentifier(node) && isAssignmentTarget(node));
+    if (written) {
+      problems.push(
+        `\`${node.text}\` is written by assignment at line ${lineOf(file, node)} (\`${oneLine(file, parent)}\`) — this parser reads a road field only where an object literal writes it`,
+      );
+      continue;
+    }
+    if (!ts.isIdentifier(node) && (ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.arguments?.includes(node)) {
+      problems.push(
+        `"${node.text}" is handed to a call as a string at line ${lineOf(file, node)} — a row written through \`Reflect.set\`/\`defineProperty\` is not read`,
+      );
+    }
+  }
+
+  for (const name of dynamicWhy) {
+    const members = resolveUnion(name);
+    if (members.length === 0) problems.push(`a why draws from ${name}, which could not be resolved`);
+    for (const m of members) why.add(m);
+  }
+
+  return {
+    landingWhyOnTheRow: [...landingLiteralWhy].sort(),
+    landingWhyDrawsFromTheUnion: landingDrawsFromTheUnion,
+    route: [...route].sort(),
+    rung: [...rung].sort(),
+    refused: [...refused].sort(),
+    why: [...why].sort(),
+    problems,
+  };
 }

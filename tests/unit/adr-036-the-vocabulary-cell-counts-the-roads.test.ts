@@ -23,12 +23,20 @@ import {
 } from "../../scripts/lib/route-vocabulary.mjs";
 import {
   readInlineFieldUnion as parsedReadInlineFieldUnion,
+  readRoadVocabulary as parsedReadRoadVocabulary,
   readUnion as parsedReadUnion,
 } from "../../scripts/lib/typescript-source.mjs";
 
+// **Both road readers.** The gate reads the road through the parser; the scanner stays as the
+// differential control, and every cell written against it now asks both.
+const ROAD_READERS = [
+  { name: "scanner", readRoadVocabulary },
+  { name: "parser", readRoadVocabulary: parsedReadRoadVocabulary },
+];
+
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 
-describe("the extractor", () => {
+describe.each(ROAD_READERS)("the extractor ($name)", ({ name, readRoadVocabulary }) => {
   it("does not read the literals that comments quote", () => {
     // `why: "uia_set_value"` appears in prose one screen above the line that produces it. A raw
     // grep counts the comment; the extraction is wrong in the direction that looks complete.
@@ -51,15 +59,26 @@ probeRoute("real_road", undefined, entity, { why: "real_why" });
     // says it is not.
     for (const call of [
       `probeRoute(chosenRoad, undefined, entity, {});`,
-      `probeRoute(cond ? "shell_road" : "wsl_road", undefined, entity, {});`,
       `const route = "sneaky"; probeRoute(route, undefined, entity, {});`,
       `probeRoute(NEW_ROAD, undefined, entity, {});`,
     ]) {
       expect(readRoadVocabulary(call).problems.join(""), call).toMatch(/non-literal/);
     }
-    expect(
-      readRoadVocabulary(`probeRoute("uia", undefined, entity, { why: ok ? "a" : "b" });`).problems.join(""),
-    ).toMatch(/why is not a literal/);
+    // **A conditional of literals is the one shape the two readers answer differently, on purpose.**
+    // The scanner cannot read it and says so; the parser reads BOTH branches, because both roads are
+    // producible — a complete answer, which is what the report was standing in for. Either way the
+    // count is right or says it is not; neither under-counts in silence.
+    const ternaryRoad = readRoadVocabulary(`probeRoute(cond ? "shell_road" : "wsl_road", undefined, entity, {});`);
+    const ternaryWhy = readRoadVocabulary(`probeRoute("uia", undefined, entity, { why: ok ? "a" : "b" });`);
+    if (name === "scanner") {
+      expect(ternaryRoad.problems.join("")).toMatch(/non-literal/);
+      expect(ternaryWhy.problems.join("")).toMatch(/why is not a literal/);
+    } else {
+      expect(ternaryRoad.route).toEqual(["shell_road", "wsl_road"]);
+      expect(ternaryRoad.problems).toEqual([]);
+      expect(ternaryWhy.why).toEqual(["a", "b"]);
+      expect(ternaryWhy.problems).toEqual([]);
+    }
   });
 
   it("does not report a call that was merely wrapped across lines", () => {
@@ -203,9 +222,18 @@ async function probedStep(rung, aimHwnd, entity, step) {
     expect(v.problems).toEqual([]);
     // A union that is NOT all quoted literals is reported, not skipped — the skip is what hid the
     // hole above, so the narrow case is the only one that stays silent.
-    expect(readRoadVocabulary(`function f(why: KeyboardRungWhy | "a") {}`).problems).toEqual([
-      "a why union is not all quoted literals: KeyboardRungWhy | \"a\"",
-    ]);
+    if (name === "scanner") {
+      expect(readRoadVocabulary(`function f(why: KeyboardRungWhy | "a") {}`).problems).toEqual([
+        "a why union is not all quoted literals: KeyboardRungWhy | \"a\"",
+      ]);
+    } else {
+      // **The parser reads an annotation only as the values of a forward** — a declaration nothing
+      // passes on is not a value the executor writes (win2, internal `b660d03`). So the same union
+      // is reported where it would reach the row, and a bare declaration is silent.
+      const forwarded = `function f(why: KeyboardRungWhy | "a") {\n  probeRoute("keyboard", undefined, entity, { why });\n}`;
+      expect(readRoadVocabulary(forwarded).problems).toEqual(["a why union is not all quoted literals: KeyboardRungWhy | \"a\""]);
+      expect(readRoadVocabulary(`function f(why: KeyboardRungWhy | "a") {}`).problems).toEqual([]);
+    }
   });
 
   it("says so when the function that produces three refusal grounds has moved", () => {
