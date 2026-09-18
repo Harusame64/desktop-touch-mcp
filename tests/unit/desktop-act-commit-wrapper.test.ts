@@ -16,10 +16,9 @@
  *   G3-S4-7  query wrapper happy path → no ToolCall events emitted (query-axis), envelope shape returned
  *   G3-S4-8  query wrapper passes lease_token in `data.lease` through to envelope (handler-side issuance, wrapper untouched)
  *
- * Plus residual-reason mapping pins (sub-plan §2.2 + §7 R4): the
- * other 3 LeaseStore reasons map to typed-code-name `Unknown` at
- * runtime (contract pin in `LEASE_REASON_TO_TYPED_CODE` for expansion
- * mechanical-copy).
+ * Plus lease-reason mapping pins: every `LeaseStore` reason maps to its OWN typed code,
+ * read from `LEASE_REASON_TO_TYPED_CODE` (internal#125, 2026-09-18). Until then the last
+ * two collapsed to `Unknown`, which a caller could not tell apart from a thrown handler.
  *
  * The wrapper accepts an injected `l1Emitter` so tests assert push
  * call shape deterministically without driving the real napi

@@ -319,8 +319,13 @@ export class SessionRegistry {
    * The old viewId is removed from the index to prevent unbounded growth during
    * frequent `see()` calls on the same target.
    *
-   * Stale leases (pointing to `oldViewId`) still safely fail with "generation_mismatch"
-   * because the session's generation counter has advanced — no index entry needed for that.
+   * Stale leases (pointing to `oldViewId`) still safely fail — but as **`entity_not_found`**, not
+   * as `generation_mismatch`: the old id is DELETED from the index here, so `getByViewId` answers
+   * undefined and `validateLeaseOnly` returns before `LeaseStore.validate` ever sees the
+   * generation. The older wording said `generation_mismatch`, and internal#125's advice text
+   * inherited that claim before the Opus review caught it (2026-09-18). `generation_mismatch` is
+   * reachable, but by other routes — a concurrent act inside an in-flight `see()`, or a caller
+   * passing a `targetGeneration` that did not come from a lease.
    */
   replaceViewId(oldViewId: string | undefined, newViewId: string, key: TargetSessionKey): void {
     if (oldViewId) this.viewIdIndex.delete(oldViewId);

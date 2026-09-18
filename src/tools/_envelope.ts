@@ -229,9 +229,9 @@ export interface EnvelopeMinimalShape<T = unknown> {
  * ADR-010 §5.4. S4 trunk wires `LeaseExpired` end-to-end (sub-plan
  * §1.1 F), and ADR-036 item 16 wires `EntityNotFound`; the other
  * lease-direct codes (`LeaseGenerationMismatch` / `LeaseDigestMismatch`)
- * are name-pinned in `LEASE_REASON_TO_TYPED_CODE` for expansion
- * mechanical-copy work, but the runtime path for them collapses to
- * `"Unknown"` (sub-plan §7 R4).
+ * were name-pinned in `LEASE_REASON_TO_TYPED_CODE` and produced by nothing until
+ * internal#125 (2026-09-18) gave them branches; all four lease reasons now arrive
+ * under their own name, and `"Unknown"` is left to mean a thrown handler.
  */
 export interface IfUnexpectedShape {
   most_likely_cause: string;
@@ -1059,16 +1059,15 @@ export type LeaseValidationLike = LeaseValidationResult;
  * code (PascalCase). Sub-plan §2.2 + §1.4 + §1.1 F:
  *
  *   `expired`              → `LeaseExpired`              ← S4 trunk: full runtime
- *   `generation_mismatch`  → `LeaseGenerationMismatch`   ← contract pin only
+ *   `generation_mismatch`  → `LeaseGenerationMismatch`   ← full runtime (internal#125)
  *   `entity_not_found`     → `EntityNotFound`            ← full runtime (ADR-036 item 16)
- *   `digest_mismatch`      → `LeaseDigestMismatch`       ← contract pin only
+ *   `digest_mismatch`      → `LeaseDigestMismatch`       ← full runtime (internal#125)
  *
- * **Contract pin**: typed-code names live here in source for expansion
- * mechanical-copy work. **Runtime**: `LeaseExpired` and `EntityNotFound` are
- * emitted end-to-end with `try_next`; the residual 2 reasons collapse to
- * `"Unknown"` at runtime (sub-plan §7 R4) so trunk skeleton stays
- * minimal — expansion lifts each into its own try_next path
- * mechanically.
+ * **The table is READ, not described.** `mapLeaseValidationToTypedReason` takes the
+ * two promoted names from here rather than copying them into literals, so a name in
+ * this table with no branch returning it is caught by `check:result-vocabulary`
+ * instead of sitting unused. All four reasons are emitted end-to-end with `try_next`
+ * (internal#125, 2026-09-18); before that the last two collapsed to `"Unknown"`.
  *
  * `EntityOutsideViewport` is NOT in this table — it's a 5th
  * lease-relevant typed code emitted via a different path (viewport-out
@@ -1086,11 +1085,11 @@ export const LEASE_REASON_TO_TYPED_CODE = {
  * Map a `LeaseStore.validate()` reason to the runtime typed code +
  * `try_next` shape carried in the failure envelope (sub-plan §2.4).
  *
- * S4 trunk fully wired `expired → LeaseExpired` with `try_next:
- * [{action: "desktop_discover"}]`, and ADR-036 item 16 wires
- * `entity_not_found → EntityNotFound` — the other 2 reasons map to
- * `Unknown` with empty `try_next` per sub-plan §7 R4. Expansion
- * promotes each to its own typed code via a mechanical change here.
+ * All four reasons map to their own typed code with non-empty `try_next`.
+ * internal#125 (2026-09-18) promoted the last two: before it, `generation_mismatch`
+ * and `digest_mismatch` both answered `Unknown` with an empty `try_next`, which a
+ * caller could not tell apart from each other OR from a thrown handler — measured on
+ * the real machine as one byte string for three causes.
  *
  * Returned shape is what `buildFailureEnvelope` consumes; tests pin
  * both branches deterministically (`tests/unit/desktop-act-commit-wrapper.test.ts`
@@ -1133,7 +1132,9 @@ export function mapLeaseValidationToTypedReason(
   // from a THROWN handler: all three arrived as the same bytes
   // (`{ok:false,reason:"unknown",diff:[],if_unexpected:{most_likely_cause:"Unknown",try_next:[]}}`
   // — measured on the real machine, four arms and one distinct byte string, internal `6bdcdce`
-  // and `4f1a8a4`). `Unknown` now means exactly one thing: the handler threw.
+  // and `4f1a8a4`). `Unknown` now means one thing ON THIS ROAD: the handler threw. It has one other
+  // caller-visible producer — `compatFailureRaw`'s own default, for an envelope that carries no
+  // `if_unexpected` at all — which is a different road and stays as it is (Opus review Round 1).
   //
   // THE NAME IS READ FROM THE TABLE, not copied into a literal here. The two names were pinned in
   // `LEASE_REASON_TO_TYPED_CODE` from the start and nothing read it, so the reservation and the
@@ -1151,8 +1152,11 @@ export function mapLeaseValidationToTypedReason(
       tryNext: getSuggestsForCode(LEASE_REASON_TO_TYPED_CODE[reason]).map((action) => ({ action })),
     };
   }
-  // Exhaustiveness, at compile time: a fifth reason added to the union stops compiling here
-  // rather than silently landing in the runtime fallback below. The fallback stays because the
+  // Exhaustiveness, at compile time. WHERE it stops compiling depends on how the reason is added:
+  // widening THIS parameter's union stops here, while adding one to `LeaseValidationResult`
+  // (`world-graph/types.ts`) stops at the CALL SITE that passes `validation.reason` in. Either way
+  // it stops, which is the point — but the older wording said "here" for both (Opus review Round 1,
+  // 2026-09-18). The runtime fallback stays because the
   // union is a promise the type system makes about callers, not about values arriving from
   // outside TypeScript — and keeping it means this addition is purely additive, so no shipped
   // shape moves.
@@ -1230,10 +1234,10 @@ export function truncateJson(args: unknown, maxBytes: number = 512): string {
  * working when the wrapper short-circuits on a lease pre-flight
  * failure (Round 1 P1 fix per Codex / user PR review on PR #113).
  *
- * `LeaseExpired` → `lease_expired`. The S4 trunk runtime only emits
- * `LeaseExpired` and `Unknown` typed codes (residual 3 LeaseStore
- * reasons collapse to `Unknown` per sub-plan §7 R4); both project
- * cleanly via the `[a-z][A-Z]` boundary insertion.
+ * `LeaseExpired` → `lease_expired`. Since internal#125 the lease road emits all four
+ * typed codes — `LeaseGenerationMismatch` → `lease_generation_mismatch`,
+ * `LeaseDigestMismatch` → `lease_digest_mismatch` — and every one of them projects
+ * cleanly via the `[a-z][A-Z]` boundary insertion (no consecutive capitals).
  */
 function pascalToSnake(s: string): string {
   return s.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();

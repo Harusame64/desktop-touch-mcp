@@ -19,6 +19,8 @@ import {
   mapLeaseValidationToTypedReason,
 } from "../../src/tools/_envelope.js";
 import { getSuggestsForCode } from "../../src/tools/_errors.js";
+// The extractor is JS on purpose — it reads the tree as text, and the cells below read it the same way.
+import { readReturnedCodes } from "../../scripts/lib/result-vocabulary.mjs";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
@@ -122,5 +124,77 @@ describe("internal#125 — the order LeaseStore.validate checks in", () => {
         (r) => mapLeaseValidationToTypedReason(r).code,
       ),
     ).toEqual(["LeaseExpired", "LeaseGenerationMismatch", "EntityNotFound", "LeaseDigestMismatch"]);
+  });
+});
+
+describe("internal#125 — the extractor that has to SEE the fix", () => {
+  // **The flag was added without an input that makes it fire, and it did not.** Round 1 of the Opus
+  // review measured the first version against five shapes and four came back silent — including the
+  // exact draft its own comment cited — because the surrounding pattern consumed both braces and the
+  // string contents were never blanked. A flag that cannot fire is indistinguishable from a
+  // negative, so the shapes live here now rather than in a comment.
+  const wrap = (body: string) =>
+    [
+      "function f(",
+      "  reason: R,",
+      "): { code: string } {",
+      '  if (reason === "a" || reason === "b") {',
+      body,
+      "  }",
+      '  return { code: "Lit" };',
+      "}",
+    ].join("\n");
+
+  const flagged = (body: string) => {
+    const problems: string[] = [];
+    readReturnedCodes(wrap(body), "f", problems, null);
+    return problems.some((x) => /SHORTHAND/.test(x));
+  };
+
+  it("fires on every shape a shorthand `code` can take", () => {
+    expect(flagged("    return { code };")).toBe(true);
+    expect(flagged("    return { code, tryNext: [] };")).toBe(true);
+    expect(flagged("    return {\n      code,\n      tryNext: [],\n    };")).toBe(true);
+    expect(flagged("    return { tryNext: [], code };")).toBe(true);
+    expect(flagged("    return { a: 1, code, b: 2 };")).toBe(true);
+  });
+
+  it("stays silent where the name IS readable, and where the text only looks like a key", () => {
+    expect(flagged('    return { code: "X" };')).toBe(false);
+    // The mirror of what gate 2 found on #674: a string whose VALUE contains the word.
+    expect(flagged('    return { note: "a, code}", code: "X" };')).toBe(false);
+    // This repo's advice lines carry braces — a non-string-aware scan ends the object inside one.
+    expect(flagged('    return { code: "X", tryNext: [{ action: "{tool:reidentify_element}" }] };')).toBe(false);
+  });
+
+  it("resolves a table read through the branch that guards it, not to the whole table", () => {
+    // **Resolving to the whole table makes "a reserved name nothing produces" true by construction**,
+    // which is the defect the reservation exists to catch, wearing the fix's clothes. The guard names
+    // "a" and "b"; "c" is reserved and reached by nothing, and must not appear.
+    const table = { a: "CodeA", b: "CodeB", c: "CodeC" };
+    const problems: string[] = [];
+    const codes = readReturnedCodes(
+      wrap("    return { code: TBL[reason] };"),
+      "f",
+      problems,
+      { name: "TBL", table },
+    );
+    expect(codes).toContain("CodeA");
+    expect(codes).toContain("CodeB");
+    expect(codes, "a reserved name no branch returns must not count as produced").not.toContain("CodeC");
+    expect(problems).toEqual([]);
+  });
+
+  it("says so when it cannot read the branch, rather than answering nothing", () => {
+    // An empty answer and "this parser could not tell" must not look the same to the caller.
+    const problems: string[] = [];
+    const codes = readReturnedCodes(
+      ["function f(", "  reason: R,", "): { code: string } {", "  return { code: TBL[reason] };", "}"].join("\n"),
+      "f",
+      problems,
+      { name: "TBL", table: { a: "CodeA" } },
+    );
+    expect(codes).toEqual([]);
+    expect(problems.join(" ")).toMatch(/cannot read/);
   });
 });

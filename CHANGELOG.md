@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **A lease that no longer fits now says which part stopped fitting.**
+  `desktop_act` takes the lease `desktop_discover` handed you, and it refuses when the lease no
+  longer describes what is on screen. Two of those refusals used to come back as
+  `reason: "unknown"` with no recovery hint at all — and a tool that crashed internally came back
+  the same way, so three different situations were one response with nothing to tell them apart.
+
+  They now arrive under their own names, each with what to do next:
+
+  - `lease_generation_mismatch` — the `targetGeneration` in the lease is not the one the view is
+    on any more, so the entity ids it carries describe a snapshot the server no longer answers
+    from. Discover again and act on what comes back, and pass the lease back exactly as discover
+    returned it.
+  - `lease_digest_mismatch` — the element is still there, but the evidence it was described by no
+    longer matches, so the lease does not vouch for what would be acted on. Discover again rather
+    than retrying by coordinate: whatever changed may be what moved it.
+
+  `reason: "unknown"` still exists and now means one thing on this road: the tool itself threw.
+  If you branch on `reason`, the two new values are the ones to add; nothing that used to work
+  stops working, and the `most_likely_cause` in the envelope carries the same split
+  (`LeaseGenerationMismatch` / `LeaseDigestMismatch`).
 - **A click aimed at a window now checks that it is still that window, and follows it when it moves.**
   A `desktop_discover` returns coordinates, and `desktop_act` used to press them
   without asking whether anything had changed in between. Three things can have

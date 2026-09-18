@@ -17,7 +17,9 @@
  *   5a.  lease validation `expired` — via `toFailureEnvelope` with a verbatim
  *        rich `tryNext` (migrated in PR-P1-2; code/tryNext from
  *        `mapLeaseValidationToTypedReason`, lease path in `makeCommitWrapper`).
- *   5b.  lease validation residual reasons (collapse to `Unknown`, empty tryNext).
+ *   5b.  the two lease mismatches — each under its own name with real advice since
+ *        internal#125 (2026-09-18); until then both collapsed to `Unknown` with an empty
+ *        tryNext, which a caller could not tell apart from a thrown handler (site 6).
  *   6.   handler throw fallback — via `toFailureEnvelope` with empty `tryNext`
  *        (migrated in PR-P1-2; handler-throw path in `makeCommitWrapper`).
  *   7.   executor_failed — via `toFailureEnvelope` raw projection (migrated in
@@ -75,7 +77,9 @@ import { Err } from "../../../src/types/result.js";
 import {
   captureAdviceConfiguration,
   resetAdviceConfiguration,
+  ADVICE_WITHHELD_FLOOR,
 } from "../../../src/tools/_advice-capability.js";
+import { getSuggestsForCode } from "../../../src/tools/_errors.js";
 import { CodedHandlerError } from "../../../src/errors/typed-errors.js";
 import {
   desktopActRawHandler,
@@ -295,16 +299,25 @@ describe("PR-P1-1 site 5b: the two lease mismatches, each under its own name (in
         ok: boolean; reason: string; diff: unknown[];
         if_unexpected: { most_likely_cause: string; try_next: { action: string }[] };
       };
+      // **The KEY SET is frozen too.** Dropping the whole-object `toEqual` to stop freezing advice
+      // prose also dropped "and nothing else is at the top level", which site 5a still holds for
+      // `LeaseExpired` (Opus review Round 1, 2026-09-18). A new top-level field is a shape change
+      // and this file is where a shape change is supposed to be noticed.
+      expect(Object.keys(parsed).sort()).toEqual(["diff", "if_unexpected", "ok", "reason"]);
+      expect(Object.keys(parsed.if_unexpected).sort()).toEqual(["most_likely_cause", "try_next"]);
       expect(parsed.ok).toBe(false);
       expect(parsed.reason).toBe(EXPECTED[reason].reason);
       expect(parsed.diff).toEqual([]);
       expect(parsed.if_unexpected.most_likely_cause).toBe(EXPECTED[reason].cause);
-      // **The COUNT is frozen, not the sentences.** Freezing the prose makes a wording change look
+      // **The ARRIVAL is frozen, not the sentences.** Freezing the prose makes a wording change look
       // like a contract change, and this file exists to catch the shape moving. What must not
-      // regress is that the advice arrives at all — the key present and non-empty, which is a
-      // different fact from the key being absent (`renderAdviceWithFloor` keeps them apart).
-      expect(parsed.if_unexpected.try_next.length).toBeGreaterThan(0);
+      // regress is that real advice arrives — which is three facts, not one: the key is present, it
+      // is not empty, and it is not the WITHHELD FLOOR. The floor satisfies "non-empty", so a cell
+      // that stops at `length > 0` passes on a configuration where every sentence was dropped
+      // (Opus review Round 1, 2026-09-18).
+      expect(parsed.if_unexpected.try_next.length).toBe(getSuggestsForCode(EXPECTED[reason].cause).length);
       expect(parsed.if_unexpected.try_next.every((row) => typeof row.action === "string")).toBe(true);
+      expect(parsed.if_unexpected.try_next.map((row) => row.action)).not.toContain(ADVICE_WITHHELD_FLOOR);
     });
   }
 });

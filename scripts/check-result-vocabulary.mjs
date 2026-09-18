@@ -37,6 +37,7 @@ import {
   readReturnedCodes,
   readEnvelopeErrorNames,
   readLeaseCodes,
+  readLeaseTable,
   readReasonCatalogue,
   readReasonConversion,
   readSuggestsKeys,
@@ -123,10 +124,14 @@ const UNRESOLVABLE = [
 // into one. Getting the conclusion right off a wrong rule is how the next case is mis-sorted.
 const family = readEnvelopeErrorNames(sources, problems, RESOLVED_DYNAMIC_NAME);
 const errorNames = readPresentedNames(sources, family.nameOfClass, problems, RESOLVED_CODED);
-// **The lease codes come from the function, not from the table beside it.** Gate 2's third round:
-// `mapLeaseValidationToTypedReason` hard-codes its returns and never consults
-// `LEASE_REASON_TO_TYPED_CODE`, whose own comment calls it a reservation for future expansion. Two
-// of its four names are produced by nothing, and adding a real branch left the gate green.
+// **The lease codes come from the function, not from the table beside it.** Gate 2's third round
+// (#672): `mapLeaseValidationToTypedReason` hard-coded its returns and never consulted
+// `LEASE_REASON_TO_TYPED_CODE`, whose own comment called it a reservation for future expansion. Two
+// of its four names were produced by nothing, and adding a real branch left the gate green.
+// **internal#125 gave those two branches, and the function now READS the table** — so the read is
+// resolved through the branch's own discriminants, not to the whole table. Resolving it to the
+// whole table would make "a reserved name nothing produces" true by construction, which is the
+// #672 defect wearing the fix's clothes (Opus review Round 1 measured exactly that).
 // The table is kept as a COVERAGE check — the role `SUGGESTS` was correctly demoted to. A code the
 // function returns with no reserved name is the shape the reservation exists to prevent.
 const reservedLeaseNames = readLeaseCodes(read("src/tools/_envelope.ts"), problems);
@@ -139,7 +144,7 @@ const leaseCodes = readReturnedCodes(
   read("src/tools/_envelope.ts"),
   "mapLeaseValidationToTypedReason",
   problems,
-  { name: "LEASE_REASON_TO_TYPED_CODE", values: reservedLeaseNames },
+  { name: "LEASE_REASON_TO_TYPED_CODE", table: readLeaseTable(read("src/tools/_envelope.ts"), problems) },
 );
 const producedNames = [
   ...new Set([...errorNames, ...leaseCodes, ...(fallbackCause === null ? [] : [fallbackCause])]),
