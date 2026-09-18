@@ -89,6 +89,16 @@ jobs:
         # that neither the compiler nor either catalogue would mention.
         run: npm run check:result-vocabulary
 
+      - name: Check the ADR-036 code vocabulary (the grid's fourth denominator)
+        # `code` shares a producer and a spelling with the envelope surface's `most_likely_cause`,
+        # so matching the two by name collapses two axes into one. The MESSAGE road is bounded —
+        # both classifier arms that read a code out of a producer's message require
+        # `Object.hasOwn(SUGGESTS, …)`, un-negated — and negating or deleting either guard lets any
+        # message name any code, with the types still `string` and the dictionary untouched. The
+        # CALL-SITE road is NOT bounded: one site forwards a computed value today, the check names
+        # it, and the number it prints is a lower bound while that is true.
+        run: npm run check:code-vocabulary
+
       - name: Type check the root config files (desktop-touch-mcp-internal#105 — a removed option must stop compiling)
         # `tsconfig.json` covers `src/**/*` only, so `vitest.config.ts` is outside the
         # program and ESLint is not type-aware: a config key that stops existing keeps
