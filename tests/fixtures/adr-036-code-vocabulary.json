@@ -67,7 +67,7 @@
     "WindowNotFound"
   ],
   "unreadableCallSites": [
-    "src/tools/key-locker-tool.ts:172: fail(code)"
+    "src/tools/key-locker-tool.ts: fail(code)"
   ],
   "residual": "ToolError",
   "dictionaryArms": [
@@ -132,7 +132,7 @@
     "src/server-linux-stub.ts → UnsupportedPlatform",
     "src/tools/_errors.ts (failArgs) → InvalidArgs",
     "src/tools/_errors.ts (toToolFailure) → (computed: code)",
-    "src/tools/macro.ts (keys) → (computed: innerCode)"
+    "src/tools/macro.ts (runMacroHandler) → (computed: innerCode)"
   ],
   "embeddedScriptCodes": [
     "ElementNotFound",

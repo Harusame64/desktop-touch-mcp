@@ -277,12 +277,25 @@ function valueAt(objectSource, from) {
  * which is what it is — an identifier the caller must resolve or report.
  */
 export function fieldAtDepthOne(objectSource, field) {
-  return (
-    eachDepthOneProperty(objectSource, (name, valueStart, source) => {
-      if (name !== field) return undefined;
-      return valueStart === null ? field : valueAt(source, valueStart);
-    }) ?? null
-  );
+  const values = fieldsAtDepthOne(objectSource, field);
+  return values.length === 0 ? null : values[0];
+}
+
+/**
+ * EVERY value `field` takes at depth 1 — a conditional spread gives it more than one.
+ *
+ * `{ ok:false, ...(c ? { code:"AAA" } : { code:"BBB" }), … }` produces two codes, and stopping at the
+ * first left `BBB` out of the axis with nothing in `problems` and nothing in `unreadable`: a caller
+ * can receive it and the grid does not count it (gate 2 on #674, round 4, finding 5).
+ */
+export function fieldsAtDepthOne(objectSource, field) {
+  const values = [];
+  eachDepthOneProperty(objectSource, (name, valueStart, source) => {
+    if (name !== field) return undefined;
+    values.push(valueStart === null ? field : valueAt(source, valueStart));
+    return undefined;
+  });
+  return values;
 }
 
 /** Every depth-1 key of an object literal, in source order. */
@@ -392,9 +405,22 @@ function enclosingCondition(body, at) {
     while (i >= 0 && /\s/.test(body[i])) i--;
     return i;
   };
+  // **The literal ranges are computed once, forward, and every backward walk below consults them.**
+  // This was the one scanner that had not learned the shared grammar: a `"}"` or a `"("` inside a
+  // string — three behaviour-preserving edits inside a guarded arm — flipped `guarded` to false and
+  // turned CI red claiming the axis was unbounded (gate 2 on #674, round 4, finding 3).
+  const masked = new Set();
+  for (let i = 0; i < body.length; i++) {
+    const end = literalEnd(body, i, significantBefore(body, i));
+    if (end === -1) continue;
+    for (let j = i; j < end; j++) masked.add(j);
+    i = end - 1;
+  }
+  const code = (i) => !masked.has(i);
   const matchParen = (i) => {
     let depth = 0;
     for (; i >= 0; i--) {
+      if (!code(i)) continue;
       if (body[i] === ")") depth++;
       else if (body[i] === "(") {
         depth--;
@@ -424,6 +450,7 @@ function enclosingCondition(body, at) {
   // refactor that changed nothing).
   let depth = 0;
   for (let j = at - 1; j >= 0; j--) {
+    if (!code(j)) continue;
     if (body[j] === "}") depth++;
     else if (body[j] === "{") {
       if (depth === 0) {
@@ -450,11 +477,18 @@ function enclosingCondition(body, at) {
  * means some other operand can carry the branch on its own.
  */
 function dictionaryMembershipRequired(condition, expr) {
-  const call = new RegExp(`(!\\s*)?Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${quoteForRegExp(expr)}\\s*\\)`, "g");
+  const call = new RegExp(`Object\\.hasOwn\\(\\s*SUGGESTS\\s*,\\s*${quoteForRegExp(expr)}\\s*\\)`, "g");
   let positive = false;
   for (const m of condition.matchAll(call)) {
-    if (m[1] === undefined) positive = true;
-    else return false; // negated anywhere: the branch can be taken without membership
+    // **Every spelling of the inversion, not just the adjacent `!`.** `!(Object.hasOwn(…))` and
+    // `Object.hasOwn(…) === false` are ordinary ways to write the same thing, and both came back
+    // `guarded: true` with the gate at exit 0 — removing the one structural invariant this axis
+    // rests on while CI stayed green (gate 2 on #674, round 4, finding 2).
+    const before = condition.slice(0, m.index);
+    const after = condition.slice(m.index + m[0].length);
+    if (/!\s*\(?\s*$/.test(before)) return false;
+    if (/^\s*(?:===?|!==?)\s*(?:false|true)/.test(after)) return false;
+    positive = true;
   }
   if (!positive) return false;
   let depth = 0;
@@ -591,7 +625,8 @@ export function readFailCodeSites(sources) {
       if (args === null) continue;
       const first = args[0] ?? "";
       const line = text.slice(0, m.index).split("\n").length;
-      if (/^\s*code\s*:\s*string/.test(first)) continue; // the declaration itself
+      // `failCode`'s own declaration, whatever it names its first parameter.
+      if (/^\s*[A-Za-z_$][\w$]*\s*:\s*string/.test(first)) continue;
       const lit = literal(first.trim());
       const tern = ternaryLiterals(first.trim());
       let resolved = null;
@@ -633,7 +668,10 @@ export function readFailCodeSites(sources) {
           // #674, round 2, finding 1).
           const arg = (args[0] ?? "").trim();
           const line = text.slice(0, m.index).split("\n").length;
-          if (!/^\s*code\s*:\s*string/.test(arg) && arg !== "") {
+          // **The wrapper's own declaration, by the parameter name it actually binds.** Hard-coding
+          // `code: string` made a behaviour-neutral rename of that parameter add a phantom entry to
+          // `unreadableCallSites` (gate 2 on #674, round 4, finding 9).
+          if (!new RegExp(`^\\s*${quoteForRegExp(wrappers.get(name) ?? "code")}\\s*:\\s*string`).test(arg) && arg !== "") {
             unreadable.push(`${file}:${line}: ${name}(${arg.replace(/\s+/g, " ").slice(0, 60)})`);
           }
           continue;
@@ -746,6 +784,11 @@ export function readHandBuiltFlatFailures(sources) {
         /^["']?\bok["']?:\s*false\b/.test(text.slice(i, i + 16)) &&
         // A sentence that DESCRIBES the shape is not a site that builds it.
         !inString.some(([a, b]) => i > a && i < b);
+      // **Resume past the KEY, not one character into it.** Testing the anchor before the literal
+      // skip is what lets `"ok": false` be seen; advancing by one then handed the closing `"` of
+      // `"ok"` to `literalEnd` as an OPENING quote, inverting quote parity for the rest of the line
+      // (gate 2 on #674, round 4, finding 8 — latent in `src` today, and latent is how the last
+      // three of these started).
       const skip = anchored ? -1 : literalEnd(text, i, significantBefore(text, i));
       if (skip !== -1) {
         i = skip - 1;
@@ -763,12 +806,14 @@ export function readHandBuiltFlatFailures(sources) {
         }
       }
       if (!anchored) continue;
+      const keyEnd = literalEnd(text, i, significantBefore(text, i));
+      if (keyEnd !== -1) i = keyEnd - 1;
       const start = open[open.length - 1];
       const obj = blockAt(text, start);
       if (obj === null || isTypeLiteral(obj.body)) continue;
       const keys = keysAtDepthOne(obj.body);
       if (!keys.includes("code") || !keys.includes("error")) continue;
-      const expr = fieldAtDepthOne(obj.body, "code");
+      const exprs = fieldsAtDepthOne(obj.body, "code");
       const line = text.slice(0, i).split("\n").length;
       const before = text.slice(0, start);
       const decl = [
@@ -776,7 +821,13 @@ export function readHandBuiltFlatFailures(sources) {
           // A FUNCTION-LIKE declaration only: `const failure: ToolFailure = { … }` is a local, and
           // taking it as the enclosing declaration answers the reachability question about a
           // variable. The const form must be followed by a function or an arrow's parameter list.
-          /\b(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>))/g,
+          // **`= (` is not enough.** It matches any parenthesised expression — `const trimmed = (s ??
+          // "").trim()` — and `declarationEncloses` then confirms it, because the first `{` after
+          // such a line is usually the producer's own object literal. `macro.ts`'s site was
+          // attributed to `const keys = (rawStep as {…})?.keys` instead of `runMacroHandler`, so
+          // `exported` read false and the reachability answer was about the wrong name (gate 2 on
+          // #674, round 4, finding 1). An arrow has to show its `=>`.
+          /\b(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?:async\s+)?(?:function\b|\([^()]*\)\s*(?::[^=;]+?)?=>|[A-Za-z_$][\w$]*\s*=>))/g,
         ),
       ].at(-1);
       let fn = decl === undefined ? null : (decl[2] ?? decl[3] ?? null);
@@ -788,7 +839,9 @@ export function readHandBuiltFlatFailures(sources) {
         fn = null;
         exported = false;
       }
-      found.push({ file, line, code: literal(expr ?? ""), expression: expr, fn, exported });
+      for (const expr of exprs) {
+        found.push({ file, line, code: literal(expr ?? ""), expression: expr, fn, exported });
+      }
     }
   }
   return found;
@@ -837,7 +890,10 @@ function declarationEncloses(text, declStart, index) {
 
 /** Is `name` called anywhere outside the file that defines it? */
 export function isCalledOutside(sources, name, definingFile) {
-  const call = new RegExp(`\\b${quoteForRegExp(name)}\\s*\\(`);
+  // **`Object.keys(o)` is not a call to a function named `keys`.** The bare `\b` boundary answered
+  // reachability by coincidence for any producer whose enclosing name collides with a common method
+  // — `keys`, `list`, `get`, `send`, `parse` (gate 2 on #674, round 4, finding 7).
+  const call = new RegExp(`(^|[^.\\w$])${quoteForRegExp(name)}\\s*\\(`);
   return sources.some(({ file, text }) => file !== definingFile && call.test(stripComments(text)));
 }
 

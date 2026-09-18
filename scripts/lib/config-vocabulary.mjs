@@ -82,6 +82,18 @@ function stripCommentsWithMask(source) {
       while (i < text.length && text[i] !== "\n") i++;
       continue;
     }
+    if (ch === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      const end = close === -1 ? text.length : close + 2;
+      for (let j = i; j < end; j++) if (text[j] === "\n") push("\n", false);
+      i = end;
+      continue;
+    }
+    // **After BOTH comment checks, never between them.** Inserting this branch between the `//`
+    // and `/*` tests made `const x = /* … */ 5;` read as a regex literal, so the comment was never
+    // stripped and its prose entered the axis as code — and a multi-line one desynced the string
+    // mask, hiding a real switch. The fix for a regex defect introduced a comment defect one line
+    // above it (gate 2 on #674, round 4, finding 6; `browser.ts:2490` hits the first form today).
     // **A regex literal's `\/\/` is not a comment either.** The same defect as the string case
     // above, one grammar rule further in: `/^https?:\/\//i` in `engine/cdp-bridge.ts:582` lost the
     // rest of its line — including the `{` that opens the `if` — so every brace-matching read after
@@ -106,13 +118,6 @@ function stripCommentsWithMask(source) {
         else if (c === "/" && !inClass) break;
         else if (c === "\n") break;
       }
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "*") {
-      const close = text.indexOf("*/", i + 2);
-      const end = close === -1 ? text.length : close + 2;
-      for (let j = i; j < end; j++) if (text[j] === "\n") push("\n", false);
-      i = end;
       continue;
     }
     push(ch, false);

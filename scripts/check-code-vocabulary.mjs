@@ -173,7 +173,10 @@ const derived = {
   // any set below. Pinned rather than failed on, like the result axis's `ToolFailureError:code` —
   // and the summary stops calling the count a ceiling while this list is non-empty, because it is
   // not one (gate 2 on #674, round 2).
-  unreadableCallSites: failCode.unreadable,
+  // Pinned WITHOUT the line number, for the reason `handBuilt` drops it: a comment added above the
+  // site moved it and the gate failed in both directions for an edit that changed nothing (gate 2 on
+  // #674, round 4, finding 4).
+  unreadableCallSites: [...new Set(failCode.unreadable.map((u) => u.replace(/^([^:]+):\d+: /, "$1: ")))].sort(),
   residual: arms.residual,
   dictionaryArms: arms.dictionaryArms.map((a) => a.identifier).sort(),
   dictionaryOnly,

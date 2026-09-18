@@ -19,6 +19,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   fieldAtDepthOne,
+  fieldsAtDepthOne,
+  isCalledOutside,
   isTypeLiteral,
   keysAtDepthOne,
   readClassifyArms,
@@ -581,13 +583,19 @@ describe("what gate 2's third pass found, kept as cells", () => {
     expect(found.map((f: { code: string }) => f.code)).toEqual(["StringBraceCode"]);
   });
 
-  it("6. sees a code that arrives by conditional spread", () => {
+  it("6. sees BOTH codes a conditional spread can produce", () => {
     // `{ ok:false, ...(c ? {code:"A"} : {code:"B"}), … }` is the tree's own idiom; counting brackets
     // uniformly buried the key two levels below the depth-1 walk.
+    //
+    // **And then the first version of this cell pinned the loss.** Reading the spread found the
+    // first branch and stopped, so `Other` never entered the axis — with nothing in `problems` and
+    // nothing in `unreadable` — and this cell asserted exactly that one-code result, locking it in
+    // (gate 2 on #674, round 4, finding 5). A cell written from the fix's output agrees with the
+    // fix, including where the fix is short.
     const found = readHandBuiltFlatFailures([
       { file: "a.ts", text: `export const h = (c) => ({ ok: false, ...(c ? { code: "SpreadCode" } : { code: "Other" }), error: "e" });` },
     ]);
-    expect(found.map((f: { code: string }) => f.code).sort()).toEqual(["SpreadCode"]);
+    expect(found.map((f: { code: string }) => f.code).sort()).toEqual(["Other", "SpreadCode"]);
   });
 
   it("scans the whole tree in well under a second", () => {
@@ -626,6 +634,96 @@ describe("what gate 2's third pass found, kept as cells", () => {
     const ci = readFileSync(join(REPO, ".github/workflows/ci.yml"), "utf8");
     expect(ci).toMatch(/check:code-vocabulary/);
     expect(ci).not.toMatch(/CLOSED ABOVE/);
+  });
+});
+
+describe("what gate 2's fourth pass found, kept as cells", () => {
+  it("1. does not take a parenthesised expression for an arrow's parameter list", () => {
+    // `= (` matched `const trimmed = (s ?? "").trim()`, and the enclosure check confirmed it because
+    // the first `{` after such a line is usually the producer's own object literal. The reachability
+    // answer was then about the wrong name, and `ceiling` drops a site answered unreachable.
+    const found = readHandBuiltFlatFailures([
+      {
+        file: "a.ts",
+        text: `export function insertText(s) { const trimmed = (s ?? "").trim(); return { ok: false, code: "X", error: trimmed }; }`,
+      },
+    ]);
+    expect(found[0].fn).toBe("insertText");
+    expect(found[0].exported).toBe(true);
+  });
+
+  it("2. sees the inversion in every spelling, not only the adjacent `!`", () => {
+    // `!(Object.hasOwn(…))` and `Object.hasOwn(…) === false` both removed the one structural
+    // invariant this axis rests on, and both left the gate at exit 0.
+    const arm = (cond: string) =>
+      readClassifyArms(
+        `function classify(m) { const d = "x"; if (${cond}) { return { code: d, suggest: [] }; } return { code: "ToolError" }; }`,
+      ).dictionaryArms.map((a: { guarded: boolean }) => a.guarded);
+    expect(arm("d && Object.hasOwn(SUGGESTS, d)")).toEqual([true]);
+    expect(arm("d && !Object.hasOwn(SUGGESTS, d)")).toEqual([false]);
+    expect(arm("d && !(Object.hasOwn(SUGGESTS, d))")).toEqual([false]);
+    expect(arm("d && Object.hasOwn(SUGGESTS, d) === false")).toEqual([false]);
+  });
+
+  it("3. the guard reader knows the shared grammar too", () => {
+    // The one scanner that had not learned it. A `"}"` or a `"("` inside a string — three
+    // behaviour-preserving edits — flipped `guarded` to false and turned CI RED, claiming the axis
+    // was unbounded. A gate that reddens for a comment-shaped edit is a gate somebody turns off.
+    const arm = (cond: string, body = "") =>
+      readClassifyArms(
+        `function classify(m) { const d = "x"; if (${cond}) { ${body}return { code: d, suggest: [] }; } return { code: "ToolError" }; }`,
+      ).dictionaryArms.map((a: { guarded: boolean }) => a.guarded);
+    expect(arm("d && Object.hasOwn(SUGGESTS, d)", `const note = "}"; `)).toEqual([true]);
+    expect(arm("d && Object.hasOwn(SUGGESTS, d)", `const note = "{"; `)).toEqual([true]);
+    expect(arm(`d && !m.includes(")") && Object.hasOwn(SUGGESTS, d)`)).toEqual([true]);
+  });
+
+  it("6. the configuration stripper puts the regex branch AFTER both comment checks", () => {
+    // **The fix for the regex defect introduced a comment defect one line above it.** Inserted
+    // between the `//` and `/*` tests, `const x = /* … */ 5;` read as a regex literal, so comment
+    // prose entered the configuration axis as code — and a multi-line one desynced the string mask,
+    // which hides a real switch. `browser.ts:2490` hits the first form today.
+    expect(stripConfigComments(`const x = /* SECRET */ 5;`)).toBe("const x =  5;");
+    expect(stripConfigComments(`if (!/^https?:\\/\\//i.test(u)) {`)).toBe(`if (!/^https?:\\/\\//i.test(u)) {`);
+    // the multi-line form, whose damage was to the mask rather than to the text
+    expect(stripConfigComments(`const a =\n  /* note\n     with a " quote */ 1;\nconst d = process.env.AFTER;`)).toContain(
+      "process.env.AFTER",
+    );
+  });
+
+  it("5. reads every value a field takes, not the first one", () => {
+    // The reader under the sweep. `fieldAtDepthOne` keeps its single-value contract for the callers
+    // that want one; the sweep asks for all of them, because a conditional spread gives the field
+    // two and the caller can receive either.
+    expect(fieldsAtDepthOne(`{ ok:false, ...(c ? { code:"AAA" } : { code:"BBB" }), error:"e" }`, "code")).toEqual([
+      '"AAA"',
+      '"BBB"',
+    ]);
+    expect(fieldAtDepthOne(`{ ok:false, code:"X", error:"e" }`, "code")).toBe('"X"');
+  });
+
+  it("7. does not read a method call as a call to a free function", () => {
+    // `Object.keys(o)` answered reachability for a producer whose enclosing name is `keys`.
+    expect(isCalledOutside([{ file: "a.ts", text: "const z = Object.keys(o);" }], "keys", "b.ts")).toBe(false);
+    expect(isCalledOutside([{ file: "a.ts", text: "const z = keys(o);" }], "keys", "b.ts")).toBe(true);
+  });
+
+  it("9. finds the wrapper's own declaration whatever it names its parameter", () => {
+    // Hard-coding `code: string` made a behaviour-neutral rename add a phantom entry to
+    // `unreadableCallSites` and the summary then claimed a call site that does not exist.
+    const { codes, unreadable } = readFailCodeSites([
+      {
+        file: "k.ts",
+        text: `
+function fail(name: string, message: string): ToolResult {
+  return failCode(name, message);
+}
+return fail("KeyLockerDisabled", "m");
+`,
+      },
+    ]);
+    expect(codes).toEqual(["KeyLockerDisabled"]);
+    expect(unreadable).toEqual([]);
   });
 });
 
