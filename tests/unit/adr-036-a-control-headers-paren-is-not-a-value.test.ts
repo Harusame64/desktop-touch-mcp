@@ -69,6 +69,17 @@ describe("a `)` that closes a control header opens a statement", () => {
       'for (let i = 0; i < n; i++) /a"b/.test(x);',
       'function f(n: number, x: string) { for (let i = 0; i < n; i++) /a"b/.test(x); }',
     ],
+    [
+      // `for await (…)` puts `await` where the keyword would be, so the header is one word further
+      // back. Missing it left the defect unfixed for exactly one statement form — a PARTIAL fix,
+      // which is the shape a set with only `if` and `while` in it walks straight past.
+      "for await (const a of b) /a\"b/.test(a);",
+      'async function f(b: AsyncIterable<string>) { for await (const a of b) /a"b/.test(a); }',
+    ],
+    [
+      "} else if (r) /a\"b/.test(x);",
+      'function f(a: boolean, r: RegExp, x: string) { if (a) { } else if (r) /a"b/.test(x); }',
+    ],
   ])("reads the regex after %s exactly as TypeScript does", (_label, source) => {
     expect(agreesWithTypeScript(source)).toBeNull();
   });
@@ -80,6 +91,21 @@ describe("a `)` that closes a control header opens a statement", () => {
     [
       "a call's `)` on the same line as a header's",
       "function f(a: boolean, g: () => number) { if (a) { } const v = g() / 2; return v; }",
+    ],
+    [
+      // **A method may be named `if`.** Taking its `)` for a header read the division and the rest of
+      // the line as a regex — the widening direction, the one that quietly stops a literal being
+      // blanked. A keyword is a keyword only where a member access is not.
+      "a method named `if`",
+      "function f(obj: { if(x: number): number }, x: number) { const q = obj.if(x) / 2; return q; }",
+    ],
+    [
+      "a method named `while`",
+      "function f(obj: { while(x: number): number }, x: number) { const q = obj.while(x) / 2; return q; }",
+    ],
+    [
+      "an optional member `?.if`",
+      "function f(obj: { if(x: number): number } | undefined, x: number) { const q = obj?.if(x) / 2; return q; }",
     ],
   ])("still reads division after %s, exactly as TypeScript does", (_label, source) => {
     // **The controls are the work.** This change WIDENS what counts as a regex, and widening is the

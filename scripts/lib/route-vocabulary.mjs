@@ -286,7 +286,8 @@ export function literalEnd(text, i, previous) {
  *
  * **The memo is load-bearing, not an optimisation.** `significantBefore` is called once per
  * character, so rebuilding the map on each `)` makes the reader quadratic: measured on
- * `src/tools/desktop-executor.ts` (50,279 characters), 36 ms with the memo and 9,449 ms without —
+ * `src/tools/desktop-executor.ts` (50,279 characters AFTER `stripComments`; 146,225 as it sits on
+ * disk), 36 ms with the memo and 9,449 ms without —
  * the same answer, 262 times slower, and the unit suite times out rather than failing. This module
  * has been here before: the first `significantBefore` sliced from the start of the file to read the
  * word behind the cursor, and the scan took minutes over a 2 MB tree.
@@ -294,10 +295,27 @@ export function literalEnd(text, i, previous) {
  * It is keyed by REFERENCE, because every caller walks one file to the end before moving to the
  * next, and comparing the strings by value would put the cost back.
  *
+ * **ONE slot, and the limit is the reason.** Two texts read alternately rebuild on every switch —
+ * win2 measured 253 ms to 515 ms for twenty alternating reads, where twenty reads of the SAME text
+ * are unchanged. The 262x measurement above cannot see that direction at all, because it repeats
+ * one text: **the instrument's direction decides the instrument's blind spot.** It stays at one
+ * slot because every caller in this tree finishes a file before starting the next, which is a
+ * reason; "two" or "four" would be a number with none, in a change whose whole subject is bounds
+ * written without their grounds.
+ *
  * No timing cell pins this. A timing assertion is flaky on a loaded machine, and the failure it
  * would catch announces itself anyway — a gate that took 36 ms takes minutes. It is written down
  * here instead, with the measurement, which is what a bound whose grounds are recorded looks like.
  */
+/** The word ending just before `at`, skipping whitespace: its text and where it starts. */
+function wordBefore(masked, at) {
+  let w = at - 1;
+  while (w >= 0 && /\s/.test(masked[w])) w--;
+  const end = w;
+  while (w >= 0 && /\w/.test(masked[w])) w--;
+  return { word: masked.slice(w + 1, end + 1), start: w + 1 };
+}
+
 let parenText = null;
 let parenMap = null;
 let buildingParenMap = false;
@@ -316,12 +334,30 @@ function controlHeaderParens(text) {
   for (let i = 0; i < masked.length; i++) {
     const ch = masked[i];
     if (ch === "(") {
-      let w = i - 1;
-      while (w >= 0 && /\s/.test(masked[w])) w--;
-      const end = w;
-      while (w >= 0 && /\w/.test(masked[w])) w--;
-      const word = masked.slice(w + 1, end + 1);
-      stack.push(/^(?:if|while|for)$/.test(word) ? word : null);
+      let { word, start } = wordBefore(masked, i);
+      // **`for await (…)` puts `await` where the keyword would be.** The header is one word further
+      // back, and missing it left the defect unfixed for exactly one statement form — the shape of a
+      // PARTIAL fix, which the shape set is built to catch and did not, until win2 added `for` to it
+      // (gate 2 on #680).
+      if (word === "await") {
+        const prior = wordBefore(masked, start);
+        word = prior.word === "for" ? "for" : "";
+        start = prior.start;
+      }
+      // **A method may be named `if`.** `obj.if(x) / 2` is a call and a division, and taking its `)`
+      // for a header read the rest of the line as a regex — the widening direction, which is the one
+      // that quietly stops a literal being blanked (gate 2 on #680). A keyword is a keyword only
+      // where a member access is not: the significant character before it must not be a `.`, which
+      // covers `?.` too.
+      // **Read here, not through `significantBefore`.** Asking that function would re-enter this one
+      // — the re-entrancy flag is only raised while the MASK is being built, not while the map is
+      // being walked — and the recursion was unbounded: `RangeError: Maximum call stack size
+      // exceeded`, with `check:code-vocabulary` printing a stack trace where its summary goes. The
+      // question is one character wide, so it is answered in place.
+      let before = start - 1;
+      while (before >= 0 && /\s/.test(masked[before])) before--;
+      const isHeader = /^(?:if|while|for)$/.test(word) && masked[before] !== ".";
+      stack.push(isHeader ? word : null);
     } else if (ch === ")") {
       const word = stack.pop();
       if (word) map.set(i, word);
