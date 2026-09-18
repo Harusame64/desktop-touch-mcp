@@ -91,7 +91,11 @@ function typeAliasNamed(file, name) {
 function unionMembers(node) {
   const members = [];
   const flatten = (n) => {
-    const inner = ts.isParenthesizedTypeNode(n) ? n.type : n;
+    // `(("b" | "c"))` is legal and means what `"b" | "c"` means. Unwrapping ONE level made the
+    // rule depth-dependent, which is not what "parentheses group a type" says; a rule that holds
+    // at depth one and not at depth two is a spelling, and spellings do not terminate here.
+    let inner = n;
+    while (ts.isParenthesizedTypeNode(inner)) inner = inner.type;
     if (ts.isUnionTypeNode(inner)) {
       for (const type of inner.types) flatten(type);
       return;

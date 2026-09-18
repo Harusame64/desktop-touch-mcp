@@ -99,6 +99,34 @@ describe("a producer neither reader has seen", () => {
   });
 });
 
+describe("a real type in this tree that the scanner asserted the absence of", () => {
+  // Found by win2's third instrument — the first two could not see this PR at all, because they
+  // import the vocabulary modules and what changed is which reader those modules take. This one
+  // puts the two readers side by side over the whole tree: 10,407 questions, 146 answered
+  // differently, none of them among the seven the gates actually ask.
+  //
+  // **`DiagnosticEvent` is 34,041 characters long and `tier` sits on line 1456 of 1457.** The
+  // scanner did not merely return a short list: it pushed `has no tier field where one was
+  // expected` — a positive claim of absence, about a field that is there. A gate reading this type
+  // would have been told the axis has no values rather than told nothing.
+  it.each([
+    ["tier", ["1", "2", "3", "4"]],
+    ["origin", ["background", "per-tool", "watcher"]],
+    ["ancestryPidHit", ["recycled", "unverified"]],
+    ["consoleHostParentState", ["alive", "gone", "recycled", "unverified"]],
+    ["consoleHostParentPidHit", ["recycled", "unverified"]],
+  ])("reads DiagnosticEvent.%s, which the scanner reported as absent", (field, expected) => {
+    const source = read("src/engine/diagnostic-log.ts");
+    const problems: string[] = [];
+    expect(readInlineFieldUnion(source, "DiagnosticEvent", field as string, problems)).toEqual(expected);
+    expect(problems).toEqual([]);
+
+    const scannerProblems: string[] = [];
+    expect(oldReadInlineFieldUnion(source, "DiagnosticEvent", field as string, scannerProblems)).toEqual([]);
+    expect(scannerProblems.join("\n")).toContain(`has no ${field} field`);
+  });
+});
+
 describe("what the parser says, named rather than compared", () => {
   it("reads a member whose text carries braces, which the scanner lost in silence", () => {
     // The defect that survived five review rounds on the function this replaces: the brace count
@@ -138,6 +166,15 @@ describe("what the parser says, named rather than compared", () => {
     expect(readInlineFieldUnion(source as string, "T", "why", problems)).toEqual(expected);
     expect(problems).toEqual([]);
     expect(oldReadInlineFieldUnion(source as string, "T", "why", [])).toEqual(expected);
+  });
+
+  it("unwraps parentheses at any depth, not one level of them", () => {
+    // A rule that holds at depth one and not at depth two is a spelling, and this repository's own
+    // note is that enumerating spellings does not terminate. `(("b" | "c"))` is legal TypeScript
+    // and means what `"b" | "c"` means.
+    const problems: string[] = [];
+    expect(readUnion('export type T = "a" | (("b" | "c"));\n', "T", () => [], problems)).toEqual(["a", "b", "c"]);
+    expect(problems).toEqual([]);
   });
 
   it("says so when a FIELD's member is not a quoted literal, rather than dropping it", () => {
@@ -184,6 +221,29 @@ describe("what the parser says, named rather than compared", () => {
     expect(values).toEqual(["a", "b"]);
     expect(problems.join("\n")).toContain("did not parse");
     expect(problems.join("\n")).toContain("LOWER BOUND");
+  });
+
+  it.each([
+    ['an indexed access', 'export type T = "a" | Other["x"];\n', ["a"], ["a", "x"]],
+    ["an intersection", 'export type T = "a" | ("b" & "c");\n', ["a"], ["a", "b", "c"]],
+  ])("names %s rather than mining a value out of it", (_label, source, expected, whatTheScannerSaid) => {
+    // **The scanner did not only lose values, it invented them.** `Other["x"]` is a lookup, not a
+    // member, and `"b" & "c"` is one member, not two — both of them fed the completion grid values
+    // no caller can ever receive, which inflates a denominator as quietly as a lost member shrinks
+    // it. Pinned with the scanner's own answer beside it so the difference is a decision, not drift.
+    const problems: string[] = [];
+    expect(readUnion(source as string, "T", () => [], problems)).toEqual(expected);
+    expect(problems.join("\n")).toContain("is not a quoted literal this parser reads");
+    expect(oldReadUnion(source as string, "T", () => [], [])).toEqual(whatTheScannerSaid);
+  });
+
+  it("does not reach a field of the same name nested inside another member", () => {
+    // "Depth one" was a brace count on a masked copy; here an object type's `members` ARE its
+    // depth-one properties, so the nested `why` is not reachable by accident. The scanner captured
+    // both — this is the difference named, because the differential on this tree cannot show it.
+    const source = 'export type T = { outer: { why: "nested" }, why: "top" };\n';
+    expect(readInlineFieldUnion(source, "T", "why", [])).toEqual(["top"]);
+    expect(oldReadInlineFieldUnion(source, "T", "why", [])).toEqual(["nested", "top"]);
   });
 
   it("reports nothing for a file that parses", () => {
