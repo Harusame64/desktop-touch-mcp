@@ -324,6 +324,25 @@ export function readSwitchesFromRust(source, file = "<source>", problems = []) {
  * Returns the stripped text and a mask saying which of its characters sit inside a string, because
  * the caller needs to tell a call from a call QUOTED IN PROSE.
  */
+/**
+ * A Rust raw-string opener at `i`, or `null`: `r"`, `r#"`, `br##"`, … with any number of `#`.
+ *
+ * Counted rather than matched inside a fixed slice. Rust permits up to 255 `#`, and the count is
+ * what the closing delimiter has to match, so an opener this reader declines to recognise is a
+ * literal it then walks INTO — where a `"` is a delimiter again and every following quote is
+ * counted with the wrong parity.
+ */
+function readRustRawOpener(text, i) {
+  let k = i;
+  if (text[k] === "b") k++;
+  if (text[k] !== "r") return null;
+  k++;
+  const from = k;
+  while (text[k] === "#") k++;
+  if (text[k] !== '"') return null;
+  return { hashes: text.slice(from, k), openEnd: k + 1 };
+}
+
 function stripRustComments(source) {
   const text = source.replace(/\r\n/g, "\n");
   let out = "";
@@ -356,13 +375,23 @@ function stripRustComments(source) {
     // **And mac's own sweep had called this shape safe**, because the example it fired
     // (`r#"say "hi" here"#`) happens to hold an EVEN number of quotes, so the state came back in
     // sync by luck. A shape that was not fired looks exactly like a shape that passed.
-    const raw = /^(?:b?r)(#*)"/.exec(text.slice(i, i + 12));
+    // **The `#` run is counted, not windowed.** This was `/^(?:b?r)(#*)"/` against `slice(i, i + 12)`,
+    // which recognises ten `#` for `r` and nine for `br` — Rust permits 255. Past the window the
+    // opener stops being an opener, the literal is entered as an ordinary string, and the first
+    // unpaired `"` inside it desynchronises the scan for the rest of the file. `problems` stays
+    // empty: measured by win2 at exactly the arithmetic bound (`r` survives `#`×10 and dies at 11,
+    // `br` survives 9 and dies at 10, the prefix eating one character of the window).
+    //
+    // **A bound whose grounds are not written down is a bound nobody can check.** Where this file
+    // does keep one — the three characters for a C# verbatim prefix below — the grammar guarantees
+    // it, and the comment says so. Twelve was not that; it was a number that fit the examples.
+    const raw = readRustRawOpener(text, i);
     if (raw !== null && !/[A-Za-z0-9_]/.test(text[i - 1] ?? "")) {
-      const close = `"${raw[1]}`;
-      const openEnd = i + raw[0].length;
+      const close = `"${raw.hashes}`;
+      const openEnd = raw.openEnd;
       const at = text.indexOf(close, openEnd);
       const end = at === -1 ? text.length : at + close.length;
-      for (let j = i; j < end; j++) push(text[j], j >= openEnd - 1 && j < end - raw[1].length);
+      for (let j = i; j < end; j++) push(text[j], j >= openEnd - 1 && j < end - raw.hashes.length);
       i = end;
       continue;
     }

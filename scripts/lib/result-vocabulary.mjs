@@ -57,11 +57,8 @@ import { quoteForRegExp } from "./route-vocabulary.mjs";
 // **The one scanner, and the one depth-1 reader.** Both already exist in this tree; this file
 // had grown its own copy of the first and no copy of the second. Importing them is the fix for
 // two findings at once, because both findings are the same defect: a second reader.
-import {
-  literalSpans,
-  fieldsAtDepthOne,
-  isShorthandAtDepthOne,
-} from "./code-vocabulary.mjs";
+import { maskLiteralContents } from "./route-vocabulary.mjs";
+import { fieldsAtDepthOne, isShorthandAtDepthOne } from "./code-vocabulary.mjs";
 
 /** Strip `//` and block comments, keeping every line's index — and leaving string literals alone. */
 export function stripComments(source) {
@@ -422,56 +419,15 @@ function classEnd(text, start) {
  * reach `probeRefusal` through a variable — and it was not carried over.
  */
 /**
- * A copy of `source` where every string literal's CONTENTS are blanked, with the quotes and the
- * length kept. Spans found on the copy therefore index the original exactly.
+ * A copy of `source` where every literal's CONTENTS are blanked, with the delimiters and the length
+ * kept — **now the base module's `maskLiteralContents`, under the name this file's callers use.**
  *
- * Why length matters: the boundaries of a returned object have to be found somewhere that `}` means
- * "close a block", and inside a string it does not. Blanking the contents is the smallest thing that
- * makes punctuation mean what it says, and keeping the length lets the value still be read off the
- * real text at the same offsets.
+ * Three rounds got it here. It began as a hand walk over quotes that did not know regex literals,
+ * which silently dropped producers whenever one carried an odd number of quotes. Round 3 made it ask
+ * `literalEnd` what a literal is. #678 made the loop around that question a view instead of a fourth
+ * copy. This line is what is left: the base module owns the walk, and this name points at it.
  */
-export function maskStringContents(source) {
-  // **It asks the one scanner what a literal is.** This was its own walk over quotes — a NINTH
-  // scanner in the file whose `literalEnd` comment states the lesson out loud: a grammar rule
-  // learned in one scanner has to be learned by all of them, and the way to make that true is to
-  // have one. The walk knew strings and not regex literals, and `stripComments` leaves a regex
-  // literal in the body on purpose, so an odd number of quotes inside one desynchronised the mask.
-  //
-  // Measured on this branch BEFORE the fix, same file, four arrangements of one regex:
-  //   between two returns → codes ["CodeA"], problems []   two producers gone, in SILENCE
-  //   above all of them   → codes [],        problems 1    the same defect, loud
-  //   below all of them   → all three                      the desync had nothing left to eat
-  //   EVEN number of quotes → all three                    the state came back
-  // The loud arrangement is the only one a gate would have caught, and which arrangement occurs is
-  // a property of the file being read, not of the defect.
-  //
-  // This is #672's finding (`stripComments` learning regexes) and #677's (each language reader
-  // learning its own grammar) reproduced INSIDE the PR written after both — the shape this repo
-  // keeps producing, where the PR that adds a guard re-grows the defect inside the guard.
-  //
-  // Hand-walked, still: the regex version of this was mangled twice on the way into the file by
-  // escaping layers, and a SILENTLY WRONG mask is worse here than none. But the walk no longer
-  // decides what a literal is; it only decides what to blank.
-  // **A view of `literalSpans`, not a walk of its own.** Round 3 made this ask `literalEnd` what a
-  // literal is, which closed the defect; the loop around that question was still a fourth copy of
-  // the same loop, so it is gone too. What is left decides only what to BLANK.
-  //
-  // **The LENGTH is the contract** — spans found on the mask index the original exactly. The
-  // opening and closing characters stay, so the mask still reads as what it masks; the interior
-  // becomes blanks, and a newline inside a template literal stays a newline so line structure
-  // survives. A regex literal is blanked the same way: its `{`, `}` and quotes must not be counted
-  // by anything that balances braces on this copy.
-  let out = "";
-  let at = 0;
-  for (const [start, end] of literalSpans(source)) {
-    out += source.slice(at, start);
-    out += source[start];
-    for (let j = start + 1; j < end - 1; j++) out += source[j] === "\n" ? "\n" : " ";
-    if (end - 1 > start) out += source[end - 1];
-    at = end;
-  }
-  return out + source.slice(at);
-}
+export const maskStringContents = maskLiteralContents;
 
 /**
  * Every `return { … }` in a function body, as balanced spans.
