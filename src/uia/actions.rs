@@ -408,7 +408,7 @@ pub(crate) fn find_element_for_action(
 /// `scroll.rs`, with its scroll twins. The same defect is there all the same — a read by a name the
 /// title contains answers with the window, on both clients — and it is a read's, with the reads'
 /// callers (`wait_until`, `scope_element`, the mouse re-query), so it is changed on both clients
-/// together or not at all.
+/// together or not at all — internal #134.
 ///
 /// **One thing about the reads DID change: `given` applies here too** (gate 2, which found this
 /// paragraph claiming otherwise). An empty `automationId` used to EXCLUDE every element that has
@@ -416,8 +416,8 @@ pub(crate) fn find_element_for_action(
 /// as the PowerShell read scripts have always dropped it (`automationId ? … : "$true"`). It is a
 /// convergence, and it widens the read defect above by one arm: `scope_element(name: "Save",
 /// automationId: "")` on a window whose title contains "Save" and whose AutomationId is set now
-/// answers with the WINDOW, where before the empty id filtered the window out. Recorded on that
-/// issue rather than patched here, because patching it here would put the two clients back at odds.
+/// answers with the WINDOW, where before the empty id filtered the window out. Recorded on #134
+/// rather than patched here, because patching it here would put the two clients back at odds.
 pub(crate) fn find_element_or_window(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
