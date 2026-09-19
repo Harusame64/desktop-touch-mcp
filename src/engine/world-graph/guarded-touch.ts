@@ -89,10 +89,11 @@ export interface BlockingElementInfo {
   role: string;
   automationId?: string;
   /**
-   * internal #126 — the blocking dialog's window handle, set when the blocker is a separate dialog
-   * window (`role: "dialog"`). A title can be empty or shared ("Error"), and `focus_window` matches
-   * titles by substring; the handle reaches that window exactly, via `desktop_discover`'s
-   * `target.hwnd`.
+   * internal #126 — the blocking window's handle. Set when the OS named the dialog (`role:
+   * "dialog"`), and when the discover snapshot's blocker — always a UIA `Window` since #686 —
+   * recorded a window handle of its own. A title can be empty or shared ("Error"), and
+   * `focus_window` matches titles by substring; the handle reaches that window exactly, via
+   * `desktop_discover`'s `target.hwnd`.
    */
   hwnd?: string;
 }
@@ -382,7 +383,16 @@ const LEASE_TO_TOUCH_REASON: Record<string, TouchFailReason> = {
 function toBlockingElementInfo(e: UiEntity): BlockingElementInfo {
   const name = e.locator?.uia?.name || e.label || e.role || "modal";
   const automationId = e.locator?.uia?.automationId;
-  return automationId ? { name, role: e.role, automationId } : { name, role: e.role };
+  // The window's own handle, so the advice can send the caller to it by handle (internal #126): the
+  // snapshot's blocker is a window, and "click_element(name=its title)" does not dismiss a window.
+  const own = e.locator?.uia?.nativeWindowHandle;
+  const hwnd = own !== undefined && /^\d+$/.test(own) && BigInt(own) !== 0n ? own : undefined;
+  return {
+    name,
+    role: e.role,
+    ...(automationId ? { automationId } : {}),
+    ...(hwnd !== undefined ? { hwnd } : {}),
+  };
 }
 
 // ── Diff helpers ──────────────────────────────────────────────────────────────

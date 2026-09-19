@@ -249,6 +249,41 @@ describe("GuardedTouchLoop — pre-touch checks", () => {
     }
   });
 
+  // internal #126 — the snapshot's blocker is a UIA `Window` (#686), reached only when the OS could
+  // not say (#687). Its own handle is what the advice sends the caller to; a title does not dismiss it.
+  it.each([
+    ["a decimal handle", "1510424", "1510424"],
+    ["a zero handle", "0", undefined],
+    ["a handle that is not a number", "Editor", undefined],
+    ["no handle", undefined, undefined],
+  ])("blockingElement carries the blocking window's own handle — %s", async (_label, own, expected) => {
+    const target = entity("e1", GEN);
+    const dialog = entity("m1", GEN, {
+      role: "unknown",
+      label: "Delete item?",
+      sources: ["uia"],
+      controlType: "Window",
+      locator: { uia: { name: "Delete item?", ...(own !== undefined && { nativeWindowHandle: own }) } },
+      // The window it was READ from — the blocked main window, as the UIA lane stamps it. Never the
+      // blocker's handle: reading this instead sent the caller back to the window it was refused on
+      // (gate 2).
+      origin: { kind: "window", id: "Editor", hwnd: "1000" },
+    });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(target, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [target, dialog],
+      isModalBlocking:     () => true,
+      findBlockingModal:   () => dialog,
+    }));
+    const result = await loop.touch({ lease });
+    expect(result).toMatchObject({ ok: false, reason: "modal_blocking" });
+    if (!result.ok) {
+      // toStrictEqual: an absent handle is absent, not a key holding undefined.
+      expect(result.blockingElement).toStrictEqual({ name: "Delete item?", role: "unknown", ...(expected !== undefined && { hwnd: expected }) });
+    }
+  });
+
   it("blockingElement falls back to locator.uia.name → role → 'modal' when label is missing", async () => {
     const target = entity("e1", GEN);
     const noLabel = entity("m1", GEN, {

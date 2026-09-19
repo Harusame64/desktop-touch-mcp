@@ -215,8 +215,8 @@ export interface SessionCreateOpts {
   isModalBlocking?: (entity: UiEntity) => boolean;
   /**
    * Override blocking-modal identity lookup. The returned entity's identity is surfaced as
-   * `blockingElement` on the modal_blocking response so the LLM can dismiss it via
-   * `click_element(name=blockingElement.name)`. Issue #63.
+   * `blockingElement` on the modal_blocking response — with the blocker's own window handle when it
+   * recorded one, so the caller can reach it by `desktop_discover target.hwnd` (internal #126). Issue #63.
    *
    * When overridden alone (without `isModalBlocking`), the predicate is derived as
    * `findBlockingModal(entity) !== null` so the two stay consistent.
