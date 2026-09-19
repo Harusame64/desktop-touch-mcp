@@ -524,6 +524,8 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
       KeyLockerConsoleLimit: "mixed line split by hand",
       KeyLockerWtUnavailable: "mixed line split by hand",
       KeyLockerNoSuchBinding: "mixed line split by hand",
+      AimRouteFailed:
+        "internal #126: the title-only road now refuses a disabled element with this code too, so two lines that said 'named its window by handle' were made road-neutral",
     };
 
     const cfg = cfgFor("v2_default");
