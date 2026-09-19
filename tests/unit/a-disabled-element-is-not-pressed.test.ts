@@ -6,8 +6,10 @@
  * fixture recorded no click, and `desktop_act` answered `ok:true` with `motion:"any_change"`. That is
  * the forbidden road of 2026-09-11: a success reported for an act that did not happen.
  *
- * The refusal is taken under the same condition as ADR-036 item 16's "not found": the native client
- * read the entity AND answered the click, so "disabled" is about the element this act was for.
+ * "Disabled" is what the route answered for the element it MATCHED, and both clients match by a
+ * name substring. So the refusal needs item 16's condition (the native client read the entity and
+ * answered the click) AND evidence that the answer is about this element: an AutomationId on the
+ * entity, or the OS saying its own window, or the window it was captured in, does not take input.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -20,10 +22,10 @@ import type { ExecutorDeps } from "../../src/tools/desktop-executor.js";
 
 const titleOnly: Aim = { kind: "aim", title: "AIM-FIXTURE" };
 
-function uiaEntity(via: "native" | "powershell" = "native"): UiEntity {
+function uiaEntity(via: "native" | "powershell" = "native", over: { automationId?: string; nativeWindowHandle?: string } = { automationId: "TARGET" }): UiEntity {
   return {
     entityId: "u1", role: "button", label: "TARGET", confidence: 0.9, sources: ["uia"],
-    locator: { uia: { name: "TARGET", automationId: "TARGET", via } },
+    locator: { uia: { name: "TARGET", via, ...over } },
     affordances: [{ verb: "invoke", executors: ["uia", "mouse"], confidence: 0.9, preconditions: [], postconditions: [] }],
     generation: "gen-1", evidenceDigest: "d", rect: { x: 100, y: 200, width: 80, height: 30 },
   };
@@ -79,8 +81,44 @@ describe("a title-only click on an element UIA reports disabled", () => {
     // The engine's words, never the backend's text.
     expect(detail).not.toContain("Element is disabled");
     const refusal = rows().find((r) => r.route === "refusal");
-    expect(refusal).toMatchObject({ rung: "uia_downgrade", refused: "aim_route_failed", routeFailure: "element_disabled" });
+    expect(refusal).toMatchObject({ rung: "uia_downgrade", refused: "aim_route_failed", routeFailure: "element_disabled", evidence: "automation_id" });
     expect(rows().some((r) => r.route === "mouse")).toBe(false);
+  });
+
+  it("keeps the downgrade with NO evidence the answer is about this element — no AutomationId, no window state", async () => {
+    // Gate 2 on this change: the native route matches by a name substring too, first in tree order,
+    // so a disabled "TARGET list" earlier in the tree answers for an enabled "TARGET". Believing
+    // "disabled" there refused a press that would have worked.
+    const d = deps({ uiaClick: failingWith("Element is disabled"), windowTakesInput: () => undefined });
+    await act(d, uiaEntity("native", {}));
+    expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
+  });
+
+  it("refuses without an AutomationId when the element's OWN window does not take input", async () => {
+    const windowTakesInput = vi.fn((h: bigint) => (h === 900n ? false : true));
+    const d = deps({ uiaClick: failingWith("Element is disabled"), windowTakesInput });
+    const thrown = await act(d, uiaEntity("native", { nativeWindowHandle: "900" }));
+    expect((thrown as Error).name).toBe("AimedRouteFailedError");
+    expect(d.mouseClick).not.toHaveBeenCalled();
+    expect(windowTakesInput).toHaveBeenCalledWith(900n);
+    expect(rows().find((r) => r.route === "refusal")).toMatchObject({ evidence: "own_window_disabled" });
+  });
+
+  it("refuses without an AutomationId when the window the entity was captured in does not take input (arm 3's shape)", async () => {
+    const d = deps({ uiaClick: failingWith("Element is disabled"), windowTakesInput: (h: bigint) => (h === 500n ? false : true) });
+    const e = { ...uiaEntity("native", {}), origin: { kind: "window" as const, id: "AIM-FIXTURE", hwnd: "500" } };
+    const thrown = await act(d, e);
+    expect((thrown as Error).name).toBe("AimedRouteFailedError");
+    expect(d.mouseClick).not.toHaveBeenCalled();
+    expect(rows().find((r) => r.route === "refusal")).toMatchObject({ evidence: "window_disabled" });
+  });
+
+  it("keeps the downgrade when the OS could not be asked about the captured window — not asked is not evidence", async () => {
+    // A mutation that read `undefined` as "does not take input" survived without this cell.
+    const d = deps({ uiaClick: failingWith("Element is disabled"), windowTakesInput: () => undefined });
+    const e = { ...uiaEntity("native", {}), origin: { kind: "window" as const, id: "AIM-FIXTURE", hwnd: "500" } };
+    await act(d, e);
+    expect(d.mouseClick).toHaveBeenCalled();
   });
 
   it("keeps the downgrade when the PowerShell client answered — the element it matched need not be this one", async () => {

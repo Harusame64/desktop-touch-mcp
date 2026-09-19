@@ -218,6 +218,12 @@ export interface ExecutorDeps {
    */
   aimIdentity?(hwnd: bigint): Promise<WindowIdentity | undefined> | WindowIdentity | undefined;
   /**
+   * internal #126 — does this window take input right now: false when it, or the top-level window
+   * it sits in, is disabled. `undefined` means the question could not be answered, and that is not
+   * evidence of anything. Optional; absent means not asked.
+   */
+  windowTakesInput?(hwnd: bigint): Promise<boolean | undefined> | boolean | undefined;
+  /**
    * ADR-036 item 6 — who would take a press at this point, from the aim's point of view.
    *
    * `"other"` blocks the press: the window on top would have taken it. `"owned"` allows it even
@@ -1785,22 +1791,35 @@ export function createDesktopExecutor(
         // `Enabled=false`, UIA answered "Element is disabled", `motion:"any_change"` on a press that
         // changed nothing the fixture recorded). That is the forbidden road of 2026-09-11 — a success
         // reported for an act that did not happen — and the user's rule refuses when the grounds are
-        // clear. They are clear under the same condition as "not found" above: the native client
-        // read the entity AND answered the click, so "disabled" is about the element this act was
-        // for, not whatever a looser match landed on (`uia-route-failure.ts`, "the element the route
-        // matched"). The refusal is `aim_route_failed`, whose published detail already names
-        // "disabled", with nothing pressed.
+        // clear.
+        //
+        // **"Disabled" alone is not that ground.** The route answers for the element it MATCHED, and
+        // both clients match by a case-insensitive name substring, first in tree order, within a
+        // window matched by a title substring (`uia-route-failure.ts`; the native road too — gate 2
+        // on this change): a disabled "Save All" earlier in the tree answers for an enabled "Save".
+        // So the answer is believed only with evidence that it is about THIS element: the read and
+        // the click were both native (item 16's condition), AND either the entity carries an
+        // AutomationId (which narrows the match), or the OS says the element's own window, or the
+        // window the entity was captured in, does not take input. Otherwise the downgrade stands.
         if (routeFailure === "element_disabled" && readVia === "native" && clickVia === "native") {
-          probeRefusal("uia_downgrade", "aim_route_failed", undefined, entity, { routeFailure: "element_disabled", readVia, clickVia });
-          throw new AimedRouteFailedError(
-            `UIA reports "${entity.label ?? entity.entityId}" disabled on the title-only road: ` +
-            `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing a control that does not take input.`,
-            undefined,
-            { cause: uiaErr },
-            `The UIA route found "${quotedLabel(entity)}" in the window this act named by title, and ` +
-            `${describeUiaRouteFailure("element_disabled")}; the act was not finished as a press, because a ` +
-            `disabled control does not take one.`,
-          );
+          const own = entity.locator?.uia?.nativeWindowHandle;
+          const ownHwnd = own !== undefined && /^\d+$/.test(own) && own !== "0" ? BigInt(own) : undefined;
+          const narrowed = (entity.locator?.uia?.automationId ?? "") !== "";
+          const ownRefuses = ownHwnd !== undefined && (await d.windowTakesInput?.(ownHwnd)) === false;
+          const windowRefuses = !ownRefuses && coordHwnd !== undefined && (await d.windowTakesInput?.(coordHwnd)) === false;
+          const evidence = ownRefuses ? "own_window_disabled" : windowRefuses ? "window_disabled" : narrowed ? "automation_id" : null;
+          if (evidence !== null) {
+            probeRefusal("uia_downgrade", "aim_route_failed", undefined, entity, { routeFailure: "element_disabled", readVia, clickVia, evidence });
+            throw new AimedRouteFailedError(
+              `UIA reports the element matched for "${entity.label ?? entity.entityId}" disabled on the title-only road ` +
+              `(${evidence}): ${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing a control that does not take input.`,
+              undefined,
+              { cause: uiaErr },
+              `The UIA route for "${quotedLabel(entity)}" answered that ${describeUiaRouteFailure("element_disabled")}` +
+              (evidence === "automation_id" ? "" : ", and the window it is in does not take input") +
+              `; the act was not finished as a press.`,
+            );
+          }
         }
         // UIA click failed (stale tree, no pattern, an answer not recognised, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
@@ -2332,6 +2351,14 @@ function getSharedRealDeps(): ExecutorDeps {
         className: getWindowClassName,
         title: getWindowTitleW,
       });
+    },
+
+    async windowTakesInput(hwnd) {
+      const { getWindowRoot, isWindowEnabled } = await import("../engine/win32.js");
+      const root = getWindowRoot(hwnd);
+      if (root === null) return undefined;
+      // `isWindowEnabled` answers true when it cannot ask, so a false here was really read.
+      return isWindowEnabled(hwnd) && isWindowEnabled(root);
     },
 
     async aimIsGone(hwnd) {
