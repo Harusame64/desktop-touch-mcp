@@ -237,12 +237,17 @@ describe("the UIA value road, on success", () => {
   });
 
   it("answers `nothing` for an empty locator, which is not the same as the roads agreeing about one", async () => {
-    // THE ROADS DO NOT AGREE, and the first version of this comment said they did (gate 2,
-    // 2026-09-16). On the NAME they do — PowerShell writes `$true` (`uia-bridge.ts::makeSetValueScript`'s `nameFilter`) and the
-    // native walk matches `contains("")` (`src/uia/scroll.rs:858`). On the AUTOMATION ID they do
-    // not: PowerShell drops the filter (the same script's `idFilter`) while the native road compares
-    // exactly (`id == target`, `src/uia/scroll.rs:867`), so an empty id EXCLUDES every element that
-    // has one.
+    // THE ROADS DID NOT AGREE, and the first version of this comment said they did (gate 2,
+    // 2026-09-16). On the NAME they always have — PowerShell writes `$true`
+    // (`uia-bridge.ts::makeSetValueScript`'s `nameFilter`) and the native walk matched `contains("")`.
+    // On the AUTOMATION ID they did not: PowerShell drops the filter (the same script's `idFilter`)
+    // while the native road compared exactly, so an empty id EXCLUDED every element that has one.
+    // internal #133 made an empty criterion mean "not given" on the native side too (`given`,
+    // `src/uia/actions.rs`), and a locator with nothing left is answered "not found" there — so THIS
+    // ENTITY NO LONGER REACHES AN ELEMENT on a real machine: `uiaSetValue` would throw, and the row
+    // is written after it returns (`desktop-executor.ts`), so there would be no row at all. What
+    // keeps this cell standing is the MOCK, and what it pins is how the row's VALUES are computed —
+    // `uiaAddressAxes` runs before the call. What the road does with the locator is #133's.
     //
     // THE CELL STILL ASSERTS `"nothing"`, and on purpose: an empty id is not something the call was
     // addressed BY, and answering `automation_id` would launder a road defect into a claim about
