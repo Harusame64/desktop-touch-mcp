@@ -171,7 +171,7 @@ describe("the modal check writes an act.modal row for what it asked", () => {
   it("says it asked NOTHING when neither the entity nor the aim has a handle", async () => {
     // The user's call, 2026-09-19: recorded in the row, not in the response. A check that asked
     // nothing answered exactly like one that found the window clear (win2).
-    expect(await find({ origin: { kind: "window", id: "AIM-FIXTURE" } }, titleOnly)).toBeNull();
+    expect(await find({ origin: { kind: "window", id: "AIM-FIXTURE" } }, titleOnly)).toEqual({ kind: "cannot_say" });
     expect(modalRow()).toMatchObject({ asked: false, askedFrom: null, handle: null, answer: "no_handle" });
   });
 

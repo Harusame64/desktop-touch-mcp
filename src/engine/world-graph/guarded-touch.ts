@@ -3,6 +3,7 @@ import type { LeaseStore } from "./lease-store.js";
 import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
 import type { Rect, UiEntityCandidate } from "../vision-gpu/types.js";
 import { classifyModal } from "./session-registry.js";
+import { probeAim } from "../aim-probe.js";
 import { resolveCandidates } from "./resolver.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
@@ -95,6 +96,26 @@ export interface BlockingElementInfo {
    */
   hwnd?: string;
 }
+
+/**
+ * internal #126 — what the OS said about the entity's own window at the moment of the act.
+ *
+ * - `blocked`: the window is disabled and a live window of its owner family (or its thread) is the
+ *   dialog doing it. A clear ground: the act is refused.
+ * - `takes_input`: the window the element ITSELF is in — its own handle's root — is enabled. **A
+ *   clear answer the other way**, and it outranks the snapshot's guess: a `Window` in the discover
+ *   snapshot rang on a modeless owned form, an MDI child, a form embedded in the window (internal
+ *   `62b4590`) and on the very dialog whose own button was being pressed (gate 2 on #686), while the
+ *   OS told all of them apart from the real modal, whose owner it disables.
+ * - `cannot_say`: no handle, no root, the aim's window changed owner, disabled with nothing live to
+ *   name, unreadable — or enabled, but asked about by a handle that is not the element's own (the
+ *   window the read was made from can be the owner of the window the element is in). The snapshot
+ *   check runs as before.
+ */
+export type WindowBlockAnswer =
+  | { kind: "blocked"; blocker: BlockingElementInfo }
+  | { kind: "takes_input" }
+  | { kind: "cannot_say" };
 
 /**
  * ADR-024 Seed-2 (S1 contract lock) — a lease-less entity preview carried inside
@@ -288,15 +309,15 @@ export interface TouchEnvironment {
   findBlockingModal?(entity: UiEntity): UiEntity | null;
   /**
    * internal #126 — the OS's answer, read at the moment of the act: is the entity's own window
-   * disabled by a dialog it owns? Returns that dialog, or null when there is no such ground.
+   * disabled by a dialog it owns? See {@link WindowBlockAnswer}.
    *
    * `isModalBlocking` looks at the `desktop_discover` snapshot, which is scoped to the target
    * window — a `ShowDialog` / `MessageBox` in ANOTHER top-level window is not in it, whenever
    * discover runs, and the act that runs into it degraded to a press the OS swallowed and answered
    * `ok:true` (win2, 2026-09-18). This asks the window instead of the snapshot. Optional: absent
-   * means "not asked", and the snapshot check below is unchanged either way.
+   * means "not asked", which the loop treats as `cannot_say`.
    */
-  findBlockingWindow?(entity: UiEntity): BlockingElementInfo | null;
+  findBlockingWindow?(entity: UiEntity): WindowBlockAnswer;
   /**
    * ADR-029 Phase 1: check whether the entity is currently reachable on screen.
    * Returns `null` when the touch may proceed, otherwise the block reason.
@@ -554,11 +575,22 @@ export class GuardedTouchLoop {
     // The OS first: a window disabled by a dialog it owns is a clear ground to refuse — the user's
     // rule (2026-09-11) is "refuse, but only when the grounds are clear" — and it is the one modal
     // the snapshot cannot contain.
-    const blockingWindow = this.env.findBlockingWindow?.(entity) ?? null;
-    if (blockingWindow !== null) {
-      return { ok: false, reason: "modal_blocking", diff: [], blockingElement: blockingWindow };
+    const windowAnswer = this.env.findBlockingWindow?.(entity) ?? { kind: "cannot_say" };
+    if (windowAnswer.kind === "blocked") {
+      return { ok: false, reason: "modal_blocking", diff: [], blockingElement: windowAnswer.blocker };
     }
-    if (this.env.isModalBlocking(entity)) {
+    // …and when the OS says the window takes input, the snapshot's `Window` is not a clear ground:
+    // it cannot tell a modal from a modeless owned form, an MDI child or an embedded form, and the
+    // OS can (internal `62b4590`). What this gives up is a modal that does not disable its owner —
+    // Tk's `grab_set` is one (internal `af5ed7d`); the act is not refused, and with the aim probe on
+    // the row says what the snapshot saw, so a press that then lands nowhere can be traced to it.
+    if (windowAnswer.kind === "takes_input") {
+      const setAside = this.env.findBlockingModal?.(entity) ?? null;
+      if (setAside !== null) {
+        const seen = toBlockingElementInfo(setAside);
+        probeAim("act.modal", { entityId: entity.entityId, answer: "snapshot_set_aside", because: "window_enabled", snapshotBlocker: seen.name });
+      }
+    } else if (this.env.isModalBlocking(entity)) {
       const blocker = this.env.findBlockingModal?.(entity) ?? null;
       return {
         ok: false,

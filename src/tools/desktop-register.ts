@@ -57,7 +57,7 @@ import {
   EntityNotFoundRefusalError,
   KeyboardTargetUnsafeRefusalError,
 } from "../errors/typed-errors.js";
-import type { BlockingElementInfo, TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
+import type { WindowBlockAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -283,6 +283,12 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
  * / `MessageBox` / a common dialog does, and the one modal the `desktop_discover` snapshot, scoped
  * to the main window, cannot contain.
  *
+ * Three answers (`WindowBlockAnswer`): `blocked` with that dialog; `takes_input` when the element's
+ * OWN window (its own handle's root) is enabled — which also sets the snapshot's guess aside;
+ * `cannot_say` for everything else, including an enabled window asked about by the entity's recorded
+ * or the aim's handle, where the snapshot check still runs. Each writes one `act.modal` row naming
+ * what it found.
+ *
  * **The family is the top of the `GW_OWNER` chain's**, so a dialog opened by a dialog is seen: the first version
  * asked the entity's window alone (`preferActivePopupIfBlocked`), which answers only one level and
  * demands a title, and a nested or untitled dialog read as "not blocked" (gate 2, round 1).
@@ -320,7 +326,7 @@ export function productionFindBlockingWindow(
   entity: UiEntity,
   aim: Aim | undefined,
   deps: BlockingWindowDeps = {},
-): BlockingElementInfo | null {
+): WindowBlockAnswer {
   const recorded = entity.origin?.hwnd;
   // The element's OWN window first, when it has one: UIA can show a window owned by the main
   // window as the main window's child, so a dialog's own "OK", discovered from the main window,
@@ -336,29 +342,36 @@ export function productionFindBlockingWindow(
   // One `act.modal` row per check, whatever it answers — including that it could not ask.
   const row = (answer: string, extra: Record<string, unknown> = {}): void =>
     probeAim("act.modal", { entityId: entity.entityId, asked: handle !== undefined, askedFrom, handle: handle?.toString() ?? null, answer, ...extra });
+  const cannotSay: WindowBlockAnswer = { kind: "cannot_say" };
   if (handle === undefined) {
     row("no_handle");
-    return null;
+    return cannotSay;
   }
   try {
     const rootOf = deps.root ?? getWindowRoot;
     const root = rootOf(handle);
     if (root === null) {
       row("no_root");
-      return null;
+      return cannotSay;
     }
     // The aim's window, still the aim's owner? Checked whenever the window asked IS the aim's.
     if (aim?.hwnd !== undefined && rootOf(aim.hwnd) === root) {
       const now = (deps.identityNow ?? productionWindowIdentity)(aim.hwnd);
       if (compareAimIdentity(aim, now) === "changed") {
         row("aim_identity_changed", { root: root.toString() });
-        return null;
+        return cannotSay;
       }
     }
     const isEnabled = deps.isEnabled ?? isWindowEnabled;
     if (isEnabled(root)) {
-      row("window_enabled", { root: root.toString() });
-      return null;
+      // Only an answer about the element's OWN window outranks the snapshot. The entity's recorded
+      // window, or the aim's, is the window the read was made from: UIA lists an owned window's
+      // controls under its owner, so a handle-less control in a modeless window W that has opened
+      // its own MessageBox is asked about the enabled owner, and setting the snapshot's guess aside
+      // on that answer set aside the very MessageBox (gate 2; the parent refused it).
+      const outranksSnapshot = askedFrom === "element";
+      row("window_enabled", { root: root.toString(), outranksSnapshot });
+      return outranksSnapshot ? { kind: "takes_input" } : cannotSay;
     }
     // The top of the OWNER chain, walked by `GW_OWNER`. Not `GA_ROOTOWNER`: that walks `GetParent`,
     // which returns the owner only for a popup-styled window, and a WinForms Form dialog is an
@@ -410,18 +423,18 @@ export function productionFindBlockingWindow(
     // ground to name — the snapshot check still runs.
     if (popup === null) {
       row("disabled_no_live_window", { root: root.toString() });
-      return null;
+      return cannotSay;
     }
     const title = (deps.title ?? getWindowTitleW)(popup);
     // Untitled is still a dialog: the ground is the disabled window, not the name. The handle is
     // what a caller can use to reach it; a class name stands in for the missing title.
     const name = title !== "" ? title : (deps.className ?? getWindowClassName)(popup) || "dialog";
     row("blocked", { root: root.toString(), blocker: String(popup) });
-    return { name, role: "dialog", hwnd: String(popup) };
+    return { kind: "blocked", blocker: { name, role: "dialog", hwnd: String(popup) } };
   } catch {
     // Unreadable is not a ground: the snapshot check still runs.
     row("unreadable");
-    return null;
+    return cannotSay;
   }
 }
 
@@ -694,8 +707,8 @@ export function getDesktopFacade(): DesktopFacade {
       // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
       // check. Same enumWindowsInZOrder source as getFocusedEntityId above.
       getFocusedHwnd: productionGetFocusedHwnd,
-      // G1-A: modal guard — session-aware default in session-registry.ts (a UIA `Window` in the snapshot).
-      // No override needed here; the session-registry default is already production-grade.
+      // G1-A: modal guard — the OS answer above first; the session-aware snapshot default in
+      // session-registry.ts (a UIA `Window` in the snapshot) runs unless that answer set it aside.
       // Phase 4 (Codex PR #41 round 5 P1): production windows enumerator —
       // wraps enumWindowsInZOrder + processName resolution. The facade catches
       // any throw and returns [] in that case, so this is allowed to fail.
