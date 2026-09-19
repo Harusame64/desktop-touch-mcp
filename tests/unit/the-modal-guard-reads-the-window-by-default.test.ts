@@ -67,7 +67,7 @@ describe("the production defaults", () => {
     // On the main window's thread the thread fallback would find the dialog even with a broken
     // owner walk, so the dialog is put on another thread: this cell answers for the walk alone.
     desktop.get(777n)!.thread = 2;
-    expect(productionFindBlockingWindow(entityIn("500"), undefined)?.hwnd).toBe("777");
+    expect(productionFindBlockingWindow(entityIn("500"), undefined)).toMatchObject({ kind: "blocked", blocker: { hwnd: "777" } });
   });
 
   it("walk the whole owner chain, not a fixed two steps", () => {
@@ -78,7 +78,7 @@ describe("the production defaults", () => {
       [600n, { owner: 500n, enabled: false, title: "A", thread: 1 }],
       [500n, { owner: null, enabled: false, title: "MAIN", thread: 1 }],
     ]);
-    expect(productionFindBlockingWindow(entityIn("500"), undefined)?.hwnd).toBe("800");
+    expect(productionFindBlockingWindow(entityIn("500"), undefined)).toMatchObject({ kind: "blocked", blocker: { hwnd: "800" } });
   });
 
   it("list every top-level window, untitled ones included", () => {
@@ -86,7 +86,7 @@ describe("the production defaults", () => {
       [777n, { owner: 500n, enabled: true, title: "", thread: 2 }],
       [500n, { owner: null, enabled: false, title: "MAIN", thread: 1 }],
     ]);
-    expect(productionFindBlockingWindow(entityIn("500"), undefined)?.hwnd).toBe("777");
+    expect(productionFindBlockingWindow(entityIn("500"), undefined)).toMatchObject({ kind: "blocked", blocker: { hwnd: "777" } });
   });
 
   it("ask the thread when the modal owns nothing and nothing owns it", () => {
@@ -94,6 +94,6 @@ describe("the production defaults", () => {
       [880n, { owner: null, enabled: true, title: "Task modal", thread: 1 }],
       [500n, { owner: null, enabled: false, title: "MAIN", thread: 1 }],
     ]);
-    expect(productionFindBlockingWindow(entityIn("500"), undefined)?.hwnd).toBe("880");
+    expect(productionFindBlockingWindow(entityIn("500"), undefined)).toMatchObject({ kind: "blocked", blocker: { hwnd: "880" } });
   });
 });

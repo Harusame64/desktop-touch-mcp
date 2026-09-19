@@ -64,7 +64,9 @@ export type AimSeam =
    * internal #126 — act time, before any backend: whether the modal check could ask the OS, which
    * handle it asked about (the element's own window, the entity's recorded one, or the aim's), and
    * what it found. "Could not ask" is written, not left to be inferred: a check that asked nothing
-   * answered exactly like one that found the window clear (win2, 2026-09-19).
+   * answered exactly like one that found the window clear (win2, 2026-09-19). When that answer set
+   * the snapshot's guess aside, a second row says so (`answer:"snapshot_set_aside"`, with the
+   * snapshot's blocker) — it asks nothing itself, so it carries no handle.
    */
   | "act.modal"
   /**

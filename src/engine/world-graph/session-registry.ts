@@ -6,7 +6,7 @@ import { LeaseStore } from "./lease-store.js";
 import {
   GuardedTouchLoop,
   type TouchAction,
-  type BlockingElementInfo,
+  type WindowBlockAnswer,
   type TouchEnvironment,
   type ViewportVerdict,
 } from "./guarded-touch.js";
@@ -202,7 +202,8 @@ export interface SessionCreateOpts {
   executorFactory?: (aim: Aim | TargetSpec | undefined) => ExecutorFn;
   /**
    * Override modal detection. Default: session-aware check — blocks if any OTHER entity
-   * in the current snapshot is a UIA `Window` (an owned dialog; `classifyModal`).
+   * in the current snapshot is a UIA `Window` (an owned dialog; `classifyModal`). Consulted only
+   * when `findBlockingWindow` is absent or did not answer `takes_input`.
    *
    * Issue #63: predicate ↔ blockingElement consistency.
    *   When overridden alone (without `findBlockingModal`), the default snapshot finder
@@ -230,7 +231,7 @@ export interface SessionCreateOpts {
    * internal #126 — ask the OS whether the entity's window is disabled by a dialog it owns.
    * Absent means not asked (tests, non-Windows); production wires `productionFindBlockingWindow`.
    */
-  findBlockingWindow?: (entity: UiEntity, aim: Aim | undefined) => BlockingElementInfo | null;
+  findBlockingWindow?: (entity: UiEntity, aim: Aim | undefined) => WindowBlockAnswer;
   /**
    * Return a focus fingerprint for the currently focused element (or undefined if unknown).
    * Used for focus_shifted detection: pre- vs post-touch fingerprint is compared.
@@ -358,7 +359,8 @@ export class SessionRegistry {
     const env: TouchEnvironment = {
       resolveLiveEntities: () => s.entities,
       currentGeneration:   () => s.generation,
-      // G1-A: Session-aware modal guard.
+      // G1-A: Session-aware modal guard — consulted only when the OS's answer (`findBlockingWindow`)
+      // did not settle it (guarded-touch.ts).
       // Default: block if any OTHER entity in the live snapshot is a UIA `Window` — an owned
       // dialog appears in its owner's tree as one (`classifyModal`, internal #126). Overlays drawn
       // inside a window do not reach the UIA tree at all (internal `89797ae`).
