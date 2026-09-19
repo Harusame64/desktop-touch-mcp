@@ -694,7 +694,7 @@ export function getDesktopFacade(): DesktopFacade {
       // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
       // check. Same enumWindowsInZOrder source as getFocusedEntityId above.
       getFocusedHwnd: productionGetFocusedHwnd,
-      // G1-A: modal guard — session-aware default in session-registry.ts (UIA unknown-role).
+      // G1-A: modal guard — session-aware default in session-registry.ts (a UIA `Window` in the snapshot).
       // No override needed here; the session-registry default is already production-grade.
       // Phase 4 (Codex PR #41 round 5 P1): production windows enumerator —
       // wraps enumWindowsInZOrder + processName resolution. The facade catches

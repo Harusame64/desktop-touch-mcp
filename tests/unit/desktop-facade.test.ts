@@ -311,15 +311,17 @@ describe("DesktopFacade — desktop_touch", () => {
 
 describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
   // The session-aware modal default (in session-registry.ts) checks if any OTHER entity
-  // in the session's live snapshot has sources:["uia"] and role:"unknown".
+  // in the session's live snapshot has sources:["uia"] and controlType "Window" (internal #126;
+  // it was role:"unknown" before, which is every control outside sixteen types).
   // No isModalBlocking override needed — the default is production-grade.
 
-  it("modal_blocking when a UIA 'unknown' entity co-exists with the touch target", async () => {
+  it("modal_blocking when a UIA Window co-exists with the touch target", async () => {
     const modalCand: UiEntityCandidate = {
       source: "uia",
       target: { kind: "window", id: "win-1" },
       label: "Dialog",
-      role: "unknown",   // ← triggers modal guard
+      role: "unknown",
+      controlType: "Window",   // ← triggers modal guard
       actionability: [],
       confidence: 0.95,
       observedAtMs: 1000,
@@ -349,6 +351,29 @@ describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
     }
   });
 
+  it("no modal_blocking from a NumericUpDown's Spinner — role:'unknown', not a Window (internal #126)", async () => {
+    // win2 measured this exact refusal on a window with no modal at all: `{ok:false,
+    // reason:"modal_blocking", blockingElement:{name:"Spinner",role:"unknown"}}` (`8954558`).
+    const spinner: UiEntityCandidate = {
+      source: "uia",
+      target: { kind: "window", id: "win-1" },
+      label: "Spinner",
+      role: "unknown",
+      controlType: "Spinner",
+      actionability: [],
+      confidence: 0.9,
+      observedAtMs: 1000,
+      provisional: false,
+      digest: "digest-spinner",
+    };
+    const facade = new DesktopFacade(() => [cand("Start Match", "visual_gpu"), spinner], { executorFn: async () => "mouse" });
+    const view = await facade.see({ target: TARGET_GAME });
+    const btnLease = view.entities.find((e) => e.label === "Start Match")?.lease;
+    expect(btnLease).toBeDefined();
+    const result = await facade.touch({ lease: btnLease! });
+    expect(result.ok).toBe(true);
+  });
+
   it("no modal_blocking when all live entities have non-unknown roles", async () => {
     // All entities are regular buttons — no modal overlay.
     const facade = new DesktopFacade(gameProvider, { executorFn: async () => "mouse" });
@@ -365,6 +390,7 @@ describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
       target: { kind: "window", id: "win-1" },
       label: "OK",
       role: "unknown",
+      controlType: "Window",
       actionability: ["invoke"],
       confidence: 0.9,
       observedAtMs: 1000,
@@ -407,6 +433,7 @@ describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
       target: { kind: "window", id: "win-1" },
       label: "Unrelated Dialog",
       role: "unknown",
+      controlType: "Window",
       actionability: [],
       confidence: 0.9,
       observedAtMs: 1000,
