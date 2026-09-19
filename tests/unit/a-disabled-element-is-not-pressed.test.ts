@@ -8,8 +8,8 @@
  *
  * "Disabled" is what the route answered for the element it MATCHED, and both clients match by a
  * name substring. So the refusal needs item 16's condition (the native client read the entity and
- * answered the click) AND evidence that the answer is about this element: an AutomationId on the
- * entity, or the OS saying its own window, or the window it was captured in, does not take input.
+ * answered the click) AND evidence that the answer is about this element: the OS saying its own
+ * window, or the window it was captured in, does not take input. An AutomationId is not unique.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -71,8 +71,8 @@ async function act(d: ExecutorDeps, e: UiEntity = uiaEntity()): Promise<unknown>
 
 describe("a title-only click on an element UIA reports disabled", () => {
   it("is refused as aim_route_failed, and nothing is pressed", async () => {
-    const d = deps({ uiaClick: failingWith("Element is disabled") });
-    const thrown = await act(d);
+    const d = deps({ uiaClick: failingWith("Element is disabled"), windowTakesInput: (h: bigint) => h !== 900n });
+    const thrown = await act(d, uiaEntity("native", { automationId: "TARGET", nativeWindowHandle: "900" }));
     expect((thrown as Error).name).toBe("AimedRouteFailedError");
     expect(d.mouseClick).not.toHaveBeenCalled();
     const detail = (thrown as { callerDetail: string }).callerDetail;
@@ -81,8 +81,16 @@ describe("a title-only click on an element UIA reports disabled", () => {
     // The engine's words, never the backend's text.
     expect(detail).not.toContain("Element is disabled");
     const refusal = rows().find((r) => r.route === "refusal");
-    expect(refusal).toMatchObject({ rung: "uia_downgrade", refused: "aim_route_failed", routeFailure: "element_disabled", evidence: "automation_id" });
+    expect(refusal).toMatchObject({ rung: "uia_downgrade", refused: "aim_route_failed", routeFailure: "element_disabled", evidence: "own_window_disabled" });
     expect(rows().some((r) => r.route === "mouse")).toBe(false);
+  });
+
+  it("keeps the downgrade when the only thing narrowing the match is an AutomationId — it is not unique", async () => {
+    // codex on #685: templated items share an AutomationId with their name, and the search takes
+    // the first match — a disabled one discovery's enabled-only filter never showed.
+    const d = deps({ uiaClick: failingWith("Element is disabled"), windowTakesInput: () => true });
+    await act(d, uiaEntity("native", { automationId: "TARGET" }));
+    expect(d.mouseClick).toHaveBeenCalledWith(140, 215);
   });
 
   it("keeps the downgrade with NO evidence the answer is about this element — no AutomationId, no window state", async () => {

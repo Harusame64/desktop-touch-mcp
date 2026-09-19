@@ -1798,16 +1798,17 @@ export function createDesktopExecutor(
         // window matched by a title substring (`uia-route-failure.ts`; the native road too — gate 2
         // on this change): a disabled "Save All" earlier in the tree answers for an enabled "Save".
         // So the answer is believed only with evidence that it is about THIS element: the read and
-        // the click were both native (item 16's condition), AND either the entity carries an
-        // AutomationId (which narrows the match), or the OS says the element's own window, or the
-        // window the entity was captured in, does not take input. Otherwise the downgrade stands.
+        // the click were both native (item 16's condition), AND the OS says the element's own
+        // window, or the window the entity was captured in, does not take input. An AutomationId is
+        // NOT that evidence: it is not unique — templated items share one with their name — and the
+        // search takes the first match, which discovery's enabled-only filter never saw (codex on
+        // #685). Otherwise the downgrade stands.
         if (routeFailure === "element_disabled" && readVia === "native" && clickVia === "native") {
           const own = entity.locator?.uia?.nativeWindowHandle;
           const ownHwnd = own !== undefined && /^\d+$/.test(own) && own !== "0" ? BigInt(own) : undefined;
-          const narrowed = (entity.locator?.uia?.automationId ?? "") !== "";
           const ownRefuses = ownHwnd !== undefined && (await d.windowTakesInput?.(ownHwnd)) === false;
           const windowRefuses = !ownRefuses && coordHwnd !== undefined && (await d.windowTakesInput?.(coordHwnd)) === false;
-          const evidence = ownRefuses ? "own_window_disabled" : windowRefuses ? "window_disabled" : narrowed ? "automation_id" : null;
+          const evidence = ownRefuses ? "own_window_disabled" : windowRefuses ? "window_disabled" : null;
           if (evidence !== null) {
             probeRefusal("uia_downgrade", "aim_route_failed", undefined, entity, { routeFailure: "element_disabled", readVia, clickVia, evidence });
             throw new AimedRouteFailedError(
@@ -1815,9 +1816,8 @@ export function createDesktopExecutor(
               `(${evidence}): ${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing a control that does not take input.`,
               undefined,
               { cause: uiaErr },
-              `The UIA route for "${quotedLabel(entity)}" answered that ${describeUiaRouteFailure("element_disabled")}` +
-              (evidence === "automation_id" ? "" : ", and the window it is in does not take input") +
-              `; the act was not finished as a press.`,
+              `The UIA route for "${quotedLabel(entity)}" answered that ${describeUiaRouteFailure("element_disabled")}, ` +
+              `and the window it is in does not take input; the act was not finished as a press.`,
             );
           }
         }
