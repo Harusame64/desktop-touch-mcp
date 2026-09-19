@@ -36,6 +36,7 @@ import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  enumTopLevelWindowHandles,
   enumWindowsInZOrder,
   clearWindowTopmost,
   postMessageToHwnd,
@@ -81,11 +82,15 @@ export type TerminalHost = "default" | "conhost" | "wt";
  * End the launched PowerShell by the PID it wrote — never `/T`, never by window title. The PID file
  * is written right after the title, so the abandon path gives it a moment to appear.
  */
-function endLaunchedPowerShell(pidFile: string, host: TerminalHost, hwnd: bigint | null): void {
+function endLaunchedPowerShell(pidFile: string, host: TerminalHost, findWindow: () => bigint | null): void {
   for (let i = 0; i < 20; i++) {
     let pid = NaN;
     try { pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10); } catch { /* not yet */ }
-    if (pid > 0) return endPowerShellGracefully(pid, host, hwnd);
+    // The window is looked up AFTER the PID file exists: the script writes it right after setting
+    // the title, so only now is the tagged window there to find. Looking it up first fixed the handle
+    // as null on a cold Windows Terminal start, and a WT shell with no window to close is ended by
+    // /F — exit code 1, the window kept open (gate 2 on #683).
+    if (pid > 0) return endPowerShellGracefully(pid, host, findWindow());
     const sab = new SharedArrayBuffer(4);
     Atomics.wait(new Int32Array(sab), 0, 0, 100);
   }
@@ -432,7 +437,9 @@ export async function launchPowerShell(opts?: {
   const psArgs = `-NoExit -NoProfile -EncodedCommand ${encodedScript}`;
   // Every top-level window that exists before the spawn. The launch may only take a window that is
   // NOT in this set (see classifyTaggedWindows).
-  const before = new Set(listWindows().map((w) => w.hwnd));
+  // Unfiltered: `enumWindowsInZOrder` skips invisible, untitled and tiny windows, which are exactly
+  // the ones a launch could join without the list showing it (gate 2 on #683).
+  const before = new Set(enumTopLevelWindowHandles());
   let proc: ChildProcess;
   let startCmd: string | null = null;
   // Tempscript + tempdir paths captured here so kill() can clean both up.
@@ -562,9 +569,16 @@ export async function launchPowerShell(opts?: {
       exe,
       "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wtScript,
     ];
-    proc = spawn("wt.exe", wtArgs, {
-      detached: true, stdio: "ignore", windowsHide: false, shell: false,
-    });
+    try {
+      proc = spawn("wt.exe", wtArgs, {
+        detached: true, stdio: "ignore", windowsHide: false, shell: false,
+      });
+    } catch (err) {
+      // A synchronous spawn failure (EPERM, EINVAL…) opened nothing; the script directory it was
+      // given must not outlive it (gate 2 on #683).
+      try { rmSync(wtTempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      throw err;
+    }
   } else {
     startCmd = `start "" "${exe}" ${psArgs}`;
   }
@@ -585,11 +599,10 @@ export async function launchPowerShell(opts?: {
   const abandon = (): void => {
     // The window WT needs `WM_CLOSE` on: the one found, or — when the throw came before the search —
     // a tagged window this launch opened, if one is up. Never one that existed before the launch.
-    let hwnd: bigint | null = found?.hwnd ?? null;
-    if (hwnd === null) {
-      try { hwnd = classifyTaggedWindows(listWindows(), before, tag).opened?.hwnd ?? null; } catch { /* cannot list */ }
-    }
-    endLaunchedPowerShell(pidFile, host, hwnd);
+    endLaunchedPowerShell(pidFile, host, () => {
+      if (found !== null) return found.hwnd;
+      try { return classifyTaggedWindows(listWindows(), before, tag).opened?.hwnd ?? null; } catch { return null; }
+    });
     try { proc.kill(); } catch { /* ignore */ }
     try { unlinkSync(pidFile); } catch { /* ignore */ }
     if (scriptToCleanup) try { unlinkSync(scriptToCleanup); } catch { /* ignore */ }
