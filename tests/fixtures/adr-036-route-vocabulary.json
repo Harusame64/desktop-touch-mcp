@@ -98,6 +98,7 @@
   "landingWhy": [
     "entity_handle_stale",
     "entity_windowless",
+    "ground_disabled:disabled",
     "ground_disabled:other_control",
     "ground_disabled:other_window",
     "ground_disabled:read_only",
@@ -109,6 +110,7 @@
     "reference_unknown"
   ],
   "keyboardGround": [
+    "disabled",
     "other_control",
     "other_window",
     "read_only"

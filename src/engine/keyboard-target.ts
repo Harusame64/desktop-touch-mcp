@@ -19,8 +19,8 @@
 import type { CallerFacingRefusal } from "./aim.js";
 
 /** The grounds the rule refuses on. Each is stated from facts the rung reads before posting. */
-export type KeyboardGround = "other_window" | "read_only" | "other_control";
-export const KEYBOARD_GROUNDS: readonly KeyboardGround[] = ["other_window", "read_only", "other_control"];
+export type KeyboardGround = "other_window" | "read_only" | "other_control" | "disabled";
+export const KEYBOARD_GROUNDS: readonly KeyboardGround[] = ["other_window", "read_only", "other_control", "disabled"];
 
 /** Which window the rule took to be the named control's (see {@link judgeKeyboardTarget}). */
 export type ReferenceFrom = "entity" | "origin" | "aim" | "lookup" | "none";
@@ -37,8 +37,11 @@ export type LandingWhy =
   | "parents_unread"
   | `ground_disabled:${KeyboardGround}`;
 
-/** Whom a `read_only` refusal is about, so its sentence does not blame the wrong control. */
-export type RefusalSubject = "named" | "focused_inside_named" | "focused";
+/**
+ * Whom a refusal is about, so its sentence does not blame the wrong control. `window` is the window
+ * the entity was captured in, for a `disabled` refusal about a control with no window of its own.
+ */
+export type RefusalSubject = "named" | "focused_inside_named" | "focused" | "window";
 
 /**
  * How the act named its window. The way back differs: a text field has no UIA invoke, so the click
@@ -82,6 +85,15 @@ export interface KeyboardFacts {
    * not meet the reference window proves nothing.
    */
   ownerChain: readonly bigint[];
+  /**
+   * Whether E's own window AND its top-level window take input (`IsWindowEnabled` on both). Null when
+   * E has no window, or the OS could not be asked. `false` only when it was read.
+   */
+  entityTakesInput: boolean | null;
+  /** The same about the window the entity was captured in (`entity.origin`). Null when absent or unread. */
+  originTakesInput: boolean | null;
+  /** Whether the value road, just before, failed because UI Automation said the element is disabled. */
+  valueRoadSaidDisabled: boolean;
 }
 
 export type KeyboardVerdict =
@@ -101,6 +113,18 @@ function same(a: bigint, b: bigint): boolean {
  * the rung looked up. The rung's own lookup is the last resort, because on the title road it takes
  * the first window whose title contains the string, and that can be a same-titled sibling.
  *
+ * 0. The field does not take input: E is usable and its window (or E's top-level window) is
+ *    disabled → refuse `disabled`. Measured before this step existed (win2, internal `07a597a`): a
+ *    field disabled after discover answered `ok:true` with nothing typed on three of four arms, and
+ *    on the fourth was refused as `other_control` — the focus had simply left the disabled field. E's
+ *    own state was disabled on all four; the receiver's was on one. It comes first so that fourth arm
+ *    is named for what it is, and its way back is not "click the field". The user's decision,
+ *    2026-09-19.
+ *    With no usable E, the window the entity was captured in is evidence only together with the value
+ *    road's own "disabled": that window is the root of the READ, and an owned dialog's fields are read
+ *    through their owner — which the dialog itself disables — so the captured window alone refused a
+ *    write into the dialog that step 3 would have posted (gate 2). Never the aim's or the looked-up
+ *    window: either can be a same-titled sibling. Not asked is not evidence.
  * 1. T or its root cannot be read → cannot say.
  * 2. E is usable, and T is E, or E is among T's parents (a partial walk counts), or E is T's root:
  *    the named control or a window inside it. Refuse `read_only` if T does not take typing;
@@ -118,7 +142,10 @@ function same(a: bigint, b: bigint): boolean {
  * 7. Otherwise → cannot say.
  *
  * `disabled` is the switch's per-ground form. A disabled ground's step still decides; it answers a
- * marked success instead of the refusal, and does not fall through to a later step.
+ * marked success instead of the refusal, and does not fall through to a later step. **Except step 0**:
+ * it is a ground about the field, and the steps after it are about the receiver, so switching
+ * `disabled` off runs them — a refusal they make stands, and a post is marked `ground_disabled:disabled`.
+ * Deciding there would have switched off `other_control` and `other_window` with it (gate 2).
  */
 export function judgeKeyboardTarget(
   f: KeyboardFacts,
@@ -131,6 +158,25 @@ export function judgeKeyboardTarget(
     : f.aimRoot !== null ? [f.aimRoot, "aim"]
     : f.lookupRoot !== null ? [f.lookupRoot, "lookup"]
     : [null, "none"];
+  const cannotSay = (why: LandingWhy): KeyboardVerdict => ({ kind: "post", confirmed: false, why, referenceFrom });
+
+  // 0.
+  if (eUsable ? f.entityTakesInput === false : f.valueRoadSaidDisabled && f.originTakesInput === false) {
+    if (!disabled.has("disabled")) return { kind: "refuse", ground: "disabled", subject: eUsable ? "named" : "window", referenceFrom };
+    const rest = judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
+    return rest.kind === "refuse" ? rest : cannotSay("ground_disabled:disabled");
+  }
+  return judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
+}
+
+/** Steps 1–7: where the characters would go, against the named control. */
+function judgeTheReceiver(
+  f: KeyboardFacts,
+  disabled: ReadonlySet<KeyboardGround>,
+  eUsable: boolean,
+  reference: bigint | null,
+  referenceFrom: ReferenceFrom,
+): KeyboardVerdict {
   const cannotSay = (why: LandingWhy): KeyboardVerdict => ({ kind: "post", confirmed: false, why, referenceFrom });
   const refuse = (ground: KeyboardGround, subject: RefusalSubject): KeyboardVerdict =>
     disabled.has(ground) ? cannotSay(`ground_disabled:${ground}`) : { kind: "refuse", ground, subject, referenceFrom };
@@ -231,6 +277,12 @@ function callerSentence(ground: KeyboardGround, subject: RefusalSubject, road: K
         (byHandle
           ? BY_HANDLE_WAY_BACK
           : "Click the field this act named (desktop_act action='click' on the same entity), then type again.");
+    case "disabled":
+      return (subject === "window"
+        ? "Nothing was typed (disabled): UI Automation reported the field disabled, and the window it was read from does not take input now. "
+        : "Nothing was typed (disabled): the field this act named does not take input now — it, or its window, is disabled. ") +
+        "Answer or wait out whatever disabled it (a form being submitted, a dialog, a step not yet done), then re-run desktop_discover and type again. " +
+        "desktop_discover does not list a disabled field, so until it is enabled it is missing there — missing then means still disabled, not gone.";
     case "read_only":
       return subject === "named"
         ? "Nothing was typed (read_only): the field this act named is read-only and does not take typed text."
