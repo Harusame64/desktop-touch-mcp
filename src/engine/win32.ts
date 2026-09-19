@@ -140,6 +140,17 @@ export interface WindowZInfo {
 }
 
 /**
+ * Every top-level window handle, UNFILTERED — invisible, untitled and tiny windows included.
+ *
+ * For "which windows existed before this" questions, where `enumWindowsInZOrder`'s filter would
+ * leave out exactly the windows a launch could join unseen (a hidden or quake Windows Terminal
+ * window; gate 2 on public #683). Throws when the native binding is absent.
+ */
+export function enumTopLevelWindowHandles(): bigint[] {
+  return requireNativeWin32().win32EnumTopLevelWindows!();
+}
+
+/**
  * Enumerate all visible top-level windows in Z-order (front to back).
  * Skips invisible, untitled, and tiny windows (< 50px in either dimension).
  */
