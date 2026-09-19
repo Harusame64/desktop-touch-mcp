@@ -6,6 +6,7 @@ import { LeaseStore } from "./lease-store.js";
 import {
   GuardedTouchLoop,
   type TouchAction,
+  type BlockingElementInfo,
   type TouchEnvironment,
   type ViewportVerdict,
 } from "./guarded-touch.js";
@@ -240,6 +241,11 @@ export interface SessionCreateOpts {
    */
   checkViewport?: (entity: UiEntity) => ViewportVerdict;
   /**
+   * internal #126 — ask the OS whether the entity's window is disabled by a dialog it owns.
+   * Absent means not asked (tests, non-Windows); production wires `productionFindBlockingWindow`.
+   */
+  findBlockingWindow?: (entity: UiEntity, aim: Aim | undefined) => BlockingElementInfo | null;
+  /**
    * Return a focus fingerprint for the currently focused element (or undefined if unknown).
    * Used for focus_shifted detection: pre- vs post-touch fingerprint is compared.
    * Conservative: when not provided, focus_shifted is never emitted.
@@ -390,6 +396,12 @@ export class SessionRegistry {
           ? () => null
           : (entity: UiEntity) => s.entities.find((e) => classifyModal(e, "pre-touch", { excludeSelf: entity })) ?? null),
       checkViewport: opts.checkViewport ?? (() => null),
+      // The aim is read at touch time, like the executor's: an entity whose lane recorded no handle
+      // is asked about the window this act is aimed at (win2: on an addon older than #619 the UIA
+      // lane records none, and the check asked nothing).
+      ...(opts.findBlockingWindow
+        ? { findBlockingWindow: (entity: UiEntity) => opts.findBlockingWindow!(entity, s.lastAim) }
+        : {}),
       // G1-C: Focus fingerprint for focus_shifted detection.
       // Only wired when opts.getFocusedEntityId is provided (e.g. production desktop-register.ts).
       // Conservative: if not provided, focus_shifted is never emitted.

@@ -57,7 +57,7 @@ import {
   EntityNotFoundRefusalError,
   KeyboardTargetUnsafeRefusalError,
 } from "../errors/typed-errors.js";
-import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
+import type { BlockingElementInfo, TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -81,7 +81,16 @@ import {
   getWindowRectByHwnd,
   getVirtualScreen,
   getWindowRenderState,
+  getWindowRoot,
+  getWindowOwner,
+  isWindowEnabled,
+  enumTopLevelWindowHandles,
+  getWindowThreadId,
+  getWindowTitleW,
+  getWindowClassName,
+  getWindowIdentity,
 } from "../engine/win32.js";
+import { compareAimIdentity, readWindowIdentityFields, type Aim, type WindowIdentity } from "../engine/aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { verifyAnyChange } from "../engine/any-change.js";
@@ -262,6 +271,142 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
   } catch {
     return null; // conservative on Win32 error
   }
+}
+
+/**
+ * internal #126 — is the entity's own window disabled by a dialog?
+ *
+ * The clear ground the user's rule asks for ("refuse, but only when the grounds are clear",
+ * 2026-09-11), read from the OS at the moment of the act: **the entity's top-level window is
+ * disabled, and a different window of its owner family is still live.** That is what `ShowDialog`
+ * / `MessageBox` / a common dialog does, and the one modal the `desktop_discover` snapshot, scoped
+ * to the main window, cannot contain.
+ *
+ * **The family is the top of the `GW_OWNER` chain's**, so a dialog opened by a dialog is seen: the first version
+ * asked the entity's window alone (`preferActivePopupIfBlocked`), which answers only one level and
+ * demands a title, and a nested or untitled dialog read as "not blocked" (gate 2, round 1).
+ *
+ * win2 measured the one-level readings on four fixtures before anything depended on them
+ * (internal `6e41392`): `ShowDialog` and `MessageBox` → blocked; a non-modal owned window and a
+ * NumericUpDown window → NOT blocked, the owner is enabled. A disabled window whose last popup is a
+ * non-modal tool window is refused too: input to a disabled window is discarded either way.
+ *
+ * **Which window is asked: the entity's recorded handle, else the aim's.** The aim is the window
+ * this act is aimed at, and it carries who owned that handle when it was taken — on an addon older
+ * than #619 the UIA lane records no handle, and the first version asked nothing at all there, a
+ * silence indistinguishable from "not blocked" (win2, 2026-09-19). Neither is re-resolved by title:
+ * a re-resolution can land on a different window, and a refusal about someone else's window is not a
+ * clear ground. **When the window asked is the aim's, its owner must still be the aim's** —
+ * `compareAimIdentity`, the executor's own check: a closed window whose handle now names another
+ * process's window is not asked (the executor refuses that act as `aim_identity_changed`; gate 2,
+ * round 1). A web page's in-page `<dialog>` does not disable the window and is not seen by this.
+ *
+ * `deps` exists for unit tests only.
+ */
+export interface BlockingWindowDeps {
+  root?: (hwnd: bigint) => bigint | null;
+  identityNow?: (hwnd: bigint) => WindowIdentity | undefined;
+  owner?: (hwnd: bigint) => bigint | null;
+  isEnabled?: (hwnd: bigint) => boolean;
+  topLevelWindows?: () => bigint[];
+  threadOf?: (hwnd: bigint) => number;
+  isVisible?: (hwnd: bigint) => boolean;
+  title?: (hwnd: bigint) => string;
+  className?: (hwnd: bigint) => string;
+}
+
+export function productionFindBlockingWindow(
+  entity: UiEntity,
+  aim: Aim | undefined,
+  deps: BlockingWindowDeps = {},
+): BlockingElementInfo | null {
+  const recorded = entity.origin?.hwnd;
+  // The element's OWN window first, when it has one: UIA can show a window owned by the main
+  // window as the main window's child, so a dialog's own "OK", discovered from the main window,
+  // records the main window's handle — disabled, with that very dialog as its popup — and would be
+  // refused as blocked by itself (gate 2, round 2). A Win32 button is its own window; its root is
+  // the dialog, which is enabled.
+  const own = entity.locator?.uia?.nativeWindowHandle;
+  const numeric = (v: string | undefined): bigint | undefined => (v !== undefined && /^\d+$/.test(v) && v !== "0" ? BigInt(v) : undefined);
+  const handle = numeric(own) ?? numeric(recorded) ?? aim?.hwnd;
+  if (handle === undefined) return null;
+  try {
+    const rootOf = deps.root ?? getWindowRoot;
+    const root = rootOf(handle);
+    if (root === null) return null;
+    // The aim's window, still the aim's owner? Checked whenever the window asked IS the aim's.
+    if (aim?.hwnd !== undefined && rootOf(aim.hwnd) === root) {
+      const now = (deps.identityNow ?? productionWindowIdentity)(aim.hwnd);
+      if (compareAimIdentity(aim, now) === "changed") return null;
+    }
+    const isEnabled = deps.isEnabled ?? isWindowEnabled;
+    if (isEnabled(root)) return null;
+    // The top of the OWNER chain, walked by `GW_OWNER`. Not `GA_ROOTOWNER`: that walks `GetParent`,
+    // which returns the owner only for a popup-styled window, and a WinForms Form dialog is an
+    // overlapped window — owned by the main window, yet its own "root owner". Keyed on that, the
+    // WinForms `ShowDialog` and a MessageBox it opened fell out of the family, and the act answered
+    // ok:true again (win2, 2026-09-19, internal `e7f3980`). Bounded: an owner loop cannot exist in
+    // Windows, but a read that tears must not spin.
+    const ownerOf = deps.owner ?? getWindowOwner;
+    const topOwnerOf = (w: bigint): bigint => {
+      let at = w;
+      for (let i = 0; i < 32; i++) {
+        const next = ownerOf(at);
+        if (next === null || next === at) return at;
+        at = next;
+      }
+      return at;
+    };
+    const chainTop = topOwnerOf(root);
+    // The windows that OWN the entity's — never its blocker: a modal is owned by what it blocks, not
+    // the other way round. Without this, an owned palette the app disabled for its own reasons named
+    // its enabled main window as the dialog blocking it (gate 2, round 3).
+    const ownersOfRoot = new Set<bigint>();
+    for (let at = ownerOf(root), i = 0; at !== null && i < 32; at = ownerOf(at), i++) ownersOfRoot.add(at);
+    // **The dialog is the window of this owner family that is still live**: visible, enabled, not
+    // the entity's own — and of those, the one nearest the top of the Z-order. A modal disables the
+    // windows it blocks and stays enabled itself; a nested dialog sits above the one that opened it.
+    //
+    // The "last active popup" reading this replaced named whatever was activated last: a hidden
+    // popup Windows still remembers, or a palette the user clicked while the modal was up — and
+    // when WinForms' `MessageBox` had disabled that palette too, the check fell silent and the act
+    // answered `ok:true` under a real modal, the defect this exists to end (win2, 2026-09-19,
+    // internal `a24d9c3`). The family is every window whose `GW_OWNER` chain tops out
+    // where this one's does. The handle list is unfiltered and front-to-back (EnumWindows).
+    const isVisible = deps.isVisible ?? isPopupVisible;
+    const windows = (deps.topLevelWindows ?? enumTopLevelWindowHandles)();
+    const live = (w: bigint): boolean => w !== root && !ownersOfRoot.has(w) && isVisible(w) && isEnabled(w);
+    // **An ownerless modal is not in any family**: `MessageBox(NULL, …, MB_TASKMODAL)` and a WPF
+    // `ShowDialog()` with no `Owner` disable every top-level window of their THREAD and own none of
+    // them (gate 2, round 3 — the #126 shape again, one step out). A modal loop runs on the thread
+    // of the windows it blocks, so the thread is the family's fallback: asked only when the owner
+    // family has nothing live.
+    const threadOf = deps.threadOf ?? getWindowThreadId;
+    const rootThread = threadOf(root);
+    const popup =
+      windows.find((w) => live(w) && topOwnerOf(w) === chainTop) ??
+      (rootThread !== 0 ? windows.find((w) => live(w) && threadOf(w) === rootThread) : undefined) ??
+      null;
+    // Disabled with nothing live in its family or its thread: its own work, not a modal. Not a
+    // ground to name — the snapshot check still runs.
+    if (popup === null) return null;
+    const title = (deps.title ?? getWindowTitleW)(popup);
+    // Untitled is still a dialog: the ground is the disabled window, not the name. The handle is
+    // what a caller can use to reach it; a class name stands in for the missing title.
+    const name = title !== "" ? title : (deps.className ?? getWindowClassName)(popup) || "dialog";
+    return { name, role: "dialog", hwnd: String(popup) };
+  } catch {
+    // Unreadable is not a ground: the snapshot check still runs.
+    return null;
+  }
+}
+
+function isPopupVisible(hwnd: bigint): boolean {
+  return getWindowRenderState(hwnd)?.visible ?? false;
+}
+
+function productionWindowIdentity(hwnd: bigint): WindowIdentity | undefined {
+  return readWindowIdentityFields(hwnd, { identity: getWindowIdentity, className: getWindowClassName, title: getWindowTitleW });
 }
 
 /**
@@ -518,6 +663,8 @@ export function getDesktopFacade(): DesktopFacade {
       // G1-B: viewport guard — blocks visual-only entities that are no longer
       // reachable at their discovered coordinates (ADR-029 Phase 1).
       checkViewport: productionCheckViewport,
+      // internal #126: the OS's answer about the entity's own window, asked before the snapshot.
+      findBlockingWindow: productionFindBlockingWindow,
       // G1-C: window-level focus fingerprint for focus_shifted diff.
       getFocusedEntityId: productionGetFocusedEntityId,
       // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
@@ -1628,7 +1775,7 @@ export function registerDesktopTools(server: McpServer): void {
       landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION),
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
-      "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
+      "  modal_blocking → response.blockingElement (when present) names the blocker. role:'dialog' means a separate dialog window has disabled the target's window: blockingElement.hwnd is that dialog — re-call desktop_discover with target.hwnd=blockingElement.hwnd, answer it there, then retry (name is its title, which may be empty or shared, so neither click_element(name) nor focus_window(title=name) reaches it). Any other role: dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
       "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",
