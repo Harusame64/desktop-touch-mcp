@@ -1060,8 +1060,16 @@ function insideEntity(
 }
 
 
-/** The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read. */
-function keyboardFactsOf(entity: UiEntity, receipt: KeyboardReceipt): KeyboardFacts {
+/**
+ * The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read,
+ * and whether the named control's window and the captured window take input.
+ */
+function keyboardFactsOf(
+  entity: UiEntity,
+  receipt: KeyboardReceipt,
+  takesInput: { entity: boolean | null; origin: boolean | null },
+  valueRoadError: unknown,
+): KeyboardFacts {
   const ancestors = receipt.receiverAncestors ?? null;
   return {
     entityHwnd: parseHandle(entity.locator?.uia?.nativeWindowHandle),
@@ -1075,6 +1083,9 @@ function keyboardFactsOf(entity: UiEntity, receipt: KeyboardReceipt): KeyboardFa
     ancestorsComplete: receipt.ancestorsComplete ?? ancestors !== null,
     receiverReadOnly: editReadOnlyOf(receipt.receiverClass ?? null, receipt.receiverStyle ?? null),
     ownerChain: receipt.ownerChain ?? [],
+    entityTakesInput: takesInput.entity,
+    originTakesInput: takesInput.origin,
+    valueRoadSaidDisabled: valueRoadError !== undefined && classifyUiaRouteFailure(valueRoadError) === "element_disabled",
   };
 }
 
@@ -1116,11 +1127,17 @@ async function keyboardRung(
     });
     return { kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } };
   }
-  const receipt = await d.keyboardResolve(winTitle, aimHwnd, {
-    entityHwnd: parseHandle(entity.locator?.uia?.nativeWindowHandle) ?? undefined,
-    originHwnd: observedHwndOfOrigin(entity.origin),
-  });
-  const verdict = judgeKeyboardTarget(keyboardFactsOf(entity, receipt), sw.disabled);
+  const entityHwnd = parseHandle(entity.locator?.uia?.nativeWindowHandle) ?? undefined;
+  const originHwnd = observedHwndOfOrigin(entity.origin);
+  const receipt = await d.keyboardResolve(winTitle, aimHwnd, { entityHwnd, originHwnd });
+  // The `disabled` ground's facts: asked of the OS, as the click's disabled refusal asks them. Not
+  // asked (no backend, no handle) is null, never "takes input" and never "does not".
+  const takesInput = async (h: bigint | undefined): Promise<boolean | null> =>
+    h === undefined || !d.windowTakesInput ? null : ((await d.windowTakesInput(h)) ?? null);
+  const verdict = judgeKeyboardTarget(
+    keyboardFactsOf(entity, receipt, { entity: await takesInput(entityHwnd), origin: await takesInput(originHwnd) }, valueRoadError),
+    sw.disabled,
+  );
   if (verdict.kind === "refuse") {
     // One row, the refusal, carrying the facts it was decided on: nothing was posted, so no route row.
     probeRefusal("keyboard", "keyboard_target_unsafe", aimHwnd, entity, {

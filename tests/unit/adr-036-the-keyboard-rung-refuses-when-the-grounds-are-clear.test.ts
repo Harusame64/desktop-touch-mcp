@@ -53,6 +53,10 @@ function facts(over: Partial<KeyboardFacts> = {}): KeyboardFacts {
     ancestorsComplete: true,
     receiverReadOnly: false,
     ownerChain: [],
+    // Not asked: the `disabled` ground's own cells are in a-disabled-field-is-not-typed-into.test.ts.
+    entityTakesInput: null,
+    originTakesInput: null,
+    valueRoadSaidDisabled: false,
     ...over,
   };
 }

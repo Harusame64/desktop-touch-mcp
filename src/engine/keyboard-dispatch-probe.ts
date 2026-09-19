@@ -173,6 +173,10 @@ export async function probeKeyboardDispatch(row: KeyboardDispatchRow): Promise<v
       ancestorsComplete: facts.ancestorsComplete,
       receiverReadOnly: editReadOnlyOf(facts.receiverClass, facts.receiverStyle),
       ownerChain: readOwnerChain(facts.receiverRootHwnd),
+      // No control and no captured window on this road, so the `disabled` ground has nothing to ask.
+      entityTakesInput: null,
+      originTakesInput: null,
+      valueRoadSaidDisabled: false,
     };
     // THE SWITCH HAS TWO FORMS, AND ONLY ONE OF THEM IS THE RULE'S BUSINESS.
     //
