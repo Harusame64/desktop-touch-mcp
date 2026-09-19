@@ -244,8 +244,10 @@ describe("the UIA value road, on success", () => {
     // while the native road compared exactly, so an empty id EXCLUDED every element that has one.
     // internal #133 made an empty criterion mean "not given" on the native side too (`given`,
     // `src/uia/actions.rs`), and a locator with nothing left is answered "not found" there — so THIS
-    // ENTITY NO LONGER REACHES AN ELEMENT on a real machine. The backend is a mock here and the cell
-    // is about the ROW, which is written before the call; what the road does with it is #133's.
+    // ENTITY NO LONGER REACHES AN ELEMENT on a real machine: `uiaSetValue` would throw, and the row
+    // is written after it returns (`desktop-executor.ts`), so there would be no row at all. What
+    // keeps this cell standing is the MOCK, and what it pins is how the row's VALUES are computed —
+    // `uiaAddressAxes` runs before the call. What the road does with the locator is #133's.
     //
     // THE CELL STILL ASSERTS `"nothing"`, and on purpose: an empty id is not something the call was
     // addressed BY, and answering `automation_id` would launder a road defect into a claim about

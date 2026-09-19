@@ -400,14 +400,24 @@ pub(crate) fn find_element_for_action(
 /// Find the element a READ names — the bounds and children reads in `tree.rs` — testing the window
 /// itself first, then its descendants as `find_element_for_action` does.
 ///
-/// **These keep the window, and #133 did not change them,** because their PowerShell twins start
-/// their search AT the window (`FindElement $target 0` in `getElementBounds` and
+/// **These keep the window** — #133 moved the acts and left the reads where they were — because
+/// their PowerShell twins start their search AT the window (`FindElement $target 0` in
+/// `getElementBounds` and
 /// `makeGetChildrenScript` — win2 read it, correcting the first version of this change, which moved
 /// them with the acts and would have split two clients that agree). So does `find_element` in
 /// `scroll.rs`, with its scroll twins. The same defect is there all the same — a read by a name the
 /// title contains answers with the window, on both clients — and it is a read's, with the reads'
 /// callers (`wait_until`, `scope_element`, the mouse re-query), so it is changed on both clients
 /// together or not at all.
+///
+/// **One thing about the reads DID change: `given` applies here too** (gate 2, which found this
+/// paragraph claiming otherwise). An empty `automationId` used to EXCLUDE every element that has
+/// one, so it accidentally pushed the search past a window with an AutomationId; now it is dropped,
+/// as the PowerShell read scripts have always dropped it (`automationId ? … : "$true"`). It is a
+/// convergence, and it widens the read defect above by one arm: `scope_element(name: "Save",
+/// automationId: "")` on a window whose title contains "Save" and whose AutomationId is set now
+/// answers with the WINDOW, where before the empty id filtered the window out. Recorded on that
+/// issue rather than patched here, because patching it here would put the two clients back at odds.
 pub(crate) fn find_element_or_window(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
@@ -429,8 +439,11 @@ pub(crate) fn find_element_or_window(
 /// It read as two different things ten lines apart, and gate 2 on this change named it. An empty
 /// `name` matches every element (`contains("")`), an empty `automation_id` matched NO element that
 /// has one (`id == target`, an exact compare) — so `automationId: ""` was a filter nobody asked for,
-/// while the same value alone meant "nothing was named". The PowerShell twins drop an empty filter
-/// (`name ? … : "$true"`), so this is also what makes the two clients read a caller the same way.
+/// while the same value alone meant "nothing was named". The PowerShell twins of the three acts and
+/// of the two reads drop an empty filter (`name ? … : "$true"`), so this is also what makes those
+/// five roads read a caller the same way. **Not the scroll road**: `find_element` in `scroll.rs`
+/// still hands an empty id to an exact compare while its own twin drops it — one more reason that
+/// road is a change of its own (no caller reaches it: both pass a name only).
 fn given<'a>(
     name: Option<&'a str>,
     automation_id: Option<&'a str>,
