@@ -91,6 +91,7 @@ import {
   getWindowIdentity,
 } from "../engine/win32.js";
 import { compareAimIdentity, readWindowIdentityFields, type Aim, type WindowIdentity } from "../engine/aim.js";
+import { probeAim } from "../engine/aim-probe.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { verifyAnyChange } from "../engine/any-change.js";
@@ -328,19 +329,37 @@ export function productionFindBlockingWindow(
   // the dialog, which is enabled.
   const own = entity.locator?.uia?.nativeWindowHandle;
   const numeric = (v: string | undefined): bigint | undefined => (v !== undefined && /^\d+$/.test(v) && v !== "0" ? BigInt(v) : undefined);
-  const handle = numeric(own) ?? numeric(recorded) ?? aim?.hwnd;
-  if (handle === undefined) return null;
+  const fromOwn = numeric(own);
+  const fromOrigin = numeric(recorded);
+  const handle = fromOwn ?? fromOrigin ?? aim?.hwnd;
+  const askedFrom = fromOwn !== undefined ? "element" : fromOrigin !== undefined ? "entity_origin" : aim?.hwnd !== undefined ? "aim" : null;
+  // One `act.modal` row per check, whatever it answers — including that it could not ask.
+  const row = (answer: string, extra: Record<string, unknown> = {}): void =>
+    probeAim("act.modal", { entityId: entity.entityId, asked: handle !== undefined, askedFrom, handle: handle?.toString() ?? null, answer, ...extra });
+  if (handle === undefined) {
+    row("no_handle");
+    return null;
+  }
   try {
     const rootOf = deps.root ?? getWindowRoot;
     const root = rootOf(handle);
-    if (root === null) return null;
+    if (root === null) {
+      row("no_root");
+      return null;
+    }
     // The aim's window, still the aim's owner? Checked whenever the window asked IS the aim's.
     if (aim?.hwnd !== undefined && rootOf(aim.hwnd) === root) {
       const now = (deps.identityNow ?? productionWindowIdentity)(aim.hwnd);
-      if (compareAimIdentity(aim, now) === "changed") return null;
+      if (compareAimIdentity(aim, now) === "changed") {
+        row("aim_identity_changed", { root: root.toString() });
+        return null;
+      }
     }
     const isEnabled = deps.isEnabled ?? isWindowEnabled;
-    if (isEnabled(root)) return null;
+    if (isEnabled(root)) {
+      row("window_enabled", { root: root.toString() });
+      return null;
+    }
     // The top of the OWNER chain, walked by `GW_OWNER`. Not `GA_ROOTOWNER`: that walks `GetParent`,
     // which returns the owner only for a popup-styled window, and a WinForms Form dialog is an
     // overlapped window — owned by the main window, yet its own "root owner". Keyed on that, the
@@ -389,14 +408,19 @@ export function productionFindBlockingWindow(
       null;
     // Disabled with nothing live in its family or its thread: its own work, not a modal. Not a
     // ground to name — the snapshot check still runs.
-    if (popup === null) return null;
+    if (popup === null) {
+      row("disabled_no_live_window", { root: root.toString() });
+      return null;
+    }
     const title = (deps.title ?? getWindowTitleW)(popup);
     // Untitled is still a dialog: the ground is the disabled window, not the name. The handle is
     // what a caller can use to reach it; a class name stands in for the missing title.
     const name = title !== "" ? title : (deps.className ?? getWindowClassName)(popup) || "dialog";
+    row("blocked", { root: root.toString(), blocker: String(popup) });
     return { name, role: "dialog", hwnd: String(popup) };
   } catch {
     // Unreadable is not a ground: the snapshot check still runs.
+    row("unreadable");
     return null;
   }
 }
@@ -1784,7 +1808,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  aim_identity_changed → the window this act named has gone and its handle now names a different window (another process, or another window of the same program); nothing was done, and the lease describes a window that is gone. Re-call desktop_discover — do NOT retry with the same handle or by coordinate;",
       "  aim_occluded → another window is drawn over the point, so nothing was done. Whether it would really have taken the press cannot be asked here (that needs the OS hit test), so anything on top counts as in the way — an overlay presses pass through is reported the same. Bring the intended window forward, or use V1 click_element, which is also the way past such an overlay — re-calling desktop_discover alone does not help, the coordinates are already right;",
       "  aim_point_outside_window → the window is still open but its coordinates can no longer be followed (among them: minimised; resized, so the contents may have reflowed — refused even where the point still falls inside; moved while it was being read, so that snapshot has no single origin; measured by a lane whose moment cannot be established, such as a stored visual snapshot; or captured in a window other than the one this act named — a menu or dropdown has an origin of its own and is followed only while it is still what sits under the point); nothing was clicked. A window that moved WITHOUT resizing is followed automatically when the coordinates were measured in the same read that measured the window; a move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport (that check does not look at uia / cdp / terminal entities). Re-call desktop_discover — do NOT retry by coordinate;",
-      "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. if_unexpected.detail names the failure when this server recognises it (not found, no pattern, disabled, read-only). When it says not found or names none: re-call desktop_discover, or try V1 click_element(name=…) on the same entity; when the route may have matched another element by the same text, click_element with controlType narrows it;",
+      "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. if_unexpected.detail names the failure when this server recognises it (not found, no pattern, disabled, read-only). When it says not found or names none: re-call desktop_discover, or try V1 click_element(name=…) on the same entity; when the route may have matched another element by the same text, click_element with controlType narrows it. When it says disabled, the element — or its whole window — does not take input now: answer or wait out whatever disabled it, then re-call desktop_discover;",
       "  keyboard_target_unsafe → the background write would not have reached the field this act named (the focus is on a different control or in a different window, or the receiving control does not take typed text); nothing was typed. if_unexpected.detail names which. Put the focus on the field you named, then type again — if_unexpected.detail names the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle too, so that road does not open there). For other_window, V1 focus_window on the field's window first — it comes forward with the focus it last had, and a window over the field makes a click answer aim_occluded — do NOT type through the foreground instead;",
       "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",

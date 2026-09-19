@@ -61,6 +61,13 @@ export type AimSeam =
   /** Act time: which backend ran, whether it was aimed, and which rung refused when one did. */
   | "act.route"
   /**
+   * internal #126 — act time, before any backend: whether the modal check could ask the OS, which
+   * handle it asked about (the element's own window, the entity's recorded one, or the aim's), and
+   * what it found. "Could not ask" is written, not left to be inferred: a check that asked nothing
+   * answered exactly like one that found the window clear (win2, 2026-09-19).
+   */
+  | "act.modal"
+  /**
    * ADR-036 family 2, arm A: one row per `keyboard` dispatch — which rung sent, who received, and
    * what the rule would have said about it. The tool road has no entity, so the rule can only ever
    * answer "cannot say" or `read_only` there; the row exists to count that before anything refuses.
