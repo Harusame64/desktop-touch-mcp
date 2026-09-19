@@ -1,0 +1,273 @@
+/**
+ * internal #126 — the modal guard asks the window, not only the snapshot.
+ *
+ * `isModalBlocking` looks at the `desktop_discover` snapshot, scoped to the target window. A
+ * `ShowDialog` / `MessageBox` in another top-level window is never in it, and the act that ran into
+ * one degraded to a press the OS swallowed and answered `ok:true` (win2, 2026-09-18). The guard now
+ * asks the OS first — is the entity's own window disabled by a dialog it owns — which win2 measured
+ * on four fixtures before anything depended on it (internal `6e41392`).
+ */
+import { describe, expect, it, vi } from "vitest";
+
+import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
+import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
+import type { UiEntity } from "../../src/engine/world-graph/types.js";
+import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
+import { DesktopFacade } from "../../src/tools/desktop.js";
+import { _resetFacadeForTest, getDesktopFacade, productionFindBlockingWindow } from "../../src/tools/desktop-register.js";
+
+const GEN = "gen-1";
+
+function entity(opts: Partial<UiEntity> = {}): UiEntity {
+  return {
+    entityId: "e1",
+    role: "button",
+    label: "OK",
+    confidence: 0.9,
+    sources: ["uia"],
+    affordances: [{ verb: "invoke", executors: ["uia", "mouse"], confidence: 0.9, preconditions: [], postconditions: [] }],
+    generation: GEN,
+    evidenceDigest: "d-e1",
+    rect: { x: 100, y: 200, width: 80, height: 30 },
+    ...opts,
+  };
+}
+
+function candidate(): UiEntityCandidate {
+  return {
+    source: "visual_gpu",
+    target: { kind: "window", id: "Editor" },
+    label: "OK",
+    role: "button",
+    rect: { x: 10, y: 10, width: 60, height: 20 },
+    actionability: ["click"],
+    confidence: 0.9,
+    observedAtMs: 0,
+    provisional: false,
+  } as unknown as UiEntityCandidate;
+}
+
+function makeEnv(overrides: Partial<TouchEnvironment> = {}): TouchEnvironment {
+  return {
+    resolveLiveEntities: () => [],
+    currentGeneration: () => GEN,
+    isModalBlocking: () => false,
+    checkViewport: () => null,
+    execute: async () => "mouse",
+    resolvePostTouchEntities: async () => [],
+    ...overrides,
+  };
+}
+
+describe("the guard asks the window before the snapshot", () => {
+  it("refuses modal_blocking with the dialog, and presses nothing, when the window is blocked", async () => {
+    const e = entity();
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const execute = vi.fn(async () => "mouse" as const);
+    const isModalBlocking = vi.fn(() => false);
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      findBlockingWindow: () => ({ name: "Save changes?", role: "dialog" }),
+      isModalBlocking,
+      execute,
+    }));
+    const result = await loop.touch({ lease });
+    expect(result).toEqual({ ok: false, reason: "modal_blocking", diff: [], blockingElement: { name: "Save changes?", role: "dialog" } });
+    // The measured defect was a press the OS swallowed and an `ok:true`. Nothing is pressed now.
+    expect(execute).not.toHaveBeenCalled();
+    // The OS answered; the snapshot is not consulted to second-guess it.
+    expect(isModalBlocking).not.toHaveBeenCalled();
+  });
+
+  it("falls through to the snapshot check, unchanged, when the window is not blocked", async () => {
+    const e = entity();
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      findBlockingWindow: () => null,
+      isModalBlocking: () => true,
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      expect(result.blockingElement).toBeUndefined();
+    }
+  });
+
+  it("proceeds when the window is not blocked and the snapshot is clear", async () => {
+    const e = entity();
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const execute = vi.fn(async () => "uia" as const);
+    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [e], findBlockingWindow: () => null, execute }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("productionFindBlockingWindow", () => {
+  const origin = { kind: "window" as const, id: "Editor", hwnd: "123" };
+  // The one-level case: main (500) disabled, its last active popup is the dialog (777).
+  const blocked = {
+    root: () => 500n,
+    isEnabled: () => false,
+    rootOwner: () => 500n,
+    lastActivePopup: () => 777n,
+    title: () => "Save changes?",
+    className: () => "#32770",
+  };
+
+  it("names the dialog, with its handle, when the entity's window is disabled by it", () => {
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, blocked)).toEqual({ name: "Save changes?", role: "dialog", hwnd: "777" });
+  });
+
+  it("asks the popup of the ROOT OWNER, so a dialog opened by a dialog is seen", () => {
+    // The entity sits in dialog A (600), which opened B (777). Windows records the last active
+    // popup on the top of the owner chain (main, 500): asking A itself answers nothing, and B's
+    // owner is A, not main. The first version asked the entity's window and read this as clear.
+    const lastActivePopup = vi.fn((h: bigint) => (h === 500n ? 777n : null));
+    const got = productionFindBlockingWindow(entity({ origin }), undefined, {
+      ...blocked,
+      root: () => 600n,
+      rootOwner: () => 500n,
+      lastActivePopup,
+      title: () => "Error",
+    });
+    expect(got).toEqual({ name: "Error", role: "dialog", hwnd: "777" });
+    expect(lastActivePopup).toHaveBeenCalledWith(500n);
+  });
+
+  it("refuses an UNTITLED dialog too, naming it by class and handle", () => {
+    // The ground is the disabled window, not the name; the first version demanded a title and let
+    // an untitled dialog through as "not blocked".
+    const got = productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, title: () => "" });
+    expect(got).toEqual({ name: "#32770", role: "dialog", hwnd: "777" });
+  });
+
+  it("asks the ROOT of the entity's recorded handle", () => {
+    const root = vi.fn(() => 500n);
+    productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, root });
+    expect(root).toHaveBeenCalledWith(123n);
+  });
+
+  it.each([
+    ["the window is enabled", { isEnabled: () => true }],
+    ["the window is disabled with no other popup (its own processing)", { lastActivePopup: () => null }],
+    ["the last active popup is the entity's own window", { lastActivePopup: () => 500n }],
+  ])("answers null when %s", (_label, over) => {
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, ...over })).toBeNull();
+  });
+
+  it.each([
+    ["no origin at all", undefined],
+    ["an origin with no handle (a lane that recorded none)", { kind: "window" as const, id: "Editor" }],
+    ["a handle that is not a number", { kind: "window" as const, id: "Editor", hwnd: "Editor" }],
+  ])("does not re-resolve by title and asks nothing, for %s", (_label, o) => {
+    // A re-resolution can land on a different window than the entity came from; a refusal about
+    // someone else's window is not a clear ground. The snapshot check still runs.
+    const root = vi.fn(() => 1n);
+    expect(productionFindBlockingWindow(entity(o ? { origin: o } : {}), undefined, { ...blocked, root })).toBeNull();
+    expect(root).not.toHaveBeenCalled();
+  });
+
+  it("answers null, not a refusal, when the OS cannot be read", () => {
+    const got = productionFindBlockingWindow(entity({ origin }), undefined, {
+      ...blocked,
+      root: () => {
+        throw new Error("native binding absent");
+      },
+    });
+    expect(got).toBeNull();
+  });
+});
+
+describe("an entity with no recorded handle is asked about the aim's window", () => {
+  const blocked = {
+    root: (h: bigint) => h,
+    isEnabled: () => false,
+    rootOwner: (h: bigint) => h,
+    lastActivePopup: () => 777n,
+    title: () => "Save changes?",
+    className: () => "#32770",
+  };
+  const aim = { kind: "aim" as const, title: "Editor", hwnd: 500n, identity: { pid: 42, processName: "editor.exe", processStartTimeMs: 1000 } };
+
+  it("asks the aim's window when the entity's lane recorded no handle", () => {
+    // win2, 2026-09-19: on an addon older than #619 the UIA lane records no handle, and the first
+    // version asked nothing — a silence that reads the same as "not blocked".
+    const root = vi.fn((h: bigint) => h);
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), aim, {
+      ...blocked,
+      root,
+      identityNow: () => aim.identity,
+    });
+    expect(got).toEqual({ name: "Save changes?", role: "dialog", hwnd: "777" });
+    expect(root).toHaveBeenCalledWith(500n);
+  });
+
+  it("does not ask the aim's window once its handle names another process's window", () => {
+    // Gate 2, round 1: a closed window's handle reused by another process — the executor refuses
+    // that act as aim_identity_changed; this must not name the stranger's dialog first.
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), aim, {
+      ...blocked,
+      identityNow: () => ({ ...aim.identity, pid: 99 }),
+    });
+    expect(got).toBeNull();
+  });
+
+  it("checks the aim's owner even when the entity recorded the same window's handle", () => {
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor", hwnd: "500" } }), aim, {
+      ...blocked,
+      identityNow: () => ({ ...aim.identity, pid: 99 }),
+    });
+    expect(got).toBeNull();
+  });
+
+  it("asks nothing when neither the entity nor the aim has a handle", () => {
+    const root = vi.fn((h: bigint) => h);
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), { kind: "aim", title: "Editor" }, { ...blocked, root });
+    expect(got).toBeNull();
+    expect(root).not.toHaveBeenCalled();
+  });
+});
+
+describe("the production wiring reaches the guard", () => {
+  // Gate 2, round 1: every cell above hands the env or the finder in directly, so deleting any of
+  // the three wiring lines (register → facade → registry → env) left them all green while the
+  // protection silently disappeared in production.
+  it("registers productionFindBlockingWindow on the production facade", () => {
+    const facade = getDesktopFacade();
+    try {
+      expect((facade as unknown as { opts: { findBlockingWindow?: unknown } }).opts.findBlockingWindow).toBe(productionFindBlockingWindow);
+    } finally {
+      _resetFacadeForTest();
+    }
+  });
+
+  it("hands the finder the session's aim, read at touch time", async () => {
+    const findBlockingWindow = vi.fn(() => null);
+    const facade = new DesktopFacade(async () => [candidate()], { executorFn: async () => "mouse", findBlockingWindow });
+    const view = await facade.see({ target: { hwnd: "500" } });
+    await facade.touch({ lease: view.entities[0].lease });
+    expect(findBlockingWindow).toHaveBeenCalledTimes(1);
+    expect(findBlockingWindow.mock.calls[0][1]).toMatchObject({ kind: "aim", hwnd: 500n });
+  });
+
+  it("carries a facade option through the registry to the guard", async () => {
+    const facade = new DesktopFacade(async () => [candidate()], {
+      executorFn: async () => "mouse",
+      findBlockingWindow: () => ({ name: "Save changes?", role: "dialog", hwnd: "777" }),
+    });
+    const view = await facade.see({ target: { windowTitle: "Editor" } });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      expect(result.blockingElement).toEqual({ name: "Save changes?", role: "dialog", hwnd: "777" });
+    }
+  });
+});

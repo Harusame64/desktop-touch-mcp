@@ -57,7 +57,7 @@ import {
   EntityNotFoundRefusalError,
   KeyboardTargetUnsafeRefusalError,
 } from "../errors/typed-errors.js";
-import type { TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
+import type { BlockingElementInfo, TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -81,7 +81,15 @@ import {
   getWindowRectByHwnd,
   getVirtualScreen,
   getWindowRenderState,
+  getWindowRoot,
+  getWindowRootOwner,
+  isWindowEnabled,
+  getLastActivePopup,
+  getWindowTitleW,
+  getWindowClassName,
+  getWindowIdentity,
 } from "../engine/win32.js";
+import { compareAimIdentity, readWindowIdentityFields, type Aim, type WindowIdentity } from "../engine/aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { verifyAnyChange } from "../engine/any-change.js";
@@ -262,6 +270,87 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
   } catch {
     return null; // conservative on Win32 error
   }
+}
+
+/**
+ * internal #126 — is the entity's own window disabled by a dialog?
+ *
+ * The clear ground the user's rule asks for ("refuse, but only when the grounds are clear",
+ * 2026-09-11), read from the OS at the moment of the act: **the entity's top-level window is
+ * disabled, and the owner chain's last active popup is a different window.** That is what
+ * `ShowDialog` / `MessageBox` / a common dialog does, and the one modal the `desktop_discover`
+ * snapshot, scoped to the main window, cannot contain.
+ *
+ * **The popup is asked of the ROOT OWNER, not of the entity's window.** Windows records the last
+ * active popup on the top of the owner chain, so a dialog that opens a second dialog is asked about
+ * nothing on its own, and the second dialog's owner is the first dialog, not the main window. The
+ * first version called `preferActivePopupIfBlocked` on the entity's window, which answers only the
+ * one-level case and demands a title: a nested dialog and an untitled one both read as "not
+ * blocked", and the press the OS swallows came back `ok:true` — the defect this exists to end
+ * (gate 2, round 1).
+ *
+ * win2 measured the one-level readings on four fixtures before anything depended on them
+ * (internal `6e41392`): `ShowDialog` and `MessageBox` → blocked; a non-modal owned window and a
+ * NumericUpDown window → NOT blocked, the owner is enabled. A disabled window whose last popup is a
+ * non-modal tool window is refused too: input to a disabled window is discarded either way.
+ *
+ * **Which window is asked: the entity's recorded handle, else the aim's.** The aim is the window
+ * this act is aimed at, and it carries who owned that handle when it was taken — on an addon older
+ * than #619 the UIA lane records no handle, and the first version asked nothing at all there, a
+ * silence indistinguishable from "not blocked" (win2, 2026-09-19). Neither is re-resolved by title:
+ * a re-resolution can land on a different window, and a refusal about someone else's window is not a
+ * clear ground. **When the window asked is the aim's, its owner must still be the aim's** —
+ * `compareAimIdentity`, the executor's own check: a closed window whose handle now names another
+ * process's window is not asked (the executor refuses that act as `aim_identity_changed`; gate 2,
+ * round 1). A web page's in-page `<dialog>` does not disable the window and is not seen by this.
+ *
+ * `deps` exists for unit tests only.
+ */
+export interface BlockingWindowDeps {
+  root?: (hwnd: bigint) => bigint | null;
+  identityNow?: (hwnd: bigint) => WindowIdentity | undefined;
+  rootOwner?: (hwnd: bigint) => bigint | null;
+  isEnabled?: (hwnd: bigint) => boolean;
+  lastActivePopup?: (hwnd: bigint) => bigint | null;
+  title?: (hwnd: bigint) => string;
+  className?: (hwnd: bigint) => string;
+}
+
+export function productionFindBlockingWindow(
+  entity: UiEntity,
+  aim: Aim | undefined,
+  deps: BlockingWindowDeps = {},
+): BlockingElementInfo | null {
+  const recorded = entity.origin?.hwnd;
+  const handle = recorded !== undefined && /^\d+$/.test(recorded) ? BigInt(recorded) : aim?.hwnd;
+  if (handle === undefined) return null;
+  try {
+    const rootOf = deps.root ?? getWindowRoot;
+    const root = rootOf(handle);
+    if (root === null) return null;
+    // The aim's window, still the aim's owner? Checked whenever the window asked IS the aim's.
+    if (aim?.hwnd !== undefined && rootOf(aim.hwnd) === root) {
+      const now = (deps.identityNow ?? productionWindowIdentity)(aim.hwnd);
+      if (compareAimIdentity(aim, now) === "changed") return null;
+    }
+    if ((deps.isEnabled ?? isWindowEnabled)(root)) return null;
+    const chainTop = (deps.rootOwner ?? getWindowRootOwner)(root) ?? root;
+    // The wrapper answers null for "no popup" (Win32 returns the window itself).
+    const popup = (deps.lastActivePopup ?? getLastActivePopup)(chainTop);
+    if (popup === null || popup === root) return null;
+    const title = (deps.title ?? getWindowTitleW)(popup);
+    // Untitled is still a dialog: the ground is the disabled window, not the name. The handle is
+    // what a caller can use to reach it; a class name stands in for the missing title.
+    const name = title !== "" ? title : (deps.className ?? getWindowClassName)(popup) || "dialog";
+    return { name, role: "dialog", hwnd: String(popup) };
+  } catch {
+    // Unreadable is not a ground: the snapshot check still runs.
+    return null;
+  }
+}
+
+function productionWindowIdentity(hwnd: bigint): WindowIdentity | undefined {
+  return readWindowIdentityFields(hwnd, { identity: getWindowIdentity, className: getWindowClassName, title: getWindowTitleW });
 }
 
 /**
@@ -518,6 +607,8 @@ export function getDesktopFacade(): DesktopFacade {
       // G1-B: viewport guard — blocks visual-only entities that are no longer
       // reachable at their discovered coordinates (ADR-029 Phase 1).
       checkViewport: productionCheckViewport,
+      // internal #126: the OS's answer about the entity's own window, asked before the snapshot.
+      findBlockingWindow: productionFindBlockingWindow,
       // G1-C: window-level focus fingerprint for focus_shifted diff.
       getFocusedEntityId: productionGetFocusedEntityId,
       // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
@@ -1628,7 +1719,7 @@ export function registerDesktopTools(server: McpServer): void {
       landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION),
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
-      "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry;",
+      "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry; role:'dialog' means a separate dialog window has disabled the target's window: blockingElement.hwnd is that dialog — re-call desktop_discover with target.hwnd=blockingElement.hwnd, answer it there, then retry (name is its title, which may be empty or shared, so do not rely on focus_window(title=name));",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
       "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",

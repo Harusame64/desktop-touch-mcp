@@ -252,7 +252,7 @@ mouse_click(x, y, origin?, scale?)    → pixel last resort; origin+scale from d
 Recovery hints — read `response.attention` after every observation and `response.warnings[]` on `desktop_discover` / `desktop_act`. Common reasons:
 
 - `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → re-call `desktop_discover`
-- `modal_blocking` → `response.blockingElement` (when present) names the blocking modal; dismiss via `click_element(name=blockingElement.name)` then retry
+- `modal_blocking` → `response.blockingElement` (when present) names the blocking modal; dismiss via `click_element(name=blockingElement.name)` then retry. `role: "dialog"` means a separate dialog window has disabled the target's window: `blockingElement.hwnd` is that dialog — re-call `desktop_discover` with `target.hwnd = blockingElement.hwnd`, answer it there, then retry (`name` is its title, which may be empty or shared)
 - `entity_outside_viewport` → the element moved off screen: `scroll(action='to_element' | 'raw')`, or re-call `desktop_discover` if its window moved or closed
 - `origin_window_not_visible` → the element's window is minimised or hidden, so nothing is drawn where it was found: `focus_window(windowTitle)` to restore it, then re-call `desktop_discover`
 - `coordinate_outside_reachable_bounds` → the coordinate is not on any connected monitor. Coordinate-based mouse input (`mouse_click` / `mouse_drag` / `scroll` / `browser_click`, and the mouse route inside `desktop_act`) now works on every monitor, including monitors placed left of or above the primary one, so this error normally means the coordinates are stale — the window moved or closed after they were read. Re-run `desktop_discover` and act on the new coordinates. If the server is running without its built-in Windows input module, mouse input falls back to the primary monitor only; the error message says so, and moving the window onto the primary monitor (or reinstalling the server) is the fix
@@ -947,7 +947,7 @@ This was the opt-in switch in v0.16.x. V2 is on by default since v0.17, so the f
 If `desktop_act` returns `ok: false`, read `reason` and follow the built-in recovery hints in the tool description. Common paths:
 
 - `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_discover`
-- `modal_blocking` → `response.blockingElement` (when present) carries `{ name, role, automationId? }`; dismiss with `click_element(name=blockingElement.name)`, then retry
+- `modal_blocking` → `response.blockingElement` (when present) carries `{ name, role, automationId? }`; dismiss with `click_element(name=blockingElement.name)`, then retry. With `role: "dialog"` the blocker is a separate dialog window that has disabled the target's window: `blockingElement` also carries its `hwnd` — `desktop_discover` with `target.hwnd = blockingElement.hwnd`, answer it, then retry
 - `entity_outside_viewport` → the element moved off screen: `scroll` / `scroll(action='to_element')` when it scrolled out of its own window, or re-call `desktop_discover` when the window itself moved or closed
 - `origin_window_not_visible` → `focus_window(windowTitle)` to restore the minimised / hidden window, then re-call `desktop_discover`
 - `coordinate_outside_reachable_bounds` → the target is on no connected monitor — usually stale coordinates: re-run `desktop_discover`. (Without the built-in Windows input module, only the primary monitor is reachable; the message says so.)

@@ -18,7 +18,7 @@ import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js"
 import { probeAim } from "../engine/aim-probe.js";
 import { toAim, readWindowIdentityFields, homingCorrectionForSources, observedHwndOfOrigin, type Aim } from "../engine/aim.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
-import type { TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
+import type { BlockingElementInfo, TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
 import { deriveEntityCapabilities } from "./desktop-capabilities.js";
@@ -202,6 +202,11 @@ export interface DesktopFacadeOptions {
    * Production implementation provided by desktop-register.ts (G1-B).
    */
   checkViewport?: (entity: UiEntity) => ViewportVerdict;
+  /**
+   * internal #126 — ask the OS whether the entity's window is disabled by a dialog it owns.
+   * Production implementation provided by desktop-register.ts.
+   */
+  findBlockingWindow?: (entity: UiEntity, aim: Aim | undefined) => BlockingElementInfo | null;
   /**
    * Return a focus fingerprint for the currently focused element, or undefined if unknown.
    * Production: uses win32.enumWindowsInZOrder() for window-level focus detection (G1-C).
@@ -1005,6 +1010,7 @@ export class DesktopFacade {
       isModalBlocking:    this.opts.isModalBlocking,
       findBlockingModal:  this.opts.findBlockingModal,
       checkViewport:      this.opts.checkViewport,
+      findBlockingWindow: this.opts.findBlockingWindow,
       getFocusedEntityId: this.opts.getFocusedEntityId,
       defaultTtlMs:       this.opts.defaultTtlMs,
       nowFn:              this.opts.nowFn,

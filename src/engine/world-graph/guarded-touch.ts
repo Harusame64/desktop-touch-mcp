@@ -87,6 +87,13 @@ export interface BlockingElementInfo {
   name: string;
   role: string;
   automationId?: string;
+  /**
+   * internal #126 — the blocking dialog's window handle, set when the blocker is a separate dialog
+   * window (`role: "dialog"`). A title can be empty or shared ("Error"), and `focus_window` matches
+   * titles by substring; the handle reaches that window exactly, via `desktop_discover`'s
+   * `target.hwnd`.
+   */
+  hwnd?: string;
 }
 
 /**
@@ -279,6 +286,17 @@ export interface TouchEnvironment {
    * Issue #63.
    */
   findBlockingModal?(entity: UiEntity): UiEntity | null;
+  /**
+   * internal #126 — the OS's answer, read at the moment of the act: is the entity's own window
+   * disabled by a dialog it owns? Returns that dialog, or null when there is no such ground.
+   *
+   * `isModalBlocking` looks at the `desktop_discover` snapshot, which is scoped to the target
+   * window — a `ShowDialog` / `MessageBox` in ANOTHER top-level window is not in it, whenever
+   * discover runs, and the act that runs into it degraded to a press the OS swallowed and answered
+   * `ok:true` (win2, 2026-09-18). This asks the window instead of the snapshot. Optional: absent
+   * means "not asked", and the snapshot check below is unchanged either way.
+   */
+  findBlockingWindow?(entity: UiEntity): BlockingElementInfo | null;
   /**
    * ADR-029 Phase 1: check whether the entity is currently reachable on screen.
    * Returns `null` when the touch may proceed, otherwise the block reason.
@@ -533,6 +551,13 @@ export class GuardedTouchLoop {
     const concreteAction = resolveAction(entity, action);
 
     // 3. Pre-touch environment checks.
+    // The OS first: a window disabled by a dialog it owns is a clear ground to refuse — the user's
+    // rule (2026-09-11) is "refuse, but only when the grounds are clear" — and it is the one modal
+    // the snapshot cannot contain.
+    const blockingWindow = this.env.findBlockingWindow?.(entity) ?? null;
+    if (blockingWindow !== null) {
+      return { ok: false, reason: "modal_blocking", diff: [], blockingElement: blockingWindow };
+    }
     if (this.env.isModalBlocking(entity)) {
       const blocker = this.env.findBlockingModal?.(entity) ?? null;
       return {
