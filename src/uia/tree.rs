@@ -392,8 +392,8 @@ fn get_element_bounds_impl(
         Err(_) => return Ok(None),
     };
 
-    // Read live properties (not cached — the element came from find_element which
-    // may have been fetched with cache but we need current state for bounds).
+    // Read live properties (not cached — the element came from `find_element_or_window`, which may
+    // have fetched it with cache, but we need current state for bounds).
     unsafe {
         let name = elem
             .CurrentName()

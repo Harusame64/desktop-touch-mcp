@@ -364,18 +364,25 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
 /// matched the window, which has no Invoke, so the title road downgraded to a coordinate press and
 /// the handle road refused. Taking `BTNW` out of the title, the same click invoked the Button.
 ///
-/// The window is never what an act names: it is addressed by title or handle before this search
-/// runs, and the name is for something inside it. The PowerShell twins of these three callers
+/// The window is addressed before this search runs — by title, or by the handle the caller gave —
+/// and the name is for something inside it. **That the handle is a top-level window is a convention,
+/// not a check** (gate 2): `resolveWindowTarget` takes any handle with a title or a rect and
+/// `element_from_handle` does not re-root it, and this server publishes a control's own handle in
+/// `get_ui_elements`. A caller that passed a CONTROL's handle and that control's own name was
+/// answered by the control before this change and gets "not found" after it. Nothing in this repo
+/// makes that call — the published handle is consumed by the keyboard receiver and the modal
+/// guard — and an act that means "this control" names it inside its window. The PowerShell twins of
+/// these three callers
 /// (`uia-bridge.ts` — the click and value scripts, by title and by handle, and the insert fallback)
 /// search `TreeScope.Descendants` and never test the window, and on the same window they invoked the
 /// Button (win2, same round); this makes the two clients give one answer.
 ///
-/// **A call that names nothing finds nothing.** With no criterion — or only empty ones, which every
-/// element passes (`contains("")`) — the window used to answer, and it cannot be invoked; the walk
-/// alone would answer with the first element in the tree, and invoke it. So that call is "not found"
-/// here. The PowerShell twins still take their first descendant (their filters become `$true`); no
-/// shipped call reaches either: discover drops nameless elements (`uia-provider.ts`), and the V1
-/// tools refuse a call with neither a name nor an AutomationId.
+/// **A call that names nothing finds nothing.** An empty criterion is not one (`given`), and with
+/// none left the window used to answer — and it cannot be invoked; the walk alone would answer with
+/// the first element in the tree, and invoke it. So that call is "not found" here. The PowerShell
+/// twins still take their first descendant (their filters become `$true`); no shipped call reaches
+/// either: discover drops nameless elements (`uia-provider.ts`), and the V1 tools refuse a call with
+/// neither a name nor an AutomationId.
 pub(crate) fn find_element_for_action(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
@@ -383,10 +390,8 @@ pub(crate) fn find_element_for_action(
     automation_id: Option<&str>,
     control_type: Option<&str>,
 ) -> napi::Result<IUIAutomationElement> {
-    let names_something = [name, automation_id, control_type]
-        .into_iter()
-        .any(|c| c.is_some_and(|s| !s.is_empty()));
-    if !names_something {
+    let (name, automation_id, control_type) = given(name, automation_id, control_type);
+    if name.is_none() && automation_id.is_none() && control_type.is_none() {
         return Err(napi::Error::from_reason("Element not found"));
     }
     find_among_descendants(ctx, window, name, automation_id, control_type)
@@ -410,12 +415,29 @@ pub(crate) fn find_element_or_window(
     automation_id: Option<&str>,
     control_type: Option<&str>,
 ) -> napi::Result<IUIAutomationElement> {
+    let (name, automation_id, control_type) = given(name, automation_id, control_type);
     let name_lower = name.map(|n| n.to_lowercase());
     let ct_lower = control_type.map(|c| c.to_lowercase());
     if matches_with_ct(window, &name_lower, automation_id, &ct_lower) {
         return Ok(window.clone());
     }
     find_among_descendants(ctx, window, name, automation_id, control_type)
+}
+
+/// Which criteria the call actually gave: an empty string is not one.
+///
+/// It read as two different things ten lines apart, and gate 2 on this change named it. An empty
+/// `name` matches every element (`contains("")`), an empty `automation_id` matched NO element that
+/// has one (`id == target`, an exact compare) — so `automationId: ""` was a filter nobody asked for,
+/// while the same value alone meant "nothing was named". The PowerShell twins drop an empty filter
+/// (`name ? … : "$true"`), so this is also what makes the two clients read a caller the same way.
+fn given<'a>(
+    name: Option<&'a str>,
+    automation_id: Option<&'a str>,
+    control_type: Option<&'a str>,
+) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>) {
+    let some = |c: Option<&'a str>| c.filter(|s| !s.is_empty());
+    (some(name), some(automation_id), some(control_type))
 }
 
 /// The walk both searches share: `window`'s descendants in the control view, depth-first, parent

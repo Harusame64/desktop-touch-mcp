@@ -1564,16 +1564,19 @@ export function createDesktopExecutor(
             // What the call CARRIED at the element. The predicates are truthiness, not
             // `!== undefined`, because an empty string is not an address.
             //
-            // THE ROADS DO NOT AGREE ABOUT AN EMPTY LOCATOR, and an earlier version of this comment
-            // said they did (gate 2, 2026-09-16). On the NAME they do: PowerShell writes `$true`
-            // (`uia-bridge.ts::makeSetValueScript`'s `nameFilter`) and the native walk matches `contains("")`
-            // (`src/uia/scroll.rs:858`) — every element passes either way. On the AUTOMATION ID they
-            // do not: PowerShell drops the filter (the same script's `idFilter`), while the native road is
-            // handed `Some("")` and compares EXACTLY (`id == target`, `src/uia/scroll.rs:867`), so
-            // an empty id silently EXCLUDES every element that has one — a filter nobody asked for,
-            // on the road that runs first. The two also disagree about what "no filter at all"
-            // selects: native tests the window element before walking (`src/uia/scroll.rs:809`),
-            // PowerShell takes the first descendant.
+            // THE ROADS DID NOT AGREE ABOUT AN EMPTY LOCATOR, and an earlier version of this comment
+            // said they did (gate 2, 2026-09-16). On the NAME they always have: PowerShell writes
+            // `$true` (`uia-bridge.ts::makeSetValueScript`'s `nameFilter`) and the native walk matched
+            // `contains("")` — every element passes either way. On the AUTOMATION ID they did not:
+            // PowerShell drops the filter (the same script's `idFilter`), while the native road was
+            // handed `Some("")` and compared EXACTLY, so an empty id silently EXCLUDED every element
+            // that has one — a filter nobody asked for, on the road that runs first.
+            //
+            // internal #133 closed that: `given` (`src/uia/actions.rs`) drops an empty criterion on
+            // the native side too, so an empty id means the same thing to both clients, and a call
+            // left with no criterion at all is answered "not found" rather than by the window the
+            // act was aimed at (the act search no longer tests the window element — that is the
+            // whole of #133).
             //
             // THE FLAG STAYS FALSE FOR `""` ANYWAY, and the reason is not that the roads agree: an
             // empty id is not something the call was ADDRESSED BY, and a row that answered
