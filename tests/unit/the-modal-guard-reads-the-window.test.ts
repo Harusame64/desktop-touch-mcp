@@ -109,80 +109,104 @@ describe("the guard asks the window before the snapshot", () => {
   });
 });
 
-describe("productionFindBlockingWindow", () => {
-  const origin = { kind: "window" as const, id: "Editor", hwnd: "123" };
-  // The one-level case: main (500) disabled, its last active popup is the dialog (777).
-  const blocked = {
-    root: () => 500n,
-    // Every window disabled except the dialog itself.
-    isEnabled: (h: bigint) => h === 777n,
-    isVisible: () => true,
-    rootOwner: () => 500n,
-    lastActivePopup: () => 777n,
-    title: () => "Save changes?",
-    className: () => "#32770",
+/**
+ * A little desktop: windows front-to-back, each with the top of its owner chain, and whether it is
+ * enabled and visible. `deps(desktop)` answers the finder's OS questions from it.
+ */
+interface W { hwnd: bigint; rootOwner: bigint; enabled: boolean; visible?: boolean; title?: string; cls?: string }
+function deps(desktop: W[], over: Record<string, unknown> = {}) {
+  const at = (h: bigint) => desktop.find((w) => w.hwnd === h);
+  return {
+    root: (h: bigint) => h,
+    rootOwner: (h: bigint) => at(h)?.rootOwner ?? h,
+    isEnabled: (h: bigint) => at(h)?.enabled ?? true,
+    isVisible: (h: bigint) => at(h)?.visible ?? true,
+    topLevelWindows: () => desktop.map((w) => w.hwnd),
+    title: (h: bigint) => at(h)?.title ?? "",
+    className: (h: bigint) => at(h)?.cls ?? "",
+    ...over,
   };
+}
+const MAIN = 500n;
+const main = (enabled = false): W => ({ hwnd: MAIN, rootOwner: MAIN, enabled, title: "Editor" });
+const modal: W = { hwnd: 777n, rootOwner: MAIN, enabled: true, title: "Save changes?", cls: "#32770" };
+const stranger: W = { hwnd: 9n, rootOwner: 9n, enabled: true, title: "Another app" };
+
+describe("productionFindBlockingWindow", () => {
+  const origin = { kind: "window" as const, id: "Editor", hwnd: "500" };
 
   it("names the dialog, with its handle, when the entity's window is disabled by it", () => {
-    expect(productionFindBlockingWindow(entity({ origin }), undefined, blocked)).toEqual({ name: "Save changes?", role: "dialog", hwnd: "777" });
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([stranger, modal, main()]))).toEqual({
+      name: "Save changes?",
+      role: "dialog",
+      hwnd: "777",
+    });
   });
 
-  it("asks the popup of the ROOT OWNER, so a dialog opened by a dialog is seen", () => {
-    // The entity sits in dialog A (600), which opened B (777). Windows records the last active
-    // popup on the top of the owner chain (main, 500): asking A itself answers nothing, and B's
-    // owner is A, not main. The first version asked the entity's window and read this as clear.
-    const lastActivePopup = vi.fn((h: bigint) => (h === 500n ? 777n : null));
-    const got = productionFindBlockingWindow(entity({ origin }), undefined, {
-      ...blocked,
-      root: () => 600n,
-      rootOwner: () => 500n,
-      lastActivePopup,
-      title: () => "Error",
-    });
-    expect(got).toEqual({ name: "Error", role: "dialog", hwnd: "777" });
-    expect(lastActivePopup).toHaveBeenCalledWith(500n);
+  it("names the INNER dialog of a nested pair, the live one at the top", () => {
+    // ShowDialog (600) opened a MessageBox (800): the first is disabled now, the second is live.
+    const outer: W = { hwnd: 600n, rootOwner: MAIN, enabled: false, title: "Options" };
+    const inner: W = { hwnd: 800n, rootOwner: MAIN, enabled: true, title: "Error" };
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([inner, outer, main()]))?.hwnd).toBe("800");
+  });
+
+  it("names the modal when WinForms' MessageBox has disabled a palette of the same owner too", () => {
+    // win2, 2026-09-19 (internal `a24d9c3`): the last active popup was the palette, disabled by the
+    // same modal — the "last active popup" reading fell silent and the act answered ok:true.
+    const palette: W = { hwnd: 650n, rootOwner: MAIN, enabled: false, title: "Palette" };
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([palette, modal, main()]))?.hwnd).toBe("777");
+  });
+
+  it("does not name a hidden window of the family, or a window of another family", () => {
+    const hidden: W = { hwnd: 640n, rootOwner: MAIN, enabled: true, visible: false, title: "Old" };
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([stranger, hidden, modal, main()]))?.hwnd).toBe("777");
+  });
+
+  it("asks the family of the ROOT OWNER when the entity sits in a dialog that opened another", () => {
+    // The entity is in dialog A (600, disabled now); A opened B (800). B's owner chain tops out at
+    // the main window, not at A — asking A's own family finds nothing (a mutation survived without
+    // this cell: every other cell here has the entity in the main window).
+    const outer: W = { hwnd: 600n, rootOwner: MAIN, enabled: false, title: "Options" };
+    const inner: W = { hwnd: 800n, rootOwner: MAIN, enabled: true, title: "Error" };
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Options", hwnd: "600" } }), undefined, deps([inner, outer, main()]));
+    expect(got?.hwnd).toBe("800");
+  });
+
+  it("names the live window NEAREST THE TOP when two of the family are live", () => {
+    // A Win32 DialogBox disables only its owner, so an owned palette stays enabled; the modal sits
+    // above it. (If the palette is activated above the modal, the palette is named — the refusal is
+    // still right, the owner IS disabled; recorded in internal #126 as the limit.)
+    const palette: W = { hwnd: 650n, rootOwner: MAIN, enabled: true, title: "Palette" };
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([modal, palette, main()]))?.hwnd).toBe("777");
   });
 
   it("refuses an UNTITLED dialog too, naming it by class and handle", () => {
-    // The ground is the disabled window, not the name; the first version demanded a title and let
-    // an untitled dialog through as "not blocked".
-    const got = productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, title: () => "" });
-    expect(got).toEqual({ name: "#32770", role: "dialog", hwnd: "777" });
-  });
-
-  it("asks the ROOT of the entity's recorded handle", () => {
-    const root = vi.fn(() => 500n);
-    productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, root });
-    expect(root).toHaveBeenCalledWith(123n);
+    const untitled: W = { ...modal, title: "" };
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([untitled, main()]))).toEqual({
+      name: "#32770",
+      role: "dialog",
+      hwnd: "777",
+    });
   });
 
   it("asks the element's OWN window first, so a dialog's own button is not refused as blocked by itself", () => {
-    // Gate 2, round 2: UIA can show an owned dialog as the main window's child, so its "OK",
-    // discovered from the main window, records the main window's handle. The button's own window
-    // roots at the dialog (777), which is enabled.
-    const root = vi.fn((h: bigint) => (h === 900n ? 777n : 500n));
+    // Gate 2, round 2: a dialog's "OK" discovered from the main window records the main window's
+    // handle. The button's own window roots at the dialog, which is enabled.
+    const root = vi.fn((h: bigint) => (h === 900n ? 777n : h));
     const got = productionFindBlockingWindow(
       entity({ origin, locator: { uia: { name: "OK", nativeWindowHandle: "900" } } }),
       undefined,
-      { ...blocked, root },
+      deps([modal, main()], { root }),
     );
     expect(got).toBeNull();
     expect(root).toHaveBeenCalledWith(900n);
   });
 
   it.each([
-    ["the popup is hidden", { isVisible: () => false }],
-    ["the popup is itself disabled", { isEnabled: () => false }],
-  ])("answers null when %s: a stale popup is not a ground to name", (_label, over) => {
-    expect(productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, ...over })).toBeNull();
-  });
-
-  it.each([
-    ["the window is enabled", { isEnabled: () => true }],
-    ["the window is disabled with no other popup (its own processing)", { lastActivePopup: () => null }],
-    ["the last active popup is the entity's own window", { lastActivePopup: () => 500n }],
-  ])("answers null when %s", (_label, over) => {
-    expect(productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, ...over })).toBeNull();
+    ["the window is enabled", [modal, main(true)]],
+    ["the window is disabled with nothing live in its family (its own work)", [stranger, main()]],
+  ])("answers null when %s", (_label, desktop) => {
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps(desktop as W[]))).toBeNull();
   });
 
   it.each([
@@ -190,70 +214,53 @@ describe("productionFindBlockingWindow", () => {
     ["an origin with no handle (a lane that recorded none)", { kind: "window" as const, id: "Editor" }],
     ["a handle that is not a number", { kind: "window" as const, id: "Editor", hwnd: "Editor" }],
   ])("does not re-resolve by title and asks nothing, for %s", (_label, o) => {
-    // A re-resolution can land on a different window than the entity came from; a refusal about
-    // someone else's window is not a clear ground. The snapshot check still runs.
-    const root = vi.fn(() => 1n);
-    expect(productionFindBlockingWindow(entity(o ? { origin: o } : {}), undefined, { ...blocked, root })).toBeNull();
+    const root = vi.fn((h: bigint) => h);
+    expect(productionFindBlockingWindow(entity(o ? { origin: o } : {}), undefined, deps([modal, main()], { root }))).toBeNull();
     expect(root).not.toHaveBeenCalled();
   });
 
   it("answers null, not a refusal, when the OS cannot be read", () => {
-    const got = productionFindBlockingWindow(entity({ origin }), undefined, {
-      ...blocked,
-      root: () => {
+    const got = productionFindBlockingWindow(entity({ origin }), undefined, deps([modal, main()], {
+      topLevelWindows: () => {
         throw new Error("native binding absent");
       },
-    });
+    }));
     expect(got).toBeNull();
   });
 });
 
 describe("an entity with no recorded handle is asked about the aim's window", () => {
-  const blocked = {
-    root: (h: bigint) => h,
-    isEnabled: (h: bigint) => h === 777n,
-    isVisible: () => true,
-    rootOwner: (h: bigint) => h,
-    lastActivePopup: () => 777n,
-    title: () => "Save changes?",
-    className: () => "#32770",
-  };
-  const aim = { kind: "aim" as const, title: "Editor", hwnd: 500n, identity: { pid: 42, processName: "editor.exe", processStartTimeMs: 1000 } };
+  const aim = { kind: "aim" as const, title: "Editor", hwnd: MAIN, identity: { pid: 42, processName: "editor.exe", processStartTimeMs: 1000 } };
 
   it("asks the aim's window when the entity's lane recorded no handle", () => {
     // win2, 2026-09-19: on an addon older than #619 the UIA lane records no handle, and the first
     // version asked nothing — a silence that reads the same as "not blocked".
     const root = vi.fn((h: bigint) => h);
-    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), aim, {
-      ...blocked,
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), aim, deps([modal, main()], {
       root,
       identityNow: () => aim.identity,
-    });
-    expect(got).toEqual({ name: "Save changes?", role: "dialog", hwnd: "777" });
-    expect(root).toHaveBeenCalledWith(500n);
+    }));
+    expect(got?.hwnd).toBe("777");
+    expect(root).toHaveBeenCalledWith(MAIN);
   });
 
   it("does not ask the aim's window once its handle names another process's window", () => {
-    // Gate 2, round 1: a closed window's handle reused by another process — the executor refuses
-    // that act as aim_identity_changed; this must not name the stranger's dialog first.
-    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), aim, {
-      ...blocked,
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), aim, deps([modal, main()], {
       identityNow: () => ({ ...aim.identity, pid: 99 }),
-    });
+    }));
     expect(got).toBeNull();
   });
 
   it("checks the aim's owner even when the entity recorded the same window's handle", () => {
-    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor", hwnd: "500" } }), aim, {
-      ...blocked,
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor", hwnd: "500" } }), aim, deps([modal, main()], {
       identityNow: () => ({ ...aim.identity, pid: 99 }),
-    });
+    }));
     expect(got).toBeNull();
   });
 
   it("asks nothing when neither the entity nor the aim has a handle", () => {
     const root = vi.fn((h: bigint) => h);
-    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), { kind: "aim", title: "Editor" }, { ...blocked, root });
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Editor" } }), { kind: "aim", title: "Editor" }, deps([modal, main()], { root }));
     expect(got).toBeNull();
     expect(root).not.toHaveBeenCalled();
   });

@@ -84,7 +84,7 @@ import {
   getWindowRoot,
   getWindowRootOwner,
   isWindowEnabled,
-  getLastActivePopup,
+  enumTopLevelWindowHandles,
   getWindowTitleW,
   getWindowClassName,
   getWindowIdentity,
@@ -277,17 +277,13 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
  *
  * The clear ground the user's rule asks for ("refuse, but only when the grounds are clear",
  * 2026-09-11), read from the OS at the moment of the act: **the entity's top-level window is
- * disabled, and the owner chain's last active popup is a different window.** That is what
- * `ShowDialog` / `MessageBox` / a common dialog does, and the one modal the `desktop_discover`
- * snapshot, scoped to the main window, cannot contain.
+ * disabled, and a different window of its owner family is still live.** That is what `ShowDialog`
+ * / `MessageBox` / a common dialog does, and the one modal the `desktop_discover` snapshot, scoped
+ * to the main window, cannot contain.
  *
- * **The popup is asked of the ROOT OWNER, not of the entity's window.** Windows records the last
- * active popup on the top of the owner chain, so a dialog that opens a second dialog is asked about
- * nothing on its own, and the second dialog's owner is the first dialog, not the main window. The
- * first version called `preferActivePopupIfBlocked` on the entity's window, which answers only the
- * one-level case and demands a title: a nested dialog and an untitled one both read as "not
- * blocked", and the press the OS swallows came back `ok:true` — the defect this exists to end
- * (gate 2, round 1).
+ * **The family is the root owner's**, so a dialog opened by a dialog is seen: the first version
+ * asked the entity's window alone (`preferActivePopupIfBlocked`), which answers only one level and
+ * demands a title, and a nested or untitled dialog read as "not blocked" (gate 2, round 1).
  *
  * win2 measured the one-level readings on four fixtures before anything depended on them
  * (internal `6e41392`): `ShowDialog` and `MessageBox` → blocked; a non-modal owned window and a
@@ -311,7 +307,7 @@ export interface BlockingWindowDeps {
   identityNow?: (hwnd: bigint) => WindowIdentity | undefined;
   rootOwner?: (hwnd: bigint) => bigint | null;
   isEnabled?: (hwnd: bigint) => boolean;
-  lastActivePopup?: (hwnd: bigint) => bigint | null;
+  topLevelWindows?: () => bigint[];
   isVisible?: (hwnd: bigint) => boolean;
   title?: (hwnd: bigint) => string;
   className?: (hwnd: bigint) => string;
@@ -341,15 +337,28 @@ export function productionFindBlockingWindow(
       const now = (deps.identityNow ?? productionWindowIdentity)(aim.hwnd);
       if (compareAimIdentity(aim, now) === "changed") return null;
     }
-    if ((deps.isEnabled ?? isWindowEnabled)(root)) return null;
-    const chainTop = (deps.rootOwner ?? getWindowRootOwner)(root) ?? root;
-    // The wrapper answers null for "no popup" (Win32 returns the window itself).
-    const popup = (deps.lastActivePopup ?? getLastActivePopup)(chainTop);
-    if (popup === null || popup === root) return null;
-    // A popup that is hidden or itself disabled is not what holds this window: Windows keeps the
-    // last active popup even after it is hidden, and a window disabled by its own work can still
-    // point at one (gate 2, round 2). Not a ground to name — the snapshot check still runs.
-    if (!(deps.isVisible ?? isPopupVisible)(popup) || !(deps.isEnabled ?? isWindowEnabled)(popup)) return null;
+    const isEnabled = deps.isEnabled ?? isWindowEnabled;
+    if (isEnabled(root)) return null;
+    const rootOwnerOf = deps.rootOwner ?? getWindowRootOwner;
+    const chainTop = rootOwnerOf(root) ?? root;
+    // **The dialog is the window of this owner family that is still live**: visible, enabled, not
+    // the entity's own — and of those, the one nearest the top of the Z-order. A modal disables the
+    // windows it blocks and stays enabled itself; a nested dialog sits above the one that opened it.
+    //
+    // The "last active popup" reading this replaced named whatever was activated last: a hidden
+    // popup Windows still remembers, or a palette the user clicked while the modal was up — and
+    // when WinForms' `MessageBox` had disabled that palette too, the check fell silent and the act
+    // answered `ok:true` under a real modal, the defect this exists to end (win2, 2026-09-19,
+    // internal `a24d9c3`). The family is the root owner's: every window whose owner chain tops out
+    // where this one's does. The handle list is unfiltered and front-to-back (EnumWindows).
+    const isVisible = deps.isVisible ?? isPopupVisible;
+    const popup =
+      (deps.topLevelWindows ?? enumTopLevelWindowHandles)().find(
+        (w) => w !== root && (rootOwnerOf(w) ?? w) === chainTop && isVisible(w) && isEnabled(w),
+      ) ?? null;
+    // Disabled with nothing live in its family: its own work, not a modal. Not a ground to name —
+    // the snapshot check still runs.
+    if (popup === null) return null;
     const title = (deps.title ?? getWindowTitleW)(popup);
     // Untitled is still a dialog: the ground is the disabled window, not the name. The handle is
     // what a caller can use to reach it; a class name stands in for the missing title.
