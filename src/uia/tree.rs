@@ -381,7 +381,7 @@ fn get_element_bounds_impl(
         Err(_) => return Ok(None),
     };
 
-    let elem = match super::actions::find_element_for_action(
+    let elem = match super::actions::find_element_or_window(
         ctx,
         &window,
         opts.name.as_deref(),
@@ -468,7 +468,7 @@ fn get_element_children_impl(
 ) -> napi::Result<Vec<UiElement>> {
     let window = find_window(ctx, &opts.window_title)?;
 
-    let target = super::actions::find_element_for_action(
+    let target = super::actions::find_element_or_window(
         ctx,
         &window,
         opts.name.as_deref(),

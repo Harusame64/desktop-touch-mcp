@@ -7,7 +7,6 @@
 use windows::Win32::UI::Accessibility::*;
 use windows::core::Interface;
 
-use super::scroll::find_element;
 use super::thread::{self, UiaContext};
 use super::tree::{resolve_root, CACHE_BUILD_FAILED_PREFIX};
 use super::types::*;
@@ -355,8 +354,28 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Find an element for action operations. Uses the same DFS search as scroll
-/// but adds `control_type` matching support.
+/// Find the element an ACT names: the first DESCENDANT of `window`, depth-first, parent before
+/// child, that matches every criterion given (`matches_with_ct`). Click, value and insert use this.
+///
+/// **Never the window itself** (internal #133). This used to test the window before its children,
+/// by the same case-insensitive name substring — and a window whose title contains the name of one
+/// of its own elements is ordinary ("Save" in "Save As"). MEASURED 2026-09-19 win2 (internal
+/// `c0f9364`): a WPF window titled `RCX-title-BTNW-…` holding a Button `BTNW`; a name-only click
+/// matched the window, which has no Invoke, so the title road downgraded to a coordinate press and
+/// the handle road refused. Taking `BTNW` out of the title, the same click invoked the Button.
+///
+/// The window is never what an act names: it is addressed by title or handle before this search
+/// runs, and the name is for something inside it. The PowerShell twins of these three callers
+/// (`uia-bridge.ts` — the click and value scripts, by title and by handle, and the insert fallback)
+/// search `TreeScope.Descendants` and never test the window, and on the same window they invoked the
+/// Button (win2, same round); this makes the two clients give one answer.
+///
+/// **A call that names nothing finds nothing.** With no criterion — or only empty ones, which every
+/// element passes (`contains("")`) — the window used to answer, and it cannot be invoked; the walk
+/// alone would answer with the first element in the tree, and invoke it. So that call is "not found"
+/// here. The PowerShell twins still take their first descendant (their filters become `$true`); no
+/// shipped call reaches either: discover drops nameless elements (`uia-provider.ts`), and the V1
+/// tools refuse a call with neither a name nor an AutomationId.
 pub(crate) fn find_element_for_action(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
@@ -364,18 +383,52 @@ pub(crate) fn find_element_for_action(
     automation_id: Option<&str>,
     control_type: Option<&str>,
 ) -> napi::Result<IUIAutomationElement> {
-    if control_type.is_none() {
-        // Delegate to existing find_element in scroll.rs
-        return find_element(ctx, window, name, automation_id);
+    let names_something = [name, automation_id, control_type]
+        .into_iter()
+        .any(|c| c.is_some_and(|s| !s.is_empty()));
+    if !names_something {
+        return Err(napi::Error::from_reason("Element not found"));
     }
+    find_among_descendants(ctx, window, name, automation_id, control_type)
+}
 
+/// Find the element a READ names — the bounds and children reads in `tree.rs` — testing the window
+/// itself first, then its descendants as `find_element_for_action` does.
+///
+/// **These keep the window, and #133 did not change them,** because their PowerShell twins start
+/// their search AT the window (`FindElement $target 0` in `getElementBounds` and
+/// `makeGetChildrenScript` — win2 read it, correcting the first version of this change, which moved
+/// them with the acts and would have split two clients that agree). So does `find_element` in
+/// `scroll.rs`, with its scroll twins. The same defect is there all the same — a read by a name the
+/// title contains answers with the window, on both clients — and it is a read's, with the reads'
+/// callers (`wait_until`, `scope_element`, the mouse re-query), so it is changed on both clients
+/// together or not at all.
+pub(crate) fn find_element_or_window(
+    ctx: &UiaContext,
+    window: &IUIAutomationElement,
+    name: Option<&str>,
+    automation_id: Option<&str>,
+    control_type: Option<&str>,
+) -> napi::Result<IUIAutomationElement> {
     let name_lower = name.map(|n| n.to_lowercase());
     let ct_lower = control_type.map(|c| c.to_lowercase());
-
-    // Check window element itself
     if matches_with_ct(window, &name_lower, automation_id, &ct_lower) {
         return Ok(window.clone());
     }
+    find_among_descendants(ctx, window, name, automation_id, control_type)
+}
+
+/// The walk both searches share: `window`'s descendants in the control view, depth-first, parent
+/// before child, to `MAX_SEARCH_DEPTH`; the first that matches every criterion given.
+fn find_among_descendants(
+    ctx: &UiaContext,
+    window: &IUIAutomationElement,
+    name: Option<&str>,
+    automation_id: Option<&str>,
+    control_type: Option<&str>,
+) -> napi::Result<IUIAutomationElement> {
+    let name_lower = name.map(|n| n.to_lowercase());
+    let ct_lower = control_type.map(|c| c.to_lowercase());
 
     let mut stack: Vec<(IUIAutomationElement, u32)> = Vec::with_capacity(64);
 
