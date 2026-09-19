@@ -863,6 +863,24 @@ function namesAWindowByTitle(title: string | undefined): boolean {
 }
 
 /**
+ * ADR-036 — what a UIA call carried to choose its window and its element, the same three fields on
+ * every row the UIA road's own rungs write: the value road, the click road, and their refusals. The
+ * coordinate downgrade carries them nested, as `uiaAttempt` — what the UIA attempt it replaces
+ * carried, never a description of the press. Each field's meaning, and why it is spelled this way, is
+ * written once, at the value road's row, where it was first measured.
+ *
+ * One place for all rows: the click road wrote none of them, so a route-check cell could say what it
+ * ASKED for but not what the product TOOK (win2, internal `dc635ce`, §4.1 — the largest blocker).
+ */
+function uiaAddressAxes(aimTitle: string | undefined, aimHwnd: bigint | undefined, automationId: string | undefined, name: string | undefined) {
+  return {
+    addressedBy: { automationId: Boolean(automationId), name: Boolean(name) },
+    addressedElementBy: automationId ? "automation_id" : name ? "name_substring" : "nothing",
+    addressedWindowBy: aimHwnd !== undefined ? "handle" : namesAWindowByTitle(aimTitle) ? "title" : "nothing",
+  } as const;
+}
+
+/**
  * ADR-036 probe — a road that succeeded says so.
  *
  * The first version of this probe only wrote at the two mouse presses and the containment check,
@@ -1456,6 +1474,8 @@ export function createDesktopExecutor(
     if (entity.sources.includes("uia") && !uiaBlocked && preferredAllows("uia")) {
       const automationId = entity.locator?.uia?.automationId;
       const name         = entity.locator?.uia?.name ?? entity.label;
+      // What this call carries to choose its window and element — on every row below (`uiaAddressAxes`).
+      const addressed    = uiaAddressAxes(aim.title, aimHwnd, automationId, name);
       // Phase 4: 'setValue' absorbs former set_element_value tool — same UIA
       // ValuePattern path as 'type'. Both actions land here for any UIA entity.
       //
@@ -1495,9 +1515,10 @@ export function createDesktopExecutor(
           //
           // "NEVER LOOKS AT THE TITLE" WOULD BE TOO STRONG (gate 2, 2026-09-16): the title is read
           // once before either road is chosen, by `refuseUiaTitleIfExcluded(windowTitle)`
-          // (`uia-bridge.ts::setElementValue`'s `refuseUiaTitleIfExcluded`), which can refuse on the title alone. It cannot change this
-          // field — a refusal throws and no row is written — but the window axis says "the handle
-          // is what SELECTED the window", not "the string was never touched".
+          // (`uia-bridge.ts::setElementValue`'s `refuseUiaTitleIfExcluded`), which can refuse on the title alone. That refusal's
+          // row (`window_excluded`) carries this field too, and says `handle` there as well: the
+          // window axis says "the handle is what SELECTED the window", not "the string was never
+          // touched" — nor which check refused.
           //
           // PRESENCE, NOT VALUES. `entityLabel` is already on this row, so an identifier is not a
           // new class of content — but the typed text never is, and a locator the caller supplied
@@ -1583,10 +1604,7 @@ export function createDesktopExecutor(
             // answers `"handle"` for exactly the same condition, so a third copy of one bit could
             // only ever disagree with the other two (gate 2, 2026-09-16). This object is the
             // ELEMENT locators the call carried; the window is the axis below.
-            addressedBy: {
-              automationId: Boolean(automationId),
-              name: Boolean(name),
-            },
+            addressedBy: addressed.addressedBy,
             // The ELEMENT axis — the NARROWEST thing the call carried for choosing an element
             // inside the window that answered. `automation_id` is matched exactly; `name` is
             // matched as a case-insensitive SUBSTRING on both roads, so it selects the first
@@ -1598,8 +1616,7 @@ export function createDesktopExecutor(
             // name records `automation_id` while the name was also required. `addressedBy` is where
             // "it carried both" is readable; this field is only "the narrowest it had".
 
-            addressedElementBy:
-              automationId ? "automation_id" : name ? "name_substring" : "nothing",
+            addressedElementBy: addressed.addressedElementBy,
             // The WINDOW axis — what decides whether a wrong WINDOW could have answered at all.
             // A handle cannot be ambiguous; a title is a substring match over top-level windows and
             // a same-titled sibling is the accident this ADR keeps measuring. MEASURED to split on
@@ -1619,14 +1636,13 @@ export function createDesktopExecutor(
             // caller's own string, passed through unchanged because a plain top-level match makes
             // `resolveWindowTarget` return `null` on purpose. A partial title reaches the backends
             // as a partial title, and the substring rule below is what decides which window answers.
-            addressedWindowBy:
-              aimHwnd !== undefined ? "handle" : namesAWindowByTitle(aim.title) ? "title" : "nothing",
+            addressedWindowBy: addressed.addressedWindowBy,
           });
           return "uia";
         } catch (uiaErr) {
           // R3 tool-exclusion — as in the click path below: refusals are not rungs.
           if (uiaErr instanceof WindowExcludedError) {
-            probeRefusal("uia_set_value", "window_excluded", aimHwnd, entity);
+            probeRefusal("uia_set_value", "window_excluded", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
             throw uiaErr;
           }
           // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses
@@ -1649,7 +1665,7 @@ export function createDesktopExecutor(
             // click path, instead of an `executor_failed` that reads like a UIA hiccup
             // (2ゲート目の指摘). One condition, one answer, whichever action asked.
             if (uiaErr instanceof AimedWindowGoneError) {
-              probeRefusal("uia_set_value_then_keyboard", "aim_window_gone", aimHwnd, entity);
+              probeRefusal("uia_set_value_then_keyboard", "aim_window_gone", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
               throw uiaErr;
             }
             // ADR-036 — and an aimed WRITE ends the same way an aimed click does. Both rungs
@@ -1675,7 +1691,7 @@ export function createDesktopExecutor(
               // give — in the classifier's words, never the backend's (`uia-route-failure.ts`). The
               // keyboard rung is not classified: none of its failures has a measured shape.
               const failure = classifyUiaRouteFailure(uiaErr);
-              probeRefusal("uia_set_value_then_keyboard", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null });
+              probeRefusal("uia_set_value_then_keyboard", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
               throw new AimedRouteFailedError(
                 `${ladder}. Not falling back to a coordinate press — this call named its window, ` +
                 `and the entity's rect is a screen point that any window can be under. ` +
@@ -1697,7 +1713,7 @@ export function createDesktopExecutor(
       }
       try {
         await d.uiaClick(winTitle, name, automationId, aimHwnd);
-        probeRoute("uia", aimHwnd, entity, { why: "uia_invoke" });
+        probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
         return "uia";
       } catch (uiaErr) {
         // R3 tool-exclusion — a refusal is not a failure to route around. Every other throw
@@ -1705,7 +1721,7 @@ export function createDesktopExecutor(
         // that window", and the mouse fallback would touch it anyway, by coordinate, at the
         // rect the secure dialog now occupies (2ゲート目の指摘).
         if (uiaErr instanceof WindowExcludedError) {
-          probeRefusal("uia_click", "window_excluded", aimHwnd, entity);
+          probeRefusal("uia_click", "window_excluded", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
           throw uiaErr;
         }
         // ADR-036 — nor is a dead aim a rung. The rect below is where the window WAS; a window
@@ -1714,7 +1730,7 @@ export function createDesktopExecutor(
         // one of the five failures the perception graph is built to stop, so this ends the
         // ladder and says so (2ゲート目の指摘).
         if (uiaErr instanceof AimedWindowGoneError) {
-          probeRefusal("uia_click", "aim_window_gone", aimHwnd, entity);
+          probeRefusal("uia_click", "aim_window_gone", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
           throw uiaErr;
         }
         // ADR-036 — and an aimed click does not finish as a blind one.
@@ -1740,7 +1756,7 @@ export function createDesktopExecutor(
           // they reached the caller as the same sentence, word for word (win2, 2026-09-11,
           // `dev/route-failure-strings/RESULTS.md`, arms Pi-a and Pi-b).
           const failure = classifyUiaRouteFailure(uiaErr);
-          probeRefusal("uia_click", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null });
+          probeRefusal("uia_click", "aim_route_failed", aimHwnd, entity, { routeFailure: failure ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
           // Typed for the same reason the two refusals above are: an untyped throw arrives as
           // `executor_failed`, and that reason's published first suggestion is "fall back to
           // mouse_click using the entity rect center" — the blind press this branch exists to
@@ -1791,7 +1807,7 @@ export function createDesktopExecutor(
         const clickViaRaw = (uiaErr as { uiaVia?: unknown } | null)?.uiaVia;
         const clickVia = clickViaRaw === "native" || clickViaRaw === "powershell" ? clickViaRaw : undefined;
         if (routeFailure === "element_not_found" && readVia === "native" && clickVia === "native") {
-          probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found", readVia, clickVia });
+          probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found", readVia, clickVia, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
           throw new TargetGoneError(
             `UIA found no element for "${entity.label ?? entity.entityId}" on the title-only road: ` +
             `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing where it used to be.`,
@@ -1827,7 +1843,7 @@ export function createDesktopExecutor(
           const windowRefuses = !ownRefuses && coordHwnd !== undefined && (await d.windowTakesInput?.(coordHwnd)) === false;
           const evidence = ownRefuses ? "own_window_disabled" : windowRefuses ? "window_disabled" : null;
           if (evidence !== null) {
-            probeRefusal("uia_downgrade", "aim_route_failed", undefined, entity, { routeFailure: "element_disabled", readVia, clickVia, evidence });
+            probeRefusal("uia_downgrade", "aim_route_failed", undefined, entity, { routeFailure: "element_disabled", readVia, clickVia, evidence, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
             throw new AimedRouteFailedError(
               `UIA reports the element matched for "${entity.label ?? entity.entityId}" disabled on the title-only road ` +
               `(${evidence}): ${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not pressing a control that does not take input.`,
@@ -1884,6 +1900,15 @@ export function createDesktopExecutor(
         // the ladder having run on the window the entity came from.
         probeRoute("mouse", undefined, entity, {
           why: "uia_downgrade",
+          // What the UIA attempt this press replaces carried (`uiaAddressAxes`), NESTED so the three
+          // names never describe a coordinate press: a reader selecting rows by `addressedWindowBy`
+          // would otherwise count this press as a UIA click by title (gate 2). The press addresses no
+          // element; the window it was checked against is `coordHwnd`, below.
+          uiaAttempt: {
+            addressedBy: addressed.addressedBy,
+            addressedElementBy: addressed.addressedElementBy,
+            addressedWindowBy: addressed.addressedWindowBy,
+          },
           // The class of the UIA answer that let the downgrade through, `null` when the classifier
           // did not recognise it — so the unrecognised answers collect in the log, where the next
           // class to add can be read from. Never the answer's own text.

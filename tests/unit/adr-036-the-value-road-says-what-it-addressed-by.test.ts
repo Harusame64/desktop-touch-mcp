@@ -260,3 +260,129 @@ describe("the UIA value road, on success", () => {
   });
 
 });
+
+/**
+ * THE CLICK ROAD WRITES THE SAME THREE FIELDS. It wrote none of them, so a route-check cell on a
+ * click could say what it ASKED for — a handle or a title, an AutomationId or a name — but not what
+ * the product TOOK (win2, internal `dc635ce`, §4.1: the largest blocker on the grid, a whole action
+ * column). One helper (`uiaAddressAxes`) now writes them on every row of the UIA road, so the value
+ * road's cells above pin the meaning and these pin that the click road carries it.
+ */
+describe("the UIA click road, and its refusals and downgrade", () => {
+  const button: UiEntity = {
+    ...base,
+    entityId: "b1",
+    role: "button",
+    label: "GO",
+    affordances: [{ verb: "invoke", executors: ["uia", "mouse"], confidence: 0.9, preconditions: [], postconditions: [] }],
+    controlType: "Button",
+    rect: { x: 100, y: 200, width: 80, height: 30 },
+  };
+  const failing = (text: string) => vi.fn(async () => { throw Object.assign(new Error(text), { uiaVia: "native" }); });
+  const allRows = (): Array<Record<string, unknown>> =>
+    existsSync(logPath)
+      ? readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>).filter((r) => r.seam === "act.route")
+      : [];
+  async function click(entity: UiEntity, aim: Aim, over: Partial<ExecutorDeps> = {}) {
+    const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+    return createDesktopExecutor(aim, { ...deps(), ...over })(entity, "click").then((v) => v, (e: unknown) => e);
+  }
+
+  it("writes the axes on a UIA invoke by handle and AutomationId", async () => {
+    await click({ ...button, locator: { uia: { name: "GO", automationId: "GO-ID" } } }, aimed);
+    const row = allRows().find((r) => r.why === "uia_invoke");
+    expect(row).toMatchObject({ route: "uia", addressedWindowBy: "handle", addressedElementBy: "automation_id" });
+    expect(row?.addressedBy).toEqual({ automationId: true, name: true });
+  });
+
+  it("writes the axes on a UIA invoke by title and name", async () => {
+    await click({ ...button, locator: { uia: { name: "GO" } } }, { kind: "aim", title: "VR-CELL" });
+    expect(allRows().find((r) => r.why === "uia_invoke")).toMatchObject({ addressedWindowBy: "title", addressedElementBy: "name_substring" });
+  });
+
+  it("writes them on the aimed refusal — the click that was not finished as a coordinate press", async () => {
+    const out = await click({ ...button, locator: { uia: { name: "GO", automationId: "GO-ID" } } }, aimed, { uiaClick: failing("Element not found") });
+    expect((out as Error).name).toBe("AimedRouteFailedError");
+    expect(allRows().find((r) => r.route === "refusal" && r.rung === "uia_click"))
+      .toMatchObject({ refused: "aim_route_failed", addressedWindowBy: "handle", addressedElementBy: "automation_id" });
+  });
+
+  it("writes them on the title road's not-found refusal", async () => {
+    const e = { ...button, locator: { uia: { name: "GO", via: "native" as const } } };
+    const out = await click(e, { kind: "aim", title: "VR-CELL" }, { uiaClick: failing("Element not found") });
+    expect((out as Error).name).toBe("TargetGoneError");
+    expect(allRows().find((r) => r.route === "refusal" && r.rung === "uia_downgrade"))
+      .toMatchObject({ refused: "entity_not_found", addressedWindowBy: "title", addressedElementBy: "name_substring" });
+  });
+
+  it("writes them on the coordinate downgrade NESTED, as what the UIA attempt it replaces carried — never as the press's own", async () => {
+    // Gate 2: under the same three names at the top level, a reader selecting rows by
+    // `addressedWindowBy` counted this coordinate press as a successful UIA click by title.
+    const d = { uiaClick: failing("InvokePattern not supported by this element"), mouseClick: vi.fn(async () => {}) };
+    await click({ ...button, locator: { uia: { name: "GO" } } }, { kind: "aim", title: "VR-CELL" }, d);
+    expect(d.mouseClick).toHaveBeenCalled();
+    const row = allRows().find((r) => r.route === "mouse" && r.why === "uia_downgrade");
+    expect(row?.uiaAttempt).toEqual({ addressedBy: { automationId: false, name: true }, addressedElementBy: "name_substring", addressedWindowBy: "title" });
+    expect(row).not.toHaveProperty("addressedWindowBy");
+    expect(row).not.toHaveProperty("addressedElementBy");
+    expect(row).not.toHaveProperty("addressedBy");
+  });
+
+  it("counts the label as the name on the click road too — the string the road is handed", async () => {
+    // Gate 2: every click cell set a locator name, so dropping `?? entity.label` survived here.
+    await click({ ...button, label: "GO", locator: { uia: {} } }, { kind: "aim", title: "VR-CELL" });
+    expect(allRows().find((r) => r.why === "uia_invoke")).toMatchObject({
+      addressedElementBy: "name_substring",
+      addressedBy: { automationId: false, name: true },
+    });
+  });
+
+  it("every row the UIA road's rungs write carries the three, with the values its call carried", async () => {
+    // A parity pin, by VALUE (gate 2: presence alone let six wrong-value mutations through). Each
+    // shape runs on a fresh log, and every UIA-road row it writes must carry exactly `expected`.
+    const { WindowExcludedError } = await import("../../src/engine/tool-exclusion.js");
+    const { AimedWindowGoneError } = await import("../../src/engine/aim.js");
+    const excluded = () => vi.fn(async () => { throw new WindowExcludedError("excluded"); });
+    const gone = () => vi.fn(async () => { throw new AimedWindowGoneError(HWND); });
+    const field: UiEntity = { ...base, label: "DELTA", locator: { uia: { name: "DELTA" } } };
+    const titled: Aim = { kind: "aim", title: "VR-CELL" };
+    const byName = { automationId: false, name: true };
+    const axes = (addressedBy: object, addressedElementBy: string, addressedWindowBy: string) => ({ addressedBy, addressedElementBy, addressedWindowBy });
+    const shapes: Array<[string, UiEntity, Aim, Partial<ExecutorDeps>, ReturnType<typeof axes>]> = [
+      ["uia/uia_invoke", { ...button, locator: { uia: { name: "GO", automationId: "GO-ID" } } }, aimed, {},
+        axes({ automationId: true, name: true }, "automation_id", "handle")],
+      ["uia_click/window_excluded", { ...button, locator: { uia: { name: "GO" } } }, aimed, { uiaClick: excluded() }, axes(byName, "name_substring", "handle")],
+      ["uia_click/aim_window_gone", { ...button, locator: { uia: { name: "GO" } } }, aimed, { uiaClick: gone() }, axes(byName, "name_substring", "handle")],
+      ["uia_click/aim_route_failed", { ...button, locator: { uia: { name: "GO" } } }, aimed, { uiaClick: failing("Element not found") }, axes(byName, "name_substring", "handle")],
+      ["uia_downgrade/entity_not_found", { ...button, locator: { uia: { name: "GO", via: "native" } } }, titled, { uiaClick: failing("Element not found") },
+        axes(byName, "name_substring", "title")],
+      ["uia_downgrade/aim_route_failed", { ...button, locator: { uia: { name: "GO", via: "native", nativeWindowHandle: "900" } } }, titled,
+        { uiaClick: failing("Element is disabled"), windowTakesInput: (h: bigint) => h !== 900n }, axes(byName, "name_substring", "title")],
+      ["uia/uia_set_value", field, aimed, {}, axes(byName, "name_substring", "handle")],
+      ["uia_set_value/window_excluded", field, aimed, { uiaSetValue: excluded() }, axes(byName, "name_substring", "handle")],
+      ["uia_set_value_then_keyboard/aim_window_gone", field, aimed, { uiaSetValue: gone(), keyboardTypeBg: gone() }, axes(byName, "name_substring", "handle")],
+      ["uia_set_value_then_keyboard/aim_route_failed", field, aimed,
+        { uiaSetValue: failing("ValuePattern not supported by this element"), keyboardTypeBg: vi.fn(async () => { throw new Error("post failed"); }) },
+        axes(byName, "name_substring", "handle")],
+    ];
+    const seen: string[] = [];
+    for (const [label, e, aim, over, expected] of shapes) {
+      rmSync(logPath, { force: true });
+      const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+      const action = e.role === "textbox" ? "type" : "click";
+      await createDesktopExecutor(aim, { ...deps(), ...over })(e, action, action === "type" ? "PROBE-VR" : undefined).catch(() => {});
+      const rows = allRows().filter((r) =>
+        r.route === "uia" || (r.route === "refusal" && typeof r.rung === "string" && (r.rung as string).startsWith("uia_")));
+      expect(rows.length, `${label}: no UIA-road row`).toBeGreaterThan(0);
+      for (const r of rows) {
+        const key = r.route === "refusal" ? `${r.rung}/${r.refused}` : `uia/${r.why}`;
+        seen.push(key);
+        expect({ addressedBy: r.addressedBy, addressedElementBy: r.addressedElementBy, addressedWindowBy: r.addressedWindowBy }, `${label} → ${key}`)
+          .toEqual(expected);
+      }
+    }
+    // Every shape reached its own row — a shape that stopped reaching it fails here, not silently.
+    expect([...new Set(seen)].sort()).toEqual(shapes.map(([label]) => label).sort());
+  });
+});
+
