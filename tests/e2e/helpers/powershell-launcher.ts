@@ -30,7 +30,7 @@
  * `host:'wt'` block below for the full story.)
  */
 
-import { spawn, execFile, type ChildProcess } from "child_process";
+import { spawn, execFile, execSync, type ChildProcess } from "child_process";
 import { promisify } from "util";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -76,6 +76,20 @@ export async function isWindowsTerminalAvailable(): Promise<boolean> {
 }
 
 export type TerminalHost = "default" | "conhost" | "wt";
+
+/**
+ * End the launched PowerShell by the PID it wrote — never `/T`, never by window title. The PID file
+ * is written right after the title, so the abandon path gives it a moment to appear.
+ */
+function endLaunchedPowerShell(pidFile: string, host: TerminalHost, hwnd: bigint | null): void {
+  for (let i = 0; i < 20; i++) {
+    let pid = NaN;
+    try { pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10); } catch { /* not yet */ }
+    if (pid > 0) return endPowerShellGracefully(pid, host, hwnd);
+    const sab = new SharedArrayBuffer(4);
+    Atomics.wait(new Int32Array(sab), 0, 0, 100);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Graceful-kill state machine (issue #204)
@@ -129,6 +143,106 @@ export function evaluateGracefulKillState(input: GracefulKillInput): GracefulKil
   return "wait";
 }
 
+
+/**
+ * End a launched PowerShell by its PID the way `kill()` always has: graceful first — `WM_CLOSE` to
+ * its Windows Terminal window, or `taskkill /PID` without `/F` — then wait for it to go, and `/F`
+ * only past the budget. Shared by `kill()` and by the launch's own abandon path, which first
+ * ended the shell with an immediate `/F`: exit code 1, and WT's `closeOnExit:graceful` kept all
+ * eight windows open (win2, 2026-09-19, internal `f637514`) — the leak #204 had fixed, rebuilt.
+ */
+function endPowerShellGracefully(pid: number, host: TerminalHost, hwnd: bigint | null): void {
+  // === Issue #204: graceful first ===
+  // Why: `taskkill /F /PID <pid>` ends PS with exit code 1
+  // (TerminateProcess), and WT default closeOnExit:graceful keeps the
+  // tab open on non-zero exit. With our per-launch `-w dtm_e2e_<tag>`
+  // unique window, each residual tab becomes a leaked top-level
+  // window. Sending CTRL_CLOSE_EVENT via plain `taskkill` lets PS
+  // exit 0 and WT auto-close the window before we move on.
+  //
+  // Initial implementation used `taskkill /PID <pid>` (no /F) which
+  // posts WM_CLOSE to the **process's main window**. That works for
+  // conhost (the conhost.exe process owns the console window), but
+  // is a no-op for WT-hosted PowerShell because the PS process
+  // itself has no top-level window — WT.exe does. Real-machine
+  // verification on 2026-05-08 showed WT residue persisted with
+  // taskkill-based graceful first. The fix splits by host:
+  //
+  //   - host:'wt'    → WM_CLOSE direct to the WT window hwnd
+  //                    (postMessageToHwnd, captured.hwnd). WT
+  //                    disconnects the ConPTY, PS exits 0, and the
+  //                    unique `-w` window auto-closes via graceful.
+  //   - other hosts  → existing `taskkill /PID <pid>` path, which
+  //                    posts WM_CLOSE to conhost / cmd / etc.
+  //
+  // Side effect note (Codex / Opus review on PR #205, P2-2):
+  // `postMessageToHwnd` records every successful PostMessage call
+  // into the L1 input ring (`engine/win32.ts:592-594`) so the
+  // perception pipeline can replay/inspect input. This means the
+  // cleanup path of an `host:'wt'` test posts WM_CLOSE = 0x0010
+  // to the ring. Today's e2e suites do not assert on the ring,
+  // so no test is affected; but if a future ring-asserting suite
+  // is added, it MUST whitelist the cleanup-induced WM_CLOSE
+  // event to avoid a spurious "unexpected ring entry" failure.
+  let exitedGracefully = false;
+  try {
+    // Two-stage graceful (Opus PR #205 P1-1):
+    // postMessageToHwnd returns false on hwnd-not-bigint / native
+    // throw / PostMessageW failure. Without this guard, a failed
+    // post left the loop polling for the full 1500ms budget before
+    // /F escalation — i.e. WT residue still leaked whenever the
+    // hwnd happened to be invalidated mid-cleanup. Falling back to
+    // `taskkill /PID <pid>` here gives conhost-style graceful close
+    // a second chance before /F. Combined cost is at most one
+    // taskkill call; no extra polling time.
+    let postSucceeded = false;
+    if (host === "wt" && hwnd !== null) {
+      postSucceeded = postMessageToHwnd(hwnd, WM_CLOSE, 0, 0);
+    }
+    if (!postSucceeded) {
+      execSync(`taskkill /PID ${pid}`, { stdio: "ignore" });
+    }
+    const POLL_INTERVAL_MS = 100;
+    const GRACE_BUDGET_MS = 1500;
+    const deadline = Date.now() + GRACE_BUDGET_MS;
+    // Polling loop: check liveness, sleep, re-check until exit or
+    // deadline. `process.kill(pid, 0)` is Node's idiom for "does
+    // this PID exist" — it throws ESRCH when the OS no longer holds
+    // the handle, which is exactly our "graceful exit landed" signal.
+    while (true) {
+      let isAlive = true;
+      try {
+        process.kill(pid, 0);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ESRCH") isAlive = false;
+        // Other errors (EPERM, EINVAL) leave isAlive=true so the
+        // helper falls back to /F rather than declaring graceful
+        // success on a probe we could not interpret.
+      }
+      const state = evaluateGracefulKillState({
+        isAlive,
+        now: Date.now(),
+        deadline,
+      });
+      if (state === "exited") { exitedGracefully = true; break; }
+      if (state === "force") break;
+      // state === "wait" — sync sleep so the kill() contract
+      // (used from afterAll without await) stays unchanged.
+      // Atomics.wait on a SharedArrayBuffer is the standard
+      // CPU-friendly sync sleep pattern in Node.
+      const sab = new SharedArrayBuffer(4);
+      Atomics.wait(new Int32Array(sab), 0, 0, POLL_INTERVAL_MS);
+    }
+  } catch { /* graceful path failed — fall through to /F */ }
+  // === /F fallback ===
+  // Reached when graceful taskkill returned non-zero, the polling
+  // loop hit the budget, or the liveness probe errored on something
+  // other than ESRCH. /T remains forbidden — single-PID only.
+  if (!exitedGracefully) {
+    try { execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" }); } catch { /* gave up */ }
+  }
+}
+
 export interface PsInstance {
   proc: ChildProcess;
   tag: string;
@@ -138,13 +252,42 @@ export interface PsInstance {
   kill(): void;
 }
 
-function findByTag(
-  tag: string
-): { hwnd: bigint; title: string; region: { x: number; y: number; width: number; height: number } } | null {
-  for (const w of enumWindowsInZOrder()) {
-    if (w.title.includes(tag)) return { hwnd: w.hwnd, title: w.title, region: w.region };
+interface ListedWindow {
+  hwnd: bigint;
+  title: string;
+  region: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * Which windows carry the launch's tag: one this launch OPENED, and one that existed before it.
+ *
+ * **A fixture may only take a window it opened.** This is an invariant, not the fix of an observed
+ * hijack: internal #129 first read win2's leftovers as tabs added to the user's own terminal, which
+ * the tag then renamed; win2 measured it on 2026-09-19 (internal `927fa66`) and every `host:"wt"`
+ * launch opened a NEW window — the "renamed" terminal was the shared WindowsTerminal PROCESS
+ * reporting another window's title as its `MainWindowTitle`. The invariant stays because the cost
+ * of being wrong is the user's window: the keyboard suites type into whatever this returns, and
+ * `kill()` posts `WM_CLOSE` to it. A host that joins an existing window (Windows 11 Notepad's tabs;
+ * WT told to reuse a window) would otherwise be taken by its title alone. A tagged window whose
+ * handle was already listed before the spawn is never taken; it is returned so the launch can stop.
+ */
+export function classifyTaggedWindows(
+  windows: readonly ListedWindow[],
+  before: ReadonlySet<bigint>,
+  tag: string,
+): { opened: ListedWindow | null; preexisting: ListedWindow | null } {
+  let opened: ListedWindow | null = null;
+  let preexisting: ListedWindow | null = null;
+  for (const w of windows) {
+    if (!w.title.includes(tag)) continue;
+    if (before.has(w.hwnd)) preexisting ??= w;
+    else opened ??= w;
   }
-  return null;
+  return { opened, preexisting };
+}
+
+function listWindows(): ListedWindow[] {
+  return enumWindowsInZOrder().map((w) => ({ hwnd: w.hwnd, title: w.title, region: w.region }));
 }
 
 /**
@@ -225,7 +368,7 @@ export async function launchPowerShell(opts?: {
    * statements. Used by the SSH-into-WSL launcher (issue #386 P3) to drop the
    * window into a remote bash session via `& ssh.exe …` once the window is
    * already titled + findable. The window title is set by [Console]::Title
-   * BEFORE this runs, so findByTag still works while the foreground process is
+   * BEFORE this runs, so the tagged-window search still works while the foreground process is
    * the SSH/bash session. Kept generic so the launcher's kill/isolation
    * guarantees are reused unchanged.
    */
@@ -255,7 +398,7 @@ export async function launchPowerShell(opts?: {
   // Use [Console]::Title (.NET → SetConsoleTitleW) instead of
   // $Host.UI.RawUI.WindowTitle. The PowerShell-host API is unreliable on
   // Windows Terminal (sets an internal value that does not propagate to
-  // the WT window's title bar, breaking findByTag with a 10s timeout —
+  // the WT window's title bar, breaking the tagged-window search with a 10s timeout —
   // observed during PR #192 manual verification 2026-05-08). [Console]::Title
   // calls SetConsoleTitleW directly which both conhost and WT honour
   // (WT picks it up via VT or the console API).
@@ -287,6 +430,9 @@ export async function launchPowerShell(opts?: {
   // shell renders "<tag> が見つかりません" in the opened window. Always quote.
   // shell:true so cmd parses the quoted title correctly.
   const psArgs = `-NoExit -NoProfile -EncodedCommand ${encodedScript}`;
+  // Every top-level window that exists before the spawn. The launch may only take a window that is
+  // NOT in this set (see classifyTaggedWindows).
+  const before = new Set(listWindows().map((w) => w.hwnd));
   let proc: ChildProcess;
   let startCmd: string | null = null;
   // Tempscript + tempdir paths captured here so kill() can clean both up.
@@ -357,10 +503,10 @@ export async function launchPowerShell(opts?: {
     //     the assumption that it would PRESERVE our PS-set window title.
     //     The actual WT semantics are the opposite: that flag tells WT to
     //     IGNORE application-set titles and use the profile name. With it
-    //     enabled, `findByTag` could never see our `$Host.UI.RawUI.WindowTitle`
+    //     enabled, `the tagged-window search` could never see our `$Host.UI.RawUI.WindowTitle`
     //     and timed out at 10s waiting for the tagged window. WT's default
     //     (no flag) honours the application title, which is exactly what
-    //     findByTag needs.
+    //     the tagged-window search needs.
     //
     // Cleanup contract (kill() below): single-PID kill of the PS child.
     // NEVER use `/T` — see kill() comment for the full rationale and
@@ -429,37 +575,74 @@ export async function launchPowerShell(opts?: {
   }
   proc!.unref(); // don't block vitest exit
 
-  const deadline = Date.now() + 10_000;
-  let found: ReturnType<typeof findByTag> = null;
-  while (Date.now() < deadline) {
-    found = findByTag(tag);
-    if (found) break;
-    await sleep(200);
-  }
-  if (!found) {
+  // **From here a window may be open, so every way out that is not a return ends our PowerShell.**
+  // win2 measured the leak on 2026-09-19 (internal `bc048d2`): with no addon, the window search
+  // THREW after `spawn` had opened the window, the exception skipped the timeout path's cleanup, and
+  // because the launch never returned, every `afterAll`'s `ps?.kill()` had nothing to kill — 8
+  // Windows Terminal windows, 7 conhost shells, their PID files and script directories, per two runs.
+  // One catch covers every throw after the spawn, including ones nobody has written yet.
+  let found: ListedWindow | null = null;
+  const abandon = (): void => {
+    // The window WT needs `WM_CLOSE` on: the one found, or — when the throw came before the search —
+    // a tagged window this launch opened, if one is up. Never one that existed before the launch.
+    let hwnd: bigint | null = found?.hwnd ?? null;
+    if (hwnd === null) {
+      try { hwnd = classifyTaggedWindows(listWindows(), before, tag).opened?.hwnd ?? null; } catch { /* cannot list */ }
+    }
+    endLaunchedPowerShell(pidFile, host, hwnd);
     try { proc.kill(); } catch { /* ignore */ }
     try { unlinkSync(pidFile); } catch { /* ignore */ }
-    throw new Error(`PowerShell window with tag "${tag}" did not appear within 10s`);
-  }
+    if (scriptToCleanup) try { unlinkSync(scriptToCleanup); } catch { /* ignore */ }
+    if (scriptDirToCleanup) try { rmSync(scriptDirToCleanup, { recursive: true, force: true }); } catch { /* ignore */ }
+  };
+  try {
+    // A deliberate throw after the window has opened — the only way to exercise the path above on a
+    // machine where nothing else throws. Read by win2's round, never set by the suite.
+    if (process.env.DTM_E2E_THROW_AFTER_SPAWN === "1") {
+      await sleep(1500);
+      throw new Error("DTM_E2E_THROW_AFTER_SPAWN: a throw after the window opened, on purpose");
+    }
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const tagged = classifyTaggedWindows(listWindows(), before, tag);
+      if (tagged.preexisting !== null) {
+        // The launch joined a window it did not open. Nothing is sent to that window — not a
+        // keystroke, not WM_CLOSE — and our PowerShell is ended by its PID alone (never /T).
+        throw new Error(
+          `PowerShell (host "${host}") put its tag "${tag}" on a window that existed before the launch ` +
+            `(hwnd ${tagged.preexisting.hwnd}, now titled "${tagged.preexisting.title}") — it joined an existing ` +
+            `terminal instead of opening one. Refusing to use or close a window this fixture did not open ` +
+            `(see classifyTaggedWindows). Nothing was sent to that window.`,
+        );
+      }
+      found = tagged.opened;
+      if (found) break;
+      await sleep(200);
+    }
+    if (!found) throw new Error(`PowerShell window with tag "${tag}" did not appear within 10s`);
 
-  // Multi-monitor placement: move the freshly spawned console onto a
-  // NON-PRIMARY monitor when one exists, so the E2E suite does not take over
-  // the screen the user is working on (Windows always spawns a new console on
-  // the primary monitor — there is no launch-time placement flag for
-  // conhost/wt). Size is preserved and the move uses SWP_NOZORDER +
-  // SWP_NOACTIVATE, so Z-order, TopMost state and the current foreground window
-  // are all left alone — if Windows' foreground lock kept the user's editor
-  // active while the console came up, this move does not yank it away. (Measured
-  // on Windows 11 in PR #558: a SWP_NOZORDER-only move did not steal the
-  // foreground either, so NOACTIVATE is a guarantee, not an observed fix.)
-  // Single-monitor machines are a no-op and keep the previous behaviour exactly.
-  if (found.region.width > 0 && found.region.height > 0) {
-    moveWindowToE2eScreen(found.hwnd, { width: found.region.width, height: found.region.height });
-  }
+    // Multi-monitor placement: move the freshly spawned console onto a
+    // NON-PRIMARY monitor when one exists, so the E2E suite does not take over
+    // the screen the user is working on (Windows always spawns a new console on
+    // the primary monitor — there is no launch-time placement flag for
+    // conhost/wt). Size is preserved and the move uses SWP_NOZORDER +
+    // SWP_NOACTIVATE, so Z-order, TopMost state and the current foreground window
+    // are all left alone — if Windows' foreground lock kept the user's editor
+    // active while the console came up, this move does not yank it away. (Measured
+    // on Windows 11 in PR #558: a SWP_NOZORDER-only move did not steal the
+    // foreground either, so NOACTIVATE is a guarantee, not an observed fix.)
+    // Single-monitor machines are a no-op and keep the previous behaviour exactly.
+    if (found.region.width > 0 && found.region.height > 0) {
+      moveWindowToE2eScreen(found.hwnd, { width: found.region.width, height: found.region.height });
+    }
 
-  // Give PowerShell a moment to actually print the banner into the buffer
-  // AND finish writing the PID file.
-  await sleep(500);
+    // Give PowerShell a moment to actually print the banner into the buffer
+    // AND finish writing the PID file.
+    await sleep(500);
+  } catch (err) {
+    abandon();
+    throw err;
+  }
 
   const captured = found; // capture for kill closure
   return {
@@ -497,99 +680,10 @@ export async function launchPowerShell(opts?: {
       // PID-scoped regardless. DO NOT add /T here under any circumstance.
       let killedByPid = false;
       try {
-        const { execSync } = require("child_process");
         const pidStr = readFileSync(pidFile, "utf-8").trim();
         const pid = parseInt(pidStr, 10);
         if (pid > 0 && !isNaN(pid)) {
-          // === Issue #204: graceful first ===
-          // Why: `taskkill /F /PID <pid>` ends PS with exit code 1
-          // (TerminateProcess), and WT default closeOnExit:graceful keeps the
-          // tab open on non-zero exit. With our per-launch `-w dtm_e2e_<tag>`
-          // unique window, each residual tab becomes a leaked top-level
-          // window. Sending CTRL_CLOSE_EVENT via plain `taskkill` lets PS
-          // exit 0 and WT auto-close the window before we move on.
-          //
-          // Initial implementation used `taskkill /PID <pid>` (no /F) which
-          // posts WM_CLOSE to the **process's main window**. That works for
-          // conhost (the conhost.exe process owns the console window), but
-          // is a no-op for WT-hosted PowerShell because the PS process
-          // itself has no top-level window — WT.exe does. Real-machine
-          // verification on 2026-05-08 showed WT residue persisted with
-          // taskkill-based graceful first. The fix splits by host:
-          //
-          //   - host:'wt'    → WM_CLOSE direct to the WT window hwnd
-          //                    (postMessageToHwnd, captured.hwnd). WT
-          //                    disconnects the ConPTY, PS exits 0, and the
-          //                    unique `-w` window auto-closes via graceful.
-          //   - other hosts  → existing `taskkill /PID <pid>` path, which
-          //                    posts WM_CLOSE to conhost / cmd / etc.
-          //
-          // Side effect note (Codex / Opus review on PR #205, P2-2):
-          // `postMessageToHwnd` records every successful PostMessage call
-          // into the L1 input ring (`engine/win32.ts:592-594`) so the
-          // perception pipeline can replay/inspect input. This means the
-          // cleanup path of an `host:'wt'` test posts WM_CLOSE = 0x0010
-          // to the ring. Today's e2e suites do not assert on the ring,
-          // so no test is affected; but if a future ring-asserting suite
-          // is added, it MUST whitelist the cleanup-induced WM_CLOSE
-          // event to avoid a spurious "unexpected ring entry" failure.
-          let exitedGracefully = false;
-          try {
-            // Two-stage graceful (Opus PR #205 P1-1):
-            // postMessageToHwnd returns false on hwnd-not-bigint / native
-            // throw / PostMessageW failure. Without this guard, a failed
-            // post left the loop polling for the full 1500ms budget before
-            // /F escalation — i.e. WT residue still leaked whenever the
-            // hwnd happened to be invalidated mid-cleanup. Falling back to
-            // `taskkill /PID <pid>` here gives conhost-style graceful close
-            // a second chance before /F. Combined cost is at most one
-            // taskkill call; no extra polling time.
-            let postSucceeded = false;
-            if (host === "wt") {
-              postSucceeded = postMessageToHwnd(captured.hwnd, WM_CLOSE, 0, 0);
-            }
-            if (!postSucceeded) {
-              execSync(`taskkill /PID ${pid}`, { stdio: "ignore" });
-            }
-            const POLL_INTERVAL_MS = 100;
-            const GRACE_BUDGET_MS = 1500;
-            const deadline = Date.now() + GRACE_BUDGET_MS;
-            // Polling loop: check liveness, sleep, re-check until exit or
-            // deadline. `process.kill(pid, 0)` is Node's idiom for "does
-            // this PID exist" — it throws ESRCH when the OS no longer holds
-            // the handle, which is exactly our "graceful exit landed" signal.
-            while (true) {
-              let isAlive = true;
-              try {
-                process.kill(pid, 0);
-              } catch (e) {
-                if ((e as NodeJS.ErrnoException).code === "ESRCH") isAlive = false;
-                // Other errors (EPERM, EINVAL) leave isAlive=true so the
-                // helper falls back to /F rather than declaring graceful
-                // success on a probe we could not interpret.
-              }
-              const state = evaluateGracefulKillState({
-                isAlive,
-                now: Date.now(),
-                deadline,
-              });
-              if (state === "exited") { exitedGracefully = true; break; }
-              if (state === "force") break;
-              // state === "wait" — sync sleep so the kill() contract
-              // (used from afterAll without await) stays unchanged.
-              // Atomics.wait on a SharedArrayBuffer is the standard
-              // CPU-friendly sync sleep pattern in Node.
-              const sab = new SharedArrayBuffer(4);
-              Atomics.wait(new Int32Array(sab), 0, 0, POLL_INTERVAL_MS);
-            }
-          } catch { /* graceful path failed — fall through to /F */ }
-          // === /F fallback ===
-          // Reached when graceful taskkill returned non-zero, the polling
-          // loop hit the budget, or the liveness probe errored on something
-          // other than ESRCH. /T remains forbidden — single-PID only.
-          if (!exitedGracefully) {
-            try { execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" }); } catch { /* gave up */ }
-          }
+          endPowerShellGracefully(pid, host, captured.hwnd);
           killedByPid = true;
         }
       } catch { /* best-effort */ }
