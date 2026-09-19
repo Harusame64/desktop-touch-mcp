@@ -114,7 +114,9 @@ describe("productionFindBlockingWindow", () => {
   // The one-level case: main (500) disabled, its last active popup is the dialog (777).
   const blocked = {
     root: () => 500n,
-    isEnabled: () => false,
+    // Every window disabled except the dialog itself.
+    isEnabled: (h: bigint) => h === 777n,
+    isVisible: () => true,
     rootOwner: () => 500n,
     lastActivePopup: () => 777n,
     title: () => "Save changes?",
@@ -154,6 +156,27 @@ describe("productionFindBlockingWindow", () => {
     expect(root).toHaveBeenCalledWith(123n);
   });
 
+  it("asks the element's OWN window first, so a dialog's own button is not refused as blocked by itself", () => {
+    // Gate 2, round 2: UIA can show an owned dialog as the main window's child, so its "OK",
+    // discovered from the main window, records the main window's handle. The button's own window
+    // roots at the dialog (777), which is enabled.
+    const root = vi.fn((h: bigint) => (h === 900n ? 777n : 500n));
+    const got = productionFindBlockingWindow(
+      entity({ origin, locator: { uia: { name: "OK", nativeWindowHandle: "900" } } }),
+      undefined,
+      { ...blocked, root },
+    );
+    expect(got).toBeNull();
+    expect(root).toHaveBeenCalledWith(900n);
+  });
+
+  it.each([
+    ["the popup is hidden", { isVisible: () => false }],
+    ["the popup is itself disabled", { isEnabled: () => false }],
+  ])("answers null when %s: a stale popup is not a ground to name", (_label, over) => {
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, { ...blocked, ...over })).toBeNull();
+  });
+
   it.each([
     ["the window is enabled", { isEnabled: () => true }],
     ["the window is disabled with no other popup (its own processing)", { lastActivePopup: () => null }],
@@ -188,7 +211,8 @@ describe("productionFindBlockingWindow", () => {
 describe("an entity with no recorded handle is asked about the aim's window", () => {
   const blocked = {
     root: (h: bigint) => h,
-    isEnabled: () => false,
+    isEnabled: (h: bigint) => h === 777n,
+    isVisible: () => true,
     rootOwner: (h: bigint) => h,
     lastActivePopup: () => 777n,
     title: () => "Save changes?",

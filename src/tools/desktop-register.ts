@@ -312,6 +312,7 @@ export interface BlockingWindowDeps {
   rootOwner?: (hwnd: bigint) => bigint | null;
   isEnabled?: (hwnd: bigint) => boolean;
   lastActivePopup?: (hwnd: bigint) => bigint | null;
+  isVisible?: (hwnd: bigint) => boolean;
   title?: (hwnd: bigint) => string;
   className?: (hwnd: bigint) => string;
 }
@@ -322,7 +323,14 @@ export function productionFindBlockingWindow(
   deps: BlockingWindowDeps = {},
 ): BlockingElementInfo | null {
   const recorded = entity.origin?.hwnd;
-  const handle = recorded !== undefined && /^\d+$/.test(recorded) ? BigInt(recorded) : aim?.hwnd;
+  // The element's OWN window first, when it has one: UIA can show a window owned by the main
+  // window as the main window's child, so a dialog's own "OK", discovered from the main window,
+  // records the main window's handle — disabled, with that very dialog as its popup — and would be
+  // refused as blocked by itself (gate 2, round 2). A Win32 button is its own window; its root is
+  // the dialog, which is enabled.
+  const own = entity.locator?.uia?.nativeWindowHandle;
+  const numeric = (v: string | undefined): bigint | undefined => (v !== undefined && /^\d+$/.test(v) && v !== "0" ? BigInt(v) : undefined);
+  const handle = numeric(own) ?? numeric(recorded) ?? aim?.hwnd;
   if (handle === undefined) return null;
   try {
     const rootOf = deps.root ?? getWindowRoot;
@@ -338,6 +346,10 @@ export function productionFindBlockingWindow(
     // The wrapper answers null for "no popup" (Win32 returns the window itself).
     const popup = (deps.lastActivePopup ?? getLastActivePopup)(chainTop);
     if (popup === null || popup === root) return null;
+    // A popup that is hidden or itself disabled is not what holds this window: Windows keeps the
+    // last active popup even after it is hidden, and a window disabled by its own work can still
+    // point at one (gate 2, round 2). Not a ground to name — the snapshot check still runs.
+    if (!(deps.isVisible ?? isPopupVisible)(popup) || !(deps.isEnabled ?? isWindowEnabled)(popup)) return null;
     const title = (deps.title ?? getWindowTitleW)(popup);
     // Untitled is still a dialog: the ground is the disabled window, not the name. The handle is
     // what a caller can use to reach it; a class name stands in for the missing title.
@@ -347,6 +359,10 @@ export function productionFindBlockingWindow(
     // Unreadable is not a ground: the snapshot check still runs.
     return null;
   }
+}
+
+function isPopupVisible(hwnd: bigint): boolean {
+  return getWindowRenderState(hwnd)?.visible ?? false;
 }
 
 function productionWindowIdentity(hwnd: bigint): WindowIdentity | undefined {
@@ -1719,7 +1735,7 @@ export function registerDesktopTools(server: McpServer): void {
       landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION),
       "If ok=false, read 'reason':",
       "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
-      "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via V1 click_element(name=blockingElement.name) then retry; role:'dialog' means a separate dialog window has disabled the target's window: blockingElement.hwnd is that dialog — re-call desktop_discover with target.hwnd=blockingElement.hwnd, answer it there, then retry (name is its title, which may be empty or shared, so do not rely on focus_window(title=name));",
+      "  modal_blocking → response.blockingElement (when present) names the blocker. role:'dialog' means a separate dialog window has disabled the target's window: blockingElement.hwnd is that dialog — re-call desktop_discover with target.hwnd=blockingElement.hwnd, answer it there, then retry (name is its title, which may be empty or shared, so neither click_element(name) nor focus_window(title=name) reaches it). Any other role: dismiss via V1 click_element(name=blockingElement.name) then retry;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
       "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",
