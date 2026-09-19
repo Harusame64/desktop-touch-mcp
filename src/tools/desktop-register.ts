@@ -85,6 +85,7 @@ import {
   getWindowOwner,
   isWindowEnabled,
   enumTopLevelWindowHandles,
+  getWindowThreadId,
   getWindowTitleW,
   getWindowClassName,
   getWindowIdentity,
@@ -308,6 +309,7 @@ export interface BlockingWindowDeps {
   owner?: (hwnd: bigint) => bigint | null;
   isEnabled?: (hwnd: bigint) => boolean;
   topLevelWindows?: () => bigint[];
+  threadOf?: (hwnd: bigint) => number;
   isVisible?: (hwnd: bigint) => boolean;
   title?: (hwnd: bigint) => string;
   className?: (hwnd: bigint) => string;
@@ -356,6 +358,11 @@ export function productionFindBlockingWindow(
       return at;
     };
     const chainTop = topOwnerOf(root);
+    // The windows that OWN the entity's — never its blocker: a modal is owned by what it blocks, not
+    // the other way round. Without this, an owned palette the app disabled for its own reasons named
+    // its enabled main window as the dialog blocking it (gate 2, round 3).
+    const ownersOfRoot = new Set<bigint>();
+    for (let at = ownerOf(root), i = 0; at !== null && i < 32; at = ownerOf(at), i++) ownersOfRoot.add(at);
     // **The dialog is the window of this owner family that is still live**: visible, enabled, not
     // the entity's own — and of those, the one nearest the top of the Z-order. A modal disables the
     // windows it blocks and stays enabled itself; a nested dialog sits above the one that opened it.
@@ -367,12 +374,21 @@ export function productionFindBlockingWindow(
     // internal `a24d9c3`). The family is every window whose `GW_OWNER` chain tops out
     // where this one's does. The handle list is unfiltered and front-to-back (EnumWindows).
     const isVisible = deps.isVisible ?? isPopupVisible;
+    const windows = (deps.topLevelWindows ?? enumTopLevelWindowHandles)();
+    const live = (w: bigint): boolean => w !== root && !ownersOfRoot.has(w) && isVisible(w) && isEnabled(w);
+    // **An ownerless modal is not in any family**: `MessageBox(NULL, …, MB_TASKMODAL)` and a WPF
+    // `ShowDialog()` with no `Owner` disable every top-level window of their THREAD and own none of
+    // them (gate 2, round 3 — the #126 shape again, one step out). A modal loop runs on the thread
+    // of the windows it blocks, so the thread is the family's fallback: asked only when the owner
+    // family has nothing live.
+    const threadOf = deps.threadOf ?? getWindowThreadId;
+    const rootThread = threadOf(root);
     const popup =
-      (deps.topLevelWindows ?? enumTopLevelWindowHandles)().find(
-        (w) => w !== root && isVisible(w) && isEnabled(w) && topOwnerOf(w) === chainTop,
-      ) ?? null;
-    // Disabled with nothing live in its family: its own work, not a modal. Not a ground to name —
-    // the snapshot check still runs.
+      windows.find((w) => live(w) && topOwnerOf(w) === chainTop) ??
+      (rootThread !== 0 ? windows.find((w) => live(w) && threadOf(w) === rootThread) : undefined) ??
+      null;
+    // Disabled with nothing live in its family or its thread: its own work, not a modal. Not a
+    // ground to name — the snapshot check still runs.
     if (popup === null) return null;
     const title = (deps.title ?? getWindowTitleW)(popup);
     // Untitled is still a dialog: the ground is the disabled window, not the name. The handle is

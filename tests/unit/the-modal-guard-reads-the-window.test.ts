@@ -113,12 +113,13 @@ describe("the guard asks the window before the snapshot", () => {
  * A little desktop: windows front-to-back, each with the top of its owner chain, and whether it is
  * enabled and visible. `deps(desktop)` answers the finder's OS questions from it.
  */
-interface W { hwnd: bigint; owner: bigint | null; enabled: boolean; visible?: boolean; title?: string; cls?: string }
+interface W { hwnd: bigint; owner: bigint | null; enabled: boolean; visible?: boolean; title?: string; cls?: string; thread?: number }
 function deps(desktop: W[], over: Record<string, unknown> = {}) {
   const at = (h: bigint) => desktop.find((w) => w.hwnd === h);
   return {
     root: (h: bigint) => h,
     owner: (h: bigint) => at(h)?.owner ?? null,
+    threadOf: (h: bigint) => at(h)?.thread ?? 1,
     isEnabled: (h: bigint) => at(h)?.enabled ?? true,
     isVisible: (h: bigint) => at(h)?.visible ?? true,
     topLevelWindows: () => desktop.map((w) => w.hwnd),
@@ -130,7 +131,7 @@ function deps(desktop: W[], over: Record<string, unknown> = {}) {
 const MAIN = 500n;
 const main = (enabled = false): W => ({ hwnd: MAIN, owner: null, enabled, title: "Editor" });
 const modal: W = { hwnd: 777n, owner: MAIN, enabled: true, title: "Save changes?", cls: "#32770" };
-const stranger: W = { hwnd: 9n, owner: null, enabled: true, title: "Another app" };
+const stranger: W = { hwnd: 9n, owner: null, enabled: true, title: "Another app", thread: 2 };
 
 describe("productionFindBlockingWindow", () => {
   const origin = { kind: "window" as const, id: "Editor", hwnd: "500" };
@@ -187,6 +188,28 @@ describe("productionFindBlockingWindow", () => {
     // still right, the owner IS disabled; recorded in internal #126 as the limit.)
     const palette: W = { hwnd: 650n, owner: MAIN, enabled: true, title: "Palette" };
     expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([modal, palette, main()]))?.hwnd).toBe("777");
+  });
+
+  it("does not name the entity's OWN OWNER, when an owned window is disabled for the app's own reasons", () => {
+    // Gate 2, round 3: an owned palette the app disabled (no modal anywhere) named its enabled main
+    // window as the dialog blocking it. A modal is owned by what it blocks, never its owner.
+    const palette: W = { hwnd: 650n, owner: MAIN, enabled: false, title: "Palette" };
+    const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Palette", hwnd: "650" } }), undefined, deps([palette, main(true), stranger]));
+    expect(got).toBeNull();
+  });
+
+  it("names an OWNERLESS modal of the same thread — MB_TASKMODAL, or WPF ShowDialog with no Owner", () => {
+    // Gate 2, round 3: such a dialog disables every top-level window of its thread and owns none of
+    // them, so it is in no owner family. The thread is the fallback. A window of another thread
+    // (the stranger, above it) is not named.
+    const taskModal: W = { hwnd: 880n, owner: null, enabled: true, title: "Task modal", thread: 1 };
+    const got = productionFindBlockingWindow(entity({ origin }), undefined, deps([stranger, taskModal, main()]));
+    expect(got?.hwnd).toBe("880");
+  });
+
+  it("prefers the owner family over the thread when both have a live window", () => {
+    const taskModal: W = { hwnd: 880n, owner: null, enabled: true, title: "Same thread, unowned", thread: 1 };
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([taskModal, modal, main()]))?.hwnd).toBe("777");
   });
 
   it("refuses an UNTITLED dialog too, naming it by class and handle", () => {
