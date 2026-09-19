@@ -82,7 +82,7 @@ import {
   getVirtualScreen,
   getWindowRenderState,
   getWindowRoot,
-  getWindowRootOwner,
+  getWindowOwner,
   isWindowEnabled,
   enumTopLevelWindowHandles,
   getWindowTitleW,
@@ -281,7 +281,7 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
  * / `MessageBox` / a common dialog does, and the one modal the `desktop_discover` snapshot, scoped
  * to the main window, cannot contain.
  *
- * **The family is the root owner's**, so a dialog opened by a dialog is seen: the first version
+ * **The family is the top of the `GW_OWNER` chain's**, so a dialog opened by a dialog is seen: the first version
  * asked the entity's window alone (`preferActivePopupIfBlocked`), which answers only one level and
  * demands a title, and a nested or untitled dialog read as "not blocked" (gate 2, round 1).
  *
@@ -305,7 +305,7 @@ export function productionCheckViewport(entity: UiEntity, deps: ViewportCheckDep
 export interface BlockingWindowDeps {
   root?: (hwnd: bigint) => bigint | null;
   identityNow?: (hwnd: bigint) => WindowIdentity | undefined;
-  rootOwner?: (hwnd: bigint) => bigint | null;
+  owner?: (hwnd: bigint) => bigint | null;
   isEnabled?: (hwnd: bigint) => boolean;
   topLevelWindows?: () => bigint[];
   isVisible?: (hwnd: bigint) => boolean;
@@ -339,8 +339,23 @@ export function productionFindBlockingWindow(
     }
     const isEnabled = deps.isEnabled ?? isWindowEnabled;
     if (isEnabled(root)) return null;
-    const rootOwnerOf = deps.rootOwner ?? getWindowRootOwner;
-    const chainTop = rootOwnerOf(root) ?? root;
+    // The top of the OWNER chain, walked by `GW_OWNER`. Not `GA_ROOTOWNER`: that walks `GetParent`,
+    // which returns the owner only for a popup-styled window, and a WinForms Form dialog is an
+    // overlapped window — owned by the main window, yet its own "root owner". Keyed on that, the
+    // WinForms `ShowDialog` and a MessageBox it opened fell out of the family, and the act answered
+    // ok:true again (win2, 2026-09-19, internal `e7f3980`). Bounded: an owner loop cannot exist in
+    // Windows, but a read that tears must not spin.
+    const ownerOf = deps.owner ?? getWindowOwner;
+    const topOwnerOf = (w: bigint): bigint => {
+      let at = w;
+      for (let i = 0; i < 32; i++) {
+        const next = ownerOf(at);
+        if (next === null || next === at) return at;
+        at = next;
+      }
+      return at;
+    };
+    const chainTop = topOwnerOf(root);
     // **The dialog is the window of this owner family that is still live**: visible, enabled, not
     // the entity's own — and of those, the one nearest the top of the Z-order. A modal disables the
     // windows it blocks and stays enabled itself; a nested dialog sits above the one that opened it.
@@ -349,12 +364,12 @@ export function productionFindBlockingWindow(
     // popup Windows still remembers, or a palette the user clicked while the modal was up — and
     // when WinForms' `MessageBox` had disabled that palette too, the check fell silent and the act
     // answered `ok:true` under a real modal, the defect this exists to end (win2, 2026-09-19,
-    // internal `a24d9c3`). The family is the root owner's: every window whose owner chain tops out
+    // internal `a24d9c3`). The family is every window whose `GW_OWNER` chain tops out
     // where this one's does. The handle list is unfiltered and front-to-back (EnumWindows).
     const isVisible = deps.isVisible ?? isPopupVisible;
     const popup =
       (deps.topLevelWindows ?? enumTopLevelWindowHandles)().find(
-        (w) => w !== root && (rootOwnerOf(w) ?? w) === chainTop && isVisible(w) && isEnabled(w),
+        (w) => w !== root && isVisible(w) && isEnabled(w) && topOwnerOf(w) === chainTop,
       ) ?? null;
     // Disabled with nothing live in its family: its own work, not a modal. Not a ground to name —
     // the snapshot check still runs.

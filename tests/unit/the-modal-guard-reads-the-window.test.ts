@@ -113,12 +113,12 @@ describe("the guard asks the window before the snapshot", () => {
  * A little desktop: windows front-to-back, each with the top of its owner chain, and whether it is
  * enabled and visible. `deps(desktop)` answers the finder's OS questions from it.
  */
-interface W { hwnd: bigint; rootOwner: bigint; enabled: boolean; visible?: boolean; title?: string; cls?: string }
+interface W { hwnd: bigint; owner: bigint | null; enabled: boolean; visible?: boolean; title?: string; cls?: string }
 function deps(desktop: W[], over: Record<string, unknown> = {}) {
   const at = (h: bigint) => desktop.find((w) => w.hwnd === h);
   return {
     root: (h: bigint) => h,
-    rootOwner: (h: bigint) => at(h)?.rootOwner ?? h,
+    owner: (h: bigint) => at(h)?.owner ?? null,
     isEnabled: (h: bigint) => at(h)?.enabled ?? true,
     isVisible: (h: bigint) => at(h)?.visible ?? true,
     topLevelWindows: () => desktop.map((w) => w.hwnd),
@@ -128,12 +128,21 @@ function deps(desktop: W[], over: Record<string, unknown> = {}) {
   };
 }
 const MAIN = 500n;
-const main = (enabled = false): W => ({ hwnd: MAIN, rootOwner: MAIN, enabled, title: "Editor" });
-const modal: W = { hwnd: 777n, rootOwner: MAIN, enabled: true, title: "Save changes?", cls: "#32770" };
-const stranger: W = { hwnd: 9n, rootOwner: 9n, enabled: true, title: "Another app" };
+const main = (enabled = false): W => ({ hwnd: MAIN, owner: null, enabled, title: "Editor" });
+const modal: W = { hwnd: 777n, owner: MAIN, enabled: true, title: "Save changes?", cls: "#32770" };
+const stranger: W = { hwnd: 9n, owner: null, enabled: true, title: "Another app" };
 
 describe("productionFindBlockingWindow", () => {
   const origin = { kind: "window" as const, id: "Editor", hwnd: "500" };
+
+  it("follows GW_OWNER, so a WinForms Form dialog — its own GA_ROOTOWNER — is in the family", () => {
+    // win2, 2026-09-19 (internal `e7f3980`): a WinForms ShowDialog is owned by the main window, but
+    // GA_ROOTOWNER answers the dialog itself (it walks GetParent, which returns the owner only for
+    // a popup). Keyed on GA_ROOTOWNER, the dialog fell out of the family and the act answered ok:true.
+    // The model's `owner` is GW_OWNER; nothing here answers GA_ROOTOWNER at all.
+    const winformsDialog: W = { hwnd: 4328194n, owner: MAIN, enabled: true, title: "MODAL" };
+    expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([winformsDialog, main()]))?.hwnd).toBe("4328194");
+  });
 
   it("names the dialog, with its handle, when the entity's window is disabled by it", () => {
     expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([stranger, modal, main()]))).toEqual({
@@ -145,29 +154,29 @@ describe("productionFindBlockingWindow", () => {
 
   it("names the INNER dialog of a nested pair, the live one at the top", () => {
     // ShowDialog (600) opened a MessageBox (800): the first is disabled now, the second is live.
-    const outer: W = { hwnd: 600n, rootOwner: MAIN, enabled: false, title: "Options" };
-    const inner: W = { hwnd: 800n, rootOwner: MAIN, enabled: true, title: "Error" };
+    const outer: W = { hwnd: 600n, owner: MAIN, enabled: false, title: "Options" };
+    const inner: W = { hwnd: 800n, owner: 600n, enabled: true, title: "Error" };
     expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([inner, outer, main()]))?.hwnd).toBe("800");
   });
 
   it("names the modal when WinForms' MessageBox has disabled a palette of the same owner too", () => {
     // win2, 2026-09-19 (internal `a24d9c3`): the last active popup was the palette, disabled by the
     // same modal — the "last active popup" reading fell silent and the act answered ok:true.
-    const palette: W = { hwnd: 650n, rootOwner: MAIN, enabled: false, title: "Palette" };
+    const palette: W = { hwnd: 650n, owner: MAIN, enabled: false, title: "Palette" };
     expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([palette, modal, main()]))?.hwnd).toBe("777");
   });
 
   it("does not name a hidden window of the family, or a window of another family", () => {
-    const hidden: W = { hwnd: 640n, rootOwner: MAIN, enabled: true, visible: false, title: "Old" };
+    const hidden: W = { hwnd: 640n, owner: MAIN, enabled: true, visible: false, title: "Old" };
     expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([stranger, hidden, modal, main()]))?.hwnd).toBe("777");
   });
 
-  it("asks the family of the ROOT OWNER when the entity sits in a dialog that opened another", () => {
-    // The entity is in dialog A (600, disabled now); A opened B (800). B's owner chain tops out at
-    // the main window, not at A — asking A's own family finds nothing (a mutation survived without
-    // this cell: every other cell here has the entity in the main window).
-    const outer: W = { hwnd: 600n, rootOwner: MAIN, enabled: false, title: "Options" };
-    const inner: W = { hwnd: 800n, rootOwner: MAIN, enabled: true, title: "Error" };
+  it("asks the family at the TOP OF THE OWNER CHAIN when the entity sits in a dialog that opened another", () => {
+    // The entity is in dialog A (600, disabled now); A opened B (800), so B's owner is A and A's is
+    // the main window. The family is the top of that chain, not A — asking A's own family finds
+    // nothing (a mutation survived without this cell: the others have the entity in the main window).
+    const outer: W = { hwnd: 600n, owner: MAIN, enabled: false, title: "Options" };
+    const inner: W = { hwnd: 800n, owner: 600n, enabled: true, title: "Error" };
     const got = productionFindBlockingWindow(entity({ origin: { kind: "window", id: "Options", hwnd: "600" } }), undefined, deps([inner, outer, main()]));
     expect(got?.hwnd).toBe("800");
   });
@@ -176,7 +185,7 @@ describe("productionFindBlockingWindow", () => {
     // A Win32 DialogBox disables only its owner, so an owned palette stays enabled; the modal sits
     // above it. (If the palette is activated above the modal, the palette is named — the refusal is
     // still right, the owner IS disabled; recorded in internal #126 as the limit.)
-    const palette: W = { hwnd: 650n, rootOwner: MAIN, enabled: true, title: "Palette" };
+    const palette: W = { hwnd: 650n, owner: MAIN, enabled: true, title: "Palette" };
     expect(productionFindBlockingWindow(entity({ origin }), undefined, deps([modal, palette, main()]))?.hwnd).toBe("777");
   });
 
