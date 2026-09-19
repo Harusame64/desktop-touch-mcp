@@ -516,8 +516,8 @@ function computeDiff(ctx: DiffContext): SemanticDiff {
  * Semantic diff codes:
  *   entity_disappeared  — touched entity no longer in post snapshot
  *   entity_moved        — touched entity moved > 16px
- *   modal_appeared      — new UIA unknown-role overlay appeared
- *   modal_dismissed     — UIA unknown-role overlay disappeared
+ *   modal_appeared      — a new UIA `Window` appeared (an owned dialog, internal #126)
+ *   modal_dismissed     — a UIA `Window` disappeared
  *   value_changed       — entity's value or terminal label changed (source-specific)
  *   entity_appeared     — non-modal entity appeared in post snapshot
  *   focus_shifted       — focus moved to a different entity (requires getFocusedEntityId)

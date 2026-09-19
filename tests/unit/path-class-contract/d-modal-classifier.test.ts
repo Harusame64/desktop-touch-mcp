@@ -11,9 +11,10 @@
  * variants including chrome / non-chrome / undefined, single / multi-source).
  *
  * Revert detection (Phase 2 acceptance §4.6 — 代表 3 件 D + F + C):
- *   - Revert PR #331 (isChromeControlType 共有抽出 + isModalLike 同期) → the
+ *   - Revert PR #331 (shared chrome exclusion + isModalLike sync) → the
  *     pre-touch vs post-touch-diff equivalence breaks on chrome controlType
  *     entities (e.g. MenuBar / TitleBar), this property fails on shrinking.
+ *     Since internal #126 the shared clause is "controlType is Window".
  *
  * @see docs/adr-020-phase-2-p2-3-contract-test-plan.md §1.1 C (D 軸)
  * @see docs/adr-020-phase-2-p2-1-modal-refactor-plan.md (classifyModal land)
@@ -42,10 +43,11 @@ const entityArbitrary: fc.Arbitrary<UiEntity> = fc.record({
   evidenceDigest: fc.constant("d0"),
   controlType: fc.option(
     fc.constantFrom(
-      // Chrome control types (must classify as non-modal)
+      // Chrome control types (never modal)
       "MenuBar", "Menu", "MenuItem", "TitleBar", "StatusBar", "ToolBar", "ScrollBar", "Tab",
-      // Non-chrome control types (must classify as modal when UIA + unknown)
-      "Pane", "Window", "Document", "Group", "Custom",
+      // Other role:"unknown" types — measured false positives before internal #126 — and
+      // `Window`, the one that was a modal
+      "Pane", "Window", "Document", "Group", "Custom", "Spinner", "Thumb",
     ),
     { nil: undefined },
   ),
@@ -63,15 +65,11 @@ describe("D contract — classifyModal: pre-touch (no excludeSelf) ⇔ post-touc
     );
   });
 
-  it("core predicate truth table is preserved (UIA + role:'unknown' + non-chrome → true)", () => {
+  it("core predicate truth table is preserved (UIA + controlType Window → true; internal #126)", () => {
     fc.assert(
       fc.property(entityArbitrary, (entity) => {
         const isUia = entity.sources.includes("uia");
-        const isUnknownRole = entity.role === "unknown";
-        const ct = entity.controlType;
-        const isChrome = ct !== undefined &&
-          new Set(["MenuBar", "Menu", "MenuItem", "TitleBar", "StatusBar", "ToolBar", "ScrollBar", "Tab"]).has(ct);
-        const expected = isUia && isUnknownRole && !isChrome;
+        const expected = isUia && entity.controlType === "Window";
         expect(classifyModal(entity, "post-touch-diff")).toBe(expected);
       }),
       { numRuns: 100 },

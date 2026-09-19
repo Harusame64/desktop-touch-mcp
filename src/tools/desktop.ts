@@ -183,7 +183,7 @@ export interface DesktopFacadeOptions {
    */
   readWindowIdentity?: (hwnd: bigint) => { pid: number; processName: string; processStartTimeMs: number };
   /**
-   * Override modal detection. Default: session-aware check (UIA unknown-role entity in snapshot).
+   * Override modal detection. Default: session-aware check (a UIA `Window` entity in the snapshot, internal #126).
    * Set to () => false to disable. Issue #63 (Codex P1): when overridden alone, `blockingElement`
    * on the modal_blocking response is intentionally dropped to prevent identity mismatch with
    * a custom predicate. Override `findBlockingModal` alongside to surface a matching blocker.

@@ -48,42 +48,33 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
 }
 
 /**
- * UI-chrome control types that UIA exposes with `role:"unknown"` but which
- * are NEVER modal blockers (Issue #297). Without this exclusion list,
- * `isModalCandidate` flagged a focused `MenuBar` / `TitleBar` / `StatusBar`
- * on a non-modal main window as a positive `blockingElement` hit, telling
- * the LLM to "dismiss" UI chrome it cannot dismiss.
+ * The one UIA control type that has been a modal (internal #126, half 2).
  *
- * Conservative list — entries here must be UI chrome that is **always**
- * non-modal, regardless of application state. Adding a control type should
- * require a fresh dogfood report rather than speculation.
+ * UIA maps nine control types to a role and reports EVERY other one as `role:"unknown"`
+ * (`uia-provider.ts::uiaRoleFromControlType`), so "role unknown and not window chrome" — this
+ * predicate until 2026-09-19 — was "any control outside sixteen types" (nine mapped, eight
+ * chrome, `MenuItem` in both). win2 read it against the product's own discover (internal `b9319d7`, main `dc73925e`, nothing pressed): it rang on
+ * 37 elements across a WinForms widget window, Explorer and Windows Terminal, none of them a
+ * modal — `Spinner`, a ToolStrip grip (`Thumb`), `Pane`, `TabItem`, `SplitButton`, `Header`,
+ * `DataItem`, `TreeItem` and seven more — and on Chrome's `BrowserRootView` pane. The two real
+ * modals in that set, a WinForms `ShowDialog` form and a `#32770` MessageBox, were both
+ * controlType `Window`, in the owner's tree.
+ *
+ * What narrowing loses, measured (internal `89797ae`): a modal drawn INSIDE a window — a WPF
+ * overlay, Chrome's `<dialog>` / `aria-modal` / `alertdialog` — does not reach the UIA tree at
+ * all, so the old predicate never saw it either; its Chrome hit was the root pane. `IsDialog`
+ * was considered and not used: WinForms never sets it, so it drops the `ShowDialog` form.
+ *
+ * What narrowing does NOT fix, measured (internal `62b4590`): a `Window` in the owner's tree
+ * that is not a modal — a modeless owned form, an MDI child, a `TopLevel=false` form embedded in
+ * the window — rings before and after. Nothing this predicate reads tells them from the real one
+ * (same controlType, same class, `IsDialog` false on all four); only the OS does: the real
+ * modal's owner is disabled, and `productionFindBlockingWindow` asks exactly that.
+ *
+ * NOT measured: WinUI `ContentDialog`, WPF dialog windows, `DialogBox` classes other than
+ * `#32770`.
  */
-const NON_MODAL_CHROME_CONTROL_TYPES = new Set([
-  "MenuBar",
-  "Menu",
-  "MenuItem",
-  "TitleBar",
-  "StatusBar",
-  "ToolBar",
-  "ScrollBar",
-  "Tab",
-]);
-
-/**
- * Issue #297 / #327 item D: shared predicate for "is this `controlType` a UI
- * chrome bucket that the modal detectors must always exclude?". Originally
- * inlined in `isModalCandidate` (pre-touch) only; #327 item D surfaced that
- * the post-touch diff classifier `isModalLike` (guarded-touch.ts) was applying
- * the same intent on a different signal set, so Notepad's TitleBar / MenuBar /
- * StatusBar fired `modal_appeared` on every entity-ID churn. The shared helper
- * makes the SSOT explicit — adding a new chrome bucket requires updating
- * `NON_MODAL_CHROME_CONTROL_TYPES` here, and every caller picks it up. Entities
- * without `controlType` (legacy / non-UIA producers) fall through to the
- * caller's prior behaviour for back-compat.
- */
-export function isChromeControlType(controlType: string | undefined): boolean {
-  return controlType !== undefined && NON_MODAL_CHROME_CONTROL_TYPES.has(controlType);
-}
+const MODAL_CONTROL_TYPE = "Window";
 
 /**
  * ADR-020 Phase 2 PR-P2-1 — unified modal classifier (issue #327 item D
@@ -93,10 +84,10 @@ export function isChromeControlType(controlType: string | undefined): boolean {
  * (#297 closure was incomplete until PR #331). Single source of truth so the
  * two paths cannot diverge again.
  *
- * Core predicate (both contexts): UIA-sourced + `role:"unknown"` + non-chrome
- * controlType. Entities lacking `controlType` fall through to the prior
- * "trust the role:'unknown' signal" behaviour for back-compat with pre-#296
- * producers.
+ * Core predicate (both contexts): UIA-sourced + controlType `Window` (see
+ * `MODAL_CONTROL_TYPE`). An entity without a `controlType` is not a modal: the
+ * only UIA producer (`uia-provider.ts`) always sets one, and "no type" read as
+ * "modal" is what made a missing fact refuse the act.
  *
  * Context-specific clauses:
  *   - `"pre-touch"` with `options.excludeSelf` set: excludes the focus target
@@ -114,15 +105,12 @@ export function isChromeControlType(controlType: string | undefined): boolean {
  *     "is there a window with 'dialog' / 'confirm' / '警告' in its title".
  *   - `classifyModal` (this function) — UIA-tree based; both pre-touch
  *     `blockingElement` resolution and post-touch `modal_appeared` /
- *     `modal_dismissed` diff detection. Requires Issue #296's `controlType`
- *     to exclude UI chrome.
+ *     `modal_dismissed` diff detection.
  *   - `evaluateModalAbove` (`sensors-win32.ts`) — Win32-Z-order based
  *     confidence score (owner chain + className `#32770` + target disabled).
  *
  * The three are NOT expected to converge on every state — they answer
- * different questions and target different layers. The chrome exclusion here
- * is the minimum change needed so they no longer **disagree** in the common
- * false-positive case (MenuBar on a non-modal main window).
+ * different questions and target different layers.
  */
 export function classifyModal(
   entity: UiEntity,
@@ -131,9 +119,7 @@ export function classifyModal(
 ): boolean {
   if (context === "pre-touch" && options?.excludeSelf?.entityId === entity.entityId) return false;
   if (!entity.sources.includes("uia")) return false;
-  if (entity.role !== "unknown") return false;
-  if (isChromeControlType(entity.controlType)) return false;
-  return true;
+  return entity.controlType === MODAL_CONTROL_TYPE;
 }
 
 /**
@@ -216,10 +202,10 @@ export interface SessionCreateOpts {
   executorFactory?: (aim: Aim | TargetSpec | undefined) => ExecutorFn;
   /**
    * Override modal detection. Default: session-aware check — blocks if any OTHER entity
-   * in the current snapshot is a UIA "unknown"-role element (overlay/dialog pattern).
+   * in the current snapshot is a UIA `Window` (an owned dialog; `classifyModal`).
    *
    * Issue #63: predicate ↔ blockingElement consistency.
-   *   When overridden alone (without `findBlockingModal`), the default UIA-unknown finder
+   *   When overridden alone (without `findBlockingModal`), the default snapshot finder
    *   is suppressed and `findBlockingModal` returns null — `blockingElement` is omitted from
    *   the response. This prevents the LLM from being told to dismiss an entity unrelated to
    *   the custom predicate. To surface `blockingElement` with a custom predicate, also
@@ -373,13 +359,13 @@ export class SessionRegistry {
       resolveLiveEntities: () => s.entities,
       currentGeneration:   () => s.generation,
       // G1-A: Session-aware modal guard.
-      // Default: block if any OTHER entity in the live snapshot is a UIA "unknown"-role
-      // element. UIA exposes system dialogs and overlays as unknown-role elements, so
-      // this catches modal blocking without a Win32 round-trip.
+      // Default: block if any OTHER entity in the live snapshot is a UIA `Window` — an owned
+      // dialog appears in its owner's tree as one (`classifyModal`, internal #126). Overlays drawn
+      // inside a window do not reach the UIA tree at all (internal `89797ae`).
       //
       // Issue #63 (Codex P1): when the user overrides exactly one of the pair, we derive
       // the other to keep predicate ↔ blockingElement consistent — never surface a default
-      // UIA-unknown blocker alongside an unrelated custom predicate.
+      // snapshot blocker alongside an unrelated custom predicate.
       //   both default      → shared classifyModal predicate (consistent, ADR-020 PR-P2-1)
       //   both overridden   → caller's responsibility (no derivation)
       //   only isModalBlocking overridden → findBlockingModal returns null (blockingElement omitted,

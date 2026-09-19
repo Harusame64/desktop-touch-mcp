@@ -490,9 +490,9 @@ describe("GuardedTouchLoop — semantic diff", () => {
     if (result.ok) expect(result.diff).toContain("entity_moved");
   });
 
-  it("modal_appeared when a new UIA role=unknown entity appears", async () => {
+  it("modal_appeared when a new UIA Window (an owned dialog) appears", async () => {
     const btn   = entity("btn",   GEN, { sources: ["visual_gpu"] });
-    const modal = entity("modal", GEN, { sources: ["uia"], role: "unknown" });
+    const modal = entity("modal", GEN, { sources: ["uia"], role: "unknown", controlType: "Window" });
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease = store.issue(btn, "v1");
     const loop  = new GuardedTouchLoop(store, makeEnv({
@@ -519,8 +519,8 @@ describe("GuardedTouchLoop — semantic diff", () => {
   });
 
   // Issue #327 item D / Issue #297 closure completion: post-touch isModalLike
-  // must exclude the same NON_MODAL_CHROME_CONTROL_TYPES list that pre-touch
-  // isModalCandidate uses, otherwise Notepad-style chrome entities (TitleBar /
+  // must exclude the same chrome types that pre-touch isModalCandidate does
+  // (since internal #126 both take only `Window`), otherwise Notepad-style chrome entities (TitleBar /
   // MenuBar / StatusBar) fire spurious modal_appeared whenever the UIA snapshot
   // re-keys them — exactly what dogfood saw on Notepad text-area clicks.
   for (const chromeType of ["MenuBar", "TitleBar", "StatusBar", "ToolBar", "ScrollBar", "Tab", "Menu", "MenuItem"] as const) {
@@ -543,12 +543,12 @@ describe("GuardedTouchLoop — semantic diff", () => {
     });
   }
 
-  it("UIA role=unknown with controlType=Pane (no chrome exclusion) DOES trigger modal_appeared — scope pin", async () => {
-    // Genuine dialogs / overlays surface as role=unknown without a chrome controlType
-    // (often controlType=Pane / Window for modal dialogs). The chrome filter must
-    // NOT swallow these — this test pins that direction of the rule.
+  it("UIA role=unknown with controlType=Pane is entity_appeared, not modal_appeared (internal #126)", async () => {
+    // This cell used to pin the opposite: "genuine dialogs surface as Pane / Window". win2 read the
+    // product's own discover (internal `b9319d7`, `89797ae`): Panes rang in Explorer, a WinForms
+    // DateTimePicker and Chrome's root with no modal anywhere, and both real modals were `Window`.
     const btn    = entity("btn", GEN, { sources: ["visual_gpu"] });
-    const dialog = entity("dialog", GEN, {
+    const pane   = entity("pane", GEN, {
       sources: ["uia"],
       role: "unknown",
       controlType: "Pane",
@@ -557,28 +557,33 @@ describe("GuardedTouchLoop — semantic diff", () => {
     const lease = store.issue(btn, "v1");
     const loop  = new GuardedTouchLoop(store, makeEnv({
       resolveLiveEntities:      () => [btn],
-      resolvePostTouchEntities: async () => [btn, dialog],
+      resolvePostTouchEntities: async () => [btn, pane],
     }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.diff).toContain("modal_appeared");
+    if (result.ok) {
+      expect(result.diff).not.toContain("modal_appeared");
+      expect(result.diff).toContain("entity_appeared");
+    }
   });
 
-  it("UIA role=unknown without controlType (legacy producer) DOES trigger modal_appeared — back-compat pin", async () => {
-    // Entities from non-UIA-fronted producers (legacy bridge, visual-only) won't
-    // have a controlType field. The chrome filter must fall through and the
-    // role-based heuristic must keep firing — preserves pre-#297 behaviour.
+  it("UIA role=unknown without controlType is entity_appeared, not modal_appeared — a missing fact is not a modal", async () => {
+    // Until internal #126 a missing controlType fell through to "trust role:'unknown'". The only
+    // UIA producer always sets one (`uia-provider.ts`), so the branch served no producer.
     const btn    = entity("btn", GEN, { sources: ["visual_gpu"] });
-    const modal  = entity("modal", GEN, { sources: ["uia"], role: "unknown" });
+    const untyped = entity("untyped", GEN, { sources: ["uia"], role: "unknown" });
     const store  = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease  = store.issue(btn, "v1");
     const loop   = new GuardedTouchLoop(store, makeEnv({
       resolveLiveEntities:      () => [btn],
-      resolvePostTouchEntities: async () => [btn, modal],
+      resolvePostTouchEntities: async () => [btn, untyped],
     }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.diff).toContain("modal_appeared");
+    if (result.ok) {
+      expect(result.diff).not.toContain("modal_appeared");
+      expect(result.diff).toContain("entity_appeared");
+    }
   });
 
   it("diff is empty and next='none' when nothing changed", async () => {
@@ -668,7 +673,7 @@ describe("GuardedTouchLoop — enriched semantic diff (P2-D)", () => {
 
   it("entity_appeared not emitted for modal (modal_appeared takes priority)", async () => {
     const btn   = entity("btn",   GEN, { sources: ["visual_gpu"] });
-    const modal = entity("modal", GEN, { sources: ["uia"], role: "unknown" });
+    const modal = entity("modal", GEN, { sources: ["uia"], role: "unknown", controlType: "Window" });
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease = store.issue(btn, "v1");
     const loop  = new GuardedTouchLoop(store, makeEnv({
@@ -686,7 +691,7 @@ describe("GuardedTouchLoop — enriched semantic diff (P2-D)", () => {
   it("both entity_appeared and modal_appeared when both types appear", async () => {
     const btn    = entity("btn",    GEN, { sources: ["visual_gpu"] });
     const newBtn = entity("new",    GEN, { sources: ["visual_gpu"], role: "button" });
-    const modal  = entity("modal",  GEN, { sources: ["uia"],        role: "unknown" });
+    const modal  = entity("modal",  GEN, { sources: ["uia"],        role: "unknown", controlType: "Window" });
     const store  = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease  = store.issue(btn, "v1");
     const loop   = new GuardedTouchLoop(store, makeEnv({
@@ -912,7 +917,9 @@ describe("GuardedTouchLoop — ADR-024 S5b postSnapshot seam", () => {
 
   it("observedRect scopes the removed set — an out-of-region dismissed modal is NOT modal_dismissed", async () => {
     const touched = entity("t1", GEN, { rect: { x: 500, y: 500, width: 10, height: 10 } });
-    const modal   = entity("m1", GEN, { role: "unknown", sources: ["uia"], rect: { x: 0, y: 0, width: 10, height: 10 } });
+    // A Window, so it IS a modal to the classifier (internal #126) — without one this cell passes
+    // with the scoping removed (gate 2).
+    const modal   = entity("m1", GEN, { role: "unknown", controlType: "Window", sources: ["uia"], rect: { x: 0, y: 0, width: 10, height: 10 } });
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease = store.issue(touched, "v1");
     const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [touched, modal] }));
