@@ -8,9 +8,10 @@
  * run it sees a window with no frame in it.
  *
  * MEASURED on the managed side, which is the side this change moves: a WinForms window answers
- * **2** descendants before registering and **10** after, the six new ones being the title bar, the
- * menu bar and the caption buttons; Notepad answered 2 here where the engine answered 26
- * (2026-09-09).
+ * **2** descendants before registering and **10** after — title bar, menu bar, caption buttons and
+ * menu items — and Notepad answered 2 here where the engine answered 26 (2026-09-09). No count of
+ * the new ones is written, because the first draft said "the six new ones" beside a delta of eight
+ * (gate 2).
  *
  * A second comparison against the engine (win2, 2026-09-20, internal `bdef099`, arm R6, 8 against
  * 2) was withdrawn the same day and is NOT cited: its native half came from an addon built
@@ -309,7 +310,10 @@ describe("the frame it can now see does not answer for the window", () => {
     ["clickElement (by handle)", () => clickElement("Save As", "Save", undefined, undefined, { hwnd: 42n })],
     ["setElementValue (by title)", () => setElementValue("Save As", "x", "Save")],
     ["setElementValue (by handle)", () => setElementValue("Save As", "x", "Save", undefined, { hwnd: 42n })],
-    ["insertTextViaTextPattern2", () => insertTextViaTextPattern2("Save As", "x", "Save")],
+    ["insertTextViaTextPattern2 (by title)", () => insertTextViaTextPattern2("Save As", "x", "Save")],
+    // The one function whose handle branch this list left out — and the whole subject of this PR
+    // is that a function's two branches drift apart (gate 2).
+    ["insertTextViaTextPattern2 (by handle)", () => insertTextViaTextPattern2("Save As", "x", "Save", undefined, { hwnd: 42n })],
     ["scrollElementIntoView", () => scrollElementIntoView("Save As", "Save")],
     ["getScrollAncestors", () => getScrollAncestors("Save As", "Save")],
     ["scrollByPercent", () => scrollByPercent("Save As", "Save", 50, -1)],
@@ -370,10 +374,18 @@ describe("the frame it can now see does not answer for the window", () => {
     // A guard that removes the thing it is guarding is the same defect one turn later: #134 made a
     // search stop answering with the window, and this nearly made it stop answering with the
     // window's title bar to anyone at all.
+    // FOUND BY MUTATION (gate 2, second pass): dropping the `controlType` argument at the five
+    // sites that have one — putting arm D4's defect back on the act roads — killed nothing,
+    // because NO cell anywhere drove an act road with a control type. Only `getElementBounds` was
+    // pinned, so one of the four typed roads carried the whole claim. `click_element` and
+    // `scope_element` both take `controlType` from the caller.
     for (const [label, call] of [
-      ["by control type alone", () => getElementBounds("Save As", undefined, undefined, "TitleBar")],
-      ["by name AND control type", () => getElementBounds("Save As", "Save", undefined, "TitleBar")],
-      ["by automationId alone", () => getElementBounds("Save As", undefined, "TitleBar")],
+      ["bounds, by control type alone", () => getElementBounds("Save As", undefined, undefined, "TitleBar")],
+      ["bounds, by name AND control type", () => getElementBounds("Save As", "Save", undefined, "TitleBar")],
+      ["bounds, by automationId alone", () => getElementBounds("Save As", undefined, "TitleBar")],
+      ["click, by title, with a control type", () => clickElement("Save As", "Save", undefined, "TitleBar")],
+      ["click, by handle, with a control type", () => clickElement("Save As", "Save", undefined, "TitleBar", { hwnd: 42n })],
+      ["children, with a control type", () => getElementChildren("Save As", "Save", undefined, "TitleBar", 2, 50, 5000)],
     ] as [string, () => Promise<unknown>][]) {
       scripts.length = 0;
       const script = await scriptOf(call);
@@ -384,6 +396,58 @@ describe("the frame it can now see does not answer for the window", () => {
     }
   });
 
+  it("carries the caption read exactly where it carries the guard, on every road and every filter", async () => {
+    // FOUND BY MUTATION (gate 2, second pass): splitting the pair at ONE site — the guard emitted
+    // with `mirrorGuardPs(name)` while the caption read still asked for `(name, controlType)` —
+    // left 159 cells green and the guard permanently dead. `$targetName` is then undefined, and
+    // PowerShell's `$null -ne ''` is TRUE, so the emptiness clause does not catch it either;
+    // `$c.Name -eq $null` is false for every named element, and #136 is back.
+    //
+    // The invariant is a BICONDITIONAL and it is checked as one, over every road and every shape
+    // of filter — not "the guard is here" and "the read is here" in two cells that can drift. The
+    // compiler carries the other half: `mirrorGuardPs`'s second parameter is required, so a site
+    // that has a `controlType` cannot quietly omit it.
+    const CAPTION = "try { $targetName = $target.Current.Name } catch {}";
+    const filters: [string, string | undefined, string | undefined, string | undefined][] = [
+      ["nothing", undefined, undefined, undefined],
+      ["name", "Save", undefined, undefined],
+      ["id", undefined, "btnSave", undefined],
+      ["type", undefined, undefined, "Button"],
+      ["name+id", "Save", "btnSave", undefined],
+      ["name+type", "Save", undefined, "Button"],
+      ["id+type", undefined, "btnSave", "Button"],
+      ["all three", "Save", "btnSave", "Button"],
+    ];
+    const roadsUnderTest: [string, (n?: string, a?: string, t?: string) => Promise<unknown>][] = [
+      ["getElementBounds", (n, a, t) => getElementBounds("App", n, a, t)],
+      ["getElementChildren", (n, a, t) => getElementChildren("App", n, a, t, 2, 50, 5000)],
+      ["clickElement (by title)", (n, a, t) => clickElement("App", n, a, t)],
+      ["clickElement (by handle)", (n, a, t) => clickElement("App", n, a, t, { hwnd: 42n })],
+      ["setElementValue (by title)", (n, a) => setElementValue("App", "x", n, a)],
+      ["setElementValue (by handle)", (n, a) => setElementValue("App", "x", n, a, { hwnd: 42n })],
+      ["insertTextViaTextPattern2 (by title)", (n, a) => insertTextViaTextPattern2("App", "x", n, a)],
+      ["insertTextViaTextPattern2 (by handle)", (n, a) => insertTextViaTextPattern2("App", "x", n, a, { hwnd: 42n })],
+      ["scrollElementIntoView", (n, a) => scrollElementIntoView("App", n, a)],
+      ["getScrollAncestors", (n) => getScrollAncestors("App", n ?? "")],
+      ["scrollByPercent", (n) => scrollByPercent("App", n ?? "", 50, -1)],
+    ];
+    let sawBoth = 0;
+    let sawNeither = 0;
+    for (const [road, call] of roadsUnderTest) {
+      for (const [shape, n, a, t] of filters) {
+        scripts.length = 0;
+        const script = await scriptOf(() => call(n, a, t));
+        const where = `${road} / ${shape}`;
+        expect(script.includes(GUARD), `${where}: guard without the caption read`)
+          .toBe(script.includes(CAPTION));
+        if (script.includes(GUARD)) sawBoth += 1; else sawNeither += 1;
+      }
+    }
+    // …and the biconditional is not holding because neither side is ever there.
+    expect(sawBoth, "the guard is never emitted anywhere").toBeGreaterThan(0);
+    expect(sawNeither, "the guard is emitted everywhere, which is arm D4's defect").toBeGreaterThan(0);
+  });
+
   it("refuses only the mirror, not every title bar and not an unnamed window", async () => {
     // Narrow on purpose, and the narrowness is the part a later reader would file off: a title bar
     // whose name is NOT the caption still matches, and a window whose own name could not be read
@@ -391,6 +455,12 @@ describe("the frame it can now see does not answer for the window", () => {
     const script = await scriptOf(() => getElementBounds("Save As", "Save"));
     expect(script).toContain("$targetName -ne ''");
     expect(script).toContain("$c.Name -eq $targetName");
+    // …and the initialiser that makes `-ne ''` mean anything. FOUND BY MUTATION (gate 2): with
+    // `$targetName = ''` gone, a caption read that THREW — the race this file guards everywhere
+    // else — leaves it undefined, PowerShell's `$null -ne ''` is TRUE, and the guard then refuses
+    // any title bar with a null name. The cell claimed to cover this while pinning only the
+    // operator.
+    expect(script).toContain("$targetName = ''\ntry { $targetName = $target.Current.Name } catch {}");
     // …and it is an AND with the control type, not a bare name compare, so a Button called the
     // same as its window is still findable.
     expect(script).toMatch(/ControlType\.TitleBar' -and \$targetName -ne '' -and \$c\.Name -eq \$targetName/);

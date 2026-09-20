@@ -537,26 +537,6 @@ if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firs
  */
 
 /**
- * ADR-036 — the same warm-up-then-register the read does, for the scripts that WRITE.
- *
- * The registration is process-local and every call is a fresh `powershell.exe`, so a discover
- * that registered and an act that did not are two different views of the window: discover
- * returned Notepad's `Close` button and the act could not find it. Measured on Windows
- * 2026-09-09 — and what happened next is the reason this is not cosmetic. The UIA lookup missed,
- * the executor downgraded to a mouse click at the entity's stale rect, and the response came
- * back `ok:true` with the truth only in `downgrade`. On `Minimize` the rect was already
- * `-32000,-32000`. So the frame this branch made VISIBLE was only ever pressable through the
- * blind fallback this ADR exists to remove.
- *
- * The warm-up before the registration is not a spare RPC: registering first does not take. What
- * ELSE it does — whether it also fails quietly — is the disputed part, and the account of that is
- * on PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL below, where the call itself lives.
- *
- * This doc belongs to PS_REGISTER_CLIENTSIDE_PROVIDERS, further down; it is written here because
- * the call it wraps has to be declared first. Gate 2 found the two docs stacked on one const,
- * which is how an IDE comes to show a sentence for the wrong symbol.
- */
-/**
  * The registration on its own, for the roads that have already touched UIA by the time they get
  * here.
  *
@@ -594,9 +574,17 @@ try {
 
 /**
  * The warm-up AND the registration, for the roads whose only door to the window is `FromHandle`.
- * See the doc above PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL for what the warm-up is for and for the
- * one thing about it that two rounds disagree on. A title road needs no warm-up of its own; a
- * handle road was never measured without one, so it keeps it.
+ * A title road needs no warm-up of its own — its search is one; a handle road was never measured
+ * without one, so it keeps it. The const above says what the warm-up is for, and carries the one
+ * thing about it that two rounds disagree on.
+ *
+ * Why this matters on the WRITE roads specifically, measured 2026-09-09: the registration is
+ * process-local and every call is a fresh `powershell.exe`, so a discover that registered and an
+ * act that did not are two views of one window. Discover returned Notepad's `Close` button and
+ * the act could not find it; the executor then downgraded to a mouse click at the entity's stale
+ * rect and answered `ok:true`, with the truth only in `downgrade`, and on `Minimize` that rect
+ * was already `-32000,-32000`. The frame one road could SEE was only ever pressable through the
+ * blind fallback this ADR exists to remove.
  */
 const PS_REGISTER_CLIENTSIDE_PROVIDERS = `
 # Guarded: this runs between resolving the window and the walk, inside the stretch a window can
@@ -627,8 +615,11 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  * title bar, menu bar and close button through nothing at all — they are synthesised from MSAA by
  * an assembly registered per process — so a caller that NAMED its window got a tree with no frame
  * in it, while the same caller holding a handle got the frame. The frameless side is measured and
- * stands on its own: 2 descendants on a WinForms fixture before registering and 10 after, and 2 on
- * Notepad where the engine returned 26 (2026-09-09). A second comparison against the engine, taken
+ * stands on its own: a WinForms fixture answers 2 descendants before registering and 10 after, the
+ * new ones being the title bar, the menu bar, the caption buttons and the menu items; Notepad
+ * answered 2 here where the engine answered 26 (2026-09-09). No count of the new ones is given
+ * because the first draft wrote "the six new ones" beside a delta of eight (gate 2) — arithmetic
+ * nobody can check against a record is worse than the record's own words. A second comparison against the engine, taken
  * 2026-09-20 (win2, internal `bdef099`, arm R6, 8 against 2), is NOT cited here: its native half
  * was taken with a stale addon, and whether that particular round was affected has not been
  * established.
@@ -640,8 +631,8 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  *
  * What this does NOT fix: registering makes this client see the frame, and does not make it agree
  * with the engine about what is in it. On the managed side, measured: a WinForms window goes from
- * 2 descendants to 10, the six new ones being the title bar, the menu bar and the caption buttons,
- * and one of those controls is reported as a `Pane` before registering and a `Button` after — so
+ * 2 descendants to 10 — title bar, menu bar, caption buttons and menu items — and one of those
+ * controls is reported as a `Pane` before registering and a `Button` after, so
  * registering changes the control TYPE as well as the membership, and the two readings of one
  * control differ by more than whether it is there.
  *
@@ -653,12 +644,6 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  * registering moves which vocabulary this road speaks rather than removing the second one. That is
  * why #136 does not close on this change.
  *
- * A second, fresher comparison (win2, 2026-09-20) said the same thing about a WinForms window, and
- * it is NOT cited here: its native half was taken with an addon built on 2026-08-29, behind the
- * tree it was compared against. It agreed with the record above, which is the only reason this
- * paragraph still says what it says — an agreeing measurement taken on the wrong build is not
- * evidence, it is a coincidence until re-shot.
- *
  * Every caller has `$root` and `$trueC` in scope before this, and reads `$target` after it. The
  * registration goes last and needs no warm-up of its own: what it requires is that the process
  * has made SOME UIA call first, and the search above is one — measured the same day, against the
@@ -668,8 +653,11 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  */
 /**
  * The element that is the window wearing another name: the synthesised title bar whose `Name` is
- * the window's own caption. Written once and used by all four searches in this file, because a
- * guard spelled separately in four places is a guard that will be three places next month.
+ * the window's own caption. Written once and used by all six searches in this file — five flat
+ * descendant loops and the shared walk, which has five callers of its own, so ten roads — because
+ * a guard spelled separately in ten places is a guard that will be nine places next month. (Gate 2
+ * found this sentence saying "four", which is the count of scripts that already registered: a
+ * number carried one paragraph too far.)
  *
  * Needs `$c` (the element under test) and `$targetName` (the window's caption, read once before
  * the walk) in scope. Internal #136.
@@ -700,8 +688,24 @@ const MIRRORS_THE_WINDOW =
  * MEASURED 2026-09-20 win2 (internal `dc652ad`), off the scripts the product generated: a search
  * by name is 195 characters longer than the same search by type, and the 195 are the two caption
  * lines and this clause. The version before this one paid them on every call.
+ *
+ * TWO THINGS NOBODY HAS MEASURED, so the next reader inherits them rather than the impression that
+ * this was settled (gate 2):
+ *
+ * - The guard fires on EVERY name-only search, including against a window where registering was a
+ *   no-op — one that publishes its own UIA, where the frame was in this road's tree before any of
+ *   this. On such a window a name-only search that used to answer a real title bar now answers
+ *   not-found. The way out is `controlType`, and `set_element_value`, the scroll roads and the
+ *   mouse's tier-3 re-query have no type to opt out with. Closing it needs a measurement on a
+ *   window with a custom caption that publishes its own UIA.
+ * - What the REGISTRATION costs in time. The saving above is a string length; the cost is that ten
+ *   roads now walk a tree several times larger (2 → 10 on a WinForms window, 2 → 26 on Notepad),
+ *   with a `.Current` read per element. `getTextViaTextPattern` and `getTextViaValuePattern` are
+ *   the two that could feel it: both run on a 6-second budget, and the second is on the keyboard's
+ *   background-type verification path, where a slower read becomes a null read and then an
+ *   `unverifiable`.
  */
-function mirrorGuardPs(name: string | undefined, controlType?: string | undefined): string {
+function mirrorGuardPs(name: string | undefined, controlType: string | undefined): string {
   return name && !controlType ? ` -and -not (${MIRRORS_THE_WINDOW})` : "";
 }
 
@@ -745,10 +749,16 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  * `-like '*needle*'`.
  *
  * MEASURED 2026-09-20 win2 (internal `e105936`), which narrowed this from what was first written
- * here. The frame is **not** ahead of the client area: on the fixture the children come back
- * `MenuBar, Button, TitleBar, MenuItem, …`, so a needle that occurs in BOTH the caption and a
- * control still finds the control, on every build. What fires is the other case — a needle that
- * occurs ONLY in the caption. For a window called `RCD136-SAVEQ-…`, `getElementBounds(window,
+ * here. What was first written was that the frame comes ahead of the client area; on that fixture
+ * the children come back `MenuBar, Button, TitleBar, MenuItem, …`, so the frame straddles it — a
+ * menu bar first, the client control second, the caption-mirroring title bar third. A needle
+ * present in both the caption and a control therefore reached the control, on all three builds of
+ * that window. **That ordering is a measurement of one window and nothing more** (gate 2 caught
+ * the first draft generalising it to every build): nobody has looked for a window whose title bar
+ * comes first, and on one the same defect would show up in that case too.
+ *
+ * What fires here is the case that does not depend on the order — a needle that occurs ONLY in the
+ * caption, where the walk reaches the title bar because nothing else matched. For a window called `RCD136-SAVEQ-…`, `getElementBounds(window,
  * "SAVEQ")` answered `{name: <the caption>, controlType: TitleBar}`, a 23-pixel strip across the
  * top, and `wait_until` answered `ok:true` with it. With the guard both answer what they answered
  * before the registration existed: not found.
@@ -890,11 +900,11 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
 # The same catch as the click script's — see there.
-${captionReadPs(mirrorGuardPs(name))}try {
+${captionReadPs(mirrorGuardPs(name, undefined))}try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name)}) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name, undefined)}) { $found = $el; break }
 }
 } catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
@@ -990,10 +1000,10 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 $found = $null
-${captionReadPs(mirrorGuardPs(name))}$all = $target.FindAll($desc, $trueC)
+${captionReadPs(mirrorGuardPs(name, undefined))}$all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name)}) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name, undefined)}) { $found = $el; break }
 }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
@@ -1802,11 +1812,11 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${resolveTargetPs}
 
 $found = $null
-${captionReadPs(mirrorGuardPs(name))}try {
+${captionReadPs(mirrorGuardPs(name, undefined))}try {
 $all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name)}) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name, undefined)}) { $found = $el; break }
 }
 ${lookupCatchPs}
 if (-not $found) { Write-Output '{"ok":false,"code":"ElementNotFound"}'; exit }
@@ -2395,7 +2405,7 @@ $trueC = [System.Windows.Automation.Condition]::TrueCondition
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"scrolled":false,"error":"Window not found"}`)}
 
-${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter})`, 12, mirrorGuardPs(name))}
+${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter})`, 12, mirrorGuardPs(name, undefined))}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
 
 try {
@@ -2467,7 +2477,7 @@ $ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found","ancestors":[]}`)}
 
-${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14, mirrorGuardPs(elementName))}
+${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14, mirrorGuardPs(elementName, undefined))}
 
 $ancestors = @()
 if ($script:found) {
@@ -2552,7 +2562,7 @@ $ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"scrolled":false,"error":"Window not found"}`)}
 
-${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14, mirrorGuardPs(elementName))}
+${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14, mirrorGuardPs(elementName, undefined))}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
 
 $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
