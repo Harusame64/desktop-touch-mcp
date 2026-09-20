@@ -2375,20 +2375,28 @@ try {
  * arrived in `error`, on a road whose answer goes back to a model that reads every word of it. The
  * script is not evidence about the failure; it is the same string on every call.
  *
- * What is worth carrying is which of the two happened and anything the process actually said, so
- * the tail after the first line is kept and clamped.
+ * **The message is not parsed, because parsing it does not work.** The first version took "the
+ * tail after the first line", on the reasoning that line one is `Command failed: <command>` and
+ * the rest is stderr. The command here is a THIRTY-LINE script, so line one ends at the script's
+ * first newline and the tail is the script's remaining lines, with the stderr past the end of the
+ * clamp. It kept the one thing worth dropping and dropped the one thing worth keeping, and the
+ * cell for it passed because its fixture put the script on a single line — a shape this producer
+ * never emits (gate 2).
+ *
+ * `execFile`'s error carries `stderr` as a field, exactly as it carries the `stdout` the salvage
+ * path above reads. That is what the process actually said.
  */
 function shortPsFailure(e: unknown, killed: boolean): string {
-  const raw = e instanceof Error ? e.message : String(e);
   const head = killed
     ? "PowerShell read was cut off at its own budget before it answered"
     : "PowerShell read failed";
-  // Only `execFile`'s own "Command failed:" prefix hides a script behind it. Everything else —
-  // `spawn powershell.exe ENOENT`, a parse error from the JSON — is short and is the whole of what
-  // is known, so clamping it would throw away the only evidence there is.
-  if (!raw.startsWith("Command failed:")) return `${head}: ${raw.slice(0, 300)}`;
-  const said = raw.split("\n").slice(1).join(" ").trim().slice(0, 300);
-  return said ? `${head}: ${said}` : head;
+  const said = (e as { stderr?: string } | null)?.stderr?.trim().slice(0, 300);
+  if (said) return `${head}: ${said}`;
+  // No `stderr` field at all means this did not come from `execFile` — a spawn failure, a
+  // programming error — and there the message IS the finding, so it is kept rather than clamped
+  // away to a heading.
+  const raw = e instanceof Error ? e.message : String(e);
+  return raw && !raw.startsWith("Command failed:") ? `${head}: ${raw.slice(0, 300)}` : head;
 }
 
 export async function getElementBounds(
@@ -2525,6 +2533,13 @@ try {
  */
 function answerFromPs(parsed: { error?: string } & Partial<ElementBounds>, nativeFailed?: string): BoundsAnswer {
   const carry = nativeFailed !== undefined ? { nativeFailed } : {};
+  // `5`, `"text"` and `null` are all valid JSON. Without this, the first two become a truthy
+  // `found` with no fields — which downstream reads as an element that was found and has no
+  // rectangle, and advises the caller to scroll something that does not exist (gate 2). A wrong
+  // answer, not a crash, which is the worse outcome.
+  if (typeof parsed !== "object" || parsed === null) {
+    return { found: null, why: "read_failed", via: "powershell", error: "PowerShell printed JSON that is not an object", ...carry };
+  }
   if (parsed.error === undefined) return { found: parsed as ElementBounds, via: "powershell", ...carry };
   const known: BoundsMiss | undefined = parsed.error === "Window not found" ? "window_not_found"
     : parsed.error === "Element not found" ? "element_not_found"

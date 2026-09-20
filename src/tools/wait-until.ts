@@ -179,7 +179,13 @@ function earnedAdvice(look: LastLook): string[] {
   } else if (why === "no_rectangle") {
     lines.push("The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer");
   } else if (why === "unreadable") {
-    lines.push("The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first with {tool:list_window_titles}, then the element name — this build's UIA engine cannot tell the two apart");
+    // Two different things wear this name, and only one of them is about the engine (gate 2):
+    // the native road discards the distinction, while the PowerShell road reaches `unreadable`
+    // only when the script said something this server does not recognise — and then the words are
+    // in `context.lastLook.error`, which the first version of this sentence never mentioned.
+    lines.push(answered === "native"
+      ? "The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first with {tool:list_window_titles}, then the element name — this build's UIA engine cannot tell the two apart"
+      : "The UIA client answered with something this server does not recognise — the words are in context.lastLook.error. Read those before changing the target");
   } else if (why === "read_unfinished") {
     lines.push("The read ran out of its own budget before answering, so nothing was observed at all — unlike the other silences, this one is not a statement about the window or the element. Some window on this desktop is answering slowly, not necessarily the one you named. The read's own budget is fixed and a longer timeoutMs buys more attempts rather than a longer look, so this helps only if the slowness passes");
   } else if (why === "read_failed") {
@@ -193,7 +199,19 @@ function earnedAdvice(look: LastLook): string[] {
   // cut off, `via` is `none` and no client spoke — and this sentence would assert exactly what
   // `UiaVia`'s own doc says `none` exists to prevent, one file over. A read that reached nobody
   // says nothing about anybody's vocabulary.
-  if (fellBack && answered === "powershell" && why !== "element_not_found") lines.push(vocabulary);
+  //
+  // …and never on a look that RESOLVED (gate 2, and this is the change's own defect shape one
+  // condition over). Two shapes reached here: a `value_changes` wait whose element was found and
+  // whose value was read on every poll, where the envelope opened with "the name you passed may
+  // be the native engine's" — a name that demonstrably worked, displacing "Increase timeoutMs",
+  // which is the right advice for a value that has not moved yet; and an `element_appears` wait
+  // that found the element without a rectangle, where line one said "found but has no rectangle"
+  // and line two said the name may be wrong. Neither is marginal: on any build with the addon, the
+  // only way to reach the PowerShell road at all is a native throw, so every fall-back carries
+  // `nativeFailed` and both fired every time.
+  if (fellBack && answered === "powershell" && look["resolved"] !== true && why !== "element_not_found") {
+    lines.push(vocabulary);
+  }
   return lines;
 }
 

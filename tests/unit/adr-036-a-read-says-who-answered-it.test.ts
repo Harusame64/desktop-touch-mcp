@@ -72,6 +72,7 @@ vi.mock("../../index.js", () => ({
 vi.resetModules();
 const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
 
+function scripts_reset(): void { psOutputs.length = 0; }
 beforeEach(() => { psOutputs.length = 0; psThrows = null; nativeAnswer = null; });
 afterEach(() => { vi.unstubAllEnvs(); });
 
@@ -122,11 +123,26 @@ describe("the bridge says which silence the read was", () => {
     // because `execFile` builds its message out of the entire command line. This field goes back
     // through a tool response to a model that reads every word of it, and the script is the same
     // string on every call — it is not evidence about the failure.
+    //
+    // THE FIXTURE IS MULTI-LINE BECAUSE THE PRODUCER IS (gate 2). The first version of this cell
+    // put the script on one line, and under it a `slice(1)` implementation looked correct while
+    // against the real thirty-line script it kept the script's remaining lines and clamped the
+    // stderr off the end — the exact opposite of the claim. A cell whose fixture the producer
+    // never emits measures a road nobody travels.
     nativeAnswer = () => { throw new Error("engine unavailable"); };
-    const script = "$root = [System.Windows.Automation.AutomationElement]::RootElement; " + "x".repeat(2000);
-    psThrows = Object.assign(new Error(`Command failed: powershell.exe -NoProfile -Command ${script}\nthe real reason`), { killed: true });
+    const script = [
+      "", "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+      "Add-Type -AssemblyName UIAutomationClient",
+      "$root = [System.Windows.Automation.AutomationElement]::RootElement",
+      ...Array.from({ length: 30 }, (_, i) => `$line${i} = 'padding padding padding padding padding'`),
+    ].join("\n");
+    psThrows = Object.assign(
+      new Error(`Command failed: powershell.exe -NoProfile -NonInteractive -Command ${script}\n`),
+      { killed: true, stderr: "the real reason", stdout: "" },
+    );
     const answer = await getElementBounds("App", "Save") as { error?: string };
     expect(answer.error).not.toContain("AutomationElement");
+    expect(answer.error).not.toContain("padding");
     expect(answer.error!.length).toBeLessThan(400);
     // …and what the process actually SAID is kept, which is the only part that differs per call.
     expect(answer.error).toMatch(/the real reason/);
@@ -134,12 +150,47 @@ describe("the bridge says which silence the read was", () => {
   });
 
   it("keeps a short failure whole, because clamping it would throw away the only evidence", async () => {
-    // `spawn powershell.exe ENOENT` has no script behind it and no second line: the message IS the
-    // finding. A rule written as "always take the tail" would have answered with a bare heading.
+    // `spawn powershell.exe ENOENT` never reached a process, so it has no `stderr` field at all:
+    // the message IS the finding. A rule written as "always read stderr" would answer with a bare
+    // heading.
     nativeAnswer = () => { throw new Error("engine unavailable"); };
     psThrows = new Error("spawn powershell.exe ENOENT");
     const answer = await getElementBounds("App", "Save") as { error?: string };
     expect(answer.error).toMatch(/ENOENT/);
+  });
+
+  it("does not tell a plain failure it was cut off, because only one of them means 'wait'", async () => {
+    // FOUND BY MUTATION (gate 2): making the heading unconditional kills nothing — the two cells
+    // above assert only the tail. A read that failed outright would then advise waiting for a
+    // slowness that is not there.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    psThrows = Object.assign(new Error("Command failed: powershell.exe -Command …"), {
+      killed: false, signal: null, stderr: "the real reason", stdout: "",
+    });
+    const answer = await getElementBounds("App", "Save") as { error?: string };
+    expect(answer.error).toMatch(/^PowerShell read failed/);
+    expect(answer.error).not.toMatch(/cut off/);
+  });
+
+  it("clamps a long message that has no script behind it", async () => {
+    // FOUND BY MUTATION (gate 2): dropping the clamp on that branch kills nothing, because no cell
+    // drives a long message down it.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    psThrows = new Error("spawn failed: " + "y".repeat(2000));
+    const answer = await getElementBounds("App", "Save") as { error?: string };
+    expect(answer.error!.length).toBeLessThan(400);
+  });
+
+  it("does not read a number as an element", async () => {
+    // `5`, `"text"` and `null` are valid JSON. Without a guard the first two become a truthy
+    // `found` with no fields, which downstream reads as an element with no rectangle and advises
+    // scrolling something that does not exist (gate 2) — a wrong answer, not a crash.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    for (const printed of ["5", '"text"', "null"]) {
+      scripts_reset();
+      psOutputs.push(printed);
+      expect(await getElementBounds("App", "Save"), printed).toMatchObject({ found: null, why: "read_failed", via: "powershell" });
+    }
   });
 
   it("does not call an outside kill our own budget, because only one of them means 'wait'", async () => {

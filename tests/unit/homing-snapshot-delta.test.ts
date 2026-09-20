@@ -238,6 +238,25 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
     expect(text).toMatch(/\[none, after native failed: UIA operation timed out after 8000ms\]/);
   });
 
+  it("names the client on the found-but-rectless note too, which no cell reached", async () => {
+    // FOUND BY MUTATION (gate 2): the tier-3 note has THREE shapes — found with a rectangle, found
+    // without one, and nothing at all — and only two had cells. Deleting the client from the
+    // middle one killed nothing.
+    const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: { name: "Save", controlType: "Button", automationId: "", boundingRect: null, value: null },
+      via: "powershell",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    mockGetSnapshot.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    mockGetCachedByTitle.mockReturnValue(cachedEntry({ x: 0, y: 0, width: 800, height: 600 }, Date.now()));
+    mockGetRect.mockReturnValue({ x: 600, y: 400, width: 800, height: 600 });
+
+    const result = await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400, elementName: "Save" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "";
+    expect(text).toMatch(/with no rectangle \[powershell, after native failed: UIA operation timed out after 8000ms\]/);
+  });
+
   it("ignores a stale main-cache entry (TTL guard) instead of applying a bogus offset", async () => {
     mockGetSnapshot.mockReturnValue(null);
     // Stale entry (older than the 60s cache TTL) — must NOT seed screenshotRegion.

@@ -29,11 +29,14 @@ let readThrows: Error | null = null;
 let miss: { why: string; via: string; nativeFailed?: string; error?: string } =
   { why: "element_not_found", via: "powershell" };
 let foundVia: "native" | "powershell" = "powershell";
+let foundNativeFailed: string | undefined;
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getElementBounds: async () => {
     if (readThrows) throw readThrows;
-    return bounds ? { found: bounds, via: foundVia } : { found: null, ...miss };
+    return bounds
+      ? { found: bounds, via: foundVia, ...(foundNativeFailed !== undefined && { nativeFailed: foundNativeFailed }) }
+      : { found: null, ...miss };
   },
 }));
 vi.mock("../../src/engine/win32.js", () => ({
@@ -50,7 +53,7 @@ vi.mock("../../src/utils/desktop-config.js", () => ({ getCdpPort: () => 9222 }))
 const { waitUntilHandler } = await import("../../src/tools/wait-until.js");
 
 beforeEach(() => {
-  bounds = null; readThrows = null; foundVia = "powershell";
+  bounds = null; readThrows = null; foundVia = "powershell"; foundNativeFailed = undefined;
   miss = { why: "element_not_found", via: "powershell" };
 });
 
@@ -278,6 +281,59 @@ describe("a timed-out wait says which silence it was", () => {
     const envelope = await waitFor("element_appears");
     expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
     expect(suggestOf(envelope)[1]).toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("does not question the name of an element it found and read twice", async () => {
+    // THE DEFECT GATE 2 FOUND, and it is this change's own shape one condition over. On any build
+    // with the addon, the ONLY way to reach the PowerShell road is a native throw — so every
+    // fall-back carries `nativeFailed`, and this fired on every one of them.
+    //
+    // Here the element was found and its value read on every poll; the wait timed out because the
+    // value never moved. The envelope opened with "the name you passed may be the native engine's
+    // — check WHICH client's name you are using", about a name that demonstrably worked, and it
+    // displaced "Increase timeoutMs", which is the right advice for a value that has not changed
+    // yet.
+    bounds = { name: "Save", value: "draft" };
+    foundVia = "powershell";
+    foundNativeFailed = "UIA operation timed out after 8000ms";
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: true, baseline: "draft", via: "powershell" });
+    expect(suggestOf(envelope)[0]).toBe("Increase timeoutMs");
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back/);
+  });
+
+  it("does not contradict itself about an element it found without a rectangle", async () => {
+    // The other resolved shape: line one said "found but has no rectangle" and line two said the
+    // name may be wrong. Both cannot be the thing to fix (gate 2).
+    bounds = { name: "Save", controlType: "Button" };
+    foundVia = "powershell";
+    foundNativeFailed = "UIA operation timed out after 8000ms";
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/no rectangle/);
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back/);
+  });
+
+  it("says the road changed once, not twice", async () => {
+    // FOUND BY MUTATION (gate 2): dropping the `why !== "element_not_found"` exclusion from the
+    // trailing push emits the vocabulary line TWICE on that silence, and every cell stayed green
+    // because they assert `suggest[0]` and a `join` containment, neither of which counts.
+    miss = { why: "element_not_found", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope).filter((line) => /fell back to the PowerShell/.test(line))).toHaveLength(1);
+  });
+
+  it("names the window lister by capability, not by a name nobody registered", async () => {
+    // FOUND BY MUTATION (gate 2), and by eye before that: the first version of these two sentences
+    // said `list_windows`, which exists nowhere in this product. The source-walking gate only
+    // checks `{tool:…}` placeholders against the capability list — a BARE unregistered tool name
+    // in prose is invisible to it, which is why the regression could come back unnoticed.
+    for (const why of ["window_not_found", "unreadable"]) {
+      miss = { why, via: why === "unreadable" ? "native" : "powershell" };
+      const envelope = await waitFor("element_appears");
+      const first = suggestOf(envelope)[0];
+      expect(first, why).toMatch(/\{tool:list_window_titles\}|desktop_discover|get_windows/);
+      expect(first, why).not.toMatch(/list_windows\b/);
+    }
   });
 
   it("stays quiet about the road when the road did not change", async () => {

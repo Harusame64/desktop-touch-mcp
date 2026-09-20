@@ -962,14 +962,28 @@ export const scopeElementHandler = async ({
       //
       // The code is spelled into the MESSAGE, which is how this product carries a declared code
       // out through `failWith` — `classify` reads the message and never the class (`_errors.ts`).
+      //
+      // All five silences, not the two that were easy (gate 2). `unreadable` is what the NATIVE
+      // road answers for both of its misses, so leaving it on the plain "Element not found" arm
+      // left a window that does not exist answering with the element-name advice on the road this
+      // product actually runs — verbatim the defect this was supposed to close. It still
+      // classifies as `ElementNotFound`, which is the honest routing for an answer that really is
+      // ambiguous; what changes is that the sentence stops asserting the half that may be false.
       const msg = answer.why === "window_not_found"
         ? `WindowNotFound: no window matched "${effectiveTitle}"`
         : answer.why === "read_unfinished"
           ? `UiaTimeout: the bounds read did not finish for "${effectiveTitle}"`
-          : "Element not found";
+          : answer.why === "read_failed"
+            ? `UiaTimeout: the bounds read failed for "${effectiveTitle}"`
+            : answer.why === "unreadable"
+              ? `Element not found — or no window matched "${effectiveTitle}"; the client that answered cannot tell the two apart`
+              : "Element not found";
       return failWith(new Error(msg), "scope_element", {
         windowTitle, name, automationId, controlType,
         why: answer.why, via: answer.via,
+        // The only evidence a failed read has. Dropping it left `via: "none"` sitting beside
+        // "Element not found" with nothing to explain either.
+        ...(answer.error !== undefined && { error: answer.error }),
         ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }),
       });
     }
