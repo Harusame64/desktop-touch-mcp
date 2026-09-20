@@ -12,6 +12,7 @@ import {
   type WindowZInfo,
 } from "../engine/win32.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 
@@ -167,9 +168,20 @@ function probeElementAppears(windowTitle: string, elementName: string | undefine
     } catch (e) {
       // A window this server may not act through is a REFUSAL, not a thing that has not happened
       // yet: swallowing it polled the key locker for the whole timeout and answered `WaitTimeout`,
-      // while the product has a `WindowExcluded` code that says nothing was done and why. The two
-      // browser probes already rethrow for the same reason (gate 2).
-      if (e instanceof Error && e.name === "WindowExcludedError") throw e;
+      // while the product has a `WindowExcluded` code that says nothing was done and why.
+      //
+      // **Rethrown with the code SPELLED INTO THE MESSAGE**, which is how this product carries a
+      // declared code out through `failWith`: `classify` reads the message, never the class or the
+      // name (`_errors.ts`), so the first version of this rethrow arrived as a bare `ToolError`
+      // with no advice at all — the four hand-written `WindowExcluded` lines never fired, and the
+      // description had just been corrected to say `ToolError` means a validation error (gate 2).
+      // `probeUrlMatches` below does the same with `BrowserNotConnected:`.
+      if (e instanceof WindowExcludedError) {
+        throw new Error(`WindowExcluded: ${e.message}`, { cause: e });
+      }
+      // Defensive, not a live road: `getElementBounds` catches everything internally on both
+      // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
+      // a future producer that does (gate 2).
       write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
@@ -200,20 +212,31 @@ function probeValueChanges(windowTitle: string, elementName: string | undefined,
       //
       // ON THE TIMEOUT ROAD ONLY, and the success road keeps a defect of its own that this does not
       // touch (gate 2): a baseline read from a live element, then a window that closes, still reads
-      // as `"" !== "draft"` and answers `ok:true` with a change that never happened. The first poll
-      // no longer produces that answer — `first` — but a later disappearance does. Filed, not fixed
-      // here: saying it costs a shape this change does not carry.
+      // as `"" !== "draft"` and answers `ok:true` with a change that never happened. `first` is the
+      // old `baseline === null` guard renamed, not a fix for it — the first poll never produced
+      // that answer either. Filed, not fixed here: saying it costs a shape this change does not
+      // carry.
       const resolved = bounds !== null && bounds !== undefined;
       const cur = bounds?.value ?? "";
       const first = baseline === null;
       if (first) baseline = cur;
-      write(look, { resolved, baseline, latest: cur, ...(resolved ? {} : { why: "element_not_found" }) });
+      // The readings are printed only where there was something to read. `baseline: ""` beside
+      // `resolved: false` asserts an observation that never happened, and "" is exactly the value a
+      // missing element is not (gate 2, the same shape one level down).
+      write(look, resolved
+        ? { resolved, baseline, latest: cur }
+        : { resolved, why: "element_not_found" });
       if (!first && baseline !== null && cur !== baseline) {
         return { before: baseline, after: cur };
       }
       return null;
     } catch (e) {
-      if (e instanceof Error && e.name === "WindowExcludedError") throw e;
+      if (e instanceof WindowExcludedError) {
+        throw new Error(`WindowExcluded: ${e.message}`, { cause: e });
+      }
+      // Defensive, not a live road: `getElementBounds` catches everything internally on both
+      // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
+      // a future producer that does (gate 2).
       write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
@@ -485,7 +508,7 @@ export function registerWaitUntilTool(server: McpServer): void {
       purpose: "Server-side poll for an observable condition — eliminates screenshot-polling loops when waiting for state changes.",
       details: "condition selects what to watch: window_appears/window_disappears (target.windowTitle required), focus_changes (optional target.fromHwnd), element_appears/value_changes (target.windowTitle + target.elementName required, UIA; min 500ms interval), ready_state (target.windowTitle; visible + not minimized), terminal_output_contains (target.windowTitle + target.pattern required [+target.regex:true], needs terminal tools loaded), element_matches (target.by + target.pattern required, needs browser tools loaded), url_matches (target.pattern required [+target.regex:true]; matches the active tab's location.href via CDP — use for SPA route changes, redirects, OAuth flows). Returns {ok:true, elapsedMs, observed} on success, or WaitTimeout error with suggest hints. timeoutMs default 5000 (max 60000).",
       prefer: "Use instead of run_macro({sleep:N}) + screenshot loops. Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation. Use url_matches when the URL is the most reliable signal (SPA routing / redirect cascades).",
-      caveats: "terminal_output_contains, element_matches, and url_matches require a browser CDP connection (open --remote-debugging-port=9222 first). element_appears/value_changes spawn a UIA process per poll (interval floor 500ms). On elapsed-timeout: {ok:false, code:'WaitTimeout', error, suggest:[...]}; suggest[] may open with a line earned by the last poll — read it, do not index. Those two also return context.lastLook (did the element resolve, why not; for value_changes baseline/latest — the field's VALUE, so a masked credential arrives as mask characters). Non-timeout failures occur too — pre-poll validation and missing-hook errors are code:'ToolError' (read the message), and CDP probe errors (url_matches / element_matches conditions) surface as code:'BrowserNotConnected' (re-attach via browser_open). Branch on code rather than assume WaitTimeout.",
+      caveats: "terminal_output_contains, element_matches, and url_matches require a browser CDP connection (open --remote-debugging-port=9222 first). element_appears/value_changes spawn a UIA process per poll (interval floor 500ms). On elapsed-timeout: {ok:false, code:'WaitTimeout', error, suggest:[...]}; suggest[] may open with a line earned by the last poll — read it, do not index. element_appears/value_changes also return context.lastLook (did the element resolve, why not; for value_changes baseline/latest — the field's VALUE, so a masked credential arrives as mask characters). Non-timeout failures occur too — pre-poll validation and missing-hook errors are code:'ToolError' (read the message), CDP probe errors (url_matches / element_matches) surface as code:'BrowserNotConnected' (re-attach via browser_open), and a target this server may not act through answers code:'WindowExcluded' at once rather than polling it. Branch on code rather than assume WaitTimeout.",
       examples: [
         "wait_until({condition:'window_appears', target:{windowTitle:'Save As'}, timeoutMs:10000})",
         "wait_until({condition:'terminal_output_contains', target:{windowTitle:'Terminal', pattern:'$ '}, timeoutMs:30000})",

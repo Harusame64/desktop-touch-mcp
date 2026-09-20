@@ -601,14 +601,14 @@
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 407,
+      "line": 430,
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 456,
+      "line": 479,
       "tool": "wait_until",
       "errKind": "identifier",
       "contextShape": "object-plain"

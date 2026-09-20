@@ -33,6 +33,9 @@ vi.mock("../../src/engine/win32.js", () => ({
   findWindow: () => null,
 }));
 vi.mock("../../src/engine/cdp-bridge.js", () => ({ DEFAULT_CDP_PORT: 9222, evaluateInTab: async () => null }));
+// The real class, because the rethrow tests it with `instanceof` and a stand-in would pass the
+// `name` check while failing the real one — which is the difference this cell exists to hold.
+const { WindowExcludedError } = await import("../../src/engine/tool-exclusion.js");
 vi.mock("../../src/utils/desktop-config.js", () => ({ getCdpPort: () => 9222 }));
 
 const { waitUntilHandler } = await import("../../src/tools/wait-until.js");
@@ -90,6 +93,17 @@ describe("a timed-out wait says which silence it was", () => {
     expect(suggestOf(envelope)[0]).toBe("Increase timeoutMs");
   });
 
+  it("prints no reading for an element it never read", async () => {
+    // `baseline: ""` beside `resolved: false` asserts an observation that never happened — and ""
+    // is exactly the value a missing element is NOT, which is the conflation this whole change is
+    // about, one level down (gate 2).
+    bounds = null;
+    const look = contextOf(await waitFor("value_changes"))["lastLook"] as Record<string, unknown>;
+    expect(look).toMatchObject({ resolved: false, why: "element_not_found" });
+    expect(look).not.toHaveProperty("baseline");
+    expect(look).not.toHaveProperty("latest");
+  });
+
   it("tells the two value silences apart, which is the whole point", async () => {
     bounds = { name: "Save", value: "draft" };
     const found = contextOf(await waitFor("value_changes"))["lastLook"];
@@ -135,6 +149,23 @@ describe("a timed-out wait says which silence it was", () => {
     expect(look).toMatchObject({ resolved: true, baseline: "draft", latest: "draft" });
     expect(look).not.toHaveProperty("why");
     expect(look).not.toHaveProperty("error");
+  });
+
+  it("stops at once for a window this server may not act through, and says so with its own code", async () => {
+    // A refusal is not a thing that has not happened yet. Swallowed, it polled the key locker for
+    // the whole timeout and answered `WaitTimeout`; rethrown bare, it arrived as `ToolError` with
+    // no advice at all, because `classify` reads the MESSAGE and not the class (gate 2 found both,
+    // one round apart). The code is spelled into the message, which is how this product carries a
+    // declared code out through `failWith`.
+    readThrows = new WindowExcludedError('UIA target window "Key Locker" belongs to the desktop-touch key locker and is excluded');
+    const started = Date.now();
+    const envelope = await waitFor("element_appears", 5000);
+    expect(envelope["code"]).toBe("WindowExcluded");
+    // It did not wait out the timeout to say so.
+    expect(Date.now() - started).toBeLessThan(2000);
+    // …and the advice for that code is the four lines the product already wrote, not silence.
+    expect(suggestOf(envelope).length).toBeGreaterThan(0);
+    expect(contextOf(envelope)).not.toHaveProperty("lastLook");
   });
 
   it("carries no last look for a condition that looks at no element", async () => {
