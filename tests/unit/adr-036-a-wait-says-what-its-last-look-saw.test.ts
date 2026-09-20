@@ -65,8 +65,10 @@ describe("a timed-out wait says which silence it was", () => {
     const envelope = await waitFor("element_appears");
     expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "element_not_found" });
     // The first suggestion is the one this look earned — "increase the timeout" is the advice a
-    // caller would otherwise take three times for a name that matches nothing.
-    expect(suggestOf(envelope)[0]).toMatch(/never resolved/);
+    // caller would otherwise take three times for a name that matches nothing. The tool in it is
+    // named by capability, so the sentence says whichever of the two this server registered.
+    expect(suggestOf(envelope)[0]).toMatch(/No element by that name was found/);
+    expect(suggestOf(envelope)[0]).toMatch(/desktop_discover|get_ui_elements/);
     expect(suggestOf(envelope)).toContain("Increase timeoutMs");
   });
 
@@ -96,6 +98,43 @@ describe("a timed-out wait says which silence it was", () => {
     expect(found).toMatchObject({ resolved: true });
     expect(missing).toMatchObject({ resolved: false });
     expect(found).not.toEqual(missing);
+  });
+
+  it("does not call an element that was found but has no rectangle a missing element", async () => {
+    // THE DEFECT THIS CHANGE NEARLY SHIPPED (gate 2): both arms wrote `resolved:false`, so a button
+    // in a collapsed panel — found by name every poll, rect nulled because it is empty or offscreen
+    // — was told its NAME was wrong, and the tool the advice points at does not list such a control
+    // either. The real recovery (bring it into view) was in none of the four suggestions.
+    bounds = { name: "Save", controlType: "Button" };   // resolved, no boundingRect
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: true, why: "no_rectangle" });
+    expect(suggestOf(envelope)[0]).toMatch(/no rectangle/);
+    expect(suggestOf(envelope)[0]).not.toMatch(/check target.elementName/);
+  });
+
+  it("does not leave one poll's reason standing beside another poll's answer", async () => {
+    // The look is replaced, not merged: a read that throws on the first poll and succeeds on the
+    // second used to ship `{resolved:true, why:"read_failed", error:…}` — a composite of two polls
+    // that contradict each other, under a comment promising the LAST look (gate 2).
+    readThrows = new Error("RPC_E_DISCONNECTED");
+    bounds = { name: "Save", value: "draft" };
+    let polls = 0;
+    const original = readThrows;
+    readThrows = null;
+    // Throw on the first poll only.
+    const uia = await import("../../src/engine/uia-bridge.js");
+    const spy = vi.spyOn(uia, "getElementBounds").mockImplementation(async () => {
+      polls += 1;
+      if (polls === 1) throw original;
+      return bounds as never;
+    });
+    const envelope = await waitFor("value_changes");
+    spy.mockRestore();
+    expect(polls).toBeGreaterThan(1);
+    const look = contextOf(envelope)["lastLook"] as Record<string, unknown>;
+    expect(look).toMatchObject({ resolved: true, baseline: "draft", latest: "draft" });
+    expect(look).not.toHaveProperty("why");
+    expect(look).not.toHaveProperty("error");
   });
 
   it("carries no last look for a condition that looks at no element", async () => {

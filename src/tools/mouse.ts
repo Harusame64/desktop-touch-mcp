@@ -272,9 +272,15 @@ async function applyHoming(
       );
       return { x: nx, y: ny, notes };
     }
-    // And a re-query that resolved NOTHING said nothing at all: the point below is the plain
-    // offset correction, which is a different claim about where the element is.
-    notes.push(`re-query for "${elementName ?? elementId}" via UIA found no element; kept the offset correction`);
+    // And a re-query that did not produce a POINT said nothing at all: the correction below is the
+    // plain offset, which is a different claim about where the element is. The two reasons are not
+    // the same thing — an element that was found and has no rectangle is not a missing element
+    // (gate 2), and only one of them means the name was wrong.
+    notes.push(
+      bounds
+        ? `re-query for "${elementName ?? elementId}" via UIA found ${bounds.controlType ?? "?"} "${bounds.name ?? ""}" with no rectangle; kept the offset correction`
+        : `re-query for "${elementName ?? elementId}" via UIA found no element; kept the offset correction`,
+    );
   }
 
   // Simple offset correction
