@@ -168,12 +168,12 @@ describe("a coordinate press asks what is at the point", () => {
       // rows would send it. Pressing is the same answer either way.
       ["unnamed", { elementAtPoint: () => AT({ name: "" }) }, entity(), { verdict: "unnamed" }],
       // No dep at all: an older build, or a test double. The press is what it was before the rung.
-      ["no dep", {}, entity(), { verdict: "not_asked", why: "no_element_at_point_dep" }],
+      ["no dep", {}, entity(), { verdict: "not_asked_no_dep" }],
       // A vision entity carries an OCR label, not a UIA name. One misread character would refuse a
       // press that is perfectly good, so it is not asked.
       ["vision entity", { elementAtPoint: () => AT({ name: "OTHERQ" }) },
         entity({ sources: ["visual_gpu"], locator: undefined }),
-        { verdict: "not_asked", why: "entity_not_named_by_uia", named: null }],
+        { verdict: "not_asked_entity_unnamed", named: null }],
     ];
     for (const [label, over, ent, row] of cases) {
       rmSync(logPath, { force: true });

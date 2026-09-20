@@ -492,8 +492,12 @@ async function resolvePressPoint(
     const atName = at?.name?.trim() ?? "";
     const windowShaped = at !== undefined && at !== null
       && (at.controlType === "Window" || at.controlType === "Pane");
-    const verdict = named === "" ? "not_asked"
-      : deps.elementAtPoint === undefined ? "not_asked"
+    // The two "not asked" cases say WHICH in the verdict rather than in a `why`: the vocabulary
+    // extractor reads a `why` only where it is a literal at the call site (it is the grid's
+    // denominator, and a value it cannot read is a slot nobody counted), and a row that is not a
+    // refusal has no rung to carry the distinction either.
+    const verdict = named === "" ? "not_asked_entity_unnamed"
+      : deps.elementAtPoint === undefined ? "not_asked_no_dep"
       : at === null || at === undefined ? "unreadable"
       : atName === "" ? "unnamed"
       : windowShaped ? "window_answered"
@@ -502,9 +506,6 @@ async function resolvePressPoint(
     probeAim("act.route", {
       route: "element_check",
       verdict,
-      why: named === "" ? "entity_not_named_by_uia"
-        : deps.elementAtPoint === undefined ? "no_element_at_point_dep"
-        : null,
       coordHwnd: String(aimHwnd),
       coordHwndFrom: handleFrom,
       point: { x, y },

@@ -54,7 +54,6 @@
   "why": [
     "cdp_click",
     "cdp_fill",
-    "entity_not_named_by_uia",
     "enumeration_failed",
     "excluded_window",
     "keyboard_only_entity",
@@ -62,7 +61,6 @@
     "measurement_moment_unknown",
     "moved_during_read",
     "no_aim_rect_dep",
-    "no_element_at_point_dep",
     "no_origin_rect",
     "no_rectangle_and_not_gone",
     "no_window_at_point",
