@@ -63,7 +63,7 @@ export const scrollSchema = z.discriminatedUnion("action", [
   // action='smart' — smart scroll with multi-strategy fallback (was: smart_scroll)
   z.object({
     action: z.literal("smart"),
-    target: z.string().describe(
+    target: z.string().min(1).describe(
       "CSS selector (Chrome/Edge) or partial UIA name (native apps). " +
       "For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). " +
       "For UIA path, a partial name match against element Name property."

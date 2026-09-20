@@ -1591,7 +1591,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "target": {
           "description": "CSS selector (Chrome/Edge) or partial UIA name (native apps). For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). For UIA path, a partial name match against element Name property.",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "strategy": {
           "description": "auto (default): try CDP → UIA → image in order. cdp: Chrome/Edge only. uia: native Windows UIA. image: image + Win32 binary-search.",

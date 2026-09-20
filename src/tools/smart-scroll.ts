@@ -43,7 +43,7 @@ const HASH_MOVE_THRESHOLD = 5; // Hamming distance below which we consider scrol
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const smartScrollSchema = {
-  target: z.string().describe(
+  target: z.string().min(1).describe(
     "CSS selector (Chrome/Edge) or partial UIA name (native apps). " +
     "For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). " +
     "For UIA path, a partial name match against element Name property."
