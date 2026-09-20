@@ -15,8 +15,11 @@
  * differently, and ADR-036 item 16 weighs a "not found" by which client said it — so what this pins
  * is that no script generated here tests `$target` itself.
  *
- * It reads the scripts the SHIPPED functions build (the native addon is absent off Windows, so the
- * PowerShell road is the one taken), not a builder exported for the test.
+ * It reads the scripts the SHIPPED functions build, not a builder exported for the test. The road is
+ * chosen by the switch, not by the host: `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` before the import, so
+ * this cell means the same thing on the machine where the addon IS built (gate 2 — it relied on the
+ * addon being absent, which is true here and false on win2, where every cell would have gone red for
+ * a reason that is not the defect).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -35,6 +38,32 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
+/**
+ * A stand-in addon that WOULD answer every call this cell makes — so the switch below is not taken on
+ * trust. Without it the cell proves nothing on this host (there is no addon here to disable), and it
+ * is the machine WITH an addon that the switch has to hold for. Remove the `stubEnv` and these
+ * answers win: no script is built, `scriptOf` finds none, and every cell reddens.
+ */
+vi.mock("../../index.js", () => ({
+  default: {
+    computeChangeFraction: () => 0,
+    dhashFromRaw: () => 0n,
+    hammingDistance: () => 0,
+    win32EnumTopLevelWindows: () => [],
+    uiaGetElements: async () => ({ windowTitle: "T", elementCount: 0, elements: [] }),
+    uiaGetElementBounds: async () => ({ name: "Save As", controlType: "Window", boundingRect: null, value: null }),
+    uiaGetElementChildren: async () => [],
+    uiaClickElement: async () => ({ ok: true, element: "Save As", error: null, code: null }),
+    uiaSetValue: async () => ({ ok: true, error: null, code: null }),
+    uiaInsertText: async () => ({ ok: true, error: null, code: null }),
+    uiaScrollIntoView: async () => ({ ok: true, scrolled: true, error: null }),
+    uiaGetScrollAncestors: async () => [],
+    uiaScrollByPercent: async () => ({ ok: true, scrolled: true, error: null }),
+  },
+}));
+
+vi.stubEnv("DESKTOP_TOUCH_DISABLE_NATIVE_UIA", "1");
+vi.resetModules();
 const {
   clickElement, setElementValue, insertTextViaTextPattern2,
   getElementBounds, getElementChildren,
@@ -90,8 +119,30 @@ describe("the reads walk from the window's children, not from the window", () =>
       expect(accept).toBeLessThan(guardEnds);
       // …and the walk still reaches as far as it did (the cap counts descendants now).
       expect(block).toContain(`if ($depth -gt ${maxDepth}) { return }`);
+      // First match wins — parent before child. Without this the walk keeps going and answers with
+      // the LAST match, which the doc above the generator promises it does not.
+      expect(block).toContain("if ($script:found) { return }");
     });
   }
+
+  it("accepts an element in exactly one place, so the window cannot be answered beside the walk", async () => {
+    // THE MUTATION THIS EXISTS FOR (gate 2): the defect can come back one line BELOW the walk —
+    // `if (-not $script:found) { $c = $target.Current; if (<match>) { $script:found = $target } }` —
+    // and every assertion above still passes, because they read the walk only. Two properties kill
+    // it: the script accepts a candidate once, and nothing reads `$target`'s own properties at all.
+    for (const call of [
+      () => getElementBounds(TITLE, NAME),
+      () => getElementChildren(TITLE, NAME, undefined, undefined, 2, 50, 5000),
+      () => scrollElementIntoView(TITLE, NAME),
+      () => getScrollAncestors(TITLE, NAME),
+      () => scrollByPercent(TITLE, NAME, 50, -1),
+    ]) {
+      scripts.length = 0;
+      const script = await scriptOf(call);
+      expect(script.match(/\$script:found = /g) ?? []).toHaveLength(1);
+      expect(script).not.toContain("$target.Current");
+    }
+  });
 
   it("names the window's own title as the shape that used to answer", async () => {
     // Not a tautology: it pins that the window IS reachable as `$target` — the search has something
@@ -115,7 +166,9 @@ describe("the acts search descendants, which never includes the window", () => {
     it(`${label} uses FindAll(Descendants) and no walk from the window`, async () => {
       const script = await scriptOf(call);
       expect(script).toContain("$target.FindAll($desc, $trueC)");
-      expect(script).toContain("$desc  = [System.Windows.Automation.TreeScope]::Descendants");
+      // By value, not by alignment: the scripts space `$desc` differently and the property is which
+      // SCOPE was asked for (gate 2).
+      expect(script).toMatch(/\$desc\s+= \[System\.Windows\.Automation\.TreeScope\]::Descendants/);
       // `Descendants` excludes the element itself, so there is no depth-0 test to guard — and there
       // must not be a hand-rolled walk beside it that would reintroduce one.
       expect(script).not.toContain("function FindElement");

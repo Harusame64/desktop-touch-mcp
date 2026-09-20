@@ -800,13 +800,14 @@ fn find_scroll_pattern_in_subtree(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// The scroll roads search with `actions::find_element_in_window` — one search for every road.
-///
-/// They had their own copy, and it was the ORIGINAL: the acts' search delegated to it, which is how
-/// the window-first test reached them (internal #133). The reads and the scroll roads kept it until
-/// #134 moved every road to descendants-only, on both clients at once. A window matched by name was
-/// never an answer here either — `walk_scroll_ancestors` walks UP from what it found, so a window
-/// yields an empty list, and `ScrollItemPattern` is not on a top-level window.
+// The scroll roads search with `actions::find_element_in_window` — one search for every road.
+//
+// They had their own copy, and it was the ORIGINAL: the acts' search delegated to it, which is how
+// the window-first test reached them (internal #133). The reads and the scroll roads kept it until
+// #134 moved every road to descendants-only, on both clients at once. A window matched by name was
+// never an answer here either — `walk_scroll_ancestors` walks UP from what it found, so a window
+// yields an empty list, and `ScrollItemPattern` is not on a top-level window.
+
 /// Walk from element upward, collecting ancestors that expose ScrollPattern.
 /// Returns outer→inner order (reversed from walk order, matching TS behaviour).
 fn walk_scroll_ancestors(

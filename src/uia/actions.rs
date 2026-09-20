@@ -378,12 +378,39 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
 /// search `TreeScope.Descendants` and never test the window, and on the same window they invoked the
 /// Button (win2, same round); this makes the two clients give one answer.
 ///
+/// **The reads and the scroll roads moved here too** (internal #134). They tested the window first,
+/// as their PowerShell twins did (`FindElement $target 0`), so the two clients agreed and neither
+/// half could move alone — both moved in the same change. MEASURED 2026-09-20 win2 (internal
+/// `bdef099`, 27 arms): with a name only the TITLE carried, `wait_until` `element_appears` answered
+/// `ok:true` at once with the window's own rect, the `mouse_click` tier-3 re-query aimed at the
+/// window's centre `(1080,660)` where the button's was `(1080,621)`, and `scope_element`'s remaining
+/// code returned the window and a screenshot of all of it (44,220 bytes against a control's 1,548).
+/// Worse, two entries hid it: `value_changes` and `scroll(action='to_element')` answered
+/// byte-for-byte what they answer when nothing matched at all, so no caller could tell a wrong
+/// target from no target.
+///
+/// What each read gives up by it, checked caller by caller (gate 2): `wait_until` keeps polling and
+/// times out, which is what it should have done, and it has `window_appears` when a window IS the
+/// subject; the mouse re-query falls back to the plain offset correction instead of aiming at the
+/// window's centre; `scope_element` — the one caller whose window-match produced a usable answer,
+/// a picture of the whole window — now says "Element not found", and `get_ui_elements` is the road
+/// for a window-wide tree; `scroll_into_view` answers `ok:false, "Element not found"` where it said
+/// `ok:true, scrolled:false, "ScrollItemPattern not available"`, which is the honest half of a
+/// distinction it could not make before; and a window matched by `get_scroll_ancestors` walked up to
+/// the root and yielded an empty list anyway.
+///
 /// **A call that names nothing finds nothing.** An empty criterion is not one (`given`), and with
 /// none left the window used to answer — and it cannot be invoked; the walk alone would answer with
-/// the first element in the tree, and invoke it. So that call is "not found" here. The PowerShell
-/// twins still take their first descendant (their filters become `$true`); no shipped call reaches
-/// either: discover drops nameless elements (`uia-provider.ts`), and the V1 tools refuse a call with
-/// neither a name nor an AutomationId.
+/// the first element in the tree, and invoke it. So that call is "not found" here, while the
+/// PowerShell twins would take their first descendant (their filters become `$true`).
+///
+/// **One entry could send an empty one, and no longer can** (gate 2): every other caller refuses it
+/// — discover drops nameless elements (`uia-provider.ts`), and the V1 tools ask for a name or an
+/// AutomationId — but `scroll`'s `target` was `z.string()` with no minimum, so
+/// `scroll(action='smart', target:'')` reached `get_scroll_ancestors`, where the two clients would
+/// now answer differently: nothing here, the window's first child there. `target` is `.min(1)` now,
+/// in both schemas that carry it, so the divergence is refused at the door rather than described in
+/// a comment.
 pub(crate) fn find_element_in_window(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
@@ -398,20 +425,6 @@ pub(crate) fn find_element_in_window(
     find_among_descendants(ctx, window, name, automation_id, control_type)
 }
 
-/// **The reads moved here too** (internal #134). They tested the window first, as their PowerShell
-/// twins did (`FindElement $target 0`), so the two clients agreed and neither half could move
-/// alone — both moved in the same change. MEASURED 2026-09-20 win2 (internal `bdef099`, 27 arms):
-/// with a name only the TITLE carried, `wait_until` `element_appears` answered `ok:true` at once
-/// with the window's own rect, the `mouse_click` tier-3 re-query aimed at the window's centre
-/// `(1080,660)` where the button's was `(1080,621)`, and `scope_element`'s remaining code returned
-/// the window and a screenshot of all of it (44,220 bytes against a control's 1,548). Worse, two
-/// entries hid it: `value_changes` and `scroll(action='to_element')` answered byte-for-byte what
-/// they answer when nothing matched at all, so no caller could tell a wrong target from no target.
-///
-/// None of the reads' callers can mean the window: `wait_until` has `window_appears` for a window,
-/// the mouse re-query is about a control's rect, and a window matched by `get_scroll_ancestors`
-/// walks up to the root and yields an empty list anyway.
-///
 /// Which criteria the call actually gave: an empty string is not one.
 ///
 /// It read as two different things ten lines apart, and gate 2 on this change named it. An empty
@@ -419,9 +432,8 @@ pub(crate) fn find_element_in_window(
 /// has one (`id == target`, an exact compare) — so `automationId: ""` was a filter nobody asked for,
 /// while the same value alone meant "nothing was named". The PowerShell twins of the three acts and
 /// of the two reads drop an empty filter (`name ? … : "$true"`), so this is also what makes those
-/// five roads read a caller the same way. **Not the scroll road**: `find_element` in `scroll.rs`
-/// still hands an empty id to an exact compare while its own twin drops it — one more reason that
-/// road is a change of its own (no caller reaches it: both pass a name only).
+/// roads read a caller the same way. #134 brought the scroll roads here too, and with them the last
+/// copy of the other reading — `scroll.rs` had its own `matches_element` with the exact compare.
 fn given<'a>(
     name: Option<&'a str>,
     automation_id: Option<&'a str>,
