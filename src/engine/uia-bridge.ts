@@ -565,6 +565,43 @@ try {
 `;
 
 /**
+ * ADR-036 internal #136 — find a window by its title, and leave this client able to SEE it.
+ *
+ * The registration above was added to the roads that resolve a window by HANDLE, and to the
+ * discover read. It was never added to the roads that resolve the same window by TITLE — so in
+ * three of these generators the two branches of ONE function disagreed about what the window
+ * contains: `makeClickElementScriptByHwnd` registered and `makeClickElementScript` did not, and
+ * the same split ran through the value write and `insertTextViaTextPattern2`. Four scripts out of
+ * fourteen carried it.
+ *
+ * What that costs is not a count. Without the registration this client reaches a legacy window's
+ * title bar, menu bar and close button through nothing at all — they are synthesised from MSAA by
+ * an assembly registered per process — so a caller that NAMED its window got a tree with no frame
+ * in it, while the same caller holding a handle got the frame. MEASURED 2026-09-20 win2 (internal
+ * `bdef099`, arm R6): the same fixture window answered 8 children through the COM client the Rust
+ * engine uses and 2 through this one, the missing six being the title bar, the menu bar, the three
+ * caption buttons and a menu item. The same window was 2 against 26 on Notepad (2026-09-09).
+ *
+ * So this is not only the discover read's problem. `getElementBounds` is what `wait_until` polls
+ * and what the mouse's tier-3 re-query asks, and on this client a wait for `Close` could never
+ * end. ADR-036 item 16 weighs "the element was not found" by WHICH client answered — a rule that
+ * assumes the two clients see the same tree, which here they demonstrably did not.
+ *
+ * Every caller has `$root` and `$trueC` in scope before this, and reads `$target` after it. The
+ * registration goes last, so the warm-up it needs has a `$target` to run against — the order the
+ * const above documents, and the one that is silent when it is wrong.
+ */
+function makeResolveWindowByTitlePs(safeTitle: string, notFoundJson: string): string {
+  return `$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '${notFoundJson}'; exit }
+${PS_REGISTER_CLIENTSIDE_PROVIDERS}`;
+}
+
+/**
  * (H3) Click an element by finding the window via HWND directly.
  * AutomationElement.FromHandle() bypasses the title-based root search,
  * which fixes WindowNotFound for common dialogs whose title is not visible
@@ -752,12 +789,7 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 $found = $null
 $all = $target.FindAll($desc, $trueC)
@@ -810,12 +842,7 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 $found = $null
 $all = $target.FindAll($desc, $trueC)
@@ -1603,12 +1630,7 @@ catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${A
 if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 ${PS_REGISTER_CLIENTSIDE_PROVIDERS}`
     : `$root = [System.Windows.Automation.AutomationElement]::RootElement
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"code":"WindowNotFound"}'; exit }`;
+${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"code":"WindowNotFound"}`)}`;
 
   // ADR-036 — the window can go between resolving the target and the walk, and everything in the
   // stretch below throws ElementNotAvailableException when it does: `FindAll`, `$el.Current`. The
@@ -1762,12 +1784,7 @@ $root   = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC  = [System.Windows.Automation.Condition]::TrueCondition
 $desc   = [System.Windows.Automation.TreeScope]::Descendants
 
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"error":"Window not found"}`)}
 
 ${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12)}
 if (-not $found) { Write-Output '{"error":"Element not found"}'; exit }
@@ -1910,13 +1927,9 @@ ${scopeHwnd !== undefined
 $hwndPtr = [System.IntPtr]::new(${scopeHwnd.toString()})
 try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr) }
 catch { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }`
-  : `$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }`}
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
+${PS_REGISTER_CLIENTSIDE_PROVIDERS}`
+  : `${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}`}
 
 # Collect ALL descendants with TextPattern, score by control-type preference
 # (Document/Custom/Edit favored — these host the real terminal buffer) and
@@ -2057,12 +2070,7 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 
 # Find the target toplevel window by title substring.
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 # Get the system focused element. If none, nothing to read back.
 $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
@@ -2168,12 +2176,7 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"error":"Window not found"}`)}
 
 ${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12)}
 if (-not $found) { Write-Output '{"error":"Element not found"}'; exit }
@@ -2245,12 +2248,7 @@ Add-Type -AssemblyName UIAutomationTypes
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"scrolled":false,"error":"Window not found"}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"scrolled":false,"error":"Window not found"}`)}
 
 ${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter})`, 12)}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
@@ -2322,12 +2320,7 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
 
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"error":"Window not found","ancestors":[]}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found","ancestors":[]}`)}
 
 ${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14)}
 
@@ -2412,12 +2405,7 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
 
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"ok":false,"scrolled":false,"error":"Window not found"}'; exit }
+${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"scrolled":false,"error":"Window not found"}`)}
 
 ${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14)}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
