@@ -195,6 +195,36 @@ describe("internal #142 — the refusal is built from which silence it was", () 
     expect(envelope.context).toMatchObject({ why: "read_unfinished", via: "none" });
   });
 
+  it("does not assert the window was there when the client could not tell", async () => {
+    // FOUND BY MUTATION: `unreadable` is what the NATIVE road answers for BOTH of its misses, and
+    // it is the road this product runs. Folding it into the plain "Element not found" arm is how a
+    // window that does not exist kept getting the element-name advice here.
+    const envelope = await scopeMissing("unreadable", "native");
+    expect(envelope.error).toMatch(/or no window matched/);
+    expect(envelope.error).toMatch(/cannot tell the two apart/);
+    // It routes as `WindowNotFound`, and that is a decision rather than an accident: the code has
+    // to be ONE of the two while the answer is genuinely both, so it is chosen for what the caller
+    // should do FIRST — you cannot find an element inside a window that is not there, and
+    // `WindowNotFound`'s own first suggestion is to list the window titles. The ambiguity lives in
+    // the message, which says both halves out loud; the code carries the recovery order. This is
+    // also what `wait_until` advises for the same `why`, so the two roads agree.
+    expect(envelope.code).toBe("WindowNotFound");
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/list_window_titles|desktop_discover|get_windows/);
+  });
+
+  it("carries the read's own error, which on a failed read is the only evidence there is", async () => {
+    // FOUND BY MUTATION: dropping the `error` spread killed nothing — `via: "none"` then sat
+    // beside a refusal with nothing to explain either of them.
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: null, why: "read_failed", via: "none", error: "PowerShell read failed: the real reason",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    const result = await scopeElementHandler(ARGS);
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { code?: string; context?: Record<string, unknown> };
+    expect(envelope.code).toBe("UiaTimeout");
+    expect(envelope.context).toMatchObject({ why: "read_failed", via: "none", error: "PowerShell read failed: the real reason" });
+  });
+
   it("still says ElementNotFound when the element really was not found", async () => {
     // The control: the refusal that was always right must not move.
     const envelope = await scopeMissing("element_not_found");

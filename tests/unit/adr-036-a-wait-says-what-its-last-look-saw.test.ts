@@ -313,6 +313,23 @@ describe("a timed-out wait says which silence it was", () => {
     expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back/);
   });
 
+  it("says two different things by 'unreadable', because two different roads produce it", async () => {
+    // FOUND BY MUTATION (gate 2's own finding, then a mutation nobody had written): the NATIVE
+    // road answers `unreadable` because the engine discards the distinction, while the PowerShell
+    // road answers it only when the script said something this server does not recognise — and
+    // then the words are in `context.lastLook.error`. One sentence for both told half the callers
+    // something false about their build.
+    miss = { why: "unreadable", via: "native" };
+    const native = await waitFor("element_appears");
+    expect(suggestOf(native)[0]).toMatch(/this build's UIA engine cannot tell the two apart/);
+
+    miss = { why: "unreadable", via: "powershell", error: "Access is denied. (0x80070005)" };
+    const ps = await waitFor("element_appears");
+    expect(suggestOf(ps)[0]).toMatch(/something this server does not recognise/);
+    expect(suggestOf(ps)[0]).toMatch(/context\.lastLook\.error/);
+    expect(suggestOf(ps)[0]).not.toMatch(/this build's UIA engine/);
+  });
+
   it("says the road changed once, not twice", async () => {
     // FOUND BY MUTATION (gate 2): dropping the `why !== "element_not_found"` exclusion from the
     // trailing push emits the vocabulary line TWICE on that silence, and every cell stayed green
