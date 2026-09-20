@@ -1938,10 +1938,39 @@ export type BoundsMiss =
   /** The client that answered says "no" without saying which of the two. Today: the native road. */
   | "unreadable"
   /** The read itself failed, and no other client answered either. */
-  | "read_failed";
+  | "read_failed"
+  /**
+   * The read was cut off by its own budget before it produced anything — nothing was concluded.
+   *
+   * MEASURED 2026-09-20 win2 (internal `0c5547d`): against a window whose UI thread is hung, this
+   * road answers nothing in 16 seconds — 8000 ms of native timeout, then 8000 ms of `runPS`
+   * timeout, spent one after the other. The script is killed with empty stdout.
+   *
+   * **It is the only silence where waiting longer can change the answer**, and it looked exactly
+   * like the three above, so a caller gave up on a read that had not finished. `runPS` passes a
+   * fixed 8000 ms here where `getUiElements` takes the caller's own budget, which is why the same
+   * hung window can be read by one road and not the other (internal #144).
+   *
+   * **It does not mean the TARGET is busy.** Measured the same day (win2, `30dac81`): reading a
+   * title that matches no window at all takes 16 s while an unrelated window is hung, and 120 ms
+   * before and after. A title search walks the root's children and reads `Current.Name` on each
+   * one, so one unresponsive window on the desktop is a tax on every title search, whoever the
+   * caller asked about. Advice that says "the window you named is busy" is wrong in exactly that
+   * case, which is why the sentence in `wait-until.ts` is about the READ and not about the
+   * window.
+   */
+  | "read_unfinished";
 
-/** Which UIA client produced an answer. */
-export type UiaVia = "native" | "powershell";
+/**
+ * Which UIA client produced an answer — or `none`, when the question was never answered at all.
+ *
+ * `none` is not a nicety. "If the native client fails, the PowerShell road answers" does not hold
+ * when the cause of the failure is SLOWNESS: both budgets are 8000 ms and they are spent one after
+ * the other, so a window slow enough to time out the engine is slow enough to time out the
+ * fallback (win2, `0c5547d`). Writing `via: "powershell"` on that answer would claim a client
+ * spoke when none did.
+ */
+export type UiaVia = "native" | "powershell" | "none";
 
 /**
  * A bounds read, and the provenance of its answer — internal #142.
@@ -2435,11 +2464,16 @@ try {
     }
     return { found: parsed as ElementBounds, via: "powershell", ...(nativeFailed !== undefined && { nativeFailed }) };
   } catch (e) {
-    // The read itself failed: the script did not run, timed out, or did not produce JSON. Distinct
-    // from both misses above — nothing looked, so nothing can be concluded about the window or the
-    // element.
+    // Nothing looked, so nothing can be concluded about the window or the element — and NOBODY
+    // answered, so `via` says so rather than crediting the road that was cut off.
+    //
+    // The two are kept apart because only one of them can change with time: `execFile` sets
+    // `killed` when it is the one that ended the process, which is this module's own 8000 ms
+    // budget expiring, not the script deciding anything (win2, `0c5547d`: 16 s against a hung
+    // window, 8000 native + 8000 here, stdout empty).
+    const killed = typeof e === "object" && e !== null && (e as { killed?: boolean }).killed === true;
     return {
-      found: null, why: "read_failed", via: "powershell",
+      found: null, why: killed ? "read_unfinished" : "read_failed", via: "none",
       error: e instanceof Error ? e.message : String(e),
       ...(nativeFailed !== undefined && { nativeFailed }),
     };

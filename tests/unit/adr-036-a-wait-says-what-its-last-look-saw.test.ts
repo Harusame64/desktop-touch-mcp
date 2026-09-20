@@ -214,6 +214,28 @@ describe("a timed-out wait says which silence it was", () => {
     expect(suggestOf(envelope)[0]).toMatch(/without saying whether the WINDOW or the ELEMENT/);
   });
 
+  it("tells the caller to wait, for the one silence where waiting works", async () => {
+    // win2, internal `0c5547d`: a hung window makes this road answer nothing in 16 s — and the
+    // envelope said `element_not_found`, so the caller went off to re-read a name belonging to an
+    // element that was on the screen the whole time.
+    //
+    // THE SUBJECT IS THE READ, NOT THE WINDOW, and that is a correction rather than a style
+    // choice. The first draft of this line said "the window is busy, not missing". Measured the
+    // same day (win2, `30dac81`): reading a title that matches NO WINDOW AT ALL takes 16 s while
+    // an unrelated window is hung, because a title search walks the root's children and reads
+    // `Current.Name` on each. One unresponsive window is a tax on every title search, so a
+    // sentence about "the window you named" is false in exactly the case that produces it.
+    miss = { why: "read_unfinished", via: "none", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "read_unfinished", via: "none" });
+    expect(suggestOf(envelope)[0]).toMatch(/ran out of its own budget/);
+    expect(suggestOf(envelope)[0]).toMatch(/not necessarily the one you named/);
+    // …it tells them to wait rather than to re-aim…
+    expect(suggestOf(envelope)[0]).toMatch(/raise timeoutMs/);
+    // …and it does NOT send them to re-check either name.
+    expect(suggestOf(envelope)[0]).not.toMatch(/target\.elementName|target\.windowTitle/);
+  });
+
   it("says a read that failed learned nothing, instead of reporting an absence", async () => {
     miss = { why: "read_failed", via: "powershell", error: "powershell.exe: timed out" };
     const envelope = await waitFor("element_appears");

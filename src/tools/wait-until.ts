@@ -492,9 +492,11 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
               ? ["The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer"]
               : lastLook["why"] === "unreadable"
                 ? ["The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first (list_windows), then the element name — this build's UIA engine cannot tell the two apart"]
-                : lastLook["why"] === "read_failed"
-                  ? ["The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target"]
-                  : []),
+                : lastLook["why"] === "read_unfinished"
+                  ? ["The read ran out of its own budget before answering — nothing was learned about either the window or the element, and this is the only silence a longer wait can turn into an answer. Some window on this desktop is answering slowly, not necessarily the one you named: raise timeoutMs rather than changing the target"]
+                  : lastLook["why"] === "read_failed"
+                    ? ["The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target"]
+                    : []),
           // Said second and only when it happened, because it changes what a NAME means rather
           // than what to do next: the two UIA clients do not name the same control the same way
           // (internal #136), so a read that fell back answered in the other one's vocabulary.

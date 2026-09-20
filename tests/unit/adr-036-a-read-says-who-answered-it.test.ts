@@ -91,10 +91,34 @@ describe("the bridge says which silence the read was", () => {
     // Nothing looked, so nothing can be concluded about either the window or the element — and the
     // error is carried so the caller is not left guessing at a silence with no content.
     nativeAnswer = () => { throw new Error("engine unavailable"); };
-    psThrows = new Error("powershell.exe: timed out");
+    psThrows = new Error("powershell.exe: spawn failed");
     const answer = await getElementBounds("App", "Save");
-    expect(answer).toMatchObject({ found: null, why: "read_failed", via: "powershell" });
-    expect((answer as { error?: string }).error).toMatch(/timed out/);
+    expect(answer).toMatchObject({ found: null, why: "read_failed", via: "none" });
+    expect((answer as { error?: string }).error).toMatch(/spawn failed/);
+  });
+
+  it("separates a read that was cut off from one that failed, because only one can change with time", async () => {
+    // FOUND ON THE MACHINE, not here (win2, internal `0c5547d`): against a window whose UI thread
+    // is hung, this road answers nothing in 16 seconds — 8000 ms of native timeout and then
+    // 8000 ms of `runPS` timeout, spent one after the other, with the script killed and stdout
+    // empty. That is not "the element is not there"; it is "nobody finished asking", and it is the
+    // only silence a longer wait can turn into an answer. It looked exactly like the other three.
+    nativeAnswer = () => { throw new Error("UIA operation timed out after 8000ms"); };
+    psThrows = Object.assign(new Error("Command failed: powershell.exe"), { killed: true, signal: "SIGTERM" });
+    const answer = await getElementBounds("App", "Save");
+    expect(answer).toMatchObject({ found: null, why: "read_unfinished", via: "none" });
+    // …and it still says the engine was asked first and what it said, which is how a reader sees
+    // that the sixteen seconds were two budgets and not one.
+    expect((answer as { nativeFailed?: string }).nativeFailed).toMatch(/timed out after 8000ms/);
+  });
+
+  it("credits no client when no client answered", async () => {
+    // "If the native client fails, the PowerShell road answers" is false when the cause of the
+    // failure is SLOWNESS — both budgets are 8000 ms and they are spent serially (win2,
+    // `0c5547d`). Writing `via: "powershell"` on that answer would name a client that never spoke.
+    nativeAnswer = () => { throw new Error("UIA operation timed out after 8000ms"); };
+    psThrows = Object.assign(new Error("Command failed"), { killed: true });
+    expect(await getElementBounds("App", "Save")).toMatchObject({ via: "none" });
   });
 
   it("says the native road cannot tell the two apart, instead of picking one", async () => {
