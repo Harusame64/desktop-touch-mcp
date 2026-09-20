@@ -254,9 +254,25 @@ describe("a timed-out wait says which silence it was", () => {
       resolved: false, why: "element_not_found", via: "powershell",
       nativeFailed: "UIA operation timed out after 8000ms",
     });
-    // Said SECOND: the first line is still the one the silence earned, and this one explains what
-    // a name means on the road that answered.
-    expect(suggestOf(envelope)[0]).toMatch(/No element by that name/);
+    // SAID FIRST on this silence, and that ordering is the measurement rather than a preference.
+    // MEASURED 2026-09-20 win2 (internal `c4374e9`): with an unrelated window hung, the native
+    // read throws, the PowerShell road COMPLETES, and it genuinely has no element called `最小化`
+    // — it calls that control `Minimize`. So `element_not_found` is true and "check
+    // target.elementName" is the wrong recovery: the name was right and the ROAD was wrong. The
+    // first round of this change put the vocabulary line second and the machine showed the
+    // envelope opening with advice that could not work.
+    expect(suggestOf(envelope)[0]).toMatch(/fell back to the PowerShell UIA client/);
+    expect(suggestOf(envelope)[0]).toMatch(/WHICH client's name/);
+    // …and the name line is still there, after it: the name CAN also be wrong.
+    expect(suggestOf(envelope).join("\n")).toMatch(/No element by that name/);
+  });
+
+  it("says the road changed SECOND when the silence is about something else", async () => {
+    // On a silence the fall-back did not cause, the vocabulary is still worth saying and is still
+    // not the thing to fix first. Two orders, one fact, decided by which silence it was.
+    miss = { why: "window_not_found", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
     expect(suggestOf(envelope)[1]).toMatch(/fell back to the PowerShell UIA client/);
   });
 

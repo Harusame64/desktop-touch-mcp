@@ -112,6 +112,31 @@ describe("the bridge says which silence the read was", () => {
     expect((answer as { nativeFailed?: string }).nativeFailed).toMatch(/timed out after 8000ms/);
   });
 
+  it("does not put the whole generated script into the answer", async () => {
+    // MEASURED 2026-09-20 win2 (internal `c4374e9`): `error` carried 2361 characters of PowerShell,
+    // because `execFile` builds its message out of the entire command line. This field goes back
+    // through a tool response to a model that reads every word of it, and the script is the same
+    // string on every call — it is not evidence about the failure.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    const script = "$root = [System.Windows.Automation.AutomationElement]::RootElement; " + "x".repeat(2000);
+    psThrows = Object.assign(new Error(`Command failed: powershell.exe -NoProfile -Command ${script}\nthe real reason`), { killed: true });
+    const answer = await getElementBounds("App", "Save") as { error?: string };
+    expect(answer.error).not.toContain("AutomationElement");
+    expect(answer.error!.length).toBeLessThan(400);
+    // …and what the process actually SAID is kept, which is the only part that differs per call.
+    expect(answer.error).toMatch(/the real reason/);
+    expect(answer.error).toMatch(/cut off at its own budget/);
+  });
+
+  it("keeps a short failure whole, because clamping it would throw away the only evidence", async () => {
+    // `spawn powershell.exe ENOENT` has no script behind it and no second line: the message IS the
+    // finding. A rule written as "always take the tail" would have answered with a bare heading.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    psThrows = new Error("spawn powershell.exe ENOENT");
+    const answer = await getElementBounds("App", "Save") as { error?: string };
+    expect(answer.error).toMatch(/ENOENT/);
+  });
+
   it("credits no client when no client answered", async () => {
     // "If the native client fails, the PowerShell road answers" is false when the cause of the
     // failure is SLOWNESS — both budgets are 8000 ms and they are spent serially (win2,

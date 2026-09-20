@@ -2365,6 +2365,30 @@ try {
  * Find a UI element and return its bounding rectangle + basic properties.
  * Used by scope_element to know which screen region to screenshot.
  */
+/**
+ * What a failed `runPS` is worth saying, without the script.
+ *
+ * `execFile` builds its message from the whole command line, and the command line here is the
+ * generated PowerShell — MEASURED 2026-09-20 win2 (internal `c4374e9`): 2361 characters of script
+ * arrived in `error`, on a road whose answer goes back to a model that reads every word of it. The
+ * script is not evidence about the failure; it is the same string on every call.
+ *
+ * What is worth carrying is which of the two happened and anything the process actually said, so
+ * the tail after the first line is kept and clamped.
+ */
+function shortPsFailure(e: unknown, killed: boolean): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const head = killed
+    ? "PowerShell read was cut off at its own budget before it answered"
+    : "PowerShell read failed";
+  // Only `execFile`'s own "Command failed:" prefix hides a script behind it. Everything else —
+  // `spawn powershell.exe ENOENT`, a parse error from the JSON — is short and is the whole of what
+  // is known, so clamping it would throw away the only evidence there is.
+  if (!raw.startsWith("Command failed:")) return `${head}: ${raw.slice(0, 300)}`;
+  const said = raw.split("\n").slice(1).join(" ").trim().slice(0, 300);
+  return said ? `${head}: ${said}` : head;
+}
+
 export async function getElementBounds(
   windowTitle: string,
   name?: string,
@@ -2474,7 +2498,7 @@ try {
     const killed = typeof e === "object" && e !== null && (e as { killed?: boolean }).killed === true;
     return {
       found: null, why: killed ? "read_unfinished" : "read_failed", via: "none",
-      error: e instanceof Error ? e.message : String(e),
+      error: shortPsFailure(e, killed),
       ...(nativeFailed !== undefined && { nativeFailed }),
     };
   }

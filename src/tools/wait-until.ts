@@ -152,6 +152,45 @@ function provenance(answer: { via: string; nativeFailed?: string }): Record<stri
   return { via: answer.via, ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }) };
 }
 
+/**
+ * The suggestions the last look earned, in the order the caller can act on them.
+ *
+ * Built as a list rather than a ternary chain because two of these can be true at once: a read
+ * that fell back AND missed is about the vocabulary first and the name second, while a read that
+ * fell back and could not find the window is about the window first. The chain could only ever
+ * say one of them (internal #142, measured).
+ */
+function earnedAdvice(look: LastLook): string[] {
+  const why = look["why"];
+  const fellBack = look["nativeFailed"] !== undefined;
+  const lines: string[] = [];
+
+  // Said FIRST only where it is the thing to fix: a name that missed on a road the caller did not
+  // choose. The two clients name some controls differently (internal #136).
+  const vocabulary =
+    "This read fell back to the PowerShell UIA client, which names some controls differently from the native engine ('Minimize' against '最小化', and twenty of Notepad's twenty-six elements differ). The name you passed may be the native engine's — check WHICH client's name you are using before changing it; context.lastLook.nativeFailed says why the road changed";
+  if (fellBack && why === "element_not_found") lines.push(vocabulary);
+
+  if (why === "window_not_found") {
+    lines.push("No window matched target.windowTitle while waiting — the element was never looked for. Check the title (list_windows) before waiting longer or re-checking the element name");
+  } else if (why === "element_not_found") {
+    lines.push("No element by that name was found while waiting — check target.elementName against what {tool:reidentify_element} returns before waiting longer");
+  } else if (why === "no_rectangle") {
+    lines.push("The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer");
+  } else if (why === "unreadable") {
+    lines.push("The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first (list_windows), then the element name — this build's UIA engine cannot tell the two apart");
+  } else if (why === "read_unfinished") {
+    lines.push("The read ran out of its own budget before answering — nothing was learned about either the window or the element, and this is the only silence a longer wait can turn into an answer. Some window on this desktop is answering slowly, not necessarily the one you named: raise timeoutMs rather than changing the target");
+  } else if (why === "read_failed") {
+    lines.push("The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target");
+  }
+
+  // …and on every other silence the same fact is said after, because there it changes what a name
+  // MEANS without being the thing to fix first.
+  if (fellBack && why !== "element_not_found") lines.push(vocabulary);
+  return lines;
+}
+
 function write(look: LastLook, seen: Record<string, unknown>): void {
   for (const key of Object.keys(look)) delete look[key];
   Object.assign(look, seen);
@@ -484,25 +523,14 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
           // `element_not_found`, so a wait against a title that matches NO WINDOW was answered
           // with "check target.elementName" (measured 2026-09-20 win2). The element name was never
           // the problem, and no amount of re-reading it would have been.
-          ...(lastLook["why"] === "window_not_found"
-            ? ["No window matched target.windowTitle while waiting — the element was never looked for. Check the title (list_windows) before waiting longer or re-checking the element name"]
-            : lastLook["why"] === "element_not_found"
-            ? [`No element by that name was found while waiting — check target.elementName against what {tool:reidentify_element} returns before waiting longer`]
-            : lastLook["why"] === "no_rectangle"
-              ? ["The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer"]
-              : lastLook["why"] === "unreadable"
-                ? ["The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first (list_windows), then the element name — this build's UIA engine cannot tell the two apart"]
-                : lastLook["why"] === "read_unfinished"
-                  ? ["The read ran out of its own budget before answering — nothing was learned about either the window or the element, and this is the only silence a longer wait can turn into an answer. Some window on this desktop is answering slowly, not necessarily the one you named: raise timeoutMs rather than changing the target"]
-                  : lastLook["why"] === "read_failed"
-                    ? ["The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target"]
-                    : []),
-          // Said second and only when it happened, because it changes what a NAME means rather
-          // than what to do next: the two UIA clients do not name the same control the same way
-          // (internal #136), so a read that fell back answered in the other one's vocabulary.
-          ...(lastLook["nativeFailed"] !== undefined
-            ? ["This read fell back to the PowerShell UIA client mid-wait, which names some controls differently from the native engine (a caption button is 'Minimize' on one and '最小化' on the other). A name that came from desktop_discover may not match on this road — context.lastLook.nativeFailed says why it fell back"]
-            : []),
+          // internal #142 — one line per silence, and the ORDER decided by what the caller can
+          // act on. MEASURED 2026-09-20 win2 (internal `c4374e9`): with an unrelated window hung,
+          // the native read throws, the PowerShell road COMPLETES, and it genuinely has no element
+          // called `最小化` — it calls that control `Minimize`. So `element_not_found` is TRUE and
+          // "check target.elementName" is the wrong recovery: the name was right and the ROAD was
+          // wrong. The first round put the vocabulary line second and the machine showed an
+          // envelope opening with advice that could not work.
+          ...earnedAdvice(lastLook),
           "Increase timeoutMs",
           "Verify the target is correct",
           "Inspect intermediate state with screenshot(detail='meta')",
