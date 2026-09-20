@@ -162,7 +162,8 @@ function elementsDiffer(a: UiaFocusInfo | null, b: UiaFocusInfo | null): boolean
  *   - pre.elementAtPoint === null AND pre.focusedElement === null
  *     → "unverifiable" (no observation channel — UIA absent on this host)
  *   - any of (elementAtPoint, focusedElement, verticalScrollPos) changed
- *     → "delivered"
+ *     → "delivered" — for elementAtPoint, only when BOTH reads returned a row
+ *       (internal #138: one side missing is the reader's state, not a change)
  *   - foregroundHwnd unchanged AND no other change
  *     → "focus_only" (matrix doc §4.4: "focus held but consumption unconfirmed")
  *   - foregroundHwnd changed but nothing else moved (rare — focus thief)
@@ -182,7 +183,17 @@ export function classifyDelivery(
   const haveUiaPost = post.elementAtPoint !== null || post.focusedElement !== null;
 
   // Tier 2: collect change signals.
-  const elemAtPointChanged = elementsDiffer(pre.elementAtPoint, post.elementAtPoint);
+  //
+  // internal #138 — the at-point pair must be READABLE on both sides before a difference between
+  // them counts. `elementsDiffer(null, x)` is true, and until the point read was fixed that
+  // comparand was inert: both sides were always null on this road, so nothing rested on it. Now
+  // that the read answers, an at-point row that is absent on one side and present on the other is
+  // routine — the element under a cursor is often unnamed (a Pane, a Chromium sub-tree), and an
+  // unnamed row is dropped — so "null before, a control after" would report `delivered` for a
+  // press nothing consumed. That is the failure this whole file exists to detect, arriving as its
+  // own answer (gate 2). A missing side is not a change; it is a missing side.
+  const elemAtPointChanged = pre.elementAtPoint !== null && post.elementAtPoint !== null
+    && elementsDiffer(pre.elementAtPoint, post.elementAtPoint);
   const focusedChanged = elementsDiffer(pre.focusedElement, post.focusedElement);
   const scrollChanged =
     pre.verticalScrollPos !== null &&

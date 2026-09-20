@@ -948,7 +948,14 @@ export async function getFocusedAndPointInfo(
   // PowerShell fallback
   const safeX = Number.isFinite(x) ? Math.trunc(x) : 0;
   const safeY = Number.isFinite(y) ? Math.trunc(y) : 0;
-  const includePointPS = includePoint ? "true" : "false";
+  // `$true` / `$false`, not JavaScript's spelling. internal #138: this read `"true"`, and
+  // PowerShell has no such literal — a bare `true` in a condition is an unresolved command name,
+  // which `if ()` takes as FALSE. So `if (true) { … }` around the point read never ran, on every
+  // call, since the road was written. MEASURED 2026-09-20 win2 (internal `cadc06f`): the product's
+  // own generated script, run as the product runs it, printed `{"focused":{…},"atPoint":null}` with
+  // an EMPTY stderr and exit code 0 — the block was skipped in silence, and `if (true) { "YES" }
+  // else { "NO" }` printed `NO` on the same host.
+  const includePointPS = includePoint ? "$true" : "$false";
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
@@ -986,8 +993,8 @@ if (${includePointPS}) {
             $ec = ''; try { $ec = $ep.Current.ControlType.ProgrammaticName -replace 'ControlType\\.',''; } catch {}
             $ea = ''; try { $ea = $ep.Current.AutomationId } catch {}
             $result.atPoint = @{ name=$en; controlType=$ec; automationId=$ea }
-        }
-    } catch {}
+        } else { $result.atPointWhy = 'from_point_empty' }
+    } catch { $result.atPointWhy = "threw: $($_.Exception.GetType().Name)" }
 }
 
 $result | ConvertTo-Json -Compress
@@ -997,7 +1004,18 @@ $result | ConvertTo-Json -Compress
     const parsed = JSON.parse(output) as {
       focused?: Record<string, string | undefined> | null;
       atPoint?: Record<string, string | undefined> | null;
+      /**
+       * internal #138 — why the point read has nothing, when it has nothing. Every failure inside
+       * that block used to collapse into `atPoint: null`, which is also what "the point is over
+       * nothing" answers, and that is how a branch that never ran survived unnoticed for the life
+       * of the road. The name is not routed on; it is printed so the next silence has a reason
+       * beside it.
+       */
+      atPointWhy?: string;
     };
+    if (parsed.atPointWhy !== undefined) {
+      console.warn(`[uia-bridge] PowerShell point read answered nothing: ${parsed.atPointWhy}`);
+    }
     const toInfo = (obj: Record<string, string | undefined> | null | undefined): UiaFocusInfo | null => {
       if (!obj || dropFocusRow(obj.name, obj.controlType, includeUnnamed)) return null;
       const info: UiaFocusInfo = { name: obj.name ?? "", controlType: obj.controlType ?? "" };
@@ -1005,7 +1023,17 @@ $result | ConvertTo-Json -Compress
       if (obj.value != null) info.value = obj.value;
       return info;
     };
-    return { focused: toInfo(parsed.focused), atPoint: toInfo(parsed.atPoint) };
+    const atPoint = toInfo(parsed.atPoint);
+    // internal #138, gate 2 — the OTHER way this answer becomes nothing, and after the fix it is the
+    // likelier one: the read found an element and `dropFocusRow` dropped it for having no Name. The
+    // element under a cursor is unnamed far more often than the focused one is (a Pane, a Document,
+    // a Chromium sub-tree), and without this line that lands on `atPoint: null` with no reason — the
+    // shape `atPointWhy` exists to end. It is also the measurement internal #139 needs: how often
+    // the channel is empty because nothing is named, rather than because nothing could be read.
+    if (atPoint === null && parsed.atPoint != null) {
+      console.warn("[uia-bridge] PowerShell point read answered nothing: dropped_unnamed");
+    }
+    return { focused: toInfo(parsed.focused), atPoint };
   } catch {
     return { focused: null, atPoint: null };
   }
